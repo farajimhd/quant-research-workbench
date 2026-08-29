@@ -7,6 +7,7 @@ CANVAS_PAGE = REPO_ROOT / "frontend" / "src" / "pages" / "CanvasConfigurationPag
 SCREENER_CONTAINERS = REPO_ROOT / "frontend" / "src" / "app" / "components" / "MarketScreenerContainers.tsx"
 TRADING_PRESENTATION = REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "tradingPresentation.tsx"
 CHART_PRESENTATION = REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "chartPresentation.tsx"
+TRADING_WORKSPACE = REPO_ROOT / "frontend" / "src" / "app" / "components" / "TradingWorkspace.tsx"
 
 
 def test_next_action_reports_backend_progress_while_canvas_stays_static() -> None:
@@ -120,8 +121,22 @@ def test_structural_history_can_span_all_loaded_chart_bars() -> None:
     assert "structure_only.then_some(1)" in history_cache_source
     assert 'column !== "qmd_structure_unified_levels"' in chart_data_source
     assert 'indicator_columns: "bar_start,qmd_structure_unified_levels"' in chart_data_source
+    assert 'const unifiedStructureAsPrimary' not in chart_data_source
+    assert '? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, stage: "bars" })}`' in chart_data_source
+    assert 'const structureFirst = unifiedStructureRequest\n' in chart_data_source
+    assert "function chartIdentityKey(ticker: string, sessionDate: string" in chart_data_source
+    assert "function chartIdentityKey(ticker: string, indicatorColumns: string" not in chart_data_source
     assert "mergeIndicatorRowsByTime(current.indicators, rows)" in chart_data_source
     assert "Loading Unified Structural Levels…" in chart_data_source
+
+
+def test_canvas_registry_retries_transient_failures_before_blocking_container_adds() -> None:
+    source = TRADING_WORKSPACE.read_text(encoding="utf-8")
+
+    assert "const loadRegistry = (attempt: number)" in source
+    assert "if (attempt < 2)" in source
+    assert "loadRegistry(attempt + 1)" in source
+    assert 'setRegistryError("")' in source
 
 
 def test_unified_structure_scores_can_filter_loaded_levels_without_a_history_request() -> None:

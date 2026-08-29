@@ -143,7 +143,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
     const historyController = new AbortController();
     const ticker = symbol.trim().toUpperCase();
     const requestKey = chartRequestKey(ticker, timeframe, projectionKey, sessionDate, historicalMode, fullSession);
-    const identityKey = chartIdentityKey(ticker, projectionKey, sessionDate, historicalMode, fullSession);
+    const identityKey = chartIdentityKey(ticker, sessionDate, historicalMode, fullSession);
     historyAbortRef.current?.abort();
     historyAbortRef.current = historyController;
     requestKeyRef.current = requestKey;
@@ -207,14 +207,15 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
       const unifiedStructureRequest = progressive && unifiedStructureSelected
         ? () => api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, include_market_signals: false, include_structure: false, indicator_columns: "bar_start,qmd_structure_unified_levels", stage: "full" })}`, { signal: historyController.signal, timeoutMs: 180_000 })
         : null;
-      const unifiedStructureAsPrimary = Boolean(unifiedStructureRequest);
+      // Candles are the chart's base authority. Optional indicators may enrich
+      // them after the first paint, but must never gate or replace that paint.
       const barsRequest = progressive
-        ? unifiedStructureRequest?.() ?? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, stage: "bars" })}`, { signal: historyController.signal, timeoutMs: historyTimeoutMs })
+        ? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, stage: "bars" })}`, { signal: historyController.signal, timeoutMs: historyTimeoutMs })
         : api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, indicator_columns: indicatorColumns, stage: "full" })}`, { signal: historyController.signal, timeoutMs: historyTimeoutMs });
       const fullRequest = progressive
         ? () => api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, indicator_columns: standardIndicatorColumns, stage: "full" })}`, { signal: historyController.signal, timeoutMs: 120_000 })
         : null;
-      let unifiedStructurePending = Boolean(unifiedStructureRequest) && !unifiedStructureAsPrimary;
+      let unifiedStructurePending = Boolean(unifiedStructureRequest);
       // Live bars and closed indicators come from the recent materializations.
       // Signal/structure history remains causal QMD History work and advances
       // after the first bar paint so chart work cannot exhaust the browser's
@@ -264,9 +265,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
           updateHistoryCursor(historyCursorRef, payload);
           const closedBars = closedRowsAtCutoff(payload.history, timeframe, cutoffMs);
           const closedIndicators = closedRowsAtCutoff(payload.indicators, timeframe, cutoffMs);
-          const aligned = unifiedStructureAsPrimary
-            ? { bars: closedBars, indicators: closedIndicators }
-            : alignHistoricalChartRows(closedBars, closedIndicators, payload.indicators_available);
+          const aligned = alignHistoricalChartRows(closedBars, closedIndicators, payload.indicators_available);
           const replaceDisplayedTimeframe = displayedRequestKeyRef.current !== requestKey;
           displayedIdentityRef.current = identityKey;
           displayedRequestKeyRef.current = requestKey;
@@ -284,7 +283,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
               canLoadEarlier: payload.has_more && !merged.atCapacity,
               marketSignalEvents: mergeMarketSignalEvents(replaceDisplayedTimeframe ? [] : current.marketSignalEvents, payload.market_signal_events),
               historyError: "",
-              historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : progressive ? liveTail ? "Loading current QMD indicators..." : "Loading requested indicators..." : liveTail ? "Historical base loaded; connecting the QMD live tail..." : "",
+              historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : progressive ? liveTail ? "Loading current QMD indicators..." : unifiedStructurePending ? "Loading Unified Structural Levels…" : "Loading requested indicators..." : liveTail ? "Historical base loaded; connecting the QMD live tail..." : "",
               indicators: merged.indicators,
               indicatorsAvailable: progressive ? current.indicatorsAvailable : payload.indicators_available,
               indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
@@ -297,7 +296,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
             return null;
           }
           void auxiliaryRequest?.().then(mergeAuxiliaryPayload).catch(() => undefined);
-          const structureFirst = unifiedStructureRequest && !unifiedStructureAsPrimary
+          const structureFirst = unifiedStructureRequest
             ? unifiedStructureRequest()
               .then(mergeUnifiedStructurePayload)
               .catch((reason) => {
@@ -435,7 +434,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
     const ticker = symbol.trim().toUpperCase();
     if (!ticker) return;
     const requestKey = chartRequestKey(ticker, timeframe, projectionKey, sessionDate, historicalMode, fullSession);
-    const identityKey = chartIdentityKey(ticker, projectionKey, sessionDate, historicalMode, fullSession);
+    const identityKey = chartIdentityKey(ticker, sessionDate, historicalMode, fullSession);
     let active = true;
     let resnapshotController: AbortController | null = null;
     const sockets: Partial<Record<"bars" | "indicators", WebSocket>> = {};
@@ -577,8 +576,11 @@ function chartRequestKey(ticker: string, timeframe: string, indicatorColumns: st
   return [ticker, timeframe, indicatorColumns, sessionDate, historicalMode, fullSession ? "full-session" : "paged"].join("|");
 }
 
-function chartIdentityKey(ticker: string, indicatorColumns: string, sessionDate: string, historicalMode: HistoricalChartMode, fullSession: boolean): string {
-  return [ticker, indicatorColumns, sessionDate, historicalMode, fullSession ? "full-session" : "paged"].join("|");
+function chartIdentityKey(ticker: string, sessionDate: string, historicalMode: HistoricalChartMode, fullSession: boolean): string {
+  // Indicator selection changes the enrichment projection, not the underlying
+  // instrument/session chart. Keep the last complete candles mounted while
+  // the new projection is requested.
+  return [ticker, sessionDate, historicalMode, fullSession ? "full-session" : "paged"].join("|");
 }
 
 function rememberChartSnapshot(key: string, payload: QmdBarHistory) {

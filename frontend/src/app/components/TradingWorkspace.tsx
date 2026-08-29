@@ -220,20 +220,32 @@ export function TradingWorkspace({
 
   useEffect(() => {
     const controller = new AbortController();
+    let retryTimer: number | undefined;
     setRegistryError("");
-    api<RegisteredContainerResponse>("/api/registries/containers", { signal: controller.signal, timeoutMs: 10000 })
-      .then((payload) => {
-        const ids = payload.rows.map((row) => row.container_id);
-        if (payload.schema_version < 2 || payload.count !== payload.rows.length || new Set(ids).size !== ids.length) {
-          throw new Error("The backend container registry failed schema, count, or unique-ID validation.");
-        }
-        setRegisteredContainers(payload.rows);
-      })
-      .catch((error: unknown) => {
-        if (controller.signal.aborted) return;
-        setRegistryError(error instanceof Error ? error.message : String(error));
-      });
-    return () => controller.abort();
+    const loadRegistry = (attempt: number) => {
+      api<RegisteredContainerResponse>("/api/registries/containers", { signal: controller.signal, timeoutMs: 5000 })
+        .then((payload) => {
+          const ids = payload.rows.map((row) => row.container_id);
+          if (payload.schema_version < 2 || payload.count !== payload.rows.length || new Set(ids).size !== ids.length) {
+            throw new Error("The backend container registry failed schema, count, or unique-ID validation.");
+          }
+          setRegisteredContainers(payload.rows);
+          setRegistryError("");
+        })
+        .catch((error: unknown) => {
+          if (controller.signal.aborted) return;
+          if (attempt < 2) {
+            retryTimer = window.setTimeout(() => loadRegistry(attempt + 1), attempt === 0 ? 250 : 1000);
+            return;
+          }
+          setRegistryError(error instanceof Error ? error.message : String(error));
+        });
+    };
+    loadRegistry(0);
+    return () => {
+      controller.abort();
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
   }, []);
 
   function contentHost(id: string) {
