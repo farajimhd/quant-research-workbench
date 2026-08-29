@@ -76,6 +76,7 @@ def test_catalog_defines_operator_profiles_and_dynamic_dependencies() -> None:
     assert order.index("ibkr-supervisor") < order.index("reference-gateway")
     assert services["qmd-live"].readiness["kind"] == "qmd_live"
     assert services["ibkr-supervisor"].readiness["kind"] == "ibkr"
+    assert "services/qmd-gateway/**" in services["qmd-history"].watch
 
 
 def test_fingerprint_detects_uncommitted_source_and_safe_environment_changes(

@@ -98,7 +98,9 @@ def test_structural_history_can_span_all_loaded_chart_bars() -> None:
     assert "delta.upserts" in chart_source
     assert '`${level.unified_level_id}:${level.side}`' in chart_source
     assert "active.delete(key)" in chart_source
-    assert "unifiedEvidenceSignature(existing.level) !== unifiedEvidenceSignature(level)" in chart_source
+    assert "existing.level = level" in chart_source
+    assert "Evidence changes reinforce the same causal level episode" in chart_source
+    assert "unifiedEvidenceSignature" not in chart_source
     assert "historyBarsDefault: 0" in chart_source
     assert 'annotationKind: "unified-structure-level"' in chart_source
     assert "borderOpacity: 0" in chart_source

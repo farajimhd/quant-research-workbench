@@ -39,7 +39,7 @@
       "fingerprint_env": ["QMD_HISTORY_BIND", "QMD_HISTORY_CARGO_TARGET_DIR"],
       "dependencies": [],
       "graceful_timeout_seconds": 20,
-      "watch": ["services/qmd_history_gateway/**", "scripts/run_qmd_history_gateway.ps1"]
+      "watch": ["services/qmd_history_gateway/**", "services/qmd-gateway/**", "scripts/run_qmd_history_gateway.ps1"]
     },
     "backend": {
       "title": "Backend",

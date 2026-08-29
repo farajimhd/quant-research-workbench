@@ -535,12 +535,12 @@ function unifiedStructureSegments(rows: HistoricalIndicator[], chartEnd: number)
     const key = `${level.unified_level_id}:${level.side}`;
     const existing = active.get(key);
     if (existing) {
-      if (unifiedEvidenceSignature(existing.level) !== unifiedEvidenceSignature(level)) {
-        closeSegment(key, time);
-        active.set(key, { end: chartEnd, latest: true, level, start: time });
-      } else {
-        existing.end = chartEnd;
-      }
+      // Evidence changes reinforce the same causal level episode. Only an
+      // explicit removal (accepted break) or a side change closes its box.
+      // The backend keeps episode geometry fixed, so updating the evidence
+      // cannot rewrite the historical price range.
+      existing.level = level;
+      existing.end = chartEnd;
       return;
     }
     const confirmed = Number(level.confirmed_at_ms) / 1000;
@@ -572,20 +572,6 @@ function unifiedStructureSegments(rows: HistoricalIndicator[], chartEnd: number)
   });
   active.forEach((segment) => completed.push({ ...segment, end: chartEnd, latest: true }));
   return completed.filter((segment) => segment.end > segment.start);
-}
-
-function unifiedEvidenceSignature(level: QmdUnifiedStructureLevel) {
-  return [
-    Number(level.lower).toFixed(6),
-    Number(level.upper).toFixed(6),
-    Number(level.price).toFixed(6),
-    Number(level.reaction_probability ?? level.confidence).toFixed(6),
-    Number(level.hold_probability ?? 0).toFixed(6),
-    Number(level.touch_count ?? 0),
-    Number(level.hold_count ?? 0),
-    Number(level.break_count ?? 0),
-    Number(level.role_flip_count ?? 0),
-  ].join(":");
 }
 
 function isQmdUnifiedStructureLevel(value: unknown): value is QmdUnifiedStructureLevel {
