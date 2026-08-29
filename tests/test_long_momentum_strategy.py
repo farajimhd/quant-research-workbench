@@ -1298,6 +1298,19 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertTrue(all("strategy" not in order.to_cpapi() for order in plan.orders))
         self.assertTrue(all("strategy_intent_id" not in order.to_cpapi() for order in plan.orders))
 
+    def test_stock_order_plan_floors_theoretical_fractional_quantity(self) -> None:
+        result = LongMomentumStrategyEngine().evaluate(assignment(), confirmed_observation())
+        plan = IbkrStrategyOrderPlanner().plan(
+            account_id="DU123",
+            instrument=InstrumentContract("ibkr:265598", 265598, "AAPL", "STK", "USD"),
+            intent=replace(result.evaluation.intents[0], quantity=143.51),
+            strategy_id=STRATEGY_ID,
+            strategy_revision=STRATEGY_REVISION,
+        )
+
+        self.assertTrue(plan.orders)
+        self.assertTrue(all(order.quantity == 143 for order in plan.orders))
+
     def test_full_exit_replaces_existing_protection_with_one_oca_group(self) -> None:
         managed = assignment(
             status=AssignmentStatus.MANAGING,

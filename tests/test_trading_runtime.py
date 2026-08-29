@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import tempfile
 import unittest
 from dataclasses import replace
@@ -77,6 +78,36 @@ class SimulatedBrokerTests(unittest.IsolatedAsyncioTestCase):
         positions = await self.broker.positions("DU123")
         self.assertEqual(positions[0].position, 100)
         self.assertEqual(positions[0].avgCost, 100.6)
+
+    async def test_stock_participation_fill_is_whole_shares(self) -> None:
+        broker = SimulatedBrokerAdapter(
+            ["DU-WHOLE"],
+            SimulationConfig(
+                initial_cash=20_000,
+                commission_per_share=0,
+                minimum_commission=0,
+                liquidity_participation=0.5,
+            ),
+        )
+        await broker.initialize()
+        await broker.on_market_event(quote(bid=99, ask=100))
+        order = OrderRequest(
+            acctId="DU-WHOLE",
+            conid=265598,
+            cOID="whole-share-parent",
+            ticker="AAPL",
+            orderType="MKT",
+            side="BUY",
+            quantity=200,
+        )
+        await broker.place_orders("DU-WHOLE", [order])
+
+        fills = await broker.on_market_event(
+            quote(bid=99, ask=100, ask_size=287.02)
+        )
+
+        self.assertEqual(fills[0].size, 143)
+        self.assertTrue(float(fills[0].size).is_integer())
 
     async def test_minimum_commission_is_cumulative_per_order_not_per_partial_fill(self) -> None:
         broker = SimulatedBrokerAdapter(
@@ -675,6 +706,18 @@ class JournalTests(unittest.TestCase):
             self.assertEqual(reopened.load_checkpoint("run")["state"], {"events": 2})
             self.assertTrue(reopened.strategy("s")["automatic"])
             reopened.close()
+
+            read_only = TradingJournal(path, read_only=True)
+            self.assertEqual(read_only.load_checkpoint("run")["state"], {"events": 2})
+            with self.assertRaises(sqlite3.OperationalError):
+                read_only.append(
+                    run_id="run",
+                    category="command",
+                    entity_type="order",
+                    entity_id="blocked",
+                    payload={},
+                )
+            read_only.close()
 
     def test_journal_batch_is_atomic_and_preserves_per_run_sequence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

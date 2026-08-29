@@ -51,9 +51,9 @@ class IbkrStrategyOrderPlanner:
         strategy_revision: int,
         limit_offset_bps: float = 5.0,
     ) -> StrategyOrderPlan:
-        quantity = float(intent.quantity)
+        quantity = _executable_quantity(instrument, float(intent.quantity))
         if quantity <= 0:
-            raise ValueError("Order planning requires a positive quantity")
+            raise ValueError("Order planning requires at least one executable share")
         prefix = f"{strategy_id[:14]}-v{strategy_revision}-{uuid4().hex[:12]}"
         position_side = str(intent.metadata.get("position_side") or "long").lower()
         if intent.action == "exit":
@@ -370,6 +370,21 @@ def _slice_quantities(quantity: float, fractions: tuple[float, ...]) -> tuple[fl
     if any(value <= 0 for value in result):
         raise ValueError("protection slice quantity must be positive")
     return tuple(result)
+
+
+def _executable_quantity(instrument: InstrumentContract, quantity: float) -> float:
+    """Return the broker-executable quantity for this security contract.
+
+    The application trades exchange-listed stocks by whole shares.  Portfolio
+    sizing may calculate a fractional theoretical quantity, but that value is
+    never an executable order authority.  Floor at the planner boundary so the
+    parent, every protection child, later reconciliation, and the simulated
+    broker all inherit one whole-share quantity.
+    """
+
+    if str(instrument.security_type or "").upper() == "STK":
+        return float(floor(quantity + 1e-9))
+    return quantity
 
 
 def _aggressive_limit(reference_price: float, side: str, offset_bps: float) -> float:

@@ -380,6 +380,7 @@ export type ChartPayload = {
   oscillator_series: ChartSeries[];
   markers: ChartMarker[];
   regions: Region[];
+  execution_annotations?: TradeFillAnnotation[];
   trade_annotations?: TradeAnnotation[];
   price_zones?: PriceZone[];
   options?: ChartOptions;
@@ -1242,7 +1243,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       zones: selectedZones,
     });
     syncPriceZoneAxisLines(candleRef.current, selectedZones, legendSettingsRef.current, priceZoneAxisLinesRef.current);
-    drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, currentPayload.trade_annotations ?? [], currentPayload.candles, timeline, chartSettingsRef.current, liveEntryLineRef.current);
+    drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, currentPayload.trade_annotations ?? [], currentPayload.execution_annotations ?? [], currentPayload.candles, timeline, chartSettingsRef.current, liveEntryLineRef.current);
     oscillatorPaneRuntimesRef.current.forEach((_runtime, key) => {
       drawSessionRegions(
         chart,
@@ -4231,6 +4232,7 @@ function drawRegions(
   layer: HTMLDivElement | null,
   regions: Region[],
   tradeAnnotations: TradeAnnotation[],
+  executionAnnotations: TradeFillAnnotation[],
   candles: Candle[],
   timeline: CandleSeriesDatum[],
   settings: ChartAppearanceSettings,
@@ -4241,6 +4243,7 @@ function drawRegions(
   if (!plotLayer) return;
   const barWidth = estimateBarWidth(chart, candles);
   drawTradeAnnotations(chart, priceSeries, layer, tradeAnnotations, candles, barWidth);
+  drawExecutionAnnotations(chart, priceSeries, layer, executionAnnotations, candles);
   drawLiveEntryLine(chart, priceSeries, layer, candles, liveEntryLine);
 }
 
@@ -5576,6 +5579,29 @@ function drawTradeAnnotations(
       const triggerY = priceSeries.priceToCoordinate(annotation.triggerPrice);
       if (triggerY !== null) drawTradeGuideLine(layer, left, width, triggerY, "#2563eb", "Trigger", "trigger");
     }
+  });
+}
+
+function drawExecutionAnnotations(
+  chart: IChartApi,
+  priceSeries: ISeriesApi<"Candlestick"> | null,
+  layer: HTMLDivElement,
+  annotations: TradeFillAnnotation[],
+  candles: Candle[],
+) {
+  if (!priceSeries || !annotations.length || !candles.length) return;
+  annotations.forEach((fill) => {
+    const x = xForAnnotationTime(chart, fill.time, candles);
+    const y = priceSeries.priceToCoordinate(fill.price);
+    if (x === null || y === null || !isVisibleCoordinate(x, layer.clientWidth)) return;
+    drawTradeFillMarker(
+      layer,
+      x,
+      y,
+      fill.side === "BUY" ? "#16a34a" : "#dc2626",
+      fill,
+      false,
+    );
   });
 }
 

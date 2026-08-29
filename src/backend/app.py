@@ -5572,8 +5572,8 @@ async def trading_backtest_debug_run_command(
 
 
 @app.get("/api/trading/backtest/runs")
-def trading_backtest_runs() -> dict[str, Any]:
-    rows = backtest_run_service.list()
+async def trading_backtest_runs() -> dict[str, Any]:
+    rows = await asyncio.to_thread(backtest_run_service.list, include_durable=True)
     return {"schema_version": 1, "rows": rows, "row_count": len(rows)}
 
 
@@ -5639,6 +5639,17 @@ def trading_backtest_run(run_id: str) -> dict[str, Any]:
         return backtest_run_service.get(run_id).snapshot()
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Backtest run not found") from exc
+
+
+@app.post("/api/trading/backtest/runs/{run_id}/review")
+async def trading_backtest_run_review(run_id: str) -> dict[str, Any]:
+    try:
+        controller = await backtest_run_service.review_completed(run_id)
+        return controller.snapshot()
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Backtest run not found") from exc
+    except (ReplayRunCapacityError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/api/trading/backtest/runs/{run_id}/results")

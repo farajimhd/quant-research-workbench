@@ -18,6 +18,7 @@ import { TRADING_WORKSPACE_LAYOUT_VERSION, type WorkspaceContainerId } from "./t
 const CHARTS_QUOTES_FOCUS_INSTANCE_ID = "charts_quotes-focus";
 
 export type TickerChartsQuotesOpenOptions = {
+  historicalRunMode?: "backtest" | "backtest_debug" | "replay";
   registry?: CanvasRegistry;
   replayRunId?: string;
   runtimeMode?: CanvasFocusRuntimeMode;
@@ -39,7 +40,7 @@ export function openTickerChartsQuotes(
     ? writeReplayCanvasFocusHandoff(profile, state)
     : writeCanvasFocusHandoff(profile, state, "Charts & Quotes");
   const url = options.replayRunId
-    ? replayFocusCanvasUrl(options.replayRunId, token)
+    ? replayFocusCanvasUrl(options.replayRunId, token, options.historicalRunMode)
     : canvasFocusHandoffUrl(token, options.runtimeMode);
   const focusedWindow = window.open(url, "_blank");
   if (!focusedWindow) {

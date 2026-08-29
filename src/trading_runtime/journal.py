@@ -34,13 +34,25 @@ class TradingJournal:
     repeating or losing them after a process crash.
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, read_only: bool = False) -> None:
         self.path = path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(path, check_same_thread=False)
+        self.read_only = read_only
+        if read_only:
+            if not path.is_file():
+                raise FileNotFoundError(path)
+            self._connection = sqlite3.connect(
+                f"file:{path.as_posix()}?mode=ro",
+                uri=True,
+                check_same_thread=False,
+            )
+            self._connection.execute("PRAGMA query_only=ON")
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._connection = sqlite3.connect(path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._lock = threading.RLock()
-        self._initialize()
+        if not read_only:
+            self._initialize()
 
     def close(self) -> None:
         with self._lock:

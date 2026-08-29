@@ -375,7 +375,9 @@ export function CanvasFocusPage() {
   if (canvasFocusToken) return <TransientCanvasFocusPage focusToken={canvasFocusToken} runtimeMode={runtimeMode} />;
   const replayRunId = params.get("replay_run") || undefined;
   const replayFocusToken = params.get("replay_focus") || undefined;
-  if (replayRunId && replayFocusToken) return <ReplayCanvasFocusPage focusToken={replayFocusToken} runId={replayRunId} />;
+  const historicalModeValue = params.get("historical_mode");
+  const historicalMode = historicalModeValue === "backtest" || historicalModeValue === "backtest_debug" ? historicalModeValue : "replay";
+  if (replayRunId && replayFocusToken) return <ReplayCanvasFocusPage focusToken={replayFocusToken} runId={replayRunId} runMode={historicalMode} />;
   const acceptanceKind = params.get("container_preview") as WorkspaceContainerId | null;
   if (acceptanceKind && TRADING_WORKSPACE_CONTAINERS.some((definition) => definition.id === acceptanceKind)) {
     return <CanvasContainerAcceptancePage
@@ -468,7 +470,7 @@ function ApprovedCanvasFocusPage({ canvasId, requestedInstanceId, requestedNewsI
   return <CanvasWorkspaceSurface approvedCanvas={approved} canvasId={canvasId} manager={false} requestedInstanceId={requestedInstanceId} requestedNewsId={requestedNewsId} requestedSecAccession={requestedSecAccession} requestedSecCik={requestedSecCik} runtimeMode={runtimeMode} />;
 }
 
-function ReplayCanvasFocusPage({ focusToken, runId }: { focusToken: string; runId: string }) {
+function ReplayCanvasFocusPage({ focusToken, runId, runMode }: { focusToken: string; runId: string; runMode: "backtest" | "backtest_debug" | "replay" }) {
   const [handoff] = useState(() => readReplayCanvasFocusHandoff(focusToken));
   const [run, setRun] = useState<CanvasReplayRun | null>(null);
   const [error, setError] = useState(handoff ? "" : "This Replay focus link is missing or expired.");
@@ -482,13 +484,13 @@ function ReplayCanvasFocusPage({ focusToken, runId }: { focusToken: string; runI
   useEffect(() => {
     if (!handoff) return;
     let cancelled = false;
-    api<CanvasReplayRun>(`/api/trading/replay/runs/${encodeURIComponent(runId)}?compact=true`, { timeoutMs: 20_000 })
+    api<CanvasReplayRun>(`/api/trading/${runMode}/runs/${encodeURIComponent(runId)}?compact=true`, { timeoutMs: 20_000 })
       .then((payload) => { if (!cancelled) mergeFocusRun(payload); })
       .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); });
     return () => { cancelled = true; };
-  }, [handoff, mergeFocusRun, runId]);
+  }, [handoff, mergeFocusRun, runId, runMode]);
 
-  useReplayRunEvents(handoff ? runId : undefined, mergeFocusRun, setError);
+  useReplayRunEvents(handoff && runMode === "replay" ? runId : undefined, mergeFocusRun, setError);
 
   if (error && !run) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-inline-error">{error}</div></div>;
   if (!run) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-empty-state"><strong>Opening Replay focus canvas</strong><span>Restoring the selected container against the active run clock.</span></div></div>;
@@ -977,6 +979,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
     const result = openTickerChartsQuotes(tickerValue, {
       registry,
       replayRunId: replayRun?.run_id,
+      historicalRunMode: replayRun?.mode,
       runtimeMode: focusRuntimeMode,
       workspaceState,
     });

@@ -229,8 +229,15 @@ class TradingRuntime:
         self._broker_stream_task: asyncio.Task[None] | None = None
         self._risk_refresh_task: asyncio.Task[None] | None = None
         self._canonical_session: CanonicalBrokerSession | None = None
+        self._review_only = False
 
-    async def initialize(self) -> None:
+    async def initialize(
+        self,
+        *,
+        record_lifecycle: bool = True,
+        review_only: bool = False,
+    ) -> None:
+        self._review_only = review_only
         if hasattr(self.broker, "canonical_accounts"):
             self._canonical_session = CanonicalBrokerSession(
                 self.broker,  # type: ignore[arg-type]
@@ -248,7 +255,10 @@ class TradingRuntime:
                 for row in canonical_snapshot.accounts
                 if row.can_view or row.can_trade
             }
-            self.portfolio.synchronize_canonical(canonical_snapshot)
+            self.portfolio.synchronize_canonical(
+                canonical_snapshot,
+                persist=not review_only,
+            )
         else:
             await self.broker.initialize()
             available = set(await self.broker.accounts())
@@ -256,22 +266,24 @@ class TradingRuntime:
         missing = set(self.config.account_ids) - available
         if missing:
             raise ValueError(f"Broker does not expose configured accounts: {', '.join(sorted(missing))}")
-        await self.risk.prime(self.broker, self.config.account_ids)
-        for account_id in self.config.account_ids:
+        if not review_only:
+            await self.risk.prime(self.broker, self.config.account_ids)
+        for account_id in self.config.account_ids if not review_only else ():
             await self.risk_supervisor.evaluate(account_id, reason="runtime_initialize")
-        if self.order_manager is not None:
+        if self.order_manager is not None and not review_only:
             await self.order_manager.configure_broker_session()
             await self.order_manager.recover()
             if hasattr(self.broker, "stream_broker_messages"):
                 self._broker_stream_task = asyncio.create_task(self._consume_broker_stream())
                 self._risk_refresh_task = asyncio.create_task(self._refresh_live_risk())
-        self.journal.append(
-            run_id=self.run_id,
-            category="lifecycle",
-            entity_type="run",
-            entity_id=self.run_id,
-            payload={"status": "running", "config": asdict(self.config)},
-        )
+        if record_lifecycle and not review_only:
+            self.journal.append(
+                run_id=self.run_id,
+                category="lifecycle",
+                entity_type="run",
+                entity_id=self.run_id,
+                payload={"status": "running", "config": asdict(self.config)},
+            )
 
     async def process_event(
         self,
@@ -290,7 +302,10 @@ class TradingRuntime:
             await self.order_manager.reconcile()
         if executions and self._canonical_session is not None:
             await self._canonical_session.reconcile()
-            self.portfolio.synchronize_canonical(self._canonical_session.projector.snapshot())
+            self.portfolio.synchronize_canonical(
+                self._canonical_session.projector.snapshot(),
+                persist=not self._review_only,
+            )
         if self.strategy is not None and evaluate_strategy:
             for account_id in self.config.account_ids:
                 evaluation = normalize_strategy_evaluation(
@@ -755,7 +770,10 @@ class TradingRuntime:
         if self._canonical_session is not None:
             await self._canonical_session.reconcile()
             snapshot = self._canonical_session.projector.snapshot()
-            self.portfolio.synchronize_canonical(snapshot)
+            self.portfolio.synchronize_canonical(
+                snapshot,
+                persist=not self._review_only,
+            )
             return replace(snapshot, as_of=as_of) if as_of is not None else snapshot
         raise RuntimeError("The configured broker does not expose canonical Replay state")
 

@@ -216,6 +216,7 @@ export function ChartPreview({
         ...strategyInvalidations,
       ],
       regions: MACRO_TIMEFRAMES.has(timeframe) ? [] : extendedSessionRegions(liveChart.bars),
+      execution_annotations: executionAnnotations(trading, linkContext.symbol),
       trade_annotations: closedTradeAnnotations(trading, linkContext.symbol),
       volume: chartSettings.showVolume ? liveChart.bars.map((bar) => ({ color: bar.close >= bar.open ? "var(--success)" : "var(--danger)", time: Date.parse(bar.bar_start) / 1000, value: bar.volume })) : [],
     };
@@ -323,6 +324,39 @@ function closedTradeAnnotations(trading: CanonicalTradingPreview | undefined, sy
       pnl,
     }];
   });
+}
+
+function executionAnnotations(
+  trading: CanonicalTradingPreview | undefined,
+  symbol: string,
+): NonNullable<ChartPayload["execution_annotations"]> {
+  type Aggregate = { latestTime: number; notional: number; orderId: string; quantity: number; side: "BUY" | "SELL" };
+  const byOrder = new Map<string, Aggregate>();
+  (trading?.executions ?? []).forEach((row, index) => {
+    if (String(nestedValue(row, "instrument", "symbol") || "").toUpperCase() !== symbol) return;
+    const rawSide = String(row.side || "").toUpperCase();
+    const side = rawSide === "BUY" || rawSide === "B" ? "BUY" : rawSide === "SELL" || rawSide === "S" ? "SELL" : null;
+    const quantity = Math.abs(Number(row.quantity || 0));
+    const price = Number(row.price || 0);
+    const time = Date.parse(String(row.source_event_time || "")) / 1000;
+    if (!side || !Number.isFinite(quantity) || !Number.isFinite(price) || !Number.isFinite(time) || quantity <= 0 || price <= 0) return;
+    const orderId = String(row.broker_order_id || row.client_order_id || row.execution_id || `${symbol}:${index}`);
+    const current = byOrder.get(orderId) ?? { latestTime: time, notional: 0, orderId, quantity: 0, side };
+    current.latestTime = Math.max(current.latestTime, time);
+    current.notional += quantity * price;
+    current.quantity += quantity;
+    byOrder.set(orderId, current);
+  });
+  return [...byOrder.values()].map((row) => {
+    const price = row.notional / row.quantity;
+    return {
+      label: `${row.side === "BUY" ? "ENTRY FILL" : "EXIT FILL"} · ${formatQuantity(row.quantity)} @ ${money(price)}`,
+      price,
+      quantity: row.quantity,
+      side: row.side,
+      time: row.latestTime,
+    };
+  }).sort((left, right) => left.time - right.time);
 }
 
 function durationSeconds(value: string): number {

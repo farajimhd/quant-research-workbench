@@ -491,7 +491,12 @@ class PortfolioManagementEngine:
         self._reconcile_account(state)
         self._persist_state(state)
 
-    def synchronize_canonical(self, snapshot: TradingStateSnapshot) -> None:
+    def synchronize_canonical(
+        self,
+        snapshot: TradingStateSnapshot,
+        *,
+        persist: bool = True,
+    ) -> None:
         """Consume the canonical projector used by live, paper, and simulation.
 
         Incomplete canonical snapshots never clear prior broker positions.
@@ -500,7 +505,8 @@ class PortfolioManagementEngine:
             if account_id not in snapshot.account_ids:
                 state.sync_state = PortfolioSyncState.ENTRIES_BLOCKED
                 state.stale_reason = "Configured account is absent from the canonical broker snapshot."
-                self._persist_state(state)
+                if persist:
+                    self._persist_state(state)
                 continue
             values = [row for row in snapshot.account_values if row.account_id == account_id]
             ledgers = [row for row in snapshot.ledger if row.account_id == account_id]
@@ -508,12 +514,14 @@ class PortfolioManagementEngine:
             if not snapshot.complete or snapshot.stale:
                 state.sync_state = PortfolioSyncState.ENTRIES_BLOCKED
                 state.stale_reason = snapshot.stale_reason or "Canonical broker snapshot is incomplete or stale."
-                self._persist_state(state)
+                if persist:
+                    self._persist_state(state)
                 continue
             if not values and not ledgers:
                 state.sync_state = PortfolioSyncState.ENTRIES_BLOCKED
                 state.stale_reason = "Canonical account values and ledger are unavailable."
-                self._persist_state(state)
+                if persist:
+                    self._persist_state(state)
                 continue
             summary = AccountSummary(
                 account_id=account_id,
@@ -594,7 +602,8 @@ class PortfolioManagementEngine:
             state.sync_state = PortfolioSyncState.SYNCHRONIZED
             state.stale_reason = ""
             self._reconcile_account(state)
-            self._persist_state(state)
+            if persist:
+                self._persist_state(state)
 
     async def approve(
         self,

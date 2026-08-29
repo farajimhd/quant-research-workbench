@@ -534,7 +534,11 @@ export function readReplayCanvasFocusHandoff(token: string): ReplayCanvasFocusHa
   }
 }
 
-export function replayFocusCanvasUrl(runId: string, handoffToken: string) {
+export function replayFocusCanvasUrl(
+  runId: string,
+  handoffToken: string,
+  mode: "backtest" | "backtest_debug" | "replay" = "replay",
+) {
   const url = new URL(window.location.href);
   url.searchParams.delete("canvas_focus");
   url.searchParams.delete("canvas");
@@ -542,6 +546,7 @@ export function replayFocusCanvasUrl(runId: string, handoffToken: string) {
   url.searchParams.delete("canvas_profile");
   url.searchParams.set("replay_focus", handoffToken);
   url.searchParams.set("replay_run", runId);
+  url.searchParams.set("historical_mode", mode);
   url.hash = "canvas-focus";
   return url.toString();
 }

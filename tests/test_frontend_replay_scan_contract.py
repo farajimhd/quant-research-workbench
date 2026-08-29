@@ -25,3 +25,22 @@ def test_strategy_activity_pins_the_navigation_stop_record() -> None:
     assert "focusSequence={strategyActivityFocusSequence}" in canvas_source
     assert "pinnedSequence={focusSequence}" in container_source
     assert "Number(row.sequence) === pinnedSequence" in container_source
+
+
+def test_chart_projects_completed_order_fills_as_execution_annotations() -> None:
+    chart_source = (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "chartPresentation.tsx").read_text(encoding="utf-8")
+    renderer_source = (REPO_ROOT / "frontend" / "src" / "app" / "components" / "ChartPanel.tsx").read_text(encoding="utf-8")
+
+    assert "execution_annotations: executionAnnotations(trading, linkContext.symbol)" in chart_source
+    assert "ENTRY FILL" in chart_source
+    assert "EXIT FILL" in chart_source
+    assert "drawExecutionAnnotations" in renderer_source
+
+
+def test_debug_page_can_open_a_durable_completed_backtest_review() -> None:
+    source = (REPO_ROOT / "frontend" / "src" / "pages" / "BacktestDebugPage.tsx").read_text(encoding="utf-8")
+
+    assert 'value="review">Completed Backtest review' in source
+    assert "/api/trading/backtest/runs" in source
+    assert "/review`" in source
+    assert 'runtimeWorkspaceId="completed-review"' in source

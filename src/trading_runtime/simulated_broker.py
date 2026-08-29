@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
+from math import floor, isclose
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -687,7 +688,15 @@ class SimulatedBrokerAdapter:
         elif order_type not in {"MKT", "STP", "TRAIL"}:
             return None
         available = self._event_liquidity(event, side)
-        quantity = min(state.remaining, max(0.0, available * self.config.liquidity_participation))
+        available_quantity = min(
+            state.remaining,
+            max(0.0, available * self.config.liquidity_participation),
+        )
+        quantity = (
+            float(floor(available_quantity + 1e-9))
+            if isclose(state.requested_quantity, round(state.requested_quantity), abs_tol=1e-9)
+            else available_quantity
+        )
         if quantity <= 0:
             return None
         slippage = self.config.market_slippage_bps / 10_000

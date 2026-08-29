@@ -2119,11 +2119,16 @@ class ReplayRunController:
             )
             yield batch.events
 
-    async def _initialize_runtime(self) -> None:
+    async def _initialize_runtime(
+        self,
+        *,
+        record_configuration: bool = True,
+        record_lifecycle: bool = True,
+        review_only: bool = False,
+    ) -> None:
         configuration = self.definition.configuration_revision["payload"]
         strategy_configuration = dict(configuration.get("strategy") or {})
         strategy_enabled = self.definition.execution_mode == "strategy"
-        source_assignments = self._selected_assignments() if strategy_enabled else []
         bindings = [
             dict(row)
             for row in configuration["accounts"]["bindings"]
@@ -2141,15 +2146,6 @@ class ReplayRunController:
             for binding in bindings
         }
         self._account_map.update(simulated_by_key)
-        assignments = [
-            _assignment_from_payload(
-                row,
-                account_id=simulated_by_key[str(row["account_key"])],
-                source=f"{self.definition.mode.value}:{row.get('source') or 'configured'}",
-                configuration=configuration,
-            )
-            for row in source_assignments
-        ]
         if self._resume_state is not None and strategy_enabled:
             checkpoint_assignments = self._resume_state.get("assignments")
             if not isinstance(checkpoint_assignments, list):
@@ -2157,6 +2153,17 @@ class ReplayRunController:
             assignments = [
                 _strategy_assignment_from_checkpoint(dict(row))
                 for row in checkpoint_assignments
+            ]
+        else:
+            source_assignments = self._selected_assignments() if strategy_enabled else []
+            assignments = [
+                _assignment_from_payload(
+                    row,
+                    account_id=simulated_by_key[str(row["account_key"])],
+                    source=f"{self.definition.mode.value}:{row.get('source') or 'configured'}",
+                    configuration=configuration,
+                )
+                for row in source_assignments
             ]
         if strategy_enabled:
             self._strategy_registration = strategy_executor(
@@ -2195,14 +2202,15 @@ class ReplayRunController:
         )
         if self._journal is None:
             self._journal = TradingJournal(self.run_dir / "journal.sqlite3")
-        self._journal.append(
-            run_id=self.run_id,
-            category="configuration",
-            entity_type="approved_trading_configuration",
-            entity_id=str(self.definition.configuration_revision["revision_id"]),
-            payload=deepcopy(self.definition.configuration_revision),
-            event_time=self.definition.requested_start,
-        )
+        if record_configuration:
+            self._journal.append(
+                run_id=self.run_id,
+                category="configuration",
+                entity_type="approved_trading_configuration",
+                entity_id=str(self.definition.configuration_revision["revision_id"]),
+                payload=deepcopy(self.definition.configuration_revision),
+                event_time=self.definition.requested_start,
+            )
         policies = {
             str(row["policy_id"]): portfolio_policy_from_payload(dict(row))
             for row in configuration["portfolio"]["policies"]
@@ -2298,13 +2306,17 @@ class ReplayRunController:
             intent_planner=self._planner,
             portfolio=portfolio,
         )
-        await self._runtime.initialize()
+        await self._runtime.initialize(
+            record_lifecycle=record_lifecycle,
+            review_only=review_only,
+        )
         if self._resume_state is not None:
             self._restore_restart_checkpoint()
-        self._runtime.persist_strategy_assignments(
-            self.current_time or self.definition.requested_start,
-            record_events=False,
-        )
+        if not review_only:
+            self._runtime.persist_strategy_assignments(
+                self.current_time or self.definition.requested_start,
+                record_events=False,
+            )
 
     def _restore_restart_checkpoint(self) -> None:
         if self._runtime is None or self._resume_state is None:
@@ -2521,9 +2533,14 @@ class ReplayRunController:
         state["share_volume"] = float(state.get("share_volume") or 0) + event.size
         cutoff = event.ts - timedelta(seconds=60)
         trade_buckets = [
-            clock for clock in list(state.get("trade_buckets") or []) if clock > cutoff
+            (clock, count)
+            for clock, count in list(state.get("trade_buckets") or [])
+            if clock > cutoff
         ]
-        trade_buckets.append(event.ts)
+        if trade_buckets and trade_buckets[-1][0] == event.ts:
+            trade_buckets[-1] = (event.ts, trade_buckets[-1][1] + 1)
+        else:
+            trade_buckets.append((event.ts, 1))
         state["trade_buckets"] = trade_buckets
         second = int(event.ts.timestamp())
         volume_buckets = [
@@ -2816,16 +2833,18 @@ class ReplayRunController:
         )
         raw_authority = bool(state.get("raw_authority"))
         if raw_authority:
-            trade_times = [
-                clock
-                for clock in list(state.get("trade_buckets") or [])
+            trade_buckets = [
+                (clock, count)
+                for clock, count in list(state.get("trade_buckets") or [])
                 if clock > frame.as_of - timedelta(seconds=60)
             ]
-            state["trade_buckets"] = trade_times
+            state["trade_buckets"] = trade_buckets
             trade_rate_10s = sum(
-                1 for clock in trade_times if clock > frame.as_of - timedelta(seconds=10)
+                count
+                for clock, count in trade_buckets
+                if clock > frame.as_of - timedelta(seconds=10)
             ) / 10.0
-            trade_rate_60s = len(trade_times) / 60.0
+            trade_rate_60s = sum(count for _, count in trade_buckets) / 60.0
             spread_bps = state.get("spread_bps")
             volume_by_second = dict(state.get("volume_buckets") or [])
             completed_second = int(frame.as_of.timestamp()) - 1
@@ -4623,6 +4642,20 @@ class ReplayRunController:
             encoding="utf-8",
         )
         _replace_path_with_retry(summary_temporary, summary_target)
+        selection_target = self.run_dir / "run-selection.json"
+        selection_temporary = self.run_dir / "run-selection.json.tmp"
+        selection_temporary.write_text(
+            json.dumps(
+                _run_selection_projection(
+                    _replay_run_list_projection(run, resident=False),
+                    self.definition.configuration_revision,
+                ),
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        _replace_path_with_retry(selection_temporary, selection_target)
 
     def _write_approved_configuration(self) -> None:
         target = self.run_dir / "approved-configuration.json"
@@ -4760,6 +4793,60 @@ class ReplayRunService:
         await controller.start()
         return controller
 
+    async def review_completed(self, run_id: str) -> ReplayRunController:
+        """Open a durable completed Backtest as an immutable Canvas review."""
+
+        normalized = str(run_id or "").strip()
+        if not re.fullmatch(r"[0-9a-fA-F-]{36}", normalized):
+            raise KeyError(run_id)
+        resident = self._runs.get(normalized)
+        if resident is not None:
+            if resident.status != "completed":
+                raise ValueError("Only completed Backtests can be opened for review")
+            return resident
+        run_dir = (self.runtime_root / normalized).resolve()
+        if self.runtime_root != run_dir and self.runtime_root not in run_dir.parents:
+            raise ValueError("Historical run directory escaped the runtime root")
+        manifest_path = run_dir / "manifest.json"
+        journal_path = run_dir / "journal.sqlite3"
+        if not manifest_path.is_file() or not journal_path.is_file():
+            raise KeyError(run_id)
+        persisted_run, definition, state = await asyncio.to_thread(
+            _load_completed_review_materials,
+            normalized,
+            run_dir,
+            manifest_path,
+            journal_path,
+        )
+        controller = ReplayRunController(
+            definition,
+            run_id=normalized,
+            runtime_root=self.runtime_root,
+            resume_state=state,
+        )
+        controller._journal = TradingJournal(journal_path, read_only=True)
+        await asyncio.to_thread(
+            _initialize_completed_review_controller,
+            controller,
+        )
+        controller.status = "completed"
+        controller.error = str(persisted_run.get("error") or "")
+        controller._runtime_inputs_ready = True
+        controller._runtime_finished = True
+        controller._preparation_stage = "ready"
+        controller._strategy_frame_cache_status = str(
+            dict(persisted_run.get("preparation_cache") or {}).get("strategy_frames")
+            or "run_checkpoint"
+        )
+        controller.created_at = _checkpoint_time(
+            persisted_run.get("created_at") or controller.created_at
+        )
+        controller.updated_at = _checkpoint_time(
+            persisted_run.get("updated_at") or controller.updated_at
+        )
+        await self._admit(controller)
+        return controller
+
     async def _admit(self, controller: ReplayRunController) -> None:
         async with self._lock:
             terminal = sorted(
@@ -4789,15 +4876,25 @@ class ReplayRunService:
             raise KeyError(run_id)
         return controller
 
-    def list(self) -> list[dict[str, Any]]:
-        return [
-            _replay_run_list_projection(controller.stream_snapshot(), resident=True)
-            for controller in sorted(
-                self._runs.values(),
-                key=lambda item: item.created_at,
-                reverse=True,
+    def list(self, *, include_durable: bool = False) -> list[dict[str, Any]]:
+        rows = {
+            controller.run_id: _run_selection_projection(
+                _replay_run_list_projection(controller.stream_snapshot(), resident=True),
+                controller.definition.configuration_revision,
             )
-        ]
+            for controller in self._runs.values()
+        }
+        if include_durable and self.runtime_root.is_dir():
+            for run_dir in self.runtime_root.iterdir():
+                if not run_dir.is_dir() or run_dir.name in rows:
+                    continue
+                try:
+                    durable = _durable_run_selection(run_dir)
+                    if durable is not None:
+                        rows[run_dir.name] = durable
+                except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                    continue
+        return sorted(rows.values(), key=lambda row: str(row.get("created_at") or ""), reverse=True)
 
 
 def _replay_run_list_projection(
@@ -4825,11 +4922,149 @@ def _replay_run_list_projection(
         "session_end",
         "progress",
         "checkpoint",
+        "mode",
+        "execution_mode",
+        "configuration_revision",
+        "configuration_revision_id",
+        "processed_events",
     )
     return {
         **{field: deepcopy(snapshot.get(field)) for field in fields},
         "resident": resident,
     }
+
+
+def _run_selection_projection(
+    row: dict[str, Any], approved: dict[str, Any]
+) -> dict[str, Any]:
+    payload = dict(approved.get("payload") or {})
+    strategy = dict(payload.get("strategy") or {})
+    run_plan = dict(payload.get("run_plan") or {})
+    return {
+        **row,
+        "configuration_label": str(approved.get("label") or ""),
+        "configuration_content_hash": str(approved.get("content_hash") or ""),
+        "strategy_id": str(strategy.get("strategy_id") or ""),
+        "strategy_name": str(strategy.get("name") or strategy.get("strategy_id") or ""),
+        "strategy_revision": int(strategy.get("revision") or 0),
+        "run_plan_name": str(run_plan.get("name") or run_plan.get("run_plan_id") or ""),
+    }
+
+
+def _load_completed_review_materials(
+    run_id: str,
+    run_dir: Path,
+    manifest_path: Path,
+    journal_path: Path,
+) -> tuple[dict[str, Any], ReplayRunDefinition, dict[str, Any]]:
+    """Load large immutable review artifacts without blocking the API event loop."""
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    persisted_run = dict(manifest.get("run") or {})
+    if str(persisted_run.get("status") or "") != "completed":
+        raise ValueError("Only completed Backtests can be opened for review")
+    definition = _definition_from_manifest(manifest, run_dir=run_dir)
+    if definition.mode != RunMode.BACKTEST:
+        raise ValueError("Completed-run review accepts Backtest runs only")
+    journal = TradingJournal(journal_path, read_only=True)
+    try:
+        persisted = journal.load_checkpoint(run_id)
+    finally:
+        journal.close()
+    state = dict((persisted or {}).get("state") or {})
+    if (
+        int(state.get("schema_version") or 0) != RESTART_CHECKPOINT_SCHEMA_VERSION
+        or not bool(state.get("complete"))
+    ):
+        raise ValueError("Completed Backtest has no complete review checkpoint")
+    return persisted_run, definition, state
+
+
+def _initialize_completed_review_controller(controller: ReplayRunController) -> None:
+    """Rebuild a terminal runtime off the serving event loop."""
+
+    asyncio.run(
+        controller._initialize_runtime(
+            record_configuration=False,
+            record_lifecycle=False,
+            review_only=True,
+        )
+    )
+
+
+def _durable_run_selection(run_dir: Path) -> dict[str, Any] | None:
+    """Read a compact picker row, including bounded legacy-run discovery."""
+
+    selection_path = run_dir / "run-selection.json"
+    if selection_path.is_file():
+        return dict(json.loads(selection_path.read_text(encoding="utf-8")))
+    manifest_path = run_dir / "manifest.json"
+    if not manifest_path.is_file():
+        return None
+    # Legacy manifests embed the full configuration and runtime snapshot and can
+    # be tens of megabytes. The definition is deliberately written first, while
+    # terminal lifecycle fields are near the tail, so discovery reads bounded
+    # edges instead of materializing every historical assignment on the API loop.
+    size = manifest_path.stat().st_size
+    with manifest_path.open("rb") as handle:
+        head = handle.read(min(size, 131_072)).decode("utf-8", errors="ignore")
+        if size > 2_097_152:
+            handle.seek(size - 2_097_152)
+        tail = handle.read().decode("utf-8", errors="ignore")
+
+    def string(pattern: str, source: str = head) -> str:
+        match = re.search(pattern, source)
+        return json.loads(f'"{match.group(1)}"') if match else ""
+
+    def integer(pattern: str, source: str = tail) -> int:
+        match = re.search(pattern, source)
+        return int(match.group(1)) if match else 0
+
+    status_match = re.search(
+        r'"speed":[^,]+,"status":"(completed|failed|stopped)","strategy_debug_sources"',
+        tail,
+    )
+    if status_match is None:
+        return None
+    mode = string(r'"mode":"([^"\\]*(?:\\.[^"\\]*)*)"')
+    session_date = string(r'"session_date":"([^"\\]*(?:\\.[^"\\]*)*)"')
+    session_end = string(r'"session_end":"([^"\\]*(?:\\.[^"\\]*)*)"')
+    label = string(r'"configuration_label":"([^"\\]*(?:\\.[^"\\]*)*)"')
+    revision = integer(r'"configuration_revision":(\d+)', head)
+    processed = integer(r'"processed_events":(\d+)', tail)
+    modified = datetime.fromtimestamp(manifest_path.stat().st_mtime, tz=UTC).isoformat()
+    selection = {
+        "schema_version": 1,
+        "run_id": run_dir.name,
+        "status": status_match.group(1),
+        "runtime_ready": False,
+        "preparation_stage": "ready",
+        "created_at": modified,
+        "updated_at": modified,
+        "current_time": session_end,
+        "session_date": session_date,
+        "session_end": session_end,
+        "mode": mode,
+        "configuration_revision": revision,
+        "configuration_label": label,
+        "strategy_name": label,
+        "strategy_revision": 0,
+        "processed_events": processed,
+        "resident": False,
+    }
+    # Add a compact derived sidecar so every later process restart avoids even
+    # the bounded legacy edge scan. The immutable journal and manifest remain
+    # untouched and authoritative.
+    temporary = run_dir / "run-selection.json.tmp"
+    try:
+        temporary.write_text(
+            json.dumps(selection, separators=(",", ":"), sort_keys=True),
+            encoding="utf-8",
+        )
+        _replace_path_with_retry(temporary, selection_path)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+    return selection
 
 
 def replay_runtime_root() -> Path:

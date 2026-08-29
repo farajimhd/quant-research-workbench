@@ -35,6 +35,16 @@ type DebugRun = CanvasReplayRun & {
   mode: "backtest_debug";
 };
 
+type CompletedBacktestRun = CanvasReplayRun & {
+  configuration_label?: string;
+  configuration_revision?: number;
+  mode: "backtest";
+  resident?: boolean;
+  run_plan_name?: string;
+  strategy_name?: string;
+  strategy_revision?: number;
+};
+
 type StoredFixture = {
   conid?: number;
   derivedFrames: string;
@@ -57,6 +67,7 @@ type TestCandidateSummary = {
 const STORAGE_KEY = "quant-research-workbench.backtest-debug-fixtures.v1";
 
 export function BacktestDebugPage() {
+  const [workflow, setWorkflow] = useState<"review" | "fixture">("review");
   const [sessionDate, setSessionDate] = useState(previousWeekdayIsoDate);
   const [startTime, setStartTime] = useState("09:45:00");
   const [symbol, setSymbol] = useState("AAPL");
@@ -74,12 +85,19 @@ export function BacktestDebugPage() {
   const [controlBusy, setControlBusy] = useState("");
   const [error, setError] = useState("");
   const [run, setRun] = useState<DebugRun | null>(null);
+  const [reviewRun, setReviewRun] = useState<CompletedBacktestRun | null>(null);
+  const [completedRuns, setCompletedRuns] = useState<CompletedBacktestRun[]>([]);
+  const [selectedCompletedRunId, setSelectedCompletedRunId] = useState("");
   const [runPlanId, setRunPlanId] = useState("");
   const [candidateId, setCandidateId] = useState("");
   const [candidates, setCandidates] = useState<TestCandidateSummary[]>([]);
   const parsed = useMemo(() => parseFixture(marketEvents, derivedFrames, signalEvents, watchlistEvents), [derivedFrames, marketEvents, signalEvents, watchlistEvents]);
 
   useEffect(() => {
+    if (workflow !== "fixture") {
+      setChecking(false);
+      return;
+    }
     let cancelled = false;
     api<{ rows: TestCandidateSummary[] }>("/api/trading/configuration/candidates")
       .then((payload) => {
@@ -89,9 +107,13 @@ export function BacktestDebugPage() {
       })
       .catch((reason) => { if (!cancelled) setError(message(reason)); });
     return () => { cancelled = true; };
-  }, []);
+  }, [workflow]);
 
   useEffect(() => {
+    if (workflow !== "fixture") {
+      setChecking(false);
+      return;
+    }
     let cancelled = false;
     setChecking(true);
     setError("");
@@ -106,7 +128,20 @@ export function BacktestDebugPage() {
         .finally(() => { if (!cancelled) setChecking(false); });
     }, 300);
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [candidateId, runPlanId, sessionDate, startTime, symbol]);
+  }, [candidateId, runPlanId, sessionDate, startTime, symbol, workflow]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api<{ rows: CompletedBacktestRun[] }>("/api/trading/backtest/runs", { timeoutMs: 20_000 })
+      .then((payload) => {
+        if (cancelled) return;
+        const rows = payload.rows.filter((row) => row.mode === "backtest" && row.status === "completed");
+        setCompletedRuns(rows);
+        setSelectedCompletedRunId((current) => current || rows[0]?.run_id || "");
+      })
+      .catch((reason) => { if (!cancelled) setError(message(reason)); });
+    return () => { cancelled = true; };
+  }, []);
 
   usePollingTask({
     enabled: Boolean(run && !terminal(run.status)),
@@ -193,6 +228,23 @@ export function BacktestDebugPage() {
     }
   }
 
+  async function openCompletedRun() {
+    if (!selectedCompletedRunId) return;
+    setCreating(true);
+    setError("");
+    try {
+      const opened = await api<CompletedBacktestRun>(`/api/trading/backtest/runs/${encodeURIComponent(selectedCompletedRunId)}/review`, {
+        method: "POST",
+        timeoutMs: 60_000,
+      });
+      setReviewRun(opened);
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      setCreating(false);
+    }
+  }
+
   async function stopRun() {
     if (!run) return;
     try {
@@ -234,6 +286,20 @@ export function BacktestDebugPage() {
     }
   }
 
+  if (reviewRun) {
+    return <CanvasWorkspaceSurface
+      canvasId="main"
+      manager={false}
+      modeControls={<div className="historical-canvas-run-state">
+        <button aria-label="Return to completed Backtest selection" className="button secondary compact" onClick={() => setReviewRun(null)} type="button"><ArrowLeft size={14} /> Backtests</button>
+        <strong>Completed Backtest review</strong>
+        <span>{reviewRun.strategy_name || reviewRun.configuration_label || "Strategy"}{reviewRun.strategy_revision ? ` r${reviewRun.strategy_revision}` : ""} · session close · {new Intl.NumberFormat("en-US", { notation: "compact" }).format(reviewRun.processed_events || 0)} events</span>
+      </div>}
+      replayRun={reviewRun}
+      runtimeWorkspaceId="completed-review"
+    />;
+  }
+
   if (run) {
     const runTerminal = terminal(run.status);
     return <CanvasWorkspaceSurface
@@ -251,19 +317,21 @@ export function BacktestDebugPage() {
   }
 
   return <TradingModeLaunch
-    actionLabel="Run Test Scenario"
-    actionSummary={parsed.ok ? <><strong>{parsed.marketEvents.length}</strong> market events, <strong>{parsed.derivedFrames.length}</strong> derived frames, <strong>{parsed.signalEvents.length}</strong> signal occurrences, and <strong>{parsed.watchlistEvents.length}</strong> eligibility transitions will be content hashed.</> : parsed.error}
+    actionLabel={workflow === "review" ? "Review Completed Backtest" : "Run Test Scenario"}
+    actionSummary={workflow === "review" ? selectedCompletedRunId ? <>Open the immutable completed run at its <strong>end-of-session clock</strong> with its pinned Canvas, strategy journal, orders, fills, positions, and performance evidence.</> : "Complete a Backtest before opening review." : parsed.ok ? <><strong>{parsed.marketEvents.length}</strong> market events, <strong>{parsed.derivedFrames.length}</strong> derived frames, <strong>{parsed.signalEvents.length}</strong> signal occurrences, and <strong>{parsed.watchlistEvents.length}</strong> eligibility transitions will be content hashed.</> : parsed.error}
     busy={creating}
-    checking={checking}
-    checks={preflight?.checks ?? []}
-    description="Reproduce a small, exact event sequence through the production historical runtime. Use the same Run Plan and Canvas contracts with deterministic scenario input."
-    error={error || (!parsed.ok ? parsed.error : "")}
+    checking={workflow === "fixture" && checking}
+    checks={workflow === "fixture" ? preflight?.checks ?? [] : []}
+    description={workflow === "review" ? "Inspect everything an already completed strategy Backtest did using the same historical Canvas as Replay, pinned at the session close." : "Reproduce a small, exact event sequence through the production historical runtime. Use the same Run Plan and Canvas contracts with deterministic scenario input."}
+    error={error || (workflow === "fixture" && !parsed.ok ? parsed.error : "")}
     eyebrow="Debug"
     icon={Bug}
-    onAction={createRun}
-    ready={Boolean(preflight?.ready && parsed.ok)}
-    title="Inspect an exact scenario"
+    onAction={workflow === "review" ? openCompletedRun : createRun}
+    ready={workflow === "review" ? Boolean(selectedCompletedRunId) : Boolean(preflight?.ready && parsed.ok)}
+    title={workflow === "review" ? "Review a completed strategy" : "Inspect an exact scenario"}
   >
+            <label className="configuration-field"><span>Debug workflow</span><select aria-label="Debug workflow" onChange={(event) => setWorkflow(event.target.value as "review" | "fixture")} value={workflow}><option value="review">Completed Backtest review</option><option value="fixture">Deterministic test scenario</option></select><small>Review uses immutable real Backtest evidence. A test scenario uses a small manually supplied fixture to isolate one rule.</small></label>
+            {workflow === "review" ? <label className="configuration-field"><span>Completed Backtest</span><select aria-label="Completed Backtest" onChange={(event) => setSelectedCompletedRunId(event.target.value)} value={selectedCompletedRunId}><option value="">No completed Backtest available</option>{completedRuns.map((row) => <option key={row.run_id} value={row.run_id}>{row.session_date} · {row.strategy_name || row.configuration_label || "Strategy"}{row.strategy_revision ? ` r${row.strategy_revision}` : ""} · config {row.configuration_revision ?? "—"} · {row.run_id.slice(0, 8)}</option>)}</select><small>The run is loaded read-only from its durable terminal checkpoint; no strategy or broker action is executed again.</small></label> : <>
             <label className="configuration-field"><span>Test Candidate</span><select aria-label="Test Candidate" onChange={(event) => setCandidateId(event.target.value)} value={candidateId}><option value="">Latest available candidate</option>{candidates.map((candidate) => <option key={candidate.candidate_id} value={candidate.candidate_id}>t{candidate.candidate_revision} · {candidate.label} · {candidate.content_hash.slice(0, 8)}</option>)}</select><small>The exact immutable configuration exercised by this deterministic scenario.</small></label>
             <label className="configuration-field"><span>Strategy Run Plan</span><select aria-label="Strategy Run Plan" onChange={(event) => setRunPlanId(event.target.value)} value={runPlanId}>{(preflight?.available_run_plans ?? []).map((plan) => <option key={plan.run_plan_id} value={plan.run_plan_id}>{plan.name} · {plan.strategy_id} r{plan.strategy_revision}</option>)}</select><small>The test scenario runs through this exact Strategy Studio profile and installed executor.</small></label>
             <label className="configuration-field"><span>Test Scenario library</span><select onChange={(event) => loadFixture(event.target.value)} value={selectedFixture}><option value="">Unsaved scenario</option>{library.map((row) => <option key={row.fixtureId} value={row.fixtureId}>{row.fixtureId}</option>)}</select><small>Stored in this browser; exact submitted records are persisted with the backend run.</small></label>
@@ -282,6 +350,7 @@ export function BacktestDebugPage() {
             <label><span>Watchlist eligibility transitions · JSON array</span><textarea aria-label="Watchlist eligibility transitions JSON" onChange={(event) => setWatchlistEvents(event.target.value)} spellCheck={false} value={watchlistEvents} /><small>{preflight?.required_watchlist_ids.length ? `Required by this Run Plan (${preflight.watchlist_policy.replaceAll("_", " ")}): ${preflight.required_watchlist_ids.join(", ")}.` : "This Run Plan does not require Watchlist membership."} Each addition pins a ticker, point-in-time conid, Watchlist, and effective clock.</small></label>
             </div>
           </details>
+          </>}
   </TradingModeLaunch>;
 }
 
