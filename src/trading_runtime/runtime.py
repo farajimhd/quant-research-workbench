@@ -26,6 +26,7 @@ from src.trading_runtime.signals import (
     MarketSignal,
     StrategyEvaluation,
     StrategyIntent,
+    StrategySignal,
     normalize_strategy_evaluation,
 )
 from src.trading_runtime.strategy_engine import StrategyObservation
@@ -48,6 +49,42 @@ class AutomaticStrategy(Protocol):
     async def on_event(
         self, event: MarketEvent, account_id: str
     ) -> StrategyEvaluation: ...
+
+
+def _wait_decision_signature(signal: StrategySignal) -> tuple[Any, ...]:
+    """Identify a materially distinct non-action decision for transition logging.
+
+    Numeric market evidence changes on every causal observation. Journaling every
+    such refresh makes historical runs IO-bound without adding a new strategy
+    decision. The failed-condition identities, structural trigger/protection
+    anchors, and assignment state capture the points at which the explanation a
+    user sees actually changes.
+    """
+
+    metadata = dict(signal.metadata or {})
+    failed_conditions: list[tuple[str, str, str]] = []
+    for stage_name in ("confirmation", "trigger", "veto"):
+        stage = dict(dict(metadata.get("entry_rules") or {}).get(stage_name) or {})
+        for group_id, rows in dict(stage.get("condition_evidence") or {}).items():
+            for row in rows or []:
+                passed = bool(row.get("passed"))
+                failed = not passed if stage_name != "veto" else passed
+                if failed:
+                    failed_conditions.append(
+                        (
+                            stage_name,
+                            str(group_id),
+                            str(row.get("condition_id") or row.get("left_source_id") or "condition"),
+                        )
+                    )
+    return (
+        str(signal.action.value if hasattr(signal.action, "value") else signal.action),
+        str(metadata.get("reason_code") or signal.reason),
+        str(metadata.get("status") or ""),
+        tuple(sorted(failed_conditions)),
+        metadata.get("trigger_threshold_price"),
+        signal.invalidation_price,
+    )
 
 
 class RuntimeIntentPlanner(Protocol):
@@ -119,7 +156,7 @@ class TradingRuntime:
         self.journal = journal
         self._persisted_assignment_versions: dict[str, tuple[str, str]] = {}
         self._persisted_assignment_times: dict[str, datetime] = {}
-        self._last_wait_decision_times: dict[tuple[str, str], datetime] = {}
+        self._last_wait_decision_signatures: dict[tuple[str, str], tuple[Any, ...]] = {}
         self.control_plane = control_plane or shared_trading_control_plane(broker)
         self.control_plane.campaigns.bind_durable_authority(
             journal,
@@ -445,16 +482,13 @@ class TradingRuntime:
             action = str(signal.action.value if hasattr(signal.action, "value") else signal.action)
             if action in {"wait", "hold"} and not evaluation.intents:
                 decision_key = (account_id, signal.ticker.upper())
-                last_wait_at = self._last_wait_decision_times.get(decision_key)
-                if (
-                    last_wait_at is not None
-                    and signal.event_time < last_wait_at + timedelta(seconds=1)
-                ):
+                signature = _wait_decision_signature(signal)
+                if self._last_wait_decision_signatures.get(decision_key) == signature:
                     continue
-                self._last_wait_decision_times[decision_key] = signal.event_time
+                self._last_wait_decision_signatures[decision_key] = signature
             else:
                 decision_key = (account_id, signal.ticker.upper())
-                self._last_wait_decision_times.pop(decision_key, None)
+                self._last_wait_decision_signatures.pop(decision_key, None)
             self.journal.append(
                 run_id=self.run_id,
                 category="strategy_decision",

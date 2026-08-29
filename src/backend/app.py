@@ -940,6 +940,7 @@ class HistoricalPreflightRequest(BaseModel):
     session_count: int = Field(default=20, ge=1, le=260)
     configuration_revision_id: str = Field(default="", max_length=128)
     run_plan_id: str = Field(default="", max_length=128)
+    end_time: str = "20:00:00"
 
 
 class HistoricalBarChunkRequest(BaseModel):
@@ -974,6 +975,7 @@ class BacktestRunCreateRequest(BaseModel):
     configuration_revision_id: str = Field(default="", max_length=128)
     run_plan_id: str = Field(default="", max_length=128)
     simulation_profile: str = Field(default="baseline", pattern="^(baseline|stress)$")
+    end_time: str = "20:00:00"
 
 
 class BacktestDebugRunCreateRequest(BaseModel):
@@ -5188,6 +5190,7 @@ def trading_historical_preflight(payload: HistoricalPreflightRequest) -> dict[st
             return backtest_preflight(
                 anchor_date=payload.anchor_date,
                 session_count=payload.session_count,
+                end_time=_replay_clock_time(payload.end_time),
                 configuration_revision=(
                     backtest_configuration_snapshot(
                         payload.run_plan_id,
@@ -5325,6 +5328,7 @@ async def trading_backtest_run_create(payload: BacktestRunCreateRequest) -> dict
             anchor_date=payload.anchor_date,
             session_count=payload.session_count,
             initial_cash=payload.initial_cash,
+            end_time=_replay_clock_time(payload.end_time),
             configuration_revision=configuration_revision,
         )
         if not preflight["strategy_run_ready"]:
@@ -5334,6 +5338,7 @@ async def trading_backtest_run_create(payload: BacktestRunCreateRequest) -> dict
             session_date=sessions[0],
             final_session_date=sessions[-1],
             start_time=_replay_clock_time("04:00:00"),
+            end_time=_replay_clock_time(payload.end_time),
             initial_cash=payload.initial_cash,
             configuration_revision=configuration_revision,
             mode=RunMode.BACKTEST,

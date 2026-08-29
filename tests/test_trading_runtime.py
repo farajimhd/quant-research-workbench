@@ -1355,6 +1355,98 @@ class _SignalAwareStrategy(_NoopStrategy):
 
 
 class RuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_runtime_journals_wait_reason_transitions_not_duplicate_market_refreshes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            runtime = TradingRuntime.__new__(TradingRuntime)
+            runtime.config = RunConfig(
+                RunMode.BACKTEST,
+                "signal-aware",
+                2,
+                ("DU123",),
+                date(2026, 7, 14),
+                run_id="00000000-0000-0000-0000-000000000099",
+            )
+            runtime.run_id = runtime.config.run_id
+            runtime.journal = journal
+            runtime._last_wait_decision_signatures = {}
+
+            def wait_signal(
+                signal_id: str,
+                *,
+                detail: str,
+                swing_passed: bool,
+                event_time: datetime,
+            ) -> StrategySignal:
+                return StrategySignal(
+                    signal_id=signal_id,
+                    signal_type="entry_confirmation_incomplete",
+                    ticker="CLSK",
+                    event_time=event_time,
+                    action="wait",
+                    direction="neutral",
+                    score=0.2,
+                    confidence=0.7,
+                    reason="entry_confirmation_incomplete",
+                    metadata={
+                        "reason_code": "entry_confirmation_incomplete",
+                        "reason_detail": detail,
+                        "status": "watching",
+                        "entry_rules": {
+                            "trigger": {
+                                "condition_evidence": {
+                                    "swing-high-break": [{
+                                        "condition_id": "price-above-swing-high",
+                                        "left_source_id": "market.last_price",
+                                        "passed": swing_passed,
+                                    }]
+                                }
+                            }
+                        },
+                    },
+                )
+
+            try:
+                runtime._record_strategy_signals(
+                    StrategyEvaluation(signals=(wait_signal(
+                        "wait-1",
+                        detail="Wait: price is 4.10; requires 4.20.",
+                        swing_passed=False,
+                        event_time=TS,
+                    ),)),
+                    "DU123",
+                )
+                runtime._record_strategy_signals(
+                    StrategyEvaluation(signals=(wait_signal(
+                        "wait-2",
+                        detail="Wait: price is 4.11; requires 4.20.",
+                        swing_passed=False,
+                        event_time=TS + timedelta(seconds=10),
+                    ),)),
+                    "DU123",
+                )
+                runtime._record_strategy_signals(
+                    StrategyEvaluation(signals=(wait_signal(
+                        "wait-3",
+                        detail="Wait: swing high passed; VWAP remains incomplete.",
+                        swing_passed=True,
+                        event_time=TS + timedelta(seconds=11),
+                    ),)),
+                    "DU123",
+                )
+
+                decisions = [
+                    row for row in journal.records(runtime.run_id)
+                    if row.category == "strategy_decision"
+                ]
+                self.assertEqual([row.entity_id for row in decisions], ["wait-1", "wait-3"])
+                self.assertEqual(
+                    decisions[0].payload["metadata"]["reason_detail"],
+                    "Wait: price is 4.10; requires 4.20.",
+                )
+            finally:
+                journal.close()
+
     async def test_confirmed_external_proposal_is_journaled_before_portfolio_and_oms(self) -> None:
         for index, authority in enumerate(("manual", "semi_automatic"), start=3):
             with self.subTest(authority=authority), tempfile.TemporaryDirectory() as directory:

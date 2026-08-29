@@ -8,7 +8,7 @@ import time as wall_time
 import unittest
 from copy import deepcopy
 from dataclasses import asdict
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
@@ -28,6 +28,7 @@ from src.backend.replay_run_service import (
     _historical_watchlist_membership_timeline_for_configuration,
     _historical_watchlist_membership_timeline_from_plans,
     _historical_watchlist_plans_at_source_native_events,
+    _historical_source_native_signal_identities,
     _historical_watchlist_assignment_is_observable,
     _historical_signal_events,
     _historical_derived_frames,
@@ -1925,6 +1926,100 @@ class BacktestPreflightTests(unittest.TestCase):
             checks["strategy_assignments"]["evidence"],
         )
 
+    @patch("src.backend.replay_run_service._historical_watchlist_membership_timeline_from_plans")
+    @patch("src.backend.replay_run_service.backtest_runtime_root")
+    @patch("src.backend.replay_run_service.historical_preflight")
+    def test_source_native_signal_preflight_defers_population_to_controller(
+        self,
+        historical,
+        runtime_root,
+        materialize,
+    ) -> None:
+        historical.return_value = {
+            "mode": "backtest",
+            "window": {
+                "sessions": ["2026-08-21"],
+                "session_count": 1,
+                "start": "2026-08-21T04:00:00-04:00",
+                "end": "2026-08-21T20:00:00-04:00",
+            },
+            "checks": [],
+            "strategy_run_ready": True,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            runtime_root.return_value = Path(directory)
+            approved = approved_configuration(assignments=[])
+            approved["payload"]["run_plan"] = {
+                "signal_stream_ids": ["price-squeeze-early"],
+                "watchlist_ids": [],
+                "activation": {"watchlist_policy": "not_required"},
+            }
+            approved["payload"]["signal_activation"] = {
+                "signal_streams": [{
+                    "signal_stream_id": "price-squeeze-early",
+                    "occurrence_source": "qmd_squeeze_episode",
+                    "enabled": True,
+                }]
+            }
+            approved["payload"]["universe"] = {
+                "source": "signal_stream",
+                "signal_stream_ids": ["price-squeeze-early"],
+                "enabled": True,
+            }
+
+            payload = backtest_preflight(
+                anchor_date=date(2026, 8, 24),
+                session_count=1,
+                configuration_revision=approved,
+            )
+
+        self.assertTrue(payload["strategy_run_ready"])
+        materialize.assert_not_called()
+        check = {row["id"]: row for row in payload["checks"]}[
+            "strategy_assignments"
+        ]
+        self.assertIn("source-native Signal Stream", check["summary"])
+        self.assertIn("bounded ticker", check["evidence"])
+
+    @patch(
+        "src.backend.historical_watchlist_feature_service.historical_watchlist_external_feature_bundle"
+    )
+    def test_source_native_identity_resolution_is_point_in_time_and_stable(
+        self,
+        bundle,
+    ) -> None:
+        bundle.return_value = {
+            "identity_intervals": [{
+                "ticker": "CLSK",
+                "start": "2026-08-21T08:00:00+00:00",
+                "end": "2026-08-22T00:00:00+00:00",
+                "identity": {"ibkr_conid": 12345, "listing_id": "listing-clsk"},
+            }]
+        }
+        events = [ReplaySignalEvent(
+            available_at=datetime(2026, 8, 21, 8, 1, 27, tzinfo=UTC),
+            occurrence={"event_id": "early-clsk"},
+            source_values={},
+            ticker="CLSK",
+        )]
+
+        identities = _historical_source_native_signal_identities(
+            [{
+                "start": "2026-08-21T08:00:00+00:00",
+                "end": "2026-08-22T00:00:00+00:00",
+            }],
+            events,
+        )
+
+        self.assertEqual(identities["CLSK"]["ibkr_conid"], 12345)
+        bundle.assert_called_once_with(
+            {
+                "start": "2026-08-21T08:00:00+00:00",
+                "end": "2026-08-22T00:00:00+00:00",
+            },
+            identity_tickers=["CLSK"],
+        )
+
     def test_backtest_definition_spans_sessions_with_one_runtime_window(self) -> None:
         definition = ReplayRunDefinition(
             session_date=date(2026, 7, 6),
@@ -1949,6 +2044,94 @@ class BacktestPreflightTests(unittest.TestCase):
 
 
 class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_one_second_frames_project_absolute_liquidity_causally(self) -> None:
+        controller = ReplayRunController(
+            ReplayRunDefinition(
+                session_date=date(2026, 8, 21),
+                start_time=time(4, 0),
+                configuration_revision=approved_configuration(),
+            ),
+            runtime_root=Path(tempfile.gettempdir()),
+        )
+        source_values: dict[str, object] = {}
+        for second, volume, dollars, trades, ratio in (
+            (1, 1_000.0, 5_000.0, 8, None),
+            (2, 2_000.0, 10_200.0, 12, 2.0),
+        ):
+            controller._project_historical_market_quality(
+                ReplayDerivedFrame(
+                    as_of=datetime(2026, 8, 21, 4, 0, second, tzinfo=NEW_YORK),
+                    bar={
+                        "volume": volume,
+                        "dollar_volume": dollars,
+                        "trade_count": trades,
+                        "spread_bps_close": 25.0,
+                        "volume_rate_ratio": ratio,
+                    },
+                    indicator={},
+                    sequence=second,
+                    ticker="CLSK",
+                    timeframe="1s",
+                ),
+                source_values,
+            )
+
+        self.assertEqual(source_values["market.volume"]["value"], 3_000.0)
+        self.assertEqual(
+            source_values["market.session_dollar_volume"]["value"], 15_200.0
+        )
+        self.assertEqual(source_values["market.trade_rate_10s"]["value"], 2.0)
+        self.assertAlmostEqual(
+            source_values["market.trade_rate_60s"]["value"], 20 / 60
+        )
+        self.assertEqual(source_values["market.spread_bps"]["value"], 25.0)
+        self.assertEqual(source_values["volume_rate_ratio@1s"]["value"], 2.0)
+
+    async def test_raw_market_stream_accumulates_liquidity_before_signal_activation(self) -> None:
+        controller = ReplayRunController(
+            ReplayRunDefinition(
+                session_date=date(2026, 8, 21),
+                start_time=time(4, 0),
+                configuration_revision=approved_configuration(),
+            ),
+            runtime_root=Path(tempfile.gettempdir()),
+        )
+        events = _debug_market_events((
+            {"kind": "trade", "ticker": "CLSK", "ts": "2026-08-21T04:00:01.100-04:00", "price": 10.0, "size": 100},
+            {"kind": "trade", "ticker": "CLSK", "ts": "2026-08-21T04:00:01.500-04:00", "price": 10.0, "size": 100},
+            {"kind": "trade", "ticker": "CLSK", "ts": "2026-08-21T04:00:02.100-04:00", "price": 10.0, "size": 400},
+            {
+                "kind": "quote",
+                "ticker": "CLSK",
+                "ts": "2026-08-21T04:00:02.500-04:00",
+                "bid_price": 9.99,
+                "ask_price": 10.01,
+                "bid_size": 100,
+                "ask_size": 100,
+            },
+        ))
+        for event in events:
+            controller._observe_historical_market_quality_event(event)
+        source_values: dict[str, object] = {}
+        controller._project_historical_market_quality(
+            ReplayDerivedFrame(
+                as_of=datetime(2026, 8, 21, 4, 0, 3, tzinfo=NEW_YORK),
+                bar={"close": 10.0},
+                indicator={},
+                sequence=1,
+                ticker="CLSK",
+                timeframe="1s",
+            ),
+            source_values,
+        )
+
+        self.assertEqual(source_values["market.volume"]["value"], 600.0)
+        self.assertEqual(source_values["market.session_dollar_volume"]["value"], 6_000.0)
+        self.assertEqual(source_values["market.trade_rate_10s"]["value"], 0.3)
+        self.assertEqual(source_values["market.trade_rate_60s"]["value"], 0.05)
+        self.assertAlmostEqual(source_values["market.spread_bps"]["value"], 20.0)
+        self.assertEqual(source_values["volume_rate_ratio@1s"]["value"], 2.0)
+
     async def test_watchlist_projection_tickers_follow_strategy_entry_session(self) -> None:
         configuration = approved_configuration()
         configuration["payload"]["signal_activation"] = {
@@ -2411,6 +2594,54 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
             ["content_hash"],
             "abc123",
         )
+
+    def test_source_native_activation_refreshes_only_on_event_or_expiry(self) -> None:
+        configuration = approved_configuration()
+        configuration["payload"]["run_plan"] = {
+            "activation": {"watchlist_policy": "not_required"},
+            "watchlist_ids": [],
+        }
+        controller = ReplayRunController(
+            ReplayRunDefinition(
+                session_date=date(2026, 7, 28),
+                start_time=time(9, 45),
+                configuration_revision=configuration,
+            ),
+            runtime_root=Path(tempfile.gettempdir()),
+        )
+        available_at = datetime(2026, 7, 28, 10, 0, tzinfo=NEW_YORK)
+        expires_at = available_at + timedelta(minutes=5)
+        controller._source_native_signal_episodes["AAPL"] = ReplaySignalEvent(
+            available_at=available_at,
+            occurrence={
+                "ticker": "AAPL",
+                "squeeze_expires_at": expires_at.isoformat(),
+            },
+            source_values={"signal.price_squeeze_early.score": {"value": 0.8}},
+            ticker="AAPL",
+        )
+
+        with patch(
+            "src.backend.replay_run_service.run_plan_accepts_signal",
+            return_value=True,
+        ) as accepts:
+            controller._refresh_source_native_signal_activation(
+                available_at,
+                force=True,
+            )
+            controller._refresh_source_native_signal_activation(
+                available_at + timedelta(minutes=1)
+            )
+            self.assertEqual(accepts.call_count, 1)
+            self.assertIn("AAPL", controller._signal_activated_tickers)
+
+            controller._refresh_source_native_signal_activation(
+                expires_at + timedelta(microseconds=1)
+            )
+
+        self.assertNotIn("AAPL", controller._source_native_signal_episodes)
+        self.assertNotIn("AAPL", controller._signal_activated_tickers)
+        self.assertIsNone(controller._next_source_native_signal_refresh_at)
 
     async def test_unsupported_native_source_fails_closed(self) -> None:
         configuration = approved_configuration()

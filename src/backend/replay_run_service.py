@@ -107,7 +107,7 @@ DEFAULT_MAX_RESIDENT_RUNS = 32
 DEFAULT_HISTORY_FETCH_CONCURRENCY = 4
 MAX_DEBUG_FIXTURE_EVENTS = 20_000
 RESTART_CHECKPOINT_SCHEMA_VERSION = 3
-PREPARED_FRAME_CACHE_SCHEMA_VERSION = 1
+PREPARED_FRAME_CACHE_SCHEMA_VERSION = 2
 _PREPARED_FRAME_CACHE_LOCKS: WeakValueDictionary[str, asyncio.Lock] = (
     WeakValueDictionary()
 )
@@ -613,7 +613,22 @@ class ReplayFrameSpool:
 
 
 _STRATEGY_BAR_FIELDS = frozenset(
-    {"bar_end", "close", "high", "low", "open", "sym", "timeframe", "volume"}
+    {
+        "bar_end",
+        "close",
+        "dollar_volume",
+        "high",
+        "liquidity_score",
+        "low",
+        "open",
+        "spread_bps_close",
+        "spread_bps_mean",
+        "sym",
+        "timeframe",
+        "trade_count",
+        "volume",
+        "volume_rate_ratio",
+    }
 )
 _STRATEGY_INDICATOR_FIELDS = frozenset(
     {
@@ -734,6 +749,7 @@ class ReplayRunController:
         self._strategy_engaged_tickers: set[str] = set()
         self._strategy_quality_admitted_tickers: set[str] = set()
         self._source_native_signal_episodes: dict[str, ReplaySignalEvent] = {}
+        self._next_source_native_signal_refresh_at: datetime | None = None
         self._canvas_state_cache: tuple[float, dict[str, Any]] | None = None
         self._runtime_finished = False
         self._stream_tickers: tuple[str, ...] = ()
@@ -768,6 +784,8 @@ class ReplayRunController:
             str, dict[str, dict[str, Any]]
         ] = {}
         self._historical_external_signal_events: list[ReplaySignalEvent] = []
+        self._historical_signal_identities: dict[str, dict[str, Any]] = {}
+        self._historical_market_quality: dict[str, dict[str, Any]] = {}
         self._data_authority: dict[str, dict[str, Any]] = {}
         self._resume_state = deepcopy(resume_state) if resume_state is not None else None
         self._source_cursor: dict[str, Any] = {}
@@ -1785,13 +1803,38 @@ class ReplayRunController:
                     str(row.occurrence.get("event_id") or ""),
                 )
             )
-            self._historical_watchlist_plans = (
-                _historical_watchlist_plans_at_source_native_events(
+            configuration = self.definition.configuration_revision["payload"]
+            run_plan = dict(configuration.get("run_plan") or {})
+            source_native_identity_only = (
+                bool(self._historical_external_signal_events)
+                and str(
+                    dict(run_plan.get("activation") or {}).get(
+                        "watchlist_policy"
+                    )
+                    or "any_selected"
+                )
+                == "not_required"
+            )
+            if source_native_identity_only:
+                self._preparation_stage = "signal_identity"
+                await self._publish(force=True)
+                self._historical_signal_identities = await asyncio.to_thread(
+                    _historical_source_native_signal_identities,
                     self._historical_watchlist_plans,
                     self._historical_external_signal_events,
-                    configuration=self.definition.configuration_revision["payload"],
                 )
-            )
+                # Entry eligibility belongs to the Strategy rule graph.  The
+                # configured Watchlist remains a presentation surface, not a
+                # second all-market admission gate for source-native runs.
+                self._historical_watchlist_plans = []
+            else:
+                self._historical_watchlist_plans = (
+                    _historical_watchlist_plans_at_source_native_events(
+                        self._historical_watchlist_plans,
+                        self._historical_external_signal_events,
+                        configuration=configuration,
+                    )
+                )
             self._preparation_stage = "watchlist_membership"
             await self._publish(force=True)
             await self._prepare_historical_watchlist_timeline()
@@ -2404,6 +2447,14 @@ class ReplayRunController:
             for row in controller.get("source_native_signal_episodes") or ()
             if str(row.get("ticker") or "").strip()
         }
+        self._next_source_native_signal_refresh_at = min(
+            (
+                _optional_checkpoint_time(event.occurrence.get("squeeze_expires_at"))
+                or event.available_at + timedelta(minutes=5)
+                for event in self._source_native_signal_episodes.values()
+            ),
+            default=None,
+        )
         self._data_authority = deepcopy(dict(controller.get("data_authority") or {}))
         self._runtime.processed_events = int(runtime.get("processed_events") or 0)
         self._runtime.last_event_time = last_event_time
@@ -2425,6 +2476,7 @@ class ReplayRunController:
     ) -> None:
         if self._runtime is None:
             raise RuntimeError("Replay runtime was not initialized")
+        self._observe_historical_market_quality_event(event)
         if isinstance(event, QuoteEvent):
             self._quotes[event.ticker] = event
         if (
@@ -2444,6 +2496,47 @@ class ReplayRunController:
             "kind": event.kind,
         }
 
+    def _observe_historical_market_quality_event(self, event: MarketEvent) -> None:
+        """Accumulate causal absolute-liquidity facts from their raw authority."""
+
+        state = self._historical_market_quality.setdefault(
+            event.ticker,
+            {
+                "dollar_volume": 0.0,
+                "share_volume": 0.0,
+                "trade_buckets": [],
+                "volume_buckets": [],
+                "raw_authority": False,
+            },
+        )
+        if isinstance(event, QuoteEvent):
+            midpoint = event.midpoint
+            if midpoint > 0 and event.ask_price >= event.bid_price > 0:
+                state["spread_bps"] = (event.ask_price - event.bid_price) / midpoint * 10_000
+            return
+        if event.price <= 0 or event.size <= 0:
+            return
+        state["raw_authority"] = True
+        state["dollar_volume"] = float(state.get("dollar_volume") or 0) + event.price * event.size
+        state["share_volume"] = float(state.get("share_volume") or 0) + event.size
+        cutoff = event.ts - timedelta(seconds=60)
+        trade_buckets = [
+            clock for clock in list(state.get("trade_buckets") or []) if clock > cutoff
+        ]
+        trade_buckets.append(event.ts)
+        state["trade_buckets"] = trade_buckets
+        second = int(event.ts.timestamp())
+        volume_buckets = [
+            (bucket, volume)
+            for bucket, volume in list(state.get("volume_buckets") or [])
+            if bucket >= second - 2
+        ]
+        if volume_buckets and volume_buckets[-1][0] == second:
+            volume_buckets[-1] = (second, volume_buckets[-1][1] + event.size)
+        else:
+            volume_buckets.append((second, event.size))
+        state["volume_buckets"] = volume_buckets
+
     def _flush_passive_market_events(self) -> None:
         if not self._pending_passive_market_events:
             return
@@ -2458,6 +2551,8 @@ class ReplayRunController:
             return False
         self._flush_passive_market_events()
         self._refresh_source_native_signal_activation(frame.as_of)
+        source_cache = self._strategy_source_values.setdefault(frame.ticker, {})
+        self._project_historical_market_quality(frame, source_cache)
         if frame.ticker in self._signal_activated_tickers:
             self._strategy_engaged_tickers.add(frame.ticker)
         activation = dict(
@@ -2587,7 +2682,6 @@ class ReplayRunController:
             source_signal_ids=(f"qmd-derived:{frame.ticker}:{frame.timeframe}:{frame.sequence}",),
             source_timeframe=frame.timeframe,
         )
-        source_cache = self._strategy_source_values.setdefault(frame.ticker, {})
         if self._strategy_registration is None:
             raise RuntimeError("Historical Strategy executor registration is unavailable")
         changed_source_values = self._strategy_registration.observation_projector(
@@ -2702,6 +2796,108 @@ class ReplayRunController:
         await asyncio.sleep(0)
         return True
 
+    def _project_historical_market_quality(
+        self,
+        frame: ReplayDerivedFrame,
+        source_cache: dict[str, Any],
+    ) -> None:
+        """Project causal absolute-liquidity facts from completed one-second bars."""
+
+        if frame.timeframe != "1s":
+            return
+        bar = dict(frame.bar)
+        state = self._historical_market_quality.setdefault(
+            frame.ticker,
+            {
+                "dollar_volume": 0.0,
+                "share_volume": 0.0,
+                "trade_buckets": [],
+            },
+        )
+        raw_authority = bool(state.get("raw_authority"))
+        if raw_authority:
+            trade_times = [
+                clock
+                for clock in list(state.get("trade_buckets") or [])
+                if clock > frame.as_of - timedelta(seconds=60)
+            ]
+            state["trade_buckets"] = trade_times
+            trade_rate_10s = sum(
+                1 for clock in trade_times if clock > frame.as_of - timedelta(seconds=10)
+            ) / 10.0
+            trade_rate_60s = len(trade_times) / 60.0
+            spread_bps = state.get("spread_bps")
+            volume_by_second = dict(state.get("volume_buckets") or [])
+            completed_second = int(frame.as_of.timestamp()) - 1
+            current_volume = float(volume_by_second.get(completed_second) or 0)
+            prior_volume = float(volume_by_second.get(completed_second - 1) or 0)
+            volume_rate_ratio = current_volume / prior_volume if prior_volume > 0 else None
+        else:
+            current_volume = max(0.0, float(bar.get("volume") or 0))
+            previous_volume = float(state.get("previous_bar_volume") or 0)
+            state["dollar_volume"] = float(state.get("dollar_volume") or 0) + max(
+                0.0,
+                float(bar.get("dollar_volume") or 0)
+                or current_volume * max(0.0, float(bar.get("close") or 0)),
+            )
+            state["share_volume"] = float(state.get("share_volume") or 0) + max(
+                0.0, current_volume
+            )
+            buckets = [
+                (clock, count)
+                for clock, count in list(state.get("trade_buckets") or [])
+                if clock > frame.as_of - timedelta(seconds=60)
+            ]
+            buckets.append((
+                frame.as_of,
+                max(
+                    1 if current_volume > 0 else 0,
+                    int(bar.get("trade_count") or 0),
+                ),
+            ))
+            state["trade_buckets"] = buckets
+            trade_rate_10s = sum(
+                count
+                for clock, count in buckets
+                if clock > frame.as_of - timedelta(seconds=10)
+            ) / 10.0
+            trade_rate_60s = sum(count for _, count in buckets) / 60.0
+            spread_bps = bar.get("spread_bps_close")
+            if spread_bps is None:
+                spread_bps = bar.get("spread_bps_mean") or state.get("spread_bps")
+            volume_rate_ratio = bar.get("volume_rate_ratio")
+            if volume_rate_ratio is None and previous_volume > 0:
+                volume_rate_ratio = current_volume / previous_volume
+            state["previous_bar_volume"] = current_volume
+        values = {
+            "market.session_dollar_volume": state["dollar_volume"],
+            "market.volume": state["share_volume"],
+            "market.trade_rate_10s": trade_rate_10s,
+            "market.trade_rate_60s": trade_rate_60s,
+            "market.spread_bps": spread_bps,
+            "volume_rate_ratio": volume_rate_ratio,
+        }
+        field_refs = {
+            "market.session_dollar_volume": "data.market.session_dollar_volume@1:value",
+            "market.volume": "data.market.volume@1:value",
+            "market.trade_rate_10s": "data.market.trade_rate_10s@1:value",
+            "market.trade_rate_60s": "data.market.trade_rate_60s@1:value",
+            "market.spread_bps": "data.market.spread_bps@1:value",
+            "volume_rate_ratio": "data.volume_rate_ratio@1:value",
+        }
+        for source_id, value in values.items():
+            if value is None:
+                continue
+            record = {
+                "observed_at": frame.as_of.isoformat(),
+                "value": float(value),
+            }
+            source_cache[source_id] = record
+            source_cache[field_refs[source_id]] = record
+            if source_id == "volume_rate_ratio":
+                source_cache[f"{source_id}@1s"] = record
+                source_cache[f"{field_refs[source_id]}@1s"] = record
+
     async def _process_external_signal_event(self, event: ReplaySignalEvent) -> None:
         source_cache = self._strategy_source_values.setdefault(event.ticker, {})
         source_cache.update(deepcopy(event.source_values))
@@ -2714,7 +2910,10 @@ class ReplayRunController:
         if is_new_for_run or accepts_prior:
             if event.occurrence.get("squeeze_expires_at"):
                 self._source_native_signal_episodes[event.ticker] = event
-                self._refresh_source_native_signal_activation(event.available_at)
+                self._refresh_source_native_signal_activation(
+                    event.available_at,
+                    force=True,
+                )
             elif run_plan_accepts_signal(
                 run_plan,
                 event.occurrence,
@@ -3232,7 +3431,9 @@ class ReplayRunController:
         return rows
 
     def _historical_signal_assignment_identities(self) -> dict[str, dict[str, Any]]:
-        identities: dict[str, dict[str, Any]] = {}
+        identities: dict[str, dict[str, Any]] = deepcopy(
+            self._historical_signal_identities
+        )
         for snapshot in self._historical_watchlist_timeline():
             for row in snapshot.get("assignment_identities") or []:
                 ticker = str(row.get("ticker") or "").strip().upper()
@@ -3492,12 +3693,28 @@ class ReplayRunController:
             return set.intersection(*memberships) if memberships else set()
         return set().union(*memberships) if memberships else set()
 
-    def _refresh_source_native_signal_activation(self, event_time: datetime) -> None:
+    def _refresh_source_native_signal_activation(
+        self,
+        event_time: datetime,
+        *,
+        force: bool = False,
+    ) -> None:
         if not self._source_native_signal_episodes:
+            self._next_source_native_signal_refresh_at = None
             return
         configuration = self.definition.configuration_revision["payload"]
         run_plan = dict(configuration.get("run_plan") or {})
+        activation = dict(run_plan.get("activation") or {})
+        if (
+            not force
+            and str(activation.get("watchlist_policy") or "any_selected")
+            == "not_required"
+            and self._next_source_native_signal_refresh_at is not None
+            and event_time <= self._next_source_native_signal_refresh_at
+        ):
+            return
         eligible = self._historical_signal_eligible_tickers(run_plan)
+        next_refresh_at: datetime | None = None
         for ticker, event in list(self._source_native_signal_episodes.items()):
             expires_at = _optional_checkpoint_time(
                 event.occurrence.get("squeeze_expires_at")
@@ -3509,6 +3726,11 @@ class ReplayRunController:
                 self._signal_activated_tickers.discard(ticker)
                 continue
             if event_time < event.available_at:
+                next_refresh_at = (
+                    event.available_at
+                    if next_refresh_at is None
+                    else min(next_refresh_at, event.available_at)
+                )
                 continue
             if run_plan_accepts_signal(
                 run_plan,
@@ -3521,6 +3743,12 @@ class ReplayRunController:
                 )
             else:
                 self._signal_activated_tickers.discard(ticker)
+            next_refresh_at = (
+                expires_at
+                if next_refresh_at is None
+                else min(next_refresh_at, expires_at)
+            )
+        self._next_source_native_signal_refresh_at = next_refresh_at
 
     def _record_historical_watchlist_authority(self) -> None:
         fixture = self.definition.debug_fixture
@@ -4774,6 +5002,13 @@ def _occurrence_source_values(occurrence: dict[str, Any]) -> dict[str, Any]:
         or ""
     )
     result: dict[str, Any] = {}
+    signal_stream_id = str(occurrence.get("signal_stream_id") or "").strip()
+    if signal_stream_id:
+        result[f"signal.activation.{signal_stream_id}"] = {
+            "value": True,
+            "observed_at": observed_at,
+            "event_id": str(occurrence.get("event_id") or ""),
+        }
     squeeze_move = occurrence.get("squeeze_move_pct")
     if squeeze_move is not None:
         record = {"value": squeeze_move, "observed_at": observed_at}
@@ -5408,6 +5643,74 @@ def _historical_watchlist_plans_at_source_native_events(
     return scoped
 
 
+def _historical_source_native_signal_identities(
+    plans: list[dict[str, Any]],
+    events: list[ReplaySignalEvent],
+) -> dict[str, dict[str, Any]]:
+    """Resolve stable point-in-time identities without replaying market data."""
+
+    tickers = sorted({event.ticker for event in events if event.ticker})
+    if not tickers:
+        return {}
+    if not plans:
+        raise ValueError(
+            "Source-native historical signals require a causal identity plan"
+        )
+    from src.backend.historical_watchlist_feature_service import (
+        historical_watchlist_external_feature_bundle,
+    )
+
+    bundle = historical_watchlist_external_feature_bundle(
+        plans[0],
+        identity_tickers=tickers,
+    )
+    intervals_by_ticker: dict[str, list[dict[str, Any]]] = {}
+    for interval in bundle.get("identity_intervals") or []:
+        ticker = str(interval.get("ticker") or "").strip().upper()
+        if ticker:
+            intervals_by_ticker.setdefault(ticker, []).append(dict(interval))
+    identities: dict[str, dict[str, Any]] = {}
+    missing: list[str] = []
+    changed: list[str] = []
+    events_by_ticker: dict[str, list[ReplaySignalEvent]] = {}
+    for event in events:
+        events_by_ticker.setdefault(event.ticker, []).append(event)
+    for ticker in tickers:
+        matching_identities: dict[str, dict[str, Any]] = {}
+        for event in events_by_ticker.get(ticker, []):
+            matches = [
+                dict(interval.get("identity") or {})
+                for interval in intervals_by_ticker.get(ticker, [])
+                if _historical_watchlist_clock(interval.get("start"))
+                <= event.available_at
+                < _historical_watchlist_clock(interval.get("end"))
+            ]
+            if len(matches) != 1 or int(matches[0].get("ibkr_conid") or 0) <= 0:
+                missing.append(ticker)
+                break
+            identity = matches[0]
+            matching_identities[
+                json.dumps(identity, sort_keys=True, separators=(",", ":"))
+            ] = identity
+        if ticker in missing:
+            continue
+        if len(matching_identities) != 1:
+            changed.append(ticker)
+            continue
+        identities[ticker] = next(iter(matching_identities.values()))
+    if missing:
+        raise ValueError(
+            "Source-native historical signals require point-in-time conids: "
+            + ", ".join(sorted(set(missing)))
+        )
+    if changed:
+        raise ValueError(
+            "Source-native historical signal identity changed during the run: "
+            + ", ".join(sorted(set(changed)))
+        )
+    return identities
+
+
 def _strategy_can_enter_at(configuration: dict[str, Any], event_time: datetime) -> bool:
     profile = dict(configuration.get("strategy_profile") or {})
     lifecycle = dict(profile.get("lifecycle") or {})
@@ -5909,6 +6212,29 @@ def backtest_preflight(
         session_count=session_count,
     )
     configuration = dict(approved.get("payload") or {})
+    run_plan = dict(configuration.get("run_plan") or {})
+    selected_signal_stream_ids = {
+        str(value)
+        for value in run_plan.get("signal_stream_ids") or []
+        if str(value)
+    }
+    activated_signal_streams = [
+        dict(row)
+        for row in dict(configuration.get("signal_activation") or {}).get(
+            "signal_streams"
+        )
+        or []
+        if bool(row.get("enabled", True))
+        and str(row.get("signal_stream_id") or "") in selected_signal_stream_ids
+    ]
+    source_native_activation = bool(activated_signal_streams) and all(
+        str(row.get("occurrence_source") or "").strip()
+        for row in activated_signal_streams
+    )
+    watchlist_policy = str(
+        dict(run_plan.get("activation") or {}).get("watchlist_policy")
+        or "any_selected"
+    )
     sessions = [date.fromisoformat(value) for value in base["window"]["sessions"]]
     bindings = [
         dict(row)
@@ -5949,7 +6275,9 @@ def backtest_preflight(
     watchlist_plans: list[dict[str, Any]] = []
     watchlist_snapshot_count = 0
     watchlist_error = ""
-    if watchlists and sessions:
+    if watchlists and sessions and not (
+        source_native_activation and watchlist_policy == "not_required"
+    ):
         try:
             watchlist_plans = _historical_watchlist_plans_for_configuration(
                 approved,
@@ -5995,18 +6323,30 @@ def backtest_preflight(
             "required": True,
         }
     )
-    work_ready = bool(assignments or watchlist_members) and not watchlist_error
+    work_ready = bool(
+        assignments
+        or watchlist_members
+        or (source_native_activation and watchlist_policy == "not_required")
+    ) and not watchlist_error
     checks.append(
         {
             "id": "strategy_assignments",
             "label": "Historical strategy population",
             "status": "ready" if work_ready else "blocked",
             "summary": (
-                f"{len(assignments)} pinned assignment(s) and {len(watchlist_members)} causal Watchlist member(s) across {watchlist_snapshot_count} transition state(s) are configured."
-                if work_ready
-                else watchlist_error or "Backtest needs an active assignment or a non-empty causal Watchlist universe."
+                f"{len(activated_signal_streams)} source-native Signal Stream(s) causally seed Strategy evaluation; liquidity and entry rules are evaluated only after each occurrence."
+                if source_native_activation and watchlist_policy == "not_required"
+                else (
+                    f"{len(assignments)} pinned assignment(s) and {len(watchlist_members)} causal Watchlist member(s) across {watchlist_snapshot_count} transition state(s) are configured."
+                    if work_ready
+                    else watchlist_error or "Backtest needs an active assignment, source-native Signal Stream, or non-empty causal Watchlist universe."
+                )
             ),
-            "evidence": "The revisioned Watchlist timeline is pinned and applied at every configured intraday refresh clock before same-clock Strategy evaluation.",
+            "evidence": (
+                "Persisted Signal Stream occurrences define the bounded ticker and event-time population; the controller loads causal market and indicator frames only for those tickers."
+                if source_native_activation and watchlist_policy == "not_required"
+                else "The revisioned Watchlist timeline is pinned and applied at every configured intraday refresh clock before same-clock Strategy evaluation."
+            ),
             "required": True,
         }
     )

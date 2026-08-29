@@ -539,6 +539,11 @@ def strategy_activity_payload(
                 "action": action,
                 "state": str(payload.get("status") or payload.get("state") or ""),
                 "reason": _strategy_activity_reason(record.category, payload, metadata),
+                "reason_code": str(
+                    payload.get("reason")
+                    or metadata.get("reason_code")
+                    or ""
+                ),
                 "score": payload.get("score"),
                 "confidence": payload.get("confidence"),
                 "reference_price": (
@@ -623,7 +628,9 @@ def _strategy_activity_reason(
     metadata: dict[str, Any],
 ) -> str:
     explicit = (
-        payload.get("reason")
+        payload.get("reason_detail")
+        or metadata.get("reason_detail")
+        or payload.get("reason")
         or payload.get("evidence")
         or payload.get("membership_reason")
         or metadata.get("reason")

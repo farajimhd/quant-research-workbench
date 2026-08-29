@@ -2846,13 +2846,14 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
         _watchlist_rule(
             "strategy-squeeze-volume-spread-quality",
             "Squeeze volume and spread quality",
-            "Confirms an entry only for $2-$50 securities with at least $500,000 session dollar volume, one trade per second, a QMD liquidity score of at least 50, accelerating one-second volume, and spread no wider than 50 basis points.",
+            "Confirms an entry only for $2-$50 securities with at least $1,000,000 session dollar volume, 100,000 session shares, sustained one-minute and fast ten-second trade rates, accelerating one-second volume, and spread no wider than 50 basis points. Absolute activity and executable spread are authoritative; the cross-sectional liquidity score is presentation-only.",
             [
                 _watchlist_condition("squeeze-price-floor", "market.last_price", "greater_or_equal", 2.0),
                 _watchlist_condition("squeeze-price-ceiling", "market.last_price", "less_or_equal", 50.0),
-                _watchlist_condition("squeeze-session-dollar-volume", "market.session_dollar_volume", "greater_or_equal", 500_000.0),
+                _watchlist_condition("squeeze-session-dollar-volume", "market.session_dollar_volume", "greater_or_equal", 1_000_000.0),
+                _watchlist_condition("squeeze-session-share-volume", "market.volume", "greater_or_equal", 100_000.0),
                 _watchlist_condition("squeeze-trade-rate", "market.trade_rate_10s", "greater_or_equal", 1.0),
-                _watchlist_condition("squeeze-relative-liquidity", "market.liquidity_score", "greater_or_equal", 50.0),
+                _watchlist_condition("squeeze-sustained-trade-rate", "market.trade_rate_60s", "greater_or_equal", 0.5),
                 _watchlist_condition(
                     "squeeze-volume-attraction",
                     "volume_rate_ratio",
@@ -2883,6 +2884,47 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
                 "right_source_id": "indicator.structure.swing_high",
                 "right_interval": normalize_interval_spec("1s"),
             }],
+        ),
+        _watchlist_rule(
+            "strategy-squeeze-above-vwap-1s",
+            "Price above causal one-second VWAP",
+            "Requires the latest eligible trade price to be strictly above the causally available session VWAP on the one-second decision frame.",
+            [{
+                **_watchlist_condition(
+                    "squeeze-price-above-vwap",
+                    "market.last_price",
+                    "greater_than",
+                    0.0,
+                    interval="1s",
+                ),
+                "right_source_id": "indicator.vwap.value",
+                "right_interval": normalize_interval_spec("1s"),
+            }],
+        ),
+        _watchlist_rule(
+            "strategy-squeeze-macd-open-1s",
+            "One-second MACD open",
+            "Requires the causal one-second MACD line to be above its signal line with a positive histogram.",
+            [
+                {
+                    **_watchlist_condition(
+                        "squeeze-macd-line-above-signal",
+                        "indicator.macd.line",
+                        "greater_than",
+                        0.0,
+                        interval="1s",
+                    ),
+                    "right_source_id": "indicator.macd.signal",
+                    "right_interval": normalize_interval_spec("1s"),
+                },
+                _watchlist_condition(
+                    "squeeze-macd-positive-histogram",
+                    "indicator.macd.histogram",
+                    "greater_than",
+                    0.0,
+                    interval="1s",
+                ),
+            ],
         ),
         _watchlist_rule(
             "strategy-live-spread-quality",
@@ -3869,10 +3911,20 @@ def _default_draft() -> dict[str, Any]:
         "expression": {
             "kind": "operator",
             "operator": "and",
-            "children": [{
-                "kind": "rule_set",
-                "rule_set_id": "strategy-squeeze-volume-spread-quality",
-            }],
+            "children": [
+                {
+                    "kind": "rule_set",
+                    "rule_set_id": "strategy-squeeze-volume-spread-quality",
+                },
+                {
+                    "kind": "rule_set",
+                    "rule_set_id": "strategy-squeeze-above-vwap-1s",
+                },
+                {
+                    "kind": "rule_set",
+                    "rule_set_id": "strategy-squeeze-macd-open-1s",
+                },
+            ],
         }
     }
     squeeze_lifecycle["initial_entry"]["add_steps"] = []
@@ -3888,6 +3940,57 @@ def _default_draft() -> dict[str, Any]:
     }
     squeeze_lifecycle["reentry"]["maximum_attempts"] = 1
     squeeze_lifecycle["reentry"]["cooldown_ms"] = 5_000
+    squeeze_lifecycle["reentry"]["require_new_signal_stream_id"] = "price-squeeze-early"
+    squeeze_lifecycle["reentry"]["after_protective_exit"] = True
+    squeeze_lifecycle["reentry"]["rules"] = {
+        "opportunity": deepcopy(squeeze_lifecycle["initial_entry"]["opportunity"]),
+        "confirmation": deepcopy(squeeze_lifecycle["initial_entry"]["confirmation"]),
+        "blockers": deepcopy(squeeze_lifecycle["initial_entry"]["blockers"]),
+    }
+    # The squeeze profile owns its causal exit ladder in the executor. Retain
+    # the catalogued legacy routes as disabled definitions so configuration
+    # validation and Strategy Studio can still explain what was superseded.
+    for legacy_exit in squeeze_lifecycle["exit"]["rule_sets"]:
+        legacy_exit["enabled"] = False
+    system_profiles[0]["parameters"]["momentum_management"] = {
+        "failure_to_extend": {
+            "enabled": True,
+            "minimum_gain_pct": 0.75,
+            "minimum_extension_bps": 5.0,
+            "stalled_for_ms": 3_000,
+            "maximum_flow_structure_score": 0.15,
+            "minimum_flow_price_divergence_score": 0.55,
+            "position_fraction": 0.50,
+            "maximum_uses": 1,
+        },
+        "qmd_exhaustion": {
+            "enabled": True,
+            "active_after_ms": 1_000,
+            "maximum_flow_structure_score": -0.10,
+            "minimum_confidence": 0.55,
+            "minimum_flow_price_divergence_score": 0.60,
+        },
+        "structure_failure": {
+            "enabled": True,
+            "active_after_ms": 1_000,
+            "buffer_bps": 5.0,
+            "require_higher_low": True,
+        },
+        "macd_backstop": {
+            "enabled": True,
+            "active_after_ms": 5_000,
+            "closed_for_ms": 1_000,
+            "timeframe": "1s",
+        },
+    }
+    system_profiles[0]["parameters"].setdefault("protection", {}).setdefault(
+        "stop", {}
+    )["prefer_closer_hybrid"] = True
+    system_profiles[0]["parameters"]["protection"]["trailing"].update({
+        "activation_gain_pct": 2.0,
+        "distance_volatility_multiple": 1.5,
+        "minimum_distance_bps": 20.0,
+    })
     system_profiles[0]["action_policy_ids"] = ["profit-pocket"]
     system_profiles[0]["protected"] = True
     news_profile = deepcopy(system_profiles[0])

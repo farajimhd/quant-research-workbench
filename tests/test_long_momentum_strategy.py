@@ -946,7 +946,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(held.state["active_stop"], 100.0)
         self.assertEqual(protected.evaluation.signals[0].reason, "protective_stop")
         self.assertEqual(protected.evaluation.signals[0].action, "exit")
-        self.assertEqual(protected.status, AssignmentStatus.COMPLETED)
+        self.assertEqual(protected.status, AssignmentStatus.EXIT_PENDING)
         self.assertFalse(protected.evaluation.intents[0].metadata["buy_back"])
 
     def test_bullish_choch_adds_only_with_confirmation(self) -> None:
@@ -1030,6 +1030,146 @@ class LongMomentumStrategyTests(unittest.TestCase):
             waiting, confirmed_observation(observed_at=NOW + timedelta(seconds=1))
         )
         self.assertEqual(result.evaluation.signals[0].reason, "reentry_cooldown")
+
+    def test_reentry_requires_a_renewed_early_squeeze_after_exit(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["reentry"].update({
+            "cooldown_ms": 5_000,
+            "maximum_attempts": 1,
+            "require_new_signal_stream_id": "price-squeeze-early",
+        })
+        parameters["phase_policy"] = {
+            "reentry": {
+                "mode": "automatic",
+                "rules": deepcopy(parameters["entry_rules"]),
+                "capital_request": {
+                    "mode": "all_available",
+                    "value": 1.0,
+                    "allow_replacement": False,
+                },
+                "order_intent": {
+                    "execution_policy": "adaptive_urgent",
+                    "partial_fill_policy": "complete_remainder",
+                    "deadline_ms": 750,
+                },
+            }
+        }
+        waiting = assignment(
+            parameters=parameters,
+            status=AssignmentStatus.REENTRY_COOLDOWN,
+            state={"reentries": 1, "last_exit_at": NOW.isoformat()},
+        )
+        stale = LongMomentumStrategyEngine().evaluate(
+            waiting,
+            confirmed_observation(
+                observed_at=NOW + timedelta(seconds=6),
+                source_values={
+                    "signal.activation.price-squeeze-early": {
+                        "value": True,
+                        "observed_at": (NOW - timedelta(seconds=1)).isoformat(),
+                    }
+                },
+            ),
+        )
+        renewed = LongMomentumStrategyEngine().evaluate(
+            waiting,
+            confirmed_observation(
+                observed_at=NOW + timedelta(seconds=6),
+                source_values={
+                    "signal.activation.price-squeeze-early": {
+                        "value": True,
+                        "observed_at": (NOW + timedelta(seconds=5)).isoformat(),
+                    }
+                },
+            ),
+        )
+
+        self.assertEqual(stale.evaluation.signals[0].reason, "waiting_for_renewed_early_squeeze")
+        self.assertIn("new Early Squeeze Move", stale.evaluation.signals[0].metadata["reason_detail"])
+        self.assertEqual(renewed.evaluation.signals[0].action, "enter_long")
+
+    def test_failure_to_extend_reduces_half_and_remains_fill_gated(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["phase_policy"] = {"exit": {"mode": "automatic", "rule_sets": []}}
+        parameters["profit_pocket"]["enabled"] = False
+        parameters["protection"]["trailing"]["enabled"] = False
+        parameters["momentum_management"]["failure_to_extend"]["enabled"] = True
+        managed = assignment(
+            parameters=parameters,
+            status=AssignmentStatus.MANAGING,
+            state={
+                "active_stop": 95.0,
+                "initial_stop": 95.0,
+                "entry_at": (NOW - timedelta(seconds=10)).isoformat(),
+                "entry_reference_price": 100.0,
+                "high_water_price": 102.0,
+                "last_extension_at": (NOW - timedelta(seconds=4)).isoformat(),
+            },
+        )
+        result = LongMomentumStrategyEngine().evaluate(
+            managed,
+            confirmed_observation(
+                price=101.0,
+                position_quantity=100,
+                average_price=100.0,
+                qmd_score=0.1,
+                flow_price_divergence_score=0.6,
+                source_timeframe="100ms",
+            ),
+        )
+
+        self.assertEqual(result.evaluation.signals[0].action, "reduce_long")
+        self.assertEqual(result.evaluation.signals[0].reason, "failure_to_extend_partial")
+        self.assertEqual(result.evaluation.intents[0].quantity, 50)
+        self.assertEqual(result.status, AssignmentStatus.EXIT_PENDING)
+        self.assertIn("stopped extending", result.evaluation.signals[0].metadata["reason_detail"])
+
+    def test_qmd_exhaustion_and_higher_low_loss_are_full_exit_routes(self) -> None:
+        base = default_long_momentum_parameters()
+        base["phase_policy"] = {"exit": {"mode": "automatic", "rule_sets": []}}
+        base["profit_pocket"]["enabled"] = False
+        base["protection"]["trailing"]["enabled"] = False
+        common_state = {
+            "active_stop": 90.0,
+            "initial_stop": 90.0,
+            "entry_at": (NOW - timedelta(seconds=10)).isoformat(),
+            "entry_reference_price": 100.0,
+            "high_water_price": 102.0,
+        }
+
+        qmd_parameters = deepcopy(base)
+        qmd_parameters["momentum_management"]["qmd_exhaustion"]["enabled"] = True
+        qmd = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=qmd_parameters, status=AssignmentStatus.MANAGING, state=common_state),
+            confirmed_observation(
+                price=101.0,
+                position_quantity=100,
+                qmd_score=-0.2,
+                qmd_confidence=0.8,
+                flow_price_divergence_score=0.7,
+                source_timeframe="100ms",
+            ),
+        )
+        self.assertEqual(qmd.evaluation.signals[0].reason, "qmd_flow_geometry_exhaustion")
+        self.assertEqual(qmd.evaluation.signals[0].action, "exit")
+
+        structure_parameters = deepcopy(base)
+        structure_parameters["momentum_management"]["structure_failure"]["enabled"] = True
+        structure_state = {
+            **common_state,
+            "latest_post_entry_swing_low": 100.0,
+            "higher_low_confirmed": True,
+        }
+        structure = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=structure_parameters, status=AssignmentStatus.MANAGING, state=structure_state),
+            confirmed_observation(
+                price=99.9,
+                position_quantity=100,
+                source_timeframe="100ms",
+            ),
+        )
+        self.assertEqual(structure.evaluation.signals[0].reason, "loss_of_confirmed_higher_low")
+        self.assertEqual(structure.evaluation.signals[0].action, "exit")
 
     def test_reentry_cooldown_sensitivity_and_fresh_confirmation(self) -> None:
         for cooldown_seconds in (1, 3, 5, 10):
@@ -1137,7 +1277,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(result.evaluation.signals[0].reason, "session_flatten")
         self.assertEqual(result.evaluation.signals[0].action, "exit")
         self.assertEqual(result.evaluation.intents[0].quantity, 100)
-        self.assertEqual(result.status, AssignmentStatus.COMPLETED)
+        self.assertEqual(result.status, AssignmentStatus.EXIT_PENDING)
         self.assertFalse(result.evaluation.intents[0].metadata["buy_back"])
 
     def test_ibkr_entry_plan_has_parent_target_hard_stop_and_trailing_stop(self) -> None:

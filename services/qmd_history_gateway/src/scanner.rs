@@ -399,6 +399,9 @@ impl CrossSectionEngine {
                     "market.trade_rate_10s" if market.trade_rate_10s.is_finite() => {
                         Some(market.trade_rate_10s)
                     }
+                    "market.trade_rate_60s" if market.trade_rate_60s.is_finite() => {
+                        Some(market.trade_rate_60s)
+                    }
                     "market.liquidity_score" if market.liquidity_score.is_finite() => {
                         Some(market.liquidity_score)
                     }
@@ -909,6 +912,7 @@ fn source_event_requirement(source_id: &str) -> RuleEventRequirement {
                 | "market.volume"
                 | "market.session_dollar_volume"
                 | "market.trade_rate_10s"
+                | "market.trade_rate_60s"
                 | "market.liquidity_score"
                 | "market.session_volume"
                 | "market.session_vwap"

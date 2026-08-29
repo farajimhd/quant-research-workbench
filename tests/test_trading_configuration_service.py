@@ -1232,6 +1232,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertNotIn("composition", default_profile)
         default_run_plan = draft["run_plans"]["plans"][0]
         self.assertEqual(default_run_plan["watchlist_ids"], ["squeeze-tradable-candidates"])
+        self.assertEqual(default_run_plan["universe_id"], "configured-watch-universe")
         self.assertEqual(default_run_plan["canvas_profile_id"], "current-canvas")
         self.assertEqual(
             default_run_plan["data_plan_ids"]["replay"],
@@ -1261,6 +1262,33 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertEqual(lifecycle["initial_entry"]["add_steps"], [])
         self.assertEqual(lifecycle["initial_entry"]["action_id"], "position.enter_long")
+        confirmation_rule_ids = configuration_service._expression_rule_set_ids(
+            lifecycle["initial_entry"]["confirmation"]["expression"]
+        )
+        self.assertEqual(
+            confirmation_rule_ids,
+            {
+                "strategy-squeeze-volume-spread-quality",
+                "strategy-squeeze-above-vwap-1s",
+                "strategy-squeeze-macd-open-1s",
+            },
+        )
+        self.assertEqual(
+            lifecycle["reentry"]["require_new_signal_stream_id"],
+            "price-squeeze-early",
+        )
+        self.assertTrue(lifecycle["reentry"]["after_protective_exit"])
+        self.assertTrue(
+            default_profile["parameters"]["momentum_management"][
+                "failure_to_extend"
+            ]["enabled"]
+        )
+        self.assertTrue(
+            default_profile["parameters"]["protection"]["stop"][
+                "prefer_closer_hybrid"
+            ]
+        )
+        self.assertTrue(all(not route["enabled"] for route in lifecycle["exit"]["rule_sets"]))
         self.assertNotIn("confirmed-pullback-add", default_profile["action_policy_ids"])
         self.assertTrue(all(route["action_id"] == "position.exit_long" for route in lifecycle["exit"]["rule_sets"]))
         self.assertNotIn("time_in_force", lifecycle["initial_entry"]["order_intent"])
@@ -1360,7 +1388,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             }.issubset(qmd_dependencies),
         )
         self.assertEqual(qmd_dependencies["momentum_core"]["input_keys"], ["macd", "vwap"])
-        self.assertIn("rule_set", qmd_dependencies["indicator.structure.bullish_choch"]["input_kinds"])
+        self.assertNotIn("indicator.structure.bullish_choch", qmd_dependencies)
         self.assertEqual(
             {row["capability_key"] for row in saved_draft["run_plans"]["plans"][0]["observation_dependencies"]},
             {row["capability_key"] for row in published["payload"]["run_plans"]["plans"][0]["observation_dependencies"]},
@@ -1422,6 +1450,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(replay["maximum_planned_risk_fraction"], 0.0025)
         self.assertEqual(replay["maximum_open_positions"], 3)
         self.assertEqual(plan["watchlist_ids"], ["squeeze-tradable-candidates"])
+        self.assertEqual(plan["universe_id"], "configured-watch-universe")
         self.assertEqual(
             plan["signal_stream_ids"],
             ["price-squeeze-early"],

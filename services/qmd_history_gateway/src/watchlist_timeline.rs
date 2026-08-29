@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const WATCHLIST_TIMELINE_PLAN_SCHEMA_VERSION: u16 = 4;
 pub const MAX_EVALUATIONS_PER_CHUNK: u64 = 1_800;
 pub const MAX_MEMBERSHIP_SLOTS_PER_CHUNK: u64 = 2_000_000;
-const QMD_SOURCES: [&str; 16] = [
+const QMD_SOURCES: [&str; 17] = [
     "indicator.vwap.value",
     "liquidity-rank",
     "market.liquidity_rank",
@@ -18,6 +18,7 @@ const QMD_SOURCES: [&str; 16] = [
     "market.relative_volume",
     "market.session_dollar_volume",
     "market.trade_rate_10s",
+    "market.trade_rate_60s",
     "market.volume",
     "price_change_1_bar_pct",
     "volume_rate_ratio",
@@ -1310,6 +1311,7 @@ mod tests {
             ("market.liquidity_score", "liquidity_score"),
             ("market.session_dollar_volume", "session_dollar_volume"),
             ("market.trade_rate_10s", "trade_rate_10s"),
+            ("market.trade_rate_60s", "trade_rate_60s"),
         ] {
             projected.qmd_sources.push(source_id.to_string());
             projected.qmd_source_specs.push(QmdSourceSpec {

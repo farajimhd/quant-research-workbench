@@ -37,6 +37,7 @@ QMD_SOURCE_IDS = {
     "market.liquidity_score",
     "market.session_dollar_volume",
     "market.trade_rate_10s",
+    "market.trade_rate_60s",
     "market.change_pct",
     "market.change_actual",
     "market.last_price",

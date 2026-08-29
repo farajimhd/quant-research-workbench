@@ -407,6 +407,7 @@ def default_long_momentum_parameters() -> dict[str, Any]:
                 "structure_buffer_bps": 8.0,
                 "volatility_multiple": 1.25,
                 "maximum_risk_pct": 1.5,
+                "prefer_closer_hybrid": False,
             },
             "trailing": {
                 "enabled": True,
@@ -427,6 +428,37 @@ def default_long_momentum_parameters() -> dict[str, Any]:
             "minimum_remaining_quantity": 1.0,
         },
         "reentry": {"enabled": True, "cooldown_ms": 0, "maximum_attempts": 3, "require_new_confirmation": True},
+        "momentum_management": {
+            "failure_to_extend": {
+                "enabled": False,
+                "minimum_gain_pct": 0.75,
+                "minimum_extension_bps": 5.0,
+                "stalled_for_ms": 3_000,
+                "maximum_flow_structure_score": 0.15,
+                "minimum_flow_price_divergence_score": 0.55,
+                "position_fraction": 0.50,
+                "maximum_uses": 1,
+            },
+            "qmd_exhaustion": {
+                "enabled": False,
+                "active_after_ms": 1_000,
+                "maximum_flow_structure_score": -0.10,
+                "minimum_confidence": 0.55,
+                "minimum_flow_price_divergence_score": 0.60,
+            },
+            "structure_failure": {
+                "enabled": False,
+                "active_after_ms": 1_000,
+                "buffer_bps": 5.0,
+                "require_higher_low": True,
+            },
+            "macd_backstop": {
+                "enabled": False,
+                "active_after_ms": 5_000,
+                "closed_for_ms": 1_000,
+                "timeframe": "1s",
+            },
+        },
         "final_exit": {
             "qmd_score": -0.35,
             "qmd_confidence": 0.55,
@@ -533,6 +565,11 @@ def resolve_long_momentum_parameters(overrides: dict[str, Any] | None = None) ->
         raise ValueError("Unsupported profit-pocket trigger")
     if int(parameters["reentry"]["cooldown_ms"]) < 0 or int(parameters["reentry"]["maximum_attempts"]) < 0:
         raise ValueError("Re-entry cooldown and maximum attempts cannot be negative")
+    required_signal_stream_id = str(
+        parameters["reentry"].get("require_new_signal_stream_id") or ""
+    ).strip()
+    if required_signal_stream_id and not required_signal_stream_id.replace("-", "").isalnum():
+        raise ValueError("Re-entry signal stream id is invalid")
     supported_urgencies = {
         "passive_limit",
         "aggressive_limit",
@@ -729,6 +766,29 @@ def _reentry_confirmation_is_fresh(
     return True
 
 
+def _reentry_signal_is_fresh(
+    reentry: dict[str, Any],
+    observation: StrategyObservation,
+    previous_exit_at: str,
+) -> bool:
+    stream_id = str(reentry.get("require_new_signal_stream_id") or "").strip()
+    if not stream_id:
+        return True
+    if not previous_exit_at:
+        return False
+    cached = observation.source_values.get(f"signal.activation.{stream_id}")
+    if not isinstance(cached, dict) or not bool(cached.get("value")):
+        return False
+    try:
+        activated_at = datetime.fromisoformat(
+            str(cached.get("observed_at") or "").replace("Z", "+00:00")
+        )
+        boundary = datetime.fromisoformat(previous_exit_at.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    return activated_at > boundary
+
+
 class LongMomentumStrategyEngine:
     """Deterministic long-only policy engine over causal point-in-time observations."""
 
@@ -810,6 +870,26 @@ class LongMomentumStrategyEngine:
             elapsed_ms = (observation.observed_at - last_exit).total_seconds() * 1000
             if elapsed_ms < float(reentry["cooldown_ms"]):
                 return self._result(assignment, observation, "wait", "reentry_cooldown", 0.0, 1.0, state, AssignmentStatus.REENTRY_COOLDOWN)
+            if not _reentry_signal_is_fresh(
+                reentry,
+                observation,
+                str(state.get("last_exit_at") or ""),
+            ):
+                return self._result(
+                    assignment,
+                    observation,
+                    "wait",
+                    "waiting_for_renewed_early_squeeze",
+                    0.0,
+                    _confirmation_confidence(observation),
+                    state,
+                    AssignmentStatus.REENTRY_COOLDOWN,
+                    metadata={
+                        "required_signal_stream_id": str(
+                            reentry.get("require_new_signal_stream_id") or ""
+                        )
+                    },
+                )
         authority_key = (
             "reentry_authority" if reentries else "initial_entry_authority"
         )
@@ -1010,6 +1090,12 @@ class LongMomentumStrategyEngine:
                 "adds": 0,
                 "profit_takes": 0,
                 "entries": int(state.get("entries") or 0) + 1,
+                "last_extension_at": observation.observed_at.isoformat(),
+                "failure_to_extend_uses": 0,
+                "macd_closed_since": "",
+                "latest_post_entry_swing_low": None,
+                "previous_post_entry_swing_low": None,
+                "higher_low_confirmed": False,
             }
         )
         return self._result(
@@ -1052,10 +1138,30 @@ class LongMomentumStrategyEngine:
     ) -> StrategyEngineResult:
         side = _strategy_side(parameters)
         manage_automatic = _phase_is_automatic(parameters, "manage")
+        previous_high_water = float(
+            state.get("high_water_price") or observation.price
+        )
         if side == "long":
-            state["high_water_price"] = max(float(state.get("high_water_price") or observation.price), observation.price)
+            state["high_water_price"] = max(previous_high_water, observation.price)
         else:
             state["low_water_price"] = min(float(state.get("low_water_price") or observation.price), observation.price)
+        entry_price = float(
+            state.get("entry_reference_price")
+            or observation.average_price
+            or observation.price
+        )
+        gain_pct = (
+            (observation.price / entry_price - 1) * 100
+            if side == "long"
+            else (entry_price / observation.price - 1) * 100
+        ) if entry_price > 0 else 0.0
+        _update_momentum_management_state(
+            parameters,
+            observation,
+            state,
+            side=side,
+            previous_high_water=previous_high_water,
+        )
         if manage_automatic:
             state["active_stop"] = _ratcheted_stop(observation, parameters, state, side=side)
         else:
@@ -1098,26 +1204,31 @@ class LongMomentumStrategyEngine:
                 "position_fraction": 1.0,
             }
         elif exit_automatic:
-            exit_rule_sets = list(
-                dict(
+            exit_route = _matching_momentum_management_route(
+                parameters,
+                observation,
+                state,
+                gain_pct=gain_pct,
+                side=side,
+            )
+            if exit_route is None:
+                exit_phase = dict(
                     dict(parameters.get("phase_policy") or {}).get("exit") or {}
-                ).get("rule_sets") or []
-            )
-            exit_route = (
-                _matching_exit_rule_set(
-                    exit_rule_sets,
-                    observation=observation,
-                    entry_at=str(state.get("entry_at") or ""),
                 )
-                if exit_rule_sets
-                else _matching_exit_route(
-                    list(parameters.get("exit_routes") or []),
-                    observation=observation,
-                    protective_stop=stop,
-                    failed_breakout=failed_breakout,
-                    side=side,
-                )
-            )
+                if "rule_sets" in exit_phase:
+                    exit_route = _matching_exit_rule_set(
+                        list(exit_phase.get("rule_sets") or []),
+                        observation=observation,
+                        entry_at=str(state.get("entry_at") or ""),
+                    )
+                else:
+                    exit_route = _matching_exit_route(
+                        list(parameters.get("exit_routes") or []),
+                        observation=observation,
+                        protective_stop=stop,
+                        failed_breakout=failed_breakout,
+                        side=side,
+                    )
         else:
             exit_route = None
         manual_exit_requested = bool(state.pop("manual_exit_requested", False))
@@ -1151,22 +1262,46 @@ class LongMomentumStrategyEngine:
                     "proposed_exit_rule_set_name": exit_route["name"],
                 },
             )
+        route_fraction = (
+            float(exit_route.get("position_fraction") or 1.0)
+            if exit_route is not None
+            else 1.0
+        )
+        route_is_partial = route_fraction < 1.0
         if exit_route is not None and (
-            assignment.permissions.exit
+            (assignment.permissions.reduce if route_is_partial else assignment.permissions.exit)
             or str(exit_route.get("mechanism")) == "protective_stop"
         ):
             reason = str(exit_route["mechanism"])
-            if reason in {"protective_stop", "failed_breakout", "bearish_qmd_macd", "session_flatten"}:
+            if reason == "session_flatten" or (
+                reason in {"protective_stop", "failed_breakout", "bearish_qmd_macd"}
+                and not bool(parameters["reentry"].get("after_protective_exit", False))
+            ):
                 state["disable_after_exit"] = True
             state["last_exit_reason"] = reason
             state["last_exit_route_id"] = str(exit_route["route_id"])
-            state["last_exit_at"] = observation.observed_at.isoformat()
-            state["reentries"] = int(state.get("reentries") or 0) + 1
-            next_status = AssignmentStatus.COMPLETED if state.get("disable_after_exit") or not assignment.permissions.reenter else AssignmentStatus.REENTRY_COOLDOWN
+            position_fraction = route_fraction
+            partial_reduction = position_fraction < 1.0
+            if partial_reduction:
+                state["failure_to_extend_uses"] = int(
+                    state.get("failure_to_extend_uses") or 0
+                ) + 1
+            else:
+                state["last_exit_at"] = observation.observed_at.isoformat()
+            next_status = AssignmentStatus.EXIT_PENDING
+            action = (
+                "reduce_long"
+                if side == "long" and partial_reduction
+                else "reduce_short"
+                if side == "short" and partial_reduction
+                else "exit"
+                if side == "long"
+                else "cover"
+            )
             return self._result(
-                assignment, observation, "exit" if side == "long" else "cover", reason, observation.qmd_score,
+                assignment, observation, action, reason, observation.qmd_score,
                 max(observation.qmd_confidence, 0.5), state, next_status,
-                quantity=observation.position_quantity * float(exit_route.get("position_fraction") or 1.0), invalidation_price=stop,
+                quantity=observation.position_quantity * position_fraction, invalidation_price=stop,
                 trailing_amount=_trailing_amount(observation, parameters),
                 order_intent=dict(exit_route.get("order_intent") or {}),
                 metadata={
@@ -1175,9 +1310,14 @@ class LongMomentumStrategyEngine:
                     "exit_route_id": exit_route["route_id"],
                     "exit_route_name": exit_route["name"],
                     "buy_back": bool(
+                        not partial_reduction
+                        and
                         assignment.permissions.reenter
                         and not state.get("disable_after_exit")
                     ),
+                    "position_fraction": position_fraction,
+                    "gain_pct": gain_pct,
+                    **dict(exit_route.get("evidence") or {}),
                 },
             )
 
@@ -1280,12 +1420,6 @@ class LongMomentumStrategyEngine:
             )
 
         pocket = parameters["profit_pocket"]
-        entry_price = float(state.get("entry_reference_price") or observation.average_price or observation.price)
-        gain_pct = (
-            (observation.price / entry_price - 1) * 100
-            if side == "long"
-            else (entry_price / observation.price - 1) * 100
-        ) if entry_price > 0 else 0
         previous_acceleration = float(state.get("last_acceleration") or 0)
         threshold = float(pocket["acceleration_slowdown_threshold"])
         slowdown = previous_acceleration > threshold and observation.acceleration <= threshold
@@ -1301,6 +1435,14 @@ class LongMomentumStrategyEngine:
             else favorable_pct
         )
         state["last_acceleration"] = observation.acceleration
+        executor_owned_partial = bool(
+            dict(
+                dict(parameters.get("momentum_management") or {}).get(
+                    "failure_to_extend"
+                )
+                or {}
+            ).get("enabled", False)
+        )
         pocket_qty = min(
             observation.position_quantity,
             max(0.0, observation.position_quantity * float(pocket["quantity_fraction"])),
@@ -1309,6 +1451,7 @@ class LongMomentumStrategyEngine:
         if (
             assignment.permissions.reduce
             and pocket["enabled"]
+            and not executor_owned_partial
             and favorable_pct
             and pocket_triggered
             and pocket_qty > 0
@@ -1320,9 +1463,20 @@ class LongMomentumStrategyEngine:
             state["profit_takes"] = int(state.get("profit_takes") or 0) + 1
             state["last_profit_take_at"] = observation.observed_at.isoformat()
             state["last_exit_reason"] = "profit_pocket"
-            state["last_exit_at"] = observation.observed_at.isoformat()
+            partial_reduction = pocket_qty < observation.position_quantity
             return self._result(
-                assignment, observation, "exit" if side == "long" else "cover", "profit_pocket",
+                assignment,
+                observation,
+                (
+                    "reduce_long"
+                    if side == "long" and partial_reduction
+                    else "reduce_short"
+                    if side == "short" and partial_reduction
+                    else "exit"
+                    if side == "long"
+                    else "cover"
+                ),
+                "profit_pocket",
                 max(0.0, observation.qmd_score), _confirmation_confidence(observation),
                 state, AssignmentStatus.EXIT_PENDING, quantity=pocket_qty,
                 invalidation_price=stop,
@@ -1330,6 +1484,8 @@ class LongMomentumStrategyEngine:
                 metadata={
                     "gain_pct": gain_pct,
                     "buy_back": bool(
+                        not partial_reduction
+                        and
                         assignment.permissions.reenter
                         and not state.get("disable_after_exit")
                     ),
@@ -1362,6 +1518,16 @@ class LongMomentumStrategyEngine:
         metadata: dict[str, Any] | None = None,
     ) -> StrategyEngineResult:
         event_id = str(uuid4())
+        resolved_metadata = dict(metadata or {})
+        reason_detail = _decision_reason_detail(
+            action,
+            reason,
+            observation,
+            resolved_metadata,
+            state,
+        )
+        resolved_metadata["reason_code"] = reason
+        resolved_metadata["reason_detail"] = reason_detail
         source_cause = (
             observation.source_signal_ids[-1]
             if observation.source_signal_ids
@@ -1391,7 +1557,7 @@ class LongMomentumStrategyEngine:
             working_timeframe=str(assignment.parameters.get("entry", {}).get("breakout_timeframe") or "1s"),
             invalidation_price=invalidation_price,
             metadata={
-                **(metadata or {}),
+                **resolved_metadata,
                 "assignment_id": assignment.assignment_id,
                 "reference_price": observation.price,
                 "status": status.value,
@@ -1463,7 +1629,7 @@ class LongMomentumStrategyEngine:
                             ).get("eligible_sessions")
                             or ["regular"]
                         ),
-                        **(metadata or {}),
+                        **resolved_metadata,
                         **lineage,
                     },
                 ),
@@ -1480,11 +1646,12 @@ class LongMomentumStrategyEngine:
             "score": signal.score,
             "confidence": signal.confidence,
             "reason": reason,
+            "reason_detail": reason_detail,
             "reference_price": observation.price,
             "invalidation_price": invalidation_price,
             "status": status.value,
             "state": state,
-            "evidence": metadata or {},
+            "evidence": resolved_metadata,
             **lineage,
         }
         return StrategyEngineResult(StrategyEvaluation(signals=(signal,), intents=intents), state, status, payload)
@@ -1969,7 +2136,9 @@ class AssignedLongMomentumStrategy:
             action = str(getattr(snapshot, "action", ""))
             if action in {"enter_long", "add_long", "enter_short", "add_short"}:
                 status = AssignmentStatus.MANAGING
-            elif action in {"exit", "take_profit", "cover", "reduce_short"}:
+            elif action in {"reduce_long", "reduce_short"}:
+                status = AssignmentStatus.MANAGING
+            elif action in {"exit", "take_profit", "cover"}:
                 if bool(getattr(snapshot, "reentry_after_fill", False)):
                     state["reentries"] = int(state.get("reentries") or 0) + 1
                     status = AssignmentStatus.REENTRY_COOLDOWN
@@ -2059,16 +2228,22 @@ def evaluate_entry_decision_rules(
         stage = dict(resolved.get(stage_name) or {})
         group_results: dict[str, bool] = {}
         group_scores: dict[str, float] = {}
+        condition_evidence: dict[str, list[dict[str, Any]]] = {}
         rule_sets = stage.get("rule_sets") or stage.get("groups") or []
         for group in rule_sets:
             if not bool(group.get("enabled", True)):
                 continue
             group_id = str(group.get("rule_set_id") or group.get("group_id") or "")
-            condition_results = [
-                _condition_matches(dict(condition), observation)
+            enabled_conditions = [
+                dict(condition)
                 for condition in group.get("conditions") or []
                 if bool(condition.get("enabled", True))
             ]
+            condition_rows = [
+                _condition_evidence(condition, observation)
+                for condition in enabled_conditions
+            ]
+            condition_results = [bool(row["passed"]) for row in condition_rows]
             operator = str(group.get("operator") or "all")
             score = (
                 sum(1 for matched in condition_results if matched)
@@ -2085,6 +2260,7 @@ def evaluate_entry_decision_rules(
             )
             group_results[group_id] = passed
             group_scores[group_id] = score
+            condition_evidence[group_id] = condition_rows
         matched = [group_id for group_id, passed in group_results.items() if passed]
         expression = dict(stage.get("expression") or {})
         operator = str(stage.get("operator") or "any")
@@ -2099,12 +2275,150 @@ def evaluate_entry_decision_rules(
         output[stage_name] = {
             "groups": group_results,
             "group_scores": group_scores,
+            "condition_evidence": condition_evidence,
             "matched_groups": matched,
             "operator": operator,
             "passed": passed,
             "score": score,
         }
     return output
+
+
+def _condition_evidence(
+    condition: dict[str, Any], observation: StrategyObservation
+) -> dict[str, Any]:
+    left_source = str(
+        condition.get("left_field_ref") or condition.get("left_source_id") or ""
+    )
+    right_source = str(
+        condition.get("right_field_ref") or condition.get("right_source_id") or ""
+    )
+    left_timeframe = _condition_interval_expression(
+        condition.get("left_interval") or condition.get("left_timeframe")
+    )
+    right_timeframe = _condition_interval_expression(
+        condition.get("right_interval") or condition.get("right_timeframe")
+    )
+    left_value = _condition_operand_value(condition, "left", observation)
+    right_value = (
+        _condition_operand_value(condition, "right", observation)
+        if right_source
+        else condition.get("value")
+    )
+    return {
+        "condition_id": str(condition.get("condition_id") or ""),
+        "left_source_id": left_source,
+        "left_timeframe": left_timeframe,
+        "left_value": left_value,
+        "comparator": str(condition.get("comparator") or ""),
+        "right_source_id": right_source,
+        "right_timeframe": right_timeframe,
+        "right_value": right_value,
+        "buffer_bps": (
+            float(condition.get("value") or 0)
+            if str(condition.get("comparator") or "") == "above_by_bps"
+            else None
+        ),
+        "passed": _condition_matches(condition, observation),
+    }
+
+
+def _display_value(value: Any) -> str:
+    if value is None:
+        return "unavailable"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float):
+        return f"{value:.6g}"
+    return str(value)
+
+
+def _failed_entry_conditions(metadata: dict[str, Any]) -> list[str]:
+    rules = dict(metadata.get("entry_rules") or {})
+    failures: list[str] = []
+    for stage_name in ("confirmation", "trigger", "veto"):
+        stage = dict(rules.get(stage_name) or {})
+        for group_id, rows in dict(stage.get("condition_evidence") or {}).items():
+            for row in rows or []:
+                passed = bool(row.get("passed"))
+                failed = not passed if stage_name != "veto" else passed
+                if not failed:
+                    continue
+                left = str(row.get("left_source_id") or row.get("condition_id") or "condition")
+                timeframe = str(row.get("left_timeframe") or "")
+                comparator = str(row.get("comparator") or "condition")
+                right = _display_value(row.get("right_value"))
+                buffer_bps = row.get("buffer_bps")
+                requirement = (
+                    f"above {right} by {float(buffer_bps):g} bps"
+                    if comparator == "above_by_bps" and buffer_bps is not None
+                    else f"{comparator.replace('_', ' ')} {right}"
+                )
+                failures.append(
+                    f"{group_id}: {left}{f' ({timeframe})' if timeframe else ''} "
+                    f"is {_display_value(row.get('left_value'))}; requires {requirement}"
+                )
+    return failures
+
+
+def _decision_reason_detail(
+    action: str,
+    reason: str,
+    observation: StrategyObservation,
+    metadata: dict[str, Any],
+    state: dict[str, Any],
+) -> str:
+    prefix = "Wait" if action == "wait" else "Hold" if action == "hold" else "Act"
+    if reason in {"entry_confirmation_incomplete", "entry_vetoed"}:
+        failures = _failed_entry_conditions(metadata)
+        label = "entry veto passed" if reason == "entry_vetoed" else "entry confirmation is incomplete"
+        return f"{prefix}: {label}" + (f" — {'; '.join(failures[:6])}" if failures else "")
+    if reason == "waiting_for_swing_high_reference":
+        return "Wait: no causally confirmed one-second swing high is available yet."
+    if reason == "waiting_for_swing_high_cross":
+        return (
+            "Wait: price "
+            f"{observation.price:.4g} has not crossed the one-second swing-high threshold "
+            f"{_display_value(metadata.get('trigger_threshold_price'))}."
+        )
+    if reason == "waiting_for_renewed_early_squeeze":
+        return (
+            "Wait: re-entry requires a new Early Squeeze Move occurrence after the last "
+            f"completed exit; stream {metadata.get('required_signal_stream_id') or 'price-squeeze-early'} has not renewed."
+        )
+    if reason == "reentry_confirmation_not_fresh":
+        return "Wait: the re-entry confirmation inputs were observed at or before the last exit."
+    if reason == "reentry_cooldown":
+        return "Wait: the configured post-exit re-entry cooldown has not elapsed."
+    if reason == "entry_fill_pending":
+        return "Wait: an entry order is working; a duplicate entry is prohibited until its fill state is final."
+    if reason == "exit_fill_pending":
+        return "Hold: an exit or reduction order is working; no second exit is emitted until its fill state is final."
+    if reason == "position_managed":
+        return (
+            "Hold: no configured exit condition passed; "
+            f"price={observation.price:.4g}, active stop={_display_value(state.get('active_stop'))}, "
+            f"gain={float(metadata.get('gain_pct') or 0):+.3f}%."
+        )
+    labels = {
+        "entry_confirmed": "Enter: liquidity, VWAP, one-second MACD, and swing-high breakout all passed.",
+        "reentry_confirmed": "Re-enter: a renewed Early Squeeze Move and fresh entry evidence all passed.",
+        "failure_to_extend_partial": "Reduce: price stopped extending while QMD flow deteriorated; pocket half and keep the protected remainder.",
+        "qmd_flow_geometry_exhaustion": "Exit: QMD flow structure weakened with confident flow-price divergence.",
+        "loss_of_confirmed_higher_low": "Exit: price lost the latest causally confirmed one-second higher low.",
+        "macd_closed_backstop": "Exit: one-second MACD remained closed for the configured backstop duration.",
+        "protective_stop": "Exit: price breached the active causal protective stop.",
+        "session_flatten": "Exit: the configured premarket flatten time was reached.",
+        "profit_pocket": "Reduce: the configured favorable-move and momentum-slowdown profit-pocket rule passed.",
+        "no_active_rule_source_updated": "Wait: this observation did not update any source used by the active strategy phase.",
+        "market_not_open": "Wait: the configured extended-hours execution session is not tradable at this clock.",
+        "entry_cutoff_reached": "Wait: the configured entry cutoff has passed; no new exposure is allowed.",
+        "protection_anchor_unavailable": "Wait: the causal structural anchor required to protect the order is unavailable.",
+        "assignment_not_active": "Wait: the strategy assignment is disabled, completed, or in error.",
+        "assignment_paused": "Wait: the strategy assignment is paused by operator authority.",
+        "entry_not_authorized": "Wait: this assignment is not authorized to open exposure.",
+    }
+    return labels.get(reason, f"{prefix}: {reason.replace('_', ' ')}.")
 
 
 def strategy_observation_source_values(
@@ -2353,6 +2667,210 @@ def _matching_exit_rule_set(
                 "route_id": str(rule_set.get("rule_set_id") or ""),
                 "mechanism": str(rule_set.get("rule_set_id") or "exit_rule_set"),
             }
+    return None
+
+
+def _elapsed_since(value: str, observed_at: datetime) -> int:
+    if not value:
+        return 0
+    try:
+        return max(
+            0,
+            int(
+                (
+                    observed_at
+                    - datetime.fromisoformat(value.replace("Z", "+00:00"))
+                ).total_seconds()
+                * 1000
+            ),
+        )
+    except (TypeError, ValueError):
+        return 0
+
+
+def _update_momentum_management_state(
+    parameters: dict[str, Any],
+    observation: StrategyObservation,
+    state: dict[str, Any],
+    *,
+    side: str,
+    previous_high_water: float,
+) -> None:
+    settings = dict(parameters.get("momentum_management") or {})
+    if not settings or side != "long":
+        return
+    failure = dict(settings.get("failure_to_extend") or {})
+    extension_bps = float(failure.get("minimum_extension_bps") or 0)
+    if observation.source_timeframe in {"", "1s"} and observation.price >= (
+        previous_high_water * (1 + extension_bps / 10_000)
+    ):
+        state["last_extension_at"] = observation.observed_at.isoformat()
+
+    if observation.source_timeframe not in {"", "1s"}:
+        return
+    swing_low = _source_value(
+        observation, "indicator.structure.swing_low", "1s"
+    )
+    if swing_low is None:
+        swing_low = observation.swing_low
+    if swing_low is None or float(swing_low) <= 0:
+        return
+    entry_at = str(state.get("entry_at") or "")
+    cached = observation.source_values.get("indicator.structure.swing_low@1s")
+    if isinstance(cached, dict) and entry_at:
+        try:
+            if datetime.fromisoformat(
+                str(cached.get("observed_at") or "").replace("Z", "+00:00")
+            ) <= datetime.fromisoformat(entry_at.replace("Z", "+00:00")):
+                return
+        except (TypeError, ValueError):
+            return
+    latest = state.get("latest_post_entry_swing_low")
+    current = float(swing_low)
+    if latest is not None and abs(float(latest) - current) < 1e-12:
+        return
+    if latest is not None:
+        state["previous_post_entry_swing_low"] = float(latest)
+        state["higher_low_confirmed"] = current > float(latest)
+    state["latest_post_entry_swing_low"] = current
+
+
+def _matching_momentum_management_route(
+    parameters: dict[str, Any],
+    observation: StrategyObservation,
+    state: dict[str, Any],
+    *,
+    gain_pct: float,
+    side: str,
+) -> dict[str, Any] | None:
+    settings = dict(parameters.get("momentum_management") or {})
+    if not settings or side != "long":
+        return None
+    elapsed_ms = _elapsed_since(str(state.get("entry_at") or ""), observation.observed_at)
+
+    structure = dict(settings.get("structure_failure") or {})
+    latest_swing_low = state.get("latest_post_entry_swing_low")
+    structure_ready = (
+        bool(structure.get("enabled", False))
+        and elapsed_ms >= int(structure.get("active_after_ms") or 0)
+        and latest_swing_low is not None
+        and (
+            bool(state.get("higher_low_confirmed"))
+            or not bool(structure.get("require_higher_low", True))
+        )
+    )
+    if structure_ready:
+        threshold = float(latest_swing_low) * (
+            1 - float(structure.get("buffer_bps") or 0) / 10_000
+        )
+        if observation.price <= threshold:
+            return {
+                "route_id": "loss-of-confirmed-higher-low",
+                "name": "Loss of confirmed one-second higher low",
+                "mechanism": "loss_of_confirmed_higher_low",
+                "position_fraction": 1.0,
+                "evidence": {
+                    "latest_confirmed_higher_low": float(latest_swing_low),
+                    "exit_threshold_price": threshold,
+                },
+            }
+
+    exhaustion = dict(settings.get("qmd_exhaustion") or {})
+    if (
+        bool(exhaustion.get("enabled", False))
+        and observation.source_timeframe in {"", "100ms"}
+        and elapsed_ms >= int(exhaustion.get("active_after_ms") or 0)
+        and observation.qmd_score
+        <= float(exhaustion.get("maximum_flow_structure_score") or 0)
+        and observation.qmd_confidence
+        >= float(exhaustion.get("minimum_confidence") or 0)
+        and observation.flow_price_divergence_score
+        >= float(exhaustion.get("minimum_flow_price_divergence_score") or 0)
+    ):
+        return {
+            "route_id": "qmd-flow-geometry-exhaustion",
+            "name": "QMD flow-geometry exhaustion",
+            "mechanism": "qmd_flow_geometry_exhaustion",
+            "position_fraction": 1.0,
+            "evidence": {
+                "flow_structure_score": observation.qmd_score,
+                "flow_structure_confidence": observation.qmd_confidence,
+                "flow_price_divergence_score": observation.flow_price_divergence_score,
+            },
+        }
+
+    failure = dict(settings.get("failure_to_extend") or {})
+    stalled_ms = _elapsed_since(
+        str(state.get("last_extension_at") or state.get("entry_at") or ""),
+        observation.observed_at,
+    )
+    flow_deteriorated = (
+        observation.qmd_score
+        <= float(failure.get("maximum_flow_structure_score") or 0)
+        or observation.flow_price_divergence_score
+        >= float(failure.get("minimum_flow_price_divergence_score") or 1)
+    )
+    if (
+        bool(failure.get("enabled", False))
+        and observation.source_timeframe in {"", "100ms"}
+        and int(state.get("failure_to_extend_uses") or 0)
+        < int(failure.get("maximum_uses") or 1)
+        and gain_pct >= float(failure.get("minimum_gain_pct") or 0)
+        and stalled_ms >= int(failure.get("stalled_for_ms") or 0)
+        and flow_deteriorated
+    ):
+        return {
+            "route_id": "failure-to-extend-partial",
+            "name": "Failure to extend with deteriorating QMD flow",
+            "mechanism": "failure_to_extend_partial",
+            "position_fraction": float(failure.get("position_fraction") or 0.5),
+            "evidence": {
+                "gain_pct": gain_pct,
+                "stalled_for_ms": stalled_ms,
+                "flow_structure_score": observation.qmd_score,
+                "flow_price_divergence_score": observation.flow_price_divergence_score,
+            },
+        }
+
+    macd = dict(settings.get("macd_backstop") or {})
+    timeframe = str(macd.get("timeframe") or "1s")
+    line = _source_value(observation, "indicator.macd.line", timeframe)
+    signal = _source_value(observation, "indicator.macd.signal", timeframe)
+    histogram = _source_value(observation, "indicator.macd.histogram", timeframe)
+    macd_closed = (
+        line is not None
+        and signal is not None
+        and histogram is not None
+        and float(line) <= float(signal)
+        and float(histogram) <= 0
+    )
+    if observation.source_timeframe in {"", timeframe}:
+        if macd_closed:
+            if not state.get("macd_closed_since"):
+                state["macd_closed_since"] = observation.observed_at.isoformat()
+        else:
+            state["macd_closed_since"] = ""
+    if (
+        bool(macd.get("enabled", False))
+        and elapsed_ms >= int(macd.get("active_after_ms") or 0)
+        and macd_closed
+        and _elapsed_since(
+            str(state.get("macd_closed_since") or ""), observation.observed_at
+        )
+        >= int(macd.get("closed_for_ms") or 0)
+    ):
+        return {
+            "route_id": "macd-closed-backstop",
+            "name": "One-second MACD closed backstop",
+            "mechanism": "macd_closed_backstop",
+            "position_fraction": 1.0,
+            "evidence": {
+                "macd_timeframe": timeframe,
+                "macd_line": line,
+                "macd_signal": signal,
+                "macd_histogram": histogram,
+            },
+        }
     return None
 
 
@@ -2639,9 +3157,17 @@ def _initial_stop(
         if method == "structure"
         else volatility_stop
         if method == "volatility"
-        else min(structure_stop, volatility_stop)
+        else (
+            max(structure_stop, volatility_stop)
+            if bool(stop.get("prefer_closer_hybrid", False))
+            else min(structure_stop, volatility_stop)
+        )
         if side == "long"
-        else max(structure_stop, volatility_stop)
+        else (
+            min(structure_stop, volatility_stop)
+            if bool(stop.get("prefer_closer_hybrid", False))
+            else max(structure_stop, volatility_stop)
+        )
     )
     maximum_risk = observation.price * (
         1 + direction * float(stop["maximum_risk_pct"]) / 100
