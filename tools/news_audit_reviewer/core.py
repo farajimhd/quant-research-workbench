@@ -7,16 +7,24 @@ import re
 import time
 import uuid
 from collections import Counter, defaultdict
+from concurrent.futures import ProcessPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from pipelines.news.benzinga.core.clickhouse_writer_v2 import json_each_row_batches
 from research.mlops.clickhouse import ClickHouseHttpClient, insert_json_each_row, quote_ident, sql_string
+from scripts.evaluate_news_synthesis_pattern_policy_gold import (
+    _initialize_prediction_worker,
+    _load_scoped_identity_index,
+    _prediction,
+    _query_training_month,
+    _worker_prediction,
+)
 
 
-CAMPAIGN_ID = "news_synthesis_v61_training_mismatches_personal_review_v2"
-CONTRACT_VERSION = "news_synthesis_clickhouse_personal_review_v2"
+CAMPAIGN_ID = "news_synthesis_v61_training_population_personal_review_v3"
+CONTRACT_VERSION = "news_synthesis_clickhouse_personal_review_v3"
 NEWS_ROOT = Path(r"D:\TradingML\runtimes\text_intelligence\news_synthesis_v1")
 DEFAULT_EVALUATION = NEWS_ROOT / "news_synthesis_v61_consolidated_gold_v2_evaluation_v1" / "MISMATCHES.jsonl"
 DEFAULT_ASSIGNMENTS = (
@@ -25,25 +33,26 @@ DEFAULT_ASSIGNMENTS = (
     / "EVALUATION_ASSIGNMENTS.csv"
 )
 EXPECTED_ALL_MISMATCHES = 32_533
+EXPECTED_TRAINING_ARTICLES = 347_515
 EXPECTED_TRAINING_MISMATCHES = 31_856
 EXPECTED_HOLDOUT_MISMATCHES = 677
 EXPECTED_ASSIGNMENTS = 352_559
 
-SOURCE_TABLE = "news_synthesis_v61_review_source_v2"
-MANIFEST_TABLE = "news_synthesis_v61_review_manifest_v2"
-LABEL_HISTORY_TABLE = "news_synthesis_v61_operator_label_history_v2"
-GROUP_HISTORY_TABLE = "news_synthesis_v61_review_group_history_v2"
-NOTE_HISTORY_TABLE = "news_synthesis_v61_review_note_history_v2"
+SOURCE_TABLE = "news_synthesis_v61_review_source_v3"
+MANIFEST_TABLE = "news_synthesis_v61_review_manifest_v3"
+LABEL_HISTORY_TABLE = "news_synthesis_v61_operator_label_history_v3"
+GROUP_HISTORY_TABLE = "news_synthesis_v61_review_group_history_v3"
+NOTE_HISTORY_TABLE = "news_synthesis_v61_review_note_history_v3"
 
 ALLOWED_LABELS = {"eligible", "ineligible", ""}
 ALLOWED_DISPOSITIONS = {"all_eligible", "all_ineligible", "mixed", ""}
 ALLOWED_GROUP_FIELDS = {
     "synthesis_path", "title_pattern_id", "normalized_title_template", "gold_label",
-    "synthesis_label", "confusion_cell", "ticker", "channel", "provider_tag", "author",
-    "provider", "year", "month", "review_status",
+    "synthesis_label", "policy_expected_label", "policy_status", "confusion_cell", "ticker",
+    "channel", "provider_tag", "author", "provider", "year", "month", "review_status",
 }
 ARRAY_GROUP_FIELDS = {"ticker", "channel", "provider_tag"}
-DEFAULT_GROUP_BY = ("synthesis_path", "title_pattern_id", "gold_label")
+DEFAULT_GROUP_BY = ("synthesis_path", "title_pattern_id")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 SOURCE_COLUMNS = [
@@ -51,8 +60,9 @@ SOURCE_COLUMNS = [
     "normalized_title", "teaser", "rendered_text", "rendered_text_hash", "source_revision_key",
     "author", "tickers", "channels", "provider_tags", "content_quality_flags", "population_split",
     "gold_label", "synthesis_label", "confusion_cell", "synthesis_path", "title_pattern_id",
-    "normalized_title_template", "forecast_policy_ids", "forecast_reasons", "evaluation_sha256",
-    "assignments_sha256", "imported_at_utc",
+    "normalized_title_template", "policy_expected_label", "policy_status", "gold_authority",
+    "gold_merge_resolution", "eligible_policy_patterns", "ineligible_policy_patterns", "mixed_patterns",
+    "forecast_policy_ids", "forecast_reasons", "evaluation_sha256", "assignments_sha256", "imported_at_utc",
 ]
 LABEL_COLUMNS = [
     "campaign_id", "decision_id", "source_id", "original_gold_label", "operator_label",
@@ -145,12 +155,16 @@ class ClickHouseReviewBackend:
         campaign_id: str = CAMPAIGN_ID,
         evaluation_path: Path = DEFAULT_EVALUATION,
         assignments_path: Path = DEFAULT_ASSIGNMENTS,
+        workers: int = 8,
     ) -> None:
         self.client = client
         self.database = database
         self.campaign_id = campaign_id
         self.evaluation_path = Path(evaluation_path)
         self.assignments_path = Path(assignments_path)
+        if not 1 <= workers <= 32:
+            raise ValueError("workers must be in [1, 32]")
+        self.workers = workers
         self.db = quote_ident(database)
 
     def execute(self, sql: str) -> str:
@@ -167,6 +181,9 @@ rendered_text_hash String,source_revision_key String,author String,tickers Array
 provider_tags Array(String),content_quality_flags Array(LowCardinality(String)),population_split LowCardinality(String),
 gold_label LowCardinality(String),synthesis_label LowCardinality(String),confusion_cell LowCardinality(String),
 synthesis_path LowCardinality(String),title_pattern_id LowCardinality(String),normalized_title_template String,
+policy_expected_label LowCardinality(String),policy_status LowCardinality(String),gold_authority LowCardinality(String),
+gold_merge_resolution LowCardinality(String),eligible_policy_patterns Array(String),ineligible_policy_patterns Array(String),
+mixed_patterns Array(String),
 forecast_policy_ids Array(String),forecast_reasons Array(String),evaluation_sha256 FixedString(64),
 assignments_sha256 FixedString(64),imported_at_utc DateTime64(6,'UTC')
 ) ENGINE=ReplacingMergeTree(imported_at_utc) PARTITION BY toYYYYMM(published_at_utc)
@@ -204,7 +221,7 @@ ORDER BY (campaign_id,scope_type,scope_key,revision,note_id)""")
         self._write_manifest("building", 0, evaluation_hash, assignments_hash, "")
         try:
             mismatches, split_counts = self._load_mismatches()
-            assignments = self._load_assignments(set(mismatches))
+            assignments = self._load_assignments()
             existing = {
                 str(row["source_id"])
                 for row in self.rows(
@@ -212,41 +229,95 @@ ORDER BY (campaign_id,scope_type,scope_key,revision,note_id)""")
                     f"WHERE campaign_id={sql_string(self.campaign_id)} FORMAT JSONEachRow"
                 )
             }
-            missing = [source_id for source_id in mismatches if source_id not in existing]
+            missing = [source_id for source_id in assignments if source_id not in existing]
             by_month: dict[str, list[str]] = defaultdict(list)
             for source_id in missing:
-                by_month[str(mismatches[source_id]["published_at_utc"])[:7]].append(source_id)
+                by_month[str(assignments[source_id]["published_at_utc"])[:7]].append(source_id)
             progress(f"[prepare] existing={len(existing):,} missing={len(missing):,} months={len(by_month):,}")
             imported = 0
             for month, source_ids in sorted(by_month.items()):
-                canonical = self._query_canonical_month(month, source_ids)
-                absent = sorted(set(source_ids) - set(canonical))
+                wanted = set(source_ids)
+                canonical = {
+                    str(row["source_id"]): row
+                    for row in _query_training_month(self.client, database=self.database, month=month)
+                    if str(row["source_id"]) in wanted
+                }
+                absent = sorted(wanted - set(canonical))
                 if absent:
                     raise ValueError(f"ClickHouse canonical coverage missing {len(absent):,} rows for {month}: {absent[:5]}")
+                month_tickers = {
+                    ticker.strip().upper()
+                    for source_id in source_ids
+                    for ticker in str(assignments[source_id].get("tickers") or "").split("|")
+                    if ticker.strip()
+                }
+                identity_index, identities = _load_scoped_identity_index(
+                    self.client, database=self.database, tickers=month_tickers
+                )
+                ordered_ids = sorted(source_ids)
+                if self.workers == 1:
+                    from research.text_intelligence.news_synthesis_v1.engine import NewsSynthesisEngine
+                    engine = NewsSynthesisEngine(identity_index)
+                    predictions = [_prediction(engine, canonical[source_id]) for source_id in ordered_ids]
+                else:
+                    with ProcessPoolExecutor(
+                        max_workers=self.workers,
+                        initializer=_initialize_prediction_worker,
+                        initargs=(identities,),
+                    ) as executor:
+                        predictions = list(executor.map(
+                            _worker_prediction,
+                            (canonical[source_id] for source_id in ordered_ids),
+                            chunksize=32,
+                        ))
                 output: list[dict[str, Any]] = []
-                for source_id in source_ids:
-                    mismatch, assignment, source = mismatches[source_id], assignments[source_id], canonical[source_id]
+                for source_id, prediction in zip(ordered_ids, predictions):
+                    assignment, source = assignments[source_id], canonical[source_id]
+                    if prediction["prediction"] == "error":
+                        raise ValueError(f"V61 prediction failed for {source_id}: {prediction['error']}")
                     if str(assignment["population_split"]) != "training_development":
                         raise ValueError(f"holdout assignment entered source snapshot: {source_id}")
+                    gold_label = str(assignment["gold_label"])
+                    synthesis_label = str(prediction["prediction"])
+                    synthesis_path = " > ".join((
+                        str(prediction["structure"]), str(prediction["purpose"]), str(prediction["origin"])
+                    ))
+                    expected_mismatch = mismatches.get(source_id)
+                    is_binary_mismatch = gold_label in {"eligible", "ineligible"} and gold_label != synthesis_label
+                    if bool(expected_mismatch) != is_binary_mismatch:
+                        raise ValueError(f"V61 replay mismatch lineage changed for {source_id}")
+                    if expected_mismatch and (
+                        str(expected_mismatch["synthesis_label"]) != synthesis_label
+                        or str(expected_mismatch["synthesis_path"]) != synthesis_path
+                    ):
+                        raise ValueError(f"V61 replay output changed for {source_id}")
+                    confusion_cell = f"gold_{gold_label}__synthesis_{synthesis_label}"
                     output.append({
                         "campaign_id": self.campaign_id, "source_id": source_id,
-                        "published_at_utc": mismatch["published_at_utc"], "published_date": str(mismatch["published_at_utc"])[:10],
-                        "provider": source.get("provider") or "", "title": source.get("title") or mismatch.get("title") or "",
-                        "normalized_title": source.get("normalized_title") or "", "teaser": source.get("teaser") or "",
-                        "rendered_text": source.get("rendered_text") or source.get("teaser") or source.get("title") or "",
+                        "published_at_utc": assignment["published_at_utc"], "published_date": str(assignment["published_at_utc"])[:10],
+                        "provider": source.get("provider") or "", "title": source.get("title") or assignment.get("title") or "",
+                        "normalized_title": source.get("title") or "", "teaser": str(source.get("text") or source.get("title") or "")[:1200],
+                        "rendered_text": source.get("text") or source.get("title") or "",
                         "rendered_text_hash": source.get("rendered_text_hash") or "", "source_revision_key": source.get("source_revision_key") or "",
                         "author": source.get("author") or assignment.get("author") or "",
-                        "tickers": list(source.get("tickers") or mismatch.get("tickers") or []),
+                        "tickers": list(source.get("tickers") or split_pipe(assignment.get("tickers"))),
                         "channels": list(source.get("channels") or split_pipe(assignment.get("channels"))),
                         "provider_tags": list(source.get("provider_tags") or split_pipe(assignment.get("provider_tags"))),
-                        "content_quality_flags": list(source.get("content_quality_flags") or []),
-                        "population_split": "training_development", "gold_label": mismatch["gold_label"],
-                        "synthesis_label": mismatch["synthesis_label"], "confusion_cell": mismatch["confusion_cell"],
-                        "synthesis_path": mismatch["synthesis_path"],
+                        "content_quality_flags": sorted(set(source.get("content_quality_flags") or []) | set(prediction.get("quality_flags") or [])),
+                        "population_split": "training_development", "gold_label": gold_label,
+                        "synthesis_label": synthesis_label, "confusion_cell": confusion_cell,
+                        "synthesis_path": synthesis_path,
                         "title_pattern_id": str(assignment.get("primary_pattern_id") or "unmatched"),
                         "normalized_title_template": str(assignment.get("normalized_title_template") or ""),
-                        "forecast_policy_ids": list(mismatch.get("forecast_policy_ids") or []),
-                        "forecast_reasons": list(mismatch.get("forecast_reasons") or []),
+                        "policy_expected_label": str(assignment.get("policy_expected_label") or ""),
+                        "policy_status": str(assignment.get("policy_status") or ""),
+                        "gold_authority": str(assignment.get("gold_authority") or ""),
+                        "gold_merge_resolution": str(assignment.get("gold_merge_resolution") or ""),
+                        "eligible_policy_patterns": split_pipe(assignment.get("eligible_policy_patterns")),
+                        "ineligible_policy_patterns": split_pipe(assignment.get("ineligible_policy_patterns")),
+                        "mixed_patterns": split_pipe(assignment.get("mixed_patterns")),
+                        "forecast_policy_ids": list(prediction.get("forecast_policy_ids") or []),
+                        "forecast_reasons": list(prediction.get("forecast_reasons") or []),
                         "evaluation_sha256": evaluation_hash, "assignments_sha256": assignments_hash,
                         "imported_at_utc": utc_now_clickhouse(),
                     })
@@ -281,59 +352,18 @@ ORDER BY (campaign_id,scope_type,scope_key,revision,note_id)""")
             raise ValueError(f"training mismatch count changed: {len(result):,}")
         return result, splits
 
-    def _load_assignments(self, wanted: set[str]) -> dict[str, dict[str, str]]:
+    def _load_assignments(self) -> dict[str, dict[str, str]]:
         result: dict[str, dict[str, str]] = {}
         count = 0
         with self.assignments_path.open("r", encoding="utf-8-sig", newline="") as handle:
             for row in csv.DictReader(handle):
                 count += 1
-                if str(row["source_id"]) in wanted:
+                if str(row["population_split"]) == "training_development":
                     result[str(row["source_id"])] = row
         if count != EXPECTED_ASSIGNMENTS:
             raise ValueError(f"assignment population changed: {count:,}")
-        missing = wanted - set(result)
-        if missing:
-            raise ValueError(f"training mismatches missing assignments: {sorted(missing)[:5]}")
-        return result
-
-    def _query_canonical_month(self, month: str, source_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
-        year, month_number = (int(value) for value in month.split("-"))
-        start = f"{year:04d}-{month_number:02d}-01"
-        end = f"{year + 1:04d}-01-01" if month_number == 12 else f"{year:04d}-{month_number + 1:02d}-01"
-        values = ",".join(sql_string(value) for value in source_ids)
-        rows = self.rows(f"""
-SELECT e.canonical_news_id source_id,e.provider,e.title,e.normalized_title,e.teaser,e.author,
-       e.tickers,e.channels,e.provider_tags,e.content_quality_flags,e.source_revision_key
-FROM {self.db}.benzinga_news_event_v2 e FINAL
-PREWHERE e.published_date >= toDate({sql_string(start)}) AND e.published_date < toDate({sql_string(end)})
-WHERE e.canonical_news_id IN ({values}) FORMAT JSONEachRow
-""")
-        result: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            source_id = str(row["source_id"])
-            if source_id in result:
-                raise ValueError(f"canonical ClickHouse query returned duplicate source_id: {source_id}")
-            result[source_id] = row
-        rendered_rows = self.rows(f"""
-SELECT r.canonical_news_id source_id,r.rendered_text,r.rendered_text_hash
-FROM {self.db}.benzinga_news_rendered_v2 r FINAL
-PREWHERE r.published_date >= toDate({sql_string(start)}) AND r.published_date < toDate({sql_string(end)})
-WHERE r.canonical_news_id IN ({values}) FORMAT JSONEachRow
-""")
-        rendered: dict[str, dict[str, Any]] = {}
-        for row in rendered_rows:
-            source_id = str(row["source_id"])
-            if source_id in rendered:
-                raise ValueError(f"rendered ClickHouse query returned duplicate source_id: {source_id}")
-            rendered[source_id] = row
-        for source_id, row in result.items():
-            render = rendered.get(source_id) or {}
-            fallback = str(row.get("teaser") or row.get("title") or "")
-            row["rendered_text"] = str(render.get("rendered_text") or fallback)
-            row["rendered_text_hash"] = str(
-                render.get("rendered_text_hash")
-                or hashlib.sha256(fallback.encode("utf-8")).hexdigest()
-            )
+        if len(result) != EXPECTED_TRAINING_ARTICLES:
+            raise ValueError(f"training assignment population changed: {len(result):,}")
         return result
 
     def _insert_source_rows(self, rows: list[dict[str, Any]]) -> None:
@@ -343,7 +373,7 @@ WHERE r.canonical_news_id IN ({values}) FORMAT JSONEachRow
     def _write_manifest(self, status: str, source_rows: int, evaluation_hash: str, assignments_hash: str, error: str) -> None:
         row = {
             "campaign_id": self.campaign_id, "contract_version": CONTRACT_VERSION, "status": status,
-            "expected_rows": EXPECTED_TRAINING_MISMATCHES, "source_rows": source_rows, "holdout_rows": 0,
+            "expected_rows": EXPECTED_TRAINING_ARTICLES, "source_rows": source_rows, "holdout_rows": 0,
             "evaluation_sha256": evaluation_hash, "assignments_sha256": assignments_hash, "error": error,
             "updated_at_utc": utc_now_clickhouse(),
         }
@@ -359,17 +389,21 @@ WHERE r.canonical_news_id IN ({values}) FORMAT JSONEachRow
     def validate_source(self) -> dict[str, Any]:
         row = self.rows(f"""
 SELECT count() rows,uniqExact(source_id) unique_ids,countIf(population_split!='training_development') non_training,
-       countIf(gold_label=synthesis_label) non_mismatches,uniqExact(synthesis_path) paths,
+       countIf(gold_label IN ('eligible','ineligible') AND gold_label!=synthesis_label) mismatches,
+       uniqExact(synthesis_path) paths,
        uniqExact((synthesis_path,title_pattern_id)) groups
 FROM {self.db}.{quote_ident(SOURCE_TABLE)} FINAL WHERE campaign_id={sql_string(self.campaign_id)} FORMAT JSONEachRow
 """)[0]
-        if int(row["rows"]) != EXPECTED_TRAINING_MISMATCHES or int(row["unique_ids"]) != EXPECTED_TRAINING_MISMATCHES:
+        if int(row["rows"]) != EXPECTED_TRAINING_ARTICLES or int(row["unique_ids"]) != EXPECTED_TRAINING_ARTICLES:
             raise ValueError(f"ClickHouse source coverage changed: rows={row['rows']} unique={row['unique_ids']}")
-        if int(row["non_training"]) or int(row["non_mismatches"]):
-            raise ValueError("ClickHouse source contains non-training or non-mismatch rows")
+        if int(row["non_training"]):
+            raise ValueError("ClickHouse source contains non-training rows")
+        if int(row["mismatches"]) != EXPECTED_TRAINING_MISMATCHES:
+            raise ValueError(f"ClickHouse mismatch lineage changed: {row['mismatches']}")
         return {
             "status": "ready", "articles": int(row["rows"]), "holdout_rows": 0,
-            "paths": int(row["paths"]), "groups": int(row["groups"]), "database": self.database,
+            "mismatches": int(row["mismatches"]), "paths": int(row["paths"]),
+            "groups": int(row["groups"]), "database": self.database,
             "source_table": SOURCE_TABLE, "label_history_table": LABEL_HISTORY_TABLE,
         }
 
@@ -387,13 +421,36 @@ GROUP BY campaign_id,source_id)"""
         row = self.rows(f"""
 SELECT count() articles,countIf(notEmpty(l.operator_label)) reviewed_articles,
        countIf(notEmpty(l.operator_label) AND l.operator_label!=s.gold_label) changed_articles,
-       countIf(l.operator_label='eligible') operator_eligible,countIf(l.operator_label='ineligible') operator_ineligible
+       countIf(l.operator_label='eligible') operator_eligible,countIf(l.operator_label='ineligible') operator_ineligible,
+       countIf(s.gold_label IN ('eligible','ineligible') AND s.gold_label!=s.synthesis_label) mismatches,
+       countIf(s.gold_label=s.synthesis_label) agreements,countIf(s.gold_label='insufficient_short_text') insufficient_short_text
 FROM {self.db}.{quote_ident(SOURCE_TABLE)} s FINAL
 LEFT JOIN {self._current_labels_sql()} l ON l.campaign_id=s.campaign_id AND l.source_id=s.source_id
 WHERE s.campaign_id={sql_string(self.campaign_id)} FORMAT JSONEachRow
 """)[0]
         result = {key: int(value) for key, value in row.items()}
         result["unreviewed_articles"] = result["articles"] - result["reviewed_articles"]
+        return result
+
+    def filter_options(self) -> dict[str, list[dict[str, Any]]]:
+        fields = {
+            "gold_label": "gold_label", "synthesis_label": "synthesis_label",
+            "policy_expected_label": "policy_expected_label", "policy_status": "policy_status",
+            "synthesis_path": "synthesis_path", "title_pattern_id": "title_pattern_id",
+            "provider": "provider", "gold_authority": "gold_authority",
+            "gold_merge_resolution": "gold_merge_resolution",
+        }
+        result: dict[str, list[dict[str, Any]]] = {}
+        for key, column in fields.items():
+            result[key] = [
+                {"value": str(row["value"]), "count": int(row["count"])}
+                for row in self.rows(f"""
+SELECT {quote_ident(column)} value,count() count
+FROM {self.db}.{quote_ident(SOURCE_TABLE)} FINAL
+WHERE campaign_id={sql_string(self.campaign_id)}
+GROUP BY value ORDER BY count DESC,value LIMIT 1000 FORMAT JSONEachRow
+""")
+            ]
         return result
 
     def notes(self) -> dict[str, str]:
@@ -431,7 +488,8 @@ WHERE campaign_id={sql_string(self.campaign_id)} GROUP BY group_id FORMAT JSONEa
         expressions = {
             "synthesis_path": "s.synthesis_path", "title_pattern_id": "s.title_pattern_id",
             "normalized_title_template": "s.normalized_title_template", "gold_label": "s.gold_label",
-            "synthesis_label": "s.synthesis_label", "confusion_cell": "s.confusion_cell",
+            "synthesis_label": "s.synthesis_label", "policy_expected_label": "s.policy_expected_label",
+            "policy_status": "s.policy_status", "confusion_cell": "s.confusion_cell",
             "ticker": "arrayJoin(s.tickers)", "channel": "arrayJoin(s.channels)",
             "provider_tag": "arrayJoin(s.provider_tags)", "author": "s.author", "provider": "s.provider",
             "year": "toString(toYear(s.published_at_utc))", "month": "toString(toYYYYMM(s.published_at_utc))",
@@ -458,6 +516,7 @@ WHERE campaign_id={sql_string(self.campaign_id)} GROUP BY group_id FORMAT JSONEa
         q = str(values.get("q") or "").strip()
         if q:
             parts = [
+                f"positionCaseInsensitiveUTF8(s.source_id,{sql_string(q)})>0",
                 f"positionCaseInsensitiveUTF8(s.title,{sql_string(q)})>0",
                 f"positionCaseInsensitiveUTF8(s.normalized_title_template,{sql_string(q)})>0",
                 f"positionCaseInsensitiveUTF8(s.teaser,{sql_string(q)})>0",
@@ -468,8 +527,10 @@ WHERE campaign_id={sql_string(self.campaign_id)} GROUP BY group_id FORMAT JSONEa
         scalar = {
             "synthesis_path": "s.synthesis_path", "title_pattern_id": "s.title_pattern_id",
             "normalized_title_template": "s.normalized_title_template", "gold_label": "s.gold_label",
-            "synthesis_label": "s.synthesis_label", "confusion_cell": "s.confusion_cell",
-            "author": "s.author", "provider": "s.provider",
+            "synthesis_label": "s.synthesis_label", "policy_expected_label": "s.policy_expected_label",
+            "policy_status": "s.policy_status", "confusion_cell": "s.confusion_cell",
+            "author": "s.author", "provider": "s.provider", "gold_authority": "s.gold_authority",
+            "gold_merge_resolution": "s.gold_merge_resolution",
         }
         for key, expression in scalar.items():
             value = str(values.get(key) or "").strip()
@@ -505,6 +566,13 @@ WHERE campaign_id={sql_string(self.campaign_id)} GROUP BY group_id FORMAT JSONEa
             if status not in status_clauses:
                 raise ValueError("invalid review status")
             clauses.append(status_clauses[status])
+        agreement = str(values.get("agreement") or "").strip()
+        if agreement == "mismatch":
+            clauses.append("s.gold_label IN ('eligible','ineligible') AND s.gold_label!=s.synthesis_label")
+        elif agreement == "agreement":
+            clauses.append("s.gold_label=s.synthesis_label")
+        elif agreement:
+            raise ValueError("invalid agreement filter")
         return " AND ".join(f"({clause})" for clause in clauses)
 
     def groups(self, filters: Mapping[str, Any], group_by: Sequence[str]) -> dict[str, Any]:
@@ -557,11 +625,13 @@ WHERE {where} FORMAT JSONEachRow
         rows = self.rows(f"""
 SELECT s.source_id,toString(s.published_at_utc) published_at_utc,s.provider,s.title,s.normalized_title_template,
        leftUTF8(s.teaser,500) teaser,s.author,s.tickers,s.channels,s.provider_tags,s.gold_label,s.synthesis_label,
+       s.policy_expected_label,s.policy_status,s.gold_authority,s.gold_merge_resolution,
+       s.eligible_policy_patterns,s.ineligible_policy_patterns,s.mixed_patterns,
        s.confusion_cell,s.synthesis_path,s.title_pattern_id,s.forecast_policy_ids,s.forecast_reasons,
        l.operator_label,l.decision_source,l.article_comment,toString(l.label_updated_at) label_updated_at
 FROM {self.db}.{quote_ident(SOURCE_TABLE)} s FINAL
 LEFT JOIN {self._current_labels_sql()} l ON l.campaign_id=s.campaign_id AND l.source_id=s.source_id
-WHERE {where} ORDER BY s.published_at_utc,s.source_id LIMIT {page_size} OFFSET {offset} FORMAT JSONEachRow
+WHERE {where} ORDER BY s.published_at_utc DESC,s.source_id LIMIT {page_size} OFFSET {offset} FORMAT JSONEachRow
 """)
         spec = {"filters": dict(filters), "selection": dict(selection)}
         total = int(count_row["rows"])

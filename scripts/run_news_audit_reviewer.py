@@ -38,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--evaluation", type=Path, default=DEFAULT_EVALUATION)
     parser.add_argument("--assignments", type=Path, default=DEFAULT_ASSIGNMENTS)
     parser.add_argument("--port", type=int, default=8812)
+    parser.add_argument("--workers", type=int, default=8, help="V61 preparation workers (1-32).")
     parser.add_argument("--prepare-only", action="store_true", help="Prepare and validate ClickHouse, then exit.")
     parser.add_argument("--no-browser", action="store_true", help="Do not open the reviewer in a browser.")
     return parser.parse_args()
@@ -59,10 +60,11 @@ def main() -> int:
         database=args.database,
         evaluation_path=args.evaluation,
         assignments_path=args.assignments,
+        workers=args.workers,
     )
     print("News Synthesis ClickHouse Reviewer", flush=True)
     print(f"  Database   : {args.database}", flush=True)
-    print("  Preparing  : lineage-bound 31,856-row training source snapshot", flush=True)
+    print("  Preparing  : lineage-bound 347,515-row training source snapshot", flush=True)
     prepared = backend.prepare_source()
     print(
         f"  Ready      : articles={prepared['articles']:,} paths={prepared['paths']:,} "

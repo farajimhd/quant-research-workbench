@@ -71,8 +71,18 @@ def create_app(backend: ClickHouseReviewBackend) -> FastAPI:
                 "audit": backend.validate_source(),
                 "summary": backend.summary(),
                 "notes": backend.notes(),
+                "filter_options": backend.filter_options(),
                 "group_fields": sorted(ALLOWED_GROUP_FIELDS),
                 "default_group_by": list(DEFAULT_GROUP_BY),
+                "presets": [
+                    {"id": "all", "label": "All training news", "description": "Complete 2025-2026 training population", "filters": {}},
+                    {"id": "mismatches", "label": "V61 mismatches", "description": "Binary gold and synthesis disagree", "filters": {"agreement": "mismatch"}},
+                    {"id": "false_negatives", "label": "Gold eligible / V61 ineligible", "description": "Potential missed forecast events", "filters": {"gold_label": "eligible", "synthesis_label": "ineligible"}},
+                    {"id": "false_positives", "label": "Gold ineligible / V61 eligible", "description": "Potential over-triggering", "filters": {"gold_label": "ineligible", "synthesis_label": "eligible"}},
+                    {"id": "unreviewed", "label": "Unreviewed", "description": "No personal operator label", "filters": {"review_status": "unreviewed"}},
+                    {"id": "changed", "label": "Changed from gold", "description": "Your label differs from gold", "filters": {"review_status": "changed"}},
+                    {"id": "short_text", "label": "Insufficient short text", "description": "Non-binary gold supervision", "filters": {"gold_label": "insufficient_short_text"}},
+                ],
             }
         except Exception as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc

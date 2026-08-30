@@ -107,6 +107,20 @@ def test_mismatch_loader_excludes_holdout_and_rejects_non_mismatch() -> None:
         assert splits == {"training_development": 1, "holdout_august_2026": 1}
 
 
+def test_assignment_loader_exposes_all_training_rows_but_never_holdout() -> None:
+    with TemporaryDirectory() as directory:
+        path = Path(directory) / "assignments.csv"
+        path.write_text(
+            "source_id,population_split\ntraining-1,training_development\n"
+            "training-2,training_development\nholdout-1,holdout_august_2026\n",
+            encoding="utf-8",
+        )
+        backend = ClickHouseReviewBackend(FakeClient(), assignments_path=path)
+        with patch.multiple(core, EXPECTED_ASSIGNMENTS=3, EXPECTED_TRAINING_ARTICLES=2):
+            assignments = backend._load_assignments()
+        assert set(assignments) == {"training-1", "training-2"}
+
+
 def test_article_label_is_appended_with_original_gold_provenance() -> None:
     client = FakeClient()
     backend = DecisionBackend(client)
@@ -116,7 +130,7 @@ def test_article_label_is_appended_with_original_gold_provenance() -> None:
     assert decision["decision_source"] == "article"
     assert decision["reviewer"] == "owner"
     insert = client.executed[-1]
-    assert "INSERT INTO `q_live`.`news_synthesis_v61_operator_label_history_v2`" in insert
+    assert "INSERT INTO `q_live`.`news_synthesis_v61_operator_label_history_v3`" in insert
     assert "direct issuer guidance" in insert
 
 
@@ -133,4 +147,4 @@ def test_saved_group_completion_uses_frozen_matched_count() -> None:
     )
     assert result["matched_rows"] == 12
     assert result["completed"] == 1
-    assert "news_synthesis_v61_review_group_history_v2" in client.executed[-1]
+    assert "news_synthesis_v61_review_group_history_v3" in client.executed[-1]
