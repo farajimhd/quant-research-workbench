@@ -79,6 +79,8 @@ def test_filter_builder_supports_search_grouping_and_escapes_input() -> None:
             "q": "CEO's outlook",
             "search_scope": "full_text",
             "ticker": "AAPL",
+            "ticker_count": "2",
+            "forecast_policy_id": "forecast.trigger.issuer_guidance",
             "date_from": "2025-01-01",
             "review_status": "changed",
         },
@@ -87,6 +89,8 @@ def test_filter_builder_supports_search_grouping_and_escapes_input() -> None:
     assert "CEO\\'s outlook" in where
     assert "s.rendered_text" in where
     assert "has(s.tickers,'AAPL')" in where
+    assert "length(s.tickers)=2" in where
+    assert "has(s.forecast_policy_ids,'forecast.trigger.issuer_guidance')" in where
     assert "l.operator_label!=s.gold_label" in where
     assert "single_subject > report > issuer" in where
 
@@ -98,6 +102,15 @@ def test_grouping_rejects_unsafe_or_cartesian_dimensions() -> None:
         backend.normalize_group_by(["drop table"])
     with pytest.raises(ValueError, match="array-valued"):
         backend.normalize_group_by(["ticker", "channel"])
+    assert backend._group_expression("ticker_count") == (
+        "multiIf(length(s.tickers)>=5,'5+',toString(length(s.tickers)))"
+    )
+
+
+def test_filter_builder_rejects_invalid_ticker_count() -> None:
+    backend = ClickHouseReviewBackend(FakeClient())
+    with pytest.raises(ValueError, match="ticker_count"):
+        backend._where({"ticker_count": "many"})
 
 
 def test_mismatch_loader_includes_training_and_former_holdout() -> None:

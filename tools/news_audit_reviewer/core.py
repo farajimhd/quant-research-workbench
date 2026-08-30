@@ -54,9 +54,10 @@ ALLOWED_DISPOSITIONS = {"all_eligible", "all_ineligible", "mixed", ""}
 ALLOWED_GROUP_FIELDS = {
     "synthesis_path", "title_pattern_id", "normalized_title_template", "gold_label",
     "synthesis_label", "policy_expected_label", "policy_status", "confusion_cell", "ticker",
-    "channel", "provider_tag", "author", "provider", "population_split", "year", "month", "review_status",
+    "channel", "provider_tag", "forecast_policy_id", "forecast_reason", "ticker_count",
+    "author", "provider", "population_split", "year", "month", "review_status",
 }
-ARRAY_GROUP_FIELDS = {"ticker", "channel", "provider_tag"}
+ARRAY_GROUP_FIELDS = {"ticker", "channel", "provider_tag", "forecast_policy_id", "forecast_reason"}
 DEFAULT_GROUP_BY = ("synthesis_path", "title_pattern_id")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -496,6 +497,28 @@ WHERE campaign_id={sql_string(self.campaign_id)}
 GROUP BY value ORDER BY count DESC,value LIMIT 1000 FORMAT JSONEachRow
 """)
             ]
+        for key, column in {
+            "forecast_policy_id": "forecast_policy_ids",
+            "forecast_reason": "forecast_reasons",
+        }.items():
+            result[key] = [
+                {"value": str(row["value"]), "count": int(row["count"])}
+                for row in self.rows(f"""
+SELECT arrayJoin({quote_ident(column)}) value,count() count
+FROM {self.db}.{quote_ident(SOURCE_TABLE)} FINAL
+WHERE campaign_id={sql_string(self.campaign_id)}
+GROUP BY value ORDER BY count DESC,value LIMIT 1000 FORMAT JSONEachRow
+""")
+            ]
+        result["ticker_count"] = [
+            {"value": str(row["value"]), "count": int(row["count"])}
+            for row in self.rows(f"""
+SELECT multiIf(length(tickers)>=5,'5+',toString(length(tickers))) value,count() count
+FROM {self.db}.{quote_ident(SOURCE_TABLE)} FINAL
+WHERE campaign_id={sql_string(self.campaign_id)}
+GROUP BY value ORDER BY value FORMAT JSONEachRow
+""")
+        ]
         return result
 
     def notes(self) -> dict[str, str]:
@@ -536,7 +559,11 @@ WHERE campaign_id={sql_string(self.campaign_id)} GROUP BY group_id FORMAT JSONEa
             "synthesis_label": "s.synthesis_label", "policy_expected_label": "s.policy_expected_label",
             "policy_status": "s.policy_status", "confusion_cell": "s.confusion_cell",
             "ticker": "arrayJoin(s.tickers)", "channel": "arrayJoin(s.channels)",
-            "provider_tag": "arrayJoin(s.provider_tags)", "author": "s.author", "provider": "s.provider",
+            "provider_tag": "arrayJoin(s.provider_tags)",
+            "forecast_policy_id": "arrayJoin(s.forecast_policy_ids)",
+            "forecast_reason": "arrayJoin(s.forecast_reasons)",
+            "ticker_count": "multiIf(length(s.tickers)>=5,'5+',toString(length(s.tickers)))",
+            "author": "s.author", "provider": "s.provider",
             "population_split": "s.population_split",
             "year": "toString(toYear(s.published_at_utc))", "month": "toString(toYYYYMM(s.published_at_utc))",
             "review_status": "multiIf(empty(l.operator_label),'unreviewed',l.operator_label!=s.gold_label,'changed','confirmed')",
@@ -583,10 +610,21 @@ WHERE campaign_id={sql_string(self.campaign_id)} GROUP BY group_id FORMAT JSONEa
             value = str(values.get(key) or "").strip()
             if value:
                 clauses.append(f"{expression}={sql_string(value)}")
-        for key, column in (("ticker", "s.tickers"), ("channel", "s.channels"), ("provider_tag", "s.provider_tags")):
+        for key, column in (
+            ("ticker", "s.tickers"), ("channel", "s.channels"), ("provider_tag", "s.provider_tags"),
+            ("forecast_policy_id", "s.forecast_policy_ids"), ("forecast_reason", "s.forecast_reasons"),
+        ):
             value = str(values.get(key) or "").strip()
             if value:
                 clauses.append(f"has({column},{sql_string(value)})")
+        ticker_count = str(values.get("ticker_count") or "").strip()
+        if ticker_count:
+            if ticker_count == "5+":
+                clauses.append("length(s.tickers)>=5")
+            elif ticker_count in {"0", "1", "2", "3", "4"}:
+                clauses.append(f"length(s.tickers)={int(ticker_count)}")
+            else:
+                raise ValueError("ticker_count must be one of 0, 1, 2, 3, 4, 5+")
         year, month = str(values.get("year") or "").strip(), str(values.get("month") or "").strip()
         if year:
             if not re.fullmatch(r"\d{4}", year):

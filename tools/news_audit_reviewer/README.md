@@ -33,9 +33,9 @@ Use `--prepare-only` to prepare or validate ClickHouse without starting the UI.
 
 1. Start in the flat **All review news** table or select a predefined view
    such as V61 mismatches, false negatives, false positives, or unreviewed.
-2. Search and filter Gold, V61, policy-expected, policy-status, synthesis-path,
-   title-pattern, provider, ticker, population split, dates, or current operator
-   state.
+2. Filter in review order: synthesis path, title pattern, V61 forecast-trigger
+   rule/reason, ticker count, Gold, then V61. Less-frequent scope and rulebook
+   diagnostics are under **More filters**.
 3. Optionally group the filtered table from the left panel by path and title
    pattern, label matrix, title pattern, ticker, month, review status, or a
    custom combination of up to three dimensions.
@@ -51,6 +51,10 @@ Use `--prepare-only` to prepare or validate ClickHouse without starting the UI.
 
 Article titles open the full canonical ClickHouse text and lineage in a centered
 modal.
+
+The **rule-implied label** comes from the separate title-pattern rulebook; the
+**rule comparison** says whether that suggestion agrees with Gold or why no
+single binary suggestion exists. Neither field is the V61 prediction.
 
 ## Persistence and authority
 
