@@ -692,6 +692,22 @@ class SimulatedBrokerAdapter:
         elif order_type not in {"MKT", "STP", "TRAIL"}:
             return None
         available = self._event_liquidity(event, side)
+        if side == "SELL" and not self.config.allow_short:
+            held = max(
+                0.0,
+                self._positions[request.acctId]
+                .get(request.conid, _Position(request.conid, request.ticker))
+                .quantity,
+            )
+            # Execution is the final no-short authority. Order reconciliation
+            # can observe a batch of partial sibling fills after the broker has
+            # already booked them, so a temporarily stale order quantity must
+            # never be allowed to cross a long position through zero.
+            if held < state.remaining:
+                state.request = replace(
+                    state.request,
+                    quantity=state.filled + held,
+                )
         available_quantity = min(
             state.remaining,
             max(0.0, available * self.config.liquidity_participation),
@@ -713,8 +729,8 @@ class SimulatedBrokerAdapter:
         state.filled += quantity
         state.avg_price = (prior_value + price * quantity) / state.filled
         state.status = OrderStatus.FILLED if state.remaining <= 1e-12 else OrderStatus.SUBMITTED
-        if state.oca_group and state.status != OrderStatus.FILLED:
-            self._reduce_oca_sibling_capacity(state, quantity)
+        if self._is_single_exit_group_member(state) and state.status != OrderStatus.FILLED:
+            self._reduce_single_exit_sibling_capacity(state, quantity)
         commission = self._incremental_order_commission(state)
         execution = Execution(
             execution_id=f"SIM-{self._next_execution_id}",
@@ -745,15 +761,23 @@ class SimulatedBrokerAdapter:
             self._cancel_oca_siblings(state)
         return execution
 
-    def _reduce_oca_sibling_capacity(
+    def _reduce_single_exit_sibling_capacity(
         self, filled: _OrderState, incremental_quantity: float
     ) -> None:
-        """Reduce every alternative by fills elsewhere in the OCA group."""
+        """Reduce alternatives after a partial fill in an OCA or bracket."""
 
         for sibling in self._orders.values():
             if sibling.order_id == filled.order_id:
                 continue
-            if sibling.oca_group != filled.oca_group:
+            same_group = (
+                bool(filled.oca_group)
+                and sibling.oca_group == filled.oca_group
+            ) or (
+                not filled.oca_group
+                and bool(filled.request.parentId)
+                and sibling.request.parentId == filled.request.parentId
+            )
+            if not same_group:
                 continue
             if sibling.status not in OPEN_ORDER_STATUSES:
                 continue
@@ -765,6 +789,11 @@ class SimulatedBrokerAdapter:
             if next_remaining <= 1e-12:
                 sibling.status = OrderStatus.CANCELLED
                 sibling.status_description = "OCA capacity was filled by a sibling"
+
+    def _is_single_exit_group_member(self, state: _OrderState) -> bool:
+        if not state.request.isSingleGroup:
+            return False
+        return bool(state.oca_group or state.request.parentId)
 
     def _book_execution(self, request: OrderRequest, price: float, quantity: float, commission: float) -> None:
         account_id = request.acctId

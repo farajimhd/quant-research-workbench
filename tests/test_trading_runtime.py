@@ -307,6 +307,84 @@ class SimulatedBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sold, 100)
         self.assertEqual(await self.broker.positions("DU123"), [])
 
+    async def test_partial_bracket_fills_share_capacity_without_overfill(self) -> None:
+        orders = [
+            OrderRequest(
+                acctId="DU123", conid=265598, cOID="entry-partial-bracket",
+                ticker="AAPL", orderType="LMT", side="BUY", quantity=100,
+                price=100,
+            ),
+            OrderRequest(
+                acctId="DU123", conid=265598, cOID="target-partial-bracket",
+                parentId="entry-partial-bracket", ticker="AAPL",
+                orderType="LMT", side="SELL", quantity=100, price=98,
+                isSingleGroup=True,
+            ),
+            OrderRequest(
+                acctId="DU123", conid=265598, cOID="stop-partial-bracket",
+                parentId="entry-partial-bracket", ticker="AAPL",
+                orderType="STP", side="SELL", quantity=100, auxPrice=100,
+                isSingleGroup=True,
+            ),
+        ]
+        await self.broker.place_orders("DU123", orders)
+        await self.broker.on_market_event(
+            quote(bid=99, ask=100, bid_size=200, ask_size=200)
+        )
+
+        first = await self.broker.on_market_event(
+            quote(bid=99, ask=100, bid_size=80, ask_size=80)
+        )
+        second = await self.broker.on_market_event(
+            quote(bid=99, ask=100, bid_size=80, ask_size=80)
+        )
+
+        sold = sum(fill.size for fill in [*first, *second] if fill.side == "S")
+        self.assertEqual(sold, 100)
+        self.assertEqual(await self.broker.positions("DU123"), [])
+        snapshots = await self.broker.live_orders()
+        self.assertEqual(snapshots[1].filledQuantity + snapshots[2].filledQuantity, 100)
+        self.assertTrue(
+            all(
+                row.order_status in {OrderStatus.FILLED, OrderStatus.CANCELLED}
+                for row in snapshots[1:]
+            )
+        )
+
+    async def test_execution_clamps_stale_sell_capacity_to_long_position(self) -> None:
+        entry = OrderRequest(
+            acctId="DU123", conid=265598, cOID="entry-stale-exit",
+            ticker="AAPL", orderType="LMT", side="BUY", quantity=100,
+            price=100,
+        )
+        await self.broker.place_orders("DU123", [entry])
+        await self.broker.on_market_event(
+            quote(bid=99, ask=100, bid_size=200, ask_size=200)
+        )
+        exit_order = OrderRequest(
+            acctId="DU123", conid=265598, cOID="stale-exit",
+            ticker="AAPL", orderType="LMT", side="SELL", quantity=100,
+            price=98,
+        )
+        await self.broker.place_orders("DU123", [exit_order])
+
+        # Emulate a stale restored/reconciled request whose requested size no
+        # longer matches the broker-held position. The execution boundary must
+        # remain authoritative even when upstream state is temporarily stale.
+        self.broker._orders["2"].request = replace(
+            self.broker._orders["2"].request,
+            quantity=175,
+        )
+        fills = await self.broker.on_market_event(
+            quote(bid=99, ask=100, bid_size=400, ask_size=400)
+        )
+
+        self.assertEqual(sum(fill.size for fill in fills), 100)
+        self.assertEqual(await self.broker.positions("DU123"), [])
+        snapshot = (await self.broker.live_orders())[-1]
+        self.assertEqual(snapshot.totalSize, 100)
+        self.assertEqual(snapshot.remainingQuantity, 0)
+
     async def test_full_exit_oca_can_atomically_replace_same_strategy_protection(self) -> None:
         strategy_raw = {
             "canonical_strategy_id": "momentum",
