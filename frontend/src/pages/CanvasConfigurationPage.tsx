@@ -559,7 +559,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   }, [canvasId, overlayEpoch, replayRun?.execution_mode, requestedInstanceId, runtimeBase, transient, workspaceStorageKey]);
   const [registry, setRegistry] = useState<CanvasRegistry>(() => {
     const base = runtimeBase
-      ? transient ? runtimeBase : readCanvasRuntimeRegistry(runtimeBase, runtimeRegistryStorageKey)
+      ? transient && !replayRun ? runtimeBase : readCanvasRuntimeRegistry(runtimeBase, runtimeRegistryStorageKey)
       : readCanvasRegistry();
     return replayRun?.execution_mode === "strategy" && !transient
       ? strategyReplayRegistry(base, replayRun)
@@ -671,13 +671,16 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   }, [canvasId, requestedInstanceId, runtimeBase]);
 
   useEffect(() => {
-    if (transient) return;
+    // A Replay/Backtest focus window is transient in layout ownership only.
+    // Its chart settings are a user overlay and must survive reloads so an
+    // enabled indicator does not appear to vanish while the run is reviewed.
+    if (transient && !replayRun) return;
     if (runtimeBase && runtimeRegistryStorageKey) {
       window.localStorage.setItem(runtimeRegistryStorageKey, JSON.stringify(registry));
       return;
     }
     writeCanvasRegistry(registry);
-  }, [registry, runtimeBase, runtimeRegistryStorageKey, transient]);
+  }, [registry, replayRun, runtimeBase, runtimeRegistryStorageKey, transient]);
 
   useEffect(() => {
     if (!runtimeBase || runtimeRebase || !workspaceState || transient) return;

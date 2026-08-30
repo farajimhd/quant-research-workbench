@@ -50,6 +50,14 @@ def test_replay_chart_refresh_tracks_closed_timeframe_boundaries() -> None:
     assert '`Up to ${speed}×`' in replay_source
 
 
+def test_replay_focus_chart_settings_survive_reload() -> None:
+    canvas_source = source("pages/CanvasConfigurationPage.tsx")
+
+    assert "transient && !replayRun ? runtimeBase : readCanvasRuntimeRegistry" in canvas_source
+    assert "if (transient && !replayRun) return;" in canvas_source
+    assert "window.localStorage.setItem(runtimeRegistryStorageKey, JSON.stringify(registry));" in canvas_source
+
+
 def test_service_tables_use_explicit_cell_controls_instead_of_interactive_rows() -> None:
     service_tables = [
         source("features/services/NewsHistoryTables.tsx"),

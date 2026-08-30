@@ -127,14 +127,16 @@ def test_structural_history_can_span_all_loaded_chart_bars() -> None:
     assert "CacheProfile::Bars(timeframe.clone())" in history_cache_source
     assert "(CacheProfile::Bars(_), Some(timeframe)) => vec![timeframe.clone()]" in history_cache_source
     assert 'column !== "qmd_structure_unified_levels"' in chart_data_source
-    assert 'indicator_columns: "bar_start,qmd_structure_unified_levels"' in chart_data_source
+    assert '? "bar_start,qmd_structure_unified_levels"' in chart_data_source
     assert 'const unifiedStructureAsPrimary' not in chart_data_source
-    assert '? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, stage: "bars" })}`' in chart_data_source
-    assert 'const structureFirst = unifiedStructureRequest\n' in chart_data_source
+    assert 'indicator_columns: baseIndicatorColumns, stage: "bars"' in chart_data_source
+    assert 'const structureFirst = unifiedStructureRequest\n' not in chart_data_source
     assert "function chartIdentityKey(ticker: string, sessionDate: string" in chart_data_source
     assert "function chartIdentityKey(ticker: string, indicatorColumns: string" not in chart_data_source
     assert "mergeIndicatorRowsByTime(current.indicators, rows)" in chart_data_source
-    assert "Loading Unified Structural Levels…" in chart_data_source
+    assert "structure_projection: Vec<Value>" in history_cache_source
+    assert "prepared_structure_projection(artifact" in history_cache_source
+    assert "CacheProfile::Bars(_) | CacheProfile::Derived(_) | CacheProfile::Structure(_)" in history_cache_source
     assert "statusMessage={liveChart.historyNotice}" in chart_source
     assert 'chart-update-status${loading ? " centered" : ""}' in renderer_source
     assert ".chart-update-status.centered" in styles_source

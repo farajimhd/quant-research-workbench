@@ -52,6 +52,9 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
     [indicatorColumns],
   );
   const standardIndicatorsRequested = standardIndicatorColumns !== "bar_start";
+  const baseIndicatorColumns = unifiedStructureSelected
+    ? "bar_start,qmd_structure_unified_levels"
+    : "bar_start";
   const historyTimeoutMs = unifiedStructureSelected ? 180_000 : 120_000;
   const auxiliaryProjection = useMemo(() => requestedChartAuxiliary(visibleIndicatorIds), [visibleIndicatorIds]);
   const projectionKey = `${indicatorColumns}|signals=${auxiliaryProjection.includeMarketSignals}|structure=${auxiliaryProjection.includeStructure}`;
@@ -81,9 +84,9 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
     historyAbortRef.current = controller;
     historyRequestRef.current = true;
     setState((current) => ({ ...current, historyError: "", loadingEarlier: true }));
-    const page = api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...request.params, include_market_signals: auxiliaryProjection.includeMarketSignals, include_structure: auxiliaryProjection.includeStructure })}`, { signal: controller.signal, timeoutMs: historyTimeoutMs });
-    const unifiedStructurePage = unifiedStructureSelected
-      ? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...request.params, include_market_signals: false, include_structure: false, indicator_columns: "bar_start,qmd_structure_unified_levels" })}`, { signal: controller.signal, timeoutMs: 180_000 })
+    const page = api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...request.params, include_market_signals: auxiliaryProjection.includeMarketSignals, include_structure: auxiliaryProjection.includeStructure, indicator_columns: baseIndicatorColumns, stage: "bars" })}`, { signal: controller.signal, timeoutMs: historyTimeoutMs });
+    const standardIndicatorPage = standardIndicatorsRequested
+      ? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...request.params, include_market_signals: false, include_structure: false, indicator_columns: standardIndicatorColumns, stage: "full" })}`, { signal: controller.signal, timeoutMs: 120_000 })
       : null;
     page
       .then((payload) => {
@@ -123,7 +126,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
         }
         if (requestKeyRef.current === requestKey) setState((current) => ({ ...current, loadingEarlier: false }));
       });
-    void unifiedStructurePage?.then((payload) => {
+    void standardIndicatorPage?.then((payload) => {
       if (controller.signal.aborted || requestKeyRef.current !== requestKey) return;
       const rows = closedRowsAtCutoff(payload.indicators, timeframe, cutoffMs);
       setState((current) => ({
@@ -133,9 +136,9 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
       }));
     }).catch((reason) => {
       if (controller.signal.aborted || requestKeyRef.current !== requestKey) return;
-      setState((current) => ({ ...current, historyError: `Unified Structural Levels: ${reason instanceof Error ? reason.message : String(reason)}` }));
+      setState((current) => ({ ...current, historyError: reason instanceof Error ? reason.message : String(reason) }));
     });
-  }, [auxiliaryProjection.includeMarketSignals, auxiliaryProjection.includeStructure, cutoffMs, enabled, fullSession, historicalMode, projectionKey, rowBudget, sessionDate, standardIndicatorColumns, symbol, timeframe, unifiedStructureSelected]);
+  }, [auxiliaryProjection.includeMarketSignals, auxiliaryProjection.includeStructure, baseIndicatorColumns, cutoffMs, enabled, fullSession, historicalMode, projectionKey, rowBudget, sessionDate, standardIndicatorColumns, standardIndicatorsRequested, symbol, timeframe]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -204,18 +207,14 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
       historyRequestRef.current = true;
       const requestParams = { allow_persisted_bars: liveTail, as_of: new Date(cutoffMs).toISOString(), full_session: fullSession, include_market_signals: auxiliaryProjection.includeMarketSignals, include_structure: auxiliaryProjection.includeStructure, mode: liveTail ? "live" : historicalMode, row_limit: fullSession ? chartFullSessionPageSize(timeframe) : chartInitialPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe };
       const progressive = ENRICHED_QMD_TIMEFRAMES.has(timeframe);
-      const unifiedStructureRequest = progressive && unifiedStructureSelected
-        ? () => api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, include_market_signals: false, include_structure: false, indicator_columns: "bar_start,qmd_structure_unified_levels", stage: "full" })}`, { signal: historyController.signal, timeoutMs: 180_000 })
-        : null;
       // Candles are the chart's base authority. Optional indicators may enrich
       // them after the first paint, but must never gate or replace that paint.
       const barsRequest = progressive
-        ? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, stage: "bars" })}`, { signal: historyController.signal, timeoutMs: historyTimeoutMs })
+        ? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, indicator_columns: baseIndicatorColumns, stage: "bars" })}`, { signal: historyController.signal, timeoutMs: historyTimeoutMs })
         : api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, indicator_columns: indicatorColumns, stage: "full" })}`, { signal: historyController.signal, timeoutMs: historyTimeoutMs });
       const fullRequest = progressive
         ? () => api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, indicator_columns: standardIndicatorColumns, stage: "full" })}`, { signal: historyController.signal, timeoutMs: 120_000 })
         : null;
-      let unifiedStructurePending = Boolean(unifiedStructureRequest);
       // Live bars and closed indicators come from the recent materializations.
       // Signal/structure history remains causal QMD History work and advances
       // after the first bar paint so chart work cannot exhaust the browser's
@@ -244,19 +243,6 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
             };
           });
         };
-      const mergeUnifiedStructurePayload = (payload: QmdBarHistory) => {
-        if (!active || requestKeyRef.current !== requestKey) return;
-        unifiedStructurePending = false;
-        const rows = closedRowsAtCutoff(payload.indicators, timeframe, cutoffMs);
-        setState((current) => ({
-          ...current,
-          historyError: "",
-          historyNotice: standardIndicatorsRequested ? "Loading requested indicators…" : "",
-          indicators: limitRowsToLatest(mergeIndicatorRowsByTime(current.indicators, rows), rowBudget),
-          indicatorsAvailable: payload.indicators_available,
-          indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
-        }));
-      };
       barsRequest
         .then((payload) => {
           if (!active || requestKeyRef.current !== requestKey) return;
@@ -283,7 +269,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
               canLoadEarlier: payload.has_more && !merged.atCapacity,
               marketSignalEvents: mergeMarketSignalEvents(replaceDisplayedTimeframe ? [] : current.marketSignalEvents, payload.market_signal_events),
               historyError: "",
-              historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : progressive ? liveTail ? "Loading current QMD indicators..." : unifiedStructurePending ? "Loading Unified Structural Levels…" : "Loading requested indicators..." : liveTail ? "Historical base loaded; connecting the QMD live tail..." : "",
+              historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : progressive ? liveTail ? "Loading current QMD indicators..." : standardIndicatorsRequested ? "Loading requested indicators..." : "" : liveTail ? "Historical base loaded; connecting the QMD live tail..." : "",
               indicators: merged.indicators,
               indicatorsAvailable: progressive ? current.indicatorsAvailable : payload.indicators_available,
               indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
@@ -296,23 +282,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
             return null;
           }
           void auxiliaryRequest?.().then(mergeAuxiliaryPayload).catch(() => undefined);
-          const structureFirst = unifiedStructureRequest
-            ? unifiedStructureRequest()
-              .then(mergeUnifiedStructurePayload)
-              .catch((reason) => {
-                unifiedStructurePending = false;
-                if (historyController.signal.aborted || !active || requestKeyRef.current !== requestKey) return;
-                setState((current) => ({
-                  ...current,
-                  historyError: `Unified Structural Levels: ${reason instanceof Error ? reason.message : String(reason)}`,
-                  historyNotice: standardIndicatorsRequested ? "Loading requested indicators…" : "",
-                }));
-              })
-            : Promise.resolve();
-          // The level book is a bounded trade-only build. Let it finish before
-          // starting the CPU-heavy full indicator profile so concurrent cold
-          // builds cannot starve the indicator the user just enabled.
-          return structureFirst.then(() => fullRequest?.() ?? null);
+          return fullRequest?.() ?? null;
         })
         .then((payload) => {
           if (!payload || !active || requestKeyRef.current !== requestKey) return;
@@ -330,7 +300,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
               bars: merged.bars,
               canLoadEarlier: payload.has_more && !merged.atCapacity,
               marketSignalEvents: mergeMarketSignalEvents(current.marketSignalEvents, payload.market_signal_events),
-              historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : unifiedStructurePending ? "Loading Unified Structural Levels…" : "",
+              historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : "",
               indicators: merged.indicators,
               indicatorsAvailable: payload.indicators_available,
               indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
@@ -360,7 +330,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
       if (requestKeyRef.current === requestKey) requestKeyRef.current = "";
       historyController.abort();
     };
-  }, [auxiliaryProjection.includeMarketSignals, auxiliaryProjection.includeStructure, enabled, fullSession, historicalMode, indicatorColumns, pointInTime, projectionKey, rowBudget, sessionDate, standardIndicatorColumns, standardIndicatorsRequested, symbol, timeframe, unifiedStructureSelected]);
+  }, [auxiliaryProjection.includeMarketSignals, auxiliaryProjection.includeStructure, baseIndicatorColumns, enabled, fullSession, historicalMode, indicatorColumns, pointInTime, projectionKey, rowBudget, sessionDate, standardIndicatorColumns, standardIndicatorsRequested, symbol, timeframe]);
 
   useEffect(() => {
     if (!enabled || liveTail) return;
@@ -371,7 +341,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
     loadedCutoffRef.current = refreshCutoffMs;
     const controller = new AbortController();
     const requestParams = { as_of: new Date(refreshCutoffMs).toISOString(), full_session: fullSession, mode: historicalMode, row_limit: fullSession ? chartFullSessionPageSize(timeframe) : chartInitialPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe };
-    api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, include_market_signals: auxiliaryProjection.includeMarketSignals, include_structure: auxiliaryProjection.includeStructure, indicator_columns: standardIndicatorColumns })}`, {
+    api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, include_market_signals: auxiliaryProjection.includeMarketSignals, include_structure: auxiliaryProjection.includeStructure, indicator_columns: baseIndicatorColumns, stage: "bars" })}`, {
       signal: controller.signal,
       timeoutMs: 120_000,
     })
@@ -407,8 +377,8 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
           setState((current) => ({ ...current, historyError: reason instanceof Error ? reason.message : String(reason) }));
         }
       });
-    if (unifiedStructureSelected) {
-      void api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, include_market_signals: false, include_structure: false, indicator_columns: "bar_start,qmd_structure_unified_levels" })}`, {
+    if (standardIndicatorsRequested) {
+      void api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, include_market_signals: false, include_structure: false, indicator_columns: standardIndicatorColumns, stage: "full" })}`, {
         signal: controller.signal,
         timeoutMs: 180_000,
       }).then((payload) => {
@@ -421,12 +391,12 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
         }));
       }).catch((reason) => {
         if (!controller.signal.aborted && requestKeyRef.current === requestKey) {
-          setState((current) => ({ ...current, historyError: `Unified Structural Levels: ${reason instanceof Error ? reason.message : String(reason)}` }));
+          setState((current) => ({ ...current, historyError: reason instanceof Error ? reason.message : String(reason) }));
         }
       });
     }
     return () => controller.abort();
-  }, [auxiliaryProjection.includeMarketSignals, auxiliaryProjection.includeStructure, enabled, fullSession, historicalMode, liveTail, projectionKey, refreshCutoffMs, rowBudget, sessionDate, standardIndicatorColumns, symbol, timeframe, unifiedStructureSelected]);
+  }, [auxiliaryProjection.includeMarketSignals, auxiliaryProjection.includeStructure, baseIndicatorColumns, enabled, fullSession, historicalMode, liveTail, projectionKey, refreshCutoffMs, rowBudget, sessionDate, standardIndicatorColumns, standardIndicatorsRequested, symbol, timeframe]);
 
   useEffect(() => {
     if (!enabled || !liveTail) return;

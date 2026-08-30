@@ -41,7 +41,7 @@ pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v33";
 pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v35";
 pub const HISTORICAL_CORPORATE_ACTION_REVISION: &str = "raw-unadjusted-v1";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
-const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 1;
+const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 2;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CacheProfile {
@@ -162,6 +162,7 @@ struct PreparedBarCacheArtifact {
     key: String,
     event_count: u64,
     bars: Vec<ChartBarRow>,
+    structure_projection: Vec<Value>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -603,10 +604,10 @@ impl HistoricalDerivedCache {
         let resolution_us = parse_resolution_us(&timeframe)
             .ok_or_else(|| format!("unsupported chart timeframe {timeframe}"))?;
         let profile = if qmd_core::bars::is_supported_timeframe(&timeframe) {
-            if structure_only {
-                CacheProfile::Structure(timeframe.clone())
-            } else if bars_only {
+            if bars_only {
                 CacheProfile::Bars(timeframe.clone())
+            } else if structure_only {
+                CacheProfile::Structure(timeframe.clone())
             } else {
                 CacheProfile::Derived(timeframe.clone())
             }
@@ -670,12 +671,19 @@ impl HistoricalDerivedCache {
                     .filter(|update| update.bar.timeframe.eq_ignore_ascii_case(&timeframe))
                     .map(|update| ChartBarRow::from_bar(&update.bar))
                     .collect::<Vec<_>>();
+                let all_updates = state
+                    .bars
+                    .iter()
+                    .filter(|update| update.bar.timeframe.eq_ignore_ascii_case(&timeframe))
+                    .collect::<Vec<_>>();
+                let structure_projection = unified_structure_projection(&all_updates)?;
                 drop(state);
                 let artifact = PreparedBarCacheArtifact {
                     schema_version: PREPARED_BAR_CACHE_SCHEMA_VERSION,
                     key: lease.key.clone(),
                     event_count,
                     bars: all_bars,
+                    structure_projection,
                 };
                 if self.store_prepared_bar_cache(&artifact).await {
                     self.stats
@@ -1089,7 +1097,7 @@ impl HistoricalDerivedCache {
         };
         if matches!(
             &profile,
-            CacheProfile::Derived(_) | CacheProfile::Structure(_)
+            CacheProfile::Bars(_) | CacheProfile::Derived(_) | CacheProfile::Structure(_)
         ) {
             if let Some(checkpoint) = self
                 .structure_seed_checkpoint(&ticker, window.start)
@@ -2053,26 +2061,36 @@ fn prepared_bar_chart_snapshot(
     as_of: DateTime<Utc>,
     before: Option<DateTime<Utc>>,
 ) -> ChartSnapshot {
-    let mut selected = artifact
+    let mut selected_indices = artifact
         .bars
         .iter()
+        .enumerate()
         .rev()
-        .filter(|bar| bar.bar_end <= as_of && before.is_none_or(|bound| bar.bar_start < bound))
+        .filter(|(_, bar)| bar.bar_end <= as_of && before.is_none_or(|bound| bar.bar_start < bound))
         .take(limit.saturating_add(1))
-        .cloned()
+        .map(|(index, _)| index)
         .collect::<Vec<_>>();
-    let has_more = selected.len() > limit;
-    selected.truncate(limit);
-    selected.reverse();
+    let has_more = selected_indices.len() > limit;
+    selected_indices.truncate(limit);
+    selected_indices.reverse();
+    let selected = selected_indices
+        .iter()
+        .map(|index| artifact.bars[*index].clone())
+        .collect::<Vec<_>>();
     let next_before = has_more.then(|| selected[0].bar_start);
+    let indicator_projection = selected_indices
+        .first()
+        .zip(selected_indices.last())
+        .map(|(first, last)| prepared_structure_projection(artifact, *first, *last))
+        .filter(|rows| !rows.is_empty());
     ChartSnapshot {
         as_of,
         bars: selected,
         cache,
         has_more,
         indicators: Vec::new(),
-        indicator_projection: None,
-        indicators_available: false,
+        indicator_projection,
+        indicators_available: true,
         market_signal_events: Vec::new(),
         next_before,
         structure_events: Vec::new(),
@@ -2080,6 +2098,84 @@ fn prepared_bar_chart_snapshot(
         ticker,
         timeframe,
     }
+}
+
+fn prepared_structure_projection(
+    artifact: &PreparedBarCacheArtifact,
+    first_index: usize,
+    last_index: usize,
+) -> Vec<Value> {
+    if artifact.structure_projection.len() != artifact.bars.len() || first_index > last_index {
+        return Vec::new();
+    }
+    let mut active = BTreeMap::<String, Value>::new();
+    let mut projected = Vec::with_capacity(last_index - first_index + 1);
+    for (index, row) in artifact
+        .structure_projection
+        .iter()
+        .enumerate()
+        .take(last_index + 1)
+    {
+        apply_structure_projection_row(&mut active, row);
+        if index < first_index {
+            continue;
+        }
+        if index == first_index || index == last_index {
+            projected.push(json!({
+                "bar_start": artifact.bars[index].bar_start,
+                "qmd_structure_unified_levels": active.values().cloned().collect::<Vec<_>>(),
+            }));
+        } else {
+            projected.push(row.clone());
+        }
+    }
+    projected
+}
+
+fn apply_structure_projection_row(active: &mut BTreeMap<String, Value>, row: &Value) {
+    let Some(object) = row.as_object() else {
+        return;
+    };
+    if let Some(levels) = object
+        .get("qmd_structure_unified_levels")
+        .and_then(Value::as_array)
+    {
+        active.clear();
+        for level in levels {
+            if let Some(identity) = unified_structure_identity(level) {
+                active.insert(identity, level.clone());
+            }
+        }
+        return;
+    }
+    let Some(delta) = object
+        .get("qmd_structure_unified_level_delta")
+        .and_then(Value::as_object)
+    else {
+        return;
+    };
+    if let Some(removed) = delta.get("removed").and_then(Value::as_array) {
+        for level in removed {
+            if let Some(identity) = unified_structure_identity(level) {
+                active.remove(&identity);
+            }
+        }
+    }
+    if let Some(upserts) = delta.get("upserts").and_then(Value::as_array) {
+        for level in upserts {
+            if let Some(identity) = unified_structure_identity(level) {
+                active.insert(identity, level.clone());
+            }
+        }
+    }
+}
+
+fn unified_structure_identity(level: &Value) -> Option<String> {
+    Some(format!(
+        "{}:{}",
+        level.get("unified_level_id")?,
+        level.get("side")?,
+    ))
 }
 
 fn prepared_bar_cache_path(root: &Path, key: &str) -> PathBuf {
@@ -2335,8 +2431,9 @@ fn valid_price_bar(bar: &BarRow) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_encountered_structure_levels, cache_key, encountered_structure_levels_for_session,
-        ensure_monotonic_bar_start, historical_requirement, prepared_bar_cache_path,
+        apply_structure_projection_row, bounded_encountered_structure_levels, cache_key,
+        encountered_structure_levels_for_session, ensure_monotonic_bar_start,
+        historical_requirement, prepared_bar_cache_path,
         read_prepared_bar_cache, revision_window, session_anchor, split_event_window,
         stable_hash_hex, structure_events_overlapping, write_prepared_bar_cache, CacheEntry,
         CacheProfile, ChartBarRow, EntryState, PreparedBarCacheArtifact, SourceRevision,
@@ -2347,6 +2444,8 @@ mod tests {
     use crate::source::EventWindow;
     use chrono::{DateTime, Duration, TimeZone, Utc};
     use qmd_core::generic_structure::{GenericStructureEvent, StructureLevelCandidate};
+    use serde_json::json;
+    use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::{broadcast, Mutex, Notify};
@@ -2555,6 +2654,10 @@ mod tests {
                 estimated_luld_distance_to_lower_pct: 0.0,
                 estimated_luld_state: "unavailable".to_string(),
             }],
+            structure_projection: vec![json!({
+                "bar_start": start,
+                "qmd_structure_unified_levels": [],
+            })],
         };
         let bytes = serde_json::to_vec(&artifact).unwrap();
 
@@ -2568,6 +2671,34 @@ mod tests {
         assert!(read_prepared_bar_cache(&path, "wrong-key", "SUGP", "1s").is_err());
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prepared_structure_projection_rehydrates_full_state_and_deltas() {
+        let first = json!({
+            "bar_start": "2026-08-21T08:00:00Z",
+            "qmd_structure_unified_levels": [{
+                "unified_level_id": 1,
+                "side": 1,
+                "price": 3.5,
+            }],
+        });
+        let transition = json!({
+            "bar_start": "2026-08-21T08:00:01Z",
+            "qmd_structure_unified_level_delta": {
+                "removed": [{"unified_level_id": 1, "side": 1}],
+                "upserts": [{"unified_level_id": 2, "side": -1, "price": 3.8}],
+            },
+        });
+        let mut active = BTreeMap::new();
+
+        apply_structure_projection_row(&mut active, &first);
+        assert_eq!(active.len(), 1);
+        assert_eq!(active.values().next().unwrap()["price"], json!(3.5));
+
+        apply_structure_projection_row(&mut active, &transition);
+        assert_eq!(active.len(), 1);
+        assert_eq!(active.values().next().unwrap()["price"], json!(3.8));
     }
 
     #[test]
