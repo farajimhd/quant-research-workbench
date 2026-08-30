@@ -92,6 +92,11 @@ import { useCanvasLiveScannerSnapshot, useCanvasScannerSnapshot } from "../featu
 import { dateInTimeZone } from "../features/canvas/time";
 
 type CanvasChartPreviewProps = Parameters<typeof import("../features/canvas/chartPresentation").ChartPreview>[0];
+const CHARTS_QUOTES_CONTEXT_APPEARANCE_DEFAULTS = {
+  daySeparatorsVisible: false,
+  legendGutterVisible: false,
+  rightLegendGutterVisible: false,
+} as const;
 const LazyCanvasChartPreview = lazy(() => import("../features/canvas/chartPresentation").then((module) => ({ default: module.ChartPreview })));
 type TradingContainerPreviewProps = import("../features/canvas/tradingPresentation").TradingContainerPreviewProps;
 type StrategyOrderEntryProps = Parameters<typeof import("../features/canvas/tradingPresentation").StrategyOrderEntry>[0];
@@ -1578,11 +1583,11 @@ function ChartsQuotesContainerPreview({ canvasId, cutoffMs, instanceId, linkCont
   } : null;
   const chartProps = { changeAsOf, linkContext, logoUrl, onLinkContextChange, strategyDecisions, strategyPresentation, symbolEditable: false, toolbarVariant: "compact" as const, trading };
   return <ChartsQuotesMarketLayout
-    dailyChart={<ChartPreview {...chartProps} baseHeight={255} canvasId={canvasId} chartSettings={settings.charts_quotes.daily} fillHeight instanceId={`${instanceId}.daily`} liveChart={daily} onChartSettingsChange={(next) => updateSlot("daily", { ...next, timeframe: "1d" })} showTradeAnnotations={false} timeframes={["1d"]} />}
+    dailyChart={<ChartPreview {...chartProps} appearanceDefaults={CHARTS_QUOTES_CONTEXT_APPEARANCE_DEFAULTS} baseHeight={255} canvasId={canvasId} chartSettings={settings.charts_quotes.daily} fillHeight instanceId={`${instanceId}.daily`} liveChart={daily} onChartSettingsChange={(next) => updateSlot("daily", { ...next, timeframe: "1d" })} showTradeAnnotations={false} timeframes={["1d"]} />}
     end={liveMode ? undefined : changeAsOf}
     layout={settings.charts_quotes.layout}
     mainChart={<ChartPreview {...chartProps} baseHeight={460} canvasId={canvasId} chartSettings={settings.charts_quotes.main} fillHeight fullSessionReview={fullSession} instanceId={`${instanceId}.main`} liveChart={main} onChartSettingsChange={(next) => updateSlot("main", next)} timeframes={HISTORICAL_TIMEFRAMES} />}
-    monthChart={<ChartPreview {...chartProps} baseHeight={255} canvasId={canvasId} chartSettings={settings.charts_quotes.month} fillHeight instanceId={`${instanceId}.month`} liveChart={month} onChartSettingsChange={(next) => updateSlot("month", { ...next, timeframe: "1mo" })} showTradeAnnotations={false} timeframes={["1mo"]} />}
+    monthChart={<ChartPreview {...chartProps} appearanceDefaults={CHARTS_QUOTES_CONTEXT_APPEARANCE_DEFAULTS} baseHeight={255} canvasId={canvasId} chartSettings={settings.charts_quotes.month} fillHeight instanceId={`${instanceId}.month`} liveChart={month} onChartSettingsChange={(next) => updateSlot("month", { ...next, timeframe: "1mo" })} showTradeAnnotations={false} timeframes={["1mo"]} />}
     onLayoutChange={(layout) => updateSettings((current) => ({ ...current, charts_quotes: { ...current.charts_quotes, layout } }))}
     onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined}
     start={liveMode ? undefined : dateInTimeZone(previewContext.sessionDate, "04:00", "America/New_York").toISOString()}

@@ -4,7 +4,7 @@ import type { UTCTimestamp } from "lightweight-charts";
 
 import { api } from "../../api/client";
 import { CANVAS_SETTINGS_STORAGE_KEY, type CanvasChartTimeframe, type CanvasLinkContext } from "../../app/canvasWorkspace";
-import { ChartPanel, type ChartPanelHandle, type ChartPayload, type LiveEntryLine } from "../../app/components/ChartPanel";
+import { ChartPanel, type ChartAppearanceDefaults, type ChartPanelHandle, type ChartPayload, type LiveEntryLine } from "../../app/components/ChartPanel";
 import {
   DEFAULT_STRATEGY_CHART_PRESENTATION,
   strategyInvalidationZones,
@@ -55,6 +55,7 @@ import {
 } from "./structureModel";
 
 export function ChartPreview({
+  appearanceDefaults,
   baseHeight,
   canvasId,
   changeAsOf,
@@ -75,6 +76,7 @@ export function ChartPreview({
   showTradeAnnotations = true,
   trading,
 }: {
+  appearanceDefaults?: ChartAppearanceDefaults;
   baseHeight?: number;
   canvasId: string;
   changeAsOf: string;
@@ -315,7 +317,7 @@ export function ChartPreview({
       <label><span>Trigger</span><select aria-label="BarGPT trigger mode" onChange={(event) => onChartSettingsChange({ ...chartSettings, barGptTriggerMode: event.target.value as CanvasChartSettings["barGptTriggerMode"] })} value={barGptTriggerMode}><option value="auto">Auto</option><option value="manual">Manual</option></select></label>
       {barGptTriggerMode === "manual" ? <button disabled={!barGptReady || barGptInferring} onClick={() => void runManualInference()} type="button">{barGptInferring ? "Running…" : "Infer now"}</button> : null}
     </div> : null}
-    <ChartPanel ref={chartPanelRef} baseHeight={baseHeight} canLoadEarlier={liveChart.canLoadEarlier} displayItemOptions={CHART_INDICATORS} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} fillHeight={fillHeight} indicatorOptions={[]} initialFitMode="default" liveEntryLine={positionLine} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => onChartSettingsChange({ ...chartSettings, visibleIndicators: nextVisibleIndicators })} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} statusMessage={liveChart.historyNotice} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={timeframes} toolbarVariant={toolbarVariant} visibleColumns={visibleIndicators} />
+    <ChartPanel ref={chartPanelRef} appearanceDefaults={appearanceDefaults} baseHeight={baseHeight} canLoadEarlier={liveChart.canLoadEarlier} displayItemOptions={CHART_INDICATORS} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} fillHeight={fillHeight} indicatorOptions={[]} initialFitMode="default" liveEntryLine={positionLine} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => onChartSettingsChange({ ...chartSettings, visibleIndicators: nextVisibleIndicators })} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} statusMessage={liveChart.historyNotice} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={timeframes} toolbarVariant={toolbarVariant} visibleColumns={visibleIndicators} />
   </div>;
 }
 

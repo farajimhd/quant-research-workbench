@@ -451,6 +451,10 @@ type ChartAppearanceSettings = {
   wickVisible: boolean;
 };
 
+export type ChartAppearanceDefaults = Partial<Pick<ChartAppearanceSettings,
+  "daySeparatorsVisible" | "legendGutterVisible" | "rightLegendGutterVisible"
+>>;
+
 export type ChartPayload = {
   candles: Candle[];
   volume: Array<{ time: number; value: number; color: string }>;
@@ -479,6 +483,7 @@ export type ChartPanelHandle = {
 };
 
 type ChartPanelProps = {
+  appearanceDefaults?: ChartAppearanceDefaults;
   baseHeight?: number;
   catalogColumns?: ChartCatalogItem[];
   displayItemOptions?: ChartDisplayItem[];
@@ -562,6 +567,7 @@ type ChartPalette = {
 };
 
 const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
+  appearanceDefaults,
   baseHeight = 620,
   catalogColumns = [],
   displayItemOptions = [],
@@ -661,7 +667,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const oscillatorThresholdStorageKey = settingsStorageKey ? `${settingsStorageKey}.oscillator-thresholds` : OSCILLATOR_THRESHOLD_STORAGE_KEY;
   const appearanceStorageKey = settingsStorageKey ? `${settingsStorageKey}.appearance` : CHART_APPEARANCE_STORAGE_KEY;
   const paneLayoutStorageKey = settingsStorageKey ? `${settingsStorageKey}.pane-layout-v2` : `${LEGEND_SETTINGS_STORAGE_KEY}.pane-layout-v2`;
-  const [chartSettings, setChartSettings] = useState<ChartAppearanceSettings>(() => loadChartAppearanceSettings(appearanceStorageKey));
+  const instanceAppearanceDefaults = normalizeChartAppearanceSettings({ ...defaultChartAppearanceSettings, ...appearanceDefaults });
+  const [chartSettings, setChartSettings] = useState<ChartAppearanceSettings>(() => loadChartAppearanceSettings(appearanceStorageKey, instanceAppearanceDefaults));
   const [legendSettings, setLegendSettings] = useState<LegendSettingsMap>(() => loadLegendSettings(legendStorageKey));
   const [oscillatorThresholdSettings, setOscillatorThresholdSettings] = useState<OscillatorThresholdSettingsMap>(() => loadOscillatorThresholdSettings(oscillatorThresholdStorageKey));
   const [paneStretchFactors, setPaneStretchFactors] = useState<Record<string, number>>(() => loadPaneStretchFactors(paneLayoutStorageKey));
@@ -697,9 +704,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const nativeChartHeight: CSSProperties["height"] = fullscreen
     ? `calc(100vh - 322px + ${oscillatorPaneTotalHeight}px)`
     : baseHeight + oscillatorPaneTotalHeight;
-  // The shared default reserves a stable price-scale gutter on both sides so
-  // adding an oscillator cannot change the plot width. Traders can explicitly
-  // reclaim the left gutter; the setting is persisted per chart instance.
+  // Each chart instance can choose its initial price-scale gutters while
+  // preserving explicit user choices in that instance's persisted settings.
   const alignLeftPriceScale = chartSettings.legendGutterVisible;
   const reserveRightPriceScale = chartSettings.rightLegendGutterVisible;
   const priceLegendItems = [
@@ -730,7 +736,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   };
 
   const resetChartSettings = () => {
-    const next = { ...defaultChartAppearanceSettings };
+    const next = { ...instanceAppearanceDefaults };
     saveChartAppearanceSettings(next, appearanceStorageKey);
     setChartSettings(next);
   };
@@ -3388,14 +3394,17 @@ function resolveOscillatorThresholdSettings(settings?: Partial<OscillatorThresho
   };
 }
 
-function loadChartAppearanceSettings(storageKey = CHART_APPEARANCE_STORAGE_KEY): ChartAppearanceSettings {
-  if (typeof window === "undefined") return { ...defaultChartAppearanceSettings };
+function loadChartAppearanceSettings(
+  storageKey = CHART_APPEARANCE_STORAGE_KEY,
+  defaults = defaultChartAppearanceSettings
+): ChartAppearanceSettings {
+  if (typeof window === "undefined") return { ...defaults };
   try {
     const raw = window.localStorage.getItem(storageKey);
-    if (!raw) return { ...defaultChartAppearanceSettings };
-    return normalizeChartAppearanceSettings(JSON.parse(raw) as Partial<ChartAppearanceSettings>);
+    if (!raw) return { ...defaults };
+    return normalizeChartAppearanceSettings(JSON.parse(raw) as Partial<ChartAppearanceSettings>, defaults);
   } catch {
-    return { ...defaultChartAppearanceSettings };
+    return { ...defaults };
   }
 }
 
@@ -3419,7 +3428,10 @@ function savePaneStretchFactors(factors: Record<string, number>, storageKey: str
   window.localStorage.setItem(storageKey, JSON.stringify(factors));
 }
 
-function normalizeChartAppearanceSettings(settings: Partial<ChartAppearanceSettings>): ChartAppearanceSettings {
+function normalizeChartAppearanceSettings(
+  settings: Partial<ChartAppearanceSettings>,
+  defaults = defaultChartAppearanceSettings
+): ChartAppearanceSettings {
   const afterHoursColor = validHexColor(settings.afterHoursColor, defaultChartAppearanceSettings.afterHoursColor);
   const premarketColor = validHexColor(settings.premarketColor, defaultChartAppearanceSettings.premarketColor);
   return {
@@ -3432,12 +3444,12 @@ function normalizeChartAppearanceSettings(settings: Partial<ChartAppearanceSetti
     daySeparatorColor: validHexColor(settings.daySeparatorColor, defaultChartAppearanceSettings.daySeparatorColor),
     daySeparatorStyle: isDaySeparatorStyle(settings.daySeparatorStyle) ? settings.daySeparatorStyle : defaultChartAppearanceSettings.daySeparatorStyle,
     daySeparatorsVisible:
-      typeof settings.daySeparatorsVisible === "boolean" ? settings.daySeparatorsVisible : defaultChartAppearanceSettings.daySeparatorsVisible,
+      typeof settings.daySeparatorsVisible === "boolean" ? settings.daySeparatorsVisible : defaults.daySeparatorsVisible,
     downColor: validHexColor(settings.downColor, defaultChartAppearanceSettings.downColor),
     gridVisible: typeof settings.gridVisible === "boolean" ? settings.gridVisible : defaultChartAppearanceSettings.gridVisible,
     hideEmptyIntervals: typeof settings.hideEmptyIntervals === "boolean" ? settings.hideEmptyIntervals : defaultChartAppearanceSettings.hideEmptyIntervals,
-    legendGutterVisible: typeof settings.legendGutterVisible === "boolean" ? settings.legendGutterVisible : defaultChartAppearanceSettings.legendGutterVisible,
-    rightLegendGutterVisible: typeof settings.rightLegendGutterVisible === "boolean" ? settings.rightLegendGutterVisible : defaultChartAppearanceSettings.rightLegendGutterVisible,
+    legendGutterVisible: typeof settings.legendGutterVisible === "boolean" ? settings.legendGutterVisible : defaults.legendGutterVisible,
+    rightLegendGutterVisible: typeof settings.rightLegendGutterVisible === "boolean" ? settings.rightLegendGutterVisible : defaults.rightLegendGutterVisible,
     premarketColor: premarketColor.toUpperCase() === "#FBBF24" ? defaultChartAppearanceSettings.premarketColor : premarketColor,
     premarketOpacity: settings.premarketOpacity === 0.22 ? defaultChartAppearanceSettings.premarketOpacity : clampNumber(settings.premarketOpacity, 0, 0.6, defaultChartAppearanceSettings.premarketOpacity),
     upColor: validHexColor(settings.upColor, defaultChartAppearanceSettings.upColor),
