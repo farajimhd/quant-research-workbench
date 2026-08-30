@@ -47,7 +47,11 @@ from src.trading_runtime.signals import (
     normalize_strategy_evaluation,
 )
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter, _Position
-from src.trading_runtime.strategy_orders import IbkrStrategyOrderPlanner, StrategyOrderPlan
+from src.trading_runtime.strategy_orders import (
+    IbkrStrategyOrderPlanner,
+    RuntimeIbkrStrategyOrderPlanner,
+    StrategyOrderPlan,
+)
 
 
 NOW = datetime.now(timezone.utc)
@@ -495,7 +499,7 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                 await broker.on_market_event(
                     QuoteEvent(
                         ask_exchange=11,
-                        ask_price=10.02,
+                        ask_price=10.03,
                         ask_size=100,
                         bid_exchange=12,
                         bid_price=10.00,
@@ -515,6 +519,10 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                     intent(side_quote=(10.00, 10.02), quantity=10),
                     event_time=event_time,
                     reference_price=10.02,
+                    metadata={
+                        **intent(side_quote=(10.00, 10.02)).metadata,
+                        "quote_observed_at": event_time.isoformat(),
+                    },
                 )
 
                 snapshot = await manager.submit_intent(
@@ -1206,6 +1214,115 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
             )
             await manager.close()
             journal.close()
+
+    async def test_historical_full_exit_delegates_before_immediate_causal_fill(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            from src.market_engine.events import QuoteEvent
+
+            event_time = datetime(2026, 8, 21, 14, 0, tzinfo=timezone.utc)
+            broker = SimulatedBrokerAdapter(["DU1"], mode=TradingMode.BACKTEST)
+            instrument = InstrumentContract("TEST", 123, "TEST", "STK", "USD")
+            runtime_planner = RuntimeIbkrStrategyOrderPlanner(
+                {"TEST": instrument},
+                strategy_id="strategy-1",
+                strategy_revision=1,
+                run_id="run-1",
+            )
+
+            def bracket_planner(strategy_intent, account_id, event):
+                return runtime_planner.plan(
+                    intent=strategy_intent,
+                    account_id=account_id,
+                    event=event,
+                )
+
+            journal = TradingJournal(Path(directory) / "orders.sqlite3")
+            await broker.initialize()
+            risk = RiskAuthority()
+            await risk.prime(broker, ["DU1"])
+            manager = OrderManagementEngine(
+                broker=broker,
+                planner=bracket_planner,
+                risk=risk,
+                journal=journal,
+                run_id="run-1",
+                strategy_id="strategy-1",
+                strategy_revision=1,
+                policy=BrokerCommunicationPolicy(),
+            )
+            try:
+                await broker.on_market_event(
+                    QuoteEvent(
+                        ask_exchange=11,
+                        ask_price=10.02,
+                        ask_size=1_000,
+                        bid_exchange=12,
+                        bid_price=10.00,
+                        bid_size=1_000,
+                        conditions=(),
+                        indicators=(),
+                        ingest_ts=event_time - timedelta(milliseconds=100),
+                        raw={"conid": 123},
+                        sequence=1,
+                        source="test",
+                        tape=3,
+                        ticker="TEST",
+                        ts=event_time - timedelta(milliseconds=100),
+                    )
+                )
+                entry = replace(
+                    intent(quantity=100),
+                    intent_id="historical-entry-with-stop",
+                    event_time=event_time,
+                    reference_price=10.02,
+                    profit_target_price=None,
+                    metadata={
+                        **intent(quantity=100).metadata,
+                        "quote_observed_at": event_time.isoformat(),
+                    },
+                )
+                await manager.submit_intent(
+                    portfolio_approved(journal, entry),
+                    account_id="DU1",
+                    event=None,
+                )
+                source_group = next(
+                    group
+                    for group in manager._groups.values()
+                    if group.intent.intent_id == entry.intent_id
+                )
+                self.assertEqual((await broker.positions("DU1"))[0].position, 100)
+
+                exit_intent = replace(
+                    intent(action="exit", quantity=100),
+                    intent_id="historical-immediate-exit",
+                    event_time=event_time,
+                    reference_price=10.00,
+                    metadata={
+                        **intent(action="exit").metadata,
+                        "position_quantity": 100.0,
+                        "position_side": "long",
+                        "quote_observed_at": event_time.isoformat(),
+                    },
+                )
+                exit_snapshot = await manager.submit_intent(
+                    portfolio_approved(journal, exit_intent),
+                    account_id="DU1",
+                    event=None,
+                )
+
+                self.assertEqual(exit_snapshot.filled_quantity, 100)
+                self.assertTrue(source_group.protection_delegated)
+                self.assertFalse(
+                    any(
+                        "repair-" in str(order.cOID or "")
+                        for order in source_group.orders
+                    )
+                )
+                self.assertEqual(await broker.positions("DU1"), [])
+            finally:
+                await manager.close()
+                journal.close()
 
     async def test_full_exit_reprices_every_sliced_target_without_resizing_one_child(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

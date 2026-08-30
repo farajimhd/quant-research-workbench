@@ -600,6 +600,9 @@ class SimulatedBrokerAdapter:
         ticker: str,
         event_time: datetime,
         broker_order_ids: tuple[str, ...] = (),
+        decision_bid: float | None = None,
+        decision_ask: float | None = None,
+        quote_observed_at: datetime | None = None,
     ) -> list[Execution]:
         """Match new historical orders against the latest causal market event.
 
@@ -629,6 +632,21 @@ class SimulatedBrokerAdapter:
             quote = self._quotes.get(conid)
             if quote is None or quote.ts.astimezone(timezone.utc) > at:
                 continue
+            if (
+                decision_bid is not None
+                and decision_bid > 0
+                and decision_ask is not None
+                and decision_ask >= decision_bid
+            ):
+                observed_at = (quote_observed_at or event_time).astimezone(timezone.utc)
+                if observed_at > at:
+                    continue
+                quote = replace(
+                    quote,
+                    bid_price=float(decision_bid),
+                    ask_price=float(decision_ask),
+                    ts=observed_at,
+                )
             executions.extend(
                 await self._match_orders(
                     quote,
