@@ -566,14 +566,19 @@ function unifiedStructureSegments(rows: HistoricalIndicator[], chartEnd: number)
     // QMD History publishes the first level-book snapshot, each material
     // transition, and the terminal snapshot. A missing field carries the
     // previous state; an explicit empty array closes all active segments.
+    const snapshot = row.qmd_structure_unified_levels;
     const delta = row.qmd_structure_unified_level_delta;
-    if (!Array.isArray(row.qmd_structure_unified_levels) && !delta) return;
-    if (delta) {
+    if (!Array.isArray(snapshot) && !delta) return;
+    // A full snapshot is authoritative if a legacy/mixed cached row contains
+    // both forms. Current QMD History responses guarantee exclusivity, but
+    // preferring the snapshot here prevents an old delta from fragmenting a
+    // continuous episode during an in-place settings redraw.
+    if (!Array.isArray(snapshot) && delta) {
       (delta.removed ?? []).forEach((level) => closeSegment(`${level.unified_level_id}:${level.side}`, time));
       (delta.upserts ?? []).filter(isQmdUnifiedStructureLevel).forEach((level) => upsertLevel(level, time));
       return;
     }
-    const levels = (row.qmd_structure_unified_levels ?? []).filter(isQmdUnifiedStructureLevel);
+    const levels = (snapshot ?? []).filter(isQmdUnifiedStructureLevel);
     const keys = new Set(levels.map((level) => `${level.unified_level_id}:${level.side}`));
     active.forEach((segment, key) => {
       if (keys.has(key)) return;

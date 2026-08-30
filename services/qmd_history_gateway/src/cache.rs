@@ -38,10 +38,10 @@ use std::sync::Mutex as StdMutex;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, OnceCell, Semaphore};
 
 pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v33";
-pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v37";
+pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v38";
 pub const HISTORICAL_CORPORATE_ACTION_REVISION: &str = "raw-unadjusted-v1";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
-const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 3;
+const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 4;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CacheProfile {
@@ -2213,6 +2213,14 @@ fn prepared_indicator_projection(
         .map(|(mut indicator, structure)| {
             if let (Some(target), Some(source)) = (indicator.as_object_mut(), structure.as_object())
             {
+                // The compact structure projection is the sole authority for
+                // level-book state on chart rows. Older prepared bar payloads
+                // carried a full per-bar snapshot in the generic indicator
+                // projection; leaving it beside a delta makes the client
+                // resurrect that stale, fragmented presentation after an
+                // otherwise presentation-only settings update.
+                target.remove("qmd_structure_unified_levels");
+                target.remove("qmd_structure_unified_level_delta");
                 source.iter().for_each(|(key, value)| {
                     target.insert(key.clone(), value.clone());
                 });
@@ -2559,12 +2567,13 @@ mod tests {
     use super::{
         apply_structure_projection_row, bounded_encountered_structure_levels, cache_key,
         encountered_structure_levels_for_session, ensure_monotonic_bar_start,
-        historical_requirement, prepared_bar_cache_path, read_prepared_bar_cache, revision_window,
-        session_anchor, split_event_window, stable_hash_hex, structure_events_overlapping,
-        write_prepared_bar_cache, CacheEntry, CacheProfile, ChartBarRow, EntryState,
-        PreparedBarCacheArtifact, SourceRevision, HISTORICAL_CALCULATION_REVISION,
-        HISTORICAL_CORPORATE_ACTION_REVISION, HISTORICAL_ENGINE_VERSION,
-        MAX_ENCOUNTERED_STRUCTURE_LEVELS, PREPARED_BAR_CACHE_SCHEMA_VERSION,
+        historical_requirement, prepared_bar_cache_path, prepared_indicator_projection,
+        read_prepared_bar_cache, revision_window, session_anchor, split_event_window,
+        stable_hash_hex, structure_events_overlapping, write_prepared_bar_cache, CacheEntry,
+        CacheProfile, ChartBarRow, EntryState, PreparedBarCacheArtifact, SourceRevision,
+        HISTORICAL_CALCULATION_REVISION, HISTORICAL_CORPORATE_ACTION_REVISION,
+        HISTORICAL_ENGINE_VERSION, MAX_ENCOUNTERED_STRUCTURE_LEVELS,
+        PREPARED_BAR_CACHE_SCHEMA_VERSION,
     };
     use crate::source::EventWindow;
     use chrono::{DateTime, Duration, TimeZone, Utc};
@@ -2834,6 +2843,81 @@ mod tests {
         apply_structure_projection_row(&mut active, &transition);
         assert_eq!(active.len(), 1);
         assert_eq!(active.values().next().unwrap()["price"], json!(3.8));
+    }
+
+    #[test]
+    fn prepared_indicator_projection_replaces_legacy_per_bar_structure_atomically() {
+        let start = Utc.with_ymd_and_hms(2026, 8, 21, 8, 0, 0).unwrap();
+        let bar = |offset: i64| ChartBarRow {
+            schema_version: 1,
+            session_date: "2026-08-21".to_string(),
+            timeframe: "1s".to_string(),
+            sym: "SUGP".to_string(),
+            bar_start: start + Duration::seconds(offset),
+            bar_end: start + Duration::seconds(offset + 1),
+            is_closed: true,
+            open: 3.5,
+            high: 3.6,
+            low: 3.5,
+            close: 3.6,
+            volume: 100.0,
+            vwap: Some(3.55),
+            estimated_luld_active: false,
+            estimated_luld_reference_price: 0.0,
+            estimated_luld_lower_price: 0.0,
+            estimated_luld_upper_price: 0.0,
+            estimated_luld_distance_to_upper_pct: 0.0,
+            estimated_luld_distance_to_lower_pct: 0.0,
+            estimated_luld_state: "unavailable".to_string(),
+        };
+        let legacy = |offset: i64| {
+            json!({
+                "bar_start": start + Duration::seconds(offset),
+                "vwap": 3.55,
+                "qmd_structure_unified_levels": [{"unified_level_id": 999, "side": 1}],
+                "qmd_structure_unified_level_delta": {
+                    "upserts": [{"unified_level_id": 998, "side": 1}],
+                    "removed": [],
+                },
+            })
+        };
+        let artifact = PreparedBarCacheArtifact {
+            schema_version: PREPARED_BAR_CACHE_SCHEMA_VERSION,
+            key: "atomic-structure-projection".to_string(),
+            event_count: 2,
+            bars: vec![bar(0), bar(1)],
+            bar_indicator_projection: vec![legacy(0), legacy(1)],
+            structure_projection: vec![
+                json!({
+                    "bar_start": start,
+                    "qmd_structure_unified_levels": [{"unified_level_id": 1, "side": 1}],
+                }),
+                json!({
+                    "bar_start": start + Duration::seconds(1),
+                    "qmd_structure_unified_level_delta": {
+                        "upserts": [{"unified_level_id": 2, "side": -1}],
+                        "removed": [{"unified_level_id": 1, "side": 1}],
+                    },
+                }),
+            ],
+        };
+
+        let projected = prepared_indicator_projection(&artifact, 0, 1);
+
+        assert_eq!(
+            projected[0]["qmd_structure_unified_levels"][0]["unified_level_id"],
+            1
+        );
+        assert!(projected[0]
+            .get("qmd_structure_unified_level_delta")
+            .is_none());
+        assert_eq!(
+            projected[1]["qmd_structure_unified_levels"][0]["unified_level_id"],
+            2
+        );
+        assert!(projected[1]
+            .get("qmd_structure_unified_level_delta")
+            .is_none());
     }
 
     #[test]

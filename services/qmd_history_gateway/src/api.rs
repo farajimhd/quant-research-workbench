@@ -1115,6 +1115,10 @@ fn compact_projected_unified_structure_history(indicators: &mut [Value]) {
         let Some(levels) = object.get("qmd_structure_unified_levels").cloned() else {
             continue;
         };
+        // A chart row is either a full level-book snapshot or a delta, never
+        // both. Clear any projection inherited from a prepared/base row before
+        // writing the compact authority for this row.
+        object.remove("qmd_structure_unified_level_delta");
         let current = unified_structure_level_map(&levels);
         if index > 0 && index != terminal_index {
             let upserts = current
@@ -2534,6 +2538,40 @@ mod tests {
             Some(1)
         );
         assert!(indicators[3].get("qmd_structure_unified_levels").is_some());
+        assert!(indicators.iter().all(|row| {
+            !(row.get("qmd_structure_unified_levels").is_some()
+                && row.get("qmd_structure_unified_level_delta").is_some())
+        }));
+
+        let mut contaminated = vec![
+            json!({
+                "bar_start": "a",
+                "qmd_structure_unified_levels": [level(0.70, 10.0)],
+                "qmd_structure_unified_level_delta": {
+                    "upserts": [{"unified_level_id": 999, "side": -1}],
+                    "removed": [],
+                },
+            }),
+            json!({
+                "bar_start": "b",
+                "qmd_structure_unified_levels": [level(0.75, 20.0)],
+                "qmd_structure_unified_level_delta": {
+                    "upserts": [{"unified_level_id": 998, "side": -1}],
+                    "removed": [],
+                },
+            }),
+        ];
+        compact_projected_unified_structure_history(&mut contaminated);
+        assert!(contaminated.iter().all(|row| {
+            !(row.get("qmd_structure_unified_levels").is_some()
+                && row.get("qmd_structure_unified_level_delta").is_some())
+        }));
+        assert!(contaminated[0]
+            .get("qmd_structure_unified_level_delta")
+            .is_none());
+        assert!(contaminated[1]
+            .get("qmd_structure_unified_level_delta")
+            .is_none());
 
         let mut closes = vec![
             json!({"bar_start": "a", "qmd_structure_unified_levels": [level(0.70, 10.0)]}),

@@ -123,20 +123,34 @@ def test_structural_history_can_span_all_loaded_chart_bars() -> None:
     assert "(bars_only || structure_only).then_some(1)" in history_cache_source
     assert "rebuild_trade_structure_checkpoint" in history_cache_source
     assert "rebuild_structure_checkpoint_inner(config, source, request, Some(1))" in structure_checkpoint_source
-    assert "source.stream_ordered_filtered(" in structure_checkpoint_source
+    assert "source.stream_structure_ordered_filtered(" in structure_checkpoint_source
     assert "CacheProfile::Bars(timeframe.clone())" in history_cache_source
     assert "(CacheProfile::Bars(_), Some(timeframe)) => vec![timeframe.clone()]" in history_cache_source
     assert 'column !== "qmd_structure_unified_levels"' in chart_data_source
-    assert '? "bar_start,qmd_structure_unified_levels"' in chart_data_source
+    assert 'const unifiedStructureColumns = "bar_start,qmd_structure_unified_levels"' in chart_data_source
     assert 'const unifiedStructureAsPrimary' not in chart_data_source
     assert 'indicator_columns: baseIndicatorColumns, stage: "bars"' in chart_data_source
-    assert 'const structureFirst = unifiedStructureRequest\n' not in chart_data_source
+    assert "const unifiedStructureRequest = progressive && unifiedStructureSelected" in chart_data_source
+    assert "indicator_columns: unifiedStructureColumns" in chart_data_source
+    assert "stage: \"full\", timeframe: UNIFIED_STRUCTURE_TIMEFRAME" in chart_data_source
+    assert 'const UNIFIED_STRUCTURE_TIMEFRAME: CanvasChartTimeframe = "1s"' in chart_data_source
+    assert "unifiedStructureProjectionRows(payload.indicators, cutoffMs)" in chart_data_source
+    assert "admittedTimes.has(barStartTime(row)) || isUnifiedStructureProjectionRow(row)" in chart_data_source
+    standard_page_handler = chart_data_source.split("void standardIndicatorPage?.then((payload) => {", 1)[1].split("void unifiedStructurePage?.then((payload) => {", 1)[0]
+    unified_page_handler = chart_data_source.split("void unifiedStructurePage?.then((payload) => {", 1)[1].split("}, [auxiliaryProjection", 1)[0]
+    assert "closedRowsAtCutoff(payload.indicators, timeframe, cutoffMs)" in standard_page_handler
+    assert "unifiedStructureProjectionRows(payload.indicators, cutoffMs)" in unified_page_handler
     assert "function chartIdentityKey(ticker: string, sessionDate: string" in chart_data_source
     assert "function chartIdentityKey(ticker: string, indicatorColumns: string" not in chart_data_source
     assert "mergeIndicatorRowsByTime(current.indicators, rows)" in chart_data_source
+    assert "hasUnifiedStructureProjection(replacement)" in chart_data_source
+    assert "delete next.qmd_structure_unified_levels" in chart_data_source
+    assert "delete next.qmd_structure_unified_level_delta" in chart_data_source
+    assert "if (!Array.isArray(snapshot) && delta)" in chart_source
     assert "structure_projection: Vec<Value>" in history_cache_source
     assert "prepared_structure_projection(artifact" in history_cache_source
-    assert "CacheProfile::Bars(_) | CacheProfile::Derived(_) | CacheProfile::Structure(_)" in history_cache_source
+    assert "let structure_only = matches!(&profile, CacheProfile::Structure(_))" in history_cache_source
+    assert "let bars_only = matches!(&profile, CacheProfile::Bars(_))" in history_cache_source
     assert "statusMessage={liveChart.historyNotice}" in chart_source
     assert 'chart-update-status${loading ? " centered" : ""}' in renderer_source
     assert ".chart-update-status.centered" in styles_source
@@ -168,7 +182,7 @@ def test_unified_structure_scores_can_filter_loaded_levels_without_a_history_req
     assert "minimumReactionProbability" in renderer_source
     assert "minimumHoldProbability" in renderer_source
     assert "minimumConfidence" in renderer_source
-    assert "Levels must meet all four minimums" in renderer_source
+    assert "Levels must meet every enabled evidence threshold" in renderer_source
     assert "Changes apply immediately to loaded chart data" in renderer_source
     assert "showUnifiedSupport" in renderer_source
     assert "showUnifiedResistance" in renderer_source
