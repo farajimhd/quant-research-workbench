@@ -97,6 +97,7 @@ def test_filter_builder_supports_search_grouping_and_escapes_input() -> None:
     assert "single_subject > report > issuer" in where
     assert ">=34200 AND" in where
     assert "<=57600" in where
+    assert where.index("s.synthesis_path=") < where.index("positionCaseInsensitiveUTF8(s.rendered_text")
 
 
 def test_grouping_rejects_unsafe_or_cartesian_dimensions() -> None:
@@ -124,6 +125,17 @@ def test_time_filter_supports_overnight_utc_window() -> None:
     assert "<=14400" in where
     with pytest.raises(ValueError, match="valid time"):
         backend._where({"time_from": "25:00"})
+
+
+def test_negative_search_excludes_matches_after_structured_filters() -> None:
+    backend = ClickHouseReviewBackend(FakeClient())
+    where = backend._where({
+        "gold_label": "ineligible", "q": "earnings", "search_mode": "not_contains",
+    })
+    assert "NOT (positionCaseInsensitiveUTF8" in where
+    assert where.index("s.gold_label='ineligible'") < where.index("NOT (positionCaseInsensitiveUTF8")
+    with pytest.raises(ValueError, match="search_mode"):
+        backend._where({"q": "earnings", "search_mode": "invalid"})
 
 
 def test_mismatch_loader_includes_training_and_former_holdout() -> None:

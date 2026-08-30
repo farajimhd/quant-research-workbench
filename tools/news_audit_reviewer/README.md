@@ -39,6 +39,9 @@ Use `--prepare-only` to prepare or validate ClickHouse without starting the UI.
    Search always covers canonical article bodies plus titles, templates, teaser,
    author, provider, tickers, channels, tags, and source ID. UTC time-of-day
    filters work independently of date and support ranges that cross midnight.
+   Search mode can either require or exclude the text. Structured filters are
+   emitted before the more expensive full-text predicate so ClickHouse narrows
+   the population first.
 3. Optionally group the filtered table from the left panel by path and title
    pattern, label matrix, title pattern, ticker, month, review status, or a
    custom combination of up to three dimensions.

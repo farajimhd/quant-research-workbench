@@ -587,6 +587,7 @@ WHERE campaign_id={sql_string(self.campaign_id)} GROUP BY group_id FORMAT JSONEa
         values = {**dict(filters), **dict(selection or {})}
         clauses = [f"s.campaign_id={sql_string(self.campaign_id)}"]
         q = str(values.get("q") or "").strip()
+        search_clause = ""
         if q:
             parts = [
                 f"positionCaseInsensitiveUTF8(s.source_id,{sql_string(q)})>0",
@@ -601,7 +602,11 @@ WHERE campaign_id={sql_string(self.campaign_id)} GROUP BY group_id FORMAT JSONEa
                 f"positionCaseInsensitiveUTF8(arrayStringConcat(s.channels,' '),{sql_string(q)})>0",
                 f"positionCaseInsensitiveUTF8(arrayStringConcat(s.provider_tags,' '),{sql_string(q)})>0",
             ]
-            clauses.append("(" + " OR ".join(parts) + ")")
+            search_match = "(" + " OR ".join(parts) + ")"
+            search_mode = str(values.get("search_mode") or "contains").strip()
+            if search_mode not in {"contains", "not_contains"}:
+                raise ValueError("search_mode must be contains or not_contains")
+            search_clause = f"NOT {search_match}" if search_mode == "not_contains" else search_match
         scalar = {
             "synthesis_path": "s.synthesis_path", "title_pattern_id": "s.title_pattern_id",
             "normalized_title_template": "s.normalized_title_template", "gold_label": "s.gold_label",
@@ -685,6 +690,10 @@ WHERE campaign_id={sql_string(self.campaign_id)} GROUP BY group_id FORMAT JSONEa
             clauses.append("s.gold_label=s.synthesis_label")
         elif agreement:
             raise ValueError("invalid agreement filter")
+        # Keep the expensive all-text predicate last so ClickHouse can narrow
+        # blocks with structured filters before evaluating body/metadata search.
+        if search_clause:
+            clauses.append(search_clause)
         return " AND ".join(f"({clause})" for clause in clauses)
 
     def groups(self, filters: Mapping[str, Any], group_by: Sequence[str]) -> dict[str, Any]:
