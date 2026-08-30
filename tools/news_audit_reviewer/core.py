@@ -15,6 +15,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from pipelines.news.benzinga.core.clickhouse_writer_v2 import json_each_row_batches
 from research.mlops.clickhouse import ClickHouseHttpClient, insert_json_each_row, quote_ident, sql_string
 from scripts.evaluate_news_synthesis_pattern_policy_gold import (
+    _holdout_sources,
     _initialize_prediction_worker,
     _load_scoped_identity_index,
     _prediction,
@@ -24,7 +25,7 @@ from scripts.evaluate_news_synthesis_pattern_policy_gold import (
 
 
 CAMPAIGN_ID = "news_synthesis_v61_training_population_personal_review_v3"
-CONTRACT_VERSION = "news_synthesis_clickhouse_personal_review_v3"
+CONTRACT_VERSION = "news_synthesis_clickhouse_personal_review_v4"
 NEWS_ROOT = Path(r"D:\TradingML\runtimes\text_intelligence\news_synthesis_v1")
 DEFAULT_EVALUATION = NEWS_ROOT / "news_synthesis_v61_consolidated_gold_v2_evaluation_v1" / "MISMATCHES.jsonl"
 DEFAULT_ASSIGNMENTS = (
@@ -33,9 +34,11 @@ DEFAULT_ASSIGNMENTS = (
     / "EVALUATION_ASSIGNMENTS.csv"
 )
 EXPECTED_ALL_MISMATCHES = 32_533
+EXPECTED_REVIEW_ARTICLES = 352_559
 EXPECTED_TRAINING_ARTICLES = 347_515
 EXPECTED_TRAINING_MISMATCHES = 31_856
 EXPECTED_HOLDOUT_MISMATCHES = 677
+EXPECTED_HOLDOUT_ARTICLES = 5_044
 EXPECTED_ASSIGNMENTS = 352_559
 
 SOURCE_TABLE = "news_synthesis_v61_review_source_v3"
@@ -43,13 +46,15 @@ MANIFEST_TABLE = "news_synthesis_v61_review_manifest_v3"
 LABEL_HISTORY_TABLE = "news_synthesis_v61_operator_label_history_v3"
 GROUP_HISTORY_TABLE = "news_synthesis_v61_review_group_history_v3"
 NOTE_HISTORY_TABLE = "news_synthesis_v61_review_note_history_v3"
+RESULT_BATCH_TABLE = "news_synthesis_v61_result_label_batch_v1"
+RESULT_MEMBER_TABLE = "news_synthesis_v61_result_label_member_v1"
 
 ALLOWED_LABELS = {"eligible", "ineligible", ""}
 ALLOWED_DISPOSITIONS = {"all_eligible", "all_ineligible", "mixed", ""}
 ALLOWED_GROUP_FIELDS = {
     "synthesis_path", "title_pattern_id", "normalized_title_template", "gold_label",
     "synthesis_label", "policy_expected_label", "policy_status", "confusion_cell", "ticker",
-    "channel", "provider_tag", "author", "provider", "year", "month", "review_status",
+    "channel", "provider_tag", "author", "provider", "population_split", "year", "month", "review_status",
 }
 ARRAY_GROUP_FIELDS = {"ticker", "channel", "provider_tag"}
 DEFAULT_GROUP_BY = ("synthesis_path", "title_pattern_id")
@@ -76,6 +81,14 @@ GROUP_COLUMNS = [
 NOTE_COLUMNS = [
     "campaign_id", "note_id", "scope_type", "scope_key", "note", "reviewer", "revision",
     "updated_at_utc",
+]
+RESULT_BATCH_COLUMNS = [
+    "campaign_id", "batch_id", "result_spec_json", "operator_label", "lesson", "status",
+    "matched_rows", "result_sha256", "reviewer", "revision", "created_at_utc", "completed_at_utc", "error",
+]
+RESULT_MEMBER_COLUMNS = [
+    "campaign_id", "batch_id", "source_id", "result_position", "original_gold_label",
+    "synthesis_label", "source_revision_key", "captured_at_utc",
 ]
 
 PATH_PART_MEANINGS = {
@@ -210,13 +223,30 @@ campaign_id LowCardinality(String),note_id UUID,scope_type LowCardinality(String
 reviewer String,revision UInt64,updated_at_utc DateTime64(6,'UTC')
 ) ENGINE=MergeTree PARTITION BY toYYYYMM(updated_at_utc)
 ORDER BY (campaign_id,scope_type,scope_key,revision,note_id)""")
+        self.execute(f"""CREATE TABLE IF NOT EXISTS {self.db}.{quote_ident(RESULT_BATCH_TABLE)} (
+campaign_id LowCardinality(String),batch_id UUID,result_spec_json String,operator_label LowCardinality(String),
+lesson String,status LowCardinality(String),matched_rows UInt32,result_sha256 FixedString(64),reviewer String,
+revision UInt64,created_at_utc DateTime64(6,'UTC'),completed_at_utc DateTime64(6,'UTC'),error String
+) ENGINE=MergeTree PARTITION BY toYYYYMM(created_at_utc)
+ORDER BY (campaign_id,batch_id,revision)""")
+        self.execute(f"""CREATE TABLE IF NOT EXISTS {self.db}.{quote_ident(RESULT_MEMBER_TABLE)} (
+campaign_id LowCardinality(String),batch_id UUID,source_id String,result_position UInt32,
+original_gold_label LowCardinality(String),synthesis_label LowCardinality(String),source_revision_key String,
+captured_at_utc DateTime64(6,'UTC')
+) ENGINE=MergeTree PARTITION BY toYYYYMM(captured_at_utc)
+ORDER BY (campaign_id,batch_id,result_position,source_id)""")
 
     def prepare_source(self, progress: Any = print) -> dict[str, Any]:
         self.ensure_tables()
         evaluation_hash = sha256_path(self.evaluation_path)
         assignments_hash = sha256_path(self.assignments_path)
         ready = self._ready_manifest()
-        if ready and ready.get("evaluation_sha256") == evaluation_hash and ready.get("assignments_sha256") == assignments_hash:
+        if (
+            ready
+            and int(ready.get("expected_rows") or 0) == EXPECTED_REVIEW_ARTICLES
+            and ready.get("evaluation_sha256") == evaluation_hash
+            and ready.get("assignments_sha256") == assignments_hash
+        ):
             return self.validate_source()
         self._write_manifest("building", 0, evaluation_hash, assignments_hash, "")
         try:
@@ -235,20 +265,35 @@ ORDER BY (campaign_id,scope_type,scope_key,revision,note_id)""")
                 by_month[str(assignments[source_id]["published_at_utc"])[:7]].append(source_id)
             progress(f"[prepare] existing={len(existing):,} missing={len(missing):,} months={len(by_month):,}")
             imported = 0
+            sealed_holdout: dict[str, dict[str, Any]] | None = None
             for month, source_ids in sorted(by_month.items()):
                 wanted = set(source_ids)
-                canonical = {
-                    str(row["source_id"]): row
-                    for row in _query_training_month(self.client, database=self.database, month=month)
-                    if str(row["source_id"]) in wanted
+                training_ids = {
+                    source_id for source_id in wanted
+                    if assignments[source_id]["population_split"] == "training_development"
                 }
+                holdout_ids = wanted - training_ids
+                canonical: dict[str, dict[str, Any]] = {}
+                if training_ids:
+                    canonical.update({
+                        str(row["source_id"]): row
+                        for row in _query_training_month(self.client, database=self.database, month=month)
+                        if str(row["source_id"]) in training_ids
+                    })
+                if holdout_ids:
+                    sealed_holdout = sealed_holdout or _holdout_sources()
+                    canonical.update({source_id: sealed_holdout[source_id] for source_id in holdout_ids if source_id in sealed_holdout})
                 absent = sorted(wanted - set(canonical))
                 if absent:
                     raise ValueError(f"ClickHouse canonical coverage missing {len(absent):,} rows for {month}: {absent[:5]}")
+                # The frozen evaluation built one identity scope from the complete
+                # month population. Reuse that scope even during an incremental
+                # import so predictions do not depend on which rows are missing.
                 month_tickers = {
                     ticker.strip().upper()
-                    for source_id in source_ids
-                    for ticker in str(assignments[source_id].get("tickers") or "").split("|")
+                    for source_id, assignment in assignments.items()
+                    if str(assignment["published_at_utc"]).startswith(month)
+                    for ticker in str(assignment.get("tickers") or "").split("|")
                     if ticker.strip()
                 }
                 identity_index, identities = _load_scoped_identity_index(
@@ -275,8 +320,9 @@ ORDER BY (campaign_id,scope_type,scope_key,revision,note_id)""")
                     assignment, source = assignments[source_id], canonical[source_id]
                     if prediction["prediction"] == "error":
                         raise ValueError(f"V61 prediction failed for {source_id}: {prediction['error']}")
-                    if str(assignment["population_split"]) != "training_development":
-                        raise ValueError(f"holdout assignment entered source snapshot: {source_id}")
+                    population_split = str(assignment["population_split"])
+                    if population_split not in {"training_development", "holdout_august_2026"}:
+                        raise ValueError(f"unexpected population split: {source_id} {population_split}")
                     gold_label = str(assignment["gold_label"])
                     synthesis_label = str(prediction["prediction"])
                     synthesis_path = " > ".join((
@@ -304,7 +350,7 @@ ORDER BY (campaign_id,scope_type,scope_key,revision,note_id)""")
                         "channels": list(source.get("channels") or split_pipe(assignment.get("channels"))),
                         "provider_tags": list(source.get("provider_tags") or split_pipe(assignment.get("provider_tags"))),
                         "content_quality_flags": sorted(set(source.get("content_quality_flags") or []) | set(prediction.get("quality_flags") or [])),
-                        "population_split": "training_development", "gold_label": gold_label,
+                        "population_split": population_split, "gold_label": gold_label,
                         "synthesis_label": synthesis_label, "confusion_cell": confusion_cell,
                         "synthesis_path": synthesis_path,
                         "title_pattern_id": str(assignment.get("primary_pattern_id") or "unmatched"),
@@ -343,13 +389,11 @@ ORDER BY (campaign_id,scope_type,scope_key,revision,note_id)""")
         for row in all_rows:
             source_id, split = str(row["source_id"]), str(row["population_split"])
             splits[split] += 1
-            if split != "training_development":
-                continue
             if source_id in result or row["gold_label"] == row["synthesis_label"]:
-                raise ValueError(f"invalid training mismatch: {source_id}")
+                raise ValueError(f"invalid mismatch: {source_id}")
             result[source_id] = row
-        if len(result) != EXPECTED_TRAINING_MISMATCHES:
-            raise ValueError(f"training mismatch count changed: {len(result):,}")
+        if len(result) != EXPECTED_ALL_MISMATCHES:
+            raise ValueError(f"mismatch count changed: {len(result):,}")
         return result, splits
 
     def _load_assignments(self) -> dict[str, dict[str, str]]:
@@ -358,12 +402,11 @@ ORDER BY (campaign_id,scope_type,scope_key,revision,note_id)""")
         with self.assignments_path.open("r", encoding="utf-8-sig", newline="") as handle:
             for row in csv.DictReader(handle):
                 count += 1
-                if str(row["population_split"]) == "training_development":
-                    result[str(row["source_id"])] = row
+                result[str(row["source_id"])] = row
         if count != EXPECTED_ASSIGNMENTS:
             raise ValueError(f"assignment population changed: {count:,}")
-        if len(result) != EXPECTED_TRAINING_ARTICLES:
-            raise ValueError(f"training assignment population changed: {len(result):,}")
+        if len(result) != EXPECTED_REVIEW_ARTICLES:
+            raise ValueError(f"review assignment population changed: {len(result):,}")
         return result
 
     def _insert_source_rows(self, rows: list[dict[str, Any]]) -> None:
@@ -373,7 +416,8 @@ ORDER BY (campaign_id,scope_type,scope_key,revision,note_id)""")
     def _write_manifest(self, status: str, source_rows: int, evaluation_hash: str, assignments_hash: str, error: str) -> None:
         row = {
             "campaign_id": self.campaign_id, "contract_version": CONTRACT_VERSION, "status": status,
-            "expected_rows": EXPECTED_TRAINING_ARTICLES, "source_rows": source_rows, "holdout_rows": 0,
+            "expected_rows": EXPECTED_REVIEW_ARTICLES, "source_rows": source_rows,
+            "holdout_rows": EXPECTED_HOLDOUT_ARTICLES,
             "evaluation_sha256": evaluation_hash, "assignments_sha256": assignments_hash, "error": error,
             "updated_at_utc": utc_now_clickhouse(),
         }
@@ -394,14 +438,14 @@ SELECT count() rows,uniqExact(source_id) unique_ids,countIf(population_split!='t
        uniqExact((synthesis_path,title_pattern_id)) groups
 FROM {self.db}.{quote_ident(SOURCE_TABLE)} FINAL WHERE campaign_id={sql_string(self.campaign_id)} FORMAT JSONEachRow
 """)[0]
-        if int(row["rows"]) != EXPECTED_TRAINING_ARTICLES or int(row["unique_ids"]) != EXPECTED_TRAINING_ARTICLES:
+        if int(row["rows"]) != EXPECTED_REVIEW_ARTICLES or int(row["unique_ids"]) != EXPECTED_REVIEW_ARTICLES:
             raise ValueError(f"ClickHouse source coverage changed: rows={row['rows']} unique={row['unique_ids']}")
-        if int(row["non_training"]):
-            raise ValueError("ClickHouse source contains non-training rows")
-        if int(row["mismatches"]) != EXPECTED_TRAINING_MISMATCHES:
+        if int(row["non_training"]) != EXPECTED_HOLDOUT_ARTICLES:
+            raise ValueError(f"ClickHouse former-holdout coverage changed: {row['non_training']}")
+        if int(row["mismatches"]) != EXPECTED_ALL_MISMATCHES:
             raise ValueError(f"ClickHouse mismatch lineage changed: {row['mismatches']}")
         return {
-            "status": "ready", "articles": int(row["rows"]), "holdout_rows": 0,
+            "status": "ready", "articles": int(row["rows"]), "holdout_rows": int(row["non_training"]),
             "mismatches": int(row["mismatches"]), "paths": int(row["paths"]),
             "groups": int(row["groups"]), "database": self.database,
             "source_table": SOURCE_TABLE, "label_history_table": LABEL_HISTORY_TABLE,
@@ -423,7 +467,8 @@ SELECT count() articles,countIf(notEmpty(l.operator_label)) reviewed_articles,
        countIf(notEmpty(l.operator_label) AND l.operator_label!=s.gold_label) changed_articles,
        countIf(l.operator_label='eligible') operator_eligible,countIf(l.operator_label='ineligible') operator_ineligible,
        countIf(s.gold_label IN ('eligible','ineligible') AND s.gold_label!=s.synthesis_label) mismatches,
-       countIf(s.gold_label=s.synthesis_label) agreements,countIf(s.gold_label='insufficient_short_text') insufficient_short_text
+       countIf(s.gold_label=s.synthesis_label) agreements,countIf(s.gold_label='insufficient_short_text') insufficient_short_text,
+       countIf(s.gold_label='unresolved') unresolved,countIf(s.population_split='holdout_august_2026') former_holdout_articles
 FROM {self.db}.{quote_ident(SOURCE_TABLE)} s FINAL
 LEFT JOIN {self._current_labels_sql()} l ON l.campaign_id=s.campaign_id AND l.source_id=s.source_id
 WHERE s.campaign_id={sql_string(self.campaign_id)} FORMAT JSONEachRow
@@ -438,7 +483,7 @@ WHERE s.campaign_id={sql_string(self.campaign_id)} FORMAT JSONEachRow
             "policy_expected_label": "policy_expected_label", "policy_status": "policy_status",
             "synthesis_path": "synthesis_path", "title_pattern_id": "title_pattern_id",
             "provider": "provider", "gold_authority": "gold_authority",
-            "gold_merge_resolution": "gold_merge_resolution",
+            "gold_merge_resolution": "gold_merge_resolution", "population_split": "population_split",
         }
         result: dict[str, list[dict[str, Any]]] = {}
         for key, column in fields.items():
@@ -492,6 +537,7 @@ WHERE campaign_id={sql_string(self.campaign_id)} GROUP BY group_id FORMAT JSONEa
             "policy_status": "s.policy_status", "confusion_cell": "s.confusion_cell",
             "ticker": "arrayJoin(s.tickers)", "channel": "arrayJoin(s.channels)",
             "provider_tag": "arrayJoin(s.provider_tags)", "author": "s.author", "provider": "s.provider",
+            "population_split": "s.population_split",
             "year": "toString(toYear(s.published_at_utc))", "month": "toString(toYYYYMM(s.published_at_utc))",
             "review_status": "multiIf(empty(l.operator_label),'unreviewed',l.operator_label!=s.gold_label,'changed','confirmed')",
         }
@@ -529,7 +575,8 @@ WHERE campaign_id={sql_string(self.campaign_id)} GROUP BY group_id FORMAT JSONEa
             "normalized_title_template": "s.normalized_title_template", "gold_label": "s.gold_label",
             "synthesis_label": "s.synthesis_label", "policy_expected_label": "s.policy_expected_label",
             "policy_status": "s.policy_status", "confusion_cell": "s.confusion_cell",
-            "author": "s.author", "provider": "s.provider", "gold_authority": "s.gold_authority",
+            "author": "s.author", "provider": "s.provider", "population_split": "s.population_split",
+            "gold_authority": "s.gold_authority",
             "gold_merge_resolution": "s.gold_merge_resolution",
         }
         for key, expression in scalar.items():
@@ -724,6 +771,94 @@ WHERE {self._where(filters, selection)} ORDER BY s.source_id FORMAT JSONEachRow
         }
         insert_json_each_row(self.client, self.database, GROUP_HISTORY_TABLE, GROUP_COLUMNS, [group_row])
         return {**group_row, "summary": self.summary()}
+
+    def apply_result_set(
+        self, *, filters: Mapping[str, Any], selection: Mapping[str, Any],
+        operator_label: str, lesson: str, reviewer: str,
+    ) -> dict[str, Any]:
+        if operator_label not in {"eligible", "ineligible"}:
+            raise ValueError("result-set label must be eligible or ineligible")
+        spec = {
+            "contract_version": "news_synthesis_result_set_label_v1",
+            "filters": dict(filters),
+            "selection": dict(selection),
+        }
+        spec_json = canonical_json(spec)
+        sources = self.rows(f"""
+SELECT s.source_id,s.gold_label,s.synthesis_label,s.source_revision_key
+FROM {self.db}.{quote_ident(SOURCE_TABLE)} s FINAL
+LEFT JOIN {self._current_labels_sql()} l ON l.campaign_id=s.campaign_id AND l.source_id=s.source_id
+WHERE {self._where(filters, selection)} ORDER BY s.published_at_utc DESC,s.source_id FORMAT JSONEachRow
+""")
+        if not sources:
+            raise ValueError("current result set contains no articles")
+        batch_id = str(uuid.uuid4())
+        created_at = utc_now_clickhouse()
+        digest = hashlib.sha256()
+        for position, source in enumerate(sources):
+            digest.update(canonical_json({
+                "position": position, "source_id": source["source_id"],
+                "gold_label": source["gold_label"], "synthesis_label": source["synthesis_label"],
+                "source_revision_key": source["source_revision_key"],
+            }).encode("utf-8"))
+            digest.update(b"\n")
+        result_hash = digest.hexdigest()
+
+        def write_batch(status: str, *, completed_at: str, error: str = "") -> None:
+            row = {
+                "campaign_id": self.campaign_id, "batch_id": batch_id,
+                "result_spec_json": spec_json, "operator_label": operator_label,
+                "lesson": lesson, "status": status, "matched_rows": len(sources),
+                "result_sha256": result_hash, "reviewer": reviewer, "revision": revision(),
+                "created_at_utc": created_at, "completed_at_utc": completed_at, "error": error,
+            }
+            insert_json_each_row(self.client, self.database, RESULT_BATCH_TABLE, RESULT_BATCH_COLUMNS, [row])
+
+        write_batch("captured", completed_at="1970-01-01 00:00:00.000000")
+        try:
+            members = [
+                {
+                    "campaign_id": self.campaign_id, "batch_id": batch_id,
+                    "source_id": source["source_id"], "result_position": position,
+                    "original_gold_label": source["gold_label"],
+                    "synthesis_label": source["synthesis_label"],
+                    "source_revision_key": source["source_revision_key"],
+                    "captured_at_utc": created_at,
+                }
+                for position, source in enumerate(sources)
+            ]
+            for batch in json_each_row_batches(
+                members, table=RESULT_MEMBER_TABLE, max_rows=1000,
+                target_bytes=4 * 1024 * 1024, max_row_bytes=8 * 1024 * 1024,
+            ):
+                insert_json_each_row(self.client, self.database, RESULT_MEMBER_TABLE, RESULT_MEMBER_COLUMNS, batch.rows)
+            del members
+            now, base_revision = utc_now_clickhouse(), revision()
+            decisions = [
+                {
+                    "campaign_id": self.campaign_id, "decision_id": str(uuid.uuid4()),
+                    "source_id": source["source_id"], "original_gold_label": source["gold_label"],
+                    "operator_label": operator_label, "decision_source": "result_set_bulk",
+                    "group_id": batch_id, "group_spec_json": spec_json, "note": "",
+                    "reviewer": reviewer, "revision": base_revision + position, "updated_at_utc": now,
+                }
+                for position, source in enumerate(sources)
+            ]
+            for batch in json_each_row_batches(
+                decisions, table=LABEL_HISTORY_TABLE, max_rows=500,
+                target_bytes=4 * 1024 * 1024, max_row_bytes=8 * 1024 * 1024,
+            ):
+                insert_json_each_row(self.client, self.database, LABEL_HISTORY_TABLE, LABEL_COLUMNS, batch.rows)
+            completed_at = utc_now_clickhouse()
+            write_batch("applied", completed_at=completed_at)
+            return {
+                "batch_id": batch_id, "status": "applied", "matched_rows": len(sources),
+                "operator_label": operator_label, "lesson": lesson, "result_sha256": result_hash,
+                "result_spec": spec, "summary": self.summary(),
+            }
+        except Exception as exc:
+            write_batch("failed", completed_at=utc_now_clickhouse(), error=f"{type(exc).__name__}: {exc}"[:2000])
+            raise
 
     def group_state(self, spec: Mapping[str, Any]) -> dict[str, Any]:
         identifier = group_id(spec)

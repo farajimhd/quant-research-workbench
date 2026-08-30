@@ -1,9 +1,10 @@
 # News Label Studio
 
-News Review is a standalone, localhost-only reviewer for all 347,515 articles
-in the 2025-2026 training/development population. V61 mismatches are one
-predefined view over that population, not the data source. The tool does not
-import the main frontend or run through a production service.
+News Review is a standalone, localhost-only reviewer for all 352,559 articles
+in the 2025-2026 review population: 347,515 training/development articles and
+the 5,044 articles formerly reserved as the August 2026 holdout. V61
+mismatches are one predefined view over that population, not the data source.
+The tool does not import the main frontend or run through a production service.
 
 The working source and all operator decisions live in ClickHouse. Markdown
 audit files and the generated audit controller are not runtime dependencies.
@@ -30,28 +31,36 @@ Use `--prepare-only` to prepare or validate ClickHouse without starting the UI.
 
 ## Review workflow
 
-1. Start in the flat **All training news** table or select a predefined view
+1. Start in the flat **All review news** table or select a predefined view
    such as V61 mismatches, false negatives, false positives, or unreviewed.
 2. Search and filter Gold, V61, policy-expected, policy-status, synthesis-path,
-   title-pattern, provider, ticker, dates, or current operator state.
+   title-pattern, provider, ticker, population split, dates, or current operator
+   state.
 3. Optionally group the filtered table from the left panel by path and title
    pattern, label matrix, title pattern, ticker, month, review status, or a
    custom combination of up to three dimensions.
 4. Select a group to keep the articles in the main table while adding the V61
-   group rationale and exact group actions above it.
-5. Choose **All eligible** or **All ineligible** to immediately append one
-   operator label for every matching article. Choose **Mixed** to label rows
-   individually with the Eligible/Ineligible controls.
+   group rationale above it. Article pagination and counts stay at the top of
+   the table.
+5. Add an optional lesson, then choose **Label all eligible** or **Label all
+   ineligible** to label every article returned by the active search, filters,
+   and selected group. The UI updates the visible page immediately while the
+   exact result membership is persisted. Use row controls for mixed results.
 6. Add campaign, current-view, or article notes as needed, then mark the
    exact query-defined group complete.
 
-Article titles open the full canonical ClickHouse text.
+Article titles open the full canonical ClickHouse text and lineage in a centered
+modal.
 
 ## Persistence and authority
 
 The source gold label is never overwritten. Current operator state is derived
 from append-only ClickHouse history using the latest revision per article.
 Overlapping bulk groups are therefore safe to revise and fully auditable.
+Every result-set operation freezes the search/filter/group specification, exact
+ordered article membership, source revisions, result hash, operator label, and
+lesson. Lessons are durable review evidence for a future News Synthesis upgrade;
+they do not silently change the currently deployed model or its predictions.
 
 The tables are:
 
@@ -60,7 +69,11 @@ The tables are:
 - `q_live.news_synthesis_v61_operator_label_history_v3`: article decisions
 - `q_live.news_synthesis_v61_review_group_history_v3`: query-group state
 - `q_live.news_synthesis_v61_review_note_history_v3`: general/workspace/group notes
+- `q_live.news_synthesis_v61_result_label_batch_v1`: result-set query, label,
+  lesson, status, count, and membership hash
+- `q_live.news_synthesis_v61_result_label_member_v1`: exact articles captured by
+  each result-set operation
 
-The source snapshot is restricted to `training_development`. All 5,044 exposed
-August holdout articles, including its 677 mismatches, are excluded and cannot
-be queried or labeled here.
+`population_split` remains visible provenance. It can be filtered, but it does
+not restrict personal review: the former August holdout and its 677 V61
+mismatches are queryable and labelable like every other article.

@@ -45,6 +45,25 @@ class ExistingGroupBackend(ClickHouseReviewBackend):
         return {"articles": 12, "reviewed_articles": 3}
 
 
+class ResultSetBackend(ClickHouseReviewBackend):
+    def rows(self, sql: str) -> list[dict]:
+        assert "CEO\\'s outlook" in sql
+        assert "single_subject > report > issuer" in sql
+        return [
+            {
+                "source_id": "source-2", "gold_label": "ineligible",
+                "synthesis_label": "eligible", "source_revision_key": "revision-2",
+            },
+            {
+                "source_id": "source-1", "gold_label": "eligible",
+                "synthesis_label": "eligible", "source_revision_key": "revision-1",
+            },
+        ]
+
+    def summary(self) -> dict:
+        return {"articles": 2, "reviewed_articles": 2}
+
+
 def test_group_id_is_stable_and_sensitive_to_query() -> None:
     first = {"filters": {"q": "guidance"}, "selection": {"ticker": "AAPL"}}
     reordered = {"selection": {"ticker": "AAPL"}, "filters": {"q": "guidance"}}
@@ -81,7 +100,7 @@ def test_grouping_rejects_unsafe_or_cartesian_dimensions() -> None:
         backend.normalize_group_by(["ticker", "channel"])
 
 
-def test_mismatch_loader_excludes_holdout_and_rejects_non_mismatch() -> None:
+def test_mismatch_loader_includes_training_and_former_holdout() -> None:
     with TemporaryDirectory() as directory:
         path = Path(directory) / "mismatches.jsonl"
         rows = [
@@ -102,12 +121,12 @@ def test_mismatch_loader_excludes_holdout_and_rejects_non_mismatch() -> None:
             EXPECTED_TRAINING_MISMATCHES=1,
             EXPECTED_HOLDOUT_MISMATCHES=1,
         ):
-            training, splits = backend._load_mismatches()
-        assert set(training) == {"training-1"}
+            mismatches, splits = backend._load_mismatches()
+        assert set(mismatches) == {"training-1", "holdout-1"}
         assert splits == {"training_development": 1, "holdout_august_2026": 1}
 
 
-def test_assignment_loader_exposes_all_training_rows_but_never_holdout() -> None:
+def test_assignment_loader_exposes_training_and_former_holdout() -> None:
     with TemporaryDirectory() as directory:
         path = Path(directory) / "assignments.csv"
         path.write_text(
@@ -116,9 +135,9 @@ def test_assignment_loader_exposes_all_training_rows_but_never_holdout() -> None
             encoding="utf-8",
         )
         backend = ClickHouseReviewBackend(FakeClient(), assignments_path=path)
-        with patch.multiple(core, EXPECTED_ASSIGNMENTS=3, EXPECTED_TRAINING_ARTICLES=2):
+        with patch.multiple(core, EXPECTED_ASSIGNMENTS=3, EXPECTED_REVIEW_ARTICLES=3):
             assignments = backend._load_assignments()
-        assert set(assignments) == {"training-1", "training-2"}
+        assert set(assignments) == {"training-1", "training-2", "holdout-1"}
 
 
 def test_article_label_is_appended_with_original_gold_provenance() -> None:
@@ -148,3 +167,26 @@ def test_saved_group_completion_uses_frozen_matched_count() -> None:
     assert result["matched_rows"] == 12
     assert result["completed"] == 1
     assert "news_synthesis_v61_review_group_history_v3" in client.executed[-1]
+
+
+def test_result_set_label_freezes_query_membership_and_lesson() -> None:
+    client = FakeClient()
+    backend = ResultSetBackend(client)
+    result = backend.apply_result_set(
+        filters={"q": "CEO's outlook", "search_scope": "full_text"},
+        selection={"synthesis_path": "single_subject > report > issuer"},
+        operator_label="ineligible",
+        lesson="Issuer-looking outlook headlines are not forecasts without a new assertion.",
+        reviewer="owner",
+    )
+    assert result["matched_rows"] == 2
+    assert result["operator_label"] == "ineligible"
+    assert len(result["result_sha256"]) == 64
+    assert result["result_spec"]["filters"]["q"] == "CEO's outlook"
+    executed = "\n".join(client.executed)
+    assert "news_synthesis_v61_result_label_batch_v1" in executed
+    assert "news_synthesis_v61_result_label_member_v1" in executed
+    assert "news_synthesis_v61_operator_label_history_v3" in executed
+    assert "Issuer-looking outlook headlines are not forecasts" in executed
+    assert '"source_id":"source-1"' in executed
+    assert '"source_id":"source-2"' in executed

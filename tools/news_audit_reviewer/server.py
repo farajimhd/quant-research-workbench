@@ -48,6 +48,14 @@ class NoteUpdate(BaseModel):
     reviewer: str = Field(default="personal_operator", max_length=200)
 
 
+class ResultSetLabelUpdate(BaseModel):
+    filters: dict[str, Any] = Field(default_factory=dict)
+    selection: dict[str, Any] = Field(default_factory=dict)
+    operator_label: str
+    lesson: str = Field(default="", max_length=30_000)
+    reviewer: str = Field(default="personal_operator", max_length=200)
+
+
 def create_app(backend: ClickHouseReviewBackend) -> FastAPI:
     app = FastAPI(title="News Synthesis ClickHouse Reviewer", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.backend = backend
@@ -75,13 +83,14 @@ def create_app(backend: ClickHouseReviewBackend) -> FastAPI:
                 "group_fields": sorted(ALLOWED_GROUP_FIELDS),
                 "default_group_by": list(DEFAULT_GROUP_BY),
                 "presets": [
-                    {"id": "all", "label": "All training news", "description": "Complete 2025-2026 training population", "filters": {}},
+                    {"id": "all", "label": "All review news", "description": "Complete 2025-2026 review population", "filters": {}},
                     {"id": "mismatches", "label": "V61 mismatches", "description": "Binary gold and synthesis disagree", "filters": {"agreement": "mismatch"}},
                     {"id": "false_negatives", "label": "Gold eligible / V61 ineligible", "description": "Potential missed forecast events", "filters": {"gold_label": "eligible", "synthesis_label": "ineligible"}},
                     {"id": "false_positives", "label": "Gold ineligible / V61 eligible", "description": "Potential over-triggering", "filters": {"gold_label": "ineligible", "synthesis_label": "eligible"}},
                     {"id": "unreviewed", "label": "Unreviewed", "description": "No personal operator label", "filters": {"review_status": "unreviewed"}},
                     {"id": "changed", "label": "Changed from gold", "description": "Your label differs from gold", "filters": {"review_status": "changed"}},
                     {"id": "short_text", "label": "Insufficient short text", "description": "Non-binary gold supervision", "filters": {"gold_label": "insufficient_short_text"}},
+                    {"id": "former_holdout", "label": "August 2026 review set", "description": "Former holdout retained as provenance", "filters": {"population_split": "holdout_august_2026"}},
                 ],
             }
         except Exception as exc:
@@ -137,6 +146,19 @@ def create_app(backend: ClickHouseReviewBackend) -> FastAPI:
                 note=update.note,
                 reviewer=update.reviewer,
                 apply_label=update.apply_label,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/result-set/label")
+    def label_result_set(update: ResultSetLabelUpdate) -> dict[str, Any]:
+        try:
+            return backend.apply_result_set(
+                filters=update.filters,
+                selection=update.selection,
+                operator_label=update.operator_label,
+                lesson=update.lesson,
+                reviewer=update.reviewer,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

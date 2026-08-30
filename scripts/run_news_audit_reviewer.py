@@ -64,7 +64,7 @@ def main() -> int:
     )
     print("News Synthesis ClickHouse Reviewer", flush=True)
     print(f"  Database   : {args.database}", flush=True)
-    print("  Preparing  : lineage-bound 347,515-row training source snapshot", flush=True)
+    print("  Preparing  : lineage-bound 352,559-row full review source snapshot", flush=True)
     prepared = backend.prepare_source()
     print(
         f"  Ready      : articles={prepared['articles']:,} paths={prepared['paths']:,} "
