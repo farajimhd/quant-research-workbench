@@ -1511,6 +1511,8 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(swing_condition["value"], 0.0)
         self.assertIn("swing-high breakout", profile["description"])
         self.assertEqual(plan["campaign_lifecycle"]["reentry_cooldown_ms"], 5_000)
+        self.assertTrue(profile["lifecycle"]["reentry"]["unlimited_attempts"])
+        self.assertEqual(profile["lifecycle"]["reentry"]["maximum_attempts"], 0)
         self.assertEqual(profile["lifecycle"]["trading_behavior"]["eligible_sessions"], ["premarket"])
         self.assertEqual(profile["lifecycle"]["trading_behavior"]["entry_cutoff_time"], "09:29:59")
         self.assertEqual(profile["lifecycle"]["trading_behavior"]["flatten_time"], "09:29:59")

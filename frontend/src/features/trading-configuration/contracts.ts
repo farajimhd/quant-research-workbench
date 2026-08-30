@@ -266,6 +266,7 @@ export type StrategyLifecycle = {
     cooldown_ms: number;
     enabled: boolean;
     maximum_attempts: number;
+    unlimited_attempts?: boolean;
     order_intent: OrderIntentConfig;
     require_new_confirmation: boolean;
     rules: EntryRules;

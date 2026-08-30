@@ -2,7 +2,7 @@
 
 ## Boundary
 
-`long-momentum-campaign@9` is the current post-refactor automatic strategy. It is
+`long-momentum-campaign@10` is the current post-refactor automatic strategy. It is
 long only and deterministic. It consumes normalized causal observations; it
 does not calculate a second copy of QMD, Generic Structure, VWAP, MACD, news,
 or market signals.
@@ -21,13 +21,14 @@ owns IBKR-shaped order placement/modification and broker-command recovery. QMD o
 reusable market observations. Canvas owns presentation and semantic assignment
 commands, never trading decisions or broker commands.
 
-Earlier revisions remain immutable historical evidence. Revision 9 requires an
+Earlier revisions remain immutable historical evidence. Revision 10 requires an
 Early Squeeze Move campaign, absolute liquidity and volume attraction, price
 above VWAP, a causal 1-second swing-high break, and a positive/open 1-second
 MACD: line above signal, line above zero, signal above zero, and positive
 histogram. It also separates below-entry loss handling from profitable-position
-management and permits a new causally confirmed entry after the prior episode is
-flat. Older assignments are never silently reinterpreted as revision 9.
+management and keeps reentry eligible for the lifetime of the active Early
+Squeeze campaign after the prior episode is flat. Older assignments are never
+silently reinterpreted as revision 10.
 
 ## Runtime objects
 

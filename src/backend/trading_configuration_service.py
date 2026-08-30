@@ -1430,6 +1430,7 @@ def _default_strategy_lifecycle(parameters: dict[str, Any]) -> dict[str, Any]:
             "enabled": bool(reentry.get("enabled", True)),
             "cooldown_ms": int(reentry.get("cooldown_ms") or 0),
             "maximum_attempts": int(reentry.get("maximum_attempts") or 0),
+            "unlimited_attempts": bool(reentry.get("unlimited_attempts", False)),
             "require_new_confirmation": bool(
                 reentry.get("require_new_confirmation", True)
             ),
@@ -1896,6 +1897,7 @@ def _migrate_lifecycle_v5(
     reentry.setdefault("enabled", True)
     reentry.setdefault("cooldown_ms", 0)
     reentry.setdefault("maximum_attempts", 0)
+    reentry.setdefault("unlimited_attempts", False)
     reentry.setdefault("require_new_confirmation", True)
     exit_config = result.setdefault("exit", {})
     if "routes" not in exit_config and "rule_sets" not in exit_config:
@@ -3952,7 +3954,8 @@ def _default_draft() -> dict[str, Any]:
         "value": 1.0,
         "allow_replacement": False,
     }
-    squeeze_lifecycle["reentry"]["maximum_attempts"] = 1
+    squeeze_lifecycle["reentry"]["maximum_attempts"] = 0
+    squeeze_lifecycle["reentry"]["unlimited_attempts"] = True
     squeeze_lifecycle["initial_entry"]["order_intent"][
         "protection_profile"
     ] = "structural-five-tranche"

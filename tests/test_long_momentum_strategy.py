@@ -1201,6 +1201,32 @@ class LongMomentumStrategyTests(unittest.TestCase):
         )
         self.assertEqual(result.evaluation.signals[0].reason, "reentry_cooldown")
 
+    def test_unlimited_reentry_does_not_complete_an_active_campaign(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["reentry"].update({
+            "cooldown_ms": 0,
+            "maximum_attempts": 0,
+            "unlimited_attempts": True,
+            "require_new_confirmation": False,
+        })
+        waiting = assignment(
+            parameters=parameters,
+            status=AssignmentStatus.REENTRY_COOLDOWN,
+            state={
+                "reentries": 25,
+                "last_exit_at": (NOW - timedelta(seconds=1)).isoformat(),
+            },
+        )
+
+        result = LongMomentumStrategyEngine().evaluate(
+            waiting,
+            confirmed_observation(observed_at=NOW),
+        )
+
+        self.assertEqual(result.evaluation.signals[0].action, "enter_long")
+        self.assertEqual(result.evaluation.signals[0].reason, "reentry_confirmed")
+        self.assertEqual(result.status, AssignmentStatus.ENTRY_PENDING)
+
     def test_reentry_requires_a_renewed_early_squeeze_after_exit(self) -> None:
         parameters = default_long_momentum_parameters()
         parameters["reentry"].update({

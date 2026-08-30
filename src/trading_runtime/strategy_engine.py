@@ -32,7 +32,7 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 9
+STRATEGY_REVISION = 10
 
 RULE_COMPARATORS = {
     "above_by_bps",
@@ -452,7 +452,13 @@ def default_long_momentum_parameters() -> dict[str, Any]:
             "quantity_fraction": 1.0,
             "minimum_remaining_quantity": 1.0,
         },
-        "reentry": {"enabled": True, "cooldown_ms": 0, "maximum_attempts": 3, "require_new_confirmation": True},
+        "reentry": {
+            "enabled": True,
+            "cooldown_ms": 0,
+            "maximum_attempts": 3,
+            "unlimited_attempts": False,
+            "require_new_confirmation": True,
+        },
         "momentum_management": {
             "downside_loss_guard": {
                 "enabled": False,
@@ -904,7 +910,10 @@ class LongMomentumStrategyEngine:
                 state,
                 AssignmentStatus.REENTRY_COOLDOWN if reentries else AssignmentStatus.WATCHING,
             )
-        if reentries > int(reentry["maximum_attempts"]):
+        if (
+            not bool(reentry.get("unlimited_attempts", False))
+            and reentries > int(reentry["maximum_attempts"])
+        ):
             return self._result(assignment, observation, "wait", "maximum_reentries_reached", 0.0, 1.0, state, AssignmentStatus.COMPLETED)
         if reentries and not assignment.permissions.reenter:
             return self._result(assignment, observation, "wait", "reentry_not_authorized", 0.0, 1.0, state, AssignmentStatus.COMPLETED)
