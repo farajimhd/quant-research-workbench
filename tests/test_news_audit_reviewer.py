@@ -77,22 +77,26 @@ def test_filter_builder_supports_search_grouping_and_escapes_input() -> None:
     where = backend._where(
         {
             "q": "CEO's outlook",
-            "search_scope": "full_text",
             "ticker": "AAPL",
             "ticker_count": "2",
             "forecast_policy_id": "forecast.trigger.issuer_guidance",
             "date_from": "2025-01-01",
+            "time_from": "09:30",
+            "time_to": "16:00",
             "review_status": "changed",
         },
         {"synthesis_path": "single_subject > report > issuer"},
     )
     assert "CEO\\'s outlook" in where
     assert "s.rendered_text" in where
+    assert "arrayStringConcat(s.channels,' ')" in where
     assert "has(s.tickers,'AAPL')" in where
     assert "length(s.tickers)=2" in where
     assert "has(s.forecast_policy_ids,'forecast.trigger.issuer_guidance')" in where
     assert "l.operator_label!=s.gold_label" in where
     assert "single_subject > report > issuer" in where
+    assert ">=34200 AND" in where
+    assert "<=57600" in where
 
 
 def test_grouping_rejects_unsafe_or_cartesian_dimensions() -> None:
@@ -111,6 +115,15 @@ def test_filter_builder_rejects_invalid_ticker_count() -> None:
     backend = ClickHouseReviewBackend(FakeClient())
     with pytest.raises(ValueError, match="ticker_count"):
         backend._where({"ticker_count": "many"})
+
+
+def test_time_filter_supports_overnight_utc_window() -> None:
+    backend = ClickHouseReviewBackend(FakeClient())
+    where = backend._where({"time_from": "20:00", "time_to": "04:00"})
+    assert ">=72000 OR" in where
+    assert "<=14400" in where
+    with pytest.raises(ValueError, match="valid time"):
+        backend._where({"time_from": "25:00"})
 
 
 def test_mismatch_loader_includes_training_and_former_holdout() -> None:

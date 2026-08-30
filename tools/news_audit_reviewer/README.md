@@ -36,6 +36,9 @@ Use `--prepare-only` to prepare or validate ClickHouse without starting the UI.
 2. Filter in review order: synthesis path, title pattern, V61 forecast-trigger
    rule/reason, ticker count, Gold, then V61. Less-frequent scope and rulebook
    diagnostics are under **More filters**.
+   Search always covers canonical article bodies plus titles, templates, teaser,
+   author, provider, tickers, channels, tags, and source ID. UTC time-of-day
+   filters work independently of date and support ranges that cross midnight.
 3. Optionally group the filtered table from the left panel by path and title
    pattern, label matrix, title pattern, ticker, month, review status, or a
    custom combination of up to three dimensions.
@@ -55,6 +58,10 @@ modal.
 The **rule-implied label** comes from the separate title-pattern rulebook; the
 **rule comparison** says whether that suggestion agrees with Gold or why no
 single binary suggestion exists. Neither field is the V61 prediction.
+
+The progress card above the filters shows the current append-only operator
+authority: total articles labeled, review-population coverage, eligible and
+ineligible frequencies, and labels changed from Gold.
 
 ## Persistence and authority
 

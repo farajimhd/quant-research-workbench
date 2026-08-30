@@ -591,11 +591,16 @@ WHERE campaign_id={sql_string(self.campaign_id)} GROUP BY group_id FORMAT JSONEa
             parts = [
                 f"positionCaseInsensitiveUTF8(s.source_id,{sql_string(q)})>0",
                 f"positionCaseInsensitiveUTF8(s.title,{sql_string(q)})>0",
+                f"positionCaseInsensitiveUTF8(s.normalized_title,{sql_string(q)})>0",
                 f"positionCaseInsensitiveUTF8(s.normalized_title_template,{sql_string(q)})>0",
                 f"positionCaseInsensitiveUTF8(s.teaser,{sql_string(q)})>0",
+                f"positionCaseInsensitiveUTF8(s.rendered_text,{sql_string(q)})>0",
+                f"positionCaseInsensitiveUTF8(s.provider,{sql_string(q)})>0",
+                f"positionCaseInsensitiveUTF8(s.author,{sql_string(q)})>0",
+                f"positionCaseInsensitiveUTF8(arrayStringConcat(s.tickers,' '),{sql_string(q)})>0",
+                f"positionCaseInsensitiveUTF8(arrayStringConcat(s.channels,' '),{sql_string(q)})>0",
+                f"positionCaseInsensitiveUTF8(arrayStringConcat(s.provider_tags,' '),{sql_string(q)})>0",
             ]
-            if values.get("search_scope") == "full_text":
-                parts.append(f"positionCaseInsensitiveUTF8(s.rendered_text,{sql_string(q)})>0")
             clauses.append("(" + " OR ".join(parts) + ")")
         scalar = {
             "synthesis_path": "s.synthesis_path", "title_pattern_id": "s.title_pattern_id",
@@ -640,6 +645,28 @@ WHERE campaign_id={sql_string(self.campaign_id)} GROUP BY group_id FORMAT JSONEa
                 if not DATE_RE.fullmatch(value):
                     raise ValueError(f"{key} must be YYYY-MM-DD")
                 clauses.append(f"s.published_date{op}toDate({sql_string(value)})")
+        time_values: dict[str, int] = {}
+        for key in ("time_from", "time_to"):
+            value = str(values.get(key) or "").strip()
+            if not value:
+                continue
+            match = re.fullmatch(r"(\d{2}):(\d{2})(?::(\d{2}))?", value)
+            if not match:
+                raise ValueError(f"{key} must be HH:MM or HH:MM:SS")
+            hour, minute, second = (int(part or 0) for part in match.groups())
+            if hour > 23 or minute > 59 or second > 59:
+                raise ValueError(f"{key} is outside the valid time of day")
+            time_values[key] = hour * 3600 + minute * 60 + second
+        if time_values:
+            seconds = "toHour(s.published_at_utc)*3600+toMinute(s.published_at_utc)*60+toSecond(s.published_at_utc)"
+            start, end = time_values.get("time_from"), time_values.get("time_to")
+            if start is not None and end is not None:
+                operator = "AND" if start <= end else "OR"
+                clauses.append(f"({seconds}>={start} {operator} {seconds}<={end})")
+            elif start is not None:
+                clauses.append(f"{seconds}>={start}")
+            else:
+                clauses.append(f"{seconds}<={end}")
         status = str(values.get("review_status") or "").strip()
         status_clauses = {
             "unreviewed": "empty(l.operator_label)", "reviewed": "notEmpty(l.operator_label)",
