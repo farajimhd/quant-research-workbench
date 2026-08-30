@@ -119,10 +119,12 @@ def test_structural_history_can_span_all_loaded_chart_bars() -> None:
     assert "fn unified_structure_projection" in history_cache_source
     assert 'object.insert("sources".to_string(), json!([]))' in history_cache_source
     assert "CacheProfile::Structure" in history_cache_source
-    assert "structure_only.then_some(1)" in history_cache_source
+    assert "(bars_only || structure_only).then_some(1)" in history_cache_source
     assert "rebuild_trade_structure_checkpoint" in history_cache_source
     assert "rebuild_structure_checkpoint_inner(config, source, request, Some(1))" in structure_checkpoint_source
     assert "source.stream_ordered_filtered(" in structure_checkpoint_source
+    assert "CacheProfile::Bars(timeframe.clone())" in history_cache_source
+    assert "(CacheProfile::Bars(_), Some(timeframe)) => vec![timeframe.clone()]" in history_cache_source
     assert 'column !== "qmd_structure_unified_levels"' in chart_data_source
     assert 'indicator_columns: "bar_start,qmd_structure_unified_levels"' in chart_data_source
     assert 'const unifiedStructureAsPrimary' not in chart_data_source
@@ -132,6 +134,8 @@ def test_structural_history_can_span_all_loaded_chart_bars() -> None:
     assert "function chartIdentityKey(ticker: string, indicatorColumns: string" not in chart_data_source
     assert "mergeIndicatorRowsByTime(current.indicators, rows)" in chart_data_source
     assert "Loading Unified Structural Levels…" in chart_data_source
+    assert "statusMessage={liveChart.historyNotice}" in chart_source
+    assert 'hasChartData && statusMessage ? <div className="chart-update-status" role="status">' in renderer_source
     structure_followup = chart_data_source.split(".then((payload) => {", 2)[2].split(".catch((reason) => {", 1)[0]
     assert 'historyError: ""' not in structure_followup
 

@@ -42,6 +42,7 @@ const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CacheProfile {
+    Bars(String),
     Derived(String),
     Structure(String),
     Products,
@@ -50,6 +51,7 @@ enum CacheProfile {
 impl CacheProfile {
     fn key(&self) -> String {
         match self {
+            Self::Bars(timeframe) => format!("bars:{timeframe}"),
             Self::Derived(timeframe) => format!("derived:{timeframe}"),
             Self::Structure(timeframe) => format!("structure:{timeframe}"),
             Self::Products => "products".to_string(),
@@ -586,6 +588,8 @@ impl HistoricalDerivedCache {
         let profile = if qmd_core::bars::is_supported_timeframe(&timeframe) {
             if structure_only {
                 CacheProfile::Structure(timeframe.clone())
+            } else if bars_only {
+                CacheProfile::Bars(timeframe.clone())
             } else {
                 CacheProfile::Derived(timeframe.clone())
             }
@@ -955,13 +959,15 @@ impl HistoricalDerivedCache {
             .filter_map(|value| parse_resolution_us(value))
             .collect::<Vec<_>>();
         let requested_timeframe = match &profile {
-            CacheProfile::Derived(timeframe) | CacheProfile::Structure(timeframe) => {
-                Some(timeframe.clone())
-            }
+            CacheProfile::Bars(timeframe)
+            | CacheProfile::Derived(timeframe)
+            | CacheProfile::Structure(timeframe) => Some(timeframe.clone()),
             CacheProfile::Products => None,
         };
         let structure_only = matches!(&profile, CacheProfile::Structure(_));
+        let bars_only = matches!(&profile, CacheProfile::Bars(_));
         let derived_timeframes = match (&profile, &requested_timeframe) {
+            (CacheProfile::Bars(_), Some(timeframe)) => vec![timeframe.clone()],
             (CacheProfile::Structure(_), Some(timeframe)) => vec![timeframe.clone()],
             (_, Some(timeframe)) if timeframe.eq_ignore_ascii_case("100ms") => {
                 vec![timeframe.clone()]
@@ -1162,7 +1168,7 @@ impl HistoricalDerivedCache {
             active.push_back(self.spawn_chunk_fetch(
                 chunks[next_chunk].clone(),
                 source_revision.live_continuation_sequence,
-                structure_only.then_some(1),
+                (bars_only || structure_only).then_some(1),
             ));
             next_chunk += 1;
         }
@@ -1247,7 +1253,7 @@ impl HistoricalDerivedCache {
                 active.push_back(self.spawn_chunk_fetch(
                     chunks[next_chunk].clone(),
                     source_revision.live_continuation_sequence,
-                    structure_only.then_some(1),
+                    (bars_only || structure_only).then_some(1),
                 ));
                 next_chunk += 1;
             }
@@ -2038,9 +2044,9 @@ fn historical_requirement(
         product: profile.key(),
         ticker: ticker.to_ascii_uppercase(),
         timeframe: match profile {
-            CacheProfile::Derived(timeframe) | CacheProfile::Structure(timeframe) => {
-                Some(timeframe.clone())
-            }
+            CacheProfile::Bars(timeframe)
+            | CacheProfile::Derived(timeframe)
+            | CacheProfile::Structure(timeframe) => Some(timeframe.clone()),
             CacheProfile::Products => None,
         },
         parameter_hash: stable_hash_hex(&parameter_contract),
@@ -2116,6 +2122,12 @@ mod tests {
         );
         assert_eq!(
             revision_window(&page, &CacheProfile::Products, 7)
+                .unwrap()
+                .start,
+            page.start
+        );
+        assert_eq!(
+            revision_window(&page, &CacheProfile::Bars("1s".to_string()), 7)
                 .unwrap()
                 .start,
             page.start
@@ -2245,9 +2257,16 @@ mod tests {
             &revision,
             &CacheProfile::Derived("5m".to_string()),
         );
+        let one_minute_bars = cache_key(
+            &window,
+            "AAPL",
+            &revision,
+            &CacheProfile::Bars("1m".to_string()),
+        );
         let products = cache_key(&window, "AAPL", &revision, &CacheProfile::Products);
 
         assert_ne!(one_minute, five_minute);
+        assert_ne!(one_minute, one_minute_bars);
         assert_ne!(one_minute, products);
         assert_ne!(five_minute, products);
     }

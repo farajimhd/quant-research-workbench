@@ -506,6 +506,7 @@ type ChartPanelProps = {
   showReferenceLine?: boolean;
   showIndicatorControls?: boolean;
   showSupervisionControls?: boolean;
+  statusMessage?: string;
   settingsStorageKey?: string;
   ticker: string;
   tickerChangeAsOf?: string;
@@ -588,6 +589,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   showReferenceLine = true,
   showIndicatorControls = true,
   showSupervisionControls = false,
+  statusMessage = "",
   settingsStorageKey,
   ticker,
   tickerChangeAsOf,
@@ -1640,6 +1642,10 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         />
       ) : null}
       <div className="chart-canvas-stack">
+        {hasChartData && statusMessage ? <div className="chart-update-status" role="status">
+          {loading ? <span className="loading-spinner" aria-hidden="true" /> : null}
+          {statusMessage}
+        </div> : null}
         {!hasChartData ? (
           <div className={`chart-state-overlay${errorMessage ? " error" : ""}`} role={errorMessage ? "alert" : "status"}>
             {loading ? <span className="loading-spinner" aria-hidden="true" /> : null}
