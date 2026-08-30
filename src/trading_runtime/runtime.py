@@ -137,6 +137,7 @@ class TradingRuntime:
         portfolio: PortfolioManagementEngine | None = None,
         portfolio_configuration: Mapping[str, Any] | None = None,
         control_plane: TradingControlPlane | None = None,
+        review_only: bool = False,
     ) -> None:
         if strategy is not None and (
             config.strategy_id != strategy.strategy_id
@@ -158,13 +159,14 @@ class TradingRuntime:
         self._persisted_assignment_times: dict[str, datetime] = {}
         self._last_wait_decision_signatures: dict[tuple[str, str], tuple[Any, ...]] = {}
         self.control_plane = control_plane or shared_trading_control_plane(broker)
-        self.control_plane.campaigns.bind_durable_authority(
-            journal,
-            session_key=config.anchor_date.isoformat(),
-        )
-        bind_campaigns = getattr(strategy, "bind_campaign_registry", None)
-        if bind_campaigns is not None:
-            bind_campaigns(self.control_plane.campaigns)
+        if not review_only:
+            self.control_plane.campaigns.bind_durable_authority(
+                journal,
+                session_key=config.anchor_date.isoformat(),
+            )
+            bind_campaigns = getattr(strategy, "bind_campaign_registry", None)
+            if bind_campaigns is not None:
+                bind_campaigns(self.control_plane.campaigns)
         self.risk = risk or RiskAuthority()
         self.intent_planner = intent_planner
         if portfolio is None:
@@ -229,7 +231,7 @@ class TradingRuntime:
         self._broker_stream_task: asyncio.Task[None] | None = None
         self._risk_refresh_task: asyncio.Task[None] | None = None
         self._canonical_session: CanonicalBrokerSession | None = None
-        self._review_only = False
+        self._review_only = review_only
 
     async def initialize(
         self,

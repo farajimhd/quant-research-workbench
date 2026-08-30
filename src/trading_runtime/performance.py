@@ -38,6 +38,7 @@ class _EpisodeState:
     peak_quantity: Decimal = ZERO
     entry_quantity: Decimal = ZERO
     entry_notional: Decimal = ZERO
+    open_cost_notional: Decimal = ZERO
     exit_quantity: Decimal = ZERO
     exit_notional: Decimal = ZERO
     gross_pnl: Decimal = ZERO
@@ -50,6 +51,10 @@ class _EpisodeState:
     @property
     def average_entry(self) -> Decimal:
         return self.entry_notional / self.entry_quantity if self.entry_quantity else ZERO
+
+    @property
+    def average_open_cost(self) -> Decimal:
+        return self.open_cost_notional / abs(self.position) if self.position else ZERO
 
 
 def derive_trade_episodes(executions: Iterable[Execution]) -> list[TradeEpisode]:
@@ -403,19 +408,23 @@ def _add_opening_fill(state: _EpisodeState, execution: Execution, quantity: Deci
     state.position += quantity * state.direction
     state.entry_quantity += quantity
     state.entry_notional += quantity * execution.price
+    state.open_cost_notional += quantity * execution.price
     state.fees += quantity * fee_per_unit
     state.peak_quantity = max(state.peak_quantity, abs(state.position))
     _append_identity(state, execution)
 
 
 def _add_closing_fill(state: _EpisodeState, execution: Execution, quantity: Decimal, fee_per_unit: Decimal) -> None:
+    average_open_cost = state.average_open_cost
     state.exit_quantity += quantity
     state.exit_notional += quantity * execution.price
     state.fees += quantity * fee_per_unit
-    state.gross_pnl += (execution.price - state.average_entry) * quantity * state.direction
+    state.gross_pnl += (execution.price - average_open_cost) * quantity * state.direction
+    state.open_cost_notional -= average_open_cost * quantity
     state.position -= quantity * state.direction
     if abs(state.position) <= POSITION_EPSILON:
         state.position = ZERO
+        state.open_cost_notional = ZERO
     state.exit_reason = execution.exit_reason or state.exit_reason
     _append_identity(state, execution)
 

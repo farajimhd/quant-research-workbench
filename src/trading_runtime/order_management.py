@@ -58,6 +58,12 @@ TERMINAL_MANAGEMENT_STATES = {
 }
 
 
+def _is_terminal_modify_race(exc: ValueError) -> bool:
+    """Identify the narrow broker race where a snapshotted order became terminal."""
+
+    return str(exc).strip().lower() == "only open orders may be modified"
+
+
 class ExecutionUrgency(StrEnum):
     VERY_URGENT = "very_urgent"
     URGENT = "urgent"
@@ -540,30 +546,89 @@ class OrderManagementEngine:
             group.intent.intent_id for group in self._groups.values()
         ):
             raise ValueError(f"Strategy intent has already been submitted: {intent.intent_id}")
-        plan = self.planner(intent, account_id, event)
+        working_intent = intent
+        plan = self.planner(working_intent, account_id, event)
         if not plan.orders:
-            raise ValueError(f"Strategy intent produced no broker order plan: {intent.action}")
-        await self._require_shortability(intent, plan)
-        quote = self._execution_quote(intent)
+            raise ValueError(f"Strategy intent produced no broker order plan: {working_intent.action}")
+        await self._require_shortability(working_intent, plan)
+        quote = self._execution_quote(working_intent)
         tactic = execution_tactic(
-            intent,
+            working_intent,
             self.policy,
             quote=quote,
             enforce_wall_clock_freshness=self.enforce_wall_clock_quote_freshness,
         )
-        protected_exit = await self._modify_existing_protected_exit(
-            intent,
-            account_id=account_id,
-            plan=plan,
-            tactic=tactic,
-        )
+        protected_exit: OrderGroupSnapshot | None = None
+        for stale_attempt in range(2):
+            try:
+                protected_exit = await self._modify_existing_protected_exit(
+                    working_intent,
+                    account_id=account_id,
+                    plan=plan,
+                    tactic=tactic,
+                )
+                break
+            except ValueError as exc:
+                if not _is_terminal_modify_race(exc):
+                    raise
+                reconciled = await self._reconcile_stale_protected_exit(
+                    working_intent,
+                    account_id=account_id,
+                    attempt=stale_attempt + 1,
+                )
+                if reconciled is None:
+                    return self._satisfied_exit_snapshot(
+                        working_intent,
+                        account_id=account_id,
+                        reason="protected_target_filled_before_exit_reprice",
+                    )
+                working_intent = reconciled
+                plan = self.planner(working_intent, account_id, event)
+                quote = self._execution_quote(working_intent)
+                tactic = execution_tactic(
+                    working_intent,
+                    self.policy,
+                    quote=quote,
+                    enforce_wall_clock_freshness=self.enforce_wall_clock_quote_freshness,
+                )
+        else:
+            # The broker changed the same protected order twice while it was
+            # being repriced. Stop reusing that stale order identity. Cancel
+            # only the strategy's remaining protection, then submit a fresh
+            # full-exit OCA group for the causally refreshed position quantity.
+            reconciled = await self._reconcile_stale_protected_exit(
+                working_intent,
+                account_id=account_id,
+                attempt=3,
+            )
+            if reconciled is None:
+                return self._satisfied_exit_snapshot(
+                    working_intent,
+                    account_id=account_id,
+                    reason="protected_target_filled_during_exit_reconciliation",
+                )
+            working_intent = reconciled
+            plan = self.planner(working_intent, account_id, event)
+            quote = self._execution_quote(working_intent)
+            tactic = execution_tactic(
+                working_intent,
+                self.policy,
+                quote=quote,
+                enforce_wall_clock_freshness=self.enforce_wall_clock_quote_freshness,
+            )
+            await self.cancel_strategy_protection(
+                account_id=account_id,
+                ticker=working_intent.ticker,
+                client_id_prefix=self._protective_order_prefix(),
+                event_time=working_intent.event_time,
+            )
         if protected_exit is not None:
             return protected_exit
         orders = _apply_initial_tactic(plan.orders, tactic)
-        now = self._causal_group_time(intent)
+        now = self._causal_group_time(working_intent)
         group = _ManagedOrderGroup(
             group_id=str(uuid4()),
-            intent=intent,
+            intent=working_intent,
             account_id=account_id,
             plan=plan,
             state=OrderManagementState.CREATED,
@@ -571,7 +636,7 @@ class OrderManagementEngine:
             updated_at=now,
             orders=list(orders),
             tactic=tactic,
-            remaining_quantity=float(intent.quantity),
+            remaining_quantity=float(working_intent.quantity),
             current_limit_price=(tactic.steps[0].price if tactic and tactic.steps else None),
         )
         self._groups[group.group_id] = group
@@ -583,7 +648,7 @@ class OrderManagementEngine:
             self.broker,
             account_id,
             group.orders,
-            intent=intent,
+            intent=working_intent,
             require_fresh=self.enforce_wall_clock_quote_freshness,
         )
         self.risk.reserve(account_id, group.orders)
@@ -597,6 +662,95 @@ class OrderManagementEngine:
                 event_time=intent.event_time,
                 exclude_order_ids=tuple(group.broker_order_ids),
             )
+        return group.snapshot(self.policy.version)
+
+    async def _reconcile_stale_protected_exit(
+        self,
+        intent: StrategyIntent,
+        *,
+        account_id: str,
+        attempt: int,
+    ) -> StrategyIntent | None:
+        positions = await self.broker.positions(account_id)
+        ticker = intent.ticker.upper()
+        position_side = str(intent.metadata.get("position_side") or "long").lower()
+        signed_quantity = sum(
+            float(position.position)
+            for position in positions
+            if str(position.contractDesc or "").upper() == ticker
+        )
+        remaining = (
+            max(0.0, signed_quantity)
+            if position_side != "short"
+            else max(0.0, -signed_quantity)
+        )
+        executable_remaining = math.floor(remaining * 1_000_000) / 1_000_000
+        self._record(
+            "order_management",
+            "protected_exit_snapshot_reconciled",
+            intent.intent_id,
+            account_id,
+            intent.event_time,
+            {
+                "ticker": ticker,
+                "attempt": attempt,
+                "requested_quantity": float(intent.quantity),
+                "broker_position_quantity": signed_quantity,
+                "executable_remaining_quantity": executable_remaining,
+                "reason": "protected_order_became_terminal_before_modify",
+            },
+        )
+        if executable_remaining <= 1e-9:
+            return None
+        if executable_remaining > float(intent.quantity) + 1e-9:
+            raise ValueError(
+                "Protected exit reconciliation found a larger position than the "
+                "Portfolio-approved exit quantity; refusing to expand execution authority"
+            )
+        return replace(
+            intent,
+            quantity=executable_remaining,
+            metadata={
+                **dict(intent.metadata),
+                "position_quantity": executable_remaining,
+                "exit_quantity_reconciled_from": float(intent.quantity),
+                "exit_quantity_reconciliation_attempt": attempt,
+            },
+        )
+
+    def _satisfied_exit_snapshot(
+        self,
+        intent: StrategyIntent,
+        *,
+        account_id: str,
+        reason: str,
+    ) -> OrderGroupSnapshot:
+        now = self._causal_group_time(intent)
+        group = _ManagedOrderGroup(
+            group_id=str(uuid4()),
+            intent=intent,
+            account_id=account_id,
+            plan=StrategyOrderPlan(()),
+            state=OrderManagementState.FILLED,
+            created_at=now,
+            updated_at=now,
+            orders=[],
+            remaining_quantity=0.0,
+        )
+        self._groups[group.group_id] = group
+        self._record(
+            "order_management",
+            "protected_exit_already_satisfied",
+            group.group_id,
+            account_id,
+            intent.event_time,
+            {
+                "order_group_id": group.group_id,
+                "ticker": intent.ticker.upper(),
+                "reason": reason,
+                "requested_quantity": float(intent.quantity),
+            },
+        )
         return group.snapshot(self.policy.version)
 
     def _execution_quote(self, intent: StrategyIntent) -> ExecutionQuote | None:

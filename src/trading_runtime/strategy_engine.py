@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, time as clock_time, timezone
 from enum import StrEnum
-from typing import Any
+from math import exp, floor
+from typing import Any, Mapping
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -32,7 +33,7 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 10
+STRATEGY_REVISION = 11
 
 RULE_COMPARATORS = {
     "above_by_bps",
@@ -51,6 +52,8 @@ STRATEGY_INPUT_SUMMARIES = {
     "market.previous_high": "The completed prior regular-session high used as a reference level for breakout and continuation rules.",
     "indicator.structure.swing_high": "The latest QMD-confirmed structural high for the selected timeframe, used as resistance and breakout evidence.",
     "indicator.structure.swing_low": "The latest QMD-confirmed structural low for the selected timeframe, used as support and invalidation evidence.",
+    "indicator.structure.unified_resistance_upper": "The upper boundary of the nearest causally available resistance zone from QMD's persistent Unified Structural Level Book.",
+    "indicator.structure.unified_support_lower": "The lower boundary of the nearest causally available support zone from QMD's persistent Unified Structural Level Book.",
     "indicator.structure.bullish_choch": "A QMD structure event that becomes true when price action confirms a bullish change of character on the selected timeframe.",
     "indicator.structure.bearish_choch": "A QMD structure event that becomes true when price action confirms a bearish change of character on the selected timeframe.",
     "indicator.vwap.value": "The selected timeframe's volume-weighted average price, used to judge whether trading occurs above, below, or through accepted value.",
@@ -80,6 +83,8 @@ def strategy_input_catalog() -> list[dict[str, Any]]:
         _input("market.previous_high", "Previous high", "Market", "qmd-reference", "previous_high", "price", ["session"]),
         _input("indicator.structure.swing_high", "Confirmed swing high", "QMD indicator", "qmd", "swing_high", "price", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"]),
         _input("indicator.structure.swing_low", "Confirmed swing low", "QMD indicator", "qmd", "swing_low", "price", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"]),
+        _input("indicator.structure.unified_resistance_upper", "Unified resistance upper", "QMD level book", "qmd", "structural_resistance_upper", "price", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"]),
+        _input("indicator.structure.unified_support_lower", "Unified support lower", "QMD level book", "qmd", "structural_support_lower", "price", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"]),
         _input("indicator.structure.bullish_choch", "Bullish change of character", "QMD indicator", "qmd", "bullish_choch", "boolean", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"]),
         _input("indicator.structure.bearish_choch", "Bearish change of character", "QMD indicator", "qmd", "bearish_choch", "boolean", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"]),
         _input("indicator.vwap.value", "VWAP", "QMD indicator", "qmd", "vwap", "price", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"], parameter="value"),
@@ -410,7 +415,25 @@ def default_long_momentum_parameters() -> dict[str, Any]:
             "qmd": {"minimum_score": 0.3, "minimum_confidence": 0.5},
             "vwap": {"minimum_slope_bps_per_second": 0.0},
             "macd": {"require_positive_histogram": True},
+            "use_unified_structure_levels": False,
+            "structural_level": {
+                "minimum_salience": 0.45,
+                "minimum_confidence": 0.50,
+                "minimum_reaction_probability": 0.50,
+                "acceptance_buffer_bps": 0.0,
+            },
             "veto": {"flow_price_divergence": 0.75, "liquidity_dislocation": 0.75},
+        },
+        "liquidity_admission": {
+            "enabled": False,
+            "latched": True,
+            "minimum_price": 2.0,
+            "maximum_price": 50.0,
+            "minimum_session_dollar_volume": 1_000_000.0,
+            "minimum_session_share_volume": 100_000.0,
+            "minimum_trade_rate_10s": 1.0,
+            "minimum_trade_rate_60s": 0.5,
+            "maximum_spread_bps": 50.0,
         },
         "sizing": {
             "request_mode": "fixed_quantity",
@@ -439,8 +462,19 @@ def default_long_momentum_parameters() -> dict[str, Any]:
                 "minimum_spacing_bps": 10.0,
                 "minimum_level_strength": 0.30,
                 "minimum_level_confidence": 0.50,
+                "minimum_reaction_probability": 0.0,
+                "minimum_reversal_probability": 0.0,
+                "minimum_composite_score": 0.0,
+                "premarket_maximum_gain_pct": 200.0,
             },
-            "luld_profit_target": {"enabled": True, "buffer_bps": 10.0, "require_authoritative_band": True},
+            "luld_profit_target": {
+                "enabled": True,
+                "buffer_bps": 25.0,
+                "minimum_tick_offset_count": 2,
+                "tick_size": 0.01,
+                "include_current_spread": True,
+                "require_authoritative_band": True,
+            },
         },
         "add": {"enabled": True, "trigger": "bullish_choch_after_pullback", "maximum_adds": 2},
         "profit_pocket": {
@@ -458,6 +492,12 @@ def default_long_momentum_parameters() -> dict[str, Any]:
             "maximum_attempts": 3,
             "unlimited_attempts": False,
             "require_new_confirmation": True,
+            "target_replenishment": {
+                "enabled": False,
+                "minimum_pullback_atr_multiple": 0.50,
+                "minimum_pullback_bps": 25.0,
+                "support_buffer_bps": 10.0,
+            },
         },
         "momentum_management": {
             "downside_loss_guard": {
@@ -512,6 +552,10 @@ def default_long_momentum_parameters() -> dict[str, Any]:
     }
     parameters["exit_routes"] = default_exit_routes(parameters["final_exit"])
     parameters["entry_rules"] = default_entry_decision_rules(parameters)
+    parameters["structural_entry"] = {
+        "enabled": bool(parameters["entry"].get("use_unified_structure_levels", False)),
+        **dict(parameters["entry"].get("structural_level") or {}),
+    }
     parameters.pop("entry", None)
     return parameters
 
@@ -601,8 +645,8 @@ def resolve_long_momentum_parameters(overrides: dict[str, Any] | None = None) ->
         raise ValueError("Profit-pocket quantity fraction must be between 0 and 1")
     if parameters["profit_pocket"]["trigger"] not in {"acceleration_slowdown", "favorable_move_pct", "volatility_multiple"}:
         raise ValueError("Unsupported profit-pocket trigger")
-    if int(parameters["reentry"]["cooldown_ms"]) < 0 or int(parameters["reentry"]["maximum_attempts"]) < 0:
-        raise ValueError("Re-entry cooldown and maximum attempts cannot be negative")
+    if int(parameters["reentry"]["cooldown_ms"]) < 0:
+        raise ValueError("Re-entry cooldown cannot be negative")
     required_signal_stream_id = str(
         parameters["reentry"].get("require_new_signal_stream_id") or ""
     ).strip()
@@ -722,7 +766,6 @@ def _active_rule_source_dependencies(
                 ("indicator.structure.bearish_choch", timeframe),
                 ("indicator.macd.line", timeframe),
                 ("indicator.macd.signal", timeframe),
-                ("indicator.macd.histogram", timeframe),
                 ("indicator.vwap.value", timeframe),
             })
     if _phase_is_automatic(parameters, "manage"):
@@ -838,6 +881,212 @@ def _reentry_signal_is_fresh(
     return activated_at > boundary
 
 
+def _numeric_source_value(
+    observation: StrategyObservation,
+    source_id: str,
+    timeframe: str = "",
+) -> float | None:
+    value = _source_value(observation, source_id, timeframe)
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number
+
+
+def _exact_positive_open_macd(
+    observation: StrategyObservation,
+    timeframe: str = "1s",
+) -> tuple[bool, dict[str, float | None]]:
+    line = _numeric_source_value(observation, "indicator.macd.line", timeframe)
+    signal = _numeric_source_value(observation, "indicator.macd.signal", timeframe)
+    evidence = {"macd_line": line, "macd_signal": signal}
+    return bool(
+        line is not None
+        and signal is not None
+        and line > signal
+        and line > 0
+        and signal > 0
+    ), evidence
+
+
+def _spread_bps(observation: StrategyObservation) -> float | None:
+    explicit = _numeric_source_value(observation, "market.spread_bps")
+    if explicit is not None:
+        return explicit
+    if observation.bid > 0 and observation.ask >= observation.bid:
+        midpoint = (observation.bid + observation.ask) / 2.0
+        if midpoint > 0:
+            return (observation.ask - observation.bid) / midpoint * 10_000.0
+    return None
+
+
+def _liquidity_admission_result(
+    observation: StrategyObservation,
+    policy: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    facts = {
+        "price": observation.price,
+        "session_dollar_volume": _numeric_source_value(
+            observation, "market.session_dollar_volume"
+        ),
+        "session_share_volume": _numeric_source_value(observation, "market.volume"),
+        "trade_rate_10s": _numeric_source_value(observation, "market.trade_rate_10s"),
+        "trade_rate_60s": _numeric_source_value(observation, "market.trade_rate_60s"),
+        "spread_bps": _spread_bps(observation),
+    }
+    checks = {
+        "price_floor": facts["price"] >= float(policy.get("minimum_price") or 0),
+        "price_ceiling": facts["price"] <= float(policy.get("maximum_price") or float("inf")),
+        "session_dollar_volume": facts["session_dollar_volume"] is not None
+        and float(facts["session_dollar_volume"])
+        >= float(policy.get("minimum_session_dollar_volume") or 0),
+        "session_share_volume": facts["session_share_volume"] is not None
+        and float(facts["session_share_volume"])
+        >= float(policy.get("minimum_session_share_volume") or 0),
+        "trade_rate_10s": facts["trade_rate_10s"] is not None
+        and float(facts["trade_rate_10s"])
+        >= float(policy.get("minimum_trade_rate_10s") or 0),
+        "trade_rate_60s": facts["trade_rate_60s"] is not None
+        and float(facts["trade_rate_60s"])
+        >= float(policy.get("minimum_trade_rate_60s") or 0),
+        "spread": facts["spread_bps"] is not None
+        and float(facts["spread_bps"])
+        <= float(policy.get("maximum_spread_bps") or float("inf")),
+    }
+    return all(checks.values()), {
+        "facts": facts,
+        "checks": checks,
+        "failed": [name for name, passed in checks.items() if not passed],
+    }
+
+
+def _current_execution_quality_result(
+    observation: StrategyObservation,
+    policy: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    spread = _spread_bps(observation)
+    trade_rate = _numeric_source_value(observation, "market.trade_rate_10s")
+    checks = {
+        "current_trade_rate_10s": trade_rate is not None
+        and trade_rate >= float(policy.get("minimum_trade_rate_10s") or 0),
+        "current_spread": spread is not None
+        and spread <= float(policy.get("maximum_spread_bps") or float("inf")),
+    }
+    return all(checks.values()), {
+        "facts": {"trade_rate_10s": trade_rate, "spread_bps": spread},
+        "checks": checks,
+        "failed": [name for name, passed in checks.items() if not passed],
+    }
+
+
+def _level_metric(row: dict[str, Any], *names: str) -> float:
+    for name in names:
+        value = row.get(name)
+        if value is not None:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+    return 0.0
+
+
+def _level_is_entry_quality(row: dict[str, Any], policy: dict[str, Any]) -> bool:
+    return bool(
+        _level_metric(row, "salience", "strength")
+        >= float(policy.get("minimum_salience") or 0)
+        and _level_metric(row, "confidence")
+        >= float(policy.get("minimum_confidence") or 0)
+        and _level_metric(row, "reaction_probability")
+        >= float(policy.get("minimum_reaction_probability") or 0)
+    )
+
+
+def _unified_entry_trigger(
+    observation: StrategyObservation,
+    parameters: dict[str, Any],
+    state: dict[str, Any],
+    *,
+    require_fresh_cross: bool,
+) -> dict[str, Any]:
+    policy = dict(parameters.get("structural_entry") or {})
+    buffer_bps = float(policy.get("acceptance_buffer_bps") or 0)
+    previous_price = state.get("previous_observed_price")
+    pending = state.get("pending_entry_resistance")
+    if isinstance(pending, Mapping):
+        try:
+            pending_boundary = float(pending.get("boundary") or 0)
+        except (TypeError, ValueError):
+            pending_boundary = 0.0
+        pending_threshold = pending_boundary * (1 + buffer_bps / 10_000)
+        if pending_boundary > 0 and observation.price > pending_threshold and (
+            not require_fresh_cross
+            or previous_price is not None
+            and float(previous_price) <= pending_threshold
+        ):
+            state.pop("pending_entry_resistance", None)
+            return {
+                "passed": True,
+                "reason": "unified_resistance_accepted",
+                "level": dict(pending.get("level") or {}),
+                "reference_price": pending_boundary,
+                "threshold_price": pending_threshold,
+                "previous_price": previous_price,
+            }
+    rows = [
+        dict(row)
+        for row in observation.structural_resistance_levels
+        if isinstance(row, dict) and _level_is_entry_quality(dict(row), policy)
+    ]
+    if not rows and observation.structural_resistance_upper is not None:
+        rows = [{
+            "unified_level_id": "nearest-resistance",
+            "price": observation.structural_resistance_price,
+            "lower": observation.structural_resistance_lower,
+            "upper": observation.structural_resistance_upper,
+            "salience": observation.structural_resistance_strength,
+            "confidence": observation.structural_resistance_confidence,
+            "reaction_probability": observation.structural_resistance_strength,
+        }]
+    usable: list[tuple[float, dict[str, Any]]] = []
+    for row in rows:
+        boundary = row.get("upper") or row.get("price")
+        try:
+            boundary_value = float(boundary)
+        except (TypeError, ValueError):
+            continue
+        if boundary_value > 0:
+            usable.append((boundary_value, row))
+    if not usable:
+        return {"passed": False, "reason": "waiting_for_unified_resistance", "level": None}
+    crossed = [item for item in usable if observation.price > item[0] * (1 + buffer_bps / 10_000)]
+    if crossed:
+        boundary, level = max(crossed, key=lambda item: item[0])
+    else:
+        boundary, level = min(usable, key=lambda item: abs(item[0] - observation.price))
+    threshold = boundary * (1 + buffer_bps / 10_000)
+    passed = observation.price > threshold and (
+        not require_fresh_cross
+        or previous_price is not None and float(previous_price) <= threshold
+    )
+    if passed:
+        state.pop("pending_entry_resistance", None)
+    else:
+        state["pending_entry_resistance"] = {
+            "boundary": boundary,
+            "level": dict(level),
+            "armed_at": observation.observed_at.isoformat(),
+        }
+    return {
+        "passed": passed,
+        "reason": "unified_resistance_accepted" if passed else "waiting_for_unified_resistance_break",
+        "level": level,
+        "reference_price": boundary,
+        "threshold_price": threshold,
+        "previous_price": previous_price,
+    }
+
+
 class LongMomentumStrategyEngine:
     """Deterministic long-only policy engine over causal point-in-time observations."""
 
@@ -878,6 +1127,7 @@ class LongMomentumStrategyEngine:
         ):
             return self._result(assignment, observation, "wait", "no_active_rule_source_updated", 0.0, 1.0, state, status)
 
+        state["previous_observed_price"] = state.get("last_price")
         state["last_observed_at"] = observation.observed_at.isoformat()
         state["last_price"] = observation.price
         _record_structural_anchors(state, observation)
@@ -910,11 +1160,6 @@ class LongMomentumStrategyEngine:
                 state,
                 AssignmentStatus.REENTRY_COOLDOWN if reentries else AssignmentStatus.WATCHING,
             )
-        if (
-            not bool(reentry.get("unlimited_attempts", False))
-            and reentries > int(reentry["maximum_attempts"])
-        ):
-            return self._result(assignment, observation, "wait", "maximum_reentries_reached", 0.0, 1.0, state, AssignmentStatus.COMPLETED)
         if reentries and not assignment.permissions.reenter:
             return self._result(assignment, observation, "wait", "reentry_not_authorized", 0.0, 1.0, state, AssignmentStatus.COMPLETED)
         if reentries and state.get("last_exit_at"):
@@ -994,6 +1239,62 @@ class LongMomentumStrategyEngine:
                 AssignmentStatus.COMPLETED,
             )
 
+        replenishment = dict(reentry.get("target_replenishment") or {})
+        entitlement = float(state.get("target_replenishment_quantity") or 0)
+        if (
+            reentries
+            and entitlement > 0
+            and bool(replenishment.get("enabled", False))
+        ):
+            replenishment_result = self._target_replenishment_result(
+                assignment,
+                observation,
+                parameters,
+                state,
+                flat=True,
+            )
+            if replenishment_result is not None:
+                return replenishment_result
+
+        liquidity_policy = dict(parameters.get("liquidity_admission") or {})
+        if bool(liquidity_policy.get("enabled", False)):
+            admitted = bool(state.get("liquidity_admitted_at"))
+            admission_detail: dict[str, Any] = {}
+            if not admitted:
+                admitted, admission_detail = _liquidity_admission_result(
+                    observation, liquidity_policy
+                )
+                if admitted:
+                    state["liquidity_admitted_at"] = observation.observed_at.isoformat()
+                    state["liquidity_admission_evidence"] = admission_detail
+            if not admitted:
+                return self._result(
+                    assignment,
+                    observation,
+                    "wait",
+                    "liquidity_admission_incomplete",
+                    0.0,
+                    1.0,
+                    state,
+                    AssignmentStatus.REENTRY_COOLDOWN if reentries else AssignmentStatus.WATCHING,
+                    metadata={"liquidity_admission": admission_detail},
+                )
+            execution_ready, execution_detail = _current_execution_quality_result(
+                observation, liquidity_policy
+            )
+            if not execution_ready:
+                return self._result(
+                    assignment,
+                    observation,
+                    "wait",
+                    "current_execution_quality_incomplete",
+                    0.0,
+                    1.0,
+                    state,
+                    AssignmentStatus.REENTRY_COOLDOWN if reentries else AssignmentStatus.WATCHING,
+                    metadata={"execution_quality": execution_detail},
+                )
+
         phase_policy = dict(parameters.get("phase_policy") or {})
         phase = dict(phase_policy.get(phase_name) or {})
         phase_rules = (
@@ -1001,6 +1302,12 @@ class LongMomentumStrategyEngine:
             if reentries
             else dict(parameters.get("entry_rules") or {})
         )
+        if state.get("liquidity_admitted_at"):
+            confirmation_stage = entry_stage_without_rule_set(
+                dict(phase_rules.get("confirmation") or {}),
+                "strategy-squeeze-volume-spread-quality",
+            )
+            phase_rules = {**phase_rules, "confirmation": confirmation_stage}
         if (
             reentries
             and bool(reentry.get("require_new_confirmation", True))
@@ -1038,11 +1345,34 @@ class LongMomentumStrategyEngine:
             }.items()
             if value
         ]
-        triggered = [*operational_triggers, *rule_result["trigger"]["matched_groups"]]
+        unified_trigger: dict[str, Any] | None = None
+        if bool(dict(parameters.get("structural_entry") or {}).get("enabled", False)):
+            unified_trigger = _unified_entry_trigger(
+                observation,
+                parameters,
+                state,
+                require_fresh_cross=bool(reentries),
+            )
+            triggered = [*operational_triggers]
+            if bool(unified_trigger.get("passed")):
+                triggered.append("unified-structural-resistance")
+            reference_name = "qmd.unified_structure.resistance"
+            reference = unified_trigger.get("reference_price")
+            reference_buffer_bps = float(
+                dict(parameters.get("structural_entry") or {}).get("acceptance_buffer_bps")
+                or 0
+            )
+        else:
+            triggered = [*operational_triggers, *rule_result["trigger"]["matched_groups"]]
         confirmation_score = float(rule_result["confirmation"]["score"])
         confirmation = dict(rule_result["confirmation"]["groups"])
         vetoes = list(rule_result["veto"]["matched_groups"])
-        can_enter = bool(triggered) and not vetoes and (
+        trigger_passed = (
+            bool(unified_trigger.get("passed"))
+            if unified_trigger is not None
+            else bool(triggered)
+        )
+        can_enter = trigger_passed and not vetoes and (
             observation.force_entry or bool(rule_result["confirmation"]["passed"])
         )
         if not can_enter:
@@ -1051,6 +1381,8 @@ class LongMomentumStrategyEngine:
                 reason = "entry_vetoed"
             elif not confirmation_passed:
                 reason = "entry_confirmation_incomplete"
+            elif unified_trigger is not None:
+                reason = str(unified_trigger.get("reason") or "waiting_for_unified_resistance_break")
             elif reference_name.endswith("indicator.structure.swing_high"):
                 reason = (
                     "waiting_for_swing_high_reference"
@@ -1081,6 +1413,7 @@ class LongMomentumStrategyEngine:
                     "trigger_reference_name": reference_name,
                     "trigger_reference_price": reference,
                     "trigger_threshold_price": trigger_threshold,
+                    "unified_structural_trigger": unified_trigger,
                 },
             )
         if authority == "confirm" and not observation.manual_entry_request and not observation.force_entry:
@@ -1190,6 +1523,7 @@ class LongMomentumStrategyEngine:
                 "entry_rules": rule_result,
                 "initial_stop": stop,
                 "profit_targets": profit_targets,
+                "unified_structural_trigger": unified_trigger,
             },
         )
 
@@ -1385,6 +1719,17 @@ class LongMomentumStrategyEngine:
                 },
             )
 
+        if float(state.get("target_replenishment_quantity") or 0) > 0:
+            replenishment_result = self._target_replenishment_result(
+                assignment,
+                observation,
+                parameters,
+                state,
+                flat=False,
+            )
+            if replenishment_result is not None:
+                return replenishment_result
+
         if not manage_automatic:
             return self._result(
                 assignment,
@@ -1562,6 +1907,184 @@ class LongMomentumStrategyEngine:
             state, AssignmentStatus.MANAGING, invalidation_price=stop,
             metadata={"confirmation": confirmation, "gain_pct": gain_pct},
         )
+
+    def _target_replenishment_result(
+        self,
+        assignment: StrategyAssignment,
+        observation: StrategyObservation,
+        parameters: dict[str, Any],
+        state: dict[str, Any],
+        *,
+        flat: bool,
+    ) -> StrategyEngineResult | None:
+        reentry = dict(parameters.get("reentry") or {})
+        policy = dict(reentry.get("target_replenishment") or {})
+        if not bool(policy.get("enabled", False)):
+            return None
+        entitlement = float(state.get("target_replenishment_quantity") or 0)
+        if entitlement <= 0:
+            return None
+        if bool(state.get("target_replenishment_pending")):
+            return self._result(
+                assignment,
+                observation,
+                "wait" if flat else "hold",
+                "target_replenishment_fill_pending",
+                0.0,
+                1.0,
+                state,
+                AssignmentStatus.ENTRY_PENDING if flat else AssignmentStatus.MANAGING,
+                metadata={"replenishment_quantity": entitlement},
+            )
+        authorized = assignment.permissions.reenter if flat else assignment.permissions.add
+        if not authorized:
+            return self._result(
+                assignment,
+                observation,
+                "wait" if flat else "hold",
+                "target_replenishment_not_authorized",
+                0.0,
+                1.0,
+                state,
+                AssignmentStatus.REENTRY_COOLDOWN if flat else AssignmentStatus.MANAGING,
+                metadata={"replenishment_quantity": entitlement},
+            )
+        peak = max(
+            float(state.get("target_replenishment_peak_price") or 0),
+            observation.price,
+        )
+        state["target_replenishment_peak_price"] = peak
+        pullback_required = max(
+            observation.volatility
+            * float(policy.get("minimum_pullback_atr_multiple") or 0),
+            peak * float(policy.get("minimum_pullback_bps") or 0) / 10_000.0,
+        )
+        pullback = peak - observation.price
+        macd_open, macd_evidence = _exact_positive_open_macd(observation, "1s")
+        vwap = _numeric_source_value(observation, "indicator.vwap.value", "1s")
+        above_vwap = vwap is not None and observation.price > vwap
+        support_lower = observation.structural_support_lower
+        support_buffer = (
+            float(support_lower)
+            * float(policy.get("support_buffer_bps") or 0)
+            / 10_000.0
+            if support_lower is not None
+            else 0.0
+        )
+        support_held = support_lower is None or observation.price >= float(support_lower) - support_buffer
+        bearish_choch = bool(
+            observation.structure_event == "choch"
+            and observation.structure_direction == "bearish"
+        ) or not support_held
+        liquidity_policy = dict(parameters.get("liquidity_admission") or {})
+        if bool(liquidity_policy.get("enabled", False)):
+            execution_ready, execution_evidence = _current_execution_quality_result(
+                observation, liquidity_policy
+            )
+        else:
+            execution_ready, execution_evidence = True, {"checks": {}, "failed": []}
+        try:
+            armed_at = datetime.fromisoformat(
+                str(state.get("target_replenishment_armed_at") or "").replace("Z", "+00:00")
+            )
+            after_fill = observation.observed_at > armed_at
+        except ValueError:
+            after_fill = False
+        checks = {
+            "after_target_fill": after_fill,
+            "pullback_confirmed": pullback >= pullback_required and pullback_required > 0,
+            "macd_positive_and_open": macd_open,
+            "above_vwap": above_vwap,
+            "no_bearish_choch": not bearish_choch,
+            "execution_quality": execution_ready,
+        }
+        evidence = {
+            "checks": checks,
+            "failed": [name for name, passed in checks.items() if not passed],
+            "target_level_price": state.get("target_replenishment_level_price"),
+            "peak_price": peak,
+            "last_price": observation.price,
+            "pullback": pullback,
+            "pullback_required": pullback_required,
+            "vwap": vwap,
+            "support_lower": support_lower,
+            **macd_evidence,
+            "execution_quality_detail": execution_evidence,
+        }
+        if not all(checks.values()):
+            return self._result(
+                assignment,
+                observation,
+                "wait" if flat else "hold",
+                "waiting_for_target_replenishment_pullback",
+                0.0,
+                _confirmation_confidence(observation),
+                state,
+                AssignmentStatus.REENTRY_COOLDOWN if flat else AssignmentStatus.MANAGING,
+                metadata={"target_replenishment": evidence},
+            )
+        quantity = float(max(1, floor(entitlement)))
+        side = _strategy_side(parameters)
+        stop = _initial_stop(
+            observation,
+            parameters,
+            state.get("target_replenishment_level_price") or observation.price,
+            side=side,
+        )
+        luld_target = _luld_target(observation, parameters, side=side)
+        targets = _structural_profit_targets(
+            observation,
+            parameters,
+            stop=stop,
+            side=side,
+            luld_target=luld_target,
+        )
+        # Every structural target owns one independently protected whole-share
+        # slice. A small replenishment therefore cannot carry more targets than
+        # executable shares. Preserve the nearest/highest-ranked targets and
+        # let any residual quantity remain distributed across those slices.
+        targets = targets[: max(1, int(quantity))]
+        state["structural_profit_targets"] = targets
+        state["target_replenishment_pending"] = True
+        state["target_replenishment_pending_quantity"] = quantity
+        state["target_replenishment_quantity"] = max(0.0, entitlement - quantity)
+        state["entries"] = int(state.get("entries") or 0) + 1
+        state["entry_reference_price"] = observation.price if flat else state.get("entry_reference_price")
+        state["entry_at"] = observation.observed_at.isoformat() if flat else state.get("entry_at")
+        capital_request = CapitalRequest(
+            mode="fixed_quantity",
+            value=quantity,
+            allow_replacement=False,
+        )
+        order_intent = dict(
+            dict(dict(parameters.get("phase_policy") or {}).get("reentry") or {}).get(
+                "order_intent"
+            )
+            or {}
+        )
+        return self._result(
+            assignment,
+            observation,
+            "enter_long" if flat else "add_long",
+            "target_profit_replenishment",
+            1.0,
+            _confirmation_confidence(observation),
+            state,
+            AssignmentStatus.ENTRY_PENDING if flat else AssignmentStatus.MANAGING,
+            quantity=quantity,
+            invalidation_price=stop,
+            profit_target_price=targets[0] if targets else None,
+            trailing_amount=_trailing_amount(observation, parameters),
+            capital_request=capital_request,
+            order_intent=order_intent,
+            metadata={
+                "execution_role": "target_replenishment",
+                "replenishment_quantity": quantity,
+                "profit_targets": targets,
+                "target_replenishment": evidence,
+            },
+        )
+
     def _result(
         self,
         assignment: StrategyAssignment,
@@ -1662,6 +2185,7 @@ class LongMomentumStrategyEngine:
                         resolved_order_intent,
                         observation=observation,
                         action=action,
+                        quantity=quantity,
                         parameters=assignment.parameters,
                         state=state,
                         invalidation_price=invalidation_price,
@@ -1828,6 +2352,7 @@ def _protection_profile_from_phase(
     *,
     observation: StrategyObservation,
     action: str,
+    quantity: float,
     parameters: dict[str, Any],
     state: dict[str, Any],
     invalidation_price: float | None,
@@ -1847,8 +2372,37 @@ def _protection_profile_from_phase(
         for value in state.get("structural_profit_targets") or []
         if isinstance(value, (int, float)) and float(value) > 0
     ]
+    configured_slices = [dict(raw) for raw in configured.get("slices") or []]
+    has_indexed_slices = any(
+        raw.get("strategy_profit_target_index") is not None
+        for raw in configured_slices
+    )
+    indexed_slices = [
+        raw
+        for raw in configured_slices
+        if raw.get("strategy_profit_target_index") is not None
+        and 0 <= int(raw["strategy_profit_target_index"]) < len(strategy_targets)
+    ]
+    if has_indexed_slices and quantity >= 1:
+        indexed_slices = indexed_slices[: max(1, floor(quantity + 1e-9))]
+    if not has_indexed_slices:
+        active_slices = configured_slices
+    elif indexed_slices:
+        active_slices = indexed_slices
+    elif configured_slices:
+        # No structural level qualified. Keep the complete quantity protected
+        # as a runner without inventing a synthetic profit target.
+        active_slices = [{
+            **configured_slices[0],
+            "strategy_profit_target_index": None,
+            "profit_target_price": None,
+            "use_strategy_profit_target": False,
+        }]
+    else:
+        active_slices = []
+    dynamic_fraction = 1.0 / len(active_slices) if has_indexed_slices and active_slices else 0.0
     slices: list[ProtectionSlice] = []
-    for raw in configured.get("slices") or []:
+    for raw in active_slices:
         stop_raw = dict(raw.get("stop") or {})
         rule_type = StopRuleType(str(stop_raw.pop("rule_type", StopRuleType.FIXED_PRICE)))
         order_type = StopOrderType(str(stop_raw.pop("order_type", StopOrderType.STOP)))
@@ -1899,7 +2453,11 @@ def _protection_profile_from_phase(
         slices.append(
             ProtectionSlice(
                 slice_id=str(raw.get("slice_id") or ""),
-                quantity_fraction=float(raw.get("quantity_fraction") or 0),
+                quantity_fraction=(
+                    dynamic_fraction
+                    if has_indexed_slices
+                    else float(raw.get("quantity_fraction") or 0)
+                ),
                 stop=stop,
                 profit_target_price=(
                     strategy_targets[int(raw["strategy_profit_target_index"])]
@@ -2139,6 +2697,35 @@ class AssignedLongMomentumStrategy:
             if assignment.assignment_id != assignment_id:
                 continue
             state = dict(assignment.state)
+            if str(intent.metadata.get("execution_role") or "") == "target_replenishment":
+                restored = float(
+                    state.pop("target_replenishment_pending_quantity", 0.0)
+                    or intent.quantity
+                    or 0.0
+                )
+                state["target_replenishment_quantity"] = float(
+                    state.get("target_replenishment_quantity") or 0
+                ) + restored
+                state["target_replenishment_pending"] = False
+                state["last_intent_rejection"] = {
+                    "intent_id": intent.intent_id,
+                    "reasons": list(reasons),
+                    "rejected_at": event_time.isoformat(),
+                    "execution_role": "target_replenishment",
+                }
+                updated = replace(
+                    assignment,
+                    status=(
+                        AssignmentStatus.MANAGING
+                        if str(intent.action) == "add_long"
+                        else AssignmentStatus.REENTRY_COOLDOWN
+                    ),
+                    state=state,
+                    updated_at=event_time,
+                )
+                self._assignments[key] = updated
+                self._campaigns.register(updated)
+                return
             state["last_intent_rejection"] = {
                 "intent_id": intent.intent_id,
                 "reasons": list(reasons),
@@ -2263,10 +2850,52 @@ class AssignedLongMomentumStrategy:
             state = dict(assignment.state)
             action = str(getattr(snapshot, "action", ""))
             if action in {"enter_long", "add_long", "enter_short", "add_short"}:
+                if state.get("target_replenishment_pending"):
+                    state["target_replenishment_pending"] = False
+                    state.pop("target_replenishment_pending_quantity", None)
+                    state["target_replenishments"] = int(
+                        state.get("target_replenishments") or 0
+                    ) + 1
                 status = AssignmentStatus.MANAGING
             elif action in {"reduce_long", "reduce_short"}:
                 status = AssignmentStatus.MANAGING
             elif action in {"exit", "take_profit", "cover"}:
+                fill_role = str(getattr(snapshot, "fill_role", "") or "")
+                incremental = float(
+                    getattr(snapshot, "fill_incremental_quantity", 0.0) or 0.0
+                )
+                if fill_role == "profit_target" and incremental > 0:
+                    targets = [
+                        float(value)
+                        for value in state.get("structural_profit_targets") or []
+                        if isinstance(value, (int, float)) and float(value) > 0
+                    ]
+                    slice_id = str(getattr(snapshot, "slice_id", "") or "")
+                    try:
+                        target_index = max(0, int(slice_id.rsplit("-", 1)[-1]) - 1)
+                    except (TypeError, ValueError):
+                        target_index = 0
+                    target_level = (
+                        targets[target_index]
+                        if target_index < len(targets)
+                        else targets[-1]
+                        if targets
+                        else float(state.get("high_water_price") or 0)
+                    )
+                    state["target_replenishment_quantity"] = float(
+                        state.get("target_replenishment_quantity") or 0
+                    ) + incremental
+                    state["target_replenishment_level_price"] = target_level
+                    state["target_replenishment_peak_price"] = target_level
+                    state["target_replenishment_armed_at"] = getattr(
+                        snapshot, "updated_at", datetime.now(timezone.utc)
+                    ).isoformat()
+                    state["last_profit_target_fill"] = {
+                        "slice_id": slice_id,
+                        "quantity": incremental,
+                        "level_price": target_level,
+                        "filled_at": state["target_replenishment_armed_at"],
+                    }
                 if (
                     aggregate_position_quantity is not None
                     and abs(float(aggregate_position_quantity)) > 1e-9
@@ -2446,6 +3075,42 @@ def evaluate_entry_decision_rules(
     return output
 
 
+def entry_stage_without_rule_set(
+    stage: Mapping[str, Any], rule_set_id: str
+) -> dict[str, Any]:
+    """Remove one compiled rule set and every Boolean-expression reference."""
+
+    normalized = dict(stage)
+    normalized["rule_sets"] = [
+        dict(rule_set)
+        for rule_set in normalized.get("rule_sets") or []
+        if str(rule_set.get("rule_set_id") or "") != rule_set_id
+    ]
+
+    def prune(node: Mapping[str, Any]) -> dict[str, Any]:
+        current = dict(node)
+        if (
+            str(current.get("kind") or "") == "rule_set"
+            and str(current.get("rule_set_id") or "") == rule_set_id
+        ):
+            return {}
+        if str(current.get("kind") or "") != "operator":
+            return current
+        children = [
+            child
+            for raw in current.get("children") or []
+            if isinstance(raw, Mapping)
+            for child in (prune(raw),)
+            if child
+        ]
+        return {**current, "children": children} if children else {}
+
+    expression = normalized.get("expression")
+    if isinstance(expression, Mapping):
+        normalized["expression"] = prune(expression)
+    return normalized
+
+
 def _condition_evidence(
     condition: dict[str, Any], observation: StrategyObservation
 ) -> dict[str, Any]:
@@ -2543,6 +3208,30 @@ def _decision_reason_detail(
             f"{observation.price:.4g} has not crossed the one-second swing-high threshold "
             f"{_display_value(metadata.get('trigger_threshold_price'))}."
         )
+    if reason == "waiting_for_unified_resistance":
+        return "Wait: no important causal resistance zone is available in the Unified Structural Level Book."
+    if reason == "waiting_for_unified_resistance_break":
+        trigger = dict(metadata.get("unified_structural_trigger") or {})
+        return (
+            "Wait: price "
+            f"{observation.price:.4g} has not causally cleared Unified resistance "
+            f"{_display_value(trigger.get('threshold_price'))}; previous price "
+            f"{_display_value(trigger.get('previous_price'))}."
+        )
+    if reason == "liquidity_admission_incomplete":
+        detail = dict(metadata.get("liquidity_admission") or {})
+        failed = ", ".join(str(value) for value in detail.get("failed") or [])
+        return f"Wait: liquidity admission is not yet earned — failed: {failed or 'required evidence unavailable'}."
+    if reason == "current_execution_quality_incomplete":
+        detail = dict(metadata.get("execution_quality") or {})
+        failed = ", ".join(str(value) for value in detail.get("failed") or [])
+        return f"Wait: current order execution is unsafe — failed: {failed or 'spread or activity unavailable'}."
+    if reason == "waiting_for_target_replenishment_pullback":
+        detail = dict(metadata.get("target_replenishment") or {})
+        failed = ", ".join(str(value) for value in detail.get("failed") or [])
+        return f"Hold: profit target filled; replenishment is armed but waiting — {failed or 'pullback confirmation unavailable'}."
+    if reason == "target_replenishment_fill_pending":
+        return "Hold: a profit-target replenishment order is working; duplicate replenishment is prohibited."
     if reason == "waiting_for_renewed_early_squeeze":
         return (
             "Wait: re-entry requires a new Early Squeeze Move occurrence after the last "
@@ -2563,8 +3252,9 @@ def _decision_reason_detail(
             f"gain={float(metadata.get('gain_pct') or 0):+.3f}%."
         )
     labels = {
-        "entry_confirmed": "Enter: liquidity, VWAP, positive/open one-second MACD, and swing-high breakout all passed.",
-        "reentry_confirmed": "Re-enter: fresh post-exit liquidity, VWAP, positive/open one-second MACD, and swing-high breakout all passed.",
+        "entry_confirmed": "Enter: latched liquidity, executable spread/activity, VWAP, exact positive/open one-second MACD, and Unified resistance acceptance all passed.",
+        "reentry_confirmed": "Re-enter: executable spread/activity, VWAP, exact positive/open one-second MACD, and a fresh Unified resistance recovery all passed.",
+        "target_profit_replenishment": "Profit-target replenishment: a target filled, price made a causal pullback, Unified support held, and VWAP plus exact positive/open one-second MACD remained valid.",
         "failure_to_extend_partial": "Profit reduction: price stopped extending while QMD flow deteriorated; sell half and keep the protected remainder.",
         "qmd_flow_geometry_exhaustion": "Exit: QMD flow structure weakened with confident flow-price divergence.",
         "loss_of_confirmed_higher_low": "Exit: price lost the latest causally confirmed one-second higher low.",
@@ -2918,27 +3608,49 @@ def _matching_momentum_management_route(
     downside = dict(settings.get("downside_loss_guard") or {})
     downside_timeframe = str(downside.get("timeframe") or "1s")
     if bool(downside.get("enabled", False)) and gain_pct < 0:
-        if bool(downside.get("bearish_choch", True)) and (
+        unified_support = observation.structural_support_lower
+        previous_price = state.get("previous_observed_price")
+        unified_support_broken = bool(
+            unified_support is not None
+            and observation.price < float(unified_support)
+            and (
+                previous_price is None
+                or float(previous_price) >= float(unified_support)
+            )
+        )
+        generic_bearish_choch = bool(
             observation.structure_event == "choch"
             and observation.structure_direction == "bearish"
             and observation.source_timeframe in {"", downside_timeframe}
+        )
+        if bool(downside.get("bearish_choch", True)) and (
+            unified_support_broken or generic_bearish_choch
         ):
             return {
                 "route_id": "downside-bearish-choch",
-                "name": "Below-entry bearish one-second CHOCH",
+                "name": "Below-entry bearish structural CHOCH",
                 "mechanism": "downside_bearish_choch",
                 "position_fraction": 1.0,
-                "evidence": {"gain_pct": gain_pct, "structure_timeframe": downside_timeframe},
+                "evidence": {
+                    "gain_pct": gain_pct,
+                    "structure_timeframe": (
+                        "unified_level_book"
+                        if unified_support_broken
+                        else downside_timeframe
+                    ),
+                    "structural_support_lower": unified_support,
+                },
             }
         line = _source_value(observation, "indicator.macd.line", downside_timeframe)
         signal = _source_value(observation, "indicator.macd.signal", downside_timeframe)
-        histogram = _source_value(observation, "indicator.macd.histogram", downside_timeframe)
         if bool(downside.get("macd_closed", True)) and (
             line is not None
             and signal is not None
-            and histogram is not None
-            and float(line) <= float(signal)
-            and float(histogram) <= 0
+            and (
+                float(line) <= float(signal)
+                or float(line) <= 0
+                or float(signal) <= 0
+            )
         ):
             return {
                 "route_id": "downside-macd-closed",
@@ -2950,7 +3662,6 @@ def _matching_momentum_management_route(
                     "macd_timeframe": downside_timeframe,
                     "macd_line": line,
                     "macd_signal": signal,
-                    "macd_histogram": histogram,
                 },
             }
         vwap = _source_value(observation, "indicator.vwap.value", downside_timeframe)
@@ -3064,9 +3775,11 @@ def _matching_momentum_management_route(
     macd_closed = (
         line is not None
         and signal is not None
-        and histogram is not None
-        and float(line) <= float(signal)
-        and float(histogram) <= 0
+        and (
+            float(line) <= float(signal)
+            or float(line) <= 0
+            or float(signal) <= 0
+        )
     )
     if observation.source_timeframe in {"", timeframe}:
         if macd_closed:
@@ -3456,12 +4169,42 @@ def _luld_target(
     side: str,
 ) -> float | None:
     policy = parameters["protection"]["luld_profit_target"]
-    if not policy["enabled"] or not observation.market_open:
+    local_time = observation.observed_at.astimezone(NEW_YORK).time().replace(tzinfo=None)
+    regular_session = clock_time(9, 30) <= local_time < clock_time(16, 0)
+    if not policy["enabled"] or not regular_session:
         return None
     if side == "short" or observation.upper_luld_price is None:
         return None
-    target = observation.upper_luld_price * (1 - float(policy["buffer_bps"]) / 10_000)
+    spread = max(0.0, observation.ask - observation.bid)
+    offset = max(
+        observation.upper_luld_price * float(policy.get("buffer_bps") or 0) / 10_000,
+        float(policy.get("tick_size") or 0.01)
+        * int(policy.get("minimum_tick_offset_count") or 0),
+        spread if bool(policy.get("include_current_spread", True)) else 0.0,
+    )
+    target = observation.upper_luld_price - offset
     return round(target, 4) if target > observation.price else None
+
+
+def _profit_level_score(row: dict[str, Any]) -> float:
+    salience = _level_metric(row, "salience", "strength")
+    confidence = _level_metric(row, "confidence")
+    reaction = _level_metric(row, "reaction_probability")
+    reversal = _level_metric(row, "reversal_probability")
+    hold = _level_metric(row, "hold_probability")
+    pivot_breadth = 1.0 - exp(-max(0.0, _level_metric(row, "independent_pivot_count")))
+    role_flip = 1.0 - exp(-max(0.0, _level_metric(row, "role_flip_count")))
+    pressure = abs(_level_metric(row, "pressure_bias"))
+    return (
+        0.20 * salience
+        + 0.20 * confidence
+        + 0.20 * reaction
+        + 0.15 * reversal
+        + 0.10 * hold
+        + 0.05 * pivot_breadth
+        + 0.05 * role_flip
+        + 0.05 * pressure
+    )
 
 
 def _structural_profit_targets(
@@ -3472,29 +4215,33 @@ def _structural_profit_targets(
     side: str,
     luld_target: float | None,
 ) -> list[float]:
-    """Build a causal level-first target ladder with risk-geometry fallbacks."""
+    """Build a variable causal ladder from important, high-probability levels."""
     policy = dict(parameters["protection"].get("profit_ladder") or {})
     if not bool(policy.get("enabled", True)):
         return [luld_target] if luld_target is not None else []
     entry = observation.price
-    risk = abs(entry - stop)
-    if risk <= 0:
-        risk = max(observation.volatility, entry * 0.002)
-    direction = 1.0 if side == "long" else -1.0
-    risk_candidates = [
-        entry + direction * risk * float(multiple)
-        for multiple in policy.get("risk_multiples") or [0.5, 1.0, 1.618, 2.618, 4.236]
-        if float(multiple) > 0
-    ]
     level_rows = (
         observation.structural_resistance_levels
         if side == "long"
         else observation.structural_support_levels
     )
-    level_candidates: list[float] = []
+    local_time = observation.observed_at.astimezone(NEW_YORK).time().replace(tzinfo=None)
+    regular_session = clock_time(9, 30) <= local_time < clock_time(16, 0)
+    maximum_price = (
+        luld_target
+        if side == "long" and regular_session
+        else entry
+        * (1 + float(policy.get("premarket_maximum_gain_pct") or 200.0) / 100.0)
+        if side == "long"
+        else None
+    )
+    ranked_candidates: list[tuple[float, float]] = []
     for row in level_rows:
-        strength = float(row.get("strength") or row.get("salience") or 0)
-        confidence = float(row.get("confidence") or 0)
+        strength = _level_metric(dict(row), "salience", "strength")
+        confidence = _level_metric(dict(row), "confidence")
+        reaction = _level_metric(dict(row), "reaction_probability")
+        reversal = _level_metric(dict(row), "reversal_probability")
+        score = _profit_level_score(dict(row))
         candidate = row.get("lower") if side == "long" else row.get("upper")
         if candidate is None:
             candidate = row.get("price")
@@ -3502,9 +4249,14 @@ def _structural_profit_targets(
             candidate is not None
             and strength >= float(policy.get("minimum_level_strength") or 0.0)
             and confidence >= float(policy.get("minimum_level_confidence") or 0.0)
+            and reaction >= float(policy.get("minimum_reaction_probability") or 0.0)
+            and reversal >= float(policy.get("minimum_reversal_probability") or 0.0)
+            and score >= float(policy.get("minimum_composite_score") or 0.0)
         ):
-            level_candidates.append(float(candidate))
-    if not level_candidates:
+            candidate_value = float(candidate)
+            if maximum_price is None or candidate_value <= maximum_price:
+                ranked_candidates.append((score, candidate_value))
+    if not ranked_candidates:
         nearest_price = (
             observation.structural_resistance_lower
             if side == "long"
@@ -3520,15 +4272,26 @@ def _structural_profit_targets(
             if side == "long"
             else observation.structural_support_confidence
         )
+        nearest_row = {
+            "salience": nearest_strength,
+            "confidence": nearest_confidence,
+            "reaction_probability": nearest_strength,
+            "reversal_probability": nearest_strength,
+        }
+        nearest_score = _profit_level_score(nearest_row)
         if (
             nearest_price is not None
             and nearest_strength >= float(policy.get("minimum_level_strength") or 0.0)
             and nearest_confidence >= float(policy.get("minimum_level_confidence") or 0.0)
+            and nearest_strength >= float(policy.get("minimum_reaction_probability") or 0.0)
+            and nearest_strength >= float(policy.get("minimum_reversal_probability") or 0.0)
+            and nearest_score >= float(policy.get("minimum_composite_score") or 0.0)
+            and (maximum_price is None or float(nearest_price) <= maximum_price)
         ):
-            level_candidates.append(float(nearest_price))
+            ranked_candidates.append((nearest_score, float(nearest_price)))
     spacing = entry * float(policy.get("minimum_spacing_bps") or 0.0) / 10_000.0
     unique: list[float] = []
-    maximum = int(policy.get("maximum_targets") or 5)
+    maximum = max(0, int(policy.get("maximum_targets") or 0))
 
     def append_candidates(values: list[float]) -> None:
         for candidate in sorted(values, reverse=side == "short"):
@@ -3542,14 +4305,14 @@ def _structural_profit_targets(
             if len(unique) >= maximum:
                 return
 
-    # Actual causal resistance/support zones own the first target slots. Risk
-    # multiples fill only missing slots, preserving a complete OCA ladder when
-    # the historical level book is sparse.
-    append_candidates(level_candidates)
-    if len(unique) < maximum:
-        append_candidates(risk_candidates)
-    if len(unique) < maximum and luld_target is not None:
-        append_candidates([float(luld_target)])
+    selected = [
+        candidate
+        for _, candidate in sorted(
+            ranked_candidates,
+            key=lambda item: (-item[0], item[1] if side == "long" else -item[1]),
+        )[:maximum]
+    ]
+    append_candidates(selected)
     unique.sort(reverse=side == "short")
     return unique
 

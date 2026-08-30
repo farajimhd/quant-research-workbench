@@ -1,13 +1,68 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 from src.backend.live_strategy_runtime_service import LiveStrategyRuntimeSupervisor
 
 
 class LiveStrategyRuntimeSupervisorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_market_row_uses_causal_per_ticker_unified_structure_book(self) -> None:
+        supervisor = LiveStrategyRuntimeSupervisor()
+        broker = object()
+        runtime = SimpleNamespace(
+            broker=SimpleNamespace(positions=AsyncMock(return_value=[])),
+            process_account_strategy_observation=AsyncMock(),
+        )
+        assigned = SimpleNamespace(
+            ticker="SUGP",
+            account_id="DU123",
+            conid=1,
+            parameters={"structural_entry": {"enabled": True}},
+        )
+        state = {
+            "runtime": runtime,
+            "strategy": SimpleNamespace(assignments=lambda: [assigned]),
+            "positions_cache": {},
+        }
+        supervisor._runtime_state = AsyncMock(return_value=(broker, state))  # type: ignore[method-assign]
+        as_of = datetime(2026, 8, 21, 8, 10, 1, tzinfo=timezone.utc)
+        with patch(
+            "src.backend.live_strategy_runtime_service.qmd_current_structure_snapshot",
+            return_value={
+                "sym": "SUGP",
+                "bar_end": "2026-08-21T08:10:00Z",
+                "qmd_structure_unified_levels": [{
+                    "unified_level_id": 17,
+                    "side": -1,
+                    "lower": 3.80,
+                    "upper": 3.82,
+                }],
+            },
+        ):
+            returned = await supervisor._process_market_row(
+                {
+                    "delivery": {"ticker": "SUGP", "run_plan_id": "plan-1"},
+                    "row": {
+                        "ticker": "SUGP",
+                        "market.last_price": 3.83,
+                        "quote.bid_price": 3.82,
+                        "quote.ask_price": 3.83,
+                        "session.phase": "premarket",
+                    },
+                    "as_of": as_of.isoformat(),
+                },
+                None,
+                {},
+            )
+
+        self.assertIs(returned, broker)
+        observation = runtime.process_account_strategy_observation.await_args.args[0]
+        self.assertEqual(observation.structural_resistance_levels[0]["unified_level_id"], 17)
+        self.assertEqual(observation.structural_resistance_upper, None)
+
     async def test_external_intent_uses_same_runtime_as_strategy_signals(self) -> None:
         supervisor = LiveStrategyRuntimeSupervisor()
         broker = object()

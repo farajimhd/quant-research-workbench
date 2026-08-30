@@ -34,6 +34,7 @@ from src.backend.news_signal_runtime_service import (
 from src.backend.signal_stream_runtime_service import SIGNAL_STREAM_RUNTIME
 from src.backend.qmd_gateway_client import (
     QmdProductRequest,
+    qmd_advance_historical_structure_snapshot,
     qmd_historical_structure_snapshot,
     qmd_historical_source_revision,
     qmd_history_websocket_url,
@@ -74,6 +75,7 @@ from src.trading_runtime.strategy_engine import (
     StrategyAssignment,
     StrategyObservation,
     StrategyPermissions,
+    entry_stage_without_rule_set,
     evaluate_entry_decision_rules,
 )
 from src.trading_runtime.strategy_registry import (
@@ -667,6 +669,8 @@ _STRATEGY_INDICATOR_FIELDS = frozenset(
         "qmd_structure_resistance_upper",
         "qmd_structure_resistance_strength",
         "qmd_structure_resistance_confidence",
+        "qmd_structure_unified_levels",
+        "qmd_structure_unified_level_delta",
         "structure_bos_direction",
         "structure_choch_direction",
         "structure_luld_upper",
@@ -695,6 +699,8 @@ _STRATEGY_LAZY_STRUCTURE_FIELDS = frozenset(
         "qmd_structure_resistance_upper",
         "qmd_structure_resistance_strength",
         "qmd_structure_resistance_confidence",
+        "qmd_structure_unified_levels",
+        "qmd_structure_unified_level_delta",
     }
 )
 
@@ -826,7 +832,10 @@ class ReplayRunController:
         self._strategy_quality_candidate_tickers: set[str] = set()
         self._strategy_quality_prune_ready = False
         self._historical_market_quality: dict[str, dict[str, Any]] = {}
-        self._historical_structure_context: dict[str, tuple[datetime, dict[str, Any]]] = {}
+        self._historical_prepared_structure: dict[str, dict[str, Any]] = {}
+        self._historical_structure_context: dict[
+            str, tuple[datetime, dict[str, Any], str, dict[str, Any]]
+        ] = {}
         self._data_authority: dict[str, dict[str, Any]] = {}
         self._resume_state = deepcopy(resume_state) if resume_state is not None else None
         self._source_cursor: dict[str, Any] = {}
@@ -2368,6 +2377,7 @@ class ReplayRunController:
             self._journal,
             intent_planner=self._planner,
             portfolio=portfolio,
+            review_only=review_only,
         )
         await self._runtime.initialize(
             record_lifecycle=record_lifecycle,
@@ -2706,6 +2716,43 @@ class ReplayRunController:
             direction = int(indicator.get("structure_bos_direction") or 0)
             structure_event = "bos" if direction else ""
         observed_market_time = frame.as_of.astimezone(NEW_YORK).time()
+        prepared_structure = self._historical_prepared_structure.setdefault(
+            frame.ticker, {}
+        )
+        for key in _STRATEGY_LAZY_STRUCTURE_FIELDS:
+            if key in indicator:
+                prepared_structure[key] = deepcopy(indicator[key])
+        if "qmd_structure_unified_levels" in indicator:
+            prepared_structure["qmd_structure_unified_levels"] = deepcopy(
+                indicator["qmd_structure_unified_levels"]
+            )
+        elif isinstance(indicator.get("qmd_structure_unified_level_delta"), Mapping):
+            current_levels = {
+                (int(row.get("side") or 0), str(row.get("unified_level_id") or "")): dict(row)
+                for row in prepared_structure.get("qmd_structure_unified_levels") or ()
+                if isinstance(row, Mapping)
+            }
+            delta = dict(indicator["qmd_structure_unified_level_delta"])
+            for row in delta.get("removed") or ():
+                if isinstance(row, Mapping):
+                    current_levels.pop(
+                        (int(row.get("side") or 0), str(row.get("unified_level_id") or "")),
+                        None,
+                    )
+            for row in delta.get("upserts") or ():
+                if isinstance(row, Mapping):
+                    current_levels[
+                        (int(row.get("side") or 0), str(row.get("unified_level_id") or ""))
+                    ] = dict(row)
+            prepared_structure["qmd_structure_unified_levels"] = [
+                current_levels[key] for key in sorted(current_levels)
+            ]
+        structural_indicator = {**prepared_structure, **indicator}
+        unified_levels = tuple(
+            dict(row)
+            for row in structural_indicator.get("qmd_structure_unified_levels") or ()
+            if isinstance(row, Mapping)
+        )
         base = StrategyObservation(
             ticker=frame.ticker,
             observed_at=frame.as_of,
@@ -2719,37 +2766,43 @@ class ReplayRunController:
             swing_high=_optional_positive(indicator.get("structure_swing_high")),
             swing_low=_optional_positive(indicator.get("structure_swing_low")),
             structural_support_price=_optional_positive(
-                indicator.get("qmd_structure_support_price")
+                structural_indicator.get("qmd_structure_support_price")
             ),
             structural_support_lower=_optional_positive(
-                indicator.get("qmd_structure_support_lower")
+                structural_indicator.get("qmd_structure_support_lower")
             ),
             structural_support_upper=_optional_positive(
-                indicator.get("qmd_structure_support_upper")
+                structural_indicator.get("qmd_structure_support_upper")
             ),
             structural_support_strength=float(
-                indicator.get("qmd_structure_support_strength") or 0
+                structural_indicator.get("qmd_structure_support_strength") or 0
             ),
             structural_support_confidence=float(
-                indicator.get("qmd_structure_support_confidence") or 0
+                structural_indicator.get("qmd_structure_support_confidence") or 0
             ),
             structural_resistance_price=_optional_positive(
-                indicator.get("qmd_structure_resistance_price")
+                structural_indicator.get("qmd_structure_resistance_price")
             ),
             structural_resistance_lower=_optional_positive(
-                indicator.get("qmd_structure_resistance_lower")
+                structural_indicator.get("qmd_structure_resistance_lower")
             ),
             structural_resistance_upper=_optional_positive(
-                indicator.get("qmd_structure_resistance_upper")
+                structural_indicator.get("qmd_structure_resistance_upper")
             ),
             structural_resistance_strength=float(
-                indicator.get("qmd_structure_resistance_strength") or 0
+                structural_indicator.get("qmd_structure_resistance_strength") or 0
             ),
             structural_resistance_confidence=float(
-                indicator.get("qmd_structure_resistance_confidence") or 0
+                structural_indicator.get("qmd_structure_resistance_confidence") or 0
+            ),
+            structural_support_levels=tuple(
+                row for row in unified_levels if int(row.get("side") or 0) > 0
+            ),
+            structural_resistance_levels=tuple(
+                row for row in unified_levels if int(row.get("side") or 0) < 0
             ),
             structural_up_probability=float(
-                indicator.get("qmd_structure_up_probability") or 0.5
+                structural_indicator.get("qmd_structure_up_probability") or 0.5
             ),
             structure_event=structure_event,
             structure_direction="bullish" if direction > 0 else "bearish" if direction < 0 else "",
@@ -2873,10 +2926,13 @@ class ReplayRunController:
                     for rule_set in quality_rules
                 ):
                     self._strategy_quality_admitted_tickers.add(frame.ticker)
-        if self._entry_structure_context_is_actionable(
+        if (
+            "qmd_structure_unified_levels" not in prepared_structure
+            and self._entry_structure_context_is_actionable(
             base,
             frame,
             ticker_assignments=ticker_assignments,
+            )
         ):
             structural = await self._historical_entry_structure_context(frame)
             base = replace(
@@ -2922,6 +2978,26 @@ class ReplayRunController:
                 structural_up_probability=float(
                     structural.get("qmd_structure_up_probability") or 0.5
                 ),
+            )
+            structural_source_values = (
+                self._strategy_registration.observation_projector(
+                    base, frame.timeframe
+                )
+            )
+            source_cache.update(structural_source_values)
+            base = replace(
+                base,
+                changed_source_ids=tuple(
+                    sorted(
+                        set(base.changed_source_ids)
+                        | {
+                            source_id
+                            for source_id in structural_source_values
+                            if "structure" in source_id
+                        }
+                    )
+                ),
+                source_values=deepcopy(source_cache),
             )
         for assignment in ticker_assignments:
             positions = await self._runtime.broker.positions(assignment.account_id)
@@ -2993,6 +3069,8 @@ class ReplayRunController:
         # here previously missed real entries and silently skipped structural
         # checkpoint enrichment.
         for assignment in ticker_assignments:
+            if assignment.status == AssignmentStatus.MANAGING:
+                return True
             if assignment.status not in {
                 AssignmentStatus.WATCHING,
                 AssignmentStatus.REENTRY_COOLDOWN,
@@ -3009,16 +3087,27 @@ class ReplayRunController:
                 if phase_name == "reentry"
                 else dict(assignment.parameters.get("entry_rules") or {})
             )
+            if (
+                assignment.state.get("liquidity_admitted_at")
+                or frame.ticker in self._strategy_quality_admitted_tickers
+            ):
+                # Liquidity admission is a campaign latch.  Structural
+                # enrichment must use the same post-admission contract as the
+                # Strategy evaluator; otherwise a later drop in cumulative
+                # session metrics can suppress the Unified Level Book fetch
+                # even though the campaign remains admitted.
+                confirmation_stage = entry_stage_without_rule_set(
+                    dict(rules.get("confirmation") or {}),
+                    "strategy-squeeze-volume-spread-quality",
+                )
+                rules = {**rules, "confirmation": confirmation_stage}
             result = evaluate_entry_decision_rules(rules, observation)
             if (
-                bool(dict(result.get("trigger") or {}).get("passed"))
-                and bool(dict(result.get("confirmation") or {}).get("passed"))
+                bool(dict(result.get("confirmation") or {}).get("passed"))
                 and not bool(dict(result.get("veto") or {}).get("passed"))
             ):
-                # The exact Strategy contract is the final admission authority.
-                # Keep the optimization cache aligned even if a future vector
-                # projection cannot express a newly added condition.
-                self._strategy_quality_admitted_tickers.add(frame.ticker)
+                # Structural enrichment supplies the trigger authority itself;
+                # fetching it cannot depend on the old timeframe swing trigger.
                 return True
         return False
 
@@ -3026,13 +3115,26 @@ class ReplayRunController:
         self, frame: ReplayDerivedFrame
     ) -> dict[str, Any]:
         cached = self._historical_structure_context.get(frame.ticker)
-        if cached is not None and frame.as_of - cached[0] <= timedelta(seconds=60):
+        if cached is not None and frame.as_of - cached[0] < timedelta(seconds=1):
             return cached[1]
-        payload = await asyncio.to_thread(
-            qmd_historical_structure_snapshot,
-            ticker=frame.ticker,
-            as_of=frame.as_of.astimezone(UTC).isoformat(),
-        )
+        if cached is None:
+            payload = await asyncio.to_thread(
+                qmd_historical_structure_snapshot,
+                ticker=frame.ticker,
+                as_of=frame.as_of.astimezone(UTC).isoformat(),
+            )
+            provenance = {
+                "seed_authority_start": payload.get("seed_authority_start"),
+                "seed_source_plan_hash": payload.get("seed_source_plan_hash"),
+                "seed_source_revision_token": payload.get("seed_source_revision_token"),
+            }
+        else:
+            payload = await asyncio.to_thread(
+                qmd_advance_historical_structure_snapshot,
+                session_id=cached[2],
+                as_of=frame.as_of.astimezone(UTC).isoformat(),
+            )
+            provenance = cached[3]
         snapshot = dict(payload.get("snapshot") or {})
         support = dict(snapshot.get("support") or {})
         resistance = dict(snapshot.get("resistance") or {})
@@ -3059,16 +3161,21 @@ class ReplayRunController:
             ],
             "qmd_structure_up_probability": snapshot.get("up_probability"),
         }
-        self._historical_structure_context[frame.ticker] = (frame.as_of, context)
+        self._historical_structure_context[frame.ticker] = (
+            frame.as_of,
+            context,
+            str(payload.get("session_id") or ""),
+            provenance,
+        )
         source_plan = dict(payload.get("source_plan") or {})
         self._record_data_authority(
             f"structure:{frame.ticker}:{frame.as_of.astimezone(UTC).isoformat()}",
             {
                 "authority": "qmd_history_causal_structure_checkpoint",
                 "as_of": frame.as_of.astimezone(UTC).isoformat(),
-                "seed_authority_start": payload.get("seed_authority_start"),
-                "seed_source_plan_hash": payload.get("seed_source_plan_hash"),
-                "seed_source_revision_token": payload.get(
+                "seed_authority_start": provenance.get("seed_authority_start"),
+                "seed_source_plan_hash": provenance.get("seed_source_plan_hash"),
+                "seed_source_revision_token": provenance.get(
                     "seed_source_revision_token"
                 ),
                 "source_plan_hash": source_plan.get("plan_hash"),
@@ -3077,9 +3184,7 @@ class ReplayRunController:
                     payload.get("advanced_event_count") or 0
                 ),
                 "split_adjustments": list(
-                    dict(payload.get("checkpoint") or {}).get(
-                        "applied_split_adjustments"
-                    )
+                    dict(payload.get("checkpoint") or {}).get("applied_split_adjustments")
                     or []
                 ),
             },

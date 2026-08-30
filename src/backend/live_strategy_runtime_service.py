@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from src.backend.qmd_gateway_client import qmd_current_structure_snapshot
 from src.backend.trading_runtime_service import trading_journal
 from src.trading_runtime.domain import InstrumentContract, TradingMode
 from src.trading_runtime.ibkr_client import IbkrClientPortalAdapter
@@ -350,11 +351,36 @@ class LiveStrategyRuntimeSupervisor:
         broker, state = await self._runtime_state(delivery, broker, runtimes)
         ticker = str(delivery.get("ticker") or "").upper()
         assignments = [row for row in state["strategy"].assignments() if row.ticker == ticker]
+        market_row = dict(item.get("row") or {})
+        if assignments and any(
+            bool(dict(assignment.parameters.get("structural_entry") or {}).get("enabled"))
+            for assignment in assignments
+        ):
+            structure = await asyncio.to_thread(
+                qmd_current_structure_snapshot,
+                ticker,
+                timeframe="1s",
+            )
+            observation_time = _aware_datetime(item.get("as_of"))
+            structure_time = _aware_datetime(
+                structure.get("bar_end") or structure.get("observed_at")
+            )
+            if observation_time is None or structure_time is None:
+                raise RuntimeError("Live structural strategy input omitted a causal timestamp")
+            if structure_time > observation_time:
+                raise RuntimeError(
+                    "Live structural strategy snapshot is newer than its market observation"
+                )
+            market_row.update({
+                key: deepcopy(value)
+                for key, value in structure.items()
+                if str(key).startswith("qmd_structure_")
+            })
         for assignment in assignments:
             positions = await _cached_positions(state, assignment.account_id)
             position = next((row for row in positions if int(row.conid) == assignment.conid), None)
             observation = strategy_observation_from_market_row(
-                dict(item.get("row") or {}),
+                market_row,
                 observed_at=item.get("as_of"),
                 position_quantity=float(position.position if position else 0),
                 average_price=float(position.avgPrice if position else 0),
@@ -590,6 +616,19 @@ async def _cached_positions(state: dict[str, Any], account_id: str) -> list[Any]
     rows = list(await state["runtime"].broker.positions(account_id))
     state["positions_cache"][account_id] = {"loaded_at": now, "rows": rows}
     return rows
+
+
+def _aware_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif value:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=ZoneInfo("UTC"))
 
 
 def _upsert_runtime_assignments(state: dict[str, Any], configuration: dict[str, Any]) -> None:

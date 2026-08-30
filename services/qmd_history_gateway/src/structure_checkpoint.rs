@@ -10,6 +10,12 @@ use qmd_core::generic_structure::{
     GENERIC_STRUCTURE_ALGORITHM_VERSION,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
+use tokio::sync::Mutex;
 
 pub const STRUCTURE_CHECKPOINT_ADVANCEMENT_SCHEMA_VERSION: u16 = 1;
 pub const STRUCTURE_CHECKPOINT_REBUILD_SCHEMA_VERSION: u16 = 1;
@@ -41,6 +47,114 @@ pub struct StructureSnapshotResponse {
     pub complete: bool,
 }
 
+#[derive(Clone)]
+pub struct HistoricalStructureSessionRegistry {
+    inner: Arc<Mutex<HistoricalStructureSessionRegistryInner>>,
+    next_id: Arc<AtomicU64>,
+    max_sessions: usize,
+}
+
+#[derive(Default)]
+struct HistoricalStructureSessionRegistryInner {
+    access_sequence: u64,
+    sessions: HashMap<String, HistoricalStructureSession>,
+}
+
+struct HistoricalStructureSession {
+    access_sequence: u64,
+    checkpoint: GenericStructureCheckpoint,
+}
+
+impl HistoricalStructureSessionRegistry {
+    pub fn new(max_sessions: usize) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(
+                HistoricalStructureSessionRegistryInner::default(),
+            )),
+            next_id: Arc::new(AtomicU64::new(1)),
+            max_sessions: max_sessions.max(1),
+        }
+    }
+
+    pub async fn register(&self, checkpoint: GenericStructureCheckpoint) -> String {
+        let session_id = format!(
+            "gslb-{}-{}",
+            Utc::now().timestamp_micros(),
+            self.next_id.fetch_add(1, Ordering::Relaxed)
+        );
+        let mut inner = self.inner.lock().await;
+        inner.access_sequence = inner.access_sequence.saturating_add(1);
+        if inner.sessions.len() >= self.max_sessions {
+            if let Some(oldest) = inner
+                .sessions
+                .iter()
+                .min_by_key(|(_, session)| session.access_sequence)
+                .map(|(key, _)| key.clone())
+            {
+                inner.sessions.remove(&oldest);
+            }
+        }
+        let access_sequence = inner.access_sequence;
+        inner.sessions.insert(
+            session_id.clone(),
+            HistoricalStructureSession {
+                access_sequence,
+                checkpoint,
+            },
+        );
+        session_id
+    }
+
+    pub async fn checkout(&self, session_id: &str) -> Result<GenericStructureCheckpoint, String> {
+        let mut inner = self.inner.lock().await;
+        inner
+            .sessions
+            .remove(session_id)
+            .map(|session| session.checkpoint)
+            .ok_or_else(|| {
+                "Generic Structure historical session is missing or expired; reseed the ticker snapshot"
+                    .to_string()
+            })
+    }
+
+    pub async fn replace(&self, session_id: String, checkpoint: GenericStructureCheckpoint) {
+        let mut inner = self.inner.lock().await;
+        inner.access_sequence = inner.access_sequence.saturating_add(1);
+        let access_sequence = inner.access_sequence;
+        inner.sessions.insert(
+            session_id,
+            HistoricalStructureSession {
+                access_sequence,
+                checkpoint,
+            },
+        );
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct StructureSnapshotSessionAdvanceRequest {
+    pub schema_version: u16,
+    pub session_id: String,
+    pub as_of: DateTime<Utc>,
+    pub expected_source_plan_hash: Option<String>,
+    pub event_limit: Option<usize>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct StructureSnapshotSessionAdvanceResponse {
+    pub schema_version: u16,
+    pub session_id: String,
+    pub as_of: DateTime<Utc>,
+    pub replay_start: DateTime<Utc>,
+    pub event_count: u64,
+    pub advanced_event_count: u64,
+    pub snapshot: GenericStructureSnapshot,
+    pub source_plan: MarketSourcePlan,
+    pub source_revision_before: SourceRevision,
+    pub source_revision_after: SourceRevision,
+    pub complete: bool,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct StructureCheckpointAdvanceRequest {
     pub schema_version: u16,
@@ -58,6 +172,7 @@ pub struct StructureCheckpointAdvanceResponse {
     pub replay_start: DateTime<Utc>,
     pub event_count: u64,
     pub advanced_event_count: u64,
+    pub snapshot: GenericStructureSnapshot,
     pub source_plan: MarketSourcePlan,
     pub source_revision_before: SourceRevision,
     pub source_revision_after: SourceRevision,
@@ -230,6 +345,14 @@ pub async fn advance_structure_checkpoint(
     advance_structure_checkpoint_inner(config, source, request, true).await
 }
 
+pub async fn advance_historical_structure_snapshot(
+    config: &HistoricalGatewayConfig,
+    source: &HistoricalEventSource,
+    request: StructureCheckpointAdvanceRequest,
+) -> Result<StructureCheckpointAdvanceResponse, String> {
+    advance_structure_checkpoint_inner(config, source, request, false).await
+}
+
 async fn advance_structure_checkpoint_inner(
     config: &HistoricalGatewayConfig,
     source: &HistoricalEventSource,
@@ -331,6 +454,7 @@ async fn advance_structure_checkpoint_inner(
     if source_revision_after.source_plan_hash != source_plan.plan_hash {
         return Err("Generic Structure checkpoint source plan changed during replay".to_string());
     }
+    let snapshot = engine.snapshot(request.as_of);
     let mut checkpoint = engine.checkpoint();
     checkpoint.replayed_through = Some(request.as_of);
     if exact_live_cursor && checkpoint.checkpoint_cursor() < initial_cursor {
@@ -343,6 +467,7 @@ async fn advance_structure_checkpoint_inner(
         replay_start,
         event_count,
         advanced_event_count,
+        snapshot,
         source_plan,
         source_revision_before,
         source_revision_after,
@@ -621,9 +746,13 @@ impl CheckpointCursor for GenericStructureCheckpoint {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_exact_cursor_plan, validate_rebuild_source_plan, MarketSourcePlan};
+    use super::{
+        validate_exact_cursor_plan, validate_rebuild_source_plan,
+        HistoricalStructureSessionRegistry, MarketSourcePlan,
+    };
     use crate::source::{MarketSourceSegment, MarketSourceTier};
     use chrono::{TimeZone, Utc};
+    use qmd_core::generic_structure::GenericStructureEngine;
 
     fn plan(tier: MarketSourceTier) -> MarketSourcePlan {
         let start = Utc.with_ymd_and_hms(2026, 8, 11, 13, 30, 0).unwrap();
@@ -662,5 +791,33 @@ mod tests {
         assert!(validate_rebuild_source_plan(&plan(MarketSourceTier::Archive)).is_ok());
         assert!(validate_rebuild_source_plan(&plan(MarketSourceTier::Recent)).is_ok());
         assert!(validate_rebuild_source_plan(&plan(MarketSourceTier::Gap)).is_err());
+    }
+
+    #[tokio::test]
+    async fn historical_sessions_advance_by_bounded_identity() {
+        let registry = HistoricalStructureSessionRegistry::new(2);
+        let checkpoint = GenericStructureEngine::new("SUGP").checkpoint();
+        let session_id = registry.register(checkpoint).await;
+
+        let checked_out = registry.checkout(&session_id).await.unwrap();
+        assert_eq!(checked_out.sym, "SUGP");
+        assert!(registry.checkout(&session_id).await.is_err());
+
+        registry.replace(session_id.clone(), checked_out).await;
+        assert_eq!(registry.checkout(&session_id).await.unwrap().sym, "SUGP");
+    }
+
+    #[tokio::test]
+    async fn historical_sessions_evict_the_oldest_bounded_entry() {
+        let registry = HistoricalStructureSessionRegistry::new(1);
+        let first = registry
+            .register(GenericStructureEngine::new("SUGP").checkpoint())
+            .await;
+        let second = registry
+            .register(GenericStructureEngine::new("JUNS").checkpoint())
+            .await;
+
+        assert!(registry.checkout(&first).await.is_err());
+        assert_eq!(registry.checkout(&second).await.unwrap().sym, "JUNS");
     }
 }

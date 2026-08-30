@@ -36,7 +36,7 @@ from src.trading_runtime.domain import (
     PositionState,
     TradingMode,
 )
-from src.trading_runtime.ibkr_normalizer import normalize_account_values, normalize_accounts, normalize_ledger, normalize_order, normalize_position_snapshot
+from src.trading_runtime.ibkr_normalizer import normalize_account_values, normalize_accounts, normalize_execution, normalize_ledger, normalize_order, normalize_position_snapshot
 from src.trading_runtime.projector import TradingStateProjector
 from src.trading_runtime.performance import (
     build_performance_report,
@@ -55,6 +55,44 @@ def instrument(symbol: str = "AAPL", conid: int = 265598) -> InstrumentContract:
 
 
 class CanonicalNormalizationTests(unittest.TestCase):
+    def test_execution_preserves_strategy_exit_reason_from_canonical_metadata(self) -> None:
+        execution = normalize_execution(
+            {
+                "execution_id": "exit-1",
+                "account": "DU1",
+                "conid": 265598,
+                "symbol": "AAPL",
+                "side": "S",
+                "size": 10,
+                "price": 102,
+                "trade_time": NOW.isoformat(),
+                "canonical_metadata": {"reason": "downside_macd_closed"},
+            }
+        )
+
+        self.assertEqual(execution.exit_reason, "downside_macd_closed")
+
+        protective = normalize_execution(
+            {
+                "execution_id": "target-1",
+                "account": "DU1",
+                "conid": 265598,
+                "symbol": "AAPL",
+                "side": "S",
+                "size": 5,
+                "price": 104,
+                "trade_time": NOW.isoformat(),
+                "canonical_metadata": {
+                    "execution_role": "profit_target",
+                    "reason": "entry_confirmed",
+                },
+            }
+        )
+
+        self.assertEqual(
+            protective.exit_reason, "structural_profit_target_filled"
+        )
+
     def test_live_portfolio_fetches_independent_broker_snapshots_concurrently(self) -> None:
         account = RealLiveAccount("paper", "paper", "DU1", "Paper", "paper")
         lock = threading.Lock()
@@ -213,6 +251,19 @@ class CanonicalProjectionTests(unittest.TestCase):
         self.assertEqual(episodes[0].strategy_id, "momentum")
         self.assertEqual(episodes[0].strategy_revision, 3)
         self.assertEqual(episodes[0].exit_reason, "target")
+
+    def test_trade_episode_readds_use_remaining_position_cost_basis(self) -> None:
+        executions = [
+            Execution("open", "DU1", instrument(), "BUY", Decimal("10"), Decimal("100"), NOW),
+            Execution("partial", "DU1", instrument(), "SELL", Decimal("5"), Decimal("110"), NOW + timedelta(seconds=1)),
+            Execution("readd", "DU1", instrument(), "BUY", Decimal("5"), Decimal("120"), NOW + timedelta(seconds=2)),
+            Execution("close", "DU1", instrument(), "SELL", Decimal("10"), Decimal("115"), NOW + timedelta(seconds=3)),
+        ]
+
+        episodes = derive_trade_episodes(executions)
+
+        self.assertEqual(len(episodes), 1)
+        self.assertEqual(episodes[0].gross_pnl, Decimal("100"))
 
     def test_position_lifecycle_links_all_orders_and_execution_parts(self) -> None:
         executions = [

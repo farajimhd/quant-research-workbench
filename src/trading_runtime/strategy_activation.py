@@ -181,6 +181,11 @@ def strategy_observation_from_market_row(
         _scalar_value(source_values, ("session.phase", "market.session_phase", "session_phase"))
         or ""
     ).lower()
+    unified_levels = [
+        dict(level)
+        for level in row.get("qmd_structure_unified_levels") or []
+        if isinstance(level, Mapping)
+    ]
     return StrategyObservation(
         ticker=ticker,
         observed_at=timestamp,
@@ -189,12 +194,49 @@ def strategy_observation_from_market_row(
         ask=ask,
         position_quantity=float(position_quantity),
         average_price=float(average_price),
+        swing_high=_positive_numeric(row.get("structure_swing_high")),
+        swing_low=_positive_numeric(row.get("structure_swing_low")),
+        structural_support_price=_positive_numeric(row.get("qmd_structure_support_price")),
+        structural_support_lower=_positive_numeric(row.get("qmd_structure_support_lower")),
+        structural_support_upper=_positive_numeric(row.get("qmd_structure_support_upper")),
+        structural_support_strength=float(row.get("qmd_structure_support_strength") or 0),
+        structural_support_confidence=float(row.get("qmd_structure_support_confidence") or 0),
+        structural_resistance_price=_positive_numeric(row.get("qmd_structure_resistance_price")),
+        structural_resistance_lower=_positive_numeric(row.get("qmd_structure_resistance_lower")),
+        structural_resistance_upper=_positive_numeric(row.get("qmd_structure_resistance_upper")),
+        structural_resistance_strength=float(row.get("qmd_structure_resistance_strength") or 0),
+        structural_resistance_confidence=float(row.get("qmd_structure_resistance_confidence") or 0),
+        structural_support_levels=tuple(
+            level for level in unified_levels if int(level.get("side") or 0) > 0
+        ),
+        structural_resistance_levels=tuple(
+            level for level in unified_levels if int(level.get("side") or 0) < 0
+        ),
+        structural_up_probability=float(row.get("qmd_structure_up_probability") or 0.5),
+        vwap=_positive_numeric(row.get("vwap")),
+        macd_line=_optional_numeric(row.get("macd_line")),
+        macd_signal=_optional_numeric(row.get("macd_signal")),
+        macd_histogram=_optional_numeric(row.get("macd_histogram")),
+        volatility=float(row.get("atr_14") or 0),
+        upper_luld_price=_positive_numeric(row.get("structure_luld_upper")),
         market_open=session_phase not in {"closed", "overnight"},
         evaluation_events=("market_data_update",),
         changed_source_ids=tuple(sorted(str(key) for key in source_values)),
         source_timeframe=str(row.get("indicator_interval") or row.get("timeframe") or ""),
         source_values=source_values,
     )
+
+
+def _optional_numeric(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _positive_numeric(value: Any) -> float | None:
+    number = _optional_numeric(value)
+    return number if number is not None and number > 0 else None
 
 
 def _enablement_accepts(enablement: Mapping[str, Any], event_time: datetime) -> bool:

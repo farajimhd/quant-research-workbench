@@ -43,7 +43,7 @@ from src.trading_runtime.signals import (
     StrategyIntent,
     normalize_strategy_evaluation,
 )
-from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
+from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter, _Position
 from src.trading_runtime.strategy_orders import IbkrStrategyOrderPlanner, StrategyOrderPlan
 
 
@@ -159,6 +159,23 @@ class RecordingBroker(SimulatedBrokerAdapter):
 
     async def modify_order(self, account_id: str, order_id: str, order: OrderRequest):
         self.modifications.append((order_id, order))
+        return await super().modify_order(account_id, order_id, order)
+
+
+class TerminalTargetRaceBroker(RecordingBroker):
+    def __init__(self) -> None:
+        super().__init__()
+        self.terminal_target_id = ""
+        self.raced = False
+
+    async def modify_order(self, account_id: str, order_id: str, order: OrderRequest):
+        if not self.raced and order_id == self.terminal_target_id:
+            self.raced = True
+            state = self._orders[order_id]
+            state.status = OrderStatus.FILLED
+            state.filled = state.requested_quantity
+            position = self._positions[account_id][state.request.conid]
+            position.quantity = 0.0
         return await super().modify_order(account_id, order_id, order)
 
 
@@ -1073,6 +1090,89 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 (await manager.reconcile_protection(source_group))["status"],
                 "delegated_to_managed_exit",
+            )
+            await manager.close()
+            journal.close()
+
+    async def test_full_exit_reconciles_target_fill_race_without_duplicate_sell(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            broker = TerminalTargetRaceBroker()
+            real_planner = IbkrStrategyOrderPlanner()
+            instrument = InstrumentContract("TEST", 123, "TEST", "STK", "USD")
+
+            def bracket_planner(strategy_intent, account_id, _event):
+                return real_planner.plan(
+                    account_id=account_id,
+                    instrument=instrument,
+                    intent=strategy_intent,
+                    strategy_id="strategy-1",
+                    strategy_revision=1,
+                )
+
+            journal = TradingJournal(Path(directory) / "orders.sqlite3")
+            await broker.initialize()
+            risk = RiskAuthority()
+            await risk.prime(broker, ["DU1"])
+            manager = OrderManagementEngine(
+                broker=broker,
+                planner=bracket_planner,
+                risk=risk,
+                journal=journal,
+                run_id="run-1",
+                strategy_id="strategy-1",
+                strategy_revision=1,
+                policy=BrokerCommunicationPolicy(),
+            )
+            entry = StrategyIntent(
+                **{
+                    **intent(quantity=16).payload(),
+                    "intent_id": "entry-before-target-race",
+                    "profit_target_price": 10.50,
+                }
+            )
+            entry_snapshot = await manager.submit_intent(
+                portfolio_approved(journal, entry), account_id="DU1", event=None
+            )
+            target_id = entry_snapshot.broker_order_ids[1]
+            parent_id = entry_snapshot.broker_order_ids[0]
+            broker._orders[parent_id].status = OrderStatus.FILLED
+            broker._orders[parent_id].filled = 16.0
+            broker._orders[target_id].status = OrderStatus.SUBMITTED
+            broker._positions["DU1"][123] = _Position(
+                conid=123,
+                ticker="TEST",
+                quantity=16.0,
+                avg_cost=10.0,
+            )
+            broker.terminal_target_id = target_id
+            exit_request = replace(
+                intent(action="exit", urgency="very_urgent", quantity=16),
+                intent_id="exit-during-target-race",
+                invalidation_price=9.4,
+                metadata={
+                    **intent(action="exit").metadata,
+                    "position_quantity": 16.0,
+                    "reason_code": "downside_macd_closed",
+                },
+            )
+
+            exit_snapshot = await manager.submit_intent(
+                portfolio_approved(journal, exit_request),
+                account_id="DU1",
+                event=None,
+            )
+
+            self.assertTrue(broker.raced)
+            self.assertEqual(exit_snapshot.state, OrderManagementState.FILLED)
+            self.assertEqual(exit_snapshot.remaining_quantity, 0.0)
+            self.assertEqual(exit_snapshot.broker_order_ids, ())
+            self.assertEqual(len(await broker.live_orders()), len(entry_snapshot.broker_order_ids))
+            events = journal.order_management_records()
+            self.assertTrue(
+                any(
+                    row.entity_type == "protected_exit_already_satisfied"
+                    for row in events
+                )
             )
             await manager.close()
             journal.close()

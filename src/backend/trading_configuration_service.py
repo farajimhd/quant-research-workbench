@@ -2848,7 +2848,7 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
         _watchlist_rule(
             "strategy-squeeze-volume-spread-quality",
             "Squeeze volume and spread quality",
-            "Confirms an entry only for $2-$50 securities with at least $1,000,000 session dollar volume, 100,000 session shares, sustained one-minute and fast ten-second trade rates, accelerating one-second volume, and spread no wider than 50 basis points. Absolute activity and executable spread are authoritative; the cross-sectional liquidity score is presentation-only.",
+            "Latches liquidity admission for $2-$50 securities after at least $1,000,000 session dollar volume, 100,000 session shares, sustained one-minute and fast ten-second trade rates, and spread no wider than 50 basis points. Admission remains valid for the squeeze campaign; every order still requires a current fast trade rate and executable spread. The cross-sectional liquidity score is presentation-only.",
             [
                 _watchlist_condition("squeeze-price-floor", "market.last_price", "greater_or_equal", 2.0),
                 _watchlist_condition("squeeze-price-ceiling", "market.last_price", "less_or_equal", 50.0),
@@ -2856,13 +2856,6 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
                 _watchlist_condition("squeeze-session-share-volume", "market.volume", "greater_or_equal", 100_000.0),
                 _watchlist_condition("squeeze-trade-rate", "market.trade_rate_10s", "greater_or_equal", 1.0),
                 _watchlist_condition("squeeze-sustained-trade-rate", "market.trade_rate_60s", "greater_or_equal", 0.5),
-                _watchlist_condition(
-                    "squeeze-volume-attraction",
-                    "volume_rate_ratio",
-                    "greater_or_equal",
-                    1.5,
-                    interval="1s",
-                ),
                 _watchlist_condition(
                     "squeeze-spread-quality",
                     "market.spread_bps",
@@ -2872,18 +2865,18 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
             ],
         ),
         _watchlist_rule(
-            "strategy-squeeze-swing-high-break-1s",
-            "Causal one-second swing-high breakout",
-            "Enters immediately when quality is confirmed and price passes the latest causally confirmed one-second swing high; otherwise it waits for the first later pass above that live threshold.",
+            "strategy-squeeze-unified-resistance-break",
+            "Unified structural resistance breakout",
+            "Uses QMD's persistent event-native Unified Structural Level Book. Initial entry is allowed when price is already accepted above an important resistance-zone boundary; post-loss reentry requires a fresh causal cross.",
             [{
                 **_watchlist_condition(
-                    "squeeze-price-over-swing-high",
+                    "squeeze-price-over-unified-resistance",
                     "market.last_price",
                     "above_by_bps",
                     0.0,
                     interval="1s",
                 ),
-                "right_source_id": "indicator.structure.swing_high",
+                "right_source_id": "indicator.structure.unified_resistance_upper",
                 "right_interval": normalize_interval_spec("1s"),
             }],
         ),
@@ -2906,7 +2899,7 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
         _watchlist_rule(
             "strategy-squeeze-macd-open-1s",
             "Positive one-second MACD open",
-            "Requires the causal one-second MACD line to be above its signal line, with both lines and the histogram above zero.",
+            "Requires exactly: causal one-second MACD line above its signal line, MACD line above zero, and signal line above zero.",
             [
                 {
                     **_watchlist_condition(
@@ -2929,13 +2922,6 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
                 _watchlist_condition(
                     "squeeze-macd-signal-positive",
                     "indicator.macd.signal",
-                    "greater_than",
-                    0.0,
-                    interval="1s",
-                ),
-                _watchlist_condition(
-                    "squeeze-macd-positive-histogram",
-                    "indicator.macd.histogram",
                     "greater_than",
                     0.0,
                     interval="1s",
@@ -3275,7 +3261,7 @@ def _default_watchlist_templates(symbols: list[str], calculation_rows: list[dict
         gainers.append(template(f"top-{slug}-volume-gainers", f"Top {label} Volume Gainers", f"Most unusually active {label.lower()} instruments, ranked by aligned relative volume.", [category_rule, "watchlist-relative-volume-gainer"], "market.relative_volume"))
     return [
         {"watchlist_id": "core-candidates", "name": "Core candidates", "description": "Candidate instruments produced from the Core Scan for strategy evaluation.", "enabled": True, "origin": "system", "template": False, "availability": "available", "availability_detail": "", "source_scan_id": "qmd-core-scan", "inclusion_rule_sets": [], "inclusion_operator": "all", "exclusion_rule_sets": [], "ranking_field": "market.liquidity_rank", "ranking_direction": "ascending", "maximum_size": 250, "refresh_interval_ms": 1000, "membership_expiry": "end_of_trading_day", "membership_ttl_ms": 300000, "manual_inclusions": symbols, "manual_exclusions": [], "columns": common_columns, "membership_history": []},
-        template("squeeze-tradable-candidates", "Squeeze tradable candidates", "Current $2-$50 Early Squeeze candidates whose absolute liquidity, trade rate, one-second volume attraction, and executable spread all pass. Membership may change while the Early Squeeze episode remains under Strategy observation.", ["strategy-squeeze-volume-spread-quality"], "market.liquidity_score", refresh=1000, columns=common_columns),
+        template("squeeze-tradable-candidates", "Squeeze tradable candidates", "Current $2-$50 Early Squeeze candidates whose absolute session activity, sustained trade rates, and executable spread pass campaign admission. Membership may change while the Early Squeeze episode remains under Strategy observation.", ["strategy-squeeze-volume-spread-quality"], "market.liquidity_score", refresh=1000, columns=common_columns),
         *gainers,
         template("price-or-volume-squeeze", "Session Price or Volume Expansion", "Symbols with at least 5% session price expansion or 3x aligned 20-session relative volume.", ["watchlist-price-or-volume-squeeze"], "market.relative_volume"),
         template("vwap-breakout", "VWAP Breakout", "Symbols trading at least 5 basis points above causal session VWAP.", ["watchlist-vwap-breakout"], "market.change_pct"),
@@ -3904,8 +3890,8 @@ def _default_draft() -> dict[str, Any]:
     system_profiles[0]["name"] = "Long Momentum · Squeeze"
     system_profiles[0]["description"] = (
         "Extended-hours long momentum strategy activated by the Early Squeeze Move "
-        "episode start, confirmed by executable liquidity and volume attraction, and "
-        "entered on the first causal one-second swing-high breakout."
+        "episode start, admitted once by sustained executable liquidity, and entered "
+        "through QMD's persistent Unified Structural Level Book while one-second MACD is positive and open."
     )
     squeeze_lifecycle = system_profiles[0]["lifecycle"]
     squeeze_lifecycle["trading_behavior"]["eligible_sessions"] = [
@@ -3919,7 +3905,7 @@ def _default_draft() -> dict[str, Any]:
             "operator": "and",
             "children": [{
                 "kind": "rule_set",
-                "rule_set_id": "strategy-squeeze-swing-high-break-1s",
+                "rule_set_id": "strategy-squeeze-unified-resistance-break",
             }],
         }
     }
@@ -4016,6 +4002,45 @@ def _default_draft() -> dict[str, Any]:
             "timeframe": "1s",
         },
     }
+    system_profiles[0]["parameters"]["structural_entry"] = {
+        "enabled": True,
+        "minimum_salience": 0.45,
+        "minimum_confidence": 0.50,
+        "minimum_reaction_probability": 0.50,
+        "acceptance_buffer_bps": 0.0,
+    }
+    system_profiles[0]["parameters"]["liquidity_admission"] = {
+        "enabled": True,
+        "latched": True,
+        "minimum_price": 2.0,
+        "maximum_price": 50.0,
+        "minimum_session_dollar_volume": 1_000_000.0,
+        "minimum_session_share_volume": 100_000.0,
+        "minimum_trade_rate_10s": 1.0,
+        "minimum_trade_rate_60s": 0.5,
+        "maximum_spread_bps": 50.0,
+    }
+    squeeze_lifecycle["reentry"]["target_replenishment"] = {
+        "enabled": True,
+        "minimum_pullback_atr_multiple": 0.50,
+        "minimum_pullback_bps": 25.0,
+        "support_buffer_bps": 10.0,
+    }
+    system_profiles[0]["parameters"]["protection"]["profit_ladder"].update({
+        "maximum_targets": 5,
+        "minimum_level_strength": 0.55,
+        "minimum_level_confidence": 0.60,
+        "minimum_reaction_probability": 0.60,
+        "minimum_reversal_probability": 0.55,
+        "minimum_composite_score": 0.60,
+        "premarket_maximum_gain_pct": 200.0,
+    })
+    system_profiles[0]["parameters"]["protection"]["luld_profit_target"].update({
+        "buffer_bps": 25.0,
+        "minimum_tick_offset_count": 2,
+        "tick_size": 0.01,
+        "include_current_spread": True,
+    })
     system_profiles[0]["parameters"].setdefault("protection", {}).setdefault(
         "stop", {}
     )["prefer_closer_hybrid"] = False

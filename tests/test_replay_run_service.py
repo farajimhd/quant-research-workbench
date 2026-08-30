@@ -7,7 +7,7 @@ import threading
 import time as wall_time
 import unittest
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -2045,6 +2045,55 @@ class BacktestPreflightTests(unittest.TestCase):
 
 
 class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
+    @patch("src.backend.replay_run_service.qmd_advance_historical_structure_snapshot")
+    @patch("src.backend.replay_run_service.qmd_historical_structure_snapshot")
+    async def test_historical_structure_advances_cached_checkpoint_incrementally(
+        self, initial_snapshot, advance_snapshot
+    ) -> None:
+        initial_snapshot.return_value = {
+            "complete": True,
+            "session_id": "gslb-uat-1",
+            "checkpoint": {"sym": "SUGP", "last_arrival_sequence": 10},
+            "snapshot": {"unified_levels": []},
+            "source_plan": {"plan_hash": "seed-plan"},
+            "seed_authority_start": "2026-08-20T08:00:00Z",
+            "seed_source_plan_hash": "seed-plan",
+            "seed_source_revision_token": "seed-token",
+            "event_count": 100,
+            "advanced_event_count": 100,
+        }
+        advance_snapshot.return_value = {
+            "complete": True,
+            "session_id": "gslb-uat-1",
+            "snapshot": {"unified_levels": []},
+            "source_plan": {"plan_hash": "advance-plan"},
+            "event_count": 2,
+            "advanced_event_count": 2,
+        }
+        controller = ReplayRunController.__new__(ReplayRunController)
+        controller._historical_structure_context = {}
+        controller._data_authority = {}
+        controller._journal = None
+        first = ReplayDerivedFrame(
+            as_of=datetime(2026, 8, 21, 8, 10, 25, tzinfo=UTC),
+            bar={},
+            indicator={},
+            sequence=1,
+            ticker="SUGP",
+            timeframe="1s",
+        )
+        second = replace(first, as_of=first.as_of + timedelta(seconds=1), sequence=2)
+
+        await controller._historical_entry_structure_context(first)
+        await controller._historical_entry_structure_context(second)
+
+        initial_snapshot.assert_called_once()
+        advance_snapshot.assert_called_once()
+        self.assertEqual(
+            advance_snapshot.call_args.kwargs["session_id"],
+            "gslb-uat-1",
+        )
+
     def test_structure_enrichment_uses_exact_cached_entry_contract(self) -> None:
         now = datetime(2026, 8, 21, 8, 10, 37, tzinfo=UTC)
         rules = {
@@ -2066,7 +2115,29 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
             },
             "confirmation": {
                 "operator": "all",
+                "expression": {
+                    "kind": "operator",
+                    "operator": "and",
+                    "children": [
+                        {
+                            "kind": "rule_set",
+                            "rule_set_id": "strategy-squeeze-volume-spread-quality",
+                        },
+                        {"kind": "rule_set", "rule_set_id": "confirmation"},
+                    ],
+                },
                 "rule_sets": [{
+                    "rule_set_id": "strategy-squeeze-volume-spread-quality",
+                    "operator": "all",
+                    "enabled": True,
+                    "conditions": [{
+                        "condition_id": "session-volume",
+                        "enabled": True,
+                        "comparator": "greater_or_equal",
+                        "left_source_id": "market.session_volume",
+                        "value": 100_000_000.0,
+                    }],
+                }, {
                     "rule_set_id": "confirmation",
                     "operator": "all",
                     "enabled": True,
@@ -2114,6 +2185,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
             status=AssignmentStatus.WATCHING,
             permissions=StrategyPermissions(enter=True),
             parameters={"entry_rules": rules},
+            state={"liquidity_admitted_at": now.isoformat()},
             created_at=now,
             updated_at=now,
         )
@@ -2155,7 +2227,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
                 ticker_assignments=(assigned,),
             )
         )
-        self.assertEqual(controller._strategy_quality_admitted_tickers, {"SUGP"})
+        self.assertEqual(controller._strategy_quality_admitted_tickers, set())
 
     async def test_one_second_frames_project_absolute_liquidity_causally(self) -> None:
         controller = ReplayRunController(
@@ -3715,6 +3787,48 @@ class ReplaySharedAbstractionTests(unittest.TestCase):
         self.assertEqual(order.raw["canonical_run_id"], "replay-run")
         self.assertNotIn("strategy", order.to_cpapi())
         self.assertFalse(any(key.startswith("canonical_") for key in order.to_cpapi()))
+
+    def test_runtime_planner_gives_protective_fills_explicit_exit_reasons(self) -> None:
+        planner = RuntimeIbkrStrategyOrderPlanner(
+            {
+                "AAPL": InstrumentContract(
+                    instrument_id="simulated:265598",
+                    conid=265598,
+                    symbol="AAPL",
+                    security_type="STK",
+                    currency="USD",
+                    exchange="SMART",
+                )
+            },
+            strategy_id=STRATEGY_ID,
+            strategy_revision=STRATEGY_REVISION,
+            run_id="replay-run",
+        )
+        intent = StrategyIntent(
+            intent_id="intent-entry",
+            ticker="AAPL",
+            action="enter_long",
+            quantity=10.0,
+            reference_price=100.0,
+            reason="entry_confirmed",
+            event_time=datetime(2026, 7, 28, 9, 45, tzinfo=NEW_YORK),
+            invalidation_price=98.0,
+            profit_target_price=104.0,
+        )
+
+        orders = planner.plan(intent=intent, account_id="SIM-REPLAY", event=None).orders
+        reasons = {
+            row.raw["canonical_metadata"]["execution_role"]: row.raw[
+                "canonical_metadata"
+            ]["reason"]
+            for row in orders
+        }
+
+        self.assertEqual(reasons["entry"], "entry_confirmed")
+        self.assertEqual(
+            reasons["profit_target"], "structural_profit_target_filled"
+        )
+        self.assertEqual(reasons["protective_stop"], "protective_stop_filled")
 
     def test_assignment_commands_update_shared_strategy_state(self) -> None:
         observed_at = datetime(2026, 7, 28, 9, 45, tzinfo=NEW_YORK)

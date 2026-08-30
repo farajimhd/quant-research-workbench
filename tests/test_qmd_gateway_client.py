@@ -29,6 +29,9 @@ from src.backend.qmd_gateway_client import (
     qmd_historical_scanner_market_snapshot,
     qmd_historical_scanner_snapshot,
     qmd_catalogs,
+    qmd_current_structure_snapshot,
+    qmd_indicator_capabilities,
+    qmd_advance_historical_structure_snapshot,
     qmd_live_market_state,
     qmd_ticker_state,
     qmd_indicators,
@@ -45,6 +48,57 @@ from src.request_context import begin_request_context, current_request_identity,
 
 
 class QmdGatewayClientTests(unittest.TestCase):
+    def test_unified_structure_columns_request_generic_structure_capability(self) -> None:
+        self.assertIn(
+            "qmd_generic_structure",
+            qmd_indicator_capabilities(("qmd_structure_unified_levels",)),
+        )
+
+    @patch("src.backend.qmd_gateway_client.qmd_history_post_json")
+    def test_historical_structure_advance_uses_bounded_session_identity(self, post_json) -> None:
+        post_json.return_value = {
+            "complete": True,
+            "session_id": "gslb-uat-1",
+            "snapshot": {"unified_levels": []},
+        }
+
+        payload = qmd_advance_historical_structure_snapshot(
+            session_id="gslb-uat-1",
+            as_of="2026-08-21T08:10:01Z",
+        )
+
+        self.assertEqual(payload["session_id"], "gslb-uat-1")
+        self.assertEqual(payload["snapshot"]["unified_levels"], [])
+        self.assertEqual(
+            post_json.call_args.args[0],
+            "/materialize/generic-structure-snapshot-session-advance",
+        )
+        self.assertNotIn("checkpoint", post_json.call_args.args[1])
+
+    @patch("src.backend.qmd_gateway_client.qmd_get_json")
+    def test_current_structure_snapshot_requires_complete_unified_book(self, get_json) -> None:
+        get_json.return_value = {
+            "current": {
+                "sym": "SUGP",
+                "bar_end": "2026-08-21T08:10:00Z",
+                "qmd_structure_unified_levels": [{"unified_level_id": 1, "side": -1}],
+            }
+        }
+
+        snapshot = qmd_current_structure_snapshot("sugp")
+
+        self.assertEqual(snapshot["sym"], "SUGP")
+        self.assertEqual(len(snapshot["qmd_structure_unified_levels"]), 1)
+        get_json.assert_called_once_with(
+            "/snapshot/indicators/SUGP",
+            {"timeframe": "1s", "limit": 1},
+            timeout=3,
+        )
+
+        get_json.return_value = {"current": {"sym": "SUGP"}}
+        with self.assertRaisesRegex(RuntimeError, "omitted the Unified"):
+            qmd_current_structure_snapshot("SUGP")
+
     def test_symbol_snapshot_keeps_session_values_separate_from_interval_bars(self) -> None:
         row = normalize_qmd_symbol_snapshot({
             "ticker": "AAPL",

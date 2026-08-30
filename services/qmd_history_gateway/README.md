@@ -180,6 +180,11 @@ Supported bar timeframes are the live QMD set: `100ms`, `1s`, `5s`, `10s`,
   returns a typed conflict instead of fabricating an exact continuation. The
   response includes the advanced checkpoint, event counts, source plan, and
   source revisions before and after replay.
+- `POST /materialize/generic-structure-snapshot-advance` advances a replay or
+  backtest-owned checkpoint through canonical historical events and returns
+  both the successor checkpoint and its point-in-time snapshot. It preserves
+  the exact-live-cursor contract above while avoiding a daily-book rebuild on
+  every strategy decision second.
 - `POST /materialize/generic-structure-rebuild` reconstructs a checkpoint from
   a fresh shared engine over one explicit, gap-free canonical Archive + Recent
   + Current-Live window. It is an operator recovery primitive, available only

@@ -1288,7 +1288,6 @@ class TradingConfigurationServiceTests(unittest.TestCase):
                 "squeeze-macd-line-above-signal",
                 "squeeze-macd-line-positive",
                 "squeeze-macd-signal-positive",
-                "squeeze-macd-positive-histogram",
             },
         )
         self.assertTrue(
@@ -1495,21 +1494,21 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             profile["lifecycle"]["initial_entry"]["opportunity"]["expression"][
                 "children"
             ][0]["rule_set_id"],
-            "strategy-squeeze-swing-high-break-1s",
+            "strategy-squeeze-unified-resistance-break",
         )
         swing_rule = next(
             row
             for row in draft["market_discovery"]["rule_sets"]
-            if row["rule_set_id"] == "strategy-squeeze-swing-high-break-1s"
+            if row["rule_set_id"] == "strategy-squeeze-unified-resistance-break"
         )
         swing_condition = swing_rule["conditions"][0]
         self.assertEqual(swing_condition["left_source_id"], "market.last_price")
         self.assertEqual(
             swing_condition["right_source_id"],
-            "indicator.structure.swing_high",
+            "indicator.structure.unified_resistance_upper",
         )
         self.assertEqual(swing_condition["value"], 0.0)
-        self.assertIn("swing-high breakout", profile["description"])
+        self.assertIn("Unified Structural Level Book", profile["description"])
         self.assertEqual(plan["campaign_lifecycle"]["reentry_cooldown_ms"], 5_000)
         self.assertTrue(profile["lifecycle"]["reentry"]["unlimited_attempts"])
         self.assertEqual(profile["lifecycle"]["reentry"]["maximum_attempts"], 0)

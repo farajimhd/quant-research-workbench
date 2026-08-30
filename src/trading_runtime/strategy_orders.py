@@ -268,8 +268,10 @@ class RuntimeIbkrStrategyOrderPlanner:
             strategy_revision=self.strategy_revision,
             limit_offset_bps=self.limit_offset_bps,
         )
-        enriched_by_identity = {
-            id(order): replace(
+        enriched_by_identity = {}
+        for order in planned.orders:
+            execution_role = _planned_execution_role(order, intent.action)
+            enriched_by_identity[id(order)] = replace(
                 order,
                 raw={
                     **dict(order.raw),
@@ -279,14 +281,12 @@ class RuntimeIbkrStrategyOrderPlanner:
                     "canonical_metadata": {
                         **dict(intent.metadata),
                         "action": intent.action,
-                        "execution_role": _planned_execution_role(order, intent.action),
-                        "reason": intent.reason,
+                        "execution_role": execution_role,
+                        "reason": _execution_reason(execution_role, intent.reason),
                         "signal_price": intent.reference_price,
                     },
                 },
             )
-            for order in planned.orders
-        }
         return replace(
             planned,
             orders=tuple(enriched_by_identity[id(order)] for order in planned.orders),
@@ -318,6 +318,15 @@ def _planned_execution_role(order: OrderRequest, intent_action: str) -> str:
     if order_type in {"TRAIL", "TRAILLMT"}:
         return "trailing_stop"
     return "protective_exit"
+
+
+def _execution_reason(execution_role: str, intent_reason: str) -> str:
+    return {
+        "profit_target": "structural_profit_target_filled",
+        "protective_stop": "protective_stop_filled",
+        "trailing_stop": "trailing_stop_filled",
+        "protective_exit": "protective_exit_filled",
+    }.get(execution_role, intent_reason)
 
 
 def _order(

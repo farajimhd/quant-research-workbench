@@ -14,10 +14,12 @@ use crate::source::{
     HistoricalScannerMarketSnapshot, LatestEventCoverage, MarketSourcePlan, SourceRevision,
 };
 use crate::structure_checkpoint::{
-    advance_structure_checkpoint, materialize_structure_snapshot, rebuild_structure_checkpoint,
-    StructureCheckpointAdvanceRequest, StructureCheckpointAdvanceResponse,
-    StructureCheckpointRebuildRequest, StructureCheckpointRebuildResponse,
-    StructureSnapshotRequest, StructureSnapshotResponse,
+    advance_historical_structure_snapshot, advance_structure_checkpoint,
+    materialize_structure_snapshot, rebuild_structure_checkpoint,
+    HistoricalStructureSessionRegistry, StructureCheckpointAdvanceRequest,
+    StructureCheckpointAdvanceResponse, StructureCheckpointRebuildRequest,
+    StructureCheckpointRebuildResponse, StructureSnapshotRequest,
+    StructureSnapshotSessionAdvanceRequest, StructureSnapshotSessionAdvanceResponse,
 };
 use crate::watchlist_timeline::{
     validate_plan, HistoricalWatchlistPlan, HistoricalWatchlistPlanValidation,
@@ -54,6 +56,7 @@ pub struct AppState {
     pub scanner: HistoricalScannerDerivedCache,
     pub source: HistoricalEventSource,
     pub structure_checkpoint_advancement_permits: Arc<Semaphore>,
+    pub structure_snapshot_sessions: HistoricalStructureSessionRegistry,
     pub watchlist_materialization_permits: Arc<Semaphore>,
 }
 
@@ -230,6 +233,14 @@ pub fn app(state: AppState) -> Router {
             post(materialize_generic_structure_snapshot),
         )
         .route(
+            "/materialize/generic-structure-snapshot-advance",
+            post(materialize_generic_structure_snapshot_advance),
+        )
+        .route(
+            "/materialize/generic-structure-snapshot-session-advance",
+            post(materialize_generic_structure_snapshot_session_advance),
+        )
+        .route(
             "/materialize/generic-structure-rebuild",
             post(materialize_generic_structure_rebuild),
         )
@@ -345,10 +356,107 @@ async fn materialize_generic_structure_checkpoint(
         .map_err(structure_checkpoint_advancement_error)
 }
 
+async fn materialize_generic_structure_snapshot_advance(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<StructureCheckpointAdvanceRequest>,
+) -> Result<Json<StructureCheckpointAdvanceResponse>, ApiError> {
+    let _permit = state
+        .structure_checkpoint_advancement_permits
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({
+                    "error": "Generic Structure historical advancement capacity is busy",
+                    "error_code": "structure_checkpoint_capacity_busy",
+                    "retryable": true,
+                    "retry_action": "retry_historical_structure_advancement",
+                    "source": "qmd_history_gateway",
+                })),
+            )
+        })?;
+    advance_historical_structure_snapshot(&state.config, &state.source, request)
+        .await
+        .map(Json)
+        .map_err(structure_checkpoint_advancement_error)
+}
+
+async fn materialize_generic_structure_snapshot_session_advance(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<StructureSnapshotSessionAdvanceRequest>,
+) -> Result<Json<StructureSnapshotSessionAdvanceResponse>, ApiError> {
+    if request.schema_version != 1 {
+        return Err(service_error(format!(
+            "invalid Generic Structure historical session schema_version {}; expected 1",
+            request.schema_version
+        )));
+    }
+    let _permit = state
+        .structure_checkpoint_advancement_permits
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({
+                    "error": "Generic Structure historical advancement capacity is busy",
+                    "error_code": "structure_checkpoint_capacity_busy",
+                    "retryable": true,
+                    "retry_action": "retry_historical_structure_advancement",
+                    "source": "qmd_history_gateway",
+                })),
+            )
+        })?;
+    let session_id = request.session_id.trim().to_string();
+    let checkpoint = state
+        .structure_snapshot_sessions
+        .checkout(&session_id)
+        .await
+        .map_err(structure_checkpoint_advancement_error)?;
+    let advance_request = StructureCheckpointAdvanceRequest {
+        schema_version: request.schema_version,
+        checkpoint: checkpoint.clone(),
+        as_of: request.as_of,
+        expected_source_plan_hash: request.expected_source_plan_hash,
+        event_limit: request.event_limit,
+    };
+    let advanced =
+        match advance_historical_structure_snapshot(&state.config, &state.source, advance_request)
+            .await
+        {
+            Ok(advanced) => advanced,
+            Err(error) => {
+                state
+                    .structure_snapshot_sessions
+                    .replace(session_id, checkpoint)
+                    .await;
+                return Err(structure_checkpoint_advancement_error(error));
+            }
+        };
+    state
+        .structure_snapshot_sessions
+        .replace(session_id.clone(), advanced.checkpoint)
+        .await;
+    Ok(Json(StructureSnapshotSessionAdvanceResponse {
+        schema_version: advanced.schema_version,
+        session_id,
+        as_of: advanced.as_of,
+        replay_start: advanced.replay_start,
+        event_count: advanced.event_count,
+        advanced_event_count: advanced.advanced_event_count,
+        snapshot: advanced.snapshot,
+        source_plan: advanced.source_plan,
+        source_revision_before: advanced.source_revision_before,
+        source_revision_after: advanced.source_revision_after,
+        complete: advanced.complete,
+    }))
+}
+
 async fn materialize_generic_structure_snapshot(
     State(state): State<Arc<AppState>>,
     Json(request): Json<StructureSnapshotRequest>,
-) -> Result<Json<StructureSnapshotResponse>, ApiError> {
+) -> Result<Json<Value>, ApiError> {
     let _permit = state
         .structure_checkpoint_advancement_permits
         .clone()
@@ -365,10 +473,20 @@ async fn materialize_generic_structure_snapshot(
                 })),
             )
         })?;
-    materialize_structure_snapshot(&state.config, &state.source, request)
+    let response = materialize_structure_snapshot(&state.config, &state.source, request)
         .await
-        .map(Json)
-        .map_err(structure_checkpoint_advancement_error)
+        .map_err(structure_checkpoint_advancement_error)?;
+    let session_id = state
+        .structure_snapshot_sessions
+        .register(response.checkpoint.clone())
+        .await;
+    let mut value = serde_json::to_value(response).map_err(|error| {
+        service_error(format!(
+            "failed to serialize Generic Structure snapshot: {error}"
+        ))
+    })?;
+    value["session_id"] = json!(session_id);
+    Ok(Json(value))
 }
 
 async fn materialize_generic_structure_rebuild(

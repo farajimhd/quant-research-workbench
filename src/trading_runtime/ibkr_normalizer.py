@@ -168,11 +168,28 @@ def normalize_execution(row: dict[str, Any], fallback_account: str = "") -> Exec
         strategy_revision=_integer(row.get("strategy_revision") or row.get("canonical_strategy_revision") or metadata.get("strategy_revision")),
         run_id=str(row.get("run_id") or row.get("canonical_run_id") or metadata.get("run_id") or ""),
         setup=str(row.get("setup") or metadata.get("setup") or metadata.get("tag") or ""),
-        exit_reason=str(row.get("exit_reason") or row.get("reason") or metadata.get("exit_reason") or ""),
+        exit_reason=_execution_exit_reason(row, metadata),
         signal_price=_optional_decimal(row.get("signal_price") or metadata.get("signal_price")),
         arrival_midpoint=_optional_decimal(row.get("arrival_midpoint") or metadata.get("arrival_midpoint")),
         planned_risk=_optional_decimal(row.get("planned_risk") or metadata.get("planned_risk")),
         raw=dict(row),
+    )
+
+
+def _execution_exit_reason(row: dict[str, Any], metadata: dict[str, Any]) -> str:
+    role_reason = {
+        "profit_target": "structural_profit_target_filled",
+        "protective_stop": "protective_stop_filled",
+        "trailing_stop": "trailing_stop_filled",
+        "protective_exit": "protective_exit_filled",
+    }.get(str(metadata.get("execution_role") or ""))
+    return str(
+        row.get("exit_reason")
+        or row.get("reason")
+        or metadata.get("exit_reason")
+        or role_reason
+        or metadata.get("reason")
+        or ""
     )
 
 

@@ -11,6 +11,7 @@ use crate::cache::HistoricalDerivedCache;
 use crate::config::HistoricalGatewayConfig;
 use crate::scanner::HistoricalScannerDerivedCache;
 use crate::source::HistoricalEventSource;
+use crate::structure_checkpoint::HistoricalStructureSessionRegistry;
 use qmd_core::config::load_env_files;
 use std::io;
 use std::net::SocketAddr;
@@ -59,6 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             scanner,
             source,
             structure_checkpoint_advancement_permits,
+            structure_snapshot_sessions: HistoricalStructureSessionRegistry::new(1024),
             watchlist_materialization_permits,
         }),
     )

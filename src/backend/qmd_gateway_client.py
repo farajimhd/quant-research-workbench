@@ -598,6 +598,31 @@ def qmd_historical_structure_snapshot(
         raise RuntimeError("QMD History returned no Generic Structure snapshot payload")
     if str(payload.get("ticker") or "").upper() != str(ticker).strip().upper():
         raise RuntimeError("QMD History returned a Generic Structure snapshot for another ticker")
+    if not str(payload.get("session_id") or "").strip():
+        raise RuntimeError("QMD History returned no Generic Structure session")
+    return payload
+
+
+def qmd_advance_historical_structure_snapshot(
+    *, session_id: str, as_of: str, event_limit: int | None = None
+) -> dict[str, Any]:
+    payload = qmd_history_post_json(
+        "/materialize/generic-structure-snapshot-session-advance",
+        {
+            "schema_version": 1,
+            "session_id": str(session_id).strip(),
+            "as_of": as_of,
+            "expected_source_plan_hash": None,
+            "event_limit": event_limit,
+        },
+        timeout=float(os.environ.get("QMD_HISTORY_STRUCTURE_SNAPSHOT_TIMEOUT_SECONDS", "180")),
+    )
+    if not isinstance(payload, dict) or not bool(payload.get("complete")):
+        raise RuntimeError("QMD History returned an incomplete Generic Structure advancement")
+    if str(payload.get("session_id") or "") != str(session_id).strip():
+        raise RuntimeError("QMD History returned another Generic Structure session")
+    if not isinstance(payload.get("snapshot"), dict):
+        raise RuntimeError("QMD History returned no advanced Generic Structure snapshot")
     return payload
 
 
@@ -1727,6 +1752,8 @@ def qmd_indicator_capabilities(indicator_columns: str | Iterable[str] | None) ->
         capabilities.append("volatility_core")
     if any(value.startswith("flow_structure_composite") for value in columns):
         capabilities.append("flow_structure_composite")
+    if any(value.startswith("qmd_structure_") for value in columns):
+        capabilities.append("qmd_generic_structure")
     # Base-bar values (VWAP, return, and volume) are already maintained by the
     # universal/core funnel. A scoped core_bars lease keeps the request
     # contract explicit without materializing unrelated derived families.
@@ -1791,6 +1818,42 @@ def qmd_indicators(
         timeout=3,
     )
     return payload if isinstance(payload, dict) else {"ticker": symbol.upper(), "timeframe": timeframe, "history": [], "current": None, "tick": None}
+
+
+def qmd_current_structure_snapshot(
+    symbol: str,
+    *,
+    timeframe: str = "1s",
+) -> dict[str, Any]:
+    """Read the current event-native structure book for one engaged ticker.
+
+    Scanner projections deliberately omit the large level arrays. Strategy
+    execution calls this bounded endpoint only for assigned tickers and must
+    still compare the returned ``bar_end`` with its observation clock.
+    """
+
+    ticker = symbol.strip().upper()
+    if not ticker:
+        raise ValueError("symbol is required for QMD structure snapshot")
+    payload = qmd_get_json(
+        f"/snapshot/indicators/{urllib.parse.quote(ticker)}",
+        {"timeframe": timeframe, "limit": 1},
+        timeout=3,
+    )
+    if not isinstance(payload, dict):
+        raise RuntimeError("QMD returned an invalid structure snapshot")
+    current = payload.get("current")
+    if not isinstance(current, dict):
+        raise RuntimeError(f"QMD has no current {timeframe} structure snapshot for {ticker}")
+    if str(current.get("sym") or current.get("ticker") or "").strip().upper() not in {
+        "",
+        ticker,
+    }:
+        raise RuntimeError("QMD returned a structure snapshot for another ticker")
+    levels = current.get("qmd_structure_unified_levels")
+    if not isinstance(levels, list):
+        raise RuntimeError("QMD structure snapshot omitted the Unified Structural Level Book")
+    return current
 
 
 def qmd_catalogs() -> dict[str, Any]:
