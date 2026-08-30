@@ -140,9 +140,6 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
     const standardIndicatorPage = standardIndicatorsRequested
       ? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...request.params, include_market_signals: false, include_structure: false, indicator_columns: eventIndicatorColumns, stage: "full" })}`, { signal: controller.signal, timeoutMs: 120_000 })
       : null;
-    const unifiedStructurePage = unifiedStructureSelected
-      ? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...request.params, include_market_signals: false, include_structure: false, indicator_columns: unifiedStructureColumns, row_limit: chartPageSize(UNIFIED_STRUCTURE_TIMEFRAME), stage: "full", timeframe: UNIFIED_STRUCTURE_TIMEFRAME })}`, { signal: controller.signal, timeoutMs: historyTimeoutMs })
-      : null;
     page
       .then((payload) => {
         if (requestKeyRef.current !== requestKey) return;
@@ -186,19 +183,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
       const rows = closedRowsAtCutoff(payload.indicators, timeframe, cutoffMs);
       setState((current) => ({
         ...current,
-        indicators: limitRowsToLatest(mergeIndicatorRowsByTime(current.indicators, rows), rowBudget),
-        indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
-      }));
-    }).catch((reason) => {
-      if (controller.signal.aborted || requestKeyRef.current !== requestKey) return;
-      setState((current) => ({ ...current, historyError: reason instanceof Error ? reason.message : String(reason) }));
-    });
-    void unifiedStructurePage?.then((payload) => {
-      if (controller.signal.aborted || requestKeyRef.current !== requestKey) return;
-      const rows = unifiedStructureProjectionRows(payload.indicators, cutoffMs);
-      setState((current) => ({
-        ...current,
-        indicators: limitRowsToLatest(mergeIndicatorRowsByTime(current.indicators, rows), rowBudget),
+        indicators: limitIndicatorRowsToLatest(mergeIndicatorRowsByTime(current.indicators, rows), rowBudget),
         indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
       }));
     }).catch((reason) => {
@@ -283,7 +268,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
         ? () => api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, indicator_columns: eventIndicatorColumns, stage: "full" })}`, { signal: historyController.signal, timeoutMs: 120_000 })
         : null;
       const unifiedStructureRequest = progressive && unifiedStructureSelected
-        ? () => api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, include_market_signals: false, include_structure: false, indicator_columns: unifiedStructureColumns, row_limit: fullSession ? chartFullSessionPageSize(UNIFIED_STRUCTURE_TIMEFRAME) : chartInitialPageSize(UNIFIED_STRUCTURE_TIMEFRAME), stage: "full", timeframe: UNIFIED_STRUCTURE_TIMEFRAME })}`, { signal: historyController.signal, timeoutMs: historyTimeoutMs })
+        ? () => api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, full_session: true, include_market_signals: false, include_structure: false, indicator_columns: unifiedStructureColumns, row_limit: chartFullSessionPageSize(UNIFIED_STRUCTURE_TIMEFRAME), stage: "full", timeframe: UNIFIED_STRUCTURE_TIMEFRAME })}`, { signal: historyController.signal, timeoutMs: historyTimeoutMs })
         : null;
       // Live bars and closed indicators come from the recent materializations.
       // Signal/structure history remains causal QMD History work and advances
@@ -318,7 +303,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
           const rows = unifiedStructureProjectionRows(payload.indicators, cutoffMs);
           setState((current) => ({
             ...current,
-            indicators: limitRowsToLatest(mergeIndicatorRowsByTime(current.indicators, rows), rowBudget),
+            indicators: limitIndicatorRowsToLatest(mergeIndicatorRowsByTime(current.indicators, rows), rowBudget),
             indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
           }));
         };
@@ -469,7 +454,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
         const rows = closedRowsAtCutoff(payload.indicators, timeframe, refreshCutoffMs);
         setState((current) => ({
           ...current,
-          indicators: limitRowsToLatest(mergeIndicatorRowsByTime(current.indicators, rows), rowBudget),
+          indicators: limitIndicatorRowsToLatest(mergeIndicatorRowsByTime(current.indicators, rows), rowBudget),
           indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
         }));
       }).catch((reason) => {
@@ -479,7 +464,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
       });
     }
     if (unifiedStructureSelected) {
-      void api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, include_market_signals: false, include_structure: false, indicator_columns: unifiedStructureColumns, row_limit: fullSession ? chartFullSessionPageSize(UNIFIED_STRUCTURE_TIMEFRAME) : chartInitialPageSize(UNIFIED_STRUCTURE_TIMEFRAME), stage: "full", timeframe: UNIFIED_STRUCTURE_TIMEFRAME })}`, {
+      void api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, full_session: true, include_market_signals: false, include_structure: false, indicator_columns: unifiedStructureColumns, row_limit: chartFullSessionPageSize(UNIFIED_STRUCTURE_TIMEFRAME), stage: "full", timeframe: UNIFIED_STRUCTURE_TIMEFRAME })}`, {
         signal: controller.signal,
         timeoutMs: historyTimeoutMs,
       }).then((payload) => {
@@ -487,7 +472,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
         const rows = unifiedStructureProjectionRows(payload.indicators, refreshCutoffMs);
         setState((current) => ({
           ...current,
-          indicators: limitRowsToLatest(mergeIndicatorRowsByTime(current.indicators, rows), rowBudget),
+          indicators: limitIndicatorRowsToLatest(mergeIndicatorRowsByTime(current.indicators, rows), rowBudget),
           indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
         }));
       }).catch((reason) => {
@@ -961,7 +946,7 @@ export function mergeHistoricalChartPage(
   // duplicates here would leave the first OHLC/volume values on screen.
   const bars = limitRowsToLatest(mergeRowsByTime(currentBars, [...replacementBars, ...admittedBars]), rowBudget);
   const admittedTimes = new Set(bars.map(barStartTime));
-  const indicators = limitRowsToLatest(
+  const indicators = limitIndicatorRowsToLatest(
     mergeIndicatorRowsByTime(currentIndicators, incomingIndicators.filter((row) => admittedTimes.has(barStartTime(row)) || isUnifiedStructureProjectionRow(row))),
     rowBudget,
   ).filter((row) => admittedTimes.has(barStartTime(row)) || isUnifiedStructureProjectionRow(row));
@@ -970,6 +955,24 @@ export function mergeHistoricalChartPage(
 
 export function limitRowsToLatest<T>(rows: T[], rowBudget: number): T[] {
   return rows.length <= rowBudget ? rows : rows.slice(rows.length - rowBudget);
+}
+
+export function limitIndicatorRowsToLatest(rows: HistoricalIndicator[], rowBudget: number): HistoricalIndicator[] {
+  const normalized = normalizedRowsByTime(rows);
+  // Unified structural rows form a causal state machine: the initial snapshot
+  // is the authority that every later delta modifies. Applying the candle row
+  // budget to this stream can retain only tail deltas, leaving the renderer
+  // with no book to update and therefore no visible levels. Retain the complete
+  // bounded structural projection while independently limiting ordinary
+  // bar-aligned indicators.
+  const ordinaryRows = normalized.filter((row) => !isUnifiedStructureProjectionRow(row));
+  if (ordinaryRows.length <= rowBudget) return normalized;
+  const retainedOrdinaryTimes = new Set(
+    ordinaryRows.slice(ordinaryRows.length - rowBudget).map(barStartTime),
+  );
+  return normalized.filter((row) => (
+    isUnifiedStructureProjectionRow(row) || retainedOrdinaryTimes.has(barStartTime(row))
+  ));
 }
 
 export function limitLiveRowsWithHysteresis<T>(rows: T[], rowBudget: number): T[] {

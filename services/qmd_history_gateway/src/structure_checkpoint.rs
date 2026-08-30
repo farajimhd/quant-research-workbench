@@ -177,7 +177,7 @@ async fn rebuild_structure_checkpoint_inner(
                 MarketEvent::Trade(event) => event.conditions.as_slice(),
                 MarketEvent::Quote(event) => event.conditions.as_slice(),
             };
-            engine.apply_event(&event, rules.resolve(conditions, event.ts()));
+            engine.apply_event_without_snapshot(&event, rules.resolve(conditions, event.ts()));
             if engine.checkpoint_cursor() != before {
                 advanced_event_count = advanced_event_count.saturating_add(1);
             }
@@ -315,7 +315,7 @@ async fn advance_structure_checkpoint_inner(
                 MarketEvent::Quote(event) => event.conditions.as_slice(),
             };
             let trade_rule = rules.resolve(conditions, event.ts());
-            engine.apply_event(&event, trade_rule);
+            engine.apply_event_without_snapshot(&event, trade_rule);
             if engine.checkpoint_cursor() != before {
                 advanced_event_count = advanced_event_count.saturating_add(1);
             }

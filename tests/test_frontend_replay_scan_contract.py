@@ -132,17 +132,21 @@ def test_structural_history_can_span_all_loaded_chart_bars() -> None:
     assert 'indicator_columns: baseIndicatorColumns, stage: "bars"' in chart_data_source
     assert "const unifiedStructureRequest = progressive && unifiedStructureSelected" in chart_data_source
     assert "indicator_columns: unifiedStructureColumns" in chart_data_source
+    assert "full_session: true" in chart_data_source
     assert "stage: \"full\", timeframe: UNIFIED_STRUCTURE_TIMEFRAME" in chart_data_source
     assert 'const UNIFIED_STRUCTURE_TIMEFRAME: CanvasChartTimeframe = "1s"' in chart_data_source
     assert "unifiedStructureProjectionRows(payload.indicators, cutoffMs)" in chart_data_source
     assert "admittedTimes.has(barStartTime(row)) || isUnifiedStructureProjectionRow(row)" in chart_data_source
-    standard_page_handler = chart_data_source.split("void standardIndicatorPage?.then((payload) => {", 1)[1].split("void unifiedStructurePage?.then((payload) => {", 1)[0]
-    unified_page_handler = chart_data_source.split("void unifiedStructurePage?.then((payload) => {", 1)[1].split("}, [auxiliaryProjection", 1)[0]
+    standard_page_handler = chart_data_source.split("void standardIndicatorPage?.then((payload) => {", 1)[1].split("}, [auxiliaryProjection", 1)[0]
     assert "closedRowsAtCutoff(payload.indicators, timeframe, cutoffMs)" in standard_page_handler
-    assert "unifiedStructureProjectionRows(payload.indicators, cutoffMs)" in unified_page_handler
+    assert "const unifiedStructurePage" not in chart_data_source
     assert "function chartIdentityKey(ticker: string, sessionDate: string" in chart_data_source
     assert "function chartIdentityKey(ticker: string, indicatorColumns: string" not in chart_data_source
     assert "mergeIndicatorRowsByTime(current.indicators, rows)" in chart_data_source
+    assert "function limitIndicatorRowsToLatest" in chart_data_source
+    assert "const ordinaryRows = normalized.filter((row) => !isUnifiedStructureProjectionRow(row))" in chart_data_source
+    assert "isUnifiedStructureProjectionRow(row) || retainedOrdinaryTimes.has(barStartTime(row))" in chart_data_source
+    assert "const indicators = limitIndicatorRowsToLatest(" in chart_data_source
     assert "hasUnifiedStructureProjection(replacement)" in chart_data_source
     assert "delete next.qmd_structure_unified_levels" in chart_data_source
     assert "delete next.qmd_structure_unified_level_delta" in chart_data_source
@@ -151,6 +155,8 @@ def test_structural_history_can_span_all_loaded_chart_bars() -> None:
     assert "prepared_structure_projection(artifact" in history_cache_source
     assert "let structure_only = matches!(&profile, CacheProfile::Structure(_))" in history_cache_source
     assert "let bars_only = matches!(&profile, CacheProfile::Bars(_))" in history_cache_source
+    assert "StructureProjectionBuilder" in history_cache_source
+    assert "apply_event_without_snapshot" in history_cache_source
     assert "statusMessage={liveChart.historyNotice}" in chart_source
     assert 'chart-update-status${loading ? " centered" : ""}' in renderer_source
     assert ".chart-update-status.centered" in styles_source

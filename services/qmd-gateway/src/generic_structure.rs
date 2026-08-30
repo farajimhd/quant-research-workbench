@@ -662,6 +662,21 @@ impl GenericStructureEngine {
         trade_rule: TradeUpdateRule,
     ) -> (GenericStructureSnapshot, Vec<GenericStructureEvent>) {
         let ts = event.ts();
+        let emitted = self.apply_event_without_snapshot(event, trade_rule);
+        (self.snapshot(ts), emitted)
+    }
+
+    /// Advance the persistent book without materializing its presentation
+    /// snapshot. Historical checkpoint and timeline builders consume hundreds
+    /// of thousands of prints but need a snapshot only at a checkpoint or bar
+    /// boundary; cloning and ranking the complete book for every print made a
+    /// cold chart request take minutes and then time out in the frontend.
+    pub fn apply_event_without_snapshot(
+        &mut self,
+        event: &MarketEvent,
+        trade_rule: TradeUpdateRule,
+    ) -> Vec<GenericStructureEvent> {
+        let ts = event.ts();
         let arrival_sequence = event.arrival_sequence();
         if self.last_ts.is_some_and(|previous| {
             ts < previous
@@ -670,7 +685,7 @@ impl GenericStructureEngine {
                     && self.last_arrival_sequence > 0
                     && arrival_sequence <= self.last_arrival_sequence)
         }) {
-            return (self.snapshot(ts), Vec::new());
+            return Vec::new();
         }
         self.reset_session_if_needed(ts);
         let mut emitted = Vec::new();
@@ -734,7 +749,7 @@ impl GenericStructureEngine {
         if let Some(last) = emitted.last().cloned() {
             self.last_event = Some(last);
         }
-        (self.snapshot(ts), emitted)
+        emitted
     }
 
     fn classify_aggressor(&self, price: f64) -> i8 {
@@ -4214,5 +4229,35 @@ mod tests {
 
         assert_eq!(serde_json::to_string(&engine.checkpoint()).unwrap(), before);
         assert_eq!(engine.checkpoint().last_arrival_sequence, 17);
+    }
+
+    #[test]
+    fn snapshot_free_advancement_preserves_the_complete_engine_state() {
+        let mut ordinary = GenericStructureEngine::new("TEST");
+        let mut historical = GenericStructureEngine::new("TEST");
+        let start = Utc
+            .with_ymd_and_hms(2026, 7, 24, 13, 30, 0)
+            .unwrap()
+            .timestamp_millis();
+        let events = [
+            quote(start, 9.99, 10.01, 1),
+            trade(start + 100, 10.0, 100.0, 2),
+            trade(start + 200, 10.2, 200.0, 3),
+            trade(start + 300, 9.9, 150.0, 4),
+        ];
+
+        for event in &events {
+            ordinary.apply_event(event, TradeUpdateRule::regular());
+            historical.apply_event_without_snapshot(event, TradeUpdateRule::regular());
+        }
+
+        assert_eq!(
+            serde_json::to_value(ordinary.checkpoint()).unwrap(),
+            serde_json::to_value(historical.checkpoint()).unwrap(),
+        );
+        assert_eq!(
+            serde_json::to_value(ordinary.snapshot(events.last().unwrap().ts())).unwrap(),
+            serde_json::to_value(historical.snapshot(events.last().unwrap().ts())).unwrap(),
+        );
     }
 }

@@ -881,7 +881,7 @@ impl SharedBarStore {
                 MarketEvent::Trade(trade) => trade_rules.resolve(&trade.conditions, trade.ts),
                 MarketEvent::Quote(_) => TradeUpdateRule::excluded(),
             };
-            engine.apply_event(event, trade_rule);
+            engine.apply_event_without_snapshot(event, trade_rule);
             if engine.checkpoint_cursor() != before {
                 applied = applied.saturating_add(1);
             }

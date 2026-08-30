@@ -38,7 +38,7 @@ use std::sync::Mutex as StdMutex;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, OnceCell, Semaphore};
 
 pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v33";
-pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v38";
+pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v39";
 pub const HISTORICAL_CORPORATE_ACTION_REVISION: &str = "raw-unadjusted-v1";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
 const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 4;
@@ -388,9 +388,134 @@ struct EntryState {
     events_processed: u64,
     bars: Vec<BarUpdate>,
     market_signal_events: Vec<MarketSignalEvent>,
+    structure_projection: Vec<Value>,
     structure_events: Vec<GenericStructureEvent>,
     frames: Vec<DerivedUpdate>,
     products: Option<MarketProductEngine>,
+}
+
+struct StructureProjectionBuilder {
+    engine: GenericStructureEngine,
+    current_bucket_start: Option<DateTime<Utc>>,
+    previous: BTreeMap<String, (Value, Value)>,
+    rows: Vec<Value>,
+}
+
+impl StructureProjectionBuilder {
+    fn new(engine: GenericStructureEngine, start: DateTime<Utc>) -> Result<Self, String> {
+        let levels = serialized_unified_structure_levels(&engine, start)?;
+        let previous = unified_structure_level_map(&levels);
+        Ok(Self {
+            engine,
+            current_bucket_start: None,
+            previous,
+            rows: vec![json!({
+                "bar_start": structure_projection_bar_start(start)?,
+                "qmd_structure_unified_levels": levels,
+            })],
+        })
+    }
+
+    fn apply_event(
+        &mut self,
+        event: &MarketEvent,
+        trade_rule: qmd_core::bars::TradeUpdateRule,
+    ) -> Result<(), String> {
+        let bucket_start = structure_projection_bar_start(event.ts())?;
+        if self
+            .current_bucket_start
+            .is_some_and(|current| current != bucket_start)
+        {
+            self.flush_transition(self.current_bucket_start.unwrap())?;
+        }
+        self.engine.apply_event_without_snapshot(event, trade_rule);
+        self.current_bucket_start = Some(bucket_start);
+        Ok(())
+    }
+
+    fn finish(mut self, terminal: DateTime<Utc>) -> Result<Vec<Value>, String> {
+        if let Some(bucket_start) = self.current_bucket_start {
+            self.flush_transition(bucket_start)?;
+        }
+        let levels = serialized_unified_structure_levels(&self.engine, terminal)?;
+        let terminal_start = structure_projection_bar_start(terminal)?;
+        let terminal_row = json!({
+            "bar_start": terminal_start,
+            "qmd_structure_unified_levels": levels,
+        });
+        if self.rows.last().and_then(projection_row_start) == Some(terminal_start) {
+            self.rows.pop();
+        }
+        self.rows.push(terminal_row);
+        Ok(self.rows)
+    }
+
+    fn flush_transition(&mut self, bar_start: DateTime<Utc>) -> Result<(), String> {
+        let levels = serialized_unified_structure_levels(&self.engine, bar_start)?;
+        let current = unified_structure_level_map(&levels);
+        let upserts = current
+            .iter()
+            .filter_map(|(key, (signature, level))| {
+                (self.previous.get(key).map(|(value, _)| value) != Some(signature))
+                    .then(|| level.clone())
+            })
+            .collect::<Vec<_>>();
+        let removed = self
+            .previous
+            .iter()
+            .filter_map(|(key, (_, level))| {
+                (!current.contains_key(key)).then(|| {
+                    json!({
+                        "unified_level_id": level
+                            .get("unified_level_id")
+                            .cloned()
+                            .unwrap_or(Value::Null),
+                        "side": level.get("side").cloned().unwrap_or(Value::Null),
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        if !upserts.is_empty() || !removed.is_empty() {
+            self.rows.push(json!({
+                "bar_start": bar_start,
+                "qmd_structure_unified_level_delta": {
+                    "upserts": upserts,
+                    "removed": removed,
+                },
+            }));
+        }
+        self.previous = current;
+        Ok(())
+    }
+}
+
+fn serialized_unified_structure_levels(
+    engine: &GenericStructureEngine,
+    at: DateTime<Utc>,
+) -> Result<Value, String> {
+    let mut levels = serde_json::to_value(engine.snapshot(at).unified_levels)
+        .map_err(|error| format!("failed to serialize unified structure timeline: {error}"))?;
+    if let Some(rows) = levels.as_array_mut() {
+        for level in rows {
+            if let Some(object) = level.as_object_mut() {
+                object.insert("sources".to_string(), json!([]));
+            }
+        }
+    }
+    Ok(levels)
+}
+
+fn structure_projection_bar_start(timestamp: DateTime<Utc>) -> Result<DateTime<Utc>, String> {
+    let micros = timestamp.timestamp_micros().div_euclid(1_000_000) * 1_000_000;
+    DateTime::from_timestamp_micros(micros)
+        .ok_or_else(|| "unified structure timeline timestamp is out of range".to_string())
+}
+
+fn projection_row_start(row: &Value) -> Option<DateTime<Utc>> {
+    row.get("bar_start")
+        .and_then(Value::as_str)
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
 }
 
 #[derive(Default)]
@@ -709,36 +834,26 @@ impl HistoricalDerivedCache {
                 ));
             }
             if structure_only {
-                let mut selected = state
-                    .bars
+                let indicator_projection = state
+                    .structure_projection
                     .iter()
-                    .rev()
-                    .filter(|update| {
-                        update.bar.timeframe.eq_ignore_ascii_case(&timeframe)
-                            && update.bar.bar_end <= as_of
-                            && before.is_none_or(|bound| update.bar.bar_start < bound)
+                    .filter(|row| {
+                        projection_row_start(row).is_some_and(|start| {
+                            start <= as_of && before.is_none_or(|bound| start < bound)
+                        })
                     })
-                    .take(limit.saturating_add(1))
+                    .cloned()
                     .collect::<Vec<_>>();
-                let has_more = selected.len() > limit;
-                selected.truncate(limit);
-                selected.reverse();
-                let bars = selected
-                    .iter()
-                    .map(|update| ChartBarRow::from_bar(&update.bar))
-                    .collect::<Vec<_>>();
-                let indicator_projection = unified_structure_projection(&selected)?;
-                let next_before = has_more.then(|| bars[0].bar_start);
                 return Ok(ChartSnapshot {
                     as_of,
-                    bars,
+                    bars: Vec::new(),
                     cache,
-                    has_more,
+                    has_more: false,
                     indicators: Vec::new(),
                     indicator_projection: Some(indicator_projection),
                     indicators_available: true,
                     market_signal_events: Vec::new(),
-                    next_before,
+                    next_before: None,
                     structure_events: Vec::new(),
                     structure_level_history: Vec::new(),
                     ticker,
@@ -1088,7 +1203,7 @@ impl HistoricalDerivedCache {
             (_, Some(timeframe)) => vec!["100ms".to_string(), timeframe.clone()],
             (_, None) => Vec::new(),
         };
-        let bars = if bars_only {
+        let bars = if bars_only || structure_only {
             // A bars-stage request is the scalar closed-bar authority. Unified
             // Structural Levels are loaded through their checkpoint-backed
             // projection, so advancing the event-native level book here is
@@ -1123,6 +1238,7 @@ impl HistoricalDerivedCache {
         } else {
             SessionVwapSeed::default()
         };
+        let mut structure_engine = structure_only.then(|| GenericStructureEngine::new(&ticker));
         if matches!(
             &profile,
             CacheProfile::Derived(_) | CacheProfile::Structure(_)
@@ -1131,10 +1247,17 @@ impl HistoricalDerivedCache {
                 .structure_seed_checkpoint(&ticker, window.start)
                 .await?
             {
-                bars.seed_structure_checkpoints(vec![(ticker.clone(), checkpoint)])
-                    .await;
+                if let Some(engine) = structure_engine.as_mut() {
+                    engine.seed_checkpoint(&checkpoint);
+                } else {
+                    bars.seed_structure_checkpoints(vec![(ticker.clone(), checkpoint)])
+                        .await;
+                }
             }
         }
+        let mut structure_projection = structure_engine
+            .map(|engine| StructureProjectionBuilder::new(engine, window.start))
+            .transpose()?;
         let shard = bars.shard(0);
         let trade_rules = self.source.trade_aggregation_rules();
         let structure_references = if matches!(&profile, CacheProfile::Derived(_)) {
@@ -1324,6 +1447,14 @@ impl HistoricalDerivedCache {
                     if structure_only && !matches!(&event, MarketEvent::Trade(_)) {
                         continue;
                     }
+                    if let Some(builder) = structure_projection.as_mut() {
+                        let MarketEvent::Trade(trade) = &event else {
+                            continue;
+                        };
+                        let trade_rule = trade_rules.resolve(&trade.conditions, trade.ts);
+                        builder.apply_event(&event, trade_rule)?;
+                        continue;
+                    }
                     if let Some(products) = products.as_mut() {
                         products.apply_event(&event, event.ts());
                     }
@@ -1389,6 +1520,11 @@ impl HistoricalDerivedCache {
                 ));
                 next_chunk += 1;
             }
+        }
+        if let Some(builder) = structure_projection {
+            entry
+                .store_structure_projection(builder.finish(window.end)?)
+                .await?;
         }
         let mut final_indicator_bars = Vec::new();
         for bar in shard.finalize_due(window.end).await {
@@ -1815,6 +1951,30 @@ impl CacheEntry {
         drop(state);
         let _ = self.bar_updates.send(update);
         Ok(sequence)
+    }
+
+    async fn store_structure_projection(&self, projection: Vec<Value>) -> Result<(), String> {
+        let projection_bytes = serde_json::to_vec(&projection)
+            .map_err(|error| format!("failed to size unified structure timeline: {error}"))?
+            .len();
+        let mut state = self.state.lock().await;
+        let frame_bytes = estimated_frame_bytes(
+            state.bars.len(),
+            state.structure_events.len(),
+            state.market_signal_events.len(),
+        )
+        .saturating_add(projection_bytes);
+        if frame_bytes > self.max_update_bytes {
+            return Err(format!(
+                "historical unified structure timeline exceeded max_update_bytes={}",
+                self.max_update_bytes,
+            ));
+        }
+        self.set_estimated_bytes(frame_bytes as u64 + self.product_bytes.load(Ordering::Acquire))?;
+        self.frame_bytes
+            .store(frame_bytes as u64, Ordering::Release);
+        state.structure_projection = projection;
+        Ok(())
     }
 
     async fn push_indicator(
@@ -2571,18 +2731,35 @@ mod tests {
         read_prepared_bar_cache, revision_window, session_anchor, split_event_window,
         stable_hash_hex, structure_events_overlapping, write_prepared_bar_cache, CacheEntry,
         CacheProfile, ChartBarRow, EntryState, PreparedBarCacheArtifact, SourceRevision,
-        HISTORICAL_CALCULATION_REVISION, HISTORICAL_CORPORATE_ACTION_REVISION,
-        HISTORICAL_ENGINE_VERSION, MAX_ENCOUNTERED_STRUCTURE_LEVELS,
-        PREPARED_BAR_CACHE_SCHEMA_VERSION,
+        StructureProjectionBuilder, HISTORICAL_CALCULATION_REVISION,
+        HISTORICAL_CORPORATE_ACTION_REVISION, HISTORICAL_ENGINE_VERSION,
+        MAX_ENCOUNTERED_STRUCTURE_LEVELS, PREPARED_BAR_CACHE_SCHEMA_VERSION,
     };
     use crate::source::EventWindow;
     use chrono::{DateTime, Duration, TimeZone, Utc};
-    use qmd_core::generic_structure::{GenericStructureEvent, StructureLevelCandidate};
+    use qmd_core::generic_structure::{
+        GenericStructureEngine, GenericStructureEvent, StructureLevelCandidate,
+    };
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::{broadcast, Mutex, Notify};
+
+    #[test]
+    fn structure_timeline_has_one_initial_and_one_terminal_authority() {
+        let start = Utc.with_ymd_and_hms(2026, 8, 21, 8, 0, 0).unwrap();
+        let rows = StructureProjectionBuilder::new(GenericStructureEngine::new("SUGP"), start)
+            .unwrap()
+            .finish(start + Duration::seconds(2))
+            .unwrap();
+
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| {
+            row.get("qmd_structure_unified_levels").is_some()
+                && row.get("qmd_structure_unified_level_delta").is_none()
+        }));
+    }
 
     #[test]
     fn only_structure_fallback_revision_covers_the_causal_warm_start() {
