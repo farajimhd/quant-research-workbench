@@ -721,6 +721,34 @@ class OrderManagementEngine:
         self._transition(group, OrderManagementState.RISK_RESERVED, {"event": "risk_reserved"})
         await self._submit(group)
         if plan.cancel_strategy_protection:
+            # A fresh full-exit OCA owns the entire broker-held position as soon
+            # as it is acknowledged. Delegate the source entry groups before
+            # cancelling their old children: those cancellation callbacks can
+            # run synchronously in Replay and must not manufacture a duplicate
+            # full-position repair stop while the managed exit is already live.
+            for protected in self._groups.values():
+                if protected.group_id == group.group_id:
+                    continue
+                if protected.account_id != account_id:
+                    continue
+                if protected.intent.ticker.upper() != working_intent.ticker.upper():
+                    continue
+                if str(protected.intent.action) not in {
+                    "enter_long",
+                    "enter_short",
+                    "add_long",
+                    "add_short",
+                }:
+                    continue
+                protected.protection_delegated = True
+                self._transition(
+                    protected,
+                    protected.state,
+                    {
+                        "event": "protection_delegated_to_fresh_managed_exit",
+                        "managed_exit_group_id": group.group_id,
+                    },
+                )
             await self.cancel_strategy_protection(
                 account_id=account_id,
                 ticker=intent.ticker,

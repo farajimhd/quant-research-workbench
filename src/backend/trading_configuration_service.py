@@ -2848,7 +2848,7 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
         _watchlist_rule(
             "strategy-squeeze-volume-spread-quality",
             "Squeeze volume and spread quality",
-            "Latches liquidity admission for $2-$50 securities after at least $1,000,000 session dollar volume, 100,000 session shares, sustained one-minute and fast ten-second trade rates, and spread no wider than 50 basis points. Admission remains valid for the squeeze campaign; every order still requires a current fast trade rate and executable spread. The cross-sectional liquidity score is presentation-only.",
+            "Latches liquidity admission for $2-$50 securities after at least $1,000,000 session dollar volume, 100,000 session shares, sustained one-minute and fast ten-second trade rates, and spread no wider than 60 basis points. Admission remains valid for the squeeze campaign; every order still requires a current fast trade rate and executable spread. The cross-sectional liquidity score is presentation-only.",
             [
                 _watchlist_condition("squeeze-price-floor", "market.last_price", "greater_or_equal", 2.0),
                 _watchlist_condition("squeeze-price-ceiling", "market.last_price", "less_or_equal", 50.0),
@@ -2931,7 +2931,7 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
         _watchlist_rule(
             "strategy-live-spread-quality",
             "Executable spread quality",
-            "Allows immediate event-driven entry only while the latest quoted spread is no wider than 50 basis points.",
+            "Allows immediate event-driven entry only while the latest quoted spread is no wider than 60 basis points.",
             [_watchlist_condition("live-spread-quality", "market.spread_bps", "less_or_equal", 50.0)],
         ),
         _watchlist_rule("watchlist-vwap-breakout", "VWAP breakout", "Requires last price to trade at least 5 basis points above current VWAP.", [{**_watchlist_condition("vwap-breakout-price", "market.last_price", "above_by_bps", 5), "right_source_id": "indicator.vwap.value"}]),
@@ -4009,6 +4009,9 @@ def _default_draft() -> dict[str, Any]:
         "minimum_confidence": 0.50,
         "minimum_reaction_probability": 0.50,
         "acceptance_buffer_bps": 0.0,
+        "acceptance_hold_ms": 15_000,
+        "require_swing_high_frontier": True,
+        "require_active_resistance_frontier": True,
     }
     system_profiles[0]["parameters"]["liquidity_admission"] = {
         "enabled": True,
@@ -4019,7 +4022,11 @@ def _default_draft() -> dict[str, Any]:
         "minimum_session_share_volume": 100_000.0,
         "minimum_trade_rate_10s": 1.0,
         "minimum_trade_rate_60s": 0.5,
-        "maximum_spread_bps": 50.0,
+        # SUGP UAT showed that a causal structural break at 04:10:28 ET was
+        # executable at 55.4 bps but the former 50 bps ceiling delayed entry
+        # until 04:10:32.  Keep this an instantaneous (non-latched) execution
+        # check and admit up to 60 bps for the small-cap premarket profile.
+        "maximum_spread_bps": 60.0,
     }
     squeeze_lifecycle["reentry"]["target_replenishment"] = {
         "enabled": False,

@@ -976,6 +976,7 @@ class BacktestRunCreateRequest(BaseModel):
     run_plan_id: str = Field(default="", max_length=128)
     simulation_profile: str = Field(default="baseline", pattern="^(baseline|stress)$")
     end_time: str = "20:00:00"
+    tickers: list[str] = Field(default_factory=list, max_length=100)
 
 
 class BacktestDebugRunCreateRequest(BaseModel):
@@ -5343,6 +5344,7 @@ async def trading_backtest_run_create(payload: BacktestRunCreateRequest) -> dict
             configuration_revision=configuration_revision,
             mode=RunMode.BACKTEST,
             simulation_profile=payload.simulation_profile,
+            tickers=tuple(payload.tickers),
         )
         controller = await backtest_run_service.create(definition)
         return controller.snapshot()

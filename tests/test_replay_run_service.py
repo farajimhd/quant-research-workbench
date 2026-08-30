@@ -22,9 +22,12 @@ from src.backend.replay_run_service import (
     ReplayRunDefinition,
     ReplayRunService,
     ReplaySignalEvent,
+    _STRATEGY_LAZY_STRUCTURE_FIELDS,
     _append_historical_derived_message,
     _attach_historical_signals,
     _canvas_profile_tickers,
+    _filter_historical_signal_events,
+    _filter_loaded_source_native_occurrences,
     _historical_watchlist_membership_timeline_for_configuration,
     _historical_watchlist_membership_timeline_from_plans,
     _historical_watchlist_plans_at_source_native_events,
@@ -365,6 +368,10 @@ class ReplayRunDefinitionTests(unittest.TestCase):
 
 
 class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
+    def test_strategy_carries_latest_confirmed_swing_frontier_across_frames(self) -> None:
+        self.assertIn("structure_swing_high", _STRATEGY_LAZY_STRUCTURE_FIELDS)
+        self.assertIn("structure_swing_low", _STRATEGY_LAZY_STRUCTURE_FIELDS)
+
     def fixture(self) -> HistoricalDebugFixture:
         return HistoricalDebugFixture(
             fixture_id="deterministic-aapl",
@@ -890,6 +897,45 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
 
 
 class HistoricalWatchlistTimelineTests(unittest.TestCase):
+    def test_explicit_uat_tickers_filter_historical_signals_only_when_requested(self) -> None:
+        events = [
+            ReplaySignalEvent(
+                available_at=datetime(2026, 8, 21, 8, 0, index, tzinfo=UTC),
+                occurrence={"event_id": f"event-{ticker}"},
+                source_values={},
+                ticker=ticker,
+            )
+            for index, ticker in enumerate(("SUGP", "NOK"))
+        ]
+
+        self.assertEqual(
+            [event.ticker for event in _filter_historical_signal_events(events, ("SUGP",))],
+            ["SUGP"],
+        )
+        self.assertIs(_filter_historical_signal_events(events, ()), events)
+
+    def test_explicit_uat_tickers_filter_before_source_native_signals_are_persisted(self) -> None:
+        loaded = [
+            (
+                {"signal_stream_id": "price-squeeze-early"},
+                {
+                    "authority": {"source": "qmd"},
+                    "occurrences": [
+                        {"event_id": "sugp", "ticker": "SUGP"},
+                        {"event_id": "nok", "ticker": "NOK"},
+                    ],
+                },
+            )
+        ]
+
+        filtered = _filter_loaded_source_native_occurrences(loaded, ("SUGP",))
+
+        self.assertEqual(
+            filtered[0][1]["occurrences"],
+            [{"event_id": "sugp", "ticker": "SUGP"}],
+        )
+        self.assertIs(_filter_loaded_source_native_occurrences(loaded, ()), loaded)
+
     def test_early_signal_episode_survives_later_watchlist_removal(self) -> None:
         self.assertTrue(
             _historical_watchlist_assignment_is_observable(
@@ -2316,6 +2362,52 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(source_values["market.trade_rate_60s"]["value"], 0.05)
         self.assertAlmostEqual(source_values["market.spread_bps"]["value"], 20.0)
         self.assertEqual(source_values["volume_rate_ratio@1s"]["value"], 2.0)
+
+    async def test_trade_only_prepared_bar_does_not_override_the_raw_quote_spread(self) -> None:
+        controller = ReplayRunController(
+            ReplayRunDefinition(
+                session_date=date(2026, 8, 21),
+                start_time=time(4, 0),
+                configuration_revision=approved_configuration(),
+            ),
+            runtime_root=Path(tempfile.gettempdir()),
+        )
+        quote = _debug_market_events(({
+            "kind": "quote",
+            "ticker": "SUGP",
+            "ts": "2026-08-21T04:10:31.900-04:00",
+            "bid_price": 3.61,
+            "ask_price": 3.62,
+            "bid_size": 100,
+            "ask_size": 100,
+        },))[0]
+        controller._observe_historical_market_quality_event(quote)
+        source_values: dict[str, object] = {}
+
+        controller._project_historical_market_quality(
+            ReplayDerivedFrame(
+                as_of=datetime(2026, 8, 21, 4, 10, 32, tzinfo=NEW_YORK),
+                bar={
+                    "close": 3.6104,
+                    "volume": 4_199.0,
+                    "dollar_volume": 15_157.0,
+                    "trade_count": 61,
+                    "spread_bps_close": 0.0,
+                    "spread_bps_mean": 0.0,
+                },
+                indicator={},
+                sequence=1,
+                ticker="SUGP",
+                timeframe="1s",
+            ),
+            source_values,
+        )
+
+        self.assertAlmostEqual(
+            source_values["market.spread_bps"]["value"],
+            (3.62 - 3.61) / 3.615 * 10_000,
+        )
+        self.assertEqual(source_values["market.trade_rate_10s"]["value"], 6.1)
 
     async def test_watchlist_projection_tickers_follow_strategy_entry_session(self) -> None:
         configuration = approved_configuration()

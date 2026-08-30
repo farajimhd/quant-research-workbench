@@ -33,7 +33,7 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 12
+STRATEGY_REVISION = 16
 
 RULE_COMPARATORS = {
     "above_by_bps",
@@ -421,6 +421,7 @@ def default_long_momentum_parameters() -> dict[str, Any]:
                 "minimum_confidence": 0.50,
                 "minimum_reaction_probability": 0.50,
                 "acceptance_buffer_bps": 0.0,
+                "acceptance_hold_ms": 15_000,
             },
             "veto": {"flow_price_divergence": 0.75, "liquidity_dislocation": 0.75},
         },
@@ -433,7 +434,7 @@ def default_long_momentum_parameters() -> dict[str, Any]:
             "minimum_session_share_volume": 100_000.0,
             "minimum_trade_rate_10s": 1.0,
             "minimum_trade_rate_60s": 0.5,
-            "maximum_spread_bps": 50.0,
+            "maximum_spread_bps": 60.0,
         },
         "sizing": {
             "request_mode": "fixed_quantity",
@@ -1002,6 +1003,52 @@ def _level_is_entry_quality(row: dict[str, Any], policy: dict[str, Any]) -> bool
     )
 
 
+def _consolidated_structure_levels(
+    rows: list[dict[str, Any]],
+    *,
+    side: str,
+) -> list[dict[str, Any]]:
+    """Merge overlapping level-book bands into one causal structural frontier."""
+
+    prepared: list[dict[str, Any]] = []
+    for raw in rows:
+        row = dict(raw)
+        price = _level_metric(row, "price", "lower", "upper")
+        lower = _level_metric(row, "lower") or price
+        upper = _level_metric(row, "upper") or price
+        if price <= 0 or lower <= 0 or upper <= 0:
+            continue
+        if upper < lower:
+            lower, upper = upper, lower
+        row.update({"price": price, "lower": lower, "upper": upper})
+        prepared.append(row)
+    prepared.sort(key=lambda row: (float(row["lower"]), float(row["upper"])))
+    merged: list[dict[str, Any]] = []
+    for row in prepared:
+        if not merged or float(row["lower"]) > float(merged[-1]["upper"]):
+            merged.append({**row, "component_levels": [dict(row)]})
+            continue
+        current = merged[-1]
+        components = [*list(current.get("component_levels") or []), dict(row)]
+        representative = max(
+            components,
+            key=lambda item: (
+                _level_metric(item, "salience", "strength"),
+                _level_metric(item, "confidence"),
+                _level_metric(item, "reaction_probability"),
+            ),
+        )
+        current.update(representative)
+        current["lower"] = min(float(item["lower"]) for item in components)
+        current["upper"] = max(float(item["upper"]) for item in components)
+        component_prices = [float(item.get("price") or 0) for item in components]
+        current["price"] = (
+            max(component_prices) if side == "long" else min(component_prices)
+        )
+        current["component_levels"] = components
+    return merged
+
+
 def _unified_entry_trigger(
     observation: StrategyObservation,
     parameters: dict[str, Any],
@@ -1010,26 +1057,11 @@ def _unified_entry_trigger(
     policy = dict(parameters.get("structural_entry") or {})
     buffer_bps = float(policy.get("acceptance_buffer_bps") or 0)
     previous_price = state.get("previous_observed_price")
-    accepted = state.get("accepted_entry_resistance")
-    if isinstance(accepted, Mapping):
-        accepted_boundary = _level_metric(dict(accepted), "boundary")
-        accepted_threshold = accepted_boundary * (1 + buffer_bps / 10_000)
-        if accepted_boundary > 0 and observation.price > accepted_threshold:
-            return {
-                "passed": True,
-                "reason": "unified_resistance_acceptance_held",
-                "level": dict(accepted.get("level") or {}),
-                "reference_price": accepted_boundary,
-                "threshold_price": accepted_threshold,
-                "previous_price": previous_price,
-                "accepted_at": accepted.get("accepted_at"),
-            }
-        state.pop("accepted_entry_resistance", None)
-    rows = [
+    rows = _consolidated_structure_levels([
         dict(row)
         for row in observation.structural_resistance_levels
         if isinstance(row, dict) and _level_is_entry_quality(dict(row), policy)
-    ]
+    ], side="long")
     if not rows and observation.structural_resistance_upper is not None:
         rows = [{
             "unified_level_id": "nearest-resistance",
@@ -1051,6 +1083,47 @@ def _unified_entry_trigger(
             usable.append((boundary_value, row))
     if not usable:
         return {"passed": False, "reason": "waiting_for_unified_resistance", "level": None}
+    accepted = state.get("accepted_entry_resistance")
+    accepted_level = (
+        dict(accepted.get("level") or {})
+        if isinstance(accepted, Mapping)
+        else {}
+    )
+    accepted_boundary = (
+        _level_metric(dict(accepted), "boundary")
+        if isinstance(accepted, Mapping)
+        else 0.0
+    )
+    accepted_at = (
+        _optional_aware_datetime(accepted.get("accepted_at"))
+        if isinstance(accepted, Mapping)
+        else None
+    )
+    acceptance_age_ms = (
+        max(0.0, (observation.observed_at - accepted_at).total_seconds() * 1_000)
+        if accepted_at is not None
+        else float("inf")
+    )
+    acceptance_hold_ms = max(0.0, float(policy.get("acceptance_hold_ms") or 0))
+    accepted_threshold = accepted_boundary * (1 + buffer_bps / 10_000)
+    if accepted_boundary > 0 and acceptance_age_ms <= acceptance_hold_ms:
+        passed = observation.price > accepted_threshold
+        return {
+            "passed": passed,
+            "reason": (
+                "unified_resistance_acceptance_held"
+                if passed
+                else "waiting_for_accepted_resistance_frontier"
+            ),
+            "level": accepted_level,
+            "reference_price": accepted_boundary,
+            "threshold_price": accepted_threshold,
+            "previous_price": previous_price,
+            "accepted_at": accepted.get("accepted_at"),
+            "acceptance_age_ms": acceptance_age_ms,
+            "acceptance_hold_ms": acceptance_hold_ms,
+        }
+    state.pop("accepted_entry_resistance", None)
     crossed = [
         item
         for item in usable
@@ -1059,7 +1132,38 @@ def _unified_entry_trigger(
         and observation.price > item[0] * (1 + buffer_bps / 10_000)
     ]
     if crossed:
-        boundary, level = max(crossed, key=lambda item: item[0])
+        unified_boundary, level = max(crossed, key=lambda item: item[0])
+        swing_boundary = (
+            float(observation.swing_high)
+            if bool(policy.get("require_swing_high_frontier", False))
+            and observation.swing_high is not None
+            and float(observation.swing_high) > 0
+            else 0.0
+        )
+        active_resistance_boundary = (
+            float(observation.structural_resistance_upper)
+            if bool(policy.get("require_active_resistance_frontier", False))
+            and observation.structural_resistance_upper is not None
+            and float(observation.structural_resistance_upper) > 0
+            else 0.0
+        )
+        boundary = max(
+            unified_boundary,
+            swing_boundary,
+            active_resistance_boundary,
+        )
+        level = {
+            **dict(level),
+            "unified_break_boundary": unified_boundary,
+            "swing_high_boundary": swing_boundary or None,
+            "active_resistance_boundary": active_resistance_boundary or None,
+            "combined_entry_boundary": boundary,
+        }
+        state["accepted_entry_resistance"] = {
+            "boundary": boundary,
+            "level": dict(level),
+            "accepted_at": observation.observed_at.isoformat(),
+        }
     else:
         overhead = [item for item in usable if item[0] >= observation.price]
         boundary, level = (
@@ -1071,11 +1175,6 @@ def _unified_entry_trigger(
     passed = bool(crossed) and observation.price > threshold
     if passed:
         state.pop("pending_entry_resistance", None)
-        state["accepted_entry_resistance"] = {
-            "boundary": boundary,
-            "level": dict(level),
-            "accepted_at": observation.observed_at.isoformat(),
-        }
     else:
         state["pending_entry_resistance"] = {
             "boundary": boundary,
@@ -1502,8 +1601,13 @@ class LongMomentumStrategyEngine:
                 "previous_post_entry_swing_low": None,
                 "higher_low_confirmed": False,
                 "structural_profit_targets": profit_targets,
+                "last_entry_resistance": dict(
+                    (unified_trigger or {}).get("level") or {}
+                ),
             }
         )
+        state.pop("accepted_entry_resistance", None)
+        state.pop("pending_entry_resistance", None)
         return self._result(
             assignment,
             observation,
@@ -2594,6 +2698,15 @@ def _aware_datetime(value: Any) -> datetime:
     if parsed.tzinfo is None:
         raise ValueError("Structural anchor confirmation time must include a timezone")
     return parsed
+
+
+def _optional_aware_datetime(value: Any) -> datetime | None:
+    if value in {None, ""}:
+        return None
+    try:
+        return _aware_datetime(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _validate_phase_capital_request(payload: dict[str, Any]) -> None:
@@ -4249,11 +4362,11 @@ def _structural_profit_targets(
     if not bool(policy.get("enabled", True)):
         return [luld_target] if luld_target is not None else []
     entry = observation.price
-    level_rows = (
+    level_rows = _consolidated_structure_levels(list(
         observation.structural_resistance_levels
         if side == "long"
         else observation.structural_support_levels
-    )
+    ), side=side)
     local_time = observation.observed_at.astimezone(NEW_YORK).time().replace(tzinfo=None)
     regular_session = clock_time(9, 30) <= local_time < clock_time(16, 0)
     maximum_price = (
@@ -4271,9 +4384,9 @@ def _structural_profit_targets(
         reaction = _level_metric(dict(row), "reaction_probability")
         reversal = _level_metric(dict(row), "reversal_probability")
         score = _profit_level_score(dict(row))
-        candidate = row.get("lower") if side == "long" else row.get("upper")
+        candidate = row.get("price")
         if candidate is None:
-            candidate = row.get("price")
+            candidate = row.get("lower") if side == "long" else row.get("upper")
         if (
             candidate is not None
             and strength >= float(policy.get("minimum_level_strength") or 0.0)

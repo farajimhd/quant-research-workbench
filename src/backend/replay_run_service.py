@@ -111,7 +111,11 @@ DEFAULT_MAX_RESIDENT_RUNS = 32
 DEFAULT_HISTORY_FETCH_CONCURRENCY = 4
 MAX_DEBUG_FIXTURE_EVENTS = 20_000
 RESTART_CHECKPOINT_SCHEMA_VERSION = 3
-PREPARED_FRAME_CACHE_SCHEMA_VERSION = 2
+# Version the projected frame contract, not only QMD's source revision. Version
+# 4 adds exact prepared-bar trade counts and dollar volume. The shared bar
+# artifact can carry zero spread when built from trade-only persisted bars, so
+# current execution quality continues to prefer the causal raw quote stream.
+PREPARED_FRAME_CACHE_SCHEMA_VERSION = 4
 _PREPARED_FRAME_CACHE_LOCKS: WeakValueDictionary[str, asyncio.Lock] = (
     WeakValueDictionary()
 )
@@ -701,6 +705,8 @@ _STRATEGY_LAZY_STRUCTURE_FIELDS = frozenset(
         "qmd_structure_resistance_confidence",
         "qmd_structure_unified_levels",
         "qmd_structure_unified_level_delta",
+        "structure_swing_high",
+        "structure_swing_low",
     }
 )
 
@@ -2763,8 +2769,12 @@ class ReplayRunController:
                 indicator.get("previous_close") or indicator.get("prev_close")
             ),
             previous_high=_optional_positive(indicator.get("previous_high")),
-            swing_high=_optional_positive(indicator.get("structure_swing_high")),
-            swing_low=_optional_positive(indicator.get("structure_swing_low")),
+            swing_high=_optional_positive(
+                structural_indicator.get("structure_swing_high")
+            ),
+            swing_low=_optional_positive(
+                structural_indicator.get("structure_swing_low")
+            ),
             structural_support_price=_optional_positive(
                 structural_indicator.get("qmd_structure_support_price")
             ),
@@ -3259,9 +3269,11 @@ class ReplayRunController:
                 if clock > frame.as_of - timedelta(seconds=10)
             ) / 10.0
             trade_rate_60s = sum(count for _, count in buckets) / 60.0
-            spread_bps = bar.get("spread_bps_close")
+            spread_bps = state.get("spread_bps")
             if spread_bps is None:
-                spread_bps = bar.get("spread_bps_mean") or state.get("spread_bps")
+                spread_bps = _positive(
+                    bar.get("spread_bps_close") or bar.get("spread_bps_mean")
+                )
             volume_rate_ratio = bar.get("volume_rate_ratio")
             if volume_rate_ratio is None and previous_volume > 0:
                 volume_rate_ratio = current_volume / previous_volume
@@ -4542,7 +4554,10 @@ class ReplayRunController:
             self._load_source_native_signal_events(),
             self._load_external_signal_events(),
         )
-        events = [event for batch in batches for event in batch]
+        events = _filter_historical_signal_events(
+            [event for batch in batches for event in batch],
+            self.definition.tickers,
+        )
         events.sort(
             key=lambda row: (
                 row.available_at,
@@ -4791,6 +4806,10 @@ class ReplayRunController:
             return stream, loaded
 
         loaded_streams = await asyncio.gather(*(load_stream(stream) for stream in streams))
+        loaded_streams = _filter_loaded_source_native_occurrences(
+            loaded_streams,
+            self.definition.tickers,
+        )
         return await asyncio.to_thread(
             self._persist_source_native_signal_events,
             loaded_streams,
@@ -7799,6 +7818,43 @@ def _ticker(value: Any) -> str:
     if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker):
         raise ValueError(f"Invalid Replay ticker: {value}")
     return ticker
+
+
+def _filter_historical_signal_events(
+    events: list[ReplaySignalEvent],
+    tickers: tuple[str, ...],
+) -> list[ReplaySignalEvent]:
+    """Apply an explicit UAT population without changing market-wide defaults."""
+
+    selected = {_ticker(value) for value in tickers}
+    if not selected:
+        return events
+    return [event for event in events if event.ticker in selected]
+
+
+def _filter_loaded_source_native_occurrences(
+    loaded_streams: list[tuple[dict[str, Any], dict[str, Any]]],
+    tickers: tuple[str, ...],
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """Scope source-native persistence itself to an explicit UAT population."""
+
+    selected = {_ticker(value) for value in tickers}
+    if not selected:
+        return loaded_streams
+    return [
+        (
+            stream,
+            {
+                **loaded,
+                "occurrences": [
+                    occurrence
+                    for occurrence in loaded.get("occurrences") or []
+                    if _ticker(dict(occurrence).get("ticker")) in selected
+                ],
+            },
+        )
+        for stream, loaded in loaded_streams
+    ]
 
 
 def _slug(value: str) -> str:

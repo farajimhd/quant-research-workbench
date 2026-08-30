@@ -1023,6 +1023,82 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
             await manager.close()
             journal.close()
 
+    async def test_fresh_full_exit_delegates_before_old_protection_is_cancelled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            broker = RecordingBroker()
+            real_planner = IbkrStrategyOrderPlanner()
+            instrument = InstrumentContract("TEST", 123, "TEST", "STK", "USD")
+
+            def bracket_planner(strategy_intent, account_id, _event):
+                return real_planner.plan(
+                    account_id=account_id,
+                    instrument=instrument,
+                    intent=strategy_intent,
+                    strategy_id="strategy-1",
+                    strategy_revision=1,
+                )
+
+            journal = TradingJournal(Path(directory) / "orders.sqlite3")
+            await broker.initialize()
+            risk = RiskAuthority()
+            await risk.prime(broker, ["DU1"])
+            manager = OrderManagementEngine(
+                broker=broker,
+                planner=bracket_planner,
+                risk=risk,
+                journal=journal,
+                run_id="run-1",
+                strategy_id="strategy-1",
+                strategy_revision=1,
+                policy=BrokerCommunicationPolicy(),
+            )
+            entry = replace(
+                intent(),
+                intent_id="entry-without-target",
+                profit_target_price=None,
+            )
+            await manager.submit_intent(
+                portfolio_approved(journal, entry), account_id="DU1", event=None
+            )
+            source_group = next(
+                group
+                for group in manager._groups.values()
+                if group.intent.intent_id == entry.intent_id
+            )
+            broker._positions["DU1"][123] = _Position(
+                conid=123,
+                ticker="TEST",
+                quantity=100.0,
+                avg_cost=10.0,
+            )
+            exit_intent = replace(
+                intent(action="exit"),
+                intent_id="fresh-full-exit",
+                metadata={
+                    **intent(action="exit").metadata,
+                    "position_quantity": 100.0,
+                    "position_side": "long",
+                },
+            )
+
+            exit_snapshot = await manager.submit_intent(
+                portfolio_approved(journal, exit_intent),
+                account_id="DU1",
+                event=None,
+            )
+
+            self.assertEqual(exit_snapshot.state, OrderManagementState.ACKNOWLEDGED)
+            self.assertTrue(source_group.protection_delegated)
+            self.assertEqual(
+                (await manager.reconcile_protection(source_group))["status"],
+                "delegated_to_managed_exit",
+            )
+            self.assertFalse(
+                any("repair-" in str(order.cOID or "") for order in source_group.orders)
+            )
+            await manager.close()
+            journal.close()
+
     async def test_full_exit_reprices_every_sliced_target_without_resizing_one_child(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             broker = RecordingBroker()

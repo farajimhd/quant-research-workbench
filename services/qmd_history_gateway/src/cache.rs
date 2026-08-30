@@ -41,7 +41,7 @@ pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v33";
 pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v39";
 pub const HISTORICAL_CORPORATE_ACTION_REVISION: &str = "raw-unadjusted-v1";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
-const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 4;
+const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 5;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CacheProfile {
@@ -146,6 +146,10 @@ pub struct ChartBarRow {
     pub low: f64,
     pub close: f64,
     pub volume: f64,
+    pub dollar_volume: Option<f64>,
+    pub trade_count: Option<u64>,
+    pub spread_bps_close: Option<f64>,
+    pub spread_bps_mean: Option<f64>,
     pub vwap: Option<f64>,
     pub estimated_luld_active: bool,
     pub estimated_luld_reference_price: f64,
@@ -2250,6 +2254,10 @@ impl ChartBarRow {
             low: bar.low,
             close: bar.close,
             volume: bar.volume,
+            dollar_volume: Some(bar.dollar_volume),
+            trade_count: Some(bar.trade_count),
+            spread_bps_close: Some(bar.spread_bps_close),
+            spread_bps_mean: Some(bar.spread_bps_mean),
             vwap: Some(bar.vwap),
             estimated_luld_active: bar.estimated_luld_active,
             estimated_luld_reference_price: bar.estimated_luld_reference_price,
@@ -2275,6 +2283,10 @@ impl ChartBarRow {
             low: f64::from(bar.low),
             close: f64::from(bar.close),
             volume: bar.size_sum,
+            dollar_volume: None,
+            trade_count: Some(bar.event_count),
+            spread_bps_close: None,
+            spread_bps_mean: None,
             vwap: None,
             estimated_luld_active: false,
             estimated_luld_reference_price: 0.0,
@@ -2962,6 +2974,10 @@ mod tests {
                 low: 3.5,
                 close: 3.6,
                 volume: 100.0,
+                dollar_volume: Some(355.0),
+                trade_count: Some(5),
+                spread_bps_close: Some(28.0),
+                spread_bps_mean: Some(30.0),
                 vwap: Some(3.55),
                 estimated_luld_active: false,
                 estimated_luld_reference_price: 0.0,
@@ -3038,6 +3054,10 @@ mod tests {
             low: 3.5,
             close: 3.6,
             volume: 100.0,
+            dollar_volume: Some(355.0),
+            trade_count: Some(5),
+            spread_bps_close: Some(28.0),
+            spread_bps_mean: Some(30.0),
             vwap: Some(3.55),
             estimated_luld_active: false,
             estimated_luld_reference_price: 0.0,
