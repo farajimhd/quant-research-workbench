@@ -764,6 +764,25 @@ class OrderManagementEngine:
         self.risk.reserve(account_id, group.orders)
         self._transition(group, OrderManagementState.RISK_RESERVED, {"event": "risk_reserved"})
         await self._submit(group)
+        match_current = getattr(self.broker, "match_current_orders", None)
+        if match_current is not None:
+            executions = await match_current(
+                working_intent.ticker,
+                working_intent.event_time,
+                tuple(group.broker_order_ids),
+            )
+            for execution in executions:
+                self.journal.append(
+                    run_id=self.run_id,
+                    category="execution",
+                    entity_type="fill",
+                    entity_id=execution.execution_id,
+                    account_id=execution.account,
+                    event_time=execution.trade_time,
+                    payload=execution.to_cpapi(),
+                )
+            if executions:
+                await self.reconcile()
         if plan.cancel_strategy_protection:
             # A fresh full-exit OCA owns the entire broker-held position as soon
             # as it is acknowledged. Delegate the source entry groups before

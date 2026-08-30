@@ -593,6 +593,61 @@ class SimulatedBrokerAdapter:
             return []
         if not self._orders:
             return []
+        return await self._match_orders(event, fill_time=event.ts)
+
+    async def match_current_orders(
+        self,
+        ticker: str,
+        event_time: datetime,
+        broker_order_ids: tuple[str, ...] = (),
+    ) -> list[Execution]:
+        """Match new historical orders against the latest causal market event.
+
+        A marketable order sent between persisted market events can execute
+        against a quote that was already visible when the strategy decided.
+        Waiting for the next database event introduces artificial latency and
+        can fill an entry after its strategy evidence has expired.
+        """
+
+        if self.mode not in {
+            TradingMode.REPLAY,
+            TradingMode.BACKTEST,
+            TradingMode.BACKTEST_DEBUG,
+        }:
+            return []
+        at = event_time.astimezone(timezone.utc)
+        requested_ids = set(broker_order_ids)
+        conids = {
+            state.request.conid
+            for order_id, state in self._orders.items()
+            if state.request.ticker.upper() == ticker.upper()
+            and (not requested_ids or order_id in requested_ids)
+            and state.status in {OrderStatus.SUBMITTED, OrderStatus.PRE_SUBMITTED}
+        }
+        executions: list[Execution] = []
+        for conid in sorted(conids):
+            quote = self._quotes.get(conid)
+            if quote is None or quote.ts.astimezone(timezone.utc) > at:
+                continue
+            executions.extend(
+                await self._match_orders(
+                    quote,
+                    fill_time=at,
+                    broker_order_ids=requested_ids,
+                )
+            )
+        return executions
+
+    async def _match_orders(
+        self,
+        event: MarketEvent,
+        *,
+        fill_time: datetime,
+        broker_order_ids: set[str] | None = None,
+    ) -> list[Execution]:
+        conid = self._event_conid(event)
+        if conid <= 0:
+            return []
         executions: list[Execution] = []
         async with self._lock:
             # Freeze event eligibility before applying any fills. A child that
@@ -603,6 +658,7 @@ class SimulatedBrokerAdapter:
                 state
                 for state in self._sorted_orders()
                 if state.request.conid == conid
+                and (broker_order_ids is None or state.order_id in broker_order_ids)
                 and state.status in {OrderStatus.SUBMITTED, OrderStatus.PRE_SUBMITTED}
             ]
             for state in eligible:
@@ -621,7 +677,7 @@ class SimulatedBrokerAdapter:
                 if fill is None:
                     continue
                 price, quantity = fill
-                execution = self._apply_fill(state, event.ts, price, quantity)
+                execution = self._apply_fill(state, fill_time, price, quantity)
                 executions.append(execution)
         return executions
 

@@ -480,6 +480,63 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                 await manager.close()
                 journal.close()
 
+    async def test_historical_marketable_entry_fills_from_latest_causal_quote(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            event_time = datetime(2026, 8, 21, 14, 0, tzinfo=timezone.utc)
+            broker = SimulatedBrokerAdapter(["DU1"], mode=TradingMode.BACKTEST)
+            manager, journal = await self._manager(
+                directory,
+                broker,
+                policy=BrokerCommunicationPolicy(),
+            )
+            try:
+                from src.market_engine.events import QuoteEvent
+
+                await broker.on_market_event(
+                    QuoteEvent(
+                        ask_exchange=11,
+                        ask_price=10.02,
+                        ask_size=100,
+                        bid_exchange=12,
+                        bid_price=10.00,
+                        bid_size=100,
+                        conditions=(),
+                        indicators=(),
+                        ingest_ts=event_time - timedelta(milliseconds=100),
+                        raw={"conid": 123},
+                        sequence=1,
+                        source="test",
+                        tape=3,
+                        ticker="TEST",
+                        ts=event_time - timedelta(milliseconds=100),
+                    )
+                )
+                request = replace(
+                    intent(side_quote=(10.00, 10.02), quantity=10),
+                    event_time=event_time,
+                    reference_price=10.02,
+                )
+
+                snapshot = await manager.submit_intent(
+                    portfolio_approved(journal, request),
+                    account_id="DU1",
+                    event=None,
+                )
+
+                self.assertEqual(snapshot.filled_quantity, 10)
+                self.assertEqual(snapshot.remaining_quantity, 0)
+                executions = [
+                    row
+                    for row in journal.records("run-1")
+                    if row.category == "execution"
+                ]
+                self.assertEqual(len(executions), 1)
+                self.assertEqual(executions[0].event_time, event_time)
+                self.assertEqual(executions[0].payload["price"], 10.02)
+            finally:
+                await manager.close()
+                journal.close()
+
     async def test_protection_replacement_cancels_children_before_parent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             broker = SimulatedBrokerAdapter(["DU1"], mode=TradingMode.PAPER)
