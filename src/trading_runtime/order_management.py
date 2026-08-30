@@ -1469,6 +1469,21 @@ class OrderManagementEngine:
             self._groups[group.group_id] = group
             broker_order_id = group.broker_order_ids[0]
             self._group_by_broker_id[broker_order_id] = group.group_id
+            # The replacement can fill synchronously (the simulator does this,
+            # and a live broker may publish the fill before modify_order
+            # returns). Delegate reconciliation before sending the command so
+            # cancellation of the sibling stop cannot make the source entry
+            # manufacture a second full-position repair backstop while this
+            # managed exit already owns the quantity.
+            protected.protection_delegated = True
+            self._transition(
+                protected,
+                protected.state,
+                {
+                    "event": "protection_delegated_to_managed_exit",
+                    "managed_exit_group_id": group.group_id,
+                },
+            )
             self._transition(
                 group,
                 OrderManagementState.SUBMITTING,
@@ -1479,15 +1494,21 @@ class OrderManagementEngine:
                 },
             )
             started = perf_counter()
-            async with self._command_lane(account_id):
-                response = await self.broker.modify_order(account_id, broker_order_id, replacement)
-                response = await self._resolve_warning_chain_locked(group, response)
+            try:
+                async with self._command_lane(account_id):
+                    response = await self.broker.modify_order(account_id, broker_order_id, replacement)
+                    response = await self._resolve_warning_chain_locked(group, response)
+            except Exception:
+                protected.protection_delegated = False
+                raise
             group.decision_to_submit_ms = (perf_counter() - started) * 1000.0
             group.submitted_at = datetime.now(timezone.utc)
             if group.state == OrderManagementState.POLICY_BLOCKED:
+                protected.protection_delegated = False
                 return group.snapshot(self.policy.version)
             rejected = next((row for row in response if row.get("error") or row.get("errorCode")), None)
             if rejected:
+                protected.protection_delegated = False
                 group.rejection_reason = str(rejected.get("error") or rejected.get("message") or rejected)
                 self._transition(group, OrderManagementState.REJECTED, rejected)
                 return group.snapshot(self.policy.version)

@@ -993,6 +993,16 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(replacement.price, 10.0)
             self.assertEqual(replacement.parentId, entry_snapshot.client_order_ids[0])
             self.assertTrue(replacement.isSingleGroup)
+            source_group = next(
+                group
+                for group in manager._groups.values()
+                if group.intent.intent_id == entry.intent_id
+            )
+            self.assertTrue(source_group.protection_delegated)
+            self.assertEqual(
+                (await manager.reconcile_protection(source_group))["status"],
+                "delegated_to_managed_exit",
+            )
             await manager.close()
             journal.close()
 

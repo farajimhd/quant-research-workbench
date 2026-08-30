@@ -893,16 +893,17 @@ impl HistoricalEventSource {
         event_type_filter: Option<u8>,
     ) -> Result<mpsc::Receiver<Result<Vec<LiveCompactEvent>, String>>, String> {
         // Structural reconstruction is single-ticker and response-streamed in
-        // bounded batches.  Reusing Scanner's 30-minute query chunks made an
-        // overnight daily-checkpoint advance issue sixteen empty ClickHouse
-        // round trips before reaching the 04:00 session.  Daily chunks retain
-        // bounded server work while removing that latency multiplier.
+        // bounded batches. Keep the ClickHouse response window bounded as well:
+        // a batch only bounds decoded in-process rows, while a dense ticker can
+        // still make a daily HTTP response too large for the transport. The
+        // dedicated setting allows structural rebuilds to be tuned independently
+        // from Scanner without changing causal ordering across adjacent chunks.
         self.stream_ordered_filtered_chunked(
             window,
             batch_size,
             live_continuation_sequence,
             event_type_filter,
-            1_440,
+            self.config.structure_fetch_chunk_minutes.max(1),
         )
     }
 
