@@ -2867,7 +2867,7 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
         _watchlist_rule(
             "strategy-squeeze-unified-resistance-break",
             "Unified structural resistance breakout",
-            "Uses QMD's persistent event-native Unified Structural Level Book. Initial entry is allowed when price is already accepted above an important resistance-zone boundary; post-loss reentry requires a fresh causal cross.",
+            "Uses QMD's persistent event-native Unified Structural Level Book. A fresh causal resistance-zone break is latched for the watched campaign, then remains eligible while price holds above that accepted boundary.",
             [{
                 **_watchlist_condition(
                     "squeeze-price-over-unified-resistance",
@@ -3944,11 +3944,11 @@ def _default_draft() -> dict[str, Any]:
     squeeze_lifecycle["reentry"]["unlimited_attempts"] = True
     squeeze_lifecycle["initial_entry"]["order_intent"][
         "protection_profile"
-    ] = "structural-five-tranche"
+    ] = "structural-single-target"
     squeeze_lifecycle["reentry"]["order_intent"][
         "protection_profile"
-    ] = "structural-five-tranche"
-    squeeze_lifecycle["reentry"]["cooldown_ms"] = 5_000
+    ] = "structural-single-target"
+    squeeze_lifecycle["reentry"]["cooldown_ms"] = 0
     # The original Early Squeeze occurrence owns the campaign. A re-entry in
     # that same episode needs fresh post-exit market evidence, not a duplicate
     # scanner occurrence that may never be emitted during continuation.
@@ -3973,7 +3973,7 @@ def _default_draft() -> dict[str, Any]:
             "below_vwap": True,
         },
         "failure_to_extend": {
-            "enabled": True,
+            "enabled": False,
             "minimum_gain_pct": 0.75,
             "minimum_extension_bps": 5.0,
             "stalled_for_ms": 3_000,
@@ -3983,23 +3983,24 @@ def _default_draft() -> dict[str, Any]:
             "maximum_uses": 1,
         },
         "qmd_exhaustion": {
-            "enabled": True,
+            "enabled": False,
             "active_after_ms": 1_000,
             "maximum_flow_structure_score": -0.10,
             "minimum_confidence": 0.55,
             "minimum_flow_price_divergence_score": 0.60,
         },
         "structure_failure": {
-            "enabled": True,
+            "enabled": False,
             "active_after_ms": 1_000,
             "buffer_bps": 5.0,
             "require_higher_low": True,
         },
         "macd_backstop": {
             "enabled": True,
-            "active_after_ms": 5_000,
-            "closed_for_ms": 1_000,
+            "active_after_ms": 0,
+            "closed_for_ms": 0,
             "timeframe": "1s",
+            "close_condition": "signal_above_line",
         },
     }
     system_profiles[0]["parameters"]["structural_entry"] = {
@@ -4021,18 +4022,19 @@ def _default_draft() -> dict[str, Any]:
         "maximum_spread_bps": 50.0,
     }
     squeeze_lifecycle["reentry"]["target_replenishment"] = {
-        "enabled": True,
+        "enabled": False,
         "minimum_pullback_atr_multiple": 0.50,
         "minimum_pullback_bps": 25.0,
         "support_buffer_bps": 10.0,
     }
     system_profiles[0]["parameters"]["protection"]["profit_ladder"].update({
-        "maximum_targets": 5,
-        "minimum_level_strength": 0.55,
-        "minimum_level_confidence": 0.60,
-        "minimum_reaction_probability": 0.60,
-        "minimum_reversal_probability": 0.55,
-        "minimum_composite_score": 0.60,
+        "maximum_targets": 1,
+        "selection_mode": "highest_price_below_cap",
+        "minimum_level_strength": 0.0,
+        "minimum_level_confidence": 0.0,
+        "minimum_reaction_probability": 0.0,
+        "minimum_reversal_probability": 0.0,
+        "minimum_composite_score": 0.0,
         "premarket_maximum_gain_pct": 200.0,
     })
     system_profiles[0]["parameters"]["protection"]["luld_profit_target"].update({
@@ -4048,11 +4050,10 @@ def _default_draft() -> dict[str, Any]:
         "maximum_risk_pct"
     ] = 6.0
     system_profiles[0]["parameters"]["protection"]["trailing"].update({
-        "activation_gain_pct": 8.0,
-        "distance_volatility_multiple": 2.0,
-        "minimum_distance_bps": 50.0,
+        "enabled": False,
     })
-    system_profiles[0]["action_policy_ids"] = ["profit-pocket"]
+    system_profiles[0]["parameters"]["profit_pocket"]["enabled"] = False
+    system_profiles[0]["action_policy_ids"] = []
     system_profiles[0]["protected"] = True
     news_profile = deepcopy(system_profiles[0])
     news_profile["profile_id"] = "long-momentum-bullish-news"
@@ -4291,8 +4292,11 @@ def _default_draft() -> dict[str, Any]:
             **_default_campaign_policy(),
             "initial_entry_authority": "automatic",
             "reentry_authority": "automatic",
-            "maximum_reentries": 1,
-            "reentry_cooldown_ms": 5_000,
+            # Early Squeeze discovers the campaign once.  Subsequent valid
+            # structural/MACD opportunities in the same session are not
+            # artificially capped or delayed by the Run Plan.
+            "maximum_reentries": 0,
+            "reentry_cooldown_ms": 0,
             "session_end_behavior": "exit_and_stop",
         },
         "safety_supervisor": _default_safety_supervisor(),
@@ -5659,7 +5663,12 @@ def merged_assignment_parameters(configuration: dict[str, Any], assignment: dict
         "volatility_multiple": float(protection.get("volatility_multiple") or 0),
         "maximum_risk_pct": float(protection.get("maximum_risk_pct") or 0),
     })
-    base["protection"].setdefault("trailing", {})["enabled"] = bool(protection.get("trailing_enabled", True))
+    trailing = base["protection"].setdefault("trailing", {})
+    # OMS may forbid trailing protection, but it must not re-enable a trailing
+    # strategy exit that the selected Strategy profile explicitly disabled.
+    trailing["enabled"] = bool(trailing.get("enabled", True)) and bool(
+        protection.get("trailing_enabled", True)
+    )
     identity = dict(configuration.get("strategy") or {})
     return strategy_executor(
         str(identity.get("strategy_id") or assignment.get("strategy_id") or ""),
@@ -7338,6 +7347,34 @@ def _default_protection_profiles() -> list[dict[str, Any]]:
             }
             for index in range(5)
         ],
+    })
+    profiles.append({
+        "profile_id": "structural-single-target",
+        "revision": 1,
+        "name": "Structural single target",
+        "description": (
+            "One full-position OCA group uses the strategy's single causal structural "
+            "target and adaptive protective stop without an intermediate trailing exit."
+        ),
+        "origin": "system",
+        "editable": True,
+        "add_policy": "independent_slice",
+        "profit_pocket_transition": "keep_existing",
+        "mandatory_catastrophic_backstop": True,
+        "emergency_repair_deadline_ms": 500,
+        "slices": [{
+            "slice_id": "position",
+            "quantity_fraction": 1.0,
+            "profit_target_price": None,
+            "strategy_profit_target_index": 0,
+            "stop": {
+                "rule_type": "fixed_price",
+                "order_type": "STP",
+                "price": None,
+                "stop_limit_offset_bps": None,
+            },
+            "trailing": {"rule_type": "none"},
+        }],
     })
     return profiles
 

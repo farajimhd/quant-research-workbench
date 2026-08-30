@@ -896,7 +896,7 @@ class HistoricalWatchlistTimelineTests(unittest.TestCase):
                 source="historical_watchlist:price-squeeze",
                 ticker="CLSK",
                 active_tickers=set(),
-                signal_activated_tickers={"CLSK"},
+                strategy_engaged_tickers={"CLSK"},
                 position_quantity=0.0,
             )
         )
@@ -905,7 +905,7 @@ class HistoricalWatchlistTimelineTests(unittest.TestCase):
                 source="historical_watchlist:price-squeeze",
                 ticker="CLSK",
                 active_tickers=set(),
-                signal_activated_tickers=set(),
+                strategy_engaged_tickers=set(),
                 position_quantity=0.0,
             )
         )
@@ -2819,6 +2819,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(accepts.call_count, 1)
             self.assertIn("AAPL", controller._signal_activated_tickers)
+            controller._strategy_engaged_tickers.add("AAPL")
 
             controller._refresh_source_native_signal_activation(
                 expires_at + timedelta(microseconds=1)
@@ -2826,6 +2827,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotIn("AAPL", controller._source_native_signal_episodes)
         self.assertNotIn("AAPL", controller._signal_activated_tickers)
+        self.assertIn("AAPL", controller._strategy_engaged_tickers)
         self.assertIsNone(controller._next_source_native_signal_refresh_at)
 
     async def test_unsupported_native_source_fails_closed(self) -> None:

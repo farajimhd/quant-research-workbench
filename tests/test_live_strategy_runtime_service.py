@@ -9,6 +9,17 @@ from src.backend.live_strategy_runtime_service import LiveStrategyRuntimeSupervi
 
 
 class LiveStrategyRuntimeSupervisorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_early_squeeze_admits_one_persistent_watch_per_run_and_ticker(self) -> None:
+        supervisor = LiveStrategyRuntimeSupervisor()
+        first = {"delivery_id": "one", "run_plan_id": "plan-1", "ticker": "SUGP"}
+        repeated = {"delivery_id": "two", "run_plan_id": "plan-1", "ticker": "SUGP"}
+        with patch.object(supervisor, "_save_activations"):
+            self.assertEqual(supervisor.submit([first]), 1)
+            self.assertEqual(supervisor.submit([repeated]), 1)
+
+        self.assertEqual(len(supervisor._activations), 1)
+        self.assertEqual(supervisor._queue.qsize(), 1)
+
     async def test_market_row_uses_causal_per_ticker_unified_structure_book(self) -> None:
         supervisor = LiveStrategyRuntimeSupervisor()
         broker = object()

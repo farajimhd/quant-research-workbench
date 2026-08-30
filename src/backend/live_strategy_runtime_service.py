@@ -36,6 +36,13 @@ NEW_YORK = ZoneInfo("America/New_York")
 ACTIVATION_CHECKPOINT_RUN_ID = "live-strategy-runtime:activations"
 
 
+def _activation_key(delivery: dict[str, Any]) -> str:
+    return (
+        f"{str(delivery.get('run_plan_id') or '').strip()}|"
+        f"{str(delivery.get('ticker') or '').strip().upper()}"
+    )
+
+
 class LiveStrategyRuntimeSupervisor:
     """Consume accepted Signal Stream deliveries through the shared runtime."""
 
@@ -96,9 +103,22 @@ class LiveStrategyRuntimeSupervisor:
 
     def submit(self, deliveries: list[dict[str, Any]]) -> int:
         accepted = 0
+        changed = False
         for delivery in deliveries:
+            delivery_copy = deepcopy(delivery)
+            activation_key = _activation_key(delivery_copy)
+            if not activation_key.strip("|"):
+                continue
+            with self._lock:
+                already_watched = activation_key in self._activations
+            if already_watched:
+                # The first accepted Early Squeeze occurrence admits the
+                # ticker to the campaign watch set. Later squeeze occurrences
+                # are acknowledged but cannot create duplicate assignments or
+                # re-gate an existing campaign.
+                accepted += 1
+                continue
             try:
-                delivery_copy = deepcopy(delivery)
                 self._queue.put_nowait({"kind": "signal", "delivery": delivery_copy})
             except queue.Full:
                 with self._lock:
@@ -107,12 +127,11 @@ class LiveStrategyRuntimeSupervisor:
                         "last_error": "Strategy activation queue capacity is exhausted",
                     })
                 break
-            delivery_id = str(delivery_copy.get("delivery_id") or "")
-            if delivery_id:
-                with self._lock:
-                    self._activations[delivery_id] = delivery_copy
+            with self._lock:
+                self._activations[activation_key] = delivery_copy
             accepted += 1
-        if accepted:
+            changed = True
+        if changed:
             self._save_activations()
         with self._lock:
             self._status["queued"] = self._queue.qsize()
@@ -441,9 +460,9 @@ class LiveStrategyRuntimeSupervisor:
         today = datetime.now(NEW_YORK).date().isoformat()
         rows = state.get("deliveries") if str(state.get("session_key") or "") == today else []
         self._activations = {
-            str(row.get("delivery_id") or ""): dict(row)
+            _activation_key(dict(row)): dict(row)
             for row in rows or []
-            if str(row.get("delivery_id") or "")
+            if _activation_key(dict(row)).strip("|")
         }
 
     def _save_activations(self) -> None:

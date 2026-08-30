@@ -3009,7 +3009,7 @@ class ReplayRunController:
                 source=assignment.source,
                 ticker=assignment.ticker,
                 active_tickers=self._active_historical_watchlist_tickers,
-                signal_activated_tickers=self._signal_activated_tickers,
+                strategy_engaged_tickers=self._strategy_engaged_tickers,
                 position_quantity=float(position.position if position else 0),
             ):
                 continue
@@ -3025,7 +3025,7 @@ class ReplayRunController:
                 and
                 (position is None or float(position.position) == 0)
                 and assignment.status == AssignmentStatus.WATCHING
-                and assignment.ticker not in self._signal_activated_tickers
+                and assignment.ticker not in self._strategy_engaged_tickers
             ):
                 continue
             observation = replace(
@@ -7839,16 +7839,21 @@ def _historical_watchlist_assignment_is_observable(
     source: str,
     ticker: str,
     active_tickers: set[str],
-    signal_activated_tickers: set[str],
+    strategy_engaged_tickers: set[str],
     position_quantity: float,
 ) -> bool:
-    """Keep a signal-started episode alive after its quality projection changes."""
+    """Keep a discovered campaign observable for the rest of its run session.
+
+    Source-native signal membership is intentionally transient.  It admits the
+    ticker into the Strategy once; it must not become a recurring entry or
+    re-entry prerequisite after the occurrence window expires.
+    """
 
     if "historical_watchlist" not in source:
         return True
     return bool(
         ticker in active_tickers
-        or ticker in signal_activated_tickers
+        or ticker in strategy_engaged_tickers
         or float(position_quantity) != 0
     )
 

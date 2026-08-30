@@ -1241,7 +1241,13 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertNotIn("capability_catalog", draft["strategy"])
         self.assertTrue(draft["trading_actions"]["definitions"])
         self.assertTrue(draft["trading_actions"]["policies"])
-        self.assertTrue(all(profile["action_policy_ids"] for profile in draft["strategy"]["profiles"]))
+        registered_action_policy_ids = {
+            row["policy_id"] for row in draft["trading_actions"]["policies"]
+        }
+        self.assertTrue(all(
+            set(profile["action_policy_ids"]) <= registered_action_policy_ids
+            for profile in draft["strategy"]["profiles"]
+        ))
         self.assertTrue(draft["strategy"]["input_catalog"])
         self.assertTrue(all(_profile_rule_set_ids(profile["lifecycle"]) for profile in draft["strategy"]["profiles"]))
         self.assertTrue(all(
@@ -1296,10 +1302,27 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             ]["enabled"]
         )
         self.assertTrue(lifecycle["reentry"]["after_protective_exit"])
-        self.assertTrue(
+        self.assertFalse(
             default_profile["parameters"]["momentum_management"][
                 "failure_to_extend"
             ]["enabled"]
+        )
+        self.assertFalse(lifecycle["reentry"]["target_replenishment"]["enabled"])
+        self.assertEqual(lifecycle["reentry"]["cooldown_ms"], 0)
+        self.assertFalse(
+            default_profile["parameters"]["protection"]["trailing"]["enabled"]
+        )
+        self.assertEqual(default_run_plan["campaign_lifecycle"]["maximum_reentries"], 0)
+        self.assertEqual(default_run_plan["campaign_lifecycle"]["reentry_cooldown_ms"], 0)
+        self.assertEqual(
+            default_profile["parameters"]["momentum_management"]["macd_backstop"],
+            {
+                "enabled": True,
+                "active_after_ms": 0,
+                "closed_for_ms": 0,
+                "timeframe": "1s",
+                "close_condition": "signal_above_line",
+            },
         )
         self.assertFalse(
             default_profile["parameters"]["protection"]["stop"][
@@ -1308,18 +1331,29 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertEqual(
             lifecycle["initial_entry"]["order_intent"]["protection_profile"],
-            "structural-five-tranche",
+            "structural-single-target",
         )
         structural_profile = next(
             row
             for row in draft["oms"]["protection_profiles"]
-            if row["profile_id"] == "structural-five-tranche"
+            if row["profile_id"] == "structural-single-target"
         )
-        self.assertEqual(len(structural_profile["slices"]), 5)
+        self.assertEqual(len(structural_profile["slices"]), 1)
         self.assertEqual(
             [row["strategy_profit_target_index"] for row in structural_profile["slices"]],
-            list(range(5)),
+            [0],
         )
+        self.assertEqual(structural_profile["slices"][0]["trailing"]["rule_type"], "none")
+        self.assertEqual(
+            default_profile["parameters"]["protection"]["profit_ladder"]["maximum_targets"],
+            1,
+        )
+        self.assertEqual(
+            default_profile["parameters"]["protection"]["profit_ladder"]["selection_mode"],
+            "highest_price_below_cap",
+        )
+        self.assertFalse(default_profile["parameters"]["profit_pocket"]["enabled"])
+        self.assertEqual(default_profile["action_policy_ids"], [])
         self.assertTrue(all(not route["enabled"] for route in lifecycle["exit"]["rule_sets"]))
         self.assertNotIn("confirmed-pullback-add", default_profile["action_policy_ids"])
         self.assertTrue(all(route["action_id"] == "position.exit_long" for route in lifecycle["exit"]["rule_sets"]))
@@ -1347,7 +1381,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertTrue(draft["oms"]["protection_profiles"])
         self.assertEqual(
             lifecycle["initial_entry"]["order_intent"]["protection_profile"],
-            "structural-five-tranche",
+            "structural-single-target",
         )
         self.assertTrue(lifecycle["reentry"]["rules"]["opportunity"]["expression"]["children"])
         self.assertTrue(lifecycle["exit"]["rule_sets"][1]["rules"]["expression"]["children"])
@@ -1509,7 +1543,8 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertEqual(swing_condition["value"], 0.0)
         self.assertIn("Unified Structural Level Book", profile["description"])
-        self.assertEqual(plan["campaign_lifecycle"]["reentry_cooldown_ms"], 5_000)
+        self.assertEqual(plan["campaign_lifecycle"]["maximum_reentries"], 0)
+        self.assertEqual(plan["campaign_lifecycle"]["reentry_cooldown_ms"], 0)
         self.assertTrue(profile["lifecycle"]["reentry"]["unlimited_attempts"])
         self.assertEqual(profile["lifecycle"]["reentry"]["maximum_attempts"], 0)
         self.assertEqual(profile["lifecycle"]["trading_behavior"]["eligible_sessions"], ["premarket"])
@@ -1666,9 +1701,10 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             runtime = resolve_runtime_configuration(draft, mode="replay")
 
         self.assertEqual(runtime["accounts"]["bindings"][0]["strategy_allocation"], 0.3)
-        self.assertEqual(runtime["strategy"]["parameters"]["profit_pocket"]["quantity_fraction"], 0.4)
+        self.assertFalse(runtime["strategy"]["parameters"]["profit_pocket"]["enabled"])
+        self.assertEqual(runtime["strategy"]["parameters"]["profit_pocket"]["quantity_fraction"], 1.0)
         self.assertTrue(runtime["strategy"]["action_definitions"])
-        self.assertEqual(runtime["strategy"]["action_policies"][0]["policy_id"], "profit-pocket")
+        self.assertEqual(runtime["strategy"]["action_policies"], [])
         self.assertEqual(runtime["run_plan"]["run_plan_id"], "balanced-replay")
         resolved = runtime["assignments"][0]["resolved_parameters"]
         self.assertEqual(

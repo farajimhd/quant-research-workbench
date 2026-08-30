@@ -33,7 +33,7 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 11
+STRATEGY_REVISION = 12
 
 RULE_COMPARATORS = {
     "above_by_bps",
@@ -1006,33 +1006,25 @@ def _unified_entry_trigger(
     observation: StrategyObservation,
     parameters: dict[str, Any],
     state: dict[str, Any],
-    *,
-    require_fresh_cross: bool,
 ) -> dict[str, Any]:
     policy = dict(parameters.get("structural_entry") or {})
     buffer_bps = float(policy.get("acceptance_buffer_bps") or 0)
     previous_price = state.get("previous_observed_price")
-    pending = state.get("pending_entry_resistance")
-    if isinstance(pending, Mapping):
-        try:
-            pending_boundary = float(pending.get("boundary") or 0)
-        except (TypeError, ValueError):
-            pending_boundary = 0.0
-        pending_threshold = pending_boundary * (1 + buffer_bps / 10_000)
-        if pending_boundary > 0 and observation.price > pending_threshold and (
-            not require_fresh_cross
-            or previous_price is not None
-            and float(previous_price) <= pending_threshold
-        ):
-            state.pop("pending_entry_resistance", None)
+    accepted = state.get("accepted_entry_resistance")
+    if isinstance(accepted, Mapping):
+        accepted_boundary = _level_metric(dict(accepted), "boundary")
+        accepted_threshold = accepted_boundary * (1 + buffer_bps / 10_000)
+        if accepted_boundary > 0 and observation.price > accepted_threshold:
             return {
                 "passed": True,
-                "reason": "unified_resistance_accepted",
-                "level": dict(pending.get("level") or {}),
-                "reference_price": pending_boundary,
-                "threshold_price": pending_threshold,
+                "reason": "unified_resistance_acceptance_held",
+                "level": dict(accepted.get("level") or {}),
+                "reference_price": accepted_boundary,
+                "threshold_price": accepted_threshold,
                 "previous_price": previous_price,
+                "accepted_at": accepted.get("accepted_at"),
             }
+        state.pop("accepted_entry_resistance", None)
     rows = [
         dict(row)
         for row in observation.structural_resistance_levels
@@ -1059,18 +1051,31 @@ def _unified_entry_trigger(
             usable.append((boundary_value, row))
     if not usable:
         return {"passed": False, "reason": "waiting_for_unified_resistance", "level": None}
-    crossed = [item for item in usable if observation.price > item[0] * (1 + buffer_bps / 10_000)]
+    crossed = [
+        item
+        for item in usable
+        if previous_price is not None
+        and float(previous_price) <= item[0] * (1 + buffer_bps / 10_000)
+        and observation.price > item[0] * (1 + buffer_bps / 10_000)
+    ]
     if crossed:
         boundary, level = max(crossed, key=lambda item: item[0])
     else:
-        boundary, level = min(usable, key=lambda item: abs(item[0] - observation.price))
+        overhead = [item for item in usable if item[0] >= observation.price]
+        boundary, level = (
+            min(overhead, key=lambda item: item[0])
+            if overhead
+            else max(usable, key=lambda item: item[0])
+        )
     threshold = boundary * (1 + buffer_bps / 10_000)
-    passed = observation.price > threshold and (
-        not require_fresh_cross
-        or previous_price is not None and float(previous_price) <= threshold
-    )
+    passed = bool(crossed) and observation.price > threshold
     if passed:
         state.pop("pending_entry_resistance", None)
+        state["accepted_entry_resistance"] = {
+            "boundary": boundary,
+            "level": dict(level),
+            "accepted_at": observation.observed_at.isoformat(),
+        }
     else:
         state["pending_entry_resistance"] = {
             "boundary": boundary,
@@ -1239,6 +1244,19 @@ class LongMomentumStrategyEngine:
                 AssignmentStatus.COMPLETED,
             )
 
+        # Structural acceptance is an event in the watched campaign, not a
+        # side-effect of whichever confirmation gate happens to finish last.
+        # Observe and latch the fresh causal cross before liquidity, VWAP, and
+        # MACD can return early; later frames may enter while that acceptance
+        # remains above the same boundary.
+        unified_trigger: dict[str, Any] | None = None
+        if bool(dict(parameters.get("structural_entry") or {}).get("enabled", False)):
+            unified_trigger = _unified_entry_trigger(
+                observation,
+                parameters,
+                state,
+            )
+
         replenishment = dict(reentry.get("target_replenishment") or {})
         entitlement = float(state.get("target_replenishment_quantity") or 0)
         if (
@@ -1345,14 +1363,7 @@ class LongMomentumStrategyEngine:
             }.items()
             if value
         ]
-        unified_trigger: dict[str, Any] | None = None
-        if bool(dict(parameters.get("structural_entry") or {}).get("enabled", False)):
-            unified_trigger = _unified_entry_trigger(
-                observation,
-                parameters,
-                state,
-                require_fresh_cross=bool(reentries),
-            )
+        if unified_trigger is not None:
             triggered = [*operational_triggers]
             if bool(unified_trigger.get("passed")):
                 triggered.append("unified-structural-resistance")
@@ -3259,6 +3270,7 @@ def _decision_reason_detail(
         "qmd_flow_geometry_exhaustion": "Exit: QMD flow structure weakened with confident flow-price divergence.",
         "loss_of_confirmed_higher_low": "Exit: price lost the latest causally confirmed one-second higher low.",
         "macd_closed_backstop": "Exit: one-second MACD remained closed for the configured backstop duration.",
+        "macd_signal_crossed_above_line": "Exit: the causal one-second MACD signal crossed strictly above the MACD line.",
         "downside_bearish_choch": "Loss exit: while below entry, a bearish one-second change of character occurred.",
         "downside_macd_closed": "Loss exit: while below entry, the one-second MACD closed; no confirmation delay applies.",
         "downside_vwap_lost": "Loss exit: while below entry, price moved under the causal one-second VWAP.",
@@ -3772,13 +3784,18 @@ def _matching_momentum_management_route(
     line = _source_value(observation, "indicator.macd.line", timeframe)
     signal = _source_value(observation, "indicator.macd.signal", timeframe)
     histogram = _source_value(observation, "indicator.macd.histogram", timeframe)
+    close_condition = str(macd.get("close_condition") or "regime_closed")
     macd_closed = (
         line is not None
         and signal is not None
         and (
-            float(line) <= float(signal)
-            or float(line) <= 0
-            or float(signal) <= 0
+            float(signal) > float(line)
+            if close_condition == "signal_above_line"
+            else (
+                float(line) <= float(signal)
+                or float(line) <= 0
+                or float(signal) <= 0
+            )
         )
     )
     if observation.source_timeframe in {"", timeframe}:
@@ -3797,9 +3814,21 @@ def _matching_momentum_management_route(
         >= int(macd.get("closed_for_ms") or 0)
     ):
         return {
-            "route_id": "macd-closed-backstop",
-            "name": "One-second MACD closed backstop",
-            "mechanism": "macd_closed_backstop",
+            "route_id": (
+                "macd-signal-crossed-above-line"
+                if close_condition == "signal_above_line"
+                else "macd-closed-backstop"
+            ),
+            "name": (
+                "One-second MACD signal crossed above line"
+                if close_condition == "signal_above_line"
+                else "One-second MACD closed backstop"
+            ),
+            "mechanism": (
+                "macd_signal_crossed_above_line"
+                if close_condition == "signal_above_line"
+                else "macd_closed_backstop"
+            ),
             "position_fraction": 1.0,
             "evidence": {
                 "macd_timeframe": timeframe,
@@ -4305,13 +4334,21 @@ def _structural_profit_targets(
             if len(unique) >= maximum:
                 return
 
-    selected = [
-        candidate
-        for _, candidate in sorted(
-            ranked_candidates,
-            key=lambda item: (-item[0], item[1] if side == "long" else -item[1]),
-        )[:maximum]
-    ]
+    selection_mode = str(policy.get("selection_mode") or "ranked")
+    if selection_mode == "highest_price_below_cap":
+        ordered_prices = sorted(
+            {candidate for _, candidate in ranked_candidates},
+            reverse=side == "long",
+        )
+        selected = ordered_prices[:maximum]
+    else:
+        selected = [
+            candidate
+            for _, candidate in sorted(
+                ranked_candidates,
+                key=lambda item: (-item[0], item[1] if side == "long" else -item[1]),
+            )[:maximum]
+        ]
     append_candidates(selected)
     unique.sort(reverse=side == "short")
     return unique
