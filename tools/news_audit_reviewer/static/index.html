@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>News Label Studio</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="loading" class="loading-screen"><div class="loading-mark">NL</div><p>Connecting to the ClickHouse review authority…</p></div>
+    <div id="app" class="app-shell" hidden>
+      <header class="topbar">
+        <div class="brand-block"><div class="brand-mark">NL</div><div><p class="eyebrow">ClickHouse operator authority</p><h1>News Label Studio</h1></div></div>
+        <div class="progress-block"><div class="progress-copy"><span id="progressLabel">0 of 31,856 labeled</span><strong id="progressPercent">0%</strong></div><div class="progress-track"><span id="progressBar"></span></div></div>
+        <div class="top-actions"><span id="saveStatus" class="save-status saved"><i></i> ClickHouse ready</span><button id="themeButton" class="icon-button" type="button" title="Toggle theme">◐</button><button id="notesButton" class="secondary-button" type="button">Notes</button></div>
+      </header>
+
+      <aside class="sidebar">
+        <div class="scope-card"><p class="eyebrow">Frozen review scope</p><div class="scope-number" id="scopeArticles">31,856</div><p>V61 training mismatches</p><span class="safety-chip">August holdout excluded</span></div>
+        <section class="query-builder">
+          <div class="nav-heading"><span>Search & filter</span><button id="resetFilters" type="button" class="text-button">Reset</button></div>
+          <label class="search-field nav-search"><span>⌕</span><input id="searchQuery" type="search" placeholder="Title, template, teaser…" /></label>
+          <label class="check-row"><input id="fullTextSearch" type="checkbox" /> Include full article text</label>
+          <div class="filter-grid">
+            <label>Gold<select id="goldFilter"><option value="">Any</option><option>eligible</option><option>ineligible</option></select></label>
+            <label>Synthesis<select id="synthesisFilter"><option value="">Any</option><option>eligible</option><option>ineligible</option></select></label>
+            <label>Status<select id="statusFilter"><option value="">Any</option><option value="unreviewed">Unreviewed</option><option value="reviewed">Reviewed</option><option value="changed">Changed gold</option><option value="confirmed">Confirmed gold</option><option value="eligible">Operator eligible</option><option value="ineligible">Operator ineligible</option></select></label>
+            <label>Ticker<input id="tickerFilter" placeholder="AAPL" /></label>
+            <label>From<input id="dateFrom" type="date" /></label>
+            <label>To<input id="dateTo" type="date" /></label>
+          </div>
+          <div class="nav-heading grouping-heading"><span>Group results by</span></div>
+          <div class="group-selects">
+            <select id="groupBy1"></select><select id="groupBy2"></select><select id="groupBy3"></select>
+          </div>
+          <button id="runQuery" class="primary-button wide" type="button">Run query</button>
+        </section>
+        <div class="nav-heading result-heading"><span id="groupResultLabel">Groups</span><span id="groupCount">0</span></div>
+        <nav id="groupList" class="navigation" aria-label="Query groups"></nav>
+      </aside>
+
+      <main class="workspace">
+        <section id="emptyState" class="empty-state"><div class="empty-glyph">⌕</div><h2>Build a review group</h2><p>Search the ClickHouse snapshot, choose up to three grouping dimensions, and label the matching articles.</p></section>
+        <section id="reviewPanel" hidden>
+          <div class="workspace-kicker"><span id="queryDescription">Current group</span><button id="copyGroupButton" class="text-button" type="button">Copy group summary</button></div>
+          <div class="review-header"><div><div id="selectionChips" class="selection-chips"></div><h2 id="groupTitle">Review group</h2><p id="groupMeta" class="muted"></p></div><button id="nextGroup" class="secondary-button" type="button">Next unreviewed group →</button></div>
+
+          <details class="explanation-card" open><summary><span><b>Why News Synthesis chose its label</b><small>Group-level synthesis rationale and most common decision reasons</small></span><span class="chevron">⌄</span></summary><div id="explanationBody" class="explanation-body"></div></details>
+
+          <section class="decision-card">
+            <div class="section-title"><div><p class="eyebrow">Group action</p><h3>Apply one label to this result group, or review it as mixed</h3></div><span id="groupCoverage" class="coverage-badge"></span></div>
+            <div class="decision-grid">
+              <button class="decision-option" data-decision="all_eligible" type="button"><span class="radio"></span><span><b>All eligible</b><small>Persist eligible for every matching article</small></span><kbd>E</kbd></button>
+              <button class="decision-option" data-decision="all_ineligible" type="button"><span class="radio"></span><span><b>All ineligible</b><small>Persist ineligible for every matching article</small></span><kbd>I</kbd></button>
+              <button class="decision-option" data-decision="mixed" type="button"><span class="radio"></span><span><b>Mixed</b><small>Label articles individually below</small></span><kbd>M</kbd></button>
+            </div>
+            <label class="note-field"><span>Group note <small>optional · persists to ClickHouse</small></span><textarea id="groupNote" rows="2" placeholder="Rule, exception, or reasoning for this query-defined group…"></textarea></label>
+            <div class="complete-row"><p id="decisionHelp">Choose a group disposition or label articles individually.</p><button id="completeButton" class="complete-button" type="button"><span>✓</span> Mark group complete</button></div>
+          </section>
+
+          <section class="article-card">
+            <div class="table-toolbar"><div><p class="eyebrow">Direct article labels</p><h3><span id="articleCount">0</span> matching articles</h3></div><div class="legend"><span><i class="legend-dot gold"></i> Gold</span><span><i class="legend-dot operator"></i> Your label</span></div></div>
+            <div class="table-wrap"><table><thead><tr><th>Published</th><th>Tickers</th><th>Gold / Synthesis</th><th>Article</th><th class="operator-column">Your label</th><th>Comment</th></tr></thead><tbody id="articleRows"></tbody></table></div>
+            <div class="pagination"><span id="pageSummary"></span><div><button id="previousPage" class="icon-button" type="button">←</button><span id="pageLabel"></span><button id="nextPage" class="icon-button" type="button">→</button></div></div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <div id="notesDrawer" class="drawer-backdrop" hidden><aside class="drawer"><div class="drawer-header"><div><p class="eyebrow">Persistent context</p><h2>Review notes</h2></div><button id="closeNotes" class="icon-button" type="button">×</button></div><p class="muted">Notes are append-only ClickHouse revisions and never silently change labels.</p><label class="note-field"><span>Campaign note <small>autosaves</small></span><textarea id="campaignNote" rows="10" placeholder="Overall policy, unresolved questions, follow-up ideas…"></textarea></label><label class="note-field drawer-note"><span>Current workspace note <small>this search and grouping setup</small></span><textarea id="workspaceNote" rows="7" placeholder="What are you looking for in this query?"></textarea></label></aside></div>
+
+    <div id="articleDrawer" class="drawer-backdrop" hidden><aside class="drawer article-drawer"><div class="drawer-header"><div><p class="eyebrow">Canonical ClickHouse content</p><h2 id="detailTitle">Article</h2></div><button id="closeArticle" class="icon-button" type="button">×</button></div><div id="detailMeta" class="detail-meta"></div><div id="detailText" class="detail-text"></div></aside></div>
+    <div id="toast" class="toast" hidden></div>
+    <script src="/app.js"></script>
+  </body>
+</html>
