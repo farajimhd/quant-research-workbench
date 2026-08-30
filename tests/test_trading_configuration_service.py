@@ -1296,6 +1296,23 @@ class TradingConfigurationServiceTests(unittest.TestCase):
                 "squeeze-macd-signal-positive",
             },
         )
+        squeeze_liquidity_rule = next(
+            row
+            for row in draft["market_discovery"]["rule_sets"]
+            if row["rule_set_id"] == "strategy-squeeze-volume-spread-quality"
+        )
+        squeeze_spread_condition = next(
+            row
+            for row in squeeze_liquidity_rule["conditions"]
+            if row["condition_id"] == "squeeze-spread-quality"
+        )
+        live_spread_rule = next(
+            row
+            for row in draft["market_discovery"]["rule_sets"]
+            if row["rule_set_id"] == "strategy-live-spread-quality"
+        )
+        self.assertEqual(squeeze_spread_condition["value"], 60.0)
+        self.assertEqual(live_spread_rule["conditions"][0]["value"], 60.0)
         self.assertTrue(
             default_profile["parameters"]["momentum_management"][
                 "downside_loss_guard"
