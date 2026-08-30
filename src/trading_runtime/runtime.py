@@ -294,6 +294,11 @@ class TradingRuntime:
         evaluate_strategy: bool = True,
     ) -> None:
         self._record_market_event_state(event)
+        if self.order_manager is not None:
+            # Expire stale entries before the simulated/live broker is allowed
+            # to match this event.  This keeps Replay and Backtest deadlines on
+            # the causal market clock instead of machine processing speed.
+            await self.order_manager.expire_entry_deadlines(event.ts)
         executions = await self.broker.on_market_event(event)
         for execution in executions:
             self.journal.append(
@@ -1000,6 +1005,24 @@ class TradingRuntime:
             assignment = self._assignment_for_snapshot(snapshot)
             if assignment is not None:
                 self.control_plane.campaigns.release_reservation(assignment)
+            handler = getattr(self.strategy, "on_order_group_update", None)
+            if handler is not None:
+                positions = await self.broker.positions(snapshot.account_id)
+                aggregate_position_quantity = (
+                    sum(
+                        float(position.position)
+                        for position in positions
+                        if assignment is not None
+                        and int(position.conid) == int(assignment.conid)
+                    )
+                    if assignment is not None
+                    else None
+                )
+                await handler(
+                    snapshot,
+                    aggregate_position_quantity=aggregate_position_quantity,
+                )
+                self._persist_strategy_assignments(snapshot.updated_at)
         self.portfolio.on_order_group_update(snapshot)
         await self.risk_supervisor.evaluate(
             snapshot.account_id,

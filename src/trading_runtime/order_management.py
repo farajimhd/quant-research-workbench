@@ -4,7 +4,7 @@ import asyncio
 import math
 import os
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from time import perf_counter
 from typing import Any, Awaitable, Callable, Protocol
@@ -363,6 +363,50 @@ class OrderManagementEngine:
                     group.protection_task = asyncio.create_task(
                         self._ratchet_dynamic_protection(group, snapshot)
                     )
+
+    async def expire_entry_deadlines(self, event_time: datetime) -> tuple[OrderGroupSnapshot, ...]:
+        """Cancel entry quantity that survived its causal execution deadline.
+
+        Historical engines can traverse many seconds of event time in less than
+        one wall-clock millisecond.  ExecutionEnvelope.deadline_ms therefore
+        cannot be enforced by the repricing task's monotonic timer in Replay or
+        Backtest.  The runtime calls this before the broker sees each market
+        event so an entry can never fill on an event after its deadline.
+        """
+
+        at = event_time.astimezone(timezone.utc)
+        expired: list[_ManagedOrderGroup] = []
+        for group in tuple(self._groups.values()):
+            if str(group.intent.action) not in {
+                "enter_long",
+                "enter_short",
+                "add_long",
+                "add_short",
+            }:
+                continue
+            if (
+                group.state in TERMINAL_MANAGEMENT_STATES
+                or group.state == OrderManagementState.CANCEL_PENDING
+            ):
+                continue
+            deadline_ms = group.intent.resolved_execution_policy().envelope.deadline_ms
+            if deadline_ms <= 0:
+                continue
+            deadline = group.intent.event_time.astimezone(timezone.utc) + timedelta(
+                milliseconds=deadline_ms
+            )
+            if at < deadline or not _open_entry_roots(group):
+                continue
+            # Anchor all cancellation records and the terminal transition to
+            # the causal event that crossed the deadline.  Runtime normally
+            # has an equally fresh quote snapshot, but the deadline contract
+            # must remain correct even when invoked without one.
+            group.updated_at = max(group.updated_at.astimezone(timezone.utc), at)
+            if await self._cancel_open_entry_roots(group, "execution_deadline"):
+                expired.append(group)
+        if expired:
+            await self.reconcile()
+        return tuple(group.snapshot(self.policy.version) for group in expired)
 
     async def configure_broker_session(self) -> None:
         suppress = getattr(self.broker, "suppress_order_replies", None)
@@ -1798,7 +1842,14 @@ class OrderManagementEngine:
                 group.reprice_count += 1
                 group.current_limit_price = requested_price
                 group.internal_reaction_ms = (perf_counter() - reaction_started) * 1_000
-        if group.remaining_quantity > 0 and execution_policy.name == ExecutionPolicyName.CANCEL_IF_NOT_FILLED:
+        if group.remaining_quantity > 0 and (
+            execution_policy.name == ExecutionPolicyName.CANCEL_IF_NOT_FILLED
+            or (
+                self.enforce_wall_clock_quote_freshness
+                and str(group.intent.action)
+                in {"enter_long", "enter_short", "add_long", "add_short"}
+            )
+        ):
             await self._cancel_open_entry_roots(group, "execution_deadline")
 
     async def _cancel_open_entry_roots(self, group: _ManagedOrderGroup, reason: str) -> bool:
@@ -1813,7 +1864,7 @@ class OrderManagementEngine:
                 "order_cancel_requested",
                 broker_order_id,
                 group.account_id,
-                datetime.now(timezone.utc),
+                self._causal_group_time(group.intent, previous=group.updated_at),
                 {"order_group_id": group.group_id, "reason": reason, "broker_response": response},
             )
         self._transition(group, OrderManagementState.CANCEL_PENDING, {"event": "adaptive_cancel_requested", "reason": reason})
@@ -2777,6 +2828,7 @@ class OrderManagementEngine:
             self.state_callback is not None
             and state in {
                 OrderManagementState.OUTCOME_UNKNOWN,
+                OrderManagementState.CANCELLED,
                 OrderManagementState.REJECTED,
                 OrderManagementState.POLICY_BLOCKED,
             }

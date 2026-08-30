@@ -3,7 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,7 +15,10 @@ from src.trading_runtime.ibkr_schema import (
     PortfolioPosition,
 )
 from src.trading_runtime.execution_policies import (
+    ExecutionEnvelope,
     ExecutionMarketSnapshot,
+    ExecutionPolicy,
+    ExecutionPolicyName,
     ProtectionProfile,
     ProtectionSlice,
     StopRule,
@@ -428,6 +431,54 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await broker.live_orders(), [])
             await manager.close()
             journal.close()
+
+    async def test_causal_entry_deadline_cancels_before_a_later_market_fill(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            broker = SimulatedBrokerAdapter(["DU1"], mode=TradingMode.BACKTEST)
+            manager, journal = await self._manager(
+                directory,
+                broker,
+                policy=BrokerCommunicationPolicy(),
+            )
+            try:
+                request = replace(
+                    intent(side_quote=(10.00, 10.02), quantity=10),
+                    reference_price=10.01,
+                    execution_policy=ExecutionPolicy(
+                        policy_id="test-urgent",
+                        name=ExecutionPolicyName.ADAPTIVE_URGENT,
+                        envelope=ExecutionEnvelope(
+                            maximum_buy_price=10.02,
+                            deadline_ms=750,
+                            maximum_reprices=4,
+                        ),
+                    ),
+                )
+                submitted = await manager.submit_intent(
+                    portfolio_approved(journal, request),
+                    account_id="DU1",
+                    event=None,
+                )
+                self.assertEqual(submitted.state, OrderManagementState.ACKNOWLEDGED)
+
+                expired = await manager.expire_entry_deadlines(
+                    NOW + timedelta(seconds=13)
+                )
+
+                self.assertEqual(len(expired), 1)
+                self.assertEqual(expired[0].state, OrderManagementState.CANCELLED)
+                orders = await broker.live_orders()
+                self.assertEqual(orders[0].order_status, OrderStatus.CANCELLED)
+                records = [
+                    row
+                    for row in journal.records("run-1")
+                    if row.entity_type == "order_cancel_requested"
+                ]
+                self.assertEqual(records[-1].payload["reason"], "execution_deadline")
+                self.assertEqual(records[-1].event_time, NOW + timedelta(seconds=13))
+            finally:
+                await manager.close()
+                journal.close()
 
     async def test_protection_replacement_cancels_children_before_parent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

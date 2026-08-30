@@ -33,7 +33,7 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 16
+STRATEGY_REVISION = 17
 
 RULE_COMPARATORS = {
     "above_by_bps",
@@ -1124,15 +1124,22 @@ def _unified_entry_trigger(
             "acceptance_hold_ms": acceptance_hold_ms,
         }
     state.pop("accepted_entry_resistance", None)
-    crossed = [
-        item
-        for item in usable
-        if previous_price is not None
-        and float(previous_price) <= item[0] * (1 + buffer_bps / 10_000)
-        and observation.price > item[0] * (1 + buffer_bps / 10_000)
-    ]
-    if crossed:
-        unified_boundary, level = max(crossed, key=lambda item: item[0])
+
+    # Arm one causal frontier and wait for price to clear that frontier.  A
+    # newly formed *closer* resistance may tighten the watched threshold, but a
+    # later higher band must not make the strategy chase price.  This is the
+    # event-driven equivalent of selecting the current swing high and entering
+    # on its next pass.
+    overhead = [item for item in usable if item[0] >= observation.price]
+    candidate_boundary, candidate_level = (
+        min(overhead, key=lambda item: item[0])
+        if overhead
+        else max(usable, key=lambda item: item[0])
+    )
+
+    def combined_frontier(
+        unified_boundary: float, level: dict[str, Any]
+    ) -> tuple[float, dict[str, Any]]:
         swing_boundary = (
             float(observation.swing_high)
             if bool(policy.get("require_swing_high_frontier", False))
@@ -1147,39 +1154,94 @@ def _unified_entry_trigger(
             and float(observation.structural_resistance_upper) > 0
             else 0.0
         )
-        boundary = max(
+        combined_boundary = max(
             unified_boundary,
             swing_boundary,
             active_resistance_boundary,
         )
-        level = {
+        return combined_boundary, {
             **dict(level),
             "unified_break_boundary": unified_boundary,
             "swing_high_boundary": swing_boundary or None,
             "active_resistance_boundary": active_resistance_boundary or None,
-            "combined_entry_boundary": boundary,
+            "combined_entry_boundary": combined_boundary,
         }
+
+    candidate_boundary, candidate_level = combined_frontier(
+        candidate_boundary, candidate_level
+    )
+    pending = state.get("pending_entry_resistance")
+    pending_boundary = (
+        _level_metric(dict(pending), "boundary")
+        if isinstance(pending, Mapping)
+        else 0.0
+    )
+    pending_level = (
+        dict(pending.get("level") or {})
+        if isinstance(pending, Mapping)
+        else {}
+    )
+    def level_ids(row: Mapping[str, Any] | None) -> set[str]:
+        if not isinstance(row, Mapping):
+            return set()
+        values = {
+            str(row.get("unified_level_id") or "").strip(),
+            *{
+                str(component.get("unified_level_id") or "").strip()
+                for component in row.get("component_levels") or ()
+                if isinstance(component, Mapping)
+            },
+        }
+        return {value for value in values if value}
+
+    last_entry_level = state.get("last_entry_resistance")
+    last_entry_ids = level_ids(last_entry_level)
+    fresh_reentry_frontier = bool(
+        last_entry_ids
+        and level_ids(pending_level) & last_entry_ids
+        and not level_ids(candidate_level) & last_entry_ids
+    )
+    frontier_changed = bool(
+        pending_boundary <= 0
+        or candidate_boundary < pending_boundary
+        or fresh_reentry_frontier
+    )
+    if frontier_changed:
+        boundary = candidate_boundary
+        level = candidate_level
+        armed_at = observation.observed_at.isoformat()
+    else:
+        boundary = pending_boundary
+        level = pending_level
+        armed_at = str(pending.get("armed_at") or observation.observed_at.isoformat())
+
+    threshold = boundary * (1 + buffer_bps / 10_000)
+    crossed = bool(
+        previous_price is not None
+        and float(previous_price) <= threshold
+        and observation.price > threshold
+    )
+    repeats_last_entry_level = bool(
+        level_ids(level) & last_entry_ids
+    )
+    already_above_new_frontier = bool(
+        frontier_changed
+        and observation.price > threshold
+        and not repeats_last_entry_level
+    )
+    passed = crossed or already_above_new_frontier
+    if passed:
         state["accepted_entry_resistance"] = {
             "boundary": boundary,
             "level": dict(level),
             "accepted_at": observation.observed_at.isoformat(),
         }
-    else:
-        overhead = [item for item in usable if item[0] >= observation.price]
-        boundary, level = (
-            min(overhead, key=lambda item: item[0])
-            if overhead
-            else max(usable, key=lambda item: item[0])
-        )
-    threshold = boundary * (1 + buffer_bps / 10_000)
-    passed = bool(crossed) and observation.price > threshold
-    if passed:
         state.pop("pending_entry_resistance", None)
     else:
         state["pending_entry_resistance"] = {
             "boundary": boundary,
             "level": dict(level),
-            "armed_at": observation.observed_at.isoformat(),
+            "armed_at": armed_at,
         }
     return {
         "passed": passed,
@@ -1345,8 +1407,9 @@ class LongMomentumStrategyEngine:
 
         # Structural acceptance is an event in the watched campaign, not a
         # side-effect of whichever confirmation gate happens to finish last.
-        # Observe and latch the fresh causal cross before liquidity, VWAP, and
-        # MACD can return early; later frames may enter while that acceptance
+        # Arm one causal frontier, allow only a newly observed closer frontier
+        # to tighten it, and latch its fresh cross before liquidity, VWAP, and
+        # MACD can return early. Later frames may enter while that acceptance
         # remains above the same boundary.
         unified_trigger: dict[str, Any] | None = None
         if bool(dict(parameters.get("structural_entry") or {}).get("enabled", False)):
@@ -2966,13 +3029,54 @@ class AssignedLongMomentumStrategy:
         aggregate_position_quantity: float | None = None,
     ) -> None:
         assignment_id = str(getattr(snapshot, "assignment_id", "") or "")
-        if not assignment_id or str(getattr(snapshot, "state", "")) != "filled":
+        snapshot_state = str(getattr(snapshot, "state", ""))
+        if not assignment_id or snapshot_state not in {"filled", "cancelled"}:
             return
         for key, assignment in self._assignments.items():
             if assignment.assignment_id != assignment_id:
                 continue
             state = dict(assignment.state)
             action = str(getattr(snapshot, "action", ""))
+            if snapshot_state == "cancelled" and action in {
+                "enter_long",
+                "enter_short",
+                "add_long",
+                "add_short",
+            }:
+                filled_quantity = float(getattr(snapshot, "filled_quantity", 0.0) or 0.0)
+                if filled_quantity > 0 or float(aggregate_position_quantity or 0.0) != 0:
+                    status = AssignmentStatus.MANAGING
+                else:
+                    for field_name in (
+                        "entry_reference_price",
+                        "entry_at",
+                        "initial_stop",
+                        "active_stop",
+                        "high_water_price",
+                        "low_water_price",
+                        "structural_profit_targets",
+                    ):
+                        state.pop(field_name, None)
+                    state["entries"] = max(0, int(state.get("entries") or 0) - 1)
+                    state["last_entry_order_cancelled"] = {
+                        "intent_id": str(getattr(snapshot, "intent_id", "") or ""),
+                        "cancelled_at": getattr(snapshot, "updated_at").isoformat(),
+                        "reason": "execution_deadline",
+                    }
+                    status = (
+                        AssignmentStatus.REENTRY_COOLDOWN
+                        if int(state.get("reentries") or 0) > 0
+                        else AssignmentStatus.WATCHING
+                    )
+                updated = replace(
+                    assignment,
+                    status=status,
+                    state=state,
+                    updated_at=getattr(snapshot, "updated_at"),
+                )
+                self._assignments[key] = updated
+                self._campaigns.register(updated)
+                return
             if action in {"enter_long", "add_long", "enter_short", "add_short"}:
                 if state.get("target_replenishment_pending"):
                     state["target_replenishment_pending"] = False

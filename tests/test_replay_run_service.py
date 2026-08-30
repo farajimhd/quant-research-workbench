@@ -443,7 +443,10 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                 {
                     "kind": "trade",
                     "ticker": "AAPL",
-                    "ts": "2026-07-28T09:45:02-04:00",
+                    # The marketable entry is submitted by the 09:45:01
+                    # strategy frame with a 750 ms causal execution deadline.
+                    # Keep the representative fill inside that contract.
+                    "ts": "2026-07-28T09:45:01.500-04:00",
                     "sequence": 2,
                     "price": 101.0,
                     "size": 1_000,

@@ -440,7 +440,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(entered.evaluation.signals[0].action, "enter_long")
         self.assertEqual(entered.state["breakout_level"], 100.7)
 
-    def test_unified_entry_replaces_stale_armed_level_when_book_advances(self) -> None:
+    def test_unified_entry_does_not_chase_a_higher_level_after_arming(self) -> None:
         parameters = default_long_momentum_parameters()
         parameters["structural_entry"].update({"enabled": True})
         engine = LongMomentumStrategyEngine()
@@ -478,13 +478,46 @@ class LongMomentumStrategyTests(unittest.TestCase):
                 },),
             ),
         )
-        self.assertEqual(
-            entered.evaluation.signals[0].reason,
-            "waiting_for_unified_resistance_break",
+        self.assertEqual(entered.evaluation.signals[0].action, "enter_long")
+        self.assertEqual(entered.state["breakout_level"], 100.5)
+
+    def test_unified_entry_can_tighten_to_a_new_closer_level(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["structural_entry"].update({"enabled": True})
+        engine = LongMomentumStrategyEngine()
+        armed = engine.evaluate(
+            assignment(parameters=parameters),
+            confirmed_observation(
+                price=100.45,
+                structural_resistance_levels=({
+                    "unified_level_id": 1,
+                    "side": -1,
+                    "upper": 101.0,
+                    "salience": 0.9,
+                    "confidence": 0.9,
+                    "reaction_probability": 0.9,
+                },),
+            ),
         )
-        self.assertEqual(
-            entered.state["pending_entry_resistance"]["boundary"], 101.0
+
+        entered = engine.evaluate(
+            assignment(parameters=parameters, state=dict(armed.state)),
+            confirmed_observation(
+                observed_at=NOW + timedelta(seconds=1),
+                price=100.6,
+                structural_resistance_levels=({
+                    "unified_level_id": 2,
+                    "side": -1,
+                    "upper": 100.5,
+                    "salience": 0.9,
+                    "confidence": 0.9,
+                    "reaction_probability": 0.9,
+                },),
+            ),
         )
+
+        self.assertEqual(entered.evaluation.signals[0].action, "enter_long")
+        self.assertEqual(entered.state["breakout_level"], 100.5)
 
     def test_unified_entry_holds_a_broken_level_briefly_after_the_book_advances(self) -> None:
         parameters = default_long_momentum_parameters()
@@ -658,7 +691,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
         )
         self.assertEqual(armed.evaluation.signals[0].action, "wait")
         self.assertEqual(
-            armed.state["accepted_entry_resistance"]["boundary"], 3.60
+            armed.state["pending_entry_resistance"]["boundary"], 3.60
         )
 
         entered = engine.evaluate(
@@ -706,7 +739,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
         )
         self.assertEqual(armed.evaluation.signals[0].action, "wait")
         self.assertEqual(
-            armed.state["accepted_entry_resistance"]["boundary"], 3.59
+            armed.state["pending_entry_resistance"]["boundary"], 3.59
         )
 
         entered = engine.evaluate(
@@ -2543,6 +2576,42 @@ class LongMomentumRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             updated.state["last_intent_rejection"]["reasons"],
             ["too_many_protection_slices"],
+        )
+
+    async def test_unfilled_entry_deadline_returns_campaign_to_watching(self) -> None:
+        assigned = assignment(
+            status=AssignmentStatus.ENTRY_PENDING,
+            state={
+                "entries": 1,
+                "entry_at": NOW.isoformat(),
+                "entry_reference_price": 101.0,
+                "initial_stop": 99.0,
+                "active_stop": 99.0,
+                "structural_profit_targets": [103.0],
+            },
+        )
+        strategy = AssignedLongMomentumStrategy([assigned])
+
+        await strategy.on_order_group_update(
+            SimpleNamespace(
+                action="enter_long",
+                assignment_id=assigned.assignment_id,
+                filled_quantity=0,
+                intent_id="stale-entry",
+                state="cancelled",
+                updated_at=NOW + timedelta(seconds=1),
+            ),
+            aggregate_position_quantity=0,
+        )
+
+        updated = strategy.assignments()[0]
+        self.assertEqual(updated.status, AssignmentStatus.WATCHING)
+        self.assertEqual(updated.state["entries"], 0)
+        self.assertNotIn("entry_at", updated.state)
+        self.assertNotIn("active_stop", updated.state)
+        self.assertEqual(
+            updated.state["last_entry_order_cancelled"]["reason"],
+            "execution_deadline",
         )
 
     async def test_shared_runtime_records_intent_and_submits_protected_order_group(self) -> None:
