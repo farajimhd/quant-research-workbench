@@ -2,7 +2,7 @@
 
 ## Boundary
 
-`long-momentum-campaign@2` is the current post-refactor automatic strategy. It is
+`long-momentum-campaign@9` is the current post-refactor automatic strategy. It is
 long only and deterministic. It consumes normalized causal observations; it
 does not calculate a second copy of QMD, Generic Structure, VWAP, MACD, news,
 or market signals.
@@ -21,11 +21,13 @@ owns IBKR-shaped order placement/modification and broker-command recovery. QMD o
 reusable market observations. Canvas owns presentation and semantic assignment
 commands, never trading decisions or broker commands.
 
-Revision 1 remains immutable historical evidence. Revision 2 introduces the
-explicit `patient`, `regular`, `urgent`, and `very_urgent` execution parameters,
-full-position protected profit-pocket modification, and the order-management
-feedback contract. New assignments use revision 2; revision 1 assignments are
-not silently reinterpreted as revision 2.
+Earlier revisions remain immutable historical evidence. Revision 9 requires an
+Early Squeeze Move campaign, absolute liquidity and volume attraction, price
+above VWAP, a causal 1-second swing-high break, and a positive/open 1-second
+MACD: line above signal, line above zero, signal above zero, and positive
+histogram. It also separates below-entry loss handling from profitable-position
+management and permits a new causally confirmed entry after the prior episode is
+flat. Older assignments are never silently reinterpreted as revision 9.
 
 ## Runtime objects
 
@@ -49,7 +51,7 @@ weight, and optional score/confidence threshold. The initial definition uses:
 
 - closed 100 ms QMD flow/structure composite evidence;
 - 1-second causal Generic Structure;
-- 5-second VWAP and MACD confirmation;
+- 1-second VWAP and MACD confirmation;
 - scored price/volume expansion, VWAP transition, divergence, dislocation, and
   company-news events.
 
@@ -60,7 +62,8 @@ to its parameter space and are never passed unresolved to live execution.
 
 ## Order behavior
 
-An entry intent becomes one parent order plus broker-held protective children:
+An entry intent is split into integer-sized structural-target slices. Each
+slice has one parent plus broker-held protective children:
 
 - a profit-taking limit when a valid target exists;
 - a hard structural/volatility stop;
@@ -71,16 +74,20 @@ The parent alone carries `cOID`; each child refers to that value through
 `parentId`. Internal strategy metadata stays in the journal and is never sent
 as an IB Algo `strategy` field or an unknown CPAPI request field.
 
-Adds receive their own protected bracket. Revision 2 profit pockets close the
-full campaign episode by modifying its existing target child to the selected
-bounded execution tactic, preserving its stop/trailing siblings without an
-unprotected cancel-replace interval. It deliberately does not expose an unsafe
-partial scale-out that could leave the remaining position with stale
-protective quantities. If no reusable target exists, order management submits
-the planner's standalone protected exit group. Re-entry is evaluated only
-after the prior exit fill is broker-confirmed. The LULD target is enabled only
-when an authoritative current upper band is available and above price; it is
-not a guarantee of execution before a pause.
+Profit-target fills reduce one named slice and leave the other slices protected.
+A full strategy exit reprices every remaining target child without expanding a
+single child beyond its slice; the corresponding stop remains its OCA sibling.
+Protection reconciliation is campaign-local: it counts only causally processed,
+still-open entry quantity, including committed inactive bracket children, and a
+completed campaign cannot adopt a later re-entry position. Re-entry is evaluated
+only after the prior episode is broker-confirmed flat and fresh VWAP, positive
+MACD, liquidity, and swing-high-break evidence passes.
+
+While price is below the episode entry, the first available loss authority wins:
+the broker-held protective stop, bearish CHOCH, closed 1-second MACD, or price
+below VWAP. Above entry, the structural target ladder and profitable-position
+management remain authoritative; MACD closure is a later fallback rather than a
+loss-path delay.
 
 Execution tactics, warning policy, shortability gates, latency measurement,
 failure handling, and paper/live deployment gates are documented in

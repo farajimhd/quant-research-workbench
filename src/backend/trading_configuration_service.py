@@ -2903,8 +2903,8 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
         ),
         _watchlist_rule(
             "strategy-squeeze-macd-open-1s",
-            "One-second MACD open",
-            "Requires the causal one-second MACD line to be above its signal line with a positive histogram.",
+            "Positive one-second MACD open",
+            "Requires the causal one-second MACD line to be above its signal line, with both lines and the histogram above zero.",
             [
                 {
                     **_watchlist_condition(
@@ -2917,6 +2917,20 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
                     "right_source_id": "indicator.macd.signal",
                     "right_interval": normalize_interval_spec("1s"),
                 },
+                _watchlist_condition(
+                    "squeeze-macd-line-positive",
+                    "indicator.macd.line",
+                    "greater_than",
+                    0.0,
+                    interval="1s",
+                ),
+                _watchlist_condition(
+                    "squeeze-macd-signal-positive",
+                    "indicator.macd.signal",
+                    "greater_than",
+                    0.0,
+                    interval="1s",
+                ),
                 _watchlist_condition(
                     "squeeze-macd-positive-histogram",
                     "indicator.macd.histogram",
@@ -3946,7 +3960,10 @@ def _default_draft() -> dict[str, Any]:
         "protection_profile"
     ] = "structural-five-tranche"
     squeeze_lifecycle["reentry"]["cooldown_ms"] = 5_000
-    squeeze_lifecycle["reentry"]["require_new_signal_stream_id"] = "price-squeeze-early"
+    # The original Early Squeeze occurrence owns the campaign. A re-entry in
+    # that same episode needs fresh post-exit market evidence, not a duplicate
+    # scanner occurrence that may never be emitted during continuation.
+    squeeze_lifecycle["reentry"]["require_new_signal_stream_id"] = ""
     squeeze_lifecycle["reentry"]["after_protective_exit"] = True
     squeeze_lifecycle["reentry"]["rules"] = {
         "opportunity": deepcopy(squeeze_lifecycle["initial_entry"]["opportunity"]),
@@ -3959,6 +3976,13 @@ def _default_draft() -> dict[str, Any]:
     for legacy_exit in squeeze_lifecycle["exit"]["rule_sets"]:
         legacy_exit["enabled"] = False
     system_profiles[0]["parameters"]["momentum_management"] = {
+        "downside_loss_guard": {
+            "enabled": True,
+            "timeframe": "1s",
+            "bearish_choch": True,
+            "macd_closed": True,
+            "below_vwap": True,
+        },
         "failure_to_extend": {
             "enabled": True,
             "minimum_gain_pct": 0.75,

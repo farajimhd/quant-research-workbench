@@ -279,6 +279,7 @@ class RuntimeIbkrStrategyOrderPlanner:
                     "canonical_metadata": {
                         **dict(intent.metadata),
                         "action": intent.action,
+                        "execution_role": _planned_execution_role(order, intent.action),
                         "reason": intent.reason,
                         "signal_price": intent.reference_price,
                     },
@@ -300,6 +301,23 @@ class RuntimeIbkrStrategyOrderPlanner:
 
     def protective_order_prefix(self) -> str:
         return f"{self.strategy_id[:14]}-v{self.strategy_revision}-"
+
+
+def _planned_execution_role(order: OrderRequest, intent_action: str) -> str:
+    if not order.parentId:
+        return (
+            "entry"
+            if intent_action in {"enter_long", "enter_short", "add_long", "add_short"}
+            else "managed_exit"
+        )
+    order_type = order.orderType.upper()
+    if order_type == "LMT":
+        return "profit_target"
+    if order_type in {"STP", "STOP_LIMIT"}:
+        return "protective_stop"
+    if order_type in {"TRAIL", "TRAILLMT"}:
+        return "trailing_stop"
+    return "protective_exit"
 
 
 def _order(

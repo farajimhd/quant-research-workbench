@@ -71,7 +71,10 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert '"Long" : "Short"' not in chart_source
     assert '"Short" : "Long"' in chart_source
     assert "actions.slice(1, -1)" in chart_source
-    assert 'kind === "add" ? "Add" : "Trim"' in chart_source
+    assert 'profit_target: "Target filled"' in chart_source
+    assert '"Trim"' not in chart_source
+    assert 'execution_role' in chart_source
+    assert '`${role}:${action.side}:${second}:${priceTick}`' in chart_source
     assert "closedTradeAnnotations" not in chart_source
     assert "class TradeAnnotationPrimitive implements ISeriesPrimitive<Time>" in renderer_source
     assert "candleSeries.attachPrimitive(tradeAnnotationPrimitive)" in renderer_source

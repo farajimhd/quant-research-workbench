@@ -76,7 +76,7 @@ const rendererDataCache = new WeakMap<object, RendererDataCache>();
 type Region = { start: number; end: number; color: string; label: string };
 type TradeLabelPart = { text: string; tone?: "label" | "price" | "pnlLoss" | "pnlWin" | "reason" | "separator" | "size" };
 type TradeFillAnnotation = {
-  kind?: "add" | "trim";
+  kind?: "add" | "profit_target" | "protective_stop" | "trailing_stop" | "position_exit";
   label?: string;
   labelParts?: TradeLabelPart[];
   price: number;
@@ -5979,7 +5979,13 @@ function drawCanvasPositionAdjustment(
   context.fill();
   drawCanvasTradeLabel(
     context,
-    compactTradeLabel(fill.labelParts, fill.label, fill.kind === "trim" ? "Trim" : "Add"),
+    compactTradeLabel(fill.labelParts, fill.label, {
+      add: "Add",
+      profit_target: "Target",
+      protective_stop: "Stop",
+      trailing_stop: "Trail",
+      position_exit: "Exit",
+    }[fill.kind ?? "position_exit"]),
     x - 45,
     y - 8,
     color,

@@ -344,10 +344,13 @@ function positionLifecycleAnnotations(trading: CanonicalTradingPreview | undefin
     const pnl = Number(row.net_pnl || row.gross_pnl || 0);
     const openingSide = side === "SHORT" ? "SELL" : "BUY";
     const fills = actions.slice(1, -1).map((action) => {
-      const kind = action.side === openingSide ? "add" as const : "trim" as const;
+      const kind = action.side === openingSide
+        ? "add" as const
+        : normalizedExecutionRole(action.executionRole, action.price, entryPrice, side);
+      const label = positionActionLabel(kind, action.quantity, action.price);
       return {
         kind,
-        label: `${kind === "add" ? "Add" : "Trim"} ${formatQuantity(action.quantity)} @ ${action.price.toFixed(2)}`,
+        label,
         price: action.price,
         quantity: action.quantity,
         side: action.side,
@@ -355,7 +358,12 @@ function positionLifecycleAnnotations(trading: CanonicalTradingPreview | undefin
       };
     });
     const entryQuantity = entryAction?.quantity ?? quantity;
-    const exitQuantity = exitAction?.quantity ?? quantity;
+    const exitQuantity = actions
+      .filter((action) => action.side !== openingSide)
+      .reduce((total, action) => total + action.quantity, 0) || exitAction?.quantity || quantity;
+    const exitKind = exitAction
+      ? normalizedExecutionRole(exitAction.executionRole, exitAction.price, entryPrice, side)
+      : "position_exit";
     return [{
       color: pnl >= 0 ? "var(--success)" : "var(--danger)",
       entryColor: side === "SHORT" ? "#dc2626" : "#16a34a",
@@ -363,7 +371,7 @@ function positionLifecycleAnnotations(trading: CanonicalTradingPreview | undefin
       entryPrice,
       entryTime,
       exitColor: side === "SHORT" ? "#16a34a" : "#dc2626",
-      exitLabel: `Exit ${formatQuantity(exitQuantity)} @ ${exitPrice.toFixed(2)} · ${signedMoneyShort(pnl)}`,
+      exitLabel: `${exitKind === "profit_target" ? "Targets complete" : "Exit"} ${formatQuantity(exitQuantity)} @ ${exitPrice.toFixed(2)} · ${signedMoneyShort(pnl)}`,
       exitPrice,
       exitTime,
       fills,
@@ -373,7 +381,8 @@ function positionLifecycleAnnotations(trading: CanonicalTradingPreview | undefin
   });
 }
 
-type PositionExecutionAction = { orderId: string; price: number; quantity: number; side: "BUY" | "SELL"; time: number };
+type PositionExecutionRole = "entry" | "managed_exit" | "profit_target" | "protective_stop" | "trailing_stop" | "protective_exit" | "";
+type PositionExecutionAction = { executionRole: PositionExecutionRole; orderId: string; price: number; quantity: number; side: "BUY" | "SELL"; time: number };
 
 function positionExecutionActions(executions: PreviewRow[], positionSide: string): PositionExecutionAction[] {
   type Aggregate = PositionExecutionAction & { notional: number };
@@ -385,9 +394,12 @@ function positionExecutionActions(executions: PreviewRow[], positionSide: string
     const price = Number(row.price || 0);
     const time = Date.parse(String(row.source_event_time || "")) / 1000;
     if (!side || !Number.isFinite(quantity) || !Number.isFinite(price) || !Number.isFinite(time) || quantity <= 0 || price <= 0) return;
-    const orderId = String(row.broker_order_id || row.client_order_id || row.execution_id || `fill:${index}`);
+    const clientOrderId = String(row.client_order_id || nestedValue(row, "raw", "order_ref") || "");
+    const persistedRole = String(nestedValue(row, "raw", "canonical_metadata", "execution_role") || "") as PositionExecutionRole;
+    const executionRole: PositionExecutionRole = persistedRole || (clientOrderId.includes("-entry") ? "entry" : "");
+    const orderId = String(row.broker_order_id || clientOrderId || row.execution_id || `fill:${index}`);
     const key = `${orderId}:${side}`;
-    const current = byOrderAndSide.get(key) ?? { orderId, time, notional: 0, price: 0, quantity: 0, side };
+    const current = byOrderAndSide.get(key) ?? { executionRole, orderId, time, notional: 0, price: 0, quantity: 0, side };
     current.time = Math.max(current.time, time);
     current.notional += quantity * price;
     current.quantity += quantity;
@@ -395,9 +407,48 @@ function positionExecutionActions(executions: PreviewRow[], positionSide: string
     byOrderAndSide.set(key, current);
   });
   const openingSide = positionSide === "SHORT" ? "SELL" : "BUY";
-  return [...byOrderAndSide.values()]
+  const byLevel = new Map<string, Aggregate>();
+  [...byOrderAndSide.values()].forEach((action) => {
+    const second = Math.floor(action.time);
+    const priceTick = action.price.toFixed(2);
+    const role = action.executionRole || (action.side === openingSide ? "entry" : "");
+    const key = `${role}:${action.side}:${second}:${priceTick}`;
+    const current = byLevel.get(key) ?? { ...action, executionRole: role as PositionExecutionRole, notional: 0, quantity: 0 };
+    current.time = Math.max(current.time, action.time);
+    current.notional += action.notional;
+    current.quantity += action.quantity;
+    current.price = current.notional / current.quantity;
+    byLevel.set(key, current);
+  });
+  return [...byLevel.values()]
     .sort((left, right) => left.time - right.time || Number(right.side === openingSide) - Number(left.side === openingSide))
     .map(({ notional: _notional, ...action }) => action);
+}
+
+function normalizedExecutionRole(
+  role: PositionExecutionRole,
+  price: number,
+  entryPrice: number,
+  positionSide: string,
+): "profit_target" | "protective_stop" | "trailing_stop" | "position_exit" {
+  if (role === "profit_target" || role === "protective_stop" || role === "trailing_stop") return role;
+  const favorable = positionSide === "SHORT" ? price < entryPrice : price > entryPrice;
+  return favorable ? "profit_target" : "position_exit";
+}
+
+function positionActionLabel(
+  kind: "add" | "profit_target" | "protective_stop" | "trailing_stop" | "position_exit",
+  quantity: number,
+  price: number,
+): string {
+  const name = {
+    add: "Add",
+    profit_target: "Target filled",
+    protective_stop: "Stop filled",
+    trailing_stop: "Trail filled",
+    position_exit: "Exit filled",
+  }[kind];
+  return `${name} ${formatQuantity(quantity)} @ ${price.toFixed(2)}`;
 }
 
 function signedMoneyShort(value: number): string {

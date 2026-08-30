@@ -1275,7 +1275,26 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertEqual(
             lifecycle["reentry"]["require_new_signal_stream_id"],
-            "price-squeeze-early",
+            "",
+        )
+        macd_rule = next(
+            row
+            for row in draft["market_discovery"]["rule_sets"]
+            if row["rule_set_id"] == "strategy-squeeze-macd-open-1s"
+        )
+        self.assertEqual(
+            {row["condition_id"] for row in macd_rule["conditions"]},
+            {
+                "squeeze-macd-line-above-signal",
+                "squeeze-macd-line-positive",
+                "squeeze-macd-signal-positive",
+                "squeeze-macd-positive-histogram",
+            },
+        )
+        self.assertTrue(
+            default_profile["parameters"]["momentum_management"][
+                "downside_loss_guard"
+            ]["enabled"]
         )
         self.assertTrue(lifecycle["reentry"]["after_protective_exit"])
         self.assertTrue(

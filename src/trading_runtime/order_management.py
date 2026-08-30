@@ -190,6 +190,7 @@ class OrderGroupSnapshot:
     internal_reaction_ms: float | None = None
     protection_required_quantity: float = 0.0
     protection_coverage_quantity: float = 0.0
+    protection_delegated: bool = False
     high_water_price: float = 0.0
     low_water_price: float = 0.0
     protection_task: asyncio.Task[None] | None = None
@@ -228,6 +229,7 @@ class _ManagedOrderGroup:
     low_water_price: float = 0.0
     protection_required_quantity: float = 0.0
     protection_coverage_quantity: float = 0.0
+    protection_delegated: bool = False
 
     def snapshot(
         self,
@@ -274,6 +276,7 @@ class _ManagedOrderGroup:
             internal_reaction_ms=self.internal_reaction_ms,
             protection_required_quantity=self.protection_required_quantity,
             protection_coverage_quantity=self.protection_coverage_quantity,
+            protection_delegated=self.protection_delegated,
         )
 
 
@@ -469,6 +472,7 @@ class OrderManagementEngine:
                 protection_coverage_quantity=float(
                     payload.get("protection_coverage_quantity") or 0
                 ),
+                protection_delegated=bool(payload.get("protection_delegated")),
             )
             self._groups[group_id] = group
             for request in group.orders:
@@ -1132,8 +1136,145 @@ class OrderManagementEngine:
             and str(group.intent.action) in {"enter_long", "enter_short", "add_long", "add_short"}
             and group.broker_order_ids
         ]
+        desired_side = _intent_side(intent)
+        live_by_id = {
+            str(order.orderId): order
+            for order in await self.broker.live_orders()
+            if order.order_status in OPEN_ORDER_STATUSES
+        }
+        sliced_targets: list[
+            tuple[_ManagedOrderGroup, str, int, OrderRequest, LiveOrder]
+        ] = []
+        for protected in candidates:
+            for broker_order_id in protected.broker_order_ids:
+                if protected.broker_order_roles.get(broker_order_id) != "profit_target":
+                    continue
+                live = live_by_id.get(str(broker_order_id))
+                request_index = protected.broker_order_request_indexes.get(
+                    str(broker_order_id)
+                )
+                if live is None or request_index is None:
+                    continue
+                request = protected.orders[request_index]
+                if (
+                    request.orderType.upper() == "LMT"
+                    and request.side.upper() == desired_side
+                ):
+                    sliced_targets.append(
+                        (
+                            protected,
+                            str(broker_order_id),
+                            request_index,
+                            request,
+                            live,
+                        )
+                    )
+        sliced_capacity = sum(
+            float(live.remainingQuantity)
+            for _, _, _, _, live in sliced_targets
+        )
+        if len(sliced_targets) > 1 and math.isclose(
+            sliced_capacity,
+            float(intent.quantity),
+            rel_tol=0.0,
+            abs_tol=1e-6,
+        ):
+            initial_price = (
+                tactic.steps[0].price
+                if tactic
+                else float(plan.orders[0].price or intent.reference_price)
+            )
+            replacements: list[OrderRequest] = []
+            broker_order_ids: list[str] = []
+            source_groups: dict[str, _ManagedOrderGroup] = {}
+            responses: list[dict[str, Any]] = []
+            started = perf_counter()
+            async with self._command_lane(account_id):
+                for protected, broker_order_id, request_index, request, _ in sliced_targets:
+                    canonical_metadata = {
+                        **dict(request.raw.get("canonical_metadata") or {}),
+                        "execution_role": "managed_exit",
+                        "reason": str(intent.metadata.get("reason_code") or "strategy_exit"),
+                    }
+                    replacement = replace(
+                        request,
+                        price=initial_price,
+                        raw={
+                            **dict(request.raw or {}),
+                            "canonical_metadata": canonical_metadata,
+                        },
+                    )
+                    response = await self.broker.modify_order(
+                        account_id,
+                        broker_order_id,
+                        replacement,
+                    )
+                    responses.extend(response)
+                    protected.orders[request_index] = replacement
+                    replacements.append(replacement)
+                    broker_order_ids.append(broker_order_id)
+                    source_groups[protected.group_id] = protected
+            now = self._causal_group_time(intent)
+            group = _ManagedOrderGroup(
+                group_id=str(uuid4()),
+                intent=intent,
+                account_id=account_id,
+                plan=StrategyOrderPlan(tuple(replacements)),
+                state=OrderManagementState.SUBMITTING,
+                created_at=now,
+                updated_at=now,
+                orders=replacements,
+                tactic=tactic,
+                broker_order_ids=broker_order_ids,
+                broker_order_roles={
+                    broker_order_id: "managed_exit"
+                    for broker_order_id in broker_order_ids
+                },
+                broker_order_request_indexes={
+                    broker_order_id: index
+                    for index, broker_order_id in enumerate(broker_order_ids)
+                },
+                remaining_quantity=float(intent.quantity),
+                current_limit_price=initial_price,
+            )
+            group.decision_to_submit_ms = (perf_counter() - started) * 1000.0
+            group.submitted_at = datetime.now(timezone.utc)
+            self._groups[group.group_id] = group
+            for broker_order_id in broker_order_ids:
+                self._group_by_broker_id[broker_order_id] = group.group_id
+            for protected in source_groups.values():
+                protected.protection_delegated = True
+                self._transition(
+                    protected,
+                    protected.state,
+                    {
+                        "event": "protection_delegated_to_sliced_managed_exit",
+                        "managed_exit_group_id": group.group_id,
+                    },
+                )
+            self._record(
+                "broker",
+                "protected_sliced_exit_modified",
+                group.group_id,
+                account_id,
+                intent.event_time,
+                {
+                    "order_group_id": group.group_id,
+                    "price": initial_price,
+                    "quantity": intent.quantity,
+                    "broker_order_ids": broker_order_ids,
+                    "preserved_slice_protection": True,
+                    "broker_response": responses,
+                    "decision_to_submit_ms": group.decision_to_submit_ms,
+                },
+            )
+            self._transition(
+                group,
+                OrderManagementState.ACKNOWLEDGED,
+                {"event": "protected_sliced_exit_acknowledged"},
+            )
+            return group.snapshot(self.policy.version)
         for protected in reversed(candidates):
-            desired_side = _intent_side(intent)
             target_index = next(
                 (
                     index
@@ -1550,6 +1691,13 @@ class OrderManagementEngine:
         return snapshot
 
     async def reconcile_protection(self, group: _ManagedOrderGroup) -> dict[str, Any]:
+        if group.protection_delegated:
+            return {
+                "required_quantity": 0.0,
+                "protected_quantity": 0.0,
+                "actions": [],
+                "status": "delegated_to_managed_exit",
+            }
         positions = await self.broker.positions(group.account_id)
         position = next(
             (
@@ -1561,19 +1709,60 @@ class OrderManagementEngine:
             None,
         )
         position_quantity = float(position.position) if position is not None else 0.0
-        required = abs(position_quantity)
+        initial_entry_group = str(group.intent.action) in {"enter_long", "enter_short"}
+        group_exit_quantity = sum(
+            quantity
+            for order_id, quantity in group.filled_by_broker_order.items()
+            if group.broker_order_roles.get(order_id)
+            in {"profit_target", "protective_stop", "trailing_stop"}
+        )
+        group_open_quantity = max(
+            0.0,
+            float(group.filled_quantity) - group_exit_quantity,
+        )
+        # Broker position snapshots can already contain fills whose order-state
+        # messages have not yet been consumed. During a sliced entry, reconcile
+        # only this group's causally processed, still-open quantity. Otherwise
+        # the first slice can protect future fills, or a completed campaign can
+        # mistake a later re-entry position for its own and create a stale stop.
+        required = (
+            min(abs(position_quantity), group_open_quantity)
+            if initial_entry_group
+            else abs(position_quantity)
+        )
         live_orders = await self.broker.live_orders()
+        processed_entry_parent_quantities = {
+            group.orders[request_index].cOID: float(filled)
+            for broker_order_id, filled in group.filled_by_broker_order.items()
+            if filled > 0
+            and group.broker_order_roles.get(broker_order_id) == "entry"
+            and (request_index := group.broker_order_request_indexes.get(broker_order_id))
+            is not None
+            and group.orders[request_index].cOID
+        }
+        owned_broker_order_ids = set(group.broker_order_ids)
         protective = [
             order
             for order in live_orders
             if order.account == group.account_id
             and order.ticker.upper() == group.intent.ticker.upper()
             and order.order_status in OPEN_ORDER_STATUSES
-            and order.order_status != OrderStatus.INACTIVE
+            and (
+                initial_entry_group
+                or order.order_status != OrderStatus.INACTIVE
+            )
             and order.orderType.upper() in {"STP", "STOP_LIMIT", "TRAIL", "TRAILLMT"}
             and (
                 str(order.parentId or "").startswith(self._protective_order_prefix())
                 or str(order.cOID or "").startswith(self._protective_order_prefix())
+            )
+            and (
+                not initial_entry_group
+                or str(order.parentId or "") in processed_entry_parent_quantities
+                or (
+                    "repair-" in str(order.cOID or "")
+                    and str(order.orderId) in owned_broker_order_ids
+                )
             )
         ]
         by_protection_group: dict[str, float] = {}
@@ -1581,9 +1770,21 @@ class OrderManagementEngine:
         for order in protective:
             key = _protection_group_key(order)
             protection_groups.setdefault(key, []).append(order)
+            effective_remaining = float(order.remainingQuantity)
+            if initial_entry_group and str(order.parentId or ""):
+                # An attached child is committed broker protection even while
+                # held inactive for a partially filled parent. Count only the
+                # causally processed parent fill, never the future slice size.
+                effective_remaining = min(
+                    effective_remaining,
+                    processed_entry_parent_quantities.get(
+                        str(order.parentId),
+                        0.0,
+                    ),
+                )
             by_protection_group[key] = max(
                 by_protection_group.get(key, 0.0),
-                float(order.remainingQuantity),
+                effective_remaining,
             )
         coverage = sum(by_protection_group.values())
         tolerance = 1e-9
@@ -2291,6 +2492,7 @@ class OrderManagementEngine:
                 "current_limit_price": group.current_limit_price,
                 "protection_required_quantity": group.protection_required_quantity,
                 "protection_coverage_quantity": group.protection_coverage_quantity,
+                "protection_delegated": group.protection_delegated,
             },
         )
         if (

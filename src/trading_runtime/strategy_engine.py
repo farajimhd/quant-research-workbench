@@ -32,7 +32,7 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 8
+STRATEGY_REVISION = 9
 
 RULE_COMPARATORS = {
     "above_by_bps",
@@ -52,6 +52,7 @@ STRATEGY_INPUT_SUMMARIES = {
     "indicator.structure.swing_high": "The latest QMD-confirmed structural high for the selected timeframe, used as resistance and breakout evidence.",
     "indicator.structure.swing_low": "The latest QMD-confirmed structural low for the selected timeframe, used as support and invalidation evidence.",
     "indicator.structure.bullish_choch": "A QMD structure event that becomes true when price action confirms a bullish change of character on the selected timeframe.",
+    "indicator.structure.bearish_choch": "A QMD structure event that becomes true when price action confirms a bearish change of character on the selected timeframe.",
     "indicator.vwap.value": "The selected timeframe's volume-weighted average price, used to judge whether trading occurs above, below, or through accepted value.",
     "indicator.vwap.slope": "The rate and direction of VWAP movement in basis points per second, used to distinguish rising, flat, and falling value.",
     "indicator.flow_structure.score": "QMD's signed composite of directional order flow and market structure, used to rank bullish versus bearish alignment.",
@@ -80,6 +81,7 @@ def strategy_input_catalog() -> list[dict[str, Any]]:
         _input("indicator.structure.swing_high", "Confirmed swing high", "QMD indicator", "qmd", "swing_high", "price", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"]),
         _input("indicator.structure.swing_low", "Confirmed swing low", "QMD indicator", "qmd", "swing_low", "price", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"]),
         _input("indicator.structure.bullish_choch", "Bullish change of character", "QMD indicator", "qmd", "bullish_choch", "boolean", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"]),
+        _input("indicator.structure.bearish_choch", "Bearish change of character", "QMD indicator", "qmd", "bearish_choch", "boolean", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"]),
         _input("indicator.vwap.value", "VWAP", "QMD indicator", "qmd", "vwap", "price", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"], parameter="value"),
         _input("indicator.vwap.slope", "VWAP slope", "QMD indicator", "qmd", "vwap_slope_bps_per_second", "bps_per_second", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"], parameter="slope_bps_per_second"),
         _input("indicator.flow_structure.score", "Flow-structure score", "QMD indicator", "qmd", "qmd_score", "score", ["100ms"], parameter="score"),
@@ -144,6 +146,8 @@ def default_entry_decision_rules(parameters: dict[str, Any] | None = None) -> di
                 ]),
                 _rule_group("macd-confirmation", "MACD confirms momentum", "all", [
                     _condition("macd-line-over-signal", "indicator.macd.line", "5s", "greater_or_equal", right_source_id="indicator.macd.signal", right_timeframe="5s"),
+                    _condition("macd-line-positive", "indicator.macd.line", "5s", "greater_than", value=0),
+                    _condition("macd-signal-positive", "indicator.macd.signal", "5s", "greater_than", value=0),
                     _condition("macd-positive-histogram", "indicator.macd.histogram", "5s", "greater_than", value=0),
                 ]),
             ],
@@ -450,6 +454,13 @@ def default_long_momentum_parameters() -> dict[str, Any]:
         },
         "reentry": {"enabled": True, "cooldown_ms": 0, "maximum_attempts": 3, "require_new_confirmation": True},
         "momentum_management": {
+            "downside_loss_guard": {
+                "enabled": False,
+                "timeframe": "1s",
+                "bearish_choch": True,
+                "macd_closed": True,
+                "below_vwap": True,
+            },
             "failure_to_extend": {
                 "enabled": False,
                 "minimum_gain_pct": 0.75,
@@ -697,6 +708,17 @@ def _active_rule_source_dependencies(
                 dependencies.update(
                     _rule_stage_source_dependencies(dict(route.get("rules") or {}))
                 )
+        management = dict(parameters.get("momentum_management") or {})
+        downside = dict(management.get("downside_loss_guard") or {})
+        if bool(downside.get("enabled", False)):
+            timeframe = str(downside.get("timeframe") or "1s")
+            dependencies.update({
+                ("indicator.structure.bearish_choch", timeframe),
+                ("indicator.macd.line", timeframe),
+                ("indicator.macd.signal", timeframe),
+                ("indicator.macd.histogram", timeframe),
+                ("indicator.vwap.value", timeframe),
+            })
     if _phase_is_automatic(parameters, "manage"):
         dependencies.update({
             ("indicator.structure.swing_high", ""),
@@ -2217,7 +2239,12 @@ class AssignedLongMomentumStrategy:
             return updated
         raise KeyError(assignment_id)
 
-    async def on_order_group_update(self, snapshot: Any) -> None:
+    async def on_order_group_update(
+        self,
+        snapshot: Any,
+        *,
+        aggregate_position_quantity: float | None = None,
+    ) -> None:
         assignment_id = str(getattr(snapshot, "assignment_id", "") or "")
         if not assignment_id or str(getattr(snapshot, "state", "")) != "filled":
             return
@@ -2231,8 +2258,24 @@ class AssignedLongMomentumStrategy:
             elif action in {"reduce_long", "reduce_short"}:
                 status = AssignmentStatus.MANAGING
             elif action in {"exit", "take_profit", "cover"}:
-                if bool(getattr(snapshot, "reentry_after_fill", False)):
+                if (
+                    aggregate_position_quantity is not None
+                    and abs(float(aggregate_position_quantity)) > 1e-9
+                ):
+                    # A protected position can have several independently held
+                    # target/stop slices. One child fill reduces the position;
+                    # it does not terminate the campaign.
+                    status = AssignmentStatus.MANAGING
+                elif assignment.status in {
+                    AssignmentStatus.REENTRY_COOLDOWN,
+                    AssignmentStatus.COMPLETED,
+                }:
+                    return
+                elif _fill_allows_reentry(assignment, snapshot, state):
                     state["reentries"] = int(state.get("reentries") or 0) + 1
+                    state["last_exit_at"] = getattr(
+                        snapshot, "updated_at", datetime.now(timezone.utc)
+                    ).isoformat()
                     status = AssignmentStatus.REENTRY_COOLDOWN
                 else:
                     status = AssignmentStatus.COMPLETED
@@ -2256,6 +2299,24 @@ class AssignedLongMomentumStrategy:
             self._assignments[key] = updated
             self._campaigns.register(updated)
             return
+
+
+def _fill_allows_reentry(
+    assignment: StrategyAssignment,
+    snapshot: Any,
+    state: dict[str, Any],
+) -> bool:
+    if state.get("disable_after_exit") or not assignment.permissions.reenter:
+        return False
+    reentry = dict(resolve_long_momentum_parameters(assignment.parameters).get("reentry") or {})
+    if not bool(reentry.get("enabled", True)):
+        return False
+    fill_role = str(getattr(snapshot, "fill_role", "") or "")
+    if fill_role in {"protective_stop", "trailing_stop", "protective_exit"}:
+        return bool(reentry.get("after_protective_exit", False))
+    if fill_role == "profit_target":
+        return True
+    return bool(getattr(snapshot, "reentry_after_fill", False))
 
 
 def _trigger_reference(
@@ -2493,15 +2554,18 @@ def _decision_reason_detail(
             f"gain={float(metadata.get('gain_pct') or 0):+.3f}%."
         )
     labels = {
-        "entry_confirmed": "Enter: liquidity, VWAP, one-second MACD, and swing-high breakout all passed.",
-        "reentry_confirmed": "Re-enter: a renewed Early Squeeze Move and fresh entry evidence all passed.",
-        "failure_to_extend_partial": "Reduce: price stopped extending while QMD flow deteriorated; pocket half and keep the protected remainder.",
+        "entry_confirmed": "Enter: liquidity, VWAP, positive/open one-second MACD, and swing-high breakout all passed.",
+        "reentry_confirmed": "Re-enter: fresh post-exit liquidity, VWAP, positive/open one-second MACD, and swing-high breakout all passed.",
+        "failure_to_extend_partial": "Profit reduction: price stopped extending while QMD flow deteriorated; sell half and keep the protected remainder.",
         "qmd_flow_geometry_exhaustion": "Exit: QMD flow structure weakened with confident flow-price divergence.",
         "loss_of_confirmed_higher_low": "Exit: price lost the latest causally confirmed one-second higher low.",
         "macd_closed_backstop": "Exit: one-second MACD remained closed for the configured backstop duration.",
+        "downside_bearish_choch": "Loss exit: while below entry, a bearish one-second change of character occurred.",
+        "downside_macd_closed": "Loss exit: while below entry, the one-second MACD closed; no confirmation delay applies.",
+        "downside_vwap_lost": "Loss exit: while below entry, price moved under the causal one-second VWAP.",
         "protective_stop": "Exit: price breached the active causal protective stop.",
         "session_flatten": "Exit: the configured premarket flatten time was reached.",
-        "profit_pocket": "Reduce: the configured favorable-move and momentum-slowdown profit-pocket rule passed.",
+        "profit_pocket": "Profit exit: the configured favorable-move and momentum-slowdown rule passed.",
         "no_active_rule_source_updated": "Wait: this observation did not update any source used by the active strategy phase.",
         "market_not_open": "Wait: the configured extended-hours execution session is not tradable at this clock.",
         "entry_cutoff_reached": "Wait: the configured entry cutoff has passed; no new exposure is allowed.",
@@ -2659,6 +2723,8 @@ def _source_value(
 def _observation_field_value(observation: StrategyObservation, runtime_field: str) -> Any:
     if runtime_field == "bullish_choch":
         return observation.structure_event == "choch" and observation.structure_direction == "bullish"
+    if runtime_field == "bearish_choch":
+        return observation.structure_event == "choch" and observation.structure_direction == "bearish"
     return getattr(observation, runtime_field, None)
 
 
@@ -2839,6 +2905,63 @@ def _matching_momentum_management_route(
     if not settings or side != "long":
         return None
     elapsed_ms = _elapsed_since(str(state.get("entry_at") or ""), observation.observed_at)
+
+    downside = dict(settings.get("downside_loss_guard") or {})
+    downside_timeframe = str(downside.get("timeframe") or "1s")
+    if bool(downside.get("enabled", False)) and gain_pct < 0:
+        if bool(downside.get("bearish_choch", True)) and (
+            observation.structure_event == "choch"
+            and observation.structure_direction == "bearish"
+            and observation.source_timeframe in {"", downside_timeframe}
+        ):
+            return {
+                "route_id": "downside-bearish-choch",
+                "name": "Below-entry bearish one-second CHOCH",
+                "mechanism": "downside_bearish_choch",
+                "position_fraction": 1.0,
+                "evidence": {"gain_pct": gain_pct, "structure_timeframe": downside_timeframe},
+            }
+        line = _source_value(observation, "indicator.macd.line", downside_timeframe)
+        signal = _source_value(observation, "indicator.macd.signal", downside_timeframe)
+        histogram = _source_value(observation, "indicator.macd.histogram", downside_timeframe)
+        if bool(downside.get("macd_closed", True)) and (
+            line is not None
+            and signal is not None
+            and histogram is not None
+            and float(line) <= float(signal)
+            and float(histogram) <= 0
+        ):
+            return {
+                "route_id": "downside-macd-closed",
+                "name": "Below-entry one-second MACD close",
+                "mechanism": "downside_macd_closed",
+                "position_fraction": 1.0,
+                "evidence": {
+                    "gain_pct": gain_pct,
+                    "macd_timeframe": downside_timeframe,
+                    "macd_line": line,
+                    "macd_signal": signal,
+                    "macd_histogram": histogram,
+                },
+            }
+        vwap = _source_value(observation, "indicator.vwap.value", downside_timeframe)
+        if (
+            bool(downside.get("below_vwap", True))
+            and vwap is not None
+            and observation.price < float(vwap)
+        ):
+            return {
+                "route_id": "downside-vwap-lost",
+                "name": "Below-entry loss of one-second VWAP",
+                "mechanism": "downside_vwap_lost",
+                "position_fraction": 1.0,
+                "evidence": {
+                    "gain_pct": gain_pct,
+                    "vwap_timeframe": downside_timeframe,
+                    "vwap": float(vwap),
+                    "last_price": observation.price,
+                },
+            }
 
     structure = dict(settings.get("structure_failure") or {})
     latest_swing_low = state.get("latest_post_entry_swing_low")

@@ -969,13 +969,24 @@ class TradingRuntime:
             self.journal.save_portfolio_state(account_id, persisted)
 
     async def _on_order_group_fill(self, snapshot) -> None:
+        assignment = self._assignment_for_snapshot(snapshot)
         if str(snapshot.action) in {"enter_long", "enter_short"}:
-            assignment = self._assignment_for_snapshot(snapshot)
             if assignment is not None:
                 self.control_plane.campaigns.claim(assignment)
         handler = getattr(self.strategy, "on_order_group_update", None)
         if handler is not None:
-            await handler(snapshot)
+            aggregate_position_quantity: float | None = None
+            if assignment is not None:
+                positions = await self.broker.positions(snapshot.account_id)
+                aggregate_position_quantity = sum(
+                    float(position.position)
+                    for position in positions
+                    if int(position.conid) == int(assignment.conid)
+                )
+            await handler(
+                snapshot,
+                aggregate_position_quantity=aggregate_position_quantity,
+            )
             self._persist_strategy_assignments(snapshot.updated_at)
 
     async def _on_order_group_state(self, snapshot) -> None:

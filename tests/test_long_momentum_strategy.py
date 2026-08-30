@@ -7,6 +7,7 @@ from copy import deepcopy
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from src.trading_runtime.domain import InstrumentContract, TradingMode
 from src.trading_runtime.journal import TradingJournal
@@ -84,6 +85,22 @@ def confirmed_observation(**overrides) -> StrategyObservation:
 
 
 class LongMomentumStrategyTests(unittest.TestCase):
+    def test_entry_requires_macd_line_and_signal_above_zero(self) -> None:
+        result = LongMomentumStrategyEngine().evaluate(
+            assignment(),
+            confirmed_observation(
+                macd_line=-0.10,
+                macd_signal=-0.20,
+                macd_histogram=0.10,
+            ),
+        )
+
+        self.assertEqual(result.evaluation.signals[0].action, "wait")
+        self.assertEqual(result.evaluation.signals[0].reason, "entry_confirmation_incomplete")
+        failures = result.evaluation.signals[0].metadata["reason_detail"]
+        self.assertIn("indicator.macd.line (5s) is -0.1; requires greater than 0", failures)
+        self.assertIn("indicator.macd.signal (5s) is -0.2; requires greater than 0", failures)
+
     def test_entry_uses_unified_support_and_builds_causal_five_target_ladder(self) -> None:
         result = LongMomentumStrategyEngine().evaluate(
             assignment(),
@@ -919,6 +936,88 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(signal.reason, "bearish_qmd_macd")
         self.assertEqual(signal.metadata["exit_route_id"], "bearish-momentum")
 
+    def test_below_entry_loss_guard_exits_on_first_causal_trigger(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["phase_policy"] = {"exit": {"mode": "automatic", "rule_sets": []}}
+        parameters["profit_pocket"]["enabled"] = False
+        parameters["protection"]["trailing"]["enabled"] = False
+        parameters["momentum_management"]["downside_loss_guard"]["enabled"] = True
+        managed = assignment(
+            parameters=parameters,
+            status=AssignmentStatus.MANAGING,
+            state={
+                "active_stop": 95.0,
+                "initial_stop": 95.0,
+                "breakout_level": 90.0,
+                "entry_at": (NOW - timedelta(seconds=10)).isoformat(),
+                "entry_reference_price": 101.0,
+                "high_water_price": 102.0,
+            },
+        )
+        cases = (
+            (
+                "downside_bearish_choch",
+                dict(structure_event="choch", structure_direction="bearish", vwap=99.0),
+            ),
+            (
+                "downside_macd_closed",
+                dict(macd_line=-0.2, macd_signal=-0.1, macd_histogram=-0.1, vwap=99.0),
+            ),
+            (
+                "downside_vwap_lost",
+                dict(vwap=100.5),
+            ),
+        )
+        for reason, overrides in cases:
+            with self.subTest(reason=reason):
+                result = LongMomentumStrategyEngine().evaluate(
+                    managed,
+                    confirmed_observation(
+                        price=100.0,
+                        average_price=101.0,
+                        position_quantity=100,
+                        source_timeframe="1s",
+                        **overrides,
+                    ),
+                )
+                self.assertEqual(result.evaluation.signals[0].action, "exit")
+                self.assertEqual(result.evaluation.signals[0].reason, reason)
+
+    def test_downside_loss_guard_does_not_apply_above_entry(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["phase_policy"] = {"exit": {"mode": "automatic", "rule_sets": []}}
+        parameters["profit_pocket"]["enabled"] = False
+        parameters["protection"]["trailing"]["enabled"] = False
+        parameters["momentum_management"]["downside_loss_guard"]["enabled"] = True
+        managed = assignment(
+            parameters=parameters,
+            status=AssignmentStatus.MANAGING,
+            state={
+                "active_stop": 95.0,
+                "initial_stop": 95.0,
+                "breakout_level": 90.0,
+                "entry_at": (NOW - timedelta(seconds=10)).isoformat(),
+                "entry_reference_price": 101.0,
+                "high_water_price": 102.0,
+            },
+        )
+        result = LongMomentumStrategyEngine().evaluate(
+            managed,
+            confirmed_observation(
+                price=101.5,
+                average_price=101.0,
+                position_quantity=100,
+                source_timeframe="1s",
+                structure_event="choch",
+                structure_direction="bearish",
+                macd_line=-0.2,
+                macd_signal=-0.1,
+                macd_histogram=-0.1,
+                vwap=102.0,
+            ),
+        )
+        self.assertEqual(result.evaluation.signals[0].action, "hold")
+
     def test_protective_exit_cannot_be_disabled_by_campaign_permissions(self) -> None:
         managed = assignment(
             status=AssignmentStatus.MANAGING,
@@ -1442,6 +1541,38 @@ class LongMomentumStrategyTests(unittest.TestCase):
 
 
 class LongMomentumRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_profit_target_slice_keeps_campaign_managing_until_position_is_flat(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["reentry"]["after_protective_exit"] = True
+        assigned = assignment(
+            parameters=parameters,
+            status=AssignmentStatus.MANAGING,
+        )
+        strategy = AssignedLongMomentumStrategy([assigned])
+        snapshot = SimpleNamespace(
+            action="exit",
+            assignment_id=assigned.assignment_id,
+            fill_role="profit_target",
+            reentry_after_fill=False,
+            state="filled",
+            updated_at=NOW,
+        )
+
+        await strategy.on_order_group_update(
+            snapshot,
+            aggregate_position_quantity=276,
+        )
+        self.assertEqual(strategy.assignments()[0].status, AssignmentStatus.MANAGING)
+
+        await strategy.on_order_group_update(
+            snapshot,
+            aggregate_position_quantity=0,
+        )
+        updated = strategy.assignments()[0]
+        self.assertEqual(updated.status, AssignmentStatus.REENTRY_COOLDOWN)
+        self.assertEqual(updated.state["reentries"], 1)
+        self.assertEqual(updated.state["last_exit_at"], NOW.isoformat())
+
     async def test_portfolio_rejection_clears_phantom_entry_pending_state(self) -> None:
         assigned = assignment(
             status=AssignmentStatus.ENTRY_PENDING,

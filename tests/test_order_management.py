@@ -8,7 +8,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.trading_runtime.domain import InstrumentContract, TradingMode
-from src.trading_runtime.ibkr_schema import LiveOrder, OrderRequest, OrderStatus
+from src.trading_runtime.ibkr_schema import (
+    LiveOrder,
+    OrderRequest,
+    OrderStatus,
+    PortfolioPosition,
+)
 from src.trading_runtime.execution_policies import (
     ExecutionMarketSnapshot,
     ProtectionProfile,
@@ -155,6 +160,37 @@ class RecordingBroker(SimulatedBrokerAdapter):
     async def modify_order(self, account_id: str, order_id: str, order: OrderRequest):
         self.modifications.append((order_id, order))
         return await super().modify_order(account_id, order_id, order)
+
+
+class ReconciliationRaceBroker(RecordingBroker):
+    def __init__(self, *, position_quantity: float, live_orders: list[LiveOrder]) -> None:
+        super().__init__()
+        self.position_quantity = position_quantity
+        self.forced_live_orders = live_orders
+        self.cancellations: list[str] = []
+
+    async def positions(self, account_id: str):
+        return [
+            PortfolioPosition(
+                acctId=account_id,
+                conid=123,
+                contractDesc="TEST",
+                position=self.position_quantity,
+                mktPrice=10.02,
+                mktValue=self.position_quantity * 10.02,
+                avgCost=10.0,
+                avgPrice=10.0,
+                realizedPnl=0.0,
+                unrealizedPnl=0.0,
+            )
+        ]
+
+    async def live_orders(self):
+        return list(self.forced_live_orders)
+
+    async def cancel_order(self, account_id: str, order_id: str):
+        self.cancellations.append(order_id)
+        return [{"order_id": order_id, "order_status": "Cancelled"}]
 
 
 class OutcomeUnknownBroker(SimulatedBrokerAdapter):
@@ -406,6 +442,172 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(responses), 2)
             states = {row.orderId: row.order_status for row in await broker.live_orders()}
             self.assertEqual(states, {"1": OrderStatus.CANCELLED, "2": OrderStatus.CANCELLED})
+            await manager.close()
+            journal.close()
+
+    async def test_sliced_entry_reconciliation_uses_only_causally_processed_slice(self) -> None:
+        prefix = "strategy-1-v1-"
+        slice_sizes = (60.0, 60.0, 60.0, 59.0, 59.0)
+        requests: list[OrderRequest] = []
+        live_stops: list[LiveOrder] = []
+        broker_order_ids: list[str] = []
+        request_indexes: dict[str, int] = {}
+        roles: dict[str, str] = {}
+        filled_by_broker_order: dict[str, float] = {}
+        for index, quantity in enumerate(slice_sizes):
+            parent_id = f"{prefix}entry-{index}"
+            entry_broker_id = str(index * 2 + 1)
+            stop_broker_id = str(index * 2 + 2)
+            entry = OrderRequest(
+                acctId="DU1",
+                conid=123,
+                cOID=parent_id,
+                ticker="TEST",
+                orderType="LMT",
+                side="BUY",
+                quantity=quantity,
+                price=10.0,
+            )
+            stop = OrderRequest(
+                acctId="DU1",
+                conid=123,
+                cOID="",
+                parentId=parent_id,
+                ticker="TEST",
+                orderType="STP",
+                side="SELL",
+                quantity=quantity,
+                auxPrice=9.8,
+            )
+            entry_request_index = len(requests)
+            requests.extend((entry, stop))
+            broker_order_ids.extend((entry_broker_id, stop_broker_id))
+            request_indexes[entry_broker_id] = entry_request_index
+            request_indexes[stop_broker_id] = entry_request_index + 1
+            roles[entry_broker_id] = "entry"
+            roles[stop_broker_id] = "protective_stop"
+            live_stops.append(
+                LiveOrder(
+                    account="DU1",
+                    orderId=stop_broker_id,
+                    conid=123,
+                    ticker="TEST",
+                    side="SELL",
+                    orderType="STP",
+                    tif="DAY",
+                    totalSize=quantity,
+                    filledQuantity=0,
+                    remainingQuantity=quantity,
+                    avgPrice=0,
+                    order_status=OrderStatus.INACTIVE,
+                    parentId=parent_id,
+                )
+            )
+        filled_by_broker_order["1"] = slice_sizes[0]
+        broker = ReconciliationRaceBroker(
+            position_quantity=sum(slice_sizes),
+            live_orders=live_stops,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            manager, journal = await self._manager(
+                directory,
+                broker,
+                policy=BrokerCommunicationPolicy(),
+            )
+            group = _ManagedOrderGroup(
+                group_id="sliced-entry-race",
+                intent=intent(quantity=sum(slice_sizes)),
+                account_id="DU1",
+                plan=StrategyOrderPlan(tuple(requests)),
+                state=OrderManagementState.PARTIALLY_FILLED,
+                created_at=NOW,
+                updated_at=NOW,
+                orders=requests,
+                broker_order_ids=broker_order_ids,
+                broker_order_request_indexes=request_indexes,
+                broker_order_roles=roles,
+                filled_by_broker_order=filled_by_broker_order,
+                filled_quantity=slice_sizes[0],
+                remaining_quantity=sum(slice_sizes[1:]),
+            )
+            manager._groups[group.group_id] = group
+            for order_id in broker_order_ids:
+                manager._group_by_broker_id[order_id] = group.group_id
+
+            result = await manager.reconcile_protection(group)
+
+            self.assertEqual(result["required_quantity"], slice_sizes[0])
+            self.assertEqual(result["protected_quantity"], slice_sizes[0])
+            self.assertEqual(result["actions"], [])
+            self.assertEqual(broker.cancellations, [])
+            self.assertEqual(broker.modifications, [])
+            self.assertFalse(
+                any("repair-" in str(order.cOID or "") for order in group.orders)
+            )
+            await manager.close()
+            journal.close()
+
+    async def test_completed_entry_group_does_not_protect_later_campaign_position(self) -> None:
+        broker = ReconciliationRaceBroker(
+            position_quantity=250.0,
+            live_orders=[],
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            manager, journal = await self._manager(
+                directory,
+                broker,
+                policy=BrokerCommunicationPolicy(),
+            )
+            entry_request = OrderRequest(
+                acctId="DU1",
+                conid=123,
+                cOID="strategy-1-v1-old-entry",
+                ticker="TEST",
+                orderType="LMT",
+                side="BUY",
+                quantity=345,
+                price=10.0,
+            )
+            target_request = OrderRequest(
+                acctId="DU1",
+                conid=123,
+                cOID="",
+                parentId=entry_request.cOID,
+                ticker="TEST",
+                orderType="LMT",
+                side="SELL",
+                quantity=345,
+                price=10.5,
+            )
+            group = _ManagedOrderGroup(
+                group_id="completed-old-campaign",
+                intent=intent(quantity=345),
+                account_id="DU1",
+                plan=StrategyOrderPlan((entry_request, target_request)),
+                state=OrderManagementState.FILLED,
+                created_at=NOW,
+                updated_at=NOW,
+                orders=[entry_request, target_request],
+                broker_order_ids=["1", "2"],
+                broker_order_request_indexes={"1": 0, "2": 1},
+                broker_order_roles={"1": "entry", "2": "profit_target"},
+                filled_by_broker_order={"1": 345.0, "2": 345.0},
+                filled_quantity=345.0,
+                remaining_quantity=0.0,
+            )
+            manager._groups[group.group_id] = group
+            manager._group_by_broker_id.update(
+                {"1": group.group_id, "2": group.group_id}
+            )
+
+            result = await manager.reconcile_protection(group)
+
+            self.assertEqual(result["required_quantity"], 0.0)
+            self.assertEqual(result["protected_quantity"], 0.0)
+            self.assertEqual(result["actions"], [])
+            self.assertFalse(
+                any("repair-" in str(order.cOID or "") for order in group.orders)
+            )
             await manager.close()
             journal.close()
 
@@ -774,6 +976,104 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(replacement.price, 10.0)
             self.assertEqual(replacement.parentId, entry_snapshot.client_order_ids[0])
             self.assertTrue(replacement.isSingleGroup)
+            await manager.close()
+            journal.close()
+
+    async def test_full_exit_reprices_every_sliced_target_without_resizing_one_child(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            broker = RecordingBroker()
+            real_planner = IbkrStrategyOrderPlanner()
+            instrument = InstrumentContract("TEST", 123, "TEST", "STK", "USD")
+
+            def bracket_planner(strategy_intent, account_id, _event):
+                return real_planner.plan(
+                    account_id=account_id,
+                    instrument=instrument,
+                    intent=strategy_intent,
+                    strategy_id="strategy-1",
+                    strategy_revision=1,
+                )
+
+            journal = TradingJournal(Path(directory) / "orders.sqlite3")
+            await broker.initialize()
+            risk = RiskAuthority()
+            await risk.prime(broker, ["DU1"])
+            manager = OrderManagementEngine(
+                broker=broker,
+                planner=bracket_planner,
+                risk=risk,
+                journal=journal,
+                run_id="run-1",
+                strategy_id="strategy-1",
+                strategy_revision=1,
+                policy=BrokerCommunicationPolicy(),
+            )
+            profile = ProtectionProfile(
+                profile_id="two-slice",
+                revision=1,
+                slices=(
+                    ProtectionSlice(
+                        "first",
+                        0.5,
+                        StopRule(StopRuleType.FIXED_PRICE, price=9.5),
+                        profit_target_price=10.5,
+                    ),
+                    ProtectionSlice(
+                        "second",
+                        0.5,
+                        StopRule(StopRuleType.FIXED_PRICE, price=9.5),
+                        profit_target_price=11.0,
+                    ),
+                ),
+            )
+            entry = replace(
+                intent(quantity=100),
+                intent_id="two-slice-entry",
+                protection_profile=profile,
+            )
+            entry_snapshot = await manager.submit_intent(
+                portfolio_approved(journal, entry),
+                account_id="DU1",
+                event=None,
+            )
+            exit_intent = replace(
+                intent(action="exit", urgency="very_urgent", quantity=100),
+                intent_id="two-slice-exit",
+                invalidation_price=9.4,
+                metadata={
+                    **intent(action="exit").metadata,
+                    "position_quantity": 100.0,
+                    "reason_code": "downside_macd_closed",
+                },
+            )
+
+            exit_snapshot = await manager.submit_intent(
+                portfolio_approved(journal, exit_intent),
+                account_id="DU1",
+                event=None,
+            )
+
+            self.assertEqual(exit_snapshot.action, "exit")
+            self.assertEqual(len(exit_snapshot.broker_order_ids), 2)
+            self.assertEqual(len(broker.modifications), 2)
+            self.assertEqual(
+                {replacement.quantity for _, replacement in broker.modifications},
+                {50.0},
+            )
+            self.assertEqual(
+                set(exit_snapshot.broker_order_ids),
+                {entry_snapshot.broker_order_ids[1], entry_snapshot.broker_order_ids[4]},
+            )
+            source_group = next(
+                group
+                for group in manager._groups.values()
+                if group.intent.intent_id == entry.intent_id
+            )
+            self.assertTrue(source_group.protection_delegated)
+            self.assertEqual(
+                (await manager.reconcile_protection(source_group))["status"],
+                "delegated_to_managed_exit",
+            )
             await manager.close()
             journal.close()
 
