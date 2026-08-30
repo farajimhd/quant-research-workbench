@@ -1003,6 +1003,15 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                 (await manager.reconcile_protection(source_group))["status"],
                 "delegated_to_managed_exit",
             )
+            source_group.protection_delegated = False
+            broker._positions["DU1"][123] = _Position(
+                conid=123,
+                ticker="TEST",
+                quantity=100.0,
+                avg_cost=10.0,
+            )
+            await manager._restore_managed_exit_delegation()
+            self.assertTrue(source_group.protection_delegated)
             await manager.close()
             journal.close()
 

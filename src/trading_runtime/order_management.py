@@ -486,7 +486,73 @@ class OrderManagementEngine:
                     self._group_by_client_id[request.cOID] = group_id
             for broker_order_id in group.broker_order_ids:
                 self._group_by_broker_id[broker_order_id] = group_id
+        await self._restore_managed_exit_delegation()
         return await self.reconcile()
+
+    async def _restore_managed_exit_delegation(self) -> None:
+        """Restore full-exit ownership before replaying broker order updates.
+
+        A process can stop after a full-position managed exit is accepted but
+        before the source entry's delegated flag is durably recorded. Replaying
+        the exit OCA first must not cause that entry to create an overlapping
+        repair stop. Broker-held position and open-order state are authoritative
+        for this recovery-only relationship repair.
+        """
+
+        live_by_id = {
+            str(order.orderId): order
+            for order in await self.broker.live_orders()
+            if order.order_status in OPEN_ORDER_STATUSES
+        }
+        positions_by_account_ticker = {
+            (account_id, str(position.contractDesc or position.raw.get("ticker") or "").upper()): abs(
+                float(position.position)
+            )
+            for account_id in {group.account_id for group in self._groups.values()}
+            for position in await self.broker.positions(account_id)
+        }
+        tolerance = 1e-6
+        for managed_exit in self._groups.values():
+            if str(managed_exit.intent.action) not in {
+                "exit",
+                "take_profit",
+                "reduce_long",
+                "reduce_short",
+                "cover",
+            }:
+                continue
+            ticker = managed_exit.intent.ticker.upper()
+            held = positions_by_account_ticker.get((managed_exit.account_id, ticker), 0.0)
+            if held <= tolerance or float(managed_exit.intent.quantity) + tolerance < held:
+                continue
+            if not any(
+                broker_order_id in live_by_id
+                for broker_order_id in managed_exit.broker_order_ids
+            ):
+                continue
+            for protected in self._groups.values():
+                if protected.group_id == managed_exit.group_id:
+                    continue
+                if protected.account_id != managed_exit.account_id:
+                    continue
+                if protected.intent.ticker.upper() != ticker:
+                    continue
+                if str(protected.intent.action) not in {
+                    "enter_long",
+                    "enter_short",
+                    "add_long",
+                    "add_short",
+                }:
+                    continue
+                protected.protection_delegated = True
+                self._transition(
+                    protected,
+                    protected.state,
+                    {
+                        "event": "protection_delegation_recovered",
+                        "managed_exit_group_id": managed_exit.group_id,
+                    },
+                )
 
     def _require_portfolio_approval(
         self, intent: StrategyIntent, account_id: str
