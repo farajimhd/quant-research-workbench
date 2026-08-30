@@ -1,6 +1,7 @@
 use qmd_core::config::HistoricalClickHouseConnection;
 use serde::Serialize;
 use std::env;
+use std::path::PathBuf;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct HistoricalGatewayConfig {
@@ -13,6 +14,7 @@ pub struct HistoricalGatewayConfig {
     pub cache_max_updates_per_entry: usize,
     pub cache_max_entries: usize,
     pub cache_update_capacity: usize,
+    pub prepared_bar_cache_root: PathBuf,
     pub clickhouse_database: String,
     #[serde(skip_serializing)]
     pub clickhouse_password: String,
@@ -70,6 +72,10 @@ impl HistoricalGatewayConfig {
             cache_max_entries: env_usize("QMD_HISTORY_CACHE_MAX_ENTRIES", 256).clamp(1, 10_000),
             cache_update_capacity: env_usize("QMD_HISTORY_CACHE_UPDATE_CAPACITY", 4_096)
                 .clamp(16, 100_000),
+            prepared_bar_cache_root: PathBuf::from(env_string(
+                "QMD_HISTORY_PREPARED_BAR_CACHE_ROOT",
+                r"D:\TradingML\runtimes\qmd_history_gateway\prepared-bars",
+            )),
             clickhouse_database: source.database,
             clickhouse_password_present: !source.password.is_empty(),
             clickhouse_password: source.password,
@@ -170,6 +176,9 @@ impl HistoricalGatewayConfig {
     pub fn validate(&self) -> Result<(), String> {
         if self.clickhouse_url.trim().is_empty() {
             return Err("QMD_HISTORY_CLICKHOUSE_URL is required".to_string());
+        }
+        if self.prepared_bar_cache_root.as_os_str().is_empty() {
+            return Err("QMD_HISTORY_PREPARED_BAR_CACHE_ROOT is required".to_string());
         }
         if self.clickhouse_user.trim().is_empty() {
             return Err("QMD_HISTORY_CLICKHOUSE_USER is required".to_string());

@@ -5341,6 +5341,17 @@ button {
   pointer-events: none;
 }
 
+.chart-update-status.centered {
+  top: 50%;
+  right: auto;
+  left: 50%;
+  max-width: min(420px, calc(100% - 48px));
+  padding: 8px 12px;
+  transform: translate(-50%, -50%);
+  box-shadow: var(--shadow-sm);
+  text-align: center;
+}
+
 .chart-update-status.error {
   border-color: color-mix(in oklab, var(--danger) 20%, var(--border));
   background: color-mix(in oklab, var(--danger) 7%, var(--surface));

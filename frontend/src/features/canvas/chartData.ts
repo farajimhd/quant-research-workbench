@@ -177,7 +177,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
       connected: false,
       error: "",
       historyError: "",
-      historyNotice: `Loading ${timeframe} chart; retaining the last complete timeframe until replacement bars arrive.`,
+      historyNotice: `Loading ${timeframe} chart…`,
       loading: true,
       loadingEarlier: false,
       pointInTime,

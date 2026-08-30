@@ -26,10 +26,12 @@ use qmd_core::market_products::{
 };
 use qmd_core::market_signal::{MarketSignalEngine, MarketSignalEvent};
 use qmd_core::microstructure_interval::MicrostructureIntervalWindow;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::fs;
 use std::mem::size_of;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -39,6 +41,7 @@ pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v33";
 pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v35";
 pub const HISTORICAL_CORPORATE_ACTION_REVISION: &str = "raw-unadjusted-v1";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
+const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CacheProfile {
@@ -103,6 +106,9 @@ pub struct CacheMetrics {
     pub hits: u64,
     pub misses: u64,
     pub max_bytes: usize,
+    pub prepared_bar_hits: u64,
+    pub prepared_bar_misses: u64,
+    pub prepared_bar_writes: u64,
     pub requirements: Vec<HistoricalComputationRequirement>,
 }
 
@@ -126,7 +132,7 @@ pub struct HistoricalComputationRequirement {
     pub estimated_bytes: u64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ChartBarRow {
     pub schema_version: u16,
     pub session_date: String,
@@ -148,6 +154,14 @@ pub struct ChartBarRow {
     pub estimated_luld_distance_to_upper_pct: f64,
     pub estimated_luld_distance_to_lower_pct: f64,
     pub estimated_luld_state: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct PreparedBarCacheArtifact {
+    schema_version: u16,
+    key: String,
+    event_count: u64,
+    bars: Vec<ChartBarRow>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -372,6 +386,9 @@ struct CacheStats {
     evictions: AtomicU64,
     hits: AtomicU64,
     misses: AtomicU64,
+    prepared_bar_hits: AtomicU64,
+    prepared_bar_misses: AtomicU64,
+    prepared_bar_writes: AtomicU64,
 }
 
 enum IndicatorWork {
@@ -596,6 +613,37 @@ impl HistoricalDerivedCache {
         } else {
             CacheProfile::Products
         };
+        if matches!(&profile, CacheProfile::Bars(_)) {
+            let revision_window =
+                revision_window(&window, &profile, self.config.structure_book_rebuild_days)?;
+            let source_revision = self.source.source_revision(&revision_window).await?;
+            let key = cache_key(&window, &ticker, &source_revision, &profile);
+            if let Some(artifact) = self
+                .load_prepared_bar_cache(&key, &ticker, &timeframe)
+                .await
+            {
+                self.stats.prepared_bar_hits.fetch_add(1, Ordering::Relaxed);
+                return Ok(prepared_bar_chart_snapshot(
+                    &artifact,
+                    CacheEvidence {
+                        calculation_revision: HISTORICAL_CALCULATION_REVISION,
+                        corporate_action_revision: HISTORICAL_CORPORATE_ACTION_REVISION,
+                        engine_version: HISTORICAL_ENGINE_VERSION,
+                        event_count: artifact.event_count,
+                        hit: true,
+                        source_revision,
+                    },
+                    ticker,
+                    timeframe,
+                    limit,
+                    as_of,
+                    before,
+                ));
+            }
+            self.stats
+                .prepared_bar_misses
+                .fetch_add(1, Ordering::Relaxed);
+        }
         let lease = self.acquire(window, ticker.clone(), profile).await?;
         let event_count = if (bars_only || structure_only)
             && qmd_core::bars::is_supported_timeframe(&timeframe)
@@ -616,40 +664,27 @@ impl HistoricalDerivedCache {
         if qmd_core::bars::is_supported_timeframe(&timeframe) {
             let state = lease.entry.state.lock().await;
             if bars_only {
-                let mut selected = state
+                let all_bars = state
                     .bars
                     .iter()
-                    .rev()
-                    .filter(|update| {
-                        update.bar.timeframe.eq_ignore_ascii_case(&timeframe)
-                            && update.bar.bar_end <= as_of
-                            && before.is_none_or(|bound| update.bar.bar_start < bound)
-                    })
-                    .take(limit.saturating_add(1))
-                    .collect::<Vec<_>>();
-                let has_more = selected.len() > limit;
-                selected.truncate(limit);
-                selected.reverse();
-                let bars = selected
-                    .iter()
+                    .filter(|update| update.bar.timeframe.eq_ignore_ascii_case(&timeframe))
                     .map(|update| ChartBarRow::from_bar(&update.bar))
                     .collect::<Vec<_>>();
-                let next_before = has_more.then(|| bars[0].bar_start);
-                return Ok(ChartSnapshot {
-                    as_of,
-                    bars,
-                    cache,
-                    has_more,
-                    indicators: Vec::new(),
-                    indicator_projection: None,
-                    indicators_available: false,
-                    market_signal_events: Vec::new(),
-                    next_before,
-                    structure_events: Vec::new(),
-                    structure_level_history: Vec::new(),
-                    ticker,
-                    timeframe,
-                });
+                drop(state);
+                let artifact = PreparedBarCacheArtifact {
+                    schema_version: PREPARED_BAR_CACHE_SCHEMA_VERSION,
+                    key: lease.key.clone(),
+                    event_count,
+                    bars: all_bars,
+                };
+                if self.store_prepared_bar_cache(&artifact).await {
+                    self.stats
+                        .prepared_bar_writes
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                return Ok(prepared_bar_chart_snapshot(
+                    &artifact, cache, ticker, timeframe, limit, as_of, before,
+                ));
             }
             if structure_only {
                 let mut selected = state
@@ -899,7 +934,63 @@ impl HistoricalDerivedCache {
             hits: self.stats.hits.load(Ordering::Relaxed),
             misses: self.stats.misses.load(Ordering::Relaxed),
             max_bytes: self.config.cache_max_bytes,
+            prepared_bar_hits: self.stats.prepared_bar_hits.load(Ordering::Relaxed),
+            prepared_bar_misses: self.stats.prepared_bar_misses.load(Ordering::Relaxed),
+            prepared_bar_writes: self.stats.prepared_bar_writes.load(Ordering::Relaxed),
             requirements,
+        }
+    }
+
+    async fn load_prepared_bar_cache(
+        &self,
+        key: &str,
+        ticker: &str,
+        timeframe: &str,
+    ) -> Option<PreparedBarCacheArtifact> {
+        let path = prepared_bar_cache_path(&self.config.prepared_bar_cache_root, key);
+        let expected_key = key.to_string();
+        let expected_ticker = ticker.to_ascii_uppercase();
+        let expected_timeframe = timeframe.to_string();
+        match tokio::task::spawn_blocking(move || {
+            read_prepared_bar_cache(&path, &expected_key, &expected_ticker, &expected_timeframe)
+        })
+        .await
+        {
+            Ok(Ok(artifact)) => artifact,
+            Ok(Err(error)) => {
+                eprintln!("QMD History ignored invalid prepared-bar cache: {error}");
+                None
+            }
+            Err(error) => {
+                eprintln!("QMD History prepared-bar cache reader panicked: {error}");
+                None
+            }
+        }
+    }
+
+    async fn store_prepared_bar_cache(&self, artifact: &PreparedBarCacheArtifact) -> bool {
+        if artifact.bars.is_empty() {
+            return false;
+        }
+        let root = self.config.prepared_bar_cache_root.clone();
+        let max_entries = self.config.cache_max_entries;
+        let artifact = artifact.clone();
+        match tokio::task::spawn_blocking(move || {
+            let bytes = serde_json::to_vec(&artifact)
+                .map_err(|error| format!("failed to serialize prepared bars: {error}"))?;
+            write_prepared_bar_cache(&root, &artifact.key, &bytes, max_entries)
+        })
+        .await
+        {
+            Ok(Ok(wrote)) => wrote,
+            Ok(Err(error)) => {
+                eprintln!("QMD History could not persist prepared bars: {error}");
+                false
+            }
+            Err(error) => {
+                eprintln!("QMD History prepared-bar cache writer panicked: {error}");
+                false
+            }
         }
     }
 
@@ -1953,6 +2044,160 @@ fn split_event_window(window: &EventWindow, chunk_hours: usize) -> Vec<EventWind
     chunks
 }
 
+fn prepared_bar_chart_snapshot(
+    artifact: &PreparedBarCacheArtifact,
+    cache: CacheEvidence,
+    ticker: String,
+    timeframe: String,
+    limit: usize,
+    as_of: DateTime<Utc>,
+    before: Option<DateTime<Utc>>,
+) -> ChartSnapshot {
+    let mut selected = artifact
+        .bars
+        .iter()
+        .rev()
+        .filter(|bar| bar.bar_end <= as_of && before.is_none_or(|bound| bar.bar_start < bound))
+        .take(limit.saturating_add(1))
+        .cloned()
+        .collect::<Vec<_>>();
+    let has_more = selected.len() > limit;
+    selected.truncate(limit);
+    selected.reverse();
+    let next_before = has_more.then(|| selected[0].bar_start);
+    ChartSnapshot {
+        as_of,
+        bars: selected,
+        cache,
+        has_more,
+        indicators: Vec::new(),
+        indicator_projection: None,
+        indicators_available: false,
+        market_signal_events: Vec::new(),
+        next_before,
+        structure_events: Vec::new(),
+        structure_level_history: Vec::new(),
+        ticker,
+        timeframe,
+    }
+}
+
+fn prepared_bar_cache_path(root: &Path, key: &str) -> PathBuf {
+    root.join(format!(
+        "v{PREPARED_BAR_CACHE_SCHEMA_VERSION}-{}.json",
+        stable_hash_hex(key)
+    ))
+}
+
+fn read_prepared_bar_cache(
+    path: &Path,
+    expected_key: &str,
+    expected_ticker: &str,
+    expected_timeframe: &str,
+) -> Result<Option<PreparedBarCacheArtifact>, String> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!("failed to read {}: {error}", path.display()));
+        }
+    };
+    let artifact = serde_json::from_slice::<PreparedBarCacheArtifact>(&bytes)
+        .map_err(|error| format!("failed to decode {}: {error}", path.display()))?;
+    if artifact.schema_version != PREPARED_BAR_CACHE_SCHEMA_VERSION {
+        return Err(format!(
+            "{} has schema {}, expected {}",
+            path.display(),
+            artifact.schema_version,
+            PREPARED_BAR_CACHE_SCHEMA_VERSION,
+        ));
+    }
+    if artifact.key != expected_key {
+        return Err(format!(
+            "{} does not match its cache identity",
+            path.display()
+        ));
+    }
+    let mut previous = None;
+    for bar in &artifact.bars {
+        if !bar.sym.eq_ignore_ascii_case(expected_ticker)
+            || !bar.timeframe.eq_ignore_ascii_case(expected_timeframe)
+        {
+            return Err(format!(
+                "{} contains a row outside {expected_ticker} {expected_timeframe}",
+                path.display(),
+            ));
+        }
+        ensure_monotonic_bar_start(previous, bar.bar_start)?;
+        if !bar.is_closed || bar.bar_end <= bar.bar_start {
+            return Err(format!("{} contains an invalid closed bar", path.display()));
+        }
+        previous = Some(bar.bar_start);
+    }
+    Ok(Some(artifact))
+}
+
+fn write_prepared_bar_cache(
+    root: &Path,
+    key: &str,
+    bytes: &[u8],
+    max_entries: usize,
+) -> Result<bool, String> {
+    fs::create_dir_all(root)
+        .map_err(|error| format!("failed to create {}: {error}", root.display()))?;
+    let path = prepared_bar_cache_path(root, key);
+    if path.is_file() {
+        return Ok(false);
+    }
+    let temporary = root.join(format!(
+        ".{}.{}.tmp",
+        stable_hash_hex(key),
+        std::process::id(),
+    ));
+    fs::write(&temporary, bytes)
+        .map_err(|error| format!("failed to write {}: {error}", temporary.display()))?;
+    if let Err(error) = fs::rename(&temporary, &path) {
+        let _ = fs::remove_file(&temporary);
+        if path.is_file() {
+            return Ok(false);
+        }
+        return Err(format!(
+            "failed to promote {} to {}: {error}",
+            temporary.display(),
+            path.display(),
+        ));
+    }
+
+    let mut artifacts = fs::read_dir(root)
+        .map_err(|error| format!("failed to inspect {}: {error}", root.display()))?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(&format!("v{PREPARED_BAR_CACHE_SCHEMA_VERSION}-"))
+                && entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "json")
+        })
+        .collect::<Vec<_>>();
+    artifacts.sort_by_key(|entry| {
+        entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+    });
+    let remove_count = artifacts.len().saturating_sub(max_entries.max(1));
+    for entry in artifacts.into_iter().take(remove_count) {
+        if entry.path() != path {
+            fs::remove_file(entry.path())
+                .map_err(|error| format!("failed to prune prepared-bar cache: {error}"))?;
+        }
+    }
+    Ok(true)
+}
+
 fn revision_window(
     window: &EventWindow,
     profile: &CacheProfile,
@@ -2091,11 +2336,13 @@ fn valid_price_bar(bar: &BarRow) -> bool {
 mod tests {
     use super::{
         bounded_encountered_structure_levels, cache_key, encountered_structure_levels_for_session,
-        ensure_monotonic_bar_start, historical_requirement, revision_window, session_anchor,
-        split_event_window, stable_hash_hex, structure_events_overlapping, CacheEntry,
-        CacheProfile, EntryState, SourceRevision, HISTORICAL_CALCULATION_REVISION,
-        HISTORICAL_CORPORATE_ACTION_REVISION, HISTORICAL_ENGINE_VERSION,
-        MAX_ENCOUNTERED_STRUCTURE_LEVELS,
+        ensure_monotonic_bar_start, historical_requirement, prepared_bar_cache_path,
+        read_prepared_bar_cache, revision_window, session_anchor, split_event_window,
+        stable_hash_hex, structure_events_overlapping, write_prepared_bar_cache, CacheEntry,
+        CacheProfile, ChartBarRow, EntryState, PreparedBarCacheArtifact, SourceRevision,
+        HISTORICAL_CALCULATION_REVISION, HISTORICAL_CORPORATE_ACTION_REVISION,
+        HISTORICAL_ENGINE_VERSION, MAX_ENCOUNTERED_STRUCTURE_LEVELS,
+        PREPARED_BAR_CACHE_SCHEMA_VERSION,
     };
     use crate::source::EventWindow;
     use chrono::{DateTime, Duration, TimeZone, Utc};
@@ -2269,6 +2516,58 @@ mod tests {
         assert_ne!(one_minute, one_minute_bars);
         assert_ne!(one_minute, products);
         assert_ne!(five_minute, products);
+    }
+
+    #[test]
+    fn prepared_bar_cache_is_restart_safe_and_identity_checked() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "qmd-history-prepared-bars-{}-{nonce}",
+            std::process::id()
+        ));
+        let start = Utc.with_ymd_and_hms(2026, 8, 21, 8, 0, 0).unwrap();
+        let artifact = PreparedBarCacheArtifact {
+            schema_version: PREPARED_BAR_CACHE_SCHEMA_VERSION,
+            key: "revisioned-bars-key".to_string(),
+            event_count: 17,
+            bars: vec![ChartBarRow {
+                schema_version: 1,
+                session_date: "2026-08-21".to_string(),
+                timeframe: "1s".to_string(),
+                sym: "SUGP".to_string(),
+                bar_start: start,
+                bar_end: start + Duration::seconds(1),
+                is_closed: true,
+                open: 3.5,
+                high: 3.6,
+                low: 3.5,
+                close: 3.6,
+                volume: 100.0,
+                vwap: Some(3.55),
+                estimated_luld_active: false,
+                estimated_luld_reference_price: 0.0,
+                estimated_luld_lower_price: 0.0,
+                estimated_luld_upper_price: 0.0,
+                estimated_luld_distance_to_upper_pct: 0.0,
+                estimated_luld_distance_to_lower_pct: 0.0,
+                estimated_luld_state: "unavailable".to_string(),
+            }],
+        };
+        let bytes = serde_json::to_vec(&artifact).unwrap();
+
+        assert!(write_prepared_bar_cache(&root, &artifact.key, &bytes, 4).unwrap());
+        let path = prepared_bar_cache_path(&root, &artifact.key);
+        let restored = read_prepared_bar_cache(&path, &artifact.key, "SUGP", "1s")
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.event_count, 17);
+        assert_eq!(restored.bars.len(), 1);
+        assert!(read_prepared_bar_cache(&path, "wrong-key", "SUGP", "1s").is_err());
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

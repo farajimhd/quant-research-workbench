@@ -89,6 +89,7 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
 
 def test_structural_history_can_span_all_loaded_chart_bars() -> None:
     renderer_source = (REPO_ROOT / "frontend" / "src" / "app" / "components" / "ChartPanel.tsx").read_text(encoding="utf-8")
+    styles_source = (REPO_ROOT / "frontend" / "src" / "app" / "styles.css").read_text(encoding="utf-8")
     chart_source = CHART_PRESENTATION.read_text(encoding="utf-8")
     chart_data_source = (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "chartData.ts").read_text(encoding="utf-8")
     history_api_source = (REPO_ROOT / "services" / "qmd_history_gateway" / "src" / "api.rs").read_text(encoding="utf-8")
@@ -135,7 +136,13 @@ def test_structural_history_can_span_all_loaded_chart_bars() -> None:
     assert "mergeIndicatorRowsByTime(current.indicators, rows)" in chart_data_source
     assert "Loading Unified Structural Levels…" in chart_data_source
     assert "statusMessage={liveChart.historyNotice}" in chart_source
-    assert 'hasChartData && statusMessage ? <div className="chart-update-status" role="status">' in renderer_source
+    assert 'chart-update-status${loading ? " centered" : ""}' in renderer_source
+    assert ".chart-update-status.centered" in styles_source
+    assert "transform: translate(-50%, -50%)" in styles_source
+    assert "Loading ${timeframe} chart…" in chart_data_source
+    assert "prepared_bar_cache_root" in history_cache_source
+    assert "load_prepared_bar_cache" in history_cache_source
+    assert "store_prepared_bar_cache" in history_cache_source
     structure_followup = chart_data_source.split(".then((payload) => {", 2)[2].split(".catch((reason) => {", 1)[0]
     assert 'historyError: ""' not in structure_followup
 

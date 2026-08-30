@@ -1642,7 +1642,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         />
       ) : null}
       <div className="chart-canvas-stack">
-        {hasChartData && statusMessage ? <div className="chart-update-status" role="status">
+        {hasChartData && statusMessage ? <div className={`chart-update-status${loading ? " centered" : ""}`} role="status">
           {loading ? <span className="loading-spinner" aria-hidden="true" /> : null}
           {statusMessage}
         </div> : null}
