@@ -545,6 +545,7 @@ class TradingRuntime:
             )
             decision, approved_intent = await self.portfolio.approve(intent, account_id=account_id)
             if approved_intent is None:
+                await self._record_intent_rejection(intent, account_id, decision)
                 results.append({"decision": decision.payload(), "order_group": None})
                 continue
             assignment = self._assignment_for_intent(approved_intent)
@@ -587,6 +588,58 @@ class TradingRuntime:
                         self.control_plane.campaigns.release_reservation(assignment)
                 raise
         return results
+
+    async def _record_intent_rejection(
+        self,
+        intent: StrategyIntent,
+        account_id: str,
+        decision: Any,
+    ) -> None:
+        """Return a rejected semantic entry to an actionable strategy state.
+
+        Strategy evaluation is deliberately earlier than Portfolio admission,
+        so an entry result has already moved its assignment to ENTRY_PENDING.
+        A Portfolio rejection means no order exists and therefore no future OMS
+        callback can clear that state.  Notify the strategy explicitly and
+        journal the rejection as a decision rather than masquerading forever as
+        an entry-fill wait.
+        """
+
+        reasons = [str(value) for value in getattr(decision, "reasons", ())]
+        handler = getattr(self.strategy, "on_intent_rejected", None)
+        if handler is not None:
+            result = handler(
+                intent,
+                reasons=tuple(reasons),
+                event_time=intent.event_time,
+            )
+            if hasattr(result, "__await__"):
+                await result
+        reason_detail = (
+            "Portfolio rejected the entry: " + ", ".join(reasons)
+            if reasons
+            else "Portfolio rejected the entry without a reason code."
+        )
+        self.journal.append(
+            run_id=self.run_id,
+            category="strategy_decision",
+            entity_type="intent_rejection",
+            entity_id=f"{intent.intent_id}:portfolio-rejected",
+            account_id=account_id,
+            event_time=intent.event_time,
+            payload={
+                "event": "intent_rejected",
+                "action": "wait",
+                "reason": "portfolio_rejected",
+                "reason_detail": reason_detail,
+                "rejection_reasons": reasons,
+                "ticker": intent.ticker,
+                "reference_price": intent.reference_price,
+                "strategy_id": self.config.strategy_id,
+                "strategy_revision": self.config.strategy_revision,
+                "status": "watching",
+            },
+        )
 
     def _assignment_for_intent(self, intent: StrategyIntent):
         assignment_id = str(intent.metadata.get("assignment_id") or "")
@@ -698,7 +751,7 @@ class TradingRuntime:
             if (not account_id or assignment.account_id == account_id)
             and (not normalized_ticker or assignment.ticker.upper() == normalized_ticker)
         )
-        changed: list[tuple[Any, dict[str, Any], tuple[str, str]]] = []
+        changed: list[tuple[Any, dict[str, Any], tuple[str, str], bool]] = []
         for assignment in selected:
             payload = assignment.payload()
             version = (
@@ -718,11 +771,11 @@ class TradingRuntime:
                 and event_time < last_persisted_at + timedelta(seconds=5)
             ):
                 continue
-            changed.append((assignment, payload, version))
+            changed.append((assignment, payload, version, status_changed))
         if not changed:
             return
         self.journal.save_strategy_assignments(
-            [payload for _, payload, _ in changed]
+            [payload for _, payload, _, _ in changed]
         )
         if record_events:
             self.journal.append_many([
@@ -743,9 +796,10 @@ class TradingRuntime:
                         "state": assignment.state,
                     },
                 }
-                for assignment, _, _ in changed
+                for assignment, _, _, status_changed in changed
+                if status_changed
             ])
-        for assignment, _, version in changed:
+        for assignment, _, version, _ in changed:
             self._persisted_assignment_versions[assignment.assignment_id] = version
             self._persisted_assignment_times[assignment.assignment_id] = event_time
 

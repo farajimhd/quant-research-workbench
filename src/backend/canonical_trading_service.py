@@ -257,7 +257,24 @@ def portfolio_metrics(account_values: list[dict[str, Any]], ledger: list[dict[st
         return Decimal("0")
 
     unrealized = sum(Decimal(str(row.get("unrealized_pnl") or 0)) for row in positions)
-    realized = sum(Decimal(str(row.get("realized_pnl") or 0)) for row in positions)
+    realized = amount("realizedpnl")
+    if not any(
+        row.get("is_base")
+        and any(str(key).lower() == "realizedpnl" for key in (row.get("values") or {}))
+        for row in ledger
+    ):
+        # Some broker/simulator payloads expose only one currency ledger and do
+        # not label it BASE.  That ledger is still a better realized-P&L
+        # authority than summing only currently open positions, which resets to
+        # zero as soon as the account is flat.
+        candidates = [
+            Decimal(str(value or 0))
+            for row in ledger
+            for key, value in (row.get("values") or {}).items()
+            if str(key).lower() == "realizedpnl"
+        ]
+        if len(candidates) == 1:
+            realized = candidates[0]
     return json_safe(
         {
             "net_liquidation": amount("netliquidation", "netliquidationvalue"),

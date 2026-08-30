@@ -680,6 +680,10 @@ class JournalTests(unittest.TestCase):
                 ["order", "decision", "decision", "watchlist", "signal"],
             )
             self.assertEqual(activity["rows"][2]["action"], "wait")
+            self.assertEqual(
+                activity["rows"][0]["reason"],
+                "Order is submitted.",
+            )
             occurrence = activity["rows"][-1]
             self.assertEqual(occurrence["action"], "Exact 5% Squeeze")
             self.assertIn("+5.25% from squeeze anchor", occurrence["reason"])

@@ -1,0 +1,63 @@
+# Structural Level Book
+
+## Authority
+
+Generic Structure algorithm v14 is the single deterministic authority for a ticker's structural level book. It consumes canonical, event-time-ordered eligible trades and quotes. Live, Replay, Backtest, Debug, QMD History, and chart presentation must restore or advance the same checkpoint contract; none may recalculate a competing chart-timeframe book.
+
+The current canonical market-event contract identifies a listing by normalized SIP ticker. A future security-master listing identifier may be added only as a versioned identity migration. Symbol changes or reuse must not be silently joined across that boundary.
+
+## Causal construction
+
+1. Eligible trades update a streaming geometry state: tick size, quoted spread, exponentially weighted absolute trade movement, executed volume, and aggressor-classified buy/sell footprint.
+2. A directional leg confirms an event-native high or low only after price reverses by an adaptive distance. The distance is bounded by tick, spread, and streaming price movement; it does not depend on the selected chart interval.
+3. A confirmed pivot creates or reinforces a nearby active price range. Range geometry is fixed for that role episode. Retests strengthen the same identity; they do not split the range.
+4. A tentative penetration keeps the range active. Only accepted event-native continuation beyond the far boundary closes its role. A later causal retest and rejection may flip resistance to support or support to resistance while preserving lineage.
+5. Completed 100 ms through 1 hour swing calculations are corroborating evidence only. They may strengthen an existing event-native range but cannot originate, delete, or move one.
+
+## Evidence fields
+
+- `salience`: combined structural importance from independent pivots, persistence, holds, corroboration, and role flips.
+- `confidence`: quality and breadth of the evidence supporting the range.
+- `reaction_probability`: smoothed estimate that a future encounter produces a meaningful reaction. It is not directional alpha.
+- `hold_probability` and `break_probability`: beta-smoothed lifecycle frequencies in the current role.
+- `reversal_probability`: reaction evidence adjusted by observed pressure magnitude and role-flip history. It is not a calibrated return forecast.
+- `pressure_bias`: signed executed-volume imbalance around the range in `[-1, 1]`; positive is buyer-initiated pressure and negative is seller-initiated pressure.
+- `touch_count`, `hold_count`, `break_count`, `role_flip_count`: causal lifecycle counts.
+- `buy_volume`, `sell_volume`, `neutral_volume`, `trade_count`: merged executed activity associated with event-native sources. Timeframe corroboration does not duplicate volume.
+- `confirmed_at_ms`: first instant at which the episode was tradable without lookahead.
+
+Scores can strengthen when independent event-native pivots merge, a range holds, compatible timeframe structure confirms it, executed activity accumulates, or the range survives a role flip. Accepted breaks weaken the old role. Scores never rewrite the earlier range geometry or confirmation time.
+
+## Daily checkpoints
+
+End-of-day checkpoints are immutable, versioned seeds, not mutable forecasts. Their identity includes ticker, session date, algorithm version, source-plan hash, source-revision token, exact event cursor, and checkpoint payload. A checkpoint is publishable only after the canonical source window is complete and its revision is unchanged across construction.
+
+- Live restores the latest compatible checkpoint and advances from its exact cursor.
+- Replay, Backtest, Debug, and charts select the latest compatible checkpoint strictly before their requested `as_of`, then causally warm from that cursor.
+- If no compatible checkpoint exists, QMD History rebuilds from canonical history and may persist the completed day as a restart-safe seed.
+- A checkpoint from a later session, different algorithm version, incomplete source window, gap-containing plan, or mismatched revision must fail closed.
+
+## Split boundaries
+
+`q_live.market_stock_split_v1` is the corporate-action authority. At 04:00 New York on the split execution date, before the first eligible session event is applied, the checkpoint is transformed exactly once using the split identity recorded in its payload.
+
+- Every price coordinate and price-distance state is multiplied by `split_from / split_to`.
+- Executed share quantities, footprints, and rolling trade size are multiplied by `split_to / split_from`; trade and lifecycle counts are unchanged.
+- Price-keyed volume bins and footprint offsets are rebuilt in the post-split tick regime rather than merely relabeled.
+- Level IDs, confirmation times, evidence scores, probabilities, roles, and lineage remain unchanged.
+- The pre-split checkpoint remains immutable. Live immediately persists a split-adjusted successor state; the split-day end-of-day checkpoint and all later checkpoints carry the applied-action lineage.
+- Historical reconstruction applies the same transformation at the split-day 04:00 boundary while streaming. Loading a prior checkpoint for Replay, Backtest, Debug, or charts applies every unapplied split through the requested boundary before session events are evaluated.
+
+This is a reference-data normalization, not a price signal. A missing, invalid, or contradictory split term fails the checkpoint transition instead of mixing pre- and post-split price regimes.
+
+## Strategy use
+
+After Early Squeeze Move and liquidity admission, the long-momentum strategy may use the book as follows:
+
+- Enter only after VWAP and 1-second MACD confirmation plus causal acceptance above the active resistance range.
+- Place protection below the nearest accepted support or flipped resistance, buffered by current geometry/ATR.
+- Allocate integer-share profit tranches across reachable resistance ranges. Orders are OCA siblings within the position lifecycle; fills resize remaining protection rather than creating independent positions.
+- Continue or reenter only after acceptance above a broken range and a successful support retest.
+- Exit remaining quantity on rejected breakout, accepted loss of flipped support, strong reversal evidence, inability to progress to the next structural range, or the late MACD fallback.
+
+Every action, including `WAIT`, must state the unmet or triggering facts and their observed values.

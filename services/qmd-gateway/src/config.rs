@@ -115,6 +115,7 @@ pub struct GatewayConfig {
     pub qmd_history_gateway_url: String,
     pub structure_focus_history_timeout_seconds: u64,
     pub structure_focus_rebuild_timeout_seconds: u64,
+    pub structure_focus_cold_rebuild_days: u64,
     pub structure_focus_inactive_advance_hours: u64,
     pub structure_focus_inactive_batch_size: usize,
     pub structure_focus_inactive_registry_limit: usize,
@@ -326,6 +327,8 @@ impl GatewayConfig {
                 1_800,
             )
             .clamp(60, 7_200),
+            structure_focus_cold_rebuild_days: env_u64("QMD_STRUCTURE_FOCUS_COLD_REBUILD_DAYS", 7)
+                .clamp(2, 30),
             structure_focus_inactive_advance_hours: env_u64(
                 "QMD_STRUCTURE_FOCUS_INACTIVE_ADVANCE_HOURS",
                 24,

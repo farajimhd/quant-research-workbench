@@ -1283,10 +1283,24 @@ class TradingConfigurationServiceTests(unittest.TestCase):
                 "failure_to_extend"
             ]["enabled"]
         )
-        self.assertTrue(
+        self.assertFalse(
             default_profile["parameters"]["protection"]["stop"][
                 "prefer_closer_hybrid"
             ]
+        )
+        self.assertEqual(
+            lifecycle["initial_entry"]["order_intent"]["protection_profile"],
+            "structural-five-tranche",
+        )
+        structural_profile = next(
+            row
+            for row in draft["oms"]["protection_profiles"]
+            if row["profile_id"] == "structural-five-tranche"
+        )
+        self.assertEqual(len(structural_profile["slices"]), 5)
+        self.assertEqual(
+            [row["strategy_profit_target_index"] for row in structural_profile["slices"]],
+            list(range(5)),
         )
         self.assertTrue(all(not route["enabled"] for route in lifecycle["exit"]["rule_sets"]))
         self.assertNotIn("confirmed-pullback-add", default_profile["action_policy_ids"])
@@ -1315,7 +1329,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertTrue(draft["oms"]["protection_profiles"])
         self.assertEqual(
             lifecycle["initial_entry"]["order_intent"]["protection_profile"],
-            "hybrid-single",
+            "structural-five-tranche",
         )
         self.assertTrue(lifecycle["reentry"]["rules"]["opportunity"]["expression"]["children"])
         self.assertTrue(lifecycle["exit"]["rule_sets"][1]["rules"]["expression"]["children"])
@@ -1445,8 +1459,10 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(real["eligible_equity_fraction"], 0.8)
         self.assertEqual(replay["maximum_position_fraction"], 1.0)
         self.assertEqual(replay["maximum_ticker_fraction"], 1.0)
+        self.assertEqual(replay["maximum_protection_slices"], 5)
         self.assertEqual(real["maximum_position_fraction"], 0.8)
         self.assertEqual(real["maximum_ticker_fraction"], 0.8)
+        self.assertEqual(real["maximum_protection_slices"], 5)
         self.assertEqual(replay["maximum_planned_risk_fraction"], 0.0025)
         self.assertEqual(replay["maximum_open_positions"], 3)
         self.assertEqual(plan["watchlist_ids"], ["squeeze-tradable-candidates"])
@@ -1473,7 +1489,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             swing_condition["right_source_id"],
             "indicator.structure.swing_high",
         )
-        self.assertEqual(swing_condition["value"], 5.0)
+        self.assertEqual(swing_condition["value"], 0.0)
         self.assertIn("swing-high breakout", profile["description"])
         self.assertEqual(plan["campaign_lifecycle"]["reentry_cooldown_ms"], 5_000)
         self.assertEqual(profile["lifecycle"]["trading_behavior"]["eligible_sessions"], ["premarket"])

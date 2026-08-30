@@ -38,10 +38,10 @@ use std::sync::Mutex as StdMutex;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, OnceCell, Semaphore};
 
 pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v33";
-pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v35";
+pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v37";
 pub const HISTORICAL_CORPORATE_ACTION_REVISION: &str = "raw-unadjusted-v1";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
-const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 2;
+const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 3;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CacheProfile {
@@ -162,7 +162,19 @@ struct PreparedBarCacheArtifact {
     key: String,
     event_count: u64,
     bars: Vec<ChartBarRow>,
+    bar_indicator_projection: Vec<Value>,
     structure_projection: Vec<Value>,
+}
+
+fn bar_indicator_projection(selected: &[&BarUpdate]) -> Result<Vec<Value>, String> {
+    let mut calculator = BarIndicatorCalculator::new();
+    selected
+        .iter()
+        .map(|update| {
+            serde_json::to_value(calculator.apply_bar_for_historical_cache(&update.bar))
+                .map_err(|error| format!("failed to serialize bar indicator row: {error}"))
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -677,12 +689,14 @@ impl HistoricalDerivedCache {
                     .filter(|update| update.bar.timeframe.eq_ignore_ascii_case(&timeframe))
                     .collect::<Vec<_>>();
                 let structure_projection = unified_structure_projection(&all_updates)?;
+                let bar_indicator_projection = bar_indicator_projection(&all_updates)?;
                 drop(state);
                 let artifact = PreparedBarCacheArtifact {
                     schema_version: PREPARED_BAR_CACHE_SCHEMA_VERSION,
                     key: lease.key.clone(),
                     event_count,
                     bars: all_bars,
+                    bar_indicator_projection,
                     structure_projection,
                 };
                 if self.store_prepared_bar_cache(&artifact).await {
@@ -1074,12 +1088,26 @@ impl HistoricalDerivedCache {
             (_, Some(timeframe)) => vec!["100ms".to_string(), timeframe.clone()],
             (_, None) => Vec::new(),
         };
-        let bars = SharedBarStore::new(
-            derived_timeframes,
-            self.config.cache_max_bars_per_entry,
-            1,
-            self.source.trade_aggregation_rules(),
-        );
+        let bars = if bars_only {
+            // A bars-stage request is the scalar closed-bar authority. Unified
+            // Structural Levels are loaded through their checkpoint-backed
+            // projection, so advancing the event-native level book here is
+            // redundant O(events) work and made active tickers exceed the
+            // request deadline before a single cached bar was returned.
+            SharedBarStore::new_without_structure(
+                derived_timeframes,
+                self.config.cache_max_bars_per_entry,
+                1,
+                self.source.trade_aggregation_rules(),
+            )
+        } else {
+            SharedBarStore::new(
+                derived_timeframes,
+                self.config.cache_max_bars_per_entry,
+                1,
+                self.source.trade_aggregation_rules(),
+            )
+        };
         let session_vwap_seed = if matches!(&profile, CacheProfile::Derived(_)) {
             let seed_start = session_anchor(window.start)?;
             self.source
@@ -1097,7 +1125,7 @@ impl HistoricalDerivedCache {
         };
         if matches!(
             &profile,
-            CacheProfile::Bars(_) | CacheProfile::Derived(_) | CacheProfile::Structure(_)
+            CacheProfile::Derived(_) | CacheProfile::Structure(_)
         ) {
             if let Some(checkpoint) = self
                 .structure_seed_checkpoint(&ticker, window.start)
@@ -1164,7 +1192,7 @@ impl HistoricalDerivedCache {
                                     calculator
                                 });
                             let mut indicator = if valid_price_bar(&bar) {
-                                calculator.apply_bar(&bar)
+                                calculator.apply_bar_for_historical_cache(&bar)
                             } else if let Some(previous) = &last_base_indicator {
                                 let mut carried = previous.clone();
                                 carried.session_date = bar.session_date.clone();
@@ -1191,13 +1219,18 @@ impl HistoricalDerivedCache {
                             worker_entry
                                 .push_structure_events(&indicator.qmd_structure_events)
                                 .await?;
-                            last_base_indicator = Some(indicator.clone());
-                            aggregate.push(&indicator);
                             for event in
                                 market_signal_engine.update_with_indicator(&bar, Some(&indicator))
                             {
                                 worker_entry.push_market_signal_event(event).await?;
                             }
+                            // The complete unified book is already retained by
+                            // the bar-owned delta projection.  Compact before
+                            // cloning the carried 100 ms state so ordinary
+                            // derived preparation remains linear in bar count.
+                            let indicator = indicator.compact_for_historical_cache();
+                            last_base_indicator = Some(indicator.clone());
+                            aggregate.push(&indicator);
                             if let Some(sequence) = sequence {
                                 worker_entry
                                     .push_indicator(sequence, bar, indicator)
@@ -1219,7 +1252,7 @@ impl HistoricalDerivedCache {
                                     );
                                     calculator
                                 });
-                            let mut indicator = calculator.apply_bar(&bar);
+                            let mut indicator = calculator.apply_bar_for_historical_cache(&bar);
                             aggregate.apply_to(&mut indicator);
                             aggregate.reset();
                             calculator.apply_cumulative_microstructure(&mut indicator);
@@ -1462,13 +1495,77 @@ impl HistoricalDerivedCache {
         let source = self.source.clone();
         let ticker = ticker.to_string();
         cell.get_or_init(|| async move {
-            let events = source
-                .persisted_structure_events_before(&ticker, before)
-                .await?;
-            if !events.is_empty() {
-                let mut engine = GenericStructureEngine::new(&ticker);
-                engine.seed_events(&events);
-                return Ok(Some(engine.checkpoint()));
+            let mut stale_daily_checkpoint = false;
+            if let Some(seed) = source
+                .persisted_structure_checkpoint_before(&ticker, before)
+                .await?
+            {
+                let checkpoint_end = seed
+                    .checkpoint
+                    .replayed_through
+                    .or(seed.checkpoint.updated_at)
+                    .ok_or_else(|| {
+                        "persisted structure checkpoint lacks replay cursor".to_string()
+                    })?
+                    .checked_add_signed(Duration::microseconds(1))
+                    .ok_or_else(|| "persisted structure checkpoint cursor overflow".to_string())?;
+                let authority_window = EventWindow {
+                    start: seed.authority_start,
+                    end: checkpoint_end,
+                    tickers: vec![ticker.clone()],
+                };
+                let current_revision = source.source_revision(&authority_window).await?;
+                if current_revision.complete_for_history
+                    && current_revision.request_complete
+                    && current_revision.source_plan_hash == seed.source_plan_hash
+                    && current_revision.token == seed.source_revision_token
+                {
+                    let mut checkpoint = seed.checkpoint;
+                    let cursor = checkpoint
+                        .replayed_through
+                        .or(checkpoint.updated_at)
+                        .ok_or_else(|| {
+                            "persisted structure checkpoint lacks replay cursor".to_string()
+                        })?;
+                    for adjustment in source
+                        .structure_split_adjustments(&ticker, cursor, before)
+                        .await?
+                    {
+                        checkpoint.apply_split_adjustment(&adjustment)?;
+                    }
+                    return Ok(Some(checkpoint));
+                }
+                stale_daily_checkpoint = true;
+            }
+            if !stale_daily_checkpoint {
+                let events = source
+                    .persisted_structure_events_before(&ticker, before)
+                    .await?;
+                if !events.is_empty() {
+                    let mut engine = GenericStructureEngine::new(&ticker);
+                    let first_event_at = events
+                        .first()
+                        .map(|event| event.confirmed_at)
+                        .unwrap_or(before);
+                    let adjustments = source
+                        .structure_split_adjustments(&ticker, first_event_at, before)
+                        .await?;
+                    let mut next_split = 0_usize;
+                    for event in &events {
+                        while next_split < adjustments.len()
+                            && adjustments[next_split].effective_at <= event.confirmed_at
+                        {
+                            engine.apply_split_adjustment(&adjustments[next_split])?;
+                            next_split += 1;
+                        }
+                        engine.seed_events(std::slice::from_ref(event));
+                    }
+                    while next_split < adjustments.len() {
+                        engine.apply_split_adjustment(&adjustments[next_split])?;
+                        next_split += 1;
+                    }
+                    return Ok(Some(engine.checkpoint()));
+                }
             }
             // The dedicated level-book profile is trade-driven end to end.
             // Use the same filtered authority for its warm-start rebuild so a
@@ -2081,7 +2178,7 @@ fn prepared_bar_chart_snapshot(
     let indicator_projection = selected_indices
         .first()
         .zip(selected_indices.last())
-        .map(|(first, last)| prepared_structure_projection(artifact, *first, *last))
+        .map(|(first, last)| prepared_indicator_projection(artifact, *first, *last))
         .filter(|rows| !rows.is_empty());
     ChartSnapshot {
         as_of,
@@ -2098,6 +2195,31 @@ fn prepared_bar_chart_snapshot(
         ticker,
         timeframe,
     }
+}
+
+fn prepared_indicator_projection(
+    artifact: &PreparedBarCacheArtifact,
+    first_index: usize,
+    last_index: usize,
+) -> Vec<Value> {
+    if artifact.bar_indicator_projection.len() != artifact.bars.len() {
+        return Vec::new();
+    }
+    let structure = prepared_structure_projection(artifact, first_index, last_index);
+    artifact.bar_indicator_projection[first_index..=last_index]
+        .iter()
+        .cloned()
+        .zip(structure)
+        .map(|(mut indicator, structure)| {
+            if let (Some(target), Some(source)) = (indicator.as_object_mut(), structure.as_object())
+            {
+                source.iter().for_each(|(key, value)| {
+                    target.insert(key.clone(), value.clone());
+                });
+            }
+            indicator
+        })
+        .collect()
 }
 
 fn prepared_structure_projection(
@@ -2299,10 +2421,14 @@ fn revision_window(
     profile: &CacheProfile,
     structure_rebuild_days: usize,
 ) -> Result<EventWindow, String> {
-    let start = if matches!(
-        profile,
-        CacheProfile::Derived(_) | CacheProfile::Structure(_)
-    ) {
+    // Derived indicators (VWAP, MACD, microstructure, and the chart projection)
+    // are scoped to the requested causal window.  Their structural calculator
+    // is independently seeded from the latest validated daily checkpoint in
+    // `build_entry`, so extending every derived request by the cold-rebuild
+    // horizon only replays the same prior sessions again.  Keep the bounded
+    // lookback exclusively for the structure-only fallback path, whose job is
+    // to reconstruct the event-native book when no compatible seed exists.
+    let start = if matches!(profile, CacheProfile::Structure(_)) {
         structure_rebuild_start(window.start, structure_rebuild_days)?
     } else {
         window.start
@@ -2433,13 +2559,12 @@ mod tests {
     use super::{
         apply_structure_projection_row, bounded_encountered_structure_levels, cache_key,
         encountered_structure_levels_for_session, ensure_monotonic_bar_start,
-        historical_requirement, prepared_bar_cache_path,
-        read_prepared_bar_cache, revision_window, session_anchor, split_event_window,
-        stable_hash_hex, structure_events_overlapping, write_prepared_bar_cache, CacheEntry,
-        CacheProfile, ChartBarRow, EntryState, PreparedBarCacheArtifact, SourceRevision,
-        HISTORICAL_CALCULATION_REVISION, HISTORICAL_CORPORATE_ACTION_REVISION,
-        HISTORICAL_ENGINE_VERSION, MAX_ENCOUNTERED_STRUCTURE_LEVELS,
-        PREPARED_BAR_CACHE_SCHEMA_VERSION,
+        historical_requirement, prepared_bar_cache_path, read_prepared_bar_cache, revision_window,
+        session_anchor, split_event_window, stable_hash_hex, structure_events_overlapping,
+        write_prepared_bar_cache, CacheEntry, CacheProfile, ChartBarRow, EntryState,
+        PreparedBarCacheArtifact, SourceRevision, HISTORICAL_CALCULATION_REVISION,
+        HISTORICAL_CORPORATE_ACTION_REVISION, HISTORICAL_ENGINE_VERSION,
+        MAX_ENCOUNTERED_STRUCTURE_LEVELS, PREPARED_BAR_CACHE_SCHEMA_VERSION,
     };
     use crate::source::EventWindow;
     use chrono::{DateTime, Duration, TimeZone, Utc};
@@ -2451,7 +2576,7 @@ mod tests {
     use tokio::sync::{broadcast, Mutex, Notify};
 
     #[test]
-    fn derived_revision_covers_the_causal_structure_warm_start() {
+    fn only_structure_fallback_revision_covers_the_causal_warm_start() {
         let page = EventWindow {
             start: Utc.with_ymd_and_hms(2026, 7, 14, 18, 30, 0).unwrap(),
             end: Utc.with_ymd_and_hms(2026, 7, 14, 20, 30, 0).unwrap(),
@@ -2462,6 +2587,12 @@ mod tests {
         assert_eq!(session_anchor(page.start).unwrap(), expected);
         assert_eq!(
             revision_window(&page, &CacheProfile::Derived("5m".to_string()), 7)
+                .unwrap()
+                .start,
+            page.start
+        );
+        assert_eq!(
+            revision_window(&page, &CacheProfile::Structure("5m".to_string()), 7)
                 .unwrap()
                 .start,
             Utc.with_ymd_and_hms(2026, 7, 7, 8, 0, 0).unwrap()
@@ -2654,6 +2785,10 @@ mod tests {
                 estimated_luld_distance_to_lower_pct: 0.0,
                 estimated_luld_state: "unavailable".to_string(),
             }],
+            bar_indicator_projection: vec![json!({
+                "bar_start": start,
+                "vwap": 3.55,
+            })],
             structure_projection: vec![json!({
                 "bar_start": start,
                 "qmd_structure_unified_levels": [],
@@ -2699,6 +2834,27 @@ mod tests {
         apply_structure_projection_row(&mut active, &transition);
         assert_eq!(active.len(), 1);
         assert_eq!(active.values().next().unwrap()["price"], json!(3.8));
+    }
+
+    #[test]
+    fn derived_revision_window_does_not_replay_structural_lookback() {
+        let start = Utc.with_ymd_and_hms(2026, 8, 21, 8, 0, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2026, 8, 21, 13, 30, 0).unwrap();
+        let window = EventWindow {
+            start,
+            end,
+            tickers: vec!["SUGP".to_string()],
+        };
+
+        let derived =
+            revision_window(&window, &CacheProfile::Derived("1s".to_string()), 7).unwrap();
+        let structure =
+            revision_window(&window, &CacheProfile::Structure("1s".to_string()), 7).unwrap();
+
+        assert_eq!(derived.start, start);
+        assert_eq!(derived.end, end);
+        assert!(structure.start < start);
+        assert_eq!(structure.end, end);
     }
 
     #[test]

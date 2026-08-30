@@ -16,7 +16,11 @@ from src.backend.canonical_backtest_service import (
     backtest_comparison_projection,
     canonical_backtest_state,
 )
-from src.backend.canonical_trading_service import performance_snapshot, trading_state_payload
+from src.backend.canonical_trading_service import (
+    performance_snapshot,
+    portfolio_metrics,
+    trading_state_payload,
+)
 from src.backend.real_live_trading_service import RealLiveAccount, real_live_portfolio
 from src.trading_runtime.canonical_commands import intent_to_ibkr_request
 from src.trading_runtime.canonical_session import CanonicalBrokerSession
@@ -373,6 +377,21 @@ class CanonicalProjectionTests(unittest.TestCase):
         self.assertEqual(snapshot["net_pnl_today"], "25")
         self.assertEqual(snapshot["available_cash"], "25000")
         self.assertEqual(snapshot["available_cash_basis"], "total_cash")
+
+    def test_portfolio_metrics_keep_realized_pnl_after_account_is_flat(self) -> None:
+        metrics = portfolio_metrics(
+            [],
+            [
+                {
+                    "currency": "USD",
+                    "is_base": False,
+                    "values": {"realizedpnl": "6.25"},
+                }
+            ],
+            [],
+        )
+
+        self.assertEqual(metrics["realized_pnl"], "6.25")
 
 
 class CanonicalAdapterTests(unittest.IsolatedAsyncioTestCase):

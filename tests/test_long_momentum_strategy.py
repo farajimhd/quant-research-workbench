@@ -84,6 +84,77 @@ def confirmed_observation(**overrides) -> StrategyObservation:
 
 
 class LongMomentumStrategyTests(unittest.TestCase):
+    def test_entry_uses_unified_support_and_builds_causal_five_target_ladder(self) -> None:
+        result = LongMomentumStrategyEngine().evaluate(
+            assignment(),
+            confirmed_observation(
+                price=3.55,
+                bid=3.54,
+                ask=3.55,
+                previous_close=3.20,
+                previous_high=3.50,
+                swing_high=3.50,
+                swing_low=3.48,
+                structural_support_lower=3.35,
+                structural_support_strength=0.9,
+                structural_support_confidence=0.9,
+                structural_resistance_lower=4.27,
+                structural_resistance_strength=0.9,
+                structural_resistance_confidence=0.9,
+                vwap=3.45,
+                volatility=0.05,
+                upper_luld_price=None,
+            ),
+        )
+
+        signal = result.evaluation.signals[0]
+        self.assertEqual(signal.action, "enter_long")
+        self.assertAlmostEqual(signal.invalidation_price, 3.3473, places=4)
+        self.assertEqual(len(signal.metadata["profit_targets"]), 5)
+        self.assertIn(4.27, signal.metadata["profit_targets"])
+        self.assertEqual(result.state["structural_profit_targets"], signal.metadata["profit_targets"])
+
+    def test_entry_prioritizes_five_causal_level_book_zones_before_fibonacci_fallbacks(self) -> None:
+        levels = tuple(
+            {
+                "price": price,
+                "lower": lower,
+                "strength": 0.9,
+                "confidence": 0.8,
+            }
+            for price, lower in (
+                (3.69, 3.68),
+                (3.73, 3.72),
+                (3.85, 3.83),
+                (3.91, 3.89),
+                (3.96, 3.94),
+            )
+        )
+        result = LongMomentumStrategyEngine().evaluate(
+            assignment(),
+            confirmed_observation(
+                price=3.67,
+                bid=3.66,
+                ask=3.67,
+                previous_close=3.20,
+                previous_high=3.62,
+                swing_high=3.62,
+                swing_low=3.60,
+                structural_support_lower=3.60,
+                structural_support_strength=1.0,
+                structural_support_confidence=0.77,
+                structural_resistance_levels=levels,
+                vwap=3.47,
+                volatility=0.025,
+                upper_luld_price=None,
+            ),
+        )
+
+        self.assertEqual(
+            result.evaluation.signals[0].metadata["profit_targets"],
+            [3.68, 3.72, 3.83, 3.89, 3.94],
+        )
+
     def test_background_evaluation_emits_autonomous_causal_lineage(self) -> None:
         result = LongMomentumStrategyEngine().evaluate(
             assignment(),
@@ -1371,6 +1442,39 @@ class LongMomentumStrategyTests(unittest.TestCase):
 
 
 class LongMomentumRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_portfolio_rejection_clears_phantom_entry_pending_state(self) -> None:
+        assigned = assignment(
+            status=AssignmentStatus.ENTRY_PENDING,
+            state={
+                "entries": 1,
+                "entry_at": NOW.isoformat(),
+                "entry_reference_price": 101.0,
+                "initial_stop": 99.0,
+                "active_stop": 99.0,
+                "structural_profit_targets": [103.0],
+            },
+        )
+        strategy = AssignedLongMomentumStrategy([assigned])
+        intent = LongMomentumStrategyEngine().evaluate(
+            assignment(), confirmed_observation()
+        ).evaluation.intents[0]
+
+        await strategy.on_intent_rejected(
+            intent,
+            reasons=("too_many_protection_slices",),
+            event_time=NOW,
+        )
+
+        updated = strategy.assignments()[0]
+        self.assertEqual(updated.status, AssignmentStatus.WATCHING)
+        self.assertEqual(updated.state["entries"], 0)
+        self.assertNotIn("entry_at", updated.state)
+        self.assertNotIn("active_stop", updated.state)
+        self.assertEqual(
+            updated.state["last_intent_rejection"]["reasons"],
+            ["too_many_protection_slices"],
+        )
+
     async def test_shared_runtime_records_intent_and_submits_protected_order_group(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             journal = TradingJournal(Path(directory) / "journal.sqlite3")

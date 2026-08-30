@@ -506,7 +506,7 @@ def strategy_activity_payload(
     limit: int = 500,
 ) -> dict[str, Any]:
     """Project the durable strategy journal into an operator-facing event list."""
-    requested_limit = max(1, min(int(limit), 5000))
+    requested_limit = max(1, min(int(limit), 50_000))
     records = (journal or trading_journal()).strategy_activity_records(
         strategy_id=strategy_id.strip(),
         run_id=run_id.strip(),
@@ -594,6 +594,8 @@ def strategy_activity_event_type(entity_type: str, *, category: str = "") -> str
         # Activity, their journal category is the operator-facing authority:
         # enter, wait, hold, and veto evaluations are decisions.
         return "decision"
+    if category == "order_management":
+        return "order"
     if entity_type == "signal_occurrence":
         return "signal"
     if entity_type == "historical_watchlist_member":
@@ -639,6 +641,19 @@ def _strategy_activity_reason(
     )
     if explicit:
         return str(explicit)
+    if category == "order_management":
+        state = str(payload.get("state") or "").replace("_", " ").strip()
+        status = str(payload.get("status") or "").replace("_", " ").strip()
+        event = str(payload.get("event") or "").replace("_", " ").strip()
+        if state and event:
+            return f"Order is {state}: {event}."
+        if state:
+            return f"Order is {state}."
+        if status:
+            return f"Protection is {status}."
+        if event:
+            return f"Order event: {event}."
+        return "Order-management state changed."
     if category != "market_discovery_signal":
         return ""
     parts: list[str] = []
@@ -1337,7 +1352,12 @@ def historical_bar_history_before(
             include_structure=include_structure,
             stage=stage,
             limit=row_limit,
-            timeout_seconds=(150 if indicator_columns == ["bar_start", "qmd_structure_unified_levels"] else 90),
+            # A cold full-session bar preparation is a bounded, persisted
+            # operation and may legitimately exceed the ordinary point-query
+            # deadline.  Subsequent requests are served from the prepared bar
+            # artifact; event-derived preparation retains the tighter limit so
+            # a slow secondary calculation cannot block chart readiness.
+            timeout_seconds=(180 if stage == "bars" and full_session else 90),
         ),
         history_get=_historical_gateway_get,
     ).payload

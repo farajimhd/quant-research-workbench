@@ -438,6 +438,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (shutdown_sender, mut shutdown_receiver) = watch::channel(false);
     let structure_focus_reclaimer = structure_focus.clone();
     let structure_focus_advancer = structure_focus.clone();
+    let structure_split_adjuster = structure_focus.clone();
     let structure_focus_targets = computation_targets.clone();
     let app = app(AppState {
         bars,
@@ -515,6 +516,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 }
                 Err(error) => {
                     eprintln!("QMD inactive structure checkpoint advancement deferred: {error}")
+                }
+            }
+        }
+    }));
+    producer_handles.push(tokio::spawn(async move {
+        loop {
+            sleep(Duration::from_secs(30)).await;
+            match structure_split_adjuster
+                .apply_due_split_adjustments(Utc::now())
+                .await
+            {
+                Ok(adjusted) if !adjusted.is_empty() => eprintln!(
+                    "QMD applied and persisted {} due Generic Structure split adjustments: {}",
+                    adjusted.len(),
+                    adjusted.join(","),
+                ),
+                Ok(_) => {}
+                Err(error) => {
+                    eprintln!("QMD Generic Structure split adjustment deferred: {error}")
                 }
             }
         }

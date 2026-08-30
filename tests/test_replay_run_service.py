@@ -55,6 +55,7 @@ from src.trading_runtime.strategy_engine import (
     STRATEGY_ID,
     STRATEGY_REVISION,
     StrategyAssignment,
+    StrategyObservation,
     StrategyPermissions,
     resolve_long_momentum_parameters,
     default_long_momentum_parameters,
@@ -2044,6 +2045,118 @@ class BacktestPreflightTests(unittest.TestCase):
 
 
 class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
+    def test_structure_enrichment_uses_exact_cached_entry_contract(self) -> None:
+        now = datetime(2026, 8, 21, 8, 10, 37, tzinfo=UTC)
+        rules = {
+            "trigger": {
+                "operator": "all",
+                "rule_sets": [{
+                    "rule_set_id": "swing-break",
+                    "operator": "all",
+                    "enabled": True,
+                    "conditions": [{
+                        "condition_id": "break",
+                        "enabled": True,
+                        "comparator": "above_by_bps",
+                        "left_source_id": "market.last_price",
+                        "right_source_id": "indicator.structure.swing_high",
+                        "value": 0.0,
+                    }],
+                }],
+            },
+            "confirmation": {
+                "operator": "all",
+                "rule_sets": [{
+                    "rule_set_id": "confirmation",
+                    "operator": "all",
+                    "enabled": True,
+                    "conditions": [
+                        {
+                            "condition_id": "vwap",
+                            "enabled": True,
+                            "comparator": "greater_than",
+                            "left_source_id": "market.last_price",
+                            "right_source_id": "indicator.vwap.value",
+                        },
+                        {
+                            "condition_id": "macd",
+                            "enabled": True,
+                            "comparator": "greater_than",
+                            "left_source_id": "indicator.macd.line",
+                            "right_source_id": "indicator.macd.signal",
+                        },
+                    ],
+                }],
+            },
+            "veto": {
+                "operator": "any",
+                "rule_sets": [{
+                    "rule_set_id": "veto",
+                    "operator": "all",
+                    "enabled": True,
+                    "conditions": [{
+                        "condition_id": "dislocation",
+                        "enabled": True,
+                        "comparator": "greater_or_equal",
+                        "left_source_id": "signal.liquidity_dislocation.score",
+                        "value": 0.75,
+                    }],
+                }],
+            },
+        }
+        assigned = StrategyAssignment(
+            assignment_id="sugp",
+            strategy_id=STRATEGY_ID,
+            strategy_revision=STRATEGY_REVISION,
+            account_id="DU123456",
+            ticker="SUGP",
+            conid=1,
+            status=AssignmentStatus.WATCHING,
+            permissions=StrategyPermissions(enter=True),
+            parameters={"entry_rules": rules},
+            created_at=now,
+            updated_at=now,
+        )
+        values = {
+            key: {"observed_at": now.isoformat(), "value": value}
+            for key, value in {
+                "market.last_price": 3.6694,
+                "indicator.structure.swing_high": 3.62,
+                "indicator.vwap.value": 3.47,
+                "indicator.macd.line": 0.04,
+                "indicator.macd.signal": 0.03,
+                "signal.liquidity_dislocation.score": 0.0,
+            }.items()
+        }
+        observation = StrategyObservation(
+            ticker="SUGP",
+            observed_at=now,
+            price=3.6694,
+            # Deliberately absent direct fields reproduce the prepared-bar
+            # case; the compiled Strategy contract reads causal source values.
+            source_values=values,
+        )
+        frame = ReplayDerivedFrame(
+            as_of=now,
+            bar={"close": 3.6694},
+            indicator={"close": 3.6694},
+            sequence=1,
+            ticker="SUGP",
+            timeframe="1s",
+        )
+        controller = ReplayRunController.__new__(ReplayRunController)
+        controller._strategy_quality_admitted_tickers = set()
+        controller._strategy_engaged_tickers = {"SUGP"}
+
+        self.assertTrue(
+            controller._entry_structure_context_is_actionable(
+                observation,
+                frame,
+                ticker_assignments=(assigned,),
+            )
+        )
+        self.assertEqual(controller._strategy_quality_admitted_tickers, {"SUGP"})
+
     async def test_one_second_frames_project_absolute_liquidity_causally(self) -> None:
         controller = ReplayRunController(
             ReplayRunDefinition(

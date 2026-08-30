@@ -486,6 +486,82 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
             await manager.close()
             journal.close()
 
+    async def test_volatility_trail_waits_for_configured_activation_gain(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            broker = RecordingBroker()
+            manager, journal = await self._manager(
+                directory,
+                broker,
+                policy=BrokerCommunicationPolicy(),
+            )
+            profile = ProtectionProfile(
+                profile_id="delayed-volatility-trail",
+                revision=1,
+                slices=(ProtectionSlice(
+                    "position",
+                    1.0,
+                    StopRule(StopRuleType.FIXED_PRICE, price=9.5),
+                    trailing=TrailingRule(
+                        rule_type=TrailingRuleType.VOLATILITY_TRAIL,
+                        volatility_multiple=1.0,
+                        activation_gain_percent=8.0,
+                    ),
+                ),),
+            )
+            owner_intent = replace(
+                intent(quantity=10),
+                intent_id="delayed-trail-owner",
+                protection_profile=profile,
+            )
+            stop_request = OrderRequest(
+                acctId="DU1",
+                conid=123,
+                cOID="delayed-trail-stop",
+                ticker="TEST",
+                orderType="STP",
+                side="SELL",
+                quantity=10,
+                auxPrice=9.5,
+            )
+            broker._book_execution(
+                OrderRequest(
+                    acctId="DU1", conid=123, cOID="seed-position", ticker="TEST",
+                    orderType="MKT", side="BUY", quantity=10,
+                ),
+                10.0,
+                10.0,
+                0.0,
+            )
+            response = await broker.place_orders("DU1", [stop_request])
+            order_id = response[0]["order_id"]
+            owner = _ManagedOrderGroup(
+                group_id="delayed-trail-group",
+                intent=owner_intent,
+                account_id="DU1",
+                plan=StrategyOrderPlan((stop_request,)),
+                state=OrderManagementState.FILLED,
+                created_at=NOW,
+                updated_at=NOW,
+                orders=[stop_request],
+                broker_order_ids=[order_id],
+                broker_order_request_indexes={order_id: 0},
+                high_water_price=10.5,
+                low_water_price=10.0,
+            )
+            manager._groups = {owner.group_id: owner}
+            manager._group_by_broker_id[order_id] = owner.group_id
+
+            await manager._ratchet_dynamic_protection(
+                owner,
+                ExecutionMarketSnapshot(
+                    "TEST", 10.5, 10.52, 0.01, NOW, "test", volatility=0.1
+                ),
+            )
+
+            self.assertEqual(broker.modifications, [])
+            await manager.close()
+            journal.close()
+
     async def test_oms_records_preserve_portfolio_causal_lineage(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             broker = SimulatedBrokerAdapter(["DU1"], mode=TradingMode.PAPER)
@@ -521,6 +597,7 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(
                     all(row.payload["causation_id"] == "portfolio-decision-7" for row in records)
                 )
+                self.assertTrue(all(row.event_time == NOW for row in records))
             finally:
                 await manager.close()
                 journal.close()

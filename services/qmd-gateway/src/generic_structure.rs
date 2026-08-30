@@ -5,7 +5,7 @@ use chrono_tz::America::New_York;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
-pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 12;
+pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 14;
 pub const STRUCTURE_TIMEFRAMES: [(&str, i64); 8] = [
     ("100ms", 100),
     ("1s", 1_000),
@@ -28,6 +28,25 @@ const MAX_UNIFIED_LEVELS_PER_SIDE: usize = 16;
 const MAX_UNIFIED_BOOK_CANDIDATES_PER_SIDE: usize = MAX_UNIFIED_LEVELS_PER_SIDE * 2;
 const MAX_UNIFIED_TRACKS: usize = 128;
 const MAX_UNIFIED_SOURCES_PER_TRACK: usize = 16;
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct StructureSplitAdjustment {
+    pub execution_date: NaiveDate,
+    pub effective_at: DateTime<Utc>,
+    pub split_from: f64,
+    pub split_to: f64,
+    pub source_inserted_at: DateTime<Utc>,
+}
+
+impl StructureSplitAdjustment {
+    fn identity(&self) -> (NaiveDate, i64, i64) {
+        (
+            self.execution_date,
+            (self.split_from * 1_000_000_000.0).round() as i64,
+            (self.split_to * 1_000_000_000.0).round() as i64,
+        )
+    }
+}
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct StructureFootprintBin {
@@ -125,6 +144,12 @@ pub struct UnifiedStructureSource {
     pub strength: f64,
     pub confidence: f64,
     pub total_volume: f64,
+    #[serde(default)]
+    pub buy_volume: f64,
+    #[serde(default)]
+    pub sell_volume: f64,
+    #[serde(default)]
+    pub neutral_volume: f64,
     pub trade_count: u64,
     #[serde(default)]
     pub source_kind: String,
@@ -155,7 +180,18 @@ pub struct UnifiedStructureLevel {
     pub created_at_ms: i64,
     pub confirmed_at_ms: i64,
     pub total_volume: f64,
+    #[serde(default)]
+    pub buy_volume: f64,
+    #[serde(default)]
+    pub sell_volume: f64,
+    #[serde(default)]
+    pub neutral_volume: f64,
     pub trade_count: u64,
+    /// Signed executed-volume pressure in [-1, 1]. Positive values indicate
+    /// more buyer-initiated volume around the level; negative values indicate
+    /// more seller-initiated volume. It is evidence, not a return forecast.
+    #[serde(default)]
+    pub pressure_bias: f64,
     /// Evidence-derived chance that the next encounter produces a meaningful
     /// reaction at this price area. This is deliberately not a calibrated
     /// directional forecast.
@@ -164,6 +200,14 @@ pub struct UnifiedStructureLevel {
     /// Beta-smoothed evidence that the level holds in its current role.
     #[serde(default)]
     pub hold_probability: f64,
+    /// Beta-smoothed complement of hold probability. This describes observed
+    /// level failure frequency and is not a forecast of the next price move.
+    #[serde(default)]
+    pub break_probability: f64,
+    /// Evidence-weighted likelihood of a meaningful rejection or role flip at
+    /// the range. It is a structural reaction estimate, not direction alpha.
+    #[serde(default)]
+    pub reversal_probability: f64,
     #[serde(default)]
     pub touch_count: u32,
     #[serde(default)]
@@ -486,6 +530,9 @@ pub struct GenericStructureEngine {
     last_arrival_sequence: u64,
     last_reference_price: f64,
     last_trade_price: f64,
+    rolling_abs_trade_move: f64,
+    rolling_spread: f64,
+    rolling_trade_size: f64,
     bid: f64,
     ask: f64,
     leg_direction: i8,
@@ -504,6 +551,7 @@ pub struct GenericStructureEngine {
     session_volume_by_price: HashMap<i64, PriceVolumeBin>,
     trade_volume_poc: f64,
     last_event: Option<GenericStructureEvent>,
+    applied_split_adjustments: Vec<StructureSplitAdjustment>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -517,6 +565,12 @@ pub struct GenericStructureCheckpoint {
     pub last_arrival_sequence: u64,
     last_reference_price: f64,
     last_trade_price: f64,
+    #[serde(default)]
+    rolling_abs_trade_move: f64,
+    #[serde(default)]
+    rolling_spread: f64,
+    #[serde(default)]
+    rolling_trade_size: f64,
     bid: f64,
     ask: f64,
     leg_direction: i8,
@@ -536,6 +590,8 @@ pub struct GenericStructureCheckpoint {
     session_volume_by_price: HashMap<i64, PriceVolumeBin>,
     trade_volume_poc: f64,
     last_event: Option<GenericStructureEvent>,
+    #[serde(default)]
+    pub applied_split_adjustments: Vec<StructureSplitAdjustment>,
 }
 
 impl GenericStructureEngine {
@@ -547,6 +603,9 @@ impl GenericStructureEngine {
             last_arrival_sequence: 0,
             last_reference_price: 0.0,
             last_trade_price: 0.0,
+            rolling_abs_trade_move: 0.0,
+            rolling_spread: 0.0,
+            rolling_trade_size: 0.0,
             bid: 0.0,
             ask: 0.0,
             leg_direction: 0,
@@ -568,7 +627,23 @@ impl GenericStructureEngine {
             session_volume_by_price: HashMap::new(),
             trade_volume_poc: 0.0,
             last_event: None,
+            applied_split_adjustments: Vec::new(),
         }
+    }
+
+    /// Applies a corporate-action boundary to the complete persistent book.
+    /// Price coordinates move by `split_from / split_to`; share quantities move
+    /// by the inverse factor. The operation is idempotent by split identity.
+    pub fn apply_split_adjustment(
+        &mut self,
+        adjustment: &StructureSplitAdjustment,
+    ) -> Result<bool, String> {
+        let mut checkpoint = self.checkpoint();
+        let changed = checkpoint.apply_split_adjustment(adjustment)?;
+        if changed {
+            self.seed_checkpoint(&checkpoint);
+        }
+        Ok(changed)
     }
 
     pub fn updated_at_ms(&self) -> i64 {
@@ -608,6 +683,8 @@ impl GenericStructureEngine {
             {
                 self.bid = quote.bid_price;
                 self.ask = quote.ask_price;
+                let spread = quote.ask_price - quote.bid_price;
+                self.rolling_spread = ewma(self.rolling_spread, spread, 0.08);
                 self.last_reference_price = (quote.bid_price + quote.ask_price) / 2.0;
             }
             MarketEvent::Trade(trade)
@@ -619,6 +696,16 @@ impl GenericStructureEngine {
                     0.0
                 };
                 let aggressor = self.classify_aggressor(trade.price);
+                if self.last_trade_price > 0.0 {
+                    self.rolling_abs_trade_move = ewma(
+                        self.rolling_abs_trade_move,
+                        (trade.price - self.last_trade_price).abs(),
+                        0.08,
+                    );
+                }
+                if size > 0.0 {
+                    self.rolling_trade_size = ewma(self.rolling_trade_size, size, 0.05);
+                }
                 self.last_reference_price = trade.price;
                 self.observe_trade_reference(ts, trade.price);
                 self.update_unified_level_lifecycles(ts, trade.price, size);
@@ -676,7 +763,7 @@ impl GenericStructureEngine {
         price: f64,
         emitted: &mut Vec<GenericStructureEvent>,
     ) {
-        let tick = price_tick(price);
+        let reversal_distance = self.adaptive_reversal_distance(price);
         if self.candidate_high <= 0.0 {
             self.candidate_high = price;
             self.candidate_low = price;
@@ -706,7 +793,7 @@ impl GenericStructureEngine {
             if price >= self.candidate_high {
                 self.candidate_high = price;
                 self.candidate_high_at = Some(ts);
-            } else if moved_at_least_one_tick(self.candidate_high - price, tick) {
+            } else if self.candidate_high - price >= reversal_distance {
                 let pivot_price = self.candidate_high;
                 let pivot_at = self.candidate_high_at.unwrap_or(ts);
                 self.add_or_reinforce_level(-1, pivot_price, pivot_at, ts, emitted);
@@ -719,7 +806,7 @@ impl GenericStructureEngine {
         } else if price <= self.candidate_low {
             self.candidate_low = price;
             self.candidate_low_at = Some(ts);
-        } else if moved_at_least_one_tick(price - self.candidate_low, tick) {
+        } else if price - self.candidate_low >= reversal_distance {
             let pivot_price = self.candidate_low;
             let pivot_at = self.candidate_low_at.unwrap_or(ts);
             self.add_or_reinforce_level(1, pivot_price, pivot_at, ts, emitted);
@@ -739,9 +826,12 @@ impl GenericStructureEngine {
         confirmed_at: DateTime<Utc>,
         emitted: &mut Vec<GenericStructureEvent>,
     ) {
-        let tick = price_tick(price);
+        let half_width = self.adaptive_zone_half_width(price);
         if let Some(level) = self.levels.iter_mut().find(|level| {
-            level.side == side && level.is_active() && (level.price - price).abs() <= tick * 0.5
+            level.side == side
+                && level.is_active()
+                && price >= level.lower - half_width
+                && price <= level.upper + half_width
         }) {
             level.touch_count = level.touch_count.saturating_add(1);
             level.hold_count = level.hold_count.saturating_add(1);
@@ -761,8 +851,8 @@ impl GenericStructureEngine {
             level_id,
             side,
             price,
-            lower: price - tick,
-            upper: price + tick,
+            lower: price - half_width,
+            upper: price + half_width,
             pivot_at,
             confirmed_at,
             last_test_at: confirmed_at,
@@ -785,6 +875,22 @@ impl GenericStructureEngine {
         ));
         self.levels.push(level);
         self.prune_levels();
+    }
+
+    fn adaptive_reversal_distance(&self, price: f64) -> f64 {
+        let floor = price_tick(price) * 2.0;
+        let geometry = (self.rolling_abs_trade_move * 0.75)
+            .max(self.rolling_spread * 0.75)
+            .max(floor);
+        geometry.min((price * 0.02).max(floor))
+    }
+
+    fn adaptive_zone_half_width(&self, price: f64) -> f64 {
+        let floor = price_tick(price);
+        let geometry = (self.rolling_abs_trade_move * 0.75)
+            .max(self.rolling_spread * 0.5)
+            .max(floor);
+        geometry.min((price * 0.01).max(floor))
     }
 
     fn update_timeframe_structures(
@@ -1593,6 +1699,9 @@ impl GenericStructureEngine {
             last_arrival_sequence: self.last_arrival_sequence,
             last_reference_price: self.last_reference_price,
             last_trade_price: self.last_trade_price,
+            rolling_abs_trade_move: self.rolling_abs_trade_move,
+            rolling_spread: self.rolling_spread,
+            rolling_trade_size: self.rolling_trade_size,
             bid: self.bid,
             ask: self.ask,
             leg_direction: self.leg_direction,
@@ -1611,6 +1720,7 @@ impl GenericStructureEngine {
             session_volume_by_price: self.session_volume_by_price.clone(),
             trade_volume_poc: self.trade_volume_poc,
             last_event: self.last_event.clone(),
+            applied_split_adjustments: self.applied_split_adjustments.clone(),
         }
     }
 
@@ -1624,6 +1734,9 @@ impl GenericStructureEngine {
         self.last_arrival_sequence = checkpoint.last_arrival_sequence;
         self.last_reference_price = checkpoint.last_reference_price;
         self.last_trade_price = checkpoint.last_trade_price;
+        self.rolling_abs_trade_move = checkpoint.rolling_abs_trade_move;
+        self.rolling_spread = checkpoint.rolling_spread;
+        self.rolling_trade_size = checkpoint.rolling_trade_size;
         self.bid = checkpoint.bid;
         self.ask = checkpoint.ask;
         self.leg_direction = checkpoint.leg_direction;
@@ -1642,6 +1755,194 @@ impl GenericStructureEngine {
         self.session_volume_by_price = checkpoint.session_volume_by_price.clone();
         self.trade_volume_poc = checkpoint.trade_volume_poc;
         self.last_event = checkpoint.last_event.clone();
+        self.applied_split_adjustments = checkpoint.applied_split_adjustments.clone();
+    }
+}
+
+impl GenericStructureCheckpoint {
+    pub fn apply_split_adjustment(
+        &mut self,
+        adjustment: &StructureSplitAdjustment,
+    ) -> Result<bool, String> {
+        if !(adjustment.split_from.is_finite()
+            && adjustment.split_to.is_finite()
+            && adjustment.split_from > 0.0
+            && adjustment.split_to > 0.0)
+        {
+            return Err("Generic Structure split terms must be finite and positive".to_string());
+        }
+        if adjustment.effective_at.date_naive() < adjustment.execution_date {
+            return Err("Generic Structure split effective_at precedes execution_date".to_string());
+        }
+        if self
+            .applied_split_adjustments
+            .iter()
+            .any(|applied| applied.identity() == adjustment.identity())
+        {
+            return Ok(false);
+        }
+        let price_factor = adjustment.split_from / adjustment.split_to;
+        let share_factor = adjustment.split_to / adjustment.split_from;
+        scale_price(&mut self.last_reference_price, price_factor);
+        scale_price(&mut self.last_trade_price, price_factor);
+        scale_price(&mut self.rolling_abs_trade_move, price_factor);
+        scale_price(&mut self.rolling_spread, price_factor);
+        scale_quantity(&mut self.rolling_trade_size, share_factor);
+        scale_price(&mut self.bid, price_factor);
+        scale_price(&mut self.ask, price_factor);
+        scale_price(&mut self.candidate_high, price_factor);
+        scale_price(&mut self.candidate_low, price_factor);
+        scale_price(&mut self.session_high, price_factor);
+        scale_price(&mut self.session_low, price_factor);
+        scale_price(&mut self.opening_range_high, price_factor);
+        scale_price(&mut self.opening_range_low, price_factor);
+        scale_price(&mut self.trade_volume_poc, price_factor);
+
+        for level in &mut self.levels {
+            let old_price = level.price;
+            let old_tick = price_tick(old_price);
+            scale_price(&mut level.price, price_factor);
+            scale_price(&mut level.lower, price_factor);
+            scale_price(&mut level.upper, price_factor);
+            scale_lifecycle_volume(&mut level.lifecycle, share_factor);
+            let new_tick = price_tick(level.price);
+            let mut footprint = BTreeMap::<i32, FootprintBin>::new();
+            for (offset, mut bin) in std::mem::take(&mut level.footprint) {
+                let absolute_price = (old_price + offset as f64 * old_tick) * price_factor;
+                let new_offset = ((absolute_price - level.price) / new_tick).round() as i32;
+                scale_footprint_bin(&mut bin, share_factor);
+                merge_footprint_bin(footprint.entry(new_offset).or_default(), &bin);
+            }
+            level.footprint = footprint;
+        }
+        for track in &mut self.unified_tracks {
+            scale_unified_level(&mut track.level, price_factor, share_factor);
+            scale_lifecycle_volume(&mut track.lifecycle, share_factor);
+        }
+        for state in &mut self.timeframe_states {
+            scale_price(&mut state.previous_high, price_factor);
+            scale_price(&mut state.current_high, price_factor);
+            scale_price(&mut state.previous_low, price_factor);
+            scale_price(&mut state.current_low, price_factor);
+            if let Some(bucket) = &mut state.current_bucket {
+                scale_timeframe_bucket(bucket, price_factor, share_factor);
+            }
+            for bucket in &mut state.completed_buckets {
+                scale_timeframe_bucket(bucket, price_factor, share_factor);
+            }
+            if let Some(swing) = &mut state.active_high {
+                scale_timeframe_swing(swing, price_factor, share_factor);
+            }
+            if let Some(swing) = &mut state.active_low {
+                scale_timeframe_swing(swing, price_factor, share_factor);
+            }
+        }
+        let mut volume_by_price = HashMap::<i64, PriceVolumeBin>::new();
+        for (key, mut bin) in std::mem::take(&mut self.session_volume_by_price) {
+            scale_price_volume_bin(&mut bin, share_factor);
+            let adjusted_key = price_key(price_from_key(key) * price_factor);
+            merge_price_volume_bin(volume_by_price.entry(adjusted_key).or_default(), &bin);
+        }
+        self.session_volume_by_price = volume_by_price;
+        if let Some(event) = &mut self.last_event {
+            scale_price(&mut event.price, price_factor);
+            scale_price(&mut event.lower, price_factor);
+            scale_price(&mut event.upper, price_factor);
+            scale_quantity(&mut event.total_volume, share_factor);
+            scale_quantity(&mut event.buy_volume, share_factor);
+            scale_quantity(&mut event.sell_volume, share_factor);
+            scale_quantity(&mut event.neutral_volume, share_factor);
+        }
+        self.applied_split_adjustments.push(adjustment.clone());
+        self.applied_split_adjustments
+            .sort_by_key(|item| (item.effective_at, item.source_inserted_at));
+        Ok(true)
+    }
+}
+
+fn scale_price(value: &mut f64, factor: f64) {
+    if value.is_finite() && *value != 0.0 {
+        *value *= factor;
+    }
+}
+
+fn scale_quantity(value: &mut f64, factor: f64) {
+    if value.is_finite() && *value != 0.0 {
+        *value *= factor;
+    }
+}
+
+fn scale_lifecycle_volume(lifecycle: &mut LevelLifecycle, factor: f64) {
+    if let LevelLifecycle::Crossed { beyond_volume, .. } = lifecycle {
+        scale_quantity(beyond_volume, factor);
+    }
+}
+
+fn scale_footprint_bin(bin: &mut FootprintBin, factor: f64) {
+    scale_quantity(&mut bin.total_volume, factor);
+    scale_quantity(&mut bin.buy_volume, factor);
+    scale_quantity(&mut bin.sell_volume, factor);
+    scale_quantity(&mut bin.neutral_volume, factor);
+    scale_quantity(&mut bin.largest_trade, factor);
+}
+
+fn merge_footprint_bin(target: &mut FootprintBin, source: &FootprintBin) {
+    target.total_volume += source.total_volume;
+    target.buy_volume += source.buy_volume;
+    target.sell_volume += source.sell_volume;
+    target.neutral_volume += source.neutral_volume;
+    target.trade_count = target.trade_count.saturating_add(source.trade_count);
+    target.largest_trade = target.largest_trade.max(source.largest_trade);
+}
+
+fn scale_price_volume_bin(bin: &mut PriceVolumeBin, factor: f64) {
+    scale_quantity(&mut bin.total_volume, factor);
+    scale_quantity(&mut bin.buy_volume, factor);
+    scale_quantity(&mut bin.sell_volume, factor);
+    scale_quantity(&mut bin.neutral_volume, factor);
+    scale_quantity(&mut bin.largest_trade, factor);
+}
+
+fn merge_price_volume_bin(target: &mut PriceVolumeBin, source: &PriceVolumeBin) {
+    target.total_volume += source.total_volume;
+    target.buy_volume += source.buy_volume;
+    target.sell_volume += source.sell_volume;
+    target.neutral_volume += source.neutral_volume;
+    target.trade_count = target.trade_count.saturating_add(source.trade_count);
+    target.largest_trade = target.largest_trade.max(source.largest_trade);
+}
+
+fn scale_timeframe_bucket(bucket: &mut TimeframeBucket, price_factor: f64, share_factor: f64) {
+    scale_price(&mut bucket.high, price_factor);
+    scale_price(&mut bucket.low, price_factor);
+    scale_quantity(&mut bucket.total_volume, share_factor);
+    scale_quantity(&mut bucket.buy_volume, share_factor);
+    scale_quantity(&mut bucket.sell_volume, share_factor);
+    scale_quantity(&mut bucket.neutral_volume, share_factor);
+}
+
+fn scale_timeframe_swing(swing: &mut TimeframeSwing, price_factor: f64, share_factor: f64) {
+    scale_price(&mut swing.price, price_factor);
+    scale_quantity(&mut swing.total_volume, share_factor);
+    scale_quantity(&mut swing.buy_volume, share_factor);
+    scale_quantity(&mut swing.sell_volume, share_factor);
+    scale_quantity(&mut swing.neutral_volume, share_factor);
+}
+
+fn scale_unified_level(level: &mut UnifiedStructureLevel, price_factor: f64, share_factor: f64) {
+    scale_price(&mut level.price, price_factor);
+    scale_price(&mut level.lower, price_factor);
+    scale_price(&mut level.upper, price_factor);
+    scale_quantity(&mut level.total_volume, share_factor);
+    scale_quantity(&mut level.buy_volume, share_factor);
+    scale_quantity(&mut level.sell_volume, share_factor);
+    scale_quantity(&mut level.neutral_volume, share_factor);
+    for source in &mut level.sources {
+        scale_price(&mut source.price, price_factor);
+        scale_quantity(&mut source.total_volume, share_factor);
+        scale_quantity(&mut source.buy_volume, share_factor);
+        scale_quantity(&mut source.sell_volume, share_factor);
+        scale_quantity(&mut source.neutral_volume, share_factor);
     }
 }
 
@@ -1701,16 +2002,19 @@ fn unified_structure_levels(
         })
         .map(|level| {
             let (strength, confidence) = level_evidence(level);
-            let (total_volume, trade_count) =
-                level
-                    .footprint
-                    .values()
-                    .fold((0.0, 0_u64), |(volume, trades), bin| {
+            let (total_volume, buy_volume, sell_volume, neutral_volume, trade_count) =
+                level.footprint.values().fold(
+                    (0.0, 0.0, 0.0, 0.0, 0_u64),
+                    |(total, buy, sell, neutral, trades), bin| {
                         (
-                            volume + bin.total_volume,
+                            total + bin.total_volume,
+                            buy + bin.buy_volume,
+                            sell + bin.sell_volume,
+                            neutral + bin.neutral_volume,
                             trades.saturating_add(bin.trade_count),
                         )
-                    });
+                    },
+                );
             UnifiedSwingAtom {
                 source: UnifiedStructureSource {
                     level_id: level.level_id,
@@ -1722,6 +2026,9 @@ fn unified_structure_levels(
                     strength,
                     confidence,
                     total_volume,
+                    buy_volume,
+                    sell_volume,
+                    neutral_volume,
                     trade_count,
                     source_kind: "level_book".to_string(),
                     touch_count: level.touch_count,
@@ -1733,42 +2040,48 @@ fn unified_structure_levels(
             }
         })
         .collect::<Vec<_>>();
-    atoms.extend(states.iter().flat_map(|state| {
-        [state.active_low.as_ref(), state.active_high.as_ref()]
-            .into_iter()
-            .flatten()
-            .filter(|swing| !swing.broken && swing.price > 0.0)
-            .map(|swing| UnifiedSwingAtom {
-                source: UnifiedStructureSource {
-                    level_id: swing.level_id,
-                    timeframe: state.timeframe.clone(),
-                    side: swing.side,
-                    price: swing.price,
-                    pivot_at_ms: swing
-                        .pivot_at
-                        .map(|value| value.timestamp_millis())
-                        .unwrap_or_default(),
-                    confirmed_at_ms: swing
-                        .confirmed_at
-                        .map(|value| value.timestamp_millis())
-                        .unwrap_or_default(),
-                    strength: swing.strength.clamp(0.0, 1.0),
-                    confidence: swing.confidence.clamp(0.0, 1.0),
-                    total_volume: swing.total_volume.max(0.0),
-                    trade_count: swing.trade_count,
-                    source_kind: "timeframe_swing".to_string(),
-                    touch_count: 1,
-                    hold_count: 0,
-                    break_count: 0,
-                    role_flip_count: 0,
-                    last_test_at_ms: swing
-                        .confirmed_at
-                        .map(|value| value.timestamp_millis())
-                        .unwrap_or_default(),
-                },
-            })
-            .collect::<Vec<_>>()
-    }));
+    let timeframe_atoms = states
+        .iter()
+        .flat_map(|state| {
+            [state.active_low.as_ref(), state.active_high.as_ref()]
+                .into_iter()
+                .flatten()
+                .filter(|swing| !swing.broken && swing.price > 0.0)
+                .map(|swing| UnifiedSwingAtom {
+                    source: UnifiedStructureSource {
+                        level_id: swing.level_id,
+                        timeframe: state.timeframe.clone(),
+                        side: swing.side,
+                        price: swing.price,
+                        pivot_at_ms: swing
+                            .pivot_at
+                            .map(|value| value.timestamp_millis())
+                            .unwrap_or_default(),
+                        confirmed_at_ms: swing
+                            .confirmed_at
+                            .map(|value| value.timestamp_millis())
+                            .unwrap_or_default(),
+                        strength: swing.strength.clamp(0.0, 1.0),
+                        confidence: swing.confidence.clamp(0.0, 1.0),
+                        total_volume: swing.total_volume.max(0.0),
+                        buy_volume: 0.0,
+                        sell_volume: 0.0,
+                        neutral_volume: swing.total_volume.max(0.0),
+                        trade_count: swing.trade_count,
+                        source_kind: "timeframe_swing".to_string(),
+                        touch_count: 1,
+                        hold_count: 0,
+                        break_count: 0,
+                        role_flip_count: 0,
+                        last_test_at_ms: swing
+                            .confirmed_at
+                            .map(|value| value.timestamp_millis())
+                            .unwrap_or_default(),
+                    },
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
     atoms.sort_by(|left, right| {
         left.source
             .side
@@ -1801,6 +2114,44 @@ fn unified_structure_levels(
             }
         } else {
             clusters.push(vec![atom]);
+        }
+    }
+    // Timeframe structure is corroborating evidence only. A selected chart
+    // interval must never create, remove, or re-identify the unified book.
+    // Attach a completed timeframe pivot only to a compatible event-native
+    // cluster that already exists.
+    for atom in timeframe_atoms {
+        let matching = clusters
+            .iter_mut()
+            .filter(|cluster| {
+                cluster
+                    .first()
+                    .is_some_and(|first| first.source.side == atom.source.side)
+            })
+            .filter(|cluster| {
+                let lower = cluster
+                    .iter()
+                    .map(|item| item.source.price)
+                    .fold(f64::INFINITY, f64::min);
+                let upper = cluster
+                    .iter()
+                    .map(|item| item.source.price)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                atom.source.price >= lower - bandwidth && atom.source.price <= upper + bandwidth
+            })
+            .min_by(|left, right| {
+                let left_distance = left
+                    .iter()
+                    .map(|item| (item.source.price - atom.source.price).abs())
+                    .fold(f64::INFINITY, f64::min);
+                let right_distance = right
+                    .iter()
+                    .map(|item| (item.source.price - atom.source.price).abs())
+                    .fold(f64::INFINITY, f64::min);
+                left_distance.total_cmp(&right_distance)
+            });
+        if let Some(cluster) = matching {
+            cluster.push(atom);
         }
     }
     let mut levels = clusters
@@ -1931,11 +2282,15 @@ fn unified_structure_level(
     let reaction_probability =
         (0.25 + 0.30 * salience + 0.20 * confidence + 0.15 * persistence + 0.10 * flip_importance)
             .clamp(0.0, 1.0);
-    let lower_source = sources
+    let geometry_sources = sources
+        .iter()
+        .filter(|source| source.source_kind == "level_book")
+        .collect::<Vec<_>>();
+    let lower_source = geometry_sources
         .iter()
         .map(|source| source.price)
         .fold(f64::INFINITY, f64::min);
-    let upper_source = sources
+    let upper_source = geometry_sources
         .iter()
         .map(|source| source.price)
         .fold(f64::NEG_INFINITY, f64::max);
@@ -1967,8 +2322,36 @@ fn unified_structure_level(
         .unwrap_or_default();
     let lower = lower_source - bandwidth * 0.5;
     let upper = upper_source + bandwidth * 0.5;
-    let total_volume = independent.values().map(|source| source.total_volume).sum();
-    let trade_count = independent.values().map(|source| source.trade_count).sum();
+    let total_volume = book_sources
+        .iter()
+        .map(|source| source.total_volume)
+        .sum::<f64>();
+    let buy_volume = book_sources
+        .iter()
+        .map(|source| source.buy_volume)
+        .sum::<f64>();
+    let sell_volume = book_sources
+        .iter()
+        .map(|source| source.sell_volume)
+        .sum::<f64>();
+    let neutral_volume = book_sources
+        .iter()
+        .map(|source| source.neutral_volume)
+        .sum::<f64>();
+    let trade_count = book_sources
+        .iter()
+        .map(|source| source.trade_count)
+        .sum::<u64>();
+    let directional_volume = buy_volume + sell_volume;
+    let pressure_bias = if directional_volume > 0.0 {
+        ((buy_volume - sell_volume) / directional_volume).clamp(-1.0, 1.0)
+    } else {
+        0.0
+    };
+    let break_probability = (1.0 - hold_probability).clamp(0.0, 1.0);
+    let reversal_probability = (reaction_probability
+        * (0.65 + 0.20 * pressure_bias.abs() + 0.15 * flip_importance))
+        .clamp(0.0, 1.0);
     let last_test_at_ms = sources
         .iter()
         .map(|source| source.last_test_at_ms)
@@ -2005,9 +2388,15 @@ fn unified_structure_level(
         created_at_ms,
         confirmed_at_ms,
         total_volume,
+        buy_volume,
+        sell_volume,
+        neutral_volume,
         trade_count,
+        pressure_bias,
         reaction_probability,
         hold_probability,
+        break_probability,
+        reversal_probability,
         touch_count,
         hold_count,
         break_count,
@@ -2882,8 +3271,15 @@ fn price_tick(price: f64) -> f64 {
     }
 }
 
-fn moved_at_least_one_tick(distance: f64, tick: f64) -> bool {
-    distance + tick * 1e-6 >= tick
+fn ewma(previous: f64, observation: f64, alpha: f64) -> f64 {
+    if !observation.is_finite() || observation < 0.0 {
+        return previous.max(0.0);
+    }
+    if previous <= 0.0 || !previous.is_finite() {
+        observation
+    } else {
+        previous * (1.0 - alpha) + observation * alpha
+    }
 }
 
 fn price_key(price: f64) -> i64 {
@@ -3009,15 +3405,43 @@ mod tests {
             created_at_ms: 1_700_000_000_000,
             confirmed_at_ms: 1_700_000_001_000,
             total_volume: 1_000.0,
+            buy_volume: 600.0,
+            sell_volume: 300.0,
+            neutral_volume: 100.0,
             trade_count: 10,
+            pressure_bias: 1.0 / 3.0,
             reaction_probability: 0.7,
             hold_probability: 0.5,
+            break_probability: 0.5,
+            reversal_probability: 0.5,
             touch_count: 1,
             hold_count: 0,
             break_count: 0,
             role_flip_count: 0,
             last_test_at_ms: 1_700_000_001_000,
             sources: Vec::new(),
+        }
+    }
+
+    fn event_native_level(id: u64, side: i8, price: f64, pivot_at_ms: i64) -> StructureLevel {
+        let tick = price_tick(price);
+        StructureLevel {
+            level_id: id,
+            side,
+            price,
+            lower: price - tick,
+            upper: price + tick,
+            pivot_at: Utc.timestamp_millis_opt(pivot_at_ms).unwrap(),
+            confirmed_at: Utc.timestamp_millis_opt(pivot_at_ms + 100).unwrap(),
+            last_test_at: Utc.timestamp_millis_opt(pivot_at_ms + 100).unwrap(),
+            touch_count: 1,
+            hold_count: 0,
+            break_count: 0,
+            accepted_break_count: 0,
+            role_flip_count: 0,
+            lifecycle: LevelLifecycle::Active,
+            promotions: Vec::new(),
+            footprint: BTreeMap::new(),
         }
     }
 
@@ -3096,7 +3520,7 @@ mod tests {
     }
 
     #[test]
-    fn unified_levels_deduplicate_the_same_pivot_across_timeframes() {
+    fn timeframe_pivots_only_corroborate_an_event_native_level() {
         let pivot_at_ms = 1_700_000_000_000;
         let states = vec![
             TimeframeState {
@@ -3110,13 +3534,15 @@ mod tests {
                 ..TimeframeState::default()
             },
         ];
-        let duplicated = unified_structure_levels("TEST", &states, &[], 10.0);
-        let single = unified_structure_levels("TEST", &states[..1], &[], 10.0);
+        assert!(unified_structure_levels("TEST", &states, &[], 10.0).is_empty());
+        let book = vec![event_native_level(77, -1, 10.0, pivot_at_ms)];
+        let duplicated = unified_structure_levels("TEST", &states, &book, 10.0);
+        let single = unified_structure_levels("TEST", &states[..1], &book, 10.0);
 
         assert_eq!(duplicated.len(), 1);
-        assert_eq!(duplicated[0].source_count, 2);
+        assert_eq!(duplicated[0].source_count, 3);
         assert_eq!(duplicated[0].independent_pivot_count, 1);
-        assert_eq!(duplicated[0].timeframes, vec!["1s", "5s"]);
+        assert_eq!(duplicated[0].timeframes, vec!["1s", "5s", "event-native"]);
         assert_eq!(duplicated[0].confirmed_at_ms, pivot_at_ms + 10_000);
         assert!((duplicated[0].salience - single[0].salience).abs() < 1e-12);
     }
@@ -3142,14 +3568,18 @@ mod tests {
                 ..TimeframeState::default()
             },
         ];
-        let levels = unified_structure_levels("TEST", &states, &[], 10.0);
+        let book = vec![
+            event_native_level(77, -1, 10.0, start),
+            event_native_level(78, 1, 9.9, start + 500),
+        ];
+        let levels = unified_structure_levels("TEST", &states, &book, 10.0);
 
         assert_eq!(levels.len(), 2);
         let resistance = levels.iter().find(|level| level.side == -1).unwrap();
-        assert_eq!(resistance.source_count, 2);
+        assert_eq!(resistance.source_count, 3);
         assert_eq!(resistance.independent_pivot_count, 2);
         assert!(resistance.lower < 10.0);
-        assert!(resistance.upper > 10.015);
+        assert!(resistance.upper < 10.015);
         assert_eq!(resistance.created_at_ms, start);
         assert_eq!(resistance.confirmed_at_ms, start + 11_000);
         assert!(levels.iter().all(|level| level.price < 10.1));
@@ -3337,7 +3767,7 @@ mod tests {
     fn ticker_level_book_survives_the_next_session_boundary() {
         let mut prior_engine = GenericStructureEngine::new("TEST");
         let mut persisted_events = Vec::new();
-        let prior_session = [100.00, 100.04, 100.08, 100.12, 100.11, 100.13, 100.11];
+        let prior_session = [100.00, 100.04, 100.08, 100.12, 100.08, 100.20, 100.21];
         for (index, price) in prior_session.into_iter().enumerate() {
             let (_, emitted) = prior_engine.apply_event(
                 &trade(
@@ -3378,7 +3808,10 @@ mod tests {
             prior_level.accepted_break_count
         );
         assert_eq!(seeded_level.role_flip_count, prior_level.role_flip_count);
-        assert_eq!(seeded_level.lifecycle.label(), prior_level.lifecycle.label());
+        assert_eq!(
+            seeded_level.lifecycle.label(),
+            prior_level.lifecycle.label()
+        );
         engine.apply_event(
             &trade(new_york_ms(2026, 7, 25, 4, 0, 0), 100.10, 100.0, 100),
             TradeUpdateRule::regular(),
@@ -3423,7 +3856,7 @@ mod tests {
             .with_ymd_and_hms(2026, 7, 24, 13, 30, 0)
             .unwrap()
             .timestamp_millis();
-        let prices = [100.00, 100.04, 100.08, 100.12, 100.11];
+        let prices = [100.00, 100.04, 100.08, 100.12, 100.08];
         let mut events = Vec::new();
         for (index, price) in prices.into_iter().enumerate() {
             let (_, emitted) = engine.apply_event(
@@ -3617,7 +4050,7 @@ mod tests {
             .unwrap()
             .timestamp_millis();
         engine.apply_event(&quote(start, 99.99, 100.01, 1), TradeUpdateRule::regular());
-        for (index, price) in [100.00, 100.05, 100.04, 100.03].into_iter().enumerate() {
+        for (index, price) in [100.00, 100.05, 100.01, 100.00].into_iter().enumerate() {
             engine.apply_event(
                 &trade(start + index as i64 + 1, price, 100.0, index as u64 + 2),
                 TradeUpdateRule::regular(),
@@ -3643,7 +4076,7 @@ mod tests {
             .with_ymd_and_hms(2026, 7, 24, 13, 30, 0)
             .unwrap()
             .timestamp_millis();
-        for (index, price) in [100.00, 100.10, 100.09].into_iter().enumerate() {
+        for (index, price) in [100.00, 100.10, 100.00].into_iter().enumerate() {
             source.apply_event(
                 &trade(start + index as i64, price, 100.0, index as u64),
                 TradeUpdateRule::regular(),
@@ -3693,6 +4126,77 @@ mod tests {
         let legacy_checkpoint =
             serde_json::from_value::<GenericStructureCheckpoint>(legacy_without_watermark).unwrap();
         assert_eq!(legacy_checkpoint.replayed_through, None);
+    }
+
+    #[test]
+    fn split_adjustment_transforms_prices_and_shares_once_without_changing_identity() {
+        let mut engine = GenericStructureEngine::new("TEST");
+        let start = new_york_ms(2026, 7, 23, 15, 59, 59);
+        let pivot_at = Utc.timestamp_millis_opt(start).unwrap();
+        let mut level = event_native_level(77, 1, 20.0, start);
+        level.footprint.insert(
+            1,
+            FootprintBin {
+                total_volume: 100.0,
+                buy_volume: 60.0,
+                sell_volume: 40.0,
+                neutral_volume: 0.0,
+                trade_count: 2,
+                largest_trade: 60.0,
+            },
+        );
+        engine.levels.push(level);
+        engine.last_reference_price = 20.0;
+        engine.last_trade_price = 20.0;
+        engine.rolling_abs_trade_move = 0.20;
+        engine.rolling_spread = 0.04;
+        engine.rolling_trade_size = 50.0;
+        engine.trade_volume_poc = 20.0;
+        engine.last_ts = Some(pivot_at);
+        engine.replayed_through = Some(pivot_at);
+        engine.last_arrival_sequence = 9;
+        engine.session_volume_by_price.insert(
+            price_key(20.0),
+            PriceVolumeBin {
+                total_volume: 200.0,
+                buy_volume: 120.0,
+                sell_volume: 80.0,
+                neutral_volume: 0.0,
+                trade_count: 3,
+                largest_trade: 100.0,
+            },
+        );
+        let execution_date = NaiveDate::from_ymd_opt(2026, 7, 24).unwrap();
+        let effective_at = New_York
+            .from_local_datetime(
+                &execution_date.and_time(chrono::NaiveTime::from_hms_opt(4, 0, 0).unwrap()),
+            )
+            .single()
+            .unwrap()
+            .with_timezone(&Utc);
+        let adjustment = StructureSplitAdjustment {
+            execution_date,
+            effective_at,
+            split_from: 1.0,
+            split_to: 10.0,
+            source_inserted_at: effective_at,
+        };
+
+        assert!(engine.apply_split_adjustment(&adjustment).unwrap());
+        assert!(!engine.apply_split_adjustment(&adjustment).unwrap());
+        let checkpoint = engine.checkpoint();
+        assert_eq!(checkpoint.levels[0].level_id, 77);
+        assert!((checkpoint.levels[0].price - 2.0).abs() < 1e-9);
+        assert!((checkpoint.last_trade_price - 2.0).abs() < 1e-9);
+        assert!((checkpoint.rolling_abs_trade_move - 0.02).abs() < 1e-9);
+        assert!((checkpoint.rolling_spread - 0.004).abs() < 1e-9);
+        assert!((checkpoint.rolling_trade_size - 500.0).abs() < 1e-9);
+        assert_eq!(checkpoint.applied_split_adjustments.len(), 1);
+        let footprint = checkpoint.levels[0].footprint.values().next().unwrap();
+        assert!((footprint.total_volume - 1_000.0).abs() < 1e-9);
+        let session_bin = checkpoint.session_volume_by_price.values().next().unwrap();
+        assert!((session_bin.total_volume - 2_000.0).abs() < 1e-9);
+        assert_eq!(session_bin.trade_count, 3);
     }
 
     #[test]

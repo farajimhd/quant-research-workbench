@@ -2,15 +2,44 @@ use crate::config::HistoricalGatewayConfig;
 use crate::source::{
     EventWindow, HistoricalEventSource, MarketSourcePlan, MarketSourceTier, SourceRevision,
 };
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Datelike, Duration, TimeZone, Timelike, Utc};
+use chrono_tz::America::New_York;
 use qmd_core::event::MarketEvent;
 use qmd_core::generic_structure::{
-    GenericStructureCheckpoint, GenericStructureEngine, GENERIC_STRUCTURE_ALGORITHM_VERSION,
+    GenericStructureCheckpoint, GenericStructureEngine, GenericStructureSnapshot,
+    GENERIC_STRUCTURE_ALGORITHM_VERSION,
 };
 use serde::{Deserialize, Serialize};
 
 pub const STRUCTURE_CHECKPOINT_ADVANCEMENT_SCHEMA_VERSION: u16 = 1;
 pub const STRUCTURE_CHECKPOINT_REBUILD_SCHEMA_VERSION: u16 = 1;
+pub const STRUCTURE_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct StructureSnapshotRequest {
+    pub schema_version: u16,
+    pub ticker: String,
+    pub as_of: DateTime<Utc>,
+    pub event_limit: Option<usize>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct StructureSnapshotResponse {
+    pub schema_version: u16,
+    pub ticker: String,
+    pub as_of: DateTime<Utc>,
+    pub seed_authority_start: DateTime<Utc>,
+    pub seed_source_plan_hash: String,
+    pub seed_source_revision_token: String,
+    pub event_count: u64,
+    pub advanced_event_count: u64,
+    pub source_plan: MarketSourcePlan,
+    pub source_revision_before: SourceRevision,
+    pub source_revision_after: SourceRevision,
+    pub checkpoint: GenericStructureCheckpoint,
+    pub snapshot: GenericStructureSnapshot,
+    pub complete: bool,
+}
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct StructureCheckpointAdvanceRequest {
@@ -111,12 +140,16 @@ async fn rebuild_structure_checkpoint_inner(
         .clamp(1, config.structure_checkpoint_rebuild_max_events);
     let rules = source.trade_aggregation_rules();
     let mut engine = GenericStructureEngine::new(&ticker);
+    let split_adjustments = source
+        .structure_split_adjustments(&ticker, request.start, request.as_of)
+        .await?;
+    let mut next_split = 0_usize;
     let batch_size = if event_type_filter.is_some() {
         config.batch_size.max(100_000)
     } else {
         config.batch_size
     };
-    let mut batches = source.stream_ordered_filtered(
+    let mut batches = source.stream_structure_ordered_filtered(
         window.clone(),
         batch_size,
         source_revision_before.live_continuation_sequence,
@@ -133,6 +166,12 @@ async fn rebuild_structure_checkpoint_inner(
                 ));
             }
             let event = source.market_event(&compact);
+            while next_split < split_adjustments.len()
+                && split_adjustments[next_split].effective_at <= event.ts()
+            {
+                engine.apply_split_adjustment(&split_adjustments[next_split])?;
+                next_split += 1;
+            }
             let before = engine.checkpoint_cursor();
             let conditions = match &event {
                 MarketEvent::Trade(event) => event.conditions.as_slice(),
@@ -143,6 +182,12 @@ async fn rebuild_structure_checkpoint_inner(
                 advanced_event_count = advanced_event_count.saturating_add(1);
             }
         }
+    }
+    while next_split < split_adjustments.len()
+        && split_adjustments[next_split].effective_at <= request.as_of
+    {
+        engine.apply_split_adjustment(&split_adjustments[next_split])?;
+        next_split += 1;
     }
     if event_count == 0 {
         return Err(format!(
@@ -182,6 +227,15 @@ pub async fn advance_structure_checkpoint(
     source: &HistoricalEventSource,
     request: StructureCheckpointAdvanceRequest,
 ) -> Result<StructureCheckpointAdvanceResponse, String> {
+    advance_structure_checkpoint_inner(config, source, request, true).await
+}
+
+async fn advance_structure_checkpoint_inner(
+    config: &HistoricalGatewayConfig,
+    source: &HistoricalEventSource,
+    mut request: StructureCheckpointAdvanceRequest,
+    exact_live_cursor: bool,
+) -> Result<StructureCheckpointAdvanceResponse, String> {
     let replay_start = validate_request(config, &request)?;
     let ticker = request.checkpoint.sym.trim().to_ascii_uppercase();
     let replay_end = request
@@ -194,7 +248,11 @@ pub async fn advance_structure_checkpoint(
         tickers: vec![ticker.clone()],
     };
     let source_plan = source.source_plan(&window).await?;
-    validate_exact_cursor_plan(&source_plan)?;
+    if exact_live_cursor {
+        validate_exact_cursor_plan(&source_plan)?;
+    } else {
+        validate_rebuild_source_plan(&source_plan)?;
+    }
     if request
         .expected_source_plan_hash
         .as_deref()
@@ -207,26 +265,50 @@ pub async fn advance_structure_checkpoint(
         .event_limit
         .unwrap_or(config.structure_checkpoint_max_events)
         .clamp(1, config.structure_checkpoint_max_events);
+    // Daily historical checkpoints certify the complete book through a UTC
+    // boundary, but archive compaction has a different transport ordinal than
+    // the live/recent feed. Preserve all structural state while resetting only
+    // that source-specific cursor, then consume events strictly after the
+    // certified boundary. Live advancement remains exact-cursor strict.
+    if !exact_live_cursor {
+        request.checkpoint.last_arrival_sequence = 0;
+    }
     let mut engine = GenericStructureEngine::new(&ticker);
     engine.seed_checkpoint(&request.checkpoint);
     let initial_cursor = engine.checkpoint_cursor();
+    let split_adjustments = source
+        .structure_split_adjustments(&ticker, replay_start, request.as_of)
+        .await?;
+    let mut next_split = 0_usize;
     let rules = source.trade_aggregation_rules();
-    let mut batches = source.stream_ordered(
+    let mut batches = source.stream_structure_ordered_filtered(
         window.clone(),
         config.batch_size,
-        source_revision_before.live_continuation_sequence,
+        exact_live_cursor
+            .then_some(source_revision_before.live_continuation_sequence)
+            .flatten(),
+        None,
     )?;
     let mut event_count = 0_u64;
     let mut advanced_event_count = 0_u64;
     while let Some(batch) = batches.recv().await {
         for compact in batch? {
+            let event = source.market_event(&compact);
+            if !exact_live_cursor && event.ts() <= replay_start {
+                continue;
+            }
             event_count = event_count.saturating_add(1);
             if event_count > event_limit as u64 {
                 return Err(format!(
                     "Generic Structure checkpoint replay exceeded event limit {event_limit}"
                 ));
             }
-            let event = source.market_event(&compact);
+            while next_split < split_adjustments.len()
+                && split_adjustments[next_split].effective_at <= event.ts()
+            {
+                engine.apply_split_adjustment(&split_adjustments[next_split])?;
+                next_split += 1;
+            }
             let before = engine.checkpoint_cursor();
             let conditions = match &event {
                 MarketEvent::Trade(event) => event.conditions.as_slice(),
@@ -239,13 +321,19 @@ pub async fn advance_structure_checkpoint(
             }
         }
     }
+    while next_split < split_adjustments.len()
+        && split_adjustments[next_split].effective_at <= request.as_of
+    {
+        engine.apply_split_adjustment(&split_adjustments[next_split])?;
+        next_split += 1;
+    }
     let source_revision_after = source.source_revision(&window).await?;
     if source_revision_after.source_plan_hash != source_plan.plan_hash {
         return Err("Generic Structure checkpoint source plan changed during replay".to_string());
     }
     let mut checkpoint = engine.checkpoint();
     checkpoint.replayed_through = Some(request.as_of);
-    if checkpoint.checkpoint_cursor() < initial_cursor {
+    if exact_live_cursor && checkpoint.checkpoint_cursor() < initial_cursor {
         return Err("Generic Structure checkpoint replay moved its cursor backward".to_string());
     }
     Ok(StructureCheckpointAdvanceResponse {
@@ -260,6 +348,133 @@ pub async fn advance_structure_checkpoint(
         source_revision_after,
         complete: true,
     })
+}
+
+/// Resolve the latest certified end-of-day book before `as_of`, advance it
+/// causally through canonical events (including due split adjustments), and
+/// expose the resulting point-in-time snapshot. This is the bounded lookup
+/// used by strategies when a ticker becomes actionable; it avoids rebuilding
+/// the persistent level book on every chart bar.
+pub async fn materialize_structure_snapshot(
+    config: &HistoricalGatewayConfig,
+    source: &HistoricalEventSource,
+    request: StructureSnapshotRequest,
+) -> Result<StructureSnapshotResponse, String> {
+    if request.schema_version != STRUCTURE_SNAPSHOT_SCHEMA_VERSION {
+        return Err(format!(
+            "invalid Generic Structure snapshot schema_version {}; expected {}",
+            request.schema_version, STRUCTURE_SNAPSHOT_SCHEMA_VERSION
+        ));
+    }
+    let ticker = request.ticker.trim().to_ascii_uppercase();
+    if ticker.is_empty()
+        || ticker.len() > 32
+        || !ticker
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+    {
+        return Err("invalid Generic Structure snapshot ticker".to_string());
+    }
+    if request.as_of > Utc::now() + Duration::seconds(1) {
+        return Err("Generic Structure snapshot as_of cannot be in the future".to_string());
+    }
+    let Some(seed) = source
+        .persisted_structure_checkpoint_before(&ticker, request.as_of)
+        .await?
+    else {
+        // A ticker can become actionable before its first daily checkpoint
+        // exists (new listing, sparse historical use, or a newly introduced
+        // algorithm revision).  Historical modes must cold-build the same
+        // event-native book from canonical trades instead of failing the
+        // entire market-wide run or silently treating structure as absent.
+        let rebuild_start =
+            structure_rebuild_start(request.as_of, config.structure_book_rebuild_days)?;
+        let rebuilt = rebuild_trade_structure_checkpoint(
+            config,
+            source,
+            StructureCheckpointRebuildRequest {
+                schema_version: STRUCTURE_CHECKPOINT_REBUILD_SCHEMA_VERSION,
+                ticker: ticker.clone(),
+                start: rebuild_start,
+                as_of: request.as_of,
+                expected_source_plan_hash: None,
+                event_limit: request.event_limit,
+            },
+        )
+        .await?;
+        let mut engine = GenericStructureEngine::new(&ticker);
+        engine.seed_checkpoint(&rebuilt.checkpoint);
+        let snapshot = engine.snapshot(request.as_of);
+        return Ok(StructureSnapshotResponse {
+            schema_version: STRUCTURE_SNAPSHOT_SCHEMA_VERSION,
+            ticker,
+            as_of: request.as_of,
+            seed_authority_start: rebuild_start,
+            seed_source_plan_hash: rebuilt.source_plan.plan_hash.clone(),
+            seed_source_revision_token: rebuilt.source_revision_after.token.clone(),
+            event_count: rebuilt.event_count,
+            advanced_event_count: rebuilt.advanced_event_count,
+            source_plan: rebuilt.source_plan,
+            source_revision_before: rebuilt.source_revision_before,
+            source_revision_after: rebuilt.source_revision_after,
+            checkpoint: rebuilt.checkpoint,
+            snapshot,
+            complete: rebuilt.complete,
+        });
+    };
+    let advanced = advance_structure_checkpoint_inner(
+        config,
+        source,
+        StructureCheckpointAdvanceRequest {
+            schema_version: STRUCTURE_CHECKPOINT_ADVANCEMENT_SCHEMA_VERSION,
+            checkpoint: seed.checkpoint,
+            as_of: request.as_of,
+            expected_source_plan_hash: None,
+            event_limit: request.event_limit,
+        },
+        false,
+    )
+    .await?;
+    let mut engine = GenericStructureEngine::new(&ticker);
+    engine.seed_checkpoint(&advanced.checkpoint);
+    let snapshot = engine.snapshot(request.as_of);
+    Ok(StructureSnapshotResponse {
+        schema_version: STRUCTURE_SNAPSHOT_SCHEMA_VERSION,
+        ticker,
+        as_of: request.as_of,
+        seed_authority_start: seed.authority_start,
+        seed_source_plan_hash: seed.source_plan_hash,
+        seed_source_revision_token: seed.source_revision_token,
+        event_count: advanced.event_count,
+        advanced_event_count: advanced.advanced_event_count,
+        source_plan: advanced.source_plan,
+        source_revision_before: advanced.source_revision_before,
+        source_revision_after: advanced.source_revision_after,
+        checkpoint: advanced.checkpoint,
+        snapshot,
+        complete: advanced.complete,
+    })
+}
+
+fn structure_rebuild_start(
+    timestamp: DateTime<Utc>,
+    rebuild_days: usize,
+) -> Result<DateTime<Utc>, String> {
+    let lookback = timestamp
+        .checked_sub_signed(Duration::days(rebuild_days as i64))
+        .ok_or_else(|| "historical structure rebuild lookback underflow".to_string())?;
+    let local = lookback.with_timezone(&New_York);
+    let mut date = local.date_naive();
+    if local.hour() < 4 {
+        date = date
+            .pred_opt()
+            .ok_or_else(|| "historical structure session anchor underflow".to_string())?;
+    }
+    New_York
+        .with_ymd_and_hms(date.year(), date.month(), date.day(), 4, 0, 0)
+        .single()
+        .map(|value| value.with_timezone(&Utc))
+        .ok_or_else(|| format!("invalid America/New_York structure session anchor for {date}"))
 }
 
 fn validate_request(

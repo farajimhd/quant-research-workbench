@@ -32,7 +32,7 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 5
+STRATEGY_REVISION = 8
 
 RULE_COMPARATORS = {
     "above_by_bps",
@@ -270,6 +270,19 @@ class StrategyObservation:
     previous_high: float | None = None
     swing_high: float | None = None
     swing_low: float | None = None
+    structural_support_price: float | None = None
+    structural_support_lower: float | None = None
+    structural_support_upper: float | None = None
+    structural_support_strength: float = 0.0
+    structural_support_confidence: float = 0.0
+    structural_resistance_price: float | None = None
+    structural_resistance_lower: float | None = None
+    structural_resistance_upper: float | None = None
+    structural_resistance_strength: float = 0.0
+    structural_resistance_confidence: float = 0.0
+    structural_support_levels: tuple[dict[str, Any], ...] = ()
+    structural_resistance_levels: tuple[dict[str, Any], ...] = ()
+    structural_up_probability: float = 0.5
     structure_event: str = ""
     structure_direction: str = ""
     vwap: float | None = None
@@ -406,14 +419,22 @@ def default_long_momentum_parameters() -> dict[str, Any]:
                 "method": "hybrid",
                 "structure_buffer_bps": 8.0,
                 "volatility_multiple": 1.25,
-                "maximum_risk_pct": 1.5,
+                "maximum_risk_pct": 6.0,
                 "prefer_closer_hybrid": False,
             },
             "trailing": {
                 "enabled": True,
-                "activation_gain_pct": 0.5,
-                "distance_volatility_multiple": 1.0,
-                "minimum_distance_bps": 12.0,
+                "activation_gain_pct": 8.0,
+                "distance_volatility_multiple": 2.0,
+                "minimum_distance_bps": 50.0,
+            },
+            "profit_ladder": {
+                "enabled": True,
+                "risk_multiples": [0.5, 1.0, 1.618, 2.618, 4.236],
+                "maximum_targets": 5,
+                "minimum_spacing_bps": 10.0,
+                "minimum_level_strength": 0.30,
+                "minimum_level_confidence": 0.50,
             },
             "luld_profit_target": {"enabled": True, "buffer_bps": 10.0, "require_authoritative_band": True},
         },
@@ -1057,6 +1078,15 @@ class LongMomentumStrategyEngine:
             else 0.0
         )
         target = _luld_target(observation, parameters, side=side)
+        profit_targets = _structural_profit_targets(
+            observation,
+            parameters,
+            stop=stop,
+            side=side,
+            luld_target=target,
+        )
+        if profit_targets:
+            target = profit_targets[0]
         order_intent = dict(phase.get("order_intent") or {})
         missing_anchor = _missing_protection_anchor(
             order_intent,
@@ -1096,6 +1126,7 @@ class LongMomentumStrategyEngine:
                 "latest_post_entry_swing_low": None,
                 "previous_post_entry_swing_low": None,
                 "higher_low_confirmed": False,
+                "structural_profit_targets": profit_targets,
             }
         )
         return self._result(
@@ -1126,6 +1157,8 @@ class LongMomentumStrategyEngine:
                     else None
                 ),
                 "entry_rules": rule_result,
+                "initial_stop": stop,
+                "profit_targets": profit_targets,
             },
         )
 
@@ -1778,6 +1811,11 @@ def _protection_profile_from_phase(
     if not configured:
         return None
     side = "short" if action in {"enter_short", "add_short"} else "long"
+    strategy_targets = [
+        float(value)
+        for value in state.get("structural_profit_targets") or []
+        if isinstance(value, (int, float)) and float(value) > 0
+    ]
     slices: list[ProtectionSlice] = []
     for raw in configured.get("slices") or []:
         stop_raw = dict(raw.get("stop") or {})
@@ -1833,6 +1871,10 @@ def _protection_profile_from_phase(
                 quantity_fraction=float(raw.get("quantity_fraction") or 0),
                 stop=stop,
                 profit_target_price=(
+                    strategy_targets[int(raw["strategy_profit_target_index"])]
+                    if raw.get("strategy_profit_target_index") is not None
+                    and 0 <= int(raw["strategy_profit_target_index"]) < len(strategy_targets)
+                    else
                     profit_target_price
                     if bool(raw.get("use_strategy_profit_target"))
                     else float(raw["profit_target_price"])
@@ -2049,6 +2091,56 @@ class AssignedLongMomentumStrategy:
 
     def assignments(self) -> tuple[StrategyAssignment, ...]:
         return tuple(self._assignments.values())
+
+    async def on_intent_rejected(
+        self,
+        intent: StrategyIntent,
+        *,
+        reasons: tuple[str, ...],
+        event_time: datetime,
+    ) -> None:
+        """Clear a pending state when Portfolio never authorized an order."""
+
+        assignment_id = str(intent.metadata.get("assignment_id") or "")
+        if not assignment_id:
+            return
+        for key, assignment in self._assignments.items():
+            if assignment.assignment_id != assignment_id:
+                continue
+            state = dict(assignment.state)
+            state["last_intent_rejection"] = {
+                "intent_id": intent.intent_id,
+                "reasons": list(reasons),
+                "rejected_at": event_time.isoformat(),
+            }
+            # These fields describe an accepted entry campaign.  Keeping them
+            # after Portfolio rejected the intent produces a phantom position
+            # and prevents a later causal observation from retrying.
+            for field_name in (
+                "entry_reference_price",
+                "entry_at",
+                "initial_stop",
+                "active_stop",
+                "high_water_price",
+                "low_water_price",
+                "structural_profit_targets",
+            ):
+                state.pop(field_name, None)
+            state["entries"] = max(0, int(state.get("entries") or 0) - 1)
+            next_status = (
+                AssignmentStatus.REENTRY_COOLDOWN
+                if int(state.get("reentries") or 0) > 0
+                else AssignmentStatus.WATCHING
+            )
+            updated = replace(
+                assignment,
+                status=next_status,
+                state=state,
+                updated_at=event_time,
+            )
+            self._assignments[key] = updated
+            self._campaigns.register(updated)
+            return
 
     def upsert_assignment(self, assignment: StrategyAssignment) -> None:
         key = (assignment.account_id, assignment.ticker.upper())
@@ -3142,9 +3234,25 @@ def _initial_stop(
     side: str,
 ) -> float:
     stop = parameters["protection"]["stop"]
+    causal_structure_candidates = [
+        value
+        for value in (
+            observation.swing_low if side == "long" else observation.swing_high,
+            observation.structural_support_lower
+            if side == "long"
+            else observation.structural_resistance_upper,
+        )
+        if value is not None
+        and value > 0
+        and (value < observation.price if side == "long" else value > observation.price)
+    ]
     structure_base = (
-        observation.swing_low if side == "long" else observation.swing_high
-    ) or reference or observation.price
+        min(causal_structure_candidates)
+        if side == "long" and causal_structure_candidates
+        else max(causal_structure_candidates)
+        if causal_structure_candidates
+        else reference or observation.price
+    )
     direction = -1 if side == "long" else 1
     structure_stop = structure_base * (
         1 + direction * float(stop["structure_buffer_bps"]) / 10_000
@@ -3222,6 +3330,96 @@ def _luld_target(
         return None
     target = observation.upper_luld_price * (1 - float(policy["buffer_bps"]) / 10_000)
     return round(target, 4) if target > observation.price else None
+
+
+def _structural_profit_targets(
+    observation: StrategyObservation,
+    parameters: dict[str, Any],
+    *,
+    stop: float,
+    side: str,
+    luld_target: float | None,
+) -> list[float]:
+    """Build a causal level-first target ladder with risk-geometry fallbacks."""
+    policy = dict(parameters["protection"].get("profit_ladder") or {})
+    if not bool(policy.get("enabled", True)):
+        return [luld_target] if luld_target is not None else []
+    entry = observation.price
+    risk = abs(entry - stop)
+    if risk <= 0:
+        risk = max(observation.volatility, entry * 0.002)
+    direction = 1.0 if side == "long" else -1.0
+    risk_candidates = [
+        entry + direction * risk * float(multiple)
+        for multiple in policy.get("risk_multiples") or [0.5, 1.0, 1.618, 2.618, 4.236]
+        if float(multiple) > 0
+    ]
+    level_rows = (
+        observation.structural_resistance_levels
+        if side == "long"
+        else observation.structural_support_levels
+    )
+    level_candidates: list[float] = []
+    for row in level_rows:
+        strength = float(row.get("strength") or row.get("salience") or 0)
+        confidence = float(row.get("confidence") or 0)
+        candidate = row.get("lower") if side == "long" else row.get("upper")
+        if candidate is None:
+            candidate = row.get("price")
+        if (
+            candidate is not None
+            and strength >= float(policy.get("minimum_level_strength") or 0.0)
+            and confidence >= float(policy.get("minimum_level_confidence") or 0.0)
+        ):
+            level_candidates.append(float(candidate))
+    if not level_candidates:
+        nearest_price = (
+            observation.structural_resistance_lower
+            if side == "long"
+            else observation.structural_support_upper
+        )
+        nearest_strength = (
+            observation.structural_resistance_strength
+            if side == "long"
+            else observation.structural_support_strength
+        )
+        nearest_confidence = (
+            observation.structural_resistance_confidence
+            if side == "long"
+            else observation.structural_support_confidence
+        )
+        if (
+            nearest_price is not None
+            and nearest_strength >= float(policy.get("minimum_level_strength") or 0.0)
+            and nearest_confidence >= float(policy.get("minimum_level_confidence") or 0.0)
+        ):
+            level_candidates.append(float(nearest_price))
+    spacing = entry * float(policy.get("minimum_spacing_bps") or 0.0) / 10_000.0
+    unique: list[float] = []
+    maximum = int(policy.get("maximum_targets") or 5)
+
+    def append_candidates(values: list[float]) -> None:
+        for candidate in sorted(values, reverse=side == "short"):
+            if candidate <= 0 or not (
+                candidate > entry if side == "long" else candidate < entry
+            ):
+                continue
+            if any(abs(candidate - existing) < spacing for existing in unique):
+                continue
+            unique.append(round(candidate, 4))
+            if len(unique) >= maximum:
+                return
+
+    # Actual causal resistance/support zones own the first target slots. Risk
+    # multiples fill only missing slots, preserving a complete OCA ladder when
+    # the historical level book is sparse.
+    append_candidates(level_candidates)
+    if len(unique) < maximum:
+        append_candidates(risk_candidates)
+    if len(unique) < maximum and luld_target is not None:
+        append_candidates([float(luld_target)])
+    unique.sort(reverse=side == "short")
+    return unique
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

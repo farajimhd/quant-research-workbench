@@ -2872,13 +2872,13 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
         _watchlist_rule(
             "strategy-squeeze-swing-high-break-1s",
             "Causal one-second swing-high breakout",
-            "Enters immediately when quality is confirmed and price is already at least five basis points above the latest causally confirmed one-second swing high; otherwise it waits and enters on the first later pass above that same live threshold.",
+            "Enters immediately when quality is confirmed and price passes the latest causally confirmed one-second swing high; otherwise it waits for the first later pass above that live threshold.",
             [{
                 **_watchlist_condition(
                     "squeeze-price-over-swing-high",
                     "market.last_price",
                     "above_by_bps",
-                    5.0,
+                    0.0,
                     interval="1s",
                 ),
                 "right_source_id": "indicator.structure.swing_high",
@@ -3939,6 +3939,12 @@ def _default_draft() -> dict[str, Any]:
         "allow_replacement": False,
     }
     squeeze_lifecycle["reentry"]["maximum_attempts"] = 1
+    squeeze_lifecycle["initial_entry"]["order_intent"][
+        "protection_profile"
+    ] = "structural-five-tranche"
+    squeeze_lifecycle["reentry"]["order_intent"][
+        "protection_profile"
+    ] = "structural-five-tranche"
     squeeze_lifecycle["reentry"]["cooldown_ms"] = 5_000
     squeeze_lifecycle["reentry"]["require_new_signal_stream_id"] = "price-squeeze-early"
     squeeze_lifecycle["reentry"]["after_protective_exit"] = True
@@ -3985,11 +3991,14 @@ def _default_draft() -> dict[str, Any]:
     }
     system_profiles[0]["parameters"].setdefault("protection", {}).setdefault(
         "stop", {}
-    )["prefer_closer_hybrid"] = True
+    )["prefer_closer_hybrid"] = False
+    system_profiles[0]["parameters"]["protection"]["stop"][
+        "maximum_risk_pct"
+    ] = 6.0
     system_profiles[0]["parameters"]["protection"]["trailing"].update({
-        "activation_gain_pct": 2.0,
-        "distance_volatility_multiple": 1.5,
-        "minimum_distance_bps": 20.0,
+        "activation_gain_pct": 8.0,
+        "distance_volatility_multiple": 2.0,
+        "minimum_distance_bps": 50.0,
     })
     system_profiles[0]["action_policy_ids"] = ["profit-pocket"]
     system_profiles[0]["protected"] = True
@@ -4051,6 +4060,11 @@ def _default_draft() -> dict[str, Any]:
     policy.update({
         "maximum_position_fraction": 1.0,
         "maximum_ticker_fraction": 1.0,
+        # The squeeze campaign intentionally decomposes one position into five
+        # independently protected OCA slices.  Portfolio must authorize the
+        # same topology that Strategy and OMS publish; otherwise a valid entry
+        # is rejected before any order reaches the broker.
+        "maximum_protection_slices": 5,
         "maximum_planned_risk_fraction": 0.0025,
         "maximum_open_risk_fraction": 0.0075,
         "maximum_open_positions": 3,
@@ -7143,7 +7157,7 @@ def _default_oms_profile() -> dict[str, Any]:
                 "stop_method": "hybrid",
                 "structure_buffer_bps": 8.0,
                 "volatility_multiple": 1.25,
-                "maximum_risk_pct": 1.5,
+                "maximum_risk_pct": 6.0,
                 "trailing_enabled": True,
             },
         },
@@ -7196,7 +7210,7 @@ def _default_execution_policies() -> list[dict[str, Any]]:
 
 
 def _default_protection_profiles() -> list[dict[str, Any]]:
-    return [{
+    profiles = [{
         "profile_id": "hybrid-single",
         "revision": 1,
         "name": "Hybrid single stop",
@@ -7237,6 +7251,43 @@ def _default_protection_profiles() -> list[dict[str, Any]]:
             },
         }],
     }]
+    profiles.append({
+        "profile_id": "structural-five-tranche",
+        "revision": 1,
+        "name": "Structural five-tranche ladder",
+        "description": (
+            "Five independent OCA slices use the strategy's causal structural/Fibonacci "
+            "targets and one strategy-owned adaptive stop. Trailing remains dormant until "
+            "an eight-percent favorable move."
+        ),
+        "origin": "system",
+        "editable": True,
+        "add_policy": "independent_slice",
+        "profit_pocket_transition": "keep_existing",
+        "mandatory_catastrophic_backstop": True,
+        "emergency_repair_deadline_ms": 500,
+        "slices": [
+            {
+                "slice_id": f"target-{index + 1}",
+                "quantity_fraction": 0.2,
+                "profit_target_price": None,
+                "strategy_profit_target_index": index,
+                "stop": {
+                    "rule_type": "fixed_price",
+                    "order_type": "STP",
+                    "price": None,
+                    "stop_limit_offset_bps": None,
+                },
+                "trailing": {
+                    "rule_type": "volatility_trail",
+                    "volatility_multiple": 2.0,
+                    "activation_gain_percent": 8.0,
+                },
+            }
+            for index in range(5)
+        ],
+    })
+    return profiles
 
 
 def _parameters_with_action_policies(
@@ -7338,10 +7389,40 @@ def _parameters_with_action_policies(
                 add.get("maximum_uses") or add_steps[0].get("maximum_uses") or 1
             )
             parameters["phase_policy"]["initial_entry"]["add_steps"] = add_steps
-    return strategy_executor(
+    resolved = strategy_executor(
         str(profile.get("definition_id") or ""),
         int(profile.get("definition_revision") or 0),
     ).parameter_resolver(parameters)
+    if str(profile.get("profile_id") or "") == "long-momentum-balanced":
+        # The squeeze strategy makes decisions on completed one-second frames.
+        # Project its flow/liquidity vetoes at that same causal cadence so the
+        # historical runtime does not prepare an unused 100ms product for every
+        # source-signal symbol.
+        for veto_stage in (
+            resolved.get("entry_rules", {}).get("veto", {}),
+            resolved.get("phase_policy", {})
+            .get("reentry", {})
+            .get("rules", {})
+            .get("veto", {}),
+        ):
+            for group in [
+                *list(veto_stage.get("groups") or []),
+                *list(veto_stage.get("rule_sets") or []),
+            ]:
+                for condition in group.get("conditions") or []:
+                    for side in ("left", "right"):
+                        if str(condition.get(f"{side}_timeframe") or "") == "100ms":
+                            condition[f"{side}_timeframe"] = "1s"
+                        interval_key = f"{side}_interval"
+                        if (
+                            isinstance(condition.get(interval_key), dict)
+                            and int(condition[interval_key].get("value") or 0)
+                            == 100
+                            and str(condition[interval_key].get("unit") or "")
+                            == "milliseconds"
+                        ):
+                            condition[interval_key] = normalize_interval_spec("1s")
+    return resolved
 
 
 def _validate_oms_settings(oms: dict[str, Any]) -> None:
@@ -7370,6 +7451,7 @@ def _validate_protection_profile_config(payload: dict[str, Any]):
     resolved = deepcopy(payload)
     for raw_slice in resolved.get("slices") or []:
         raw_slice.pop("use_strategy_profit_target", None)
+        raw_slice.pop("strategy_profit_target_index", None)
         stop = dict(raw_slice.get("stop") or {})
         anchor_source = str(stop.pop("anchor_source", "") or "")
         stop.pop("anchor_ordinal", None)

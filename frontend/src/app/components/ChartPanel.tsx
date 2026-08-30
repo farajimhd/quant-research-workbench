@@ -113,6 +113,7 @@ type PriceZone = {
   borderOpacity?: number;
   borderStyle?: string;
   borderWidth?: number;
+  breakProbability?: number;
   color: string;
   compactLabel?: string;
   confidence?: number;
@@ -149,8 +150,10 @@ type PriceZone = {
   presetDefault?: ChartPreset;
   probabilityLineRatio?: number;
   probabilityLineWidth?: number;
+  pressureBias?: number;
   renderMode?: "line" | "zone";
   roleFlipCount?: number;
+  reversalProbability?: number;
   settingsId?: string;
   start: number;
   strength?: number;
@@ -262,9 +265,12 @@ type LegendSeriesSettings = {
   labelFontSize?: number;
   lineStyle?: LegendLineStyle;
   lineWidth?: number;
+  maximumBreakProbability?: number;
   minimumConfidence?: number;
   minimumHoldProbability?: number;
+  minimumPressureMagnitude?: number;
   minimumReactionProbability?: number;
+  minimumReversalProbability?: number;
   minimumSalience?: number;
   opacity?: number;
   preset?: ChartPreset;
@@ -1847,9 +1853,12 @@ type LegendItem = {
   label: string;
   lineStyle: LegendLineStyle;
   lineWidth: number;
+  maximumBreakProbability?: number;
   minimumConfidence?: number;
   minimumHoldProbability?: number;
+  minimumPressureMagnitude?: number;
   minimumReactionProbability?: number;
+  minimumReversalProbability?: number;
   minimumSalience?: number;
   opacity: number;
   preset?: ChartPreset;
@@ -2194,8 +2203,11 @@ function LegendEditor({
           <ScoreThresholdControl label="Importance" value={item.minimumSalience ?? 0} onChange={(minimumSalience) => onUpdate({ minimumSalience })} />
           <ScoreThresholdControl label="Reaction" value={item.minimumReactionProbability ?? 0} onChange={(minimumReactionProbability) => onUpdate({ minimumReactionProbability })} />
           <ScoreThresholdControl label="Hold" value={item.minimumHoldProbability ?? 0} onChange={(minimumHoldProbability) => onUpdate({ minimumHoldProbability })} />
+          <ScoreThresholdControl label="Reversal" value={item.minimumReversalProbability ?? 0} onChange={(minimumReversalProbability) => onUpdate({ minimumReversalProbability })} />
+          <ScoreThresholdControl label="Pressure magnitude" value={item.minimumPressureMagnitude ?? 0} onChange={(minimumPressureMagnitude) => onUpdate({ minimumPressureMagnitude })} />
+          <ScoreThresholdControl label="Maximum break" value={item.maximumBreakProbability ?? 1} onChange={(maximumBreakProbability) => onUpdate({ maximumBreakProbability })} />
           <ScoreThresholdControl label="Confidence" value={item.minimumConfidence ?? 0} onChange={(minimumConfidence) => onUpdate({ minimumConfidence })} />
-          <small>Levels must meet all four minimums. Changes apply immediately to loaded chart data.</small>
+          <small>Levels must meet every enabled evidence threshold. Changes apply immediately to loaded chart data.</small>
           <span className="legend-filter-subtitle">Visible roles and states</span>
           <span className="legend-filter-grid">
             <UnifiedVisibilityToggle checked={item.showUnifiedSupport !== false} label="Support" onChange={(showUnifiedSupport) => onUpdate({ showUnifiedSupport })} />
@@ -3213,9 +3225,12 @@ function buildPriceZoneLegendItems(
       labelFontSize: settings.labelFontSize,
       lineStyle: settings.lineStyle,
       lineWidth: settings.lineWidth,
+      maximumBreakProbability: settings.maximumBreakProbability,
       minimumConfidence: settings.minimumConfidence,
       minimumHoldProbability: settings.minimumHoldProbability,
+      minimumPressureMagnitude: settings.minimumPressureMagnitude,
       minimumReactionProbability: settings.minimumReactionProbability,
+      minimumReversalProbability: settings.minimumReversalProbability,
       minimumSalience: settings.minimumSalience,
       opacity: settings.opacity,
       preset: settings.preset,
@@ -3682,9 +3697,12 @@ function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettin
     labelFontSize: 11,
     lineStyle: series.lineStyle ?? "solid",
     lineWidth: Math.max(1, Math.min(4, Math.round(series.lineWidth || 1))),
+    maximumBreakProbability: 1,
     minimumConfidence: 0,
     minimumHoldProbability: 0,
+    minimumPressureMagnitude: 0,
     minimumReactionProbability: 0,
+    minimumReversalProbability: 0,
     minimumSalience: 0,
     opacity: 1,
     preset: "micro",
@@ -3714,9 +3732,12 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
     labelFontSize: Math.max(9, Math.min(18, Math.round(stored.labelFontSize ?? defaults.labelFontSize))),
     lineStyle: stored.lineStyle || defaults.lineStyle,
     lineWidth: Math.max(1, Math.min(4, Math.round(stored.lineWidth ?? defaults.lineWidth))),
+    maximumBreakProbability: clampNumber(stored.maximumBreakProbability, 0, 1, defaults.maximumBreakProbability),
     minimumConfidence: clampNumber(stored.minimumConfidence, 0, 1, defaults.minimumConfidence),
     minimumHoldProbability: clampNumber(stored.minimumHoldProbability, 0, 1, defaults.minimumHoldProbability),
+    minimumPressureMagnitude: clampNumber(stored.minimumPressureMagnitude, 0, 1, defaults.minimumPressureMagnitude),
     minimumReactionProbability: clampNumber(stored.minimumReactionProbability, 0, 1, defaults.minimumReactionProbability),
+    minimumReversalProbability: clampNumber(stored.minimumReversalProbability, 0, 1, defaults.minimumReversalProbability),
     minimumSalience: clampNumber(stored.minimumSalience, 0, 1, defaults.minimumSalience),
     opacity: clampNumber(stored.opacity ?? defaults.opacity, 0, 1, 1),
     preset: stored.preset === "tactical" || stored.preset === "context" ? stored.preset : defaults.preset,
@@ -3743,9 +3764,12 @@ type ResolvedPriceZoneLegendSettings = {
   labelFontSize: number;
   lineStyle: LegendLineStyle;
   lineWidth: number;
+  maximumBreakProbability: number;
   minimumConfidence: number;
   minimumHoldProbability: number;
+  minimumPressureMagnitude: number;
   minimumReactionProbability: number;
+  minimumReversalProbability: number;
   minimumSalience: number;
   opacity: number;
   preset: ChartPreset;
@@ -3771,9 +3795,12 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
     labelFontSize: Math.max(9, Math.min(18, Math.round(stored.labelFontSize ?? 11))),
     lineStyle: stored.lineStyle ?? zoneBorderStyle(zone?.borderStyle),
     lineWidth: Math.max(1, Math.min(4, Math.round(stored.lineWidth ?? zone?.borderWidth ?? 1))),
+    maximumBreakProbability: clampNumber(stored.maximumBreakProbability, 0, 1, 1),
     minimumConfidence: clampNumber(stored.minimumConfidence, 0, 1, 0),
     minimumHoldProbability: clampNumber(stored.minimumHoldProbability, 0, 1, 0),
+    minimumPressureMagnitude: clampNumber(stored.minimumPressureMagnitude, 0, 1, 0),
     minimumReactionProbability: clampNumber(stored.minimumReactionProbability, 0, 1, 0),
+    minimumReversalProbability: clampNumber(stored.minimumReversalProbability, 0, 1, 0),
     minimumSalience: clampNumber(stored.minimumSalience, 0, 1, 0),
     opacity: clampNumber(stored.opacity ?? zone?.opacityDefault ?? 1, 0, 1, 1),
     preset: stored.preset === "tactical"
@@ -3804,6 +3831,9 @@ function priceZoneMeetsUnifiedFilters(zone: PriceZone, settings: ResolvedPriceZo
     && clampNumber(zone.strength, 0, 1, 0) >= settings.minimumSalience
     && clampNumber(zone.probabilityLineRatio, 0, 1, 0) >= settings.minimumReactionProbability
     && clampNumber(zone.holdProbability, 0, 1, 0) >= settings.minimumHoldProbability
+    && clampNumber(zone.reversalProbability, 0, 1, 0) >= settings.minimumReversalProbability
+    && Math.abs(clampNumber(zone.pressureBias, -1, 1, 0)) >= settings.minimumPressureMagnitude
+    && clampNumber(zone.breakProbability, 0, 1, 0) <= settings.maximumBreakProbability
     && clampNumber(zone.confidence, 0, 1, 0) >= settings.minimumConfidence;
 }
 

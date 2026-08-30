@@ -2,7 +2,7 @@ use crate::computation_targets::SharedComputationTargets;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::generic_structure::{
     GenericStructureCheckpoint, GenericStructureEngine, GenericStructureEvent,
-    GenericStructureSnapshot,
+    GenericStructureSnapshot, StructureSplitAdjustment,
 };
 use crate::live_market_state::LiveMarketStateRouter;
 use crate::market_products::FamilyBarRow;
@@ -933,6 +933,24 @@ impl SharedBarStore {
         }
         symbols.sort();
         symbols
+    }
+
+    pub async fn apply_structure_split_adjustment(
+        &self,
+        ticker: &str,
+        adjustment: &StructureSplitAdjustment,
+    ) -> Result<bool, String> {
+        let sym = ticker.trim().to_ascii_uppercase();
+        let shard = self.shard_for_ticker(&sym);
+        let mut store = shard.inner.lock().await;
+        let Some(engine) = store.structure.get_mut(&sym) else {
+            return Ok(false);
+        };
+        let changed = engine.apply_split_adjustment(adjustment)?;
+        if changed {
+            store.structure_dirty.insert(sym);
+        }
+        Ok(changed)
     }
 
     #[cfg(test)]

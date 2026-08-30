@@ -5584,6 +5584,20 @@ async def _backtest_result_projection(
 ) -> dict[str, Any]:
     payload = await controller.canvas_payload(symbol)
     trading = dict(payload.get("trading") or {})
+    activity: list[dict[str, Any]] = []
+    for event_type in ("signal", "watchlist", "decision", "campaign_state", "order"):
+        projection = controller.strategy_activity_snapshot(
+            as_of=controller.current_time,
+            event_type=event_type,
+            limit=50_000,
+        )
+        activity.extend(projection.get("rows") or [])
+    activity.sort(
+        key=lambda row: (
+            str(row.get("event_time") or ""),
+            int(row.get("sequence") or 0),
+        )
+    )
     return {
         "schema_version": 2,
         "run": controller.snapshot(),
@@ -5595,7 +5609,8 @@ async def _backtest_result_projection(
         "orders": trading.get("orders") or [],
         "executions": trading.get("executions") or [],
         "closed_trades": trading.get("closed_trades") or [],
-        "activity": trading.get("activity") or [],
+        "activity": activity,
+        "position_lifecycles": trading.get("position_lifecycles") or [],
         "strategy": payload.get("strategy") or {},
     }
 

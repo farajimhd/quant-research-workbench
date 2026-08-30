@@ -4,7 +4,8 @@ use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::generic_structure::{
     GenericStructureCheckpoint, GenericStructureEvent, GenericStructureSnapshot,
-    StructureLevelCandidate, StructureTimeframeSnapshot, UnifiedStructureLevel,
+    StructureLevelCandidate, StructureSplitAdjustment, StructureTimeframeSnapshot,
+    UnifiedStructureLevel,
 };
 use crate::metrics::SharedMetrics;
 use crate::microstructure_interval::{
@@ -12,7 +13,7 @@ use crate::microstructure_interval::{
 };
 use crate::scanner::ScannerPrimitiveRouter;
 use crate::timefmt::clickhouse_datetime64;
-use chrono::{DateTime, NaiveDate, Timelike, Utc};
+use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Timelike, Utc};
 use chrono_tz::America::New_York;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -24,14 +25,29 @@ use tokio::time::{interval, sleep, Duration, MissedTickBehavior};
 
 const STRUCTURE_CHECKPOINT_BATCH_LIMIT: usize = 256;
 
-pub const INDICATOR_SCHEMA_VERSION: u16 = 21;
-pub const INDICATOR_CALCULATION_REVISION: &str = "qmd-indicators-v23";
+pub const INDICATOR_SCHEMA_VERSION: u16 = 23;
+pub const INDICATOR_CALCULATION_REVISION: &str = "qmd-indicators-v25";
 const MICROSTRUCTURE_AGGREGATE_TIMEFRAMES: [&str; 7] = ["1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 const INDICATOR_STATE_RECLAIM_INTERVAL_SECONDS: u64 = 30;
 const RETAINED_100MS_HISTORY_ROWS: usize = 128;
 const RETAINED_1S_HISTORY_ROWS: usize = 300;
 const RETAINED_OTHER_HISTORY_ROWS: usize = 256;
 const PREMARKET_SESSION_START_SECONDS: u32 = 4 * 60 * 60;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct DailyStructureCheckpoint {
+    pub session_date: NaiveDate,
+    pub algorithm_version: u16,
+    pub sym: String,
+    pub authority_start: DateTime<Utc>,
+    pub checkpoint_at: DateTime<Utc>,
+    pub last_arrival_sequence: u64,
+    pub source_plan_hash: String,
+    pub source_revision_token: String,
+    pub source_complete: bool,
+    pub built_at: DateTime<Utc>,
+    pub checkpoint: GenericStructureCheckpoint,
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct IndicatorSnapshot {
@@ -436,14 +452,15 @@ impl IndicatorRow {
     /// Drop calculator-only state after the public indicator projection has
     /// been finalized. Historical chart structure history is retained by its
     /// dedicated event projection; replay consumes the scalar causal fields.
-    /// Unified levels remain because they are the compact, point-in-time chart
-    /// projection and must be recoverable at every replay clock.
+    /// Unified levels have their own delta-compressed bar projection and daily
+    /// checkpoint authority. Repeating the complete cross-session book inside
+    /// every 100 ms derived indicator row makes ordinary VWAP/MACD preparation
+    /// quadratic as the book grows, so historical derived rows retain only the
+    /// scalar structural evidence consumed by replay and strategy rules.
     pub fn compact_for_historical_cache(mut self) -> Self {
         self.qmd_structure_active_levels.clear();
         self.qmd_structure_timeframe_states.clear();
-        for level in &mut self.qmd_structure_unified_levels {
-            level.sources.clear();
-        }
+        self.qmd_structure_unified_levels.clear();
         self.qmd_structure_snapshot = Default::default();
         self.qmd_structure_events.clear();
         self.microstructure_interval = Default::default();
@@ -790,7 +807,15 @@ impl BarIndicatorCalculator {
     }
 
     pub fn apply_bar(&mut self, bar: &BarRow) -> IndicatorRow {
-        self.state.apply_bar(bar)
+        self.state.apply_bar(bar, true)
+    }
+
+    /// Build the scalar historical/replay indicator row without cloning the
+    /// bar-owned structural books. QMD History publishes those books through
+    /// the dedicated delta projection while retaining these scalar fields for
+    /// rules, logs, and point-in-time decisions.
+    pub fn apply_bar_for_historical_cache(&mut self, bar: &BarRow) -> IndicatorRow {
+        self.state.apply_bar(bar, false)
     }
 
     pub fn apply_session_vwap_only(&mut self, bar: &BarRow) -> f64 {
@@ -1865,7 +1890,7 @@ impl BarIndicatorState {
         }
     }
 
-    fn apply_bar(&mut self, bar: &BarRow) -> IndicatorRow {
+    fn apply_bar(&mut self, bar: &BarRow, include_structural_books: bool) -> IndicatorRow {
         let previous_close = self.last_close;
         let ema_9 = self.ema_9.update(bar.close);
         let ema_20 = self.ema_20.update(bar.close);
@@ -2040,9 +2065,15 @@ impl BarIndicatorState {
             qmd_structure_resistance_upper: structure.resistance.upper,
             qmd_structure_resistance_strength: structure.resistance.strength,
             qmd_structure_resistance_confidence: structure.resistance.confidence,
-            qmd_structure_active_levels: structure.active_levels.clone(),
-            qmd_structure_timeframe_states: structure.timeframe_states.clone(),
-            qmd_structure_unified_levels: structure.unified_levels.clone(),
+            qmd_structure_active_levels: include_structural_books
+                .then(|| structure.active_levels.clone())
+                .unwrap_or_default(),
+            qmd_structure_timeframe_states: include_structural_books
+                .then(|| structure.timeframe_states.clone())
+                .unwrap_or_default(),
+            qmd_structure_unified_levels: include_structural_books
+                .then(|| structure.unified_levels.clone())
+                .unwrap_or_default(),
             qmd_structure_developing_high: structure.developing_high,
             qmd_structure_developing_low: structure.developing_low,
             qmd_structure_developing_direction: structure.developing_direction,
@@ -2108,7 +2139,9 @@ impl BarIndicatorState {
             qmd_structure_prior_month_high: references.prior_month_high,
             qmd_structure_prior_month_low: references.prior_month_low,
             qmd_structure_prior_month_close: references.prior_month_close,
-            qmd_structure_snapshot: structure.as_ref().clone(),
+            qmd_structure_snapshot: include_structural_books
+                .then(|| structure.as_ref().clone())
+                .unwrap_or_default(),
             qmd_structure_events: bar.qmd_structure_events.clone(),
             microstructure_interval: MicrostructureIntervalFeatures::default(),
         }
@@ -2800,6 +2833,27 @@ impl IndicatorClickHouseWriter {
         )
         .await?;
         self.execute(
+            r#"CREATE TABLE IF NOT EXISTS qmd_structure_daily_checkpoint_v1
+            (
+                session_date Date,
+                algorithm_version UInt16,
+                sym LowCardinality(String),
+                authority_start DateTime64(6, 'UTC'),
+                checkpoint_at DateTime64(6, 'UTC'),
+                last_arrival_sequence UInt64,
+                source_plan_hash String,
+                source_revision_token String,
+                source_complete UInt8,
+                built_at DateTime64(3, 'UTC'),
+                snapshot_json String
+            )
+            ENGINE = ReplacingMergeTree(built_at)
+            PARTITION BY toYYYYMM(session_date)
+            ORDER BY (sym, session_date, algorithm_version, source_plan_hash, source_revision_token)"#,
+            true,
+        )
+        .await?;
+        self.execute(
             r#"CREATE TABLE IF NOT EXISTS qmd_structure_focus_registry_v1
             (
                 sym LowCardinality(String),
@@ -2920,6 +2974,214 @@ impl IndicatorClickHouseWriter {
     ) -> Result<(), String> {
         self.insert_structure_states(&[(checkpoint.sym.clone(), checkpoint.clone())])
             .await
+    }
+
+    pub async fn persist_daily_structure_checkpoint(
+        &self,
+        record: &DailyStructureCheckpoint,
+    ) -> Result<(), String> {
+        if !record.source_complete {
+            return Err("refusing to persist an incomplete daily structure checkpoint".to_string());
+        }
+        if record.algorithm_version != record.checkpoint.algorithm_version
+            || record.sym.to_ascii_uppercase() != record.checkpoint.sym.to_ascii_uppercase()
+            || record.last_arrival_sequence != record.checkpoint.last_arrival_sequence
+            || record.source_plan_hash.trim().is_empty()
+            || record.source_revision_token.trim().is_empty()
+        {
+            return Err("daily structure checkpoint identity is inconsistent".to_string());
+        }
+        let snapshot_json = serde_json::to_string(&record.checkpoint)
+            .map_err(|error| format!("failed to serialize daily structure checkpoint: {error}"))?;
+        let body = serde_json::to_string(&json!({
+            "session_date": record.session_date.to_string(),
+            "algorithm_version": record.algorithm_version,
+            "sym": record.sym.to_ascii_uppercase(),
+            "authority_start": clickhouse_datetime64(&record.authority_start),
+            "checkpoint_at": clickhouse_datetime64(&record.checkpoint_at),
+            "last_arrival_sequence": record.last_arrival_sequence,
+            "source_plan_hash": record.source_plan_hash,
+            "source_revision_token": record.source_revision_token,
+            "source_complete": u8::from(record.source_complete),
+            "built_at": clickhouse_datetime64(&record.built_at),
+            "snapshot_json": snapshot_json,
+        }))
+        .map_err(|error| format!("failed to encode daily structure checkpoint row: {error}"))?;
+        self.query_with_body(
+            "INSERT INTO qmd_structure_daily_checkpoint_v1 FORMAT JSONEachRow",
+            body,
+        )
+        .await
+    }
+
+    pub async fn load_daily_structure_checkpoint_before(
+        &self,
+        ticker: &str,
+        session_date: NaiveDate,
+    ) -> Result<Option<DailyStructureCheckpoint>, String> {
+        let sym = ticker.trim().to_ascii_uppercase();
+        if sym.is_empty()
+            || sym.len() > 32
+            || !sym
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+        {
+            return Err("invalid daily structure checkpoint ticker".to_string());
+        }
+        let escaped = sym.replace('\'', "''");
+        let sql = format!(
+            r#"SELECT
+                session_date,
+                algorithm_version,
+                sym,
+                toUnixTimestamp64Milli(authority_start) AS authority_start_ms,
+                toUnixTimestamp64Milli(checkpoint_at) AS checkpoint_at_ms,
+                last_arrival_sequence,
+                source_plan_hash,
+                source_revision_token,
+                source_complete,
+                toUnixTimestamp64Milli(built_at) AS built_at_ms,
+                snapshot_json
+            FROM qmd_structure_daily_checkpoint_v1
+            WHERE sym = '{}'
+              AND session_date < '{}'
+              AND algorithm_version = {}
+              AND source_complete = 1
+            ORDER BY session_date DESC, built_at DESC
+            LIMIT 1
+            FORMAT JSONEachRow"#,
+            escaped,
+            session_date,
+            crate::generic_structure::GENERIC_STRUCTURE_ALGORITHM_VERSION,
+        );
+        let text = self.query(&sql, true).await?;
+        let Some(line) = text.lines().find(|line| !line.trim().is_empty()) else {
+            return Ok(None);
+        };
+        let value = serde_json::from_str::<serde_json::Value>(line)
+            .map_err(|error| format!("invalid daily structure checkpoint row: {error}"))?;
+        let parse_string = |field: &str| {
+            value
+                .get(field)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        let parse_u64 = |field: &str| {
+            value
+                .get(field)
+                .and_then(|item| {
+                    item.as_u64()
+                        .or_else(|| item.as_str().and_then(|text| text.parse::<u64>().ok()))
+                })
+                .unwrap_or_default()
+        };
+        let checkpoint_json = parse_string("snapshot_json");
+        let checkpoint = serde_json::from_str::<GenericStructureCheckpoint>(&checkpoint_json)
+            .map_err(|error| format!("invalid daily structure checkpoint for {sym}: {error}"))?;
+        let stored_date = NaiveDate::parse_from_str(&parse_string("session_date"), "%Y-%m-%d")
+            .map_err(|error| format!("invalid daily structure checkpoint date: {error}"))?;
+        let checkpoint_at_ms = parse_u64("checkpoint_at_ms");
+        let authority_start_ms = parse_u64("authority_start_ms");
+        let built_at_ms = parse_u64("built_at_ms");
+        let authority_start = DateTime::from_timestamp_millis(authority_start_ms as i64)
+            .ok_or_else(|| "invalid daily structure checkpoint authority start".to_string())?;
+        let checkpoint_at = DateTime::from_timestamp_millis(checkpoint_at_ms as i64)
+            .ok_or_else(|| "invalid daily structure checkpoint timestamp".to_string())?;
+        let built_at = DateTime::from_timestamp_millis(built_at_ms as i64)
+            .ok_or_else(|| "invalid daily structure checkpoint build timestamp".to_string())?;
+        Ok(Some(DailyStructureCheckpoint {
+            session_date: stored_date,
+            algorithm_version: parse_u64("algorithm_version") as u16,
+            sym,
+            authority_start,
+            checkpoint_at,
+            last_arrival_sequence: parse_u64("last_arrival_sequence"),
+            source_plan_hash: parse_string("source_plan_hash"),
+            source_revision_token: parse_string("source_revision_token"),
+            source_complete: parse_u64("source_complete") == 1,
+            built_at,
+            checkpoint,
+        }))
+    }
+
+    pub async fn structure_split_adjustments(
+        &self,
+        ticker: &str,
+        start_date: NaiveDate,
+        end_date: NaiveDate,
+    ) -> Result<Vec<StructureSplitAdjustment>, String> {
+        let sym = ticker.trim().to_ascii_uppercase();
+        if sym.is_empty()
+            || sym.len() > 32
+            || !sym
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+        {
+            return Err("invalid split adjustment ticker".to_string());
+        }
+        if end_date < start_date {
+            return Err("split adjustment end date precedes start date".to_string());
+        }
+        let escaped = sym.replace('\'', "''");
+        let sql = format!(
+            r#"SELECT
+                toString(source.execution_date) AS execution_date,
+                argMax(source.split_from, source.inserted_at) AS split_from,
+                argMax(source.split_to, source.inserted_at) AS split_to,
+                formatDateTime(max(source.inserted_at), '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS source_inserted_at
+            FROM market_stock_split_v1 AS source FINAL
+            WHERE upper(source.provider_ticker) = '{escaped}'
+              AND toDate(source.execution_date) >= toDate('{start_date}')
+              AND toDate(source.execution_date) <= toDate('{end_date}')
+              AND source.split_from > 0
+              AND source.split_to > 0
+            GROUP BY source.execution_date
+            ORDER BY source.execution_date
+            FORMAT JSONEachRow"#,
+        );
+        let text = self.query(&sql, true).await?;
+        let mut adjustments = Vec::new();
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            let value = serde_json::from_str::<serde_json::Value>(line)
+                .map_err(|error| format!("invalid stock split adjustment row: {error}"))?;
+            let execution_date = value
+                .get("execution_date")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "stock split row omitted execution_date".to_string())?
+                .parse::<NaiveDate>()
+                .map_err(|error| format!("invalid stock split execution_date: {error}"))?;
+            let number = |field: &str| {
+                value
+                    .get(field)
+                    .and_then(|item| {
+                        item.as_f64()
+                            .or_else(|| item.as_str().and_then(|text| text.parse::<f64>().ok()))
+                    })
+                    .ok_or_else(|| format!("stock split row omitted {field}"))
+            };
+            let source_inserted_at = value
+                .get("source_inserted_at")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "stock split row omitted source_inserted_at".to_string())?
+                .parse::<DateTime<Utc>>()
+                .map_err(|error| format!("invalid stock split inserted_at: {error}"))?;
+            let effective_at = New_York
+                .from_local_datetime(
+                    &execution_date.and_time(NaiveTime::from_hms_opt(4, 0, 0).unwrap()),
+                )
+                .single()
+                .ok_or_else(|| "invalid New York stock split boundary".to_string())?
+                .with_timezone(&Utc);
+            adjustments.push(StructureSplitAdjustment {
+                execution_date,
+                effective_at,
+                split_from: number("split_from")?,
+                split_to: number("split_to")?,
+                source_inserted_at,
+            });
+        }
+        Ok(adjustments)
     }
 
     pub async fn load_structure_focus_registry(
@@ -3501,44 +3763,34 @@ mod tests {
     }
 
     #[test]
-    fn historical_cache_compaction_preserves_the_wire_projection() {
+    fn historical_cache_compaction_preserves_scalars_and_drops_heavy_projections() {
         let bar = base_bar();
         let mut calculator = BarIndicatorCalculator::new();
         let row = calculator.apply_bar(&bar);
-        let unified_level_count = row.qmd_structure_unified_levels.len();
         let mut wire_before = serde_json::to_value(&row).expect("indicator row should serialize");
-        wire_before
-            .as_object_mut()
-            .unwrap()
-            .remove("qmd_structure_active_levels");
-        wire_before
-            .as_object_mut()
-            .unwrap()
-            .remove("qmd_structure_timeframe_states");
+        for key in [
+            "qmd_structure_active_levels",
+            "qmd_structure_timeframe_states",
+            "qmd_structure_unified_levels",
+        ] {
+            wire_before.as_object_mut().unwrap().remove(key);
+        }
 
         let compacted = row.compact_for_historical_cache();
         let mut wire_after =
             serde_json::to_value(&compacted).expect("compacted indicator row should serialize");
-        wire_after
-            .as_object_mut()
-            .unwrap()
-            .remove("qmd_structure_active_levels");
-        wire_after
-            .as_object_mut()
-            .unwrap()
-            .remove("qmd_structure_timeframe_states");
+        for key in [
+            "qmd_structure_active_levels",
+            "qmd_structure_timeframe_states",
+            "qmd_structure_unified_levels",
+        ] {
+            wire_after.as_object_mut().unwrap().remove(key);
+        }
 
         assert_eq!(wire_after, wire_before);
         assert!(compacted.qmd_structure_active_levels.is_empty());
         assert!(compacted.qmd_structure_timeframe_states.is_empty());
-        assert_eq!(
-            compacted.qmd_structure_unified_levels.len(),
-            unified_level_count
-        );
-        assert!(compacted
-            .qmd_structure_unified_levels
-            .iter()
-            .all(|level| level.sources.is_empty()));
+        assert!(compacted.qmd_structure_unified_levels.is_empty());
         assert!(compacted.qmd_structure_snapshot.active_levels.is_empty());
         assert!(compacted.qmd_structure_snapshot.timeframe_states.is_empty());
         assert!(compacted.qmd_structure_events.is_empty());

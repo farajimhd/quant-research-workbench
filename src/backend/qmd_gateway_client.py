@@ -578,6 +578,29 @@ def qmd_history_post_json(
     return _qmd_decode_json(text, service_label="QMD History", operation="POST", path=path)
 
 
+def qmd_historical_structure_snapshot(
+    *, ticker: str, as_of: str, event_limit: int | None = None
+) -> dict[str, Any]:
+    payload = qmd_history_post_json(
+        "/materialize/generic-structure-snapshot",
+        {
+            "schema_version": 1,
+            "ticker": str(ticker).strip().upper(),
+            "as_of": as_of,
+            "event_limit": event_limit,
+        },
+        timeout=float(os.environ.get("QMD_HISTORY_STRUCTURE_SNAPSHOT_TIMEOUT_SECONDS", "180")),
+    )
+    if not isinstance(payload, dict) or not bool(payload.get("complete")):
+        raise RuntimeError("QMD History returned an incomplete Generic Structure snapshot")
+    snapshot = payload.get("snapshot")
+    if not isinstance(snapshot, dict):
+        raise RuntimeError("QMD History returned no Generic Structure snapshot payload")
+    if str(payload.get("ticker") or "").upper() != str(ticker).strip().upper():
+        raise RuntimeError("QMD History returned a Generic Structure snapshot for another ticker")
+    return payload
+
+
 def qmd_validate_historical_watchlist_plan(plan: dict[str, Any]) -> dict[str, Any]:
     payload = qmd_history_post_json(
         "/plans/watchlist-timeline/validate",

@@ -44,7 +44,9 @@ use crate::signal_stream::{
 use crate::state::{
     ScannerRowDelta, SharedMarketState, StatusMetrics, SymbolSnapshot, TickerStateSnapshot,
 };
-use crate::structure_focus::{StructureFocusCoordinator, StructureFocusRebuild};
+use crate::structure_focus::{
+    DailyStructureCheckpointBuild, StructureFocusCoordinator, StructureFocusRebuild,
+};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -138,6 +140,13 @@ struct StructureCheckpointRebuildRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct DailyStructureCheckpointRequest {
+    session_date: NaiveDate,
+    rebuild_start: chrono::DateTime<Utc>,
+    event_limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
 struct BarsQuery {
     limit: Option<usize>,
     timeframe: Option<String>,
@@ -209,6 +218,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/admin/structure-checkpoints/{ticker}/rebuild",
             post(rebuild_structure_checkpoint),
+        )
+        .route(
+            "/admin/structure-checkpoints/{ticker}/daily",
+            post(build_daily_structure_checkpoint),
         )
         .route("/snapshot/status", get(status_snapshot))
         .route("/snapshot/maintenance", get(maintenance_snapshot))
@@ -608,6 +621,65 @@ async fn rebuild_structure_checkpoint(
             Json(json!({
                 "error": error,
                 "error_code": "structure_checkpoint_rebuild_failed",
+                "retryable": false,
+            })),
+        )
+    })
+}
+
+async fn build_daily_structure_checkpoint(
+    State(state): State<Arc<AppState>>,
+    Path(ticker): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<DailyStructureCheckpointRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let expected = state.config.qmd_operator_token.trim();
+    let supplied = headers
+        .get("x-qmd-operator-token")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if !valid_shutdown_token(expected, supplied) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "a valid QMD operator token is required",
+                "error_code": "qmd_operator_token_required",
+                "retryable": false,
+            })),
+        ));
+    }
+    if !state.market_calendar.is_session_date(request.session_date) {
+        return Ok(Json(json!({
+            "ticker": ticker.to_ascii_uppercase(),
+            "session_date": request.session_date,
+            "status": "skipped_non_session",
+        })));
+    }
+    let result: DailyStructureCheckpointBuild = state
+        .structure_focus
+        .build_daily_checkpoint(
+            &ticker,
+            request.session_date,
+            request.rebuild_start,
+            request.event_limit,
+        )
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": error,
+                    "error_code": "daily_structure_checkpoint_build_failed",
+                    "retryable": false,
+                })),
+            )
+        })?;
+    serde_json::to_value(result).map(Json).map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": format!("failed to encode daily structure checkpoint response: {error}"),
+                "error_code": "daily_structure_checkpoint_response_failed",
                 "retryable": false,
             })),
         )

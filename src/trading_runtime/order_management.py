@@ -556,7 +556,7 @@ class OrderManagementEngine:
         if protected_exit is not None:
             return protected_exit
         orders = _apply_initial_tactic(plan.orders, tactic)
-        now = datetime.now(timezone.utc)
+        now = self._causal_group_time(intent)
         group = _ManagedOrderGroup(
             group_id=str(uuid4()),
             intent=intent,
@@ -1308,7 +1308,10 @@ class OrderManagementEngine:
                     "adaptive_reprice_skipped",
                     group.group_id,
                     group.account_id,
-                    datetime.now(timezone.utc),
+                    self._causal_group_time(
+                        group.intent,
+                        previous=group.updated_at,
+                    ),
                     {"reason": "quote_stale", "quote_age_ms": age_ms},
                 )
                 continue
@@ -1769,7 +1772,10 @@ class OrderManagementEngine:
             "protection_reconciliation",
             group.group_id,
             group.account_id,
-            datetime.now(timezone.utc),
+            self._causal_group_time(
+                group.intent,
+                previous=group.updated_at,
+            ),
             {"order_group_id": group.group_id, **result},
         )
         return result
@@ -2035,7 +2041,10 @@ class OrderManagementEngine:
             "profit_pocket_transition",
             group.group_id,
             group.account_id,
-            datetime.now(timezone.utc),
+            self._causal_group_time(
+                group.intent,
+                previous=group.updated_at,
+            ),
             {
                 "order_group_id": group.group_id,
                 "transition": transition.value,
@@ -2081,6 +2090,13 @@ class OrderManagementEngine:
         candidates: list[float] = []
         for item in dynamic:
             trail = item.trailing
+            gain = (
+                (snapshot.bid / average - 1) * 100
+                if long_position
+                else (average / snapshot.ask - 1) * 100
+            )
+            if gain < trail.activation_gain_percent:
+                continue
             if trail.rule_type == TrailingRuleType.VOLATILITY_TRAIL:
                 distance = snapshot.volatility * float(trail.volatility_multiple or 1.0)
                 candidates.append(
@@ -2096,14 +2112,8 @@ class OrderManagementEngine:
                     else group.low_water_price + distance
                 )
             elif trail.rule_type == TrailingRuleType.BREAKEVEN_THEN_TRAIL:
-                gain = (
-                    (snapshot.bid / average - 1) * 100
-                    if long_position
-                    else (average / snapshot.ask - 1) * 100
-                )
-                if gain >= trail.activation_gain_percent:
-                    buffer = average * trail.breakeven_buffer_bps / 10_000
-                    candidates.append(average + buffer if long_position else average - buffer)
+                buffer = average * trail.breakeven_buffer_bps / 10_000
+                candidates.append(average + buffer if long_position else average - buffer)
             elif trail.rule_type == TrailingRuleType.PROFIT_LOCK_R:
                 initial_stop = item.stop.resolve(
                     reference_price=float(group.intent.reference_price),
@@ -2201,9 +2211,42 @@ class OrderManagementEngine:
                 },
             )
 
-    def _transition(self, group: _ManagedOrderGroup, state: OrderManagementState, payload: dict[str, Any]) -> None:
+    def _causal_group_time(
+        self,
+        intent: StrategyIntent,
+        *,
+        previous: datetime | None = None,
+    ) -> datetime:
+        """Use market event time in historical modes and wall time only live.
+
+        Simulated broker callbacks are emitted while processing a causal market
+        event.  Stamping their OMS transitions with wall time places fills and
+        order states days after the replay clock, hiding them from as-of UI
+        queries.  The execution snapshot is the authoritative current clock for
+        historical OMS work; the intent time is the lower-bound fallback.
+        """
+
+        if self.enforce_wall_clock_quote_freshness:
+            candidate = datetime.now(timezone.utc)
+        else:
+            market = self.execution_market_data.snapshot(intent.ticker)
+            candidate = market.observed_at if market is not None else intent.event_time
+        candidate = candidate.astimezone(timezone.utc)
+        if previous is not None:
+            candidate = max(candidate, previous.astimezone(timezone.utc))
+        return candidate
+
+    def _transition(
+        self,
+        group: _ManagedOrderGroup,
+        state: OrderManagementState,
+        payload: dict[str, Any],
+    ) -> None:
         group.state = state
-        group.updated_at = datetime.now(timezone.utc)
+        group.updated_at = self._causal_group_time(
+            group.intent,
+            previous=group.updated_at,
+        )
         self._record(
             "order_management",
             "order_group_state",

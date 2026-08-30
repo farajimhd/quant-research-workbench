@@ -5,8 +5,9 @@ use crate::computation_targets::{
 use crate::config::GatewayConfig;
 use crate::gapfill::GapFillService;
 use crate::generic_structure::{GenericStructureCheckpoint, GENERIC_STRUCTURE_ALGORITHM_VERSION};
-use crate::indicators::IndicatorClickHouseWriter;
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use crate::indicators::{DailyStructureCheckpoint, IndicatorClickHouseWriter};
+use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, NaiveTime, TimeZone, Utc};
+use chrono_tz::America::New_York;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -62,6 +63,7 @@ pub struct StructureFocusCoordinator {
     inactive_batch_size: usize,
     inactive_registry: Arc<Mutex<BTreeMap<String, DateTime<Utc>>>>,
     inactive_registry_limit: usize,
+    cold_rebuild_days: u64,
     staging_max_events: usize,
     activation_locks: SymbolActivationLocks,
 }
@@ -105,6 +107,22 @@ pub struct StructureFocusRebuild {
     pub previous_retry_action: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct DailyStructureCheckpointBuild {
+    pub ticker: String,
+    pub session_date: NaiveDate,
+    pub seeded_from_session_date: Option<NaiveDate>,
+    pub replay_start: DateTime<Utc>,
+    pub as_of: DateTime<Utc>,
+    pub event_count: u64,
+    pub advanced_event_count: u64,
+    pub checkpoint_updated_at: DateTime<Utc>,
+    pub checkpoint_arrival_sequence: u64,
+    pub source_plan_hash: String,
+    pub source_revision_token: String,
+    pub status: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct HistoryErrorResponse {
     #[serde(default)]
@@ -127,6 +145,8 @@ struct HistoryAdvanceResponse {
     event_count: u64,
     advanced_event_count: u64,
     source_plan: HistorySourcePlan,
+    source_revision_before: HistorySourceRevision,
+    source_revision_after: HistorySourceRevision,
     complete: bool,
 }
 
@@ -147,6 +167,12 @@ struct HistoryRebuildResponse {
 #[derive(Debug, Deserialize)]
 struct HistorySourceRevision {
     token: String,
+    #[serde(default)]
+    source_plan_hash: String,
+    #[serde(default)]
+    complete_for_history: bool,
+    #[serde(default)]
+    request_complete: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -195,6 +221,7 @@ impl StructureFocusCoordinator {
             inactive_batch_size: config.structure_focus_inactive_batch_size,
             inactive_registry: Arc::new(Mutex::new(BTreeMap::new())),
             inactive_registry_limit: config.structure_focus_inactive_registry_limit,
+            cold_rebuild_days: config.structure_focus_cold_rebuild_days,
             staging_max_events: config.structure_focus_staging_max_events,
             activation_locks: SymbolActivationLocks::default(),
         })
@@ -247,13 +274,35 @@ impl StructureFocusCoordinator {
             }
             for ticker in &staged {
                 current_ticker = Some(ticker.clone());
-                let checkpoint = self
+                let mut seed_event_count = 0_u64;
+                let mut seed_advanced_event_count = 0_u64;
+                let mut seed_source_plan_hash = String::new();
+                let checkpoint = if let Some(checkpoint) = self
                     .checkpoint_store
                     .load_structure_checkpoint(ticker)
                     .await?
-                    .ok_or_else(|| {
-                        format!("no persisted Generic Structure checkpoint exists for {ticker}")
-                    })?;
+                {
+                    checkpoint
+                } else if let Some(checkpoint) = self
+                    .latest_compatible_daily_seed(ticker)
+                    .await?
+                {
+                    checkpoint
+                } else {
+                    let now = Utc::now();
+                    let rebuilt = self
+                        .request_structure_rebuild(
+                            ticker,
+                            now - ChronoDuration::days(self.cold_rebuild_days as i64),
+                            now - ChronoDuration::seconds(1),
+                            None,
+                        )
+                        .await?;
+                    seed_event_count = rebuilt.event_count;
+                    seed_advanced_event_count = rebuilt.advanced_event_count;
+                    seed_source_plan_hash = rebuilt.source_plan.plan_hash.clone();
+                    rebuilt.checkpoint
+                };
                 if checkpoint.algorithm_version != GENERIC_STRUCTURE_ALGORITHM_VERSION
                     || checkpoint.last_arrival_sequence == 0
                     || checkpoint.updated_at.is_none()
@@ -291,12 +340,17 @@ impl StructureFocusCoordinator {
                 activated.push(StructureFocusActivation {
                     ticker: ticker.clone(),
                     already_active: false,
-                    history_event_count: advanced.event_count,
-                    history_advanced_event_count: advanced.advanced_event_count,
+                    history_event_count: seed_event_count.saturating_add(advanced.event_count),
+                    history_advanced_event_count: seed_advanced_event_count
+                        .saturating_add(advanced.advanced_event_count),
                     buffered_event_count,
                     checkpoint_updated_at: advanced.checkpoint.updated_at,
                     checkpoint_arrival_sequence: cursor.1,
-                    source_plan_hash: advanced.source_plan.plan_hash,
+                    source_plan_hash: if seed_source_plan_hash.is_empty() {
+                        advanced.source_plan.plan_hash
+                    } else {
+                        format!("{}+{}", seed_source_plan_hash, advanced.source_plan.plan_hash)
+                    },
                 });
             }
             Ok::<(), String>(())
@@ -466,6 +520,237 @@ impl StructureFocusCoordinator {
         })
     }
 
+    pub async fn build_daily_checkpoint(
+        &self,
+        ticker: &str,
+        session_date: NaiveDate,
+        rebuild_start: DateTime<Utc>,
+        event_limit: Option<usize>,
+    ) -> Result<DailyStructureCheckpointBuild, String> {
+        let ticker = ticker.trim().to_ascii_uppercase();
+        if ticker.is_empty()
+            || ticker.len() > 32
+            || !ticker
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+        {
+            return Err("invalid daily Generic Structure checkpoint ticker".to_string());
+        }
+        let local_end = New_York
+            .from_local_datetime(&session_date.and_time(NaiveTime::from_hms_opt(20, 0, 0).unwrap()))
+            .single()
+            .ok_or_else(|| "invalid New York structure checkpoint session boundary".to_string())?;
+        let as_of = local_end
+            .with_timezone(&Utc)
+            .checked_sub_signed(ChronoDuration::microseconds(1))
+            .ok_or_else(|| "daily structure checkpoint session boundary underflow".to_string())?;
+        if as_of >= Utc::now() {
+            return Err("daily structure checkpoint session is not complete".to_string());
+        }
+        if rebuild_start >= as_of {
+            return Err(
+                "daily structure checkpoint rebuild_start must precede session end".to_string(),
+            );
+        }
+        let _activation_guards = self.activation_locks.acquire(&[ticker.clone()]).await;
+        let seed = self
+            .checkpoint_store
+            .load_daily_structure_checkpoint_before(&ticker, session_date)
+            .await?;
+        let (
+            checkpoint,
+            replay_start,
+            event_count,
+            advanced_event_count,
+            _source_plan,
+            _slice_revision,
+            seeded_from,
+            authority_start,
+        ) = if let Some(seed) = seed {
+            let replay_start = seed
+                .checkpoint
+                .replayed_through
+                .or(seed.checkpoint.updated_at)
+                .ok_or_else(|| "daily structure seed lacks replay cursor".to_string())?;
+            match self
+                .advance_checkpoint_through(seed.checkpoint.clone(), as_of)
+                .await
+            {
+                Ok(advanced) => {
+                    if !advanced.complete
+                        || advanced.source_revision_before.token
+                            != advanced.source_revision_after.token
+                        || advanced
+                            .source_plan
+                            .segments
+                            .iter()
+                            .any(|segment| segment.tier == "gap")
+                    {
+                        return Err(
+                            "daily structure checkpoint advancement was incomplete or source-inconsistent"
+                                .to_string(),
+                        );
+                    }
+                    (
+                        advanced.checkpoint,
+                        replay_start,
+                        advanced.event_count,
+                        advanced.advanced_event_count,
+                        advanced.source_plan,
+                        advanced.source_revision_after.token,
+                        Some(seed.session_date),
+                        seed.authority_start,
+                    )
+                }
+                Err(error) if non_retryable_history_error(&error).is_some() => {
+                    let rebuilt = self
+                        .request_structure_rebuild(
+                            &ticker,
+                            seed.authority_start,
+                            as_of,
+                            event_limit,
+                        )
+                        .await?;
+                    if !rebuilt.complete
+                        || rebuilt.ticker != ticker
+                        || rebuilt.checkpoint.algorithm_version
+                            != GENERIC_STRUCTURE_ALGORITHM_VERSION
+                        || rebuilt.source_revision_before.token
+                            != rebuilt.source_revision_after.token
+                        || rebuilt
+                            .source_plan
+                            .segments
+                            .iter()
+                            .any(|segment| segment.tier == "gap")
+                    {
+                        return Err(
+                            "daily structure checkpoint archive fallback was incomplete or source-inconsistent"
+                                .to_string(),
+                        );
+                    }
+                    (
+                        rebuilt.checkpoint,
+                        rebuilt.replay_start,
+                        rebuilt.event_count,
+                        rebuilt.advanced_event_count,
+                        rebuilt.source_plan,
+                        rebuilt.source_revision_after.token,
+                        None,
+                        seed.authority_start,
+                    )
+                }
+                Err(error) => return Err(error),
+            }
+        } else {
+            let response = self
+                .rebuild_client
+                .post(format!(
+                    "{}/materialize/generic-structure-rebuild",
+                    self.history_url
+                ))
+                .json(&json!({
+                    "schema_version": 1,
+                    "ticker": ticker,
+                    "start": rebuild_start,
+                    "as_of": as_of,
+                    "event_limit": event_limit,
+                }))
+                .send()
+                .await
+                .map_err(|error| {
+                    format!("QMD History daily checkpoint rebuild request failed: {error}")
+                })?;
+            let status = response.status();
+            if !status.is_success() {
+                let body = response.text().await.unwrap_or_default();
+                return Err(format!(
+                    "QMD History daily checkpoint rebuild returned HTTP {status}: {body}"
+                ));
+            }
+            let rebuilt = response
+                .json::<HistoryRebuildResponse>()
+                .await
+                .map_err(|error| format!("invalid QMD History daily rebuild response: {error}"))?;
+            if !rebuilt.complete
+                || rebuilt.ticker != ticker
+                || rebuilt.checkpoint.algorithm_version != GENERIC_STRUCTURE_ALGORITHM_VERSION
+                || rebuilt.source_revision_before.token != rebuilt.source_revision_after.token
+                || rebuilt
+                    .source_plan
+                    .segments
+                    .iter()
+                    .any(|segment| segment.tier == "gap")
+            {
+                return Err(
+                    "daily structure checkpoint rebuild was incomplete or source-inconsistent"
+                        .to_string(),
+                );
+            }
+            (
+                rebuilt.checkpoint,
+                rebuilt.replay_start,
+                rebuilt.event_count,
+                rebuilt.advanced_event_count,
+                rebuilt.source_plan,
+                rebuilt.source_revision_after.token,
+                None,
+                rebuild_start,
+            )
+        };
+        let checkpoint_updated_at = checkpoint
+            .updated_at
+            .ok_or_else(|| "daily structure checkpoint lacks updated_at".to_string())?;
+        if checkpoint.sym.to_ascii_uppercase() != ticker
+            || checkpoint.algorithm_version != GENERIC_STRUCTURE_ALGORITHM_VERSION
+            || checkpoint.last_arrival_sequence == 0
+        {
+            return Err("daily structure checkpoint payload identity is invalid".to_string());
+        }
+        let authority_end = as_of
+            .checked_add_signed(ChronoDuration::microseconds(1))
+            .ok_or_else(|| "daily structure checkpoint authority end overflow".to_string())?;
+        let authority_revision = self
+            .history_source_revision(&ticker, authority_start, authority_end)
+            .await?;
+        if !authority_revision.complete_for_history
+            || !authority_revision.request_complete
+            || authority_revision.source_plan_hash.trim().is_empty()
+            || authority_revision.token.trim().is_empty()
+        {
+            return Err("daily structure checkpoint full authority is incomplete".to_string());
+        }
+        let record = DailyStructureCheckpoint {
+            session_date,
+            algorithm_version: checkpoint.algorithm_version,
+            sym: ticker.clone(),
+            authority_start,
+            checkpoint_at: checkpoint_updated_at,
+            last_arrival_sequence: checkpoint.last_arrival_sequence,
+            source_plan_hash: authority_revision.source_plan_hash.clone(),
+            source_revision_token: authority_revision.token.clone(),
+            source_complete: true,
+            built_at: Utc::now(),
+            checkpoint: checkpoint.clone(),
+        };
+        self.checkpoint_store
+            .persist_daily_structure_checkpoint(&record)
+            .await?;
+        Ok(DailyStructureCheckpointBuild {
+            ticker,
+            session_date,
+            seeded_from_session_date: seeded_from,
+            replay_start,
+            as_of,
+            event_count,
+            advanced_event_count,
+            checkpoint_updated_at,
+            checkpoint_arrival_sequence: checkpoint.last_arrival_sequence,
+            source_plan_hash: authority_revision.source_plan_hash,
+            source_revision_token: authority_revision.token,
+            status: "completed".to_string(),
+        })
+    }
+
     pub async fn persist_and_reclaim_unused(
         &self,
         targets: &SharedComputationTargets,
@@ -503,6 +788,56 @@ impl StructureFocusCoordinator {
             reclaimed.push(ticker);
         }
         Ok(reclaimed)
+    }
+
+    pub async fn apply_due_split_adjustments(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<String>, String> {
+        let mut adjusted = Vec::new();
+        for ticker in self.bars.active_structure_symbols().await {
+            let Some(checkpoint) = self.bars.structure_checkpoint(&ticker).await else {
+                continue;
+            };
+            let start_date = checkpoint
+                .updated_at
+                .unwrap_or(now)
+                .with_timezone(&New_York)
+                .date_naive();
+            let end_date = now.with_timezone(&New_York).date_naive();
+            for adjustment in self
+                .checkpoint_store
+                .structure_split_adjustments(&ticker, start_date, end_date)
+                .await?
+                .into_iter()
+                .filter(|adjustment| adjustment.effective_at <= now)
+            {
+                if self
+                    .bars
+                    .apply_structure_split_adjustment(&ticker, &adjustment)
+                    .await?
+                {
+                    let successor =
+                        self.bars
+                            .structure_checkpoint(&ticker)
+                            .await
+                            .ok_or_else(|| {
+                                format!("split-adjusted checkpoint disappeared for {ticker}")
+                            })?;
+                    self.checkpoint_store
+                        .persist_structure_checkpoint(&successor)
+                        .await?;
+                    adjusted.push(format!(
+                        "{}:{}:{}-for-{}",
+                        ticker,
+                        adjustment.execution_date,
+                        adjustment.split_from,
+                        adjustment.split_to
+                    ));
+                }
+            }
+        }
+        Ok(adjusted)
     }
 
     pub async fn advance_inactive_due(&self) -> Result<StructureFocusAdvance, String> {
@@ -612,6 +947,96 @@ impl StructureFocusCoordinator {
             .map_err(|error| format!("invalid QMD History checkpoint response: {error}"))
     }
 
+    async fn latest_compatible_daily_seed(
+        &self,
+        ticker: &str,
+    ) -> Result<Option<GenericStructureCheckpoint>, String> {
+        let tomorrow = Utc::now()
+            .with_timezone(&New_York)
+            .date_naive()
+            .succ_opt()
+            .ok_or_else(|| "daily structure seed date overflow".to_string())?;
+        let Some(seed) = self
+            .checkpoint_store
+            .load_daily_structure_checkpoint_before(ticker, tomorrow)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let authority_end = seed
+            .checkpoint
+            .replayed_through
+            .or(seed.checkpoint.updated_at)
+            .ok_or_else(|| "daily structure seed lacks replay cursor".to_string())?
+            .checked_add_signed(ChronoDuration::microseconds(1))
+            .ok_or_else(|| "daily structure seed cursor overflow".to_string())?;
+        let current = self
+            .history_source_revision(ticker, seed.authority_start, authority_end)
+            .await?;
+        if current.complete_for_history
+            && current.request_complete
+            && current.source_plan_hash == seed.source_plan_hash
+            && current.token == seed.source_revision_token
+        {
+            Ok(Some(seed.checkpoint))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn request_structure_rebuild(
+        &self,
+        ticker: &str,
+        replay_start: DateTime<Utc>,
+        as_of: DateTime<Utc>,
+        event_limit: Option<usize>,
+    ) -> Result<HistoryRebuildResponse, String> {
+        let response = self
+            .rebuild_client
+            .post(format!(
+                "{}/materialize/generic-structure-rebuild",
+                self.history_url
+            ))
+            .json(&json!({
+                "schema_version": 1,
+                "ticker": ticker,
+                "start": replay_start,
+                "as_of": as_of,
+                "event_limit": event_limit,
+            }))
+            .send()
+            .await
+            .map_err(|error| format!("QMD History checkpoint rebuild request failed: {error}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(format!(
+                "QMD History checkpoint rebuild returned HTTP {status}: {body}"
+            ));
+        }
+        let rebuilt = response
+            .json::<HistoryRebuildResponse>()
+            .await
+            .map_err(|error| format!("invalid QMD History rebuild response: {error}"))?;
+        if !rebuilt.complete
+            || rebuilt.ticker != ticker
+            || rebuilt.checkpoint.sym.to_ascii_uppercase() != ticker
+            || rebuilt.checkpoint.algorithm_version != GENERIC_STRUCTURE_ALGORITHM_VERSION
+            || rebuilt.checkpoint.last_arrival_sequence == 0
+            || rebuilt.source_revision_before.token != rebuilt.source_revision_after.token
+            || rebuilt
+                .source_plan
+                .segments
+                .iter()
+                .any(|segment| segment.tier == "gap")
+        {
+            return Err(format!(
+                "QMD History returned an incomplete or mismatched rebuild for {ticker}"
+            ));
+        }
+        Ok(rebuilt)
+    }
+
     async fn advance_checkpoint_through(
         &self,
         mut checkpoint: GenericStructureCheckpoint,
@@ -685,6 +1110,37 @@ impl StructureFocusCoordinator {
             .filter(|segment| segment.tier == "gap")
             .map(|segment| (segment.start, segment.end))
             .collect())
+    }
+
+    async fn history_source_revision(
+        &self,
+        ticker: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<HistorySourceRevision, String> {
+        let response = self
+            .client
+            .get(format!(
+                "{}/source-revision?start={}&end={}&tickers={}",
+                self.history_url,
+                urlencoding::encode(&start.to_rfc3339()),
+                urlencoding::encode(&end.to_rfc3339()),
+                urlencoding::encode(ticker),
+            ))
+            .send()
+            .await
+            .map_err(|error| format!("QMD History source-revision request failed: {error}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(format!(
+                "QMD History source-revision request returned HTTP {status}: {body}"
+            ));
+        }
+        response
+            .json::<HistorySourceRevision>()
+            .await
+            .map_err(|error| format!("invalid QMD History source revision: {error}"))
     }
 }
 

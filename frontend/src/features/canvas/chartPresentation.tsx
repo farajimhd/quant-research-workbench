@@ -474,7 +474,10 @@ function pushUnifiedStructureLevels(
     const low = level.side > 0;
     const color = low ? "var(--success)" : "var(--danger)";
     const timeframes = level.timeframes.join(" · ");
-    const reactionProbability = boundedUnit(level.reaction_probability || level.confidence);
+    const reactionProbability = boundedUnit(level.reaction_probability ?? level.confidence);
+    const breakProbability = boundedUnit(level.break_probability ?? (1 - level.hold_probability));
+    const reversalProbability = boundedUnit(level.reversal_probability ?? reactionProbability);
+    const pressureBias = Math.max(-1, Math.min(1, Number(level.pressure_bias) || 0));
     zones.push({
       annotationKind: "unified-structure-level",
       axisLabelDefault: latest && latestRank++ < 4,
@@ -485,6 +488,7 @@ function pushUnifiedStructureLevels(
       color,
       compactLabel: `${low ? "S" : "R"} ${Math.round(reactionProbability * 100)}%`,
       confidence: boundedUnit(level.confidence),
+      breakProbability,
       defaultVisible: true,
       displayItemId: "indicator.qmd_unified_structure",
       end,
@@ -494,7 +498,7 @@ function pushUnifiedStructureLevels(
       historicalLabelsDefault: false,
       historyBarsDefault: 0,
       holdProbability: boundedUnit(level.hold_probability),
-      label: `${low ? "Support" : "Resistance"} · ${percentLabel(reactionProbability)} reaction evidence · ${percentLabel(level.hold_probability)} current-role hold evidence · ${level.touch_count} tests · ${level.hold_count} holds · ${level.break_count} accepted break${level.break_count === 1 ? "" : "s"} · ${level.role_flip_count} role flip${level.role_flip_count === 1 ? "" : "s"} · ${level.independent_pivot_count} independent pivot${level.independent_pivot_count === 1 ? "" : "s"} (${timeframes})`,
+      label: `${low ? "Support" : "Resistance"} · ${percentLabel(reactionProbability)} react · ${percentLabel(level.hold_probability)} hold · ${percentLabel(breakProbability)} break · ${percentLabel(reversalProbability)} reversal · ${pressureBias >= 0 ? "+" : ""}${Math.round(pressureBias * 100)}% pressure · ${level.touch_count} tests · ${level.role_flip_count} flips · ${level.independent_pivot_count} pivots (${timeframes})`,
       latest,
       legendLabel: "Unified structural level book",
       lower: level.lower,
@@ -503,11 +507,16 @@ function pushUnifiedStructureLevels(
       probabilityLineWidth: 1.5 + boundedUnit(level.salience) * 2.5,
       renderMode: "zone",
       roleFlipCount: Number(level.role_flip_count ?? 0),
+      pressureBias,
+      reversalProbability,
       settingsId: "indicator.qmd_unified_structure.level-book-v2",
       start,
       strength: boundedUnit(level.salience),
       tone: low ? "buy" : "sell",
       totalVolume: level.total_volume,
+      buyVolume: level.buy_volume,
+      sellVolume: level.sell_volume,
+      neutralVolume: level.neutral_volume,
       upper: level.upper,
     });
   });

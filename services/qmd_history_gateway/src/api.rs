@@ -14,9 +14,10 @@ use crate::source::{
     HistoricalScannerMarketSnapshot, LatestEventCoverage, MarketSourcePlan, SourceRevision,
 };
 use crate::structure_checkpoint::{
-    advance_structure_checkpoint, rebuild_structure_checkpoint, StructureCheckpointAdvanceRequest,
-    StructureCheckpointAdvanceResponse, StructureCheckpointRebuildRequest,
-    StructureCheckpointRebuildResponse,
+    advance_structure_checkpoint, materialize_structure_snapshot, rebuild_structure_checkpoint,
+    StructureCheckpointAdvanceRequest, StructureCheckpointAdvanceResponse,
+    StructureCheckpointRebuildRequest, StructureCheckpointRebuildResponse,
+    StructureSnapshotRequest, StructureSnapshotResponse,
 };
 use crate::watchlist_timeline::{
     validate_plan, HistoricalWatchlistPlan, HistoricalWatchlistPlanValidation,
@@ -225,6 +226,10 @@ pub fn app(state: AppState) -> Router {
             post(materialize_generic_structure_checkpoint),
         )
         .route(
+            "/materialize/generic-structure-snapshot",
+            post(materialize_generic_structure_snapshot),
+        )
+        .route(
             "/materialize/generic-structure-rebuild",
             post(materialize_generic_structure_rebuild),
         )
@@ -335,6 +340,32 @@ async fn materialize_generic_structure_checkpoint(
             )
         })?;
     advance_structure_checkpoint(&state.config, &state.source, request)
+        .await
+        .map(Json)
+        .map_err(structure_checkpoint_advancement_error)
+}
+
+async fn materialize_generic_structure_snapshot(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<StructureSnapshotRequest>,
+) -> Result<Json<StructureSnapshotResponse>, ApiError> {
+    let _permit = state
+        .structure_checkpoint_advancement_permits
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({
+                    "error": "Generic Structure snapshot capacity is busy",
+                    "error_code": "structure_checkpoint_capacity_busy",
+                    "retryable": true,
+                    "retry_action": "retry_structure_snapshot",
+                    "source": "qmd_history_gateway",
+                })),
+            )
+        })?;
+    materialize_structure_snapshot(&state.config, &state.source, request)
         .await
         .map(Json)
         .map_err(structure_checkpoint_advancement_error)

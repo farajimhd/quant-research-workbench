@@ -53,6 +53,9 @@ export type QmdUnifiedStructureSource = {
   strength: number;
   confidence: number;
   total_volume: number;
+  buy_volume: number;
+  sell_volume: number;
+  neutral_volume: number;
   trade_count: number;
   source_kind: string;
   touch_count: number;
@@ -75,9 +78,15 @@ export type QmdUnifiedStructureLevel = {
   created_at_ms: number;
   confirmed_at_ms: number;
   total_volume: number;
+  buy_volume: number;
+  sell_volume: number;
+  neutral_volume: number;
   trade_count: number;
+  pressure_bias: number;
   reaction_probability: number;
   hold_probability: number;
+  break_probability: number;
+  reversal_probability: number;
   touch_count: number;
   hold_count: number;
   break_count: number;

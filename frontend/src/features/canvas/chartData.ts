@@ -38,6 +38,42 @@ const CHART_SNAPSHOT_CACHE = new Map<string, ChartSnapshotCacheEntry>();
 const CHART_SNAPSHOT_CACHE_TTL_MS = 2 * 60_000;
 const CHART_SNAPSHOT_CACHE_LIMIT = 48;
 
+// These indicators are deterministic functions of the canonical closed bars
+// and are prepared with the bar artifact. Event-flow and microstructure fields
+// remain on the full derived path; they must never be approximated from OHLCV.
+const BAR_DERIVED_INDICATOR_COLUMNS = new Set([
+  "bar_start",
+  "atr_14",
+  "bollinger_lower_20",
+  "bollinger_mid_20",
+  "bollinger_std_20",
+  "bollinger_upper_20",
+  "close_sma_20",
+  "ema_9",
+  "ema_20",
+  "ema_50",
+  "macd_histogram",
+  "macd_line",
+  "macd_signal",
+  "price_vs_ema20_pct",
+  "price_vs_vwap_pct",
+  "return_1_bar",
+  "rsi_14",
+  "trend_score",
+  "volume_sma_20",
+  "vwap",
+]);
+
+// QMD attaches the causal structure snapshot to each completed BarRow before
+// the prepared chart artifact is written.  Treating these projections as
+// event-derived started a second full-session event replay after the chart was
+// already ready.  The structural books themselves remain compacted by QMD
+// History and the raw structure-event stream is still requested separately for
+// swing/break audit overlays.
+function isBarDerivedIndicatorColumn(column: string): boolean {
+  return BAR_DERIVED_INDICATOR_COLUMNS.has(column) || column.startsWith("qmd_structure_");
+}
+
 type HistoricalChartMode = "backtest" | "debug" | "replay";
 
 export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimeframe, cutoffMs: number, sessionDate: string, visibleIndicatorIds: string[], liveTail = false, enabled = true, historicalMode: HistoricalChartMode = "replay", fullSession = false): CanvasLiveChartState {
@@ -51,10 +87,24 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
     () => indicatorColumns.split(",").filter((column) => column !== "qmd_structure_unified_levels").join(","),
     [indicatorColumns],
   );
-  const standardIndicatorsRequested = standardIndicatorColumns !== "bar_start";
-  const baseIndicatorColumns = unifiedStructureSelected
-    ? "bar_start,qmd_structure_unified_levels"
-    : "bar_start";
+  const barIndicatorColumns = useMemo(
+    () => standardIndicatorColumns.split(",").filter(isBarDerivedIndicatorColumn).join(","),
+    [standardIndicatorColumns],
+  );
+  const eventIndicatorColumns = useMemo(
+    () => [
+      "bar_start",
+      ...standardIndicatorColumns
+        .split(",")
+        .filter((column) => column !== "bar_start" && !isBarDerivedIndicatorColumn(column)),
+    ].join(","),
+    [standardIndicatorColumns],
+  );
+  const standardIndicatorsRequested = eventIndicatorColumns !== "bar_start";
+  const baseIndicatorColumns = [
+    ...barIndicatorColumns.split(","),
+    ...(unifiedStructureSelected ? ["qmd_structure_unified_levels"] : []),
+  ].filter(Boolean).filter((value, index, values) => values.indexOf(value) === index).join(",");
   const historyTimeoutMs = unifiedStructureSelected ? 180_000 : 120_000;
   const auxiliaryProjection = useMemo(() => requestedChartAuxiliary(visibleIndicatorIds), [visibleIndicatorIds]);
   const projectionKey = `${indicatorColumns}|signals=${auxiliaryProjection.includeMarketSignals}|structure=${auxiliaryProjection.includeStructure}`;
@@ -86,7 +136,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
     setState((current) => ({ ...current, historyError: "", loadingEarlier: true }));
     const page = api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...request.params, include_market_signals: auxiliaryProjection.includeMarketSignals, include_structure: auxiliaryProjection.includeStructure, indicator_columns: baseIndicatorColumns, stage: "bars" })}`, { signal: controller.signal, timeoutMs: historyTimeoutMs });
     const standardIndicatorPage = standardIndicatorsRequested
-      ? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...request.params, include_market_signals: false, include_structure: false, indicator_columns: standardIndicatorColumns, stage: "full" })}`, { signal: controller.signal, timeoutMs: 120_000 })
+      ? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...request.params, include_market_signals: false, include_structure: false, indicator_columns: eventIndicatorColumns, stage: "full" })}`, { signal: controller.signal, timeoutMs: 120_000 })
       : null;
     page
       .then((payload) => {
@@ -138,7 +188,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
       if (controller.signal.aborted || requestKeyRef.current !== requestKey) return;
       setState((current) => ({ ...current, historyError: reason instanceof Error ? reason.message : String(reason) }));
     });
-  }, [auxiliaryProjection.includeMarketSignals, auxiliaryProjection.includeStructure, baseIndicatorColumns, cutoffMs, enabled, fullSession, historicalMode, projectionKey, rowBudget, sessionDate, standardIndicatorColumns, standardIndicatorsRequested, symbol, timeframe]);
+  }, [auxiliaryProjection.includeMarketSignals, auxiliaryProjection.includeStructure, baseIndicatorColumns, cutoffMs, enabled, eventIndicatorColumns, fullSession, historicalMode, projectionKey, rowBudget, sessionDate, standardIndicatorsRequested, symbol, timeframe]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -213,7 +263,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
         ? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, indicator_columns: baseIndicatorColumns, stage: "bars" })}`, { signal: historyController.signal, timeoutMs: historyTimeoutMs })
         : api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, indicator_columns: indicatorColumns, stage: "full" })}`, { signal: historyController.signal, timeoutMs: historyTimeoutMs });
       const fullRequest = progressive
-        ? () => api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, indicator_columns: standardIndicatorColumns, stage: "full" })}`, { signal: historyController.signal, timeoutMs: 120_000 })
+        ? () => api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, indicator_columns: eventIndicatorColumns, stage: "full" })}`, { signal: historyController.signal, timeoutMs: 120_000 })
         : null;
       // Live bars and closed indicators come from the recent materializations.
       // Signal/structure history remains causal QMD History work and advances
@@ -330,7 +380,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
       if (requestKeyRef.current === requestKey) requestKeyRef.current = "";
       historyController.abort();
     };
-  }, [auxiliaryProjection.includeMarketSignals, auxiliaryProjection.includeStructure, baseIndicatorColumns, enabled, fullSession, historicalMode, indicatorColumns, pointInTime, projectionKey, rowBudget, sessionDate, standardIndicatorColumns, standardIndicatorsRequested, symbol, timeframe]);
+  }, [auxiliaryProjection.includeMarketSignals, auxiliaryProjection.includeStructure, baseIndicatorColumns, enabled, eventIndicatorColumns, fullSession, historicalMode, indicatorColumns, pointInTime, projectionKey, rowBudget, sessionDate, standardIndicatorsRequested, symbol, timeframe]);
 
   useEffect(() => {
     if (!enabled || liveTail) return;
@@ -378,7 +428,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
         }
       });
     if (standardIndicatorsRequested) {
-      void api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, include_market_signals: false, include_structure: false, indicator_columns: standardIndicatorColumns, stage: "full" })}`, {
+      void api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, include_market_signals: false, include_structure: false, indicator_columns: eventIndicatorColumns, stage: "full" })}`, {
         signal: controller.signal,
         timeoutMs: 180_000,
       }).then((payload) => {
@@ -396,7 +446,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
       });
     }
     return () => controller.abort();
-  }, [auxiliaryProjection.includeMarketSignals, auxiliaryProjection.includeStructure, baseIndicatorColumns, enabled, fullSession, historicalMode, liveTail, projectionKey, refreshCutoffMs, rowBudget, sessionDate, standardIndicatorColumns, standardIndicatorsRequested, symbol, timeframe]);
+  }, [auxiliaryProjection.includeMarketSignals, auxiliaryProjection.includeStructure, baseIndicatorColumns, enabled, eventIndicatorColumns, fullSession, historicalMode, liveTail, projectionKey, refreshCutoffMs, rowBudget, sessionDate, standardIndicatorsRequested, symbol, timeframe]);
 
   useEffect(() => {
     if (!enabled || !liveTail) return;

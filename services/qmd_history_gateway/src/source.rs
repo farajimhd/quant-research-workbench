@@ -7,7 +7,10 @@ use qmd_core::compact_event::{
     LIVE_COMPACT_EVENT_SCHEMA_VERSION,
 };
 use qmd_core::event::MarketEvent;
-use qmd_core::generic_structure::{GenericStructureEvent, GENERIC_STRUCTURE_ALGORITHM_VERSION};
+use qmd_core::generic_structure::{
+    GenericStructureCheckpoint, GenericStructureEvent, StructureSplitAdjustment,
+    GENERIC_STRUCTURE_ALGORITHM_VERSION,
+};
 use qmd_core::indicators::{
     daily_session_trade_bars_sql, market_structure_reference_sql,
     parse_market_structure_reference_rows, MarketStructureReferenceLevels,
@@ -202,6 +205,7 @@ pub struct HistoricalEventSource {
     latest_coverage_cache: Arc<Mutex<HashMap<Option<NaiveDate>, CachedLatestEventCoverage>>>,
     latest_coverage_query_gate: Arc<Mutex<()>>,
     structure_table_available: Arc<OnceCell<bool>>,
+    structure_daily_checkpoint_table_available: Arc<OnceCell<bool>>,
     trade_rules: TradeAggregationRules,
     volume_eligible_trade_tokens: Arc<Vec<u8>>,
 }
@@ -210,6 +214,14 @@ pub struct HistoricalEventSource {
 pub struct SessionVwapSeed {
     pub cumulative_trade_notional: f64,
     pub cumulative_volume: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct PersistedStructureCheckpointSeed {
+    pub authority_start: DateTime<Utc>,
+    pub checkpoint: GenericStructureCheckpoint,
+    pub source_plan_hash: String,
+    pub source_revision_token: String,
 }
 
 #[derive(Clone, Debug)]
@@ -322,6 +334,22 @@ struct PersistedStructureEventRow {
     confirmed_at_text: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct PersistedStructureCheckpointRow {
+    authority_start: String,
+    snapshot_json: String,
+    source_plan_hash: String,
+    source_revision_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StockSplitAdjustmentRow {
+    execution_date: String,
+    split_from: f64,
+    split_to: f64,
+    source_inserted_at: String,
+}
+
 impl HistoricalEventSource {
     pub async fn initialize(config: HistoricalGatewayConfig) -> Result<Self, String> {
         let references = CompactEventReferences::load_from_clickhouse(
@@ -338,6 +366,7 @@ impl HistoricalEventSource {
             latest_coverage_cache: Arc::new(Mutex::new(HashMap::new())),
             latest_coverage_query_gate: Arc::new(Mutex::new(())),
             structure_table_available: Arc::new(OnceCell::new()),
+            structure_daily_checkpoint_table_available: Arc::new(OnceCell::new()),
             trade_rules: references.trade_aggregation_rules()?,
             volume_eligible_trade_tokens: Arc::new(references.volume_eligible_trade_tokens()),
         };
@@ -847,6 +876,44 @@ impl HistoricalEventSource {
         live_continuation_sequence: Option<u64>,
         event_type_filter: Option<u8>,
     ) -> Result<mpsc::Receiver<Result<Vec<LiveCompactEvent>, String>>, String> {
+        self.stream_ordered_filtered_chunked(
+            window,
+            batch_size,
+            live_continuation_sequence,
+            event_type_filter,
+            self.config.scanner_fetch_chunk_minutes.max(1),
+        )
+    }
+
+    pub fn stream_structure_ordered_filtered(
+        &self,
+        window: EventWindow,
+        batch_size: usize,
+        live_continuation_sequence: Option<u64>,
+        event_type_filter: Option<u8>,
+    ) -> Result<mpsc::Receiver<Result<Vec<LiveCompactEvent>, String>>, String> {
+        // Structural reconstruction is single-ticker and response-streamed in
+        // bounded batches.  Reusing Scanner's 30-minute query chunks made an
+        // overnight daily-checkpoint advance issue sixteen empty ClickHouse
+        // round trips before reaching the 04:00 session.  Daily chunks retain
+        // bounded server work while removing that latency multiplier.
+        self.stream_ordered_filtered_chunked(
+            window,
+            batch_size,
+            live_continuation_sequence,
+            event_type_filter,
+            1_440,
+        )
+    }
+
+    fn stream_ordered_filtered_chunked(
+        &self,
+        window: EventWindow,
+        batch_size: usize,
+        live_continuation_sequence: Option<u64>,
+        event_type_filter: Option<u8>,
+        chunk_minutes: usize,
+    ) -> Result<mpsc::Receiver<Result<Vec<LiveCompactEvent>, String>>, String> {
         validate_window(&window)?;
         let batch_size = batch_size.clamp(1, 100_000);
         let (sender, receiver) = mpsc::channel(2);
@@ -860,6 +927,7 @@ impl HistoricalEventSource {
                     batch_size,
                     live_continuation_sequence,
                     event_type_filter,
+                    chunk_minutes,
                     stream_sender,
                 ) => result,
             };
@@ -876,6 +944,7 @@ impl HistoricalEventSource {
         batch_size: usize,
         live_continuation_sequence: Option<u64>,
         event_type_filter: Option<u8>,
+        chunk_minutes: usize,
         sender: mpsc::Sender<Result<Vec<LiveCompactEvent>, String>>,
     ) -> Result<(), String> {
         let plan = self.source_plan(&window).await?;
@@ -891,8 +960,7 @@ impl HistoricalEventSource {
             .filter(|segment| segment.queryable_by_history)
             .collect::<Vec<_>>();
         historical_segments.sort_by_key(|segment| segment.start);
-        let chunk_duration =
-            chrono::Duration::minutes(self.config.scanner_fetch_chunk_minutes.max(1) as i64);
+        let chunk_duration = chrono::Duration::minutes(chunk_minutes.max(1) as i64);
         for segment in historical_segments {
             let mut chunk_start = segment.start;
             while chunk_start < segment.end {
@@ -993,7 +1061,32 @@ impl HistoricalEventSource {
         if !self.config.clickhouse_password.is_empty() {
             request = request.header("X-ClickHouse-Key", &self.config.clickhouse_password);
         }
-        let mut response = request.send().await.map_err(|error| error.to_string())?;
+        let mut response = {
+            let mut attempt = 0_u8;
+            loop {
+                attempt = attempt.saturating_add(1);
+                let retry = request
+                    .try_clone()
+                    .ok_or_else(|| "historical ClickHouse request is not cloneable".to_string())?;
+                match retry.send().await {
+                    Ok(response) => break response,
+                    Err(_error) if attempt < 3 => {
+                        // No response body exists yet, so retrying cannot
+                        // duplicate streamed events. Once body streaming has
+                        // begun, errors below still fail closed.
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            250_u64.saturating_mul(1_u64 << (attempt - 1)),
+                        ))
+                        .await;
+                    }
+                    Err(error) => {
+                        return Err(format!(
+                            "ClickHouse request failed before response after {attempt} attempts: {error}"
+                        ));
+                    }
+                }
+            }
+        };
         let status = response.status();
         if !status.is_success() {
             let text = response.text().await.map_err(|error| error.to_string())?;
@@ -1709,6 +1802,142 @@ impl HistoricalEventSource {
         }
         events.sort_by_key(|event| (event.confirmed_at, event.event_id));
         Ok(events)
+    }
+
+    pub async fn persisted_structure_checkpoint_before(
+        &self,
+        ticker: &str,
+        before: DateTime<Utc>,
+    ) -> Result<Option<PersistedStructureCheckpointSeed>, String> {
+        let ticker = normalize_ticker(ticker)?;
+        let table = format!(
+            "{}.{}",
+            self.config.structure_database, self.config.structure_daily_checkpoint_table
+        );
+        let exists_sql = format!(
+            "SELECT count() FROM system.tables WHERE database = {} AND name = {} FORMAT TSV",
+            sql_literal(&self.config.structure_database),
+            sql_literal(&self.config.structure_daily_checkpoint_table)
+        );
+        let available = *self
+            .structure_daily_checkpoint_table_available
+            .get_or_try_init(|| async {
+                Ok::<bool, String>(self.query(&exists_sql).await?.trim() == "1")
+            })
+            .await?;
+        if !available {
+            return Ok(None);
+        }
+        let sql = format!(
+            r#"SELECT
+                formatDateTime(authority_start, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS authority_start,
+                source_plan_hash,
+                source_revision_token,
+                snapshot_json
+            FROM {table}
+            WHERE sym = {ticker}
+              AND algorithm_version = {algorithm_version}
+              AND checkpoint_at < parseDateTime64BestEffort({before}, 6, 'UTC')
+              AND source_complete = 1
+            ORDER BY session_date DESC, built_at DESC
+            LIMIT 1
+            FORMAT JSONEachRow"#,
+            ticker = sql_literal(&ticker),
+            algorithm_version = GENERIC_STRUCTURE_ALGORITHM_VERSION,
+            before = sql_literal(&before.to_rfc3339()),
+        );
+        let text = self.query(&sql).await?;
+        let Some(line) = text.lines().find(|line| !line.trim().is_empty()) else {
+            return Ok(None);
+        };
+        let row = serde_json::from_str::<PersistedStructureCheckpointRow>(line)
+            .map_err(|error| format!("invalid persisted structure checkpoint row: {error}"))?;
+        let authority_start = DateTime::parse_from_rfc3339(&row.authority_start)
+            .map_err(|error| format!("invalid structure checkpoint authority start: {error}"))?
+            .with_timezone(&Utc);
+        let checkpoint = serde_json::from_str::<GenericStructureCheckpoint>(&row.snapshot_json)
+            .map_err(|error| format!("invalid persisted structure checkpoint payload: {error}"))?;
+        if checkpoint.algorithm_version != GENERIC_STRUCTURE_ALGORITHM_VERSION
+            || checkpoint.sym.to_ascii_uppercase() != ticker
+            || checkpoint.last_arrival_sequence == 0
+            || row.source_plan_hash.trim().is_empty()
+            || row.source_revision_token.trim().is_empty()
+        {
+            return Err("persisted structure checkpoint identity is invalid".to_string());
+        }
+        Ok(Some(PersistedStructureCheckpointSeed {
+            authority_start,
+            checkpoint,
+            source_plan_hash: row.source_plan_hash,
+            source_revision_token: row.source_revision_token,
+        }))
+    }
+
+    pub async fn structure_split_adjustments(
+        &self,
+        ticker: &str,
+        after: DateTime<Utc>,
+        through: DateTime<Utc>,
+    ) -> Result<Vec<StructureSplitAdjustment>, String> {
+        let ticker = normalize_ticker(ticker)?;
+        if through < after {
+            return Err("split adjustment range ends before it starts".to_string());
+        }
+        let start_date = after.with_timezone(&New_York).date_naive();
+        let end_date = through.with_timezone(&New_York).date_naive();
+        let sql = format!(
+            r#"SELECT
+                toString(source.execution_date) AS execution_date,
+                argMax(source.split_from, source.inserted_at) AS split_from,
+                argMax(source.split_to, source.inserted_at) AS split_to,
+                formatDateTime(max(source.inserted_at), '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS source_inserted_at
+            FROM q_live.market_stock_split_v1 AS source FINAL
+            WHERE upper(source.provider_ticker) = {ticker}
+              AND toDate(source.execution_date) >= toDate({start_date})
+              AND toDate(source.execution_date) <= toDate({end_date})
+              AND source.split_from > 0
+              AND source.split_to > 0
+            GROUP BY source.execution_date
+            ORDER BY source.execution_date
+            FORMAT JSONEachRow"#,
+            ticker = sql_literal(&ticker),
+            start_date = sql_literal(&start_date.to_string()),
+            end_date = sql_literal(&end_date.to_string()),
+        );
+        let text = self.query(&sql).await?;
+        let mut adjustments = Vec::new();
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            let row = serde_json::from_str::<StockSplitAdjustmentRow>(line)
+                .map_err(|error| format!("invalid stock split adjustment row: {error}"))?;
+            let execution_date = NaiveDate::parse_from_str(&row.execution_date, "%Y-%m-%d")
+                .map_err(|error| format!("invalid stock split execution_date: {error}"))?;
+            let effective_at = New_York
+                .with_ymd_and_hms(
+                    execution_date.year(),
+                    execution_date.month(),
+                    execution_date.day(),
+                    4,
+                    0,
+                    0,
+                )
+                .single()
+                .ok_or_else(|| "invalid New York stock split boundary".to_string())?
+                .with_timezone(&Utc);
+            if effective_at <= after || effective_at > through {
+                continue;
+            }
+            let source_inserted_at = DateTime::parse_from_rfc3339(&row.source_inserted_at)
+                .map_err(|error| format!("invalid stock split inserted_at: {error}"))?
+                .with_timezone(&Utc);
+            adjustments.push(StructureSplitAdjustment {
+                execution_date,
+                effective_at,
+                split_from: row.split_from,
+                split_to: row.split_to,
+                source_inserted_at,
+            });
+        }
+        Ok(adjustments)
     }
 
     pub async fn latest_coverage_before(

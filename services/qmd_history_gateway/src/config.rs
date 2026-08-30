@@ -44,6 +44,7 @@ pub struct HistoricalGatewayConfig {
     pub structure_book_max_seed_events: usize,
     pub structure_book_rebuild_days: usize,
     pub structure_database: String,
+    pub structure_daily_checkpoint_table: String,
     pub structure_events_table: String,
     pub table_prefix: String,
     pub watchlist_max_concurrent_materializations: usize,
@@ -155,6 +156,10 @@ impl HistoricalGatewayConfig {
             structure_book_rebuild_days: env_usize("QMD_HISTORY_STRUCTURE_BOOK_REBUILD_DAYS", 7)
                 .clamp(2, 30),
             structure_database: env_string("QMD_HISTORY_STRUCTURE_DATABASE", "q_live"),
+            structure_daily_checkpoint_table: env_string(
+                "QMD_HISTORY_STRUCTURE_DAILY_CHECKPOINT_TABLE",
+                "qmd_structure_daily_checkpoint_v1",
+            ),
             structure_events_table: env_string(
                 "QMD_HISTORY_STRUCTURE_EVENTS_TABLE",
                 "qmd_structure_events_v2",
@@ -232,6 +237,12 @@ impl HistoricalGatewayConfig {
         if !valid_identifier(&self.structure_events_table) {
             return Err(
                 "QMD_HISTORY_STRUCTURE_EVENTS_TABLE must be a ClickHouse identifier".to_string(),
+            );
+        }
+        if !valid_identifier(&self.structure_daily_checkpoint_table) {
+            return Err(
+                "QMD_HISTORY_STRUCTURE_DAILY_CHECKPOINT_TABLE must be a ClickHouse identifier"
+                    .to_string(),
             );
         }
         Ok(())
