@@ -1510,10 +1510,19 @@ class OrderManagementEngine:
                 continue
             existing = protected.orders[target_index]
             initial_price = tactic.steps[0].price if tactic else float(plan.orders[0].price or intent.reference_price)
+            canonical_metadata = {
+                **dict(existing.raw.get("canonical_metadata") or {}),
+                "execution_role": "managed_exit",
+                "reason": str(intent.metadata.get("reason_code") or "strategy_exit"),
+            }
             replacement = replace(
                 existing,
                 quantity=float(intent.quantity),
                 price=initial_price,
+                raw={
+                    **dict(existing.raw or {}),
+                    "canonical_metadata": canonical_metadata,
+                },
             )
             now = datetime.now(timezone.utc)
             group = _ManagedOrderGroup(

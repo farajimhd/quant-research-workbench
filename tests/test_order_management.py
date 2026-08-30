@@ -993,6 +993,14 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(replacement.price, 10.0)
             self.assertEqual(replacement.parentId, entry_snapshot.client_order_ids[0])
             self.assertTrue(replacement.isSingleGroup)
+            self.assertEqual(
+                replacement.raw["canonical_metadata"]["execution_role"],
+                "managed_exit",
+            )
+            self.assertEqual(
+                replacement.raw["canonical_metadata"]["reason"],
+                "strategy_exit",
+            )
             source_group = next(
                 group
                 for group in manager._groups.values()
