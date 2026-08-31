@@ -88,7 +88,7 @@ def test_filter_builder_supports_search_grouping_and_escapes_input() -> None:
         {"synthesis_path": "single_subject > report > issuer"},
     )
     assert "CEO\\'s outlook" in where
-    assert "s.rendered_text" in where
+    assert "b.canonical_body_text" in where
     assert "arrayStringConcat(s.channels,' ')" in where
     assert "has(s.tickers,'AAPL')" in where
     assert "length(s.tickers)=2" in where
@@ -97,7 +97,29 @@ def test_filter_builder_supports_search_grouping_and_escapes_input() -> None:
     assert "single_subject > report > issuer" in where
     assert ">=34200 AND" in where
     assert "<=57600" in where
-    assert where.index("s.synthesis_path=") < where.index("positionCaseInsensitiveUTF8(s.rendered_text")
+    assert where.index("s.synthesis_path=") < where.index("positionCaseInsensitiveUTF8(b.canonical_body_text")
+
+
+def test_body_v3_join_is_only_added_when_body_data_is_required() -> None:
+    backend = ClickHouseReviewBackend(FakeClient())
+    assert backend._body_join_sql({}) == ""
+    search_join = backend._body_join_sql({"q": "guidance"})
+    assert "benzinga_news_rendered_v3" in search_join
+    assert "b.canonical_news_id=s.source_id" in search_join
+    assert backend._body_join_sql({}, required=True) == search_join
+
+
+def test_article_detail_reads_body_v3_without_returning_frozen_v2_text() -> None:
+    client = FakeClient()
+    backend = ClickHouseReviewBackend(client)
+    with pytest.raises(KeyError, match="unknown source_id"):
+        backend.article_detail("source-1")
+    sql = client.executed[-1]
+    assert "benzinga_news_rendered_v3" in sql
+    assert "s.`source_id` AS `source_id`" in sql
+    assert "b.canonical_body_text body_text" in sql
+    assert "b.renderer_version body_renderer_version" in sql
+    assert "s.`rendered_text`" not in sql
 
 
 def test_grouping_rejects_unsafe_or_cartesian_dimensions() -> None:

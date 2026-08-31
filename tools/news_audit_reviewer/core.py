@@ -13,6 +13,11 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from pipelines.news.benzinga.core.clickhouse_writer_v2 import json_each_row_batches
+from pipelines.news.benzinga.core.clickhouse_writer_body_v3 import (
+    DEFAULT_RENDERED_TABLE as BODY_V3_RENDERED_TABLE,
+    NewsBodyV3TargetConfig,
+    validate_body_v3_tables,
+)
 from research.mlops.clickhouse import ClickHouseHttpClient, insert_json_each_row, quote_ident, sql_string
 from scripts.evaluate_news_synthesis_pattern_policy_gold import (
     _holdout_sources,
@@ -432,12 +437,19 @@ ORDER BY (campaign_id,batch_id,result_position,source_id)""")
         return rows[0] if rows else None
 
     def validate_source(self) -> dict[str, Any]:
+        validate_body_v3_tables(
+            self.client,
+            NewsBodyV3TargetConfig(database=self.database, require_certified=True),
+        )
         row = self.rows(f"""
 SELECT count() rows,uniqExact(source_id) unique_ids,countIf(population_split!='training_development') non_training,
        countIf(gold_label IN ('eligible','ineligible') AND gold_label!=synthesis_label) mismatches,
        uniqExact(synthesis_path) paths,
-       uniqExact((synthesis_path,title_pattern_id)) groups
-FROM {self.db}.{quote_ident(SOURCE_TABLE)} FINAL WHERE campaign_id={sql_string(self.campaign_id)} FORMAT JSONEachRow
+       uniqExact((synthesis_path,title_pattern_id)) groups,
+       countIf(notEmpty(b.canonical_news_id)) body_v3_rows
+FROM {self.db}.{quote_ident(SOURCE_TABLE)} s FINAL
+LEFT JOIN {self.db}.{quote_ident(BODY_V3_RENDERED_TABLE)} b FINAL ON b.canonical_news_id=s.source_id
+WHERE s.campaign_id={sql_string(self.campaign_id)} FORMAT JSONEachRow
 """)[0]
         if int(row["rows"]) != EXPECTED_REVIEW_ARTICLES or int(row["unique_ids"]) != EXPECTED_REVIEW_ARTICLES:
             raise ValueError(f"ClickHouse source coverage changed: rows={row['rows']} unique={row['unique_ids']}")
@@ -445,11 +457,16 @@ FROM {self.db}.{quote_ident(SOURCE_TABLE)} FINAL WHERE campaign_id={sql_string(s
             raise ValueError(f"ClickHouse former-holdout coverage changed: {row['non_training']}")
         if int(row["mismatches"]) != EXPECTED_ALL_MISMATCHES:
             raise ValueError(f"ClickHouse mismatch lineage changed: {row['mismatches']}")
+        if int(row["body_v3_rows"]) != EXPECTED_REVIEW_ARTICLES:
+            raise ValueError(
+                f"certified Body V3 coverage changed: {row['body_v3_rows']}/{EXPECTED_REVIEW_ARTICLES}"
+            )
         return {
             "status": "ready", "articles": int(row["rows"]), "holdout_rows": int(row["non_training"]),
             "mismatches": int(row["mismatches"]), "paths": int(row["paths"]),
             "groups": int(row["groups"]), "database": self.database,
             "source_table": SOURCE_TABLE, "label_history_table": LABEL_HISTORY_TABLE,
+            "body_table": BODY_V3_RENDERED_TABLE,
         }
 
     def _current_labels_sql(self) -> str:
@@ -572,6 +589,21 @@ WHERE campaign_id={sql_string(self.campaign_id)} GROUP BY group_id FORMAT JSONEa
             raise ValueError(f"unsupported group field: {field}")
         return expressions[field]
 
+    def _body_join_sql(
+        self,
+        filters: Mapping[str, Any],
+        selection: Mapping[str, Any] | None = None,
+        *,
+        required: bool = False,
+    ) -> str:
+        values = {**dict(filters), **dict(selection or {})}
+        if not required and not str(values.get("q") or "").strip():
+            return ""
+        return (
+            f"LEFT JOIN {self.db}.{quote_ident(BODY_V3_RENDERED_TABLE)} b FINAL "
+            "ON b.canonical_news_id=s.source_id"
+        )
+
     def normalize_group_by(self, fields: Sequence[str]) -> tuple[str, ...]:
         result = tuple(dict.fromkeys(field for field in fields if field)) or DEFAULT_GROUP_BY
         if len(result) > 3:
@@ -595,7 +627,7 @@ WHERE campaign_id={sql_string(self.campaign_id)} GROUP BY group_id FORMAT JSONEa
                 f"positionCaseInsensitiveUTF8(s.normalized_title,{sql_string(q)})>0",
                 f"positionCaseInsensitiveUTF8(s.normalized_title_template,{sql_string(q)})>0",
                 f"positionCaseInsensitiveUTF8(s.teaser,{sql_string(q)})>0",
-                f"positionCaseInsensitiveUTF8(s.rendered_text,{sql_string(q)})>0",
+                f"positionCaseInsensitiveUTF8(b.canonical_body_text,{sql_string(q)})>0",
                 f"positionCaseInsensitiveUTF8(s.provider,{sql_string(q)})>0",
                 f"positionCaseInsensitiveUTF8(s.author,{sql_string(q)})>0",
                 f"positionCaseInsensitiveUTF8(arrayStringConcat(s.tickers,' '),{sql_string(q)})>0",
@@ -708,6 +740,7 @@ SELECT {','.join(select_parts)},count() rows,countIf(notEmpty(l.operator_label))
        countIf(s.synthesis_label='eligible') synthesis_eligible,countIf(s.synthesis_label='ineligible') synthesis_ineligible
 FROM {self.db}.{quote_ident(SOURCE_TABLE)} s FINAL
 LEFT JOIN {self._current_labels_sql()} l ON l.campaign_id=s.campaign_id AND l.source_id=s.source_id
+{self._body_join_sql(filters)}
 WHERE {self._where(filters)} GROUP BY {','.join(group_parts)} ORDER BY rows DESC,{','.join(group_parts)}
 LIMIT 2001 FORMAT JSONEachRow
 """)
@@ -737,14 +770,18 @@ LIMIT 2001 FORMAT JSONEachRow
         count_row = self.rows(f"""
 SELECT count() rows,countIf(notEmpty(l.operator_label)) reviewed,
        countIf(notEmpty(l.operator_label) AND l.operator_label!=s.gold_label) changed,
+       countIf(l.operator_label='eligible') operator_eligible,
+       countIf(l.operator_label='ineligible') operator_ineligible,
+       countIf(empty(l.operator_label)) unreviewed,
        countIf(s.gold_label='eligible') gold_eligible,countIf(s.synthesis_label='eligible') synthesis_eligible
 FROM {self.db}.{quote_ident(SOURCE_TABLE)} s FINAL
 LEFT JOIN {self._current_labels_sql()} l ON l.campaign_id=s.campaign_id AND l.source_id=s.source_id
+{self._body_join_sql(filters, selection)}
 WHERE {where} FORMAT JSONEachRow
 """)[0]
         offset = (page - 1) * page_size
         rows = self.rows(f"""
-SELECT s.source_id,toString(s.published_at_utc) published_at_utc,s.provider,s.title,s.normalized_title_template,
+SELECT s.source_id source_id,toString(s.published_at_utc) published_at_utc,s.provider,s.title title,s.normalized_title_template,
        leftUTF8(s.teaser,500) teaser,s.author,s.tickers,s.channels,s.provider_tags,s.gold_label,s.synthesis_label,
        s.policy_expected_label,s.policy_status,s.gold_authority,s.gold_merge_resolution,
        s.eligible_policy_patterns,s.ineligible_policy_patterns,s.mixed_patterns,
@@ -752,6 +789,7 @@ SELECT s.source_id,toString(s.published_at_utc) published_at_utc,s.provider,s.ti
        l.operator_label,l.decision_source,l.article_comment,toString(l.label_updated_at) label_updated_at
 FROM {self.db}.{quote_ident(SOURCE_TABLE)} s FINAL
 LEFT JOIN {self._current_labels_sql()} l ON l.campaign_id=s.campaign_id AND l.source_id=s.source_id
+{self._body_join_sql(filters, selection)}
 WHERE {where} ORDER BY s.published_at_utc DESC,s.source_id LIMIT {page_size} OFFSET {offset} FORMAT JSONEachRow
 """)
         spec = {"filters": dict(filters), "selection": dict(selection)}
@@ -770,6 +808,7 @@ WHERE {where} ORDER BY s.published_at_utc DESC,s.source_id LIMIT {page_size} OFF
 SELECT reason value,count() count FROM (
  SELECT arrayJoin(s.forecast_reasons) reason FROM {self.db}.{quote_ident(SOURCE_TABLE)} s FINAL
  LEFT JOIN {self._current_labels_sql()} l ON l.campaign_id=s.campaign_id AND l.source_id=s.source_id
+ {self._body_join_sql(filters, selection)}
  WHERE {where}) WHERE notEmpty(reason) GROUP BY reason ORDER BY count DESC LIMIT 8 FORMAT JSONEachRow
 """)
         path, pattern = str(selection.get("synthesis_path") or ""), str(selection.get("title_pattern_id") or "")
@@ -780,10 +819,19 @@ SELECT reason value,count() count FROM (
         }
 
     def article_detail(self, source_id: str) -> dict[str, Any]:
+        source_projection = ",".join(
+            f"s.{quote_ident(column)} AS {quote_ident(column)}"
+            for column in SOURCE_COLUMNS
+            if column != "rendered_text"
+        )
         rows = self.rows(f"""
-SELECT s.*,l.operator_label,l.decision_source,l.article_comment,toString(l.label_updated_at) label_updated_at
+SELECT {source_projection},b.canonical_body_text body_text,b.body_hash,b.body_status,
+       b.primary_source_kind,b.renderer_version body_renderer_version,b.text_contract body_text_contract,
+       b.source_revision_key body_source_revision_key,
+       l.operator_label,l.decision_source,l.article_comment,toString(l.label_updated_at) label_updated_at
 FROM {self.db}.{quote_ident(SOURCE_TABLE)} s FINAL
 LEFT JOIN {self._current_labels_sql()} l ON l.campaign_id=s.campaign_id AND l.source_id=s.source_id
+{self._body_join_sql({}, required=True)}
 WHERE s.campaign_id={sql_string(self.campaign_id)} AND s.source_id={sql_string(source_id)} LIMIT 1 FORMAT JSONEachRow
 """)
         if not rows:
@@ -817,6 +865,7 @@ WHERE s.campaign_id={sql_string(self.campaign_id)} AND s.source_id={sql_string(s
             sources = self.rows(f"""
 SELECT s.source_id,s.gold_label FROM {self.db}.{quote_ident(SOURCE_TABLE)} s FINAL
 LEFT JOIN {self._current_labels_sql()} l ON l.campaign_id=s.campaign_id AND l.source_id=s.source_id
+{self._body_join_sql(filters, selection)}
 WHERE {self._where(filters, selection)} ORDER BY s.source_id FORMAT JSONEachRow
 """)
             if not sources:
@@ -862,6 +911,7 @@ WHERE {self._where(filters, selection)} ORDER BY s.source_id FORMAT JSONEachRow
 SELECT s.source_id,s.gold_label,s.synthesis_label,s.source_revision_key
 FROM {self.db}.{quote_ident(SOURCE_TABLE)} s FINAL
 LEFT JOIN {self._current_labels_sql()} l ON l.campaign_id=s.campaign_id AND l.source_id=s.source_id
+{self._body_join_sql(filters, selection)}
 WHERE {self._where(filters, selection)} ORDER BY s.published_at_utc DESC,s.source_id FORMAT JSONEachRow
 """)
         if not sources:

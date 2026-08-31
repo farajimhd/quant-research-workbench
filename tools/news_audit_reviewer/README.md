@@ -18,7 +18,8 @@ $env:PYTHONDONTWRITEBYTECODE='1'
 C:\Users\g835l\miniconda3\envs\ml4t\python.exe scripts\run_news_audit_reviewer.py
 ```
 
-The launcher validates the source lineage and opens
+The launcher validates the frozen label/source lineage and the certified Body
+V3 read authority, then opens
 `http://127.0.0.1:8812`. Stop it with `Ctrl+C` in the terminal.
 
 The first run creates the ClickHouse tables and materializes a frozen source
@@ -36,7 +37,7 @@ Use `--prepare-only` to prepare or validate ClickHouse without starting the UI.
 2. Filter in review order: synthesis path, title pattern, V61 forecast-trigger
    rule/reason, ticker count, Gold, then V61. Less-frequent scope and rulebook
    diagnostics are under **More filters**.
-   Search always covers canonical article bodies plus titles, templates, teaser,
+   Search always covers certified Body V3 article bodies plus titles, templates, teaser,
    author, provider, tickers, channels, tags, and source ID. UTC time-of-day
    filters work independently of date and support ranges that cross midnight.
    Search mode can either require or exclude the text. Structured filters are
@@ -47,7 +48,9 @@ Use `--prepare-only` to prepare or validate ClickHouse without starting the UI.
    custom combination of up to three dimensions.
 4. Select a group to keep the articles in the main table while adding the V61
    group rationale above it. Article pagination and counts stay at the top of
-   the table.
+   the table. The result strip immediately above the table reports how many
+   matching articles you labeled eligible, labeled ineligible, or have not yet
+   labeled.
 5. Add an optional lesson, then choose **Label all eligible** or **Label all
    ineligible** to label every article returned by the active search, filters,
    and selected group. The UI updates the visible page immediately while the
@@ -55,8 +58,10 @@ Use `--prepare-only` to prepare or validate ClickHouse without starting the UI.
 6. Add campaign, current-view, or article notes as needed, then mark the
    exact query-defined group complete.
 
-Article titles open the full canonical ClickHouse text and lineage in a centered
-modal.
+Article titles open the certified Body V3 text and its body authority/status,
+alongside the frozen V61 and gold lineage, in a centered modal. If Body V3 marks
+an article body missing, the modal uses the teaser or title rather than exposing
+the older contaminated rendered body.
 
 The **rule-implied label** comes from the separate title-pattern rulebook; the
 **rule comparison** says whether that suggestion agrees with Gold or why no
@@ -78,7 +83,8 @@ they do not silently change the currently deployed model or its predictions.
 
 The tables are:
 
-- `q_live.news_synthesis_v61_review_source_v3`: frozen searchable source
+- `q_live.news_synthesis_v61_review_source_v3`: frozen V61/gold source and lineage
+- `q_live.benzinga_news_rendered_v3`: certified body text used by search and the article modal
 - `q_live.news_synthesis_v61_review_manifest_v3`: source lineage/readiness
 - `q_live.news_synthesis_v61_operator_label_history_v3`: article decisions
 - `q_live.news_synthesis_v61_review_group_history_v3`: query-group state
