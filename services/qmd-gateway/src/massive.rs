@@ -215,8 +215,10 @@ async fn fanout_canonical_event(event: MarketEvent, fanout: &MarketEventFanout) 
             .sampled_timing(TimingTarget::CoreScanEvent, 1_024);
         fanout.state.apply_event(&event).await
     };
-    if fanout.scanner_delta_sender.send(scanner_delta).is_err() {
-        fanout.metrics.inc_app_broadcast_unobserved();
+    if let Some(scanner_delta) = scanner_delta {
+        if fanout.scanner_delta_sender.send(scanner_delta).is_err() {
+            fanout.metrics.inc_app_broadcast_unobserved();
+        }
     }
     match fanout
         .live_market_state_router

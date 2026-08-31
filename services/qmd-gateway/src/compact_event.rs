@@ -1,4 +1,4 @@
-use crate::bars::{TradeAggregationRules, TradeUpdateRule};
+use crate::bars::{TradeAggregationRules, TradeUpdateRule, FORM_T_EXTENDED_HOURS_CONDITION};
 use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::intraday_bars::{DurableCompactEvents, IntradayBarRouter};
@@ -770,10 +770,12 @@ impl CompactEventReferences {
             .trade_conditions
             .iter()
             .filter_map(|(modifier, token)| {
-                self.trade_updates
-                    .get(modifier)
-                    .is_some_and(|rule| rule.update_volume)
-                    .then_some(*token)
+                (*modifier != FORM_T_EXTENDED_HOURS_CONDITION as i16
+                    && self
+                        .trade_updates
+                        .get(modifier)
+                        .is_some_and(|rule| rule.update_volume))
+                .then_some(*token)
             })
             .collect::<Vec<_>>();
         tokens.sort_unstable();
@@ -2368,6 +2370,10 @@ mod tests {
     #[test]
     fn volume_eligible_trade_tokens_follow_the_canonical_update_rules() {
         let mut references = references();
+        references.trade_conditions.insert(12, 23);
+        references
+            .trade_updates
+            .insert(12, TradeUpdateRule::regular());
         references.trade_updates.insert(
             5,
             TradeUpdateRule {

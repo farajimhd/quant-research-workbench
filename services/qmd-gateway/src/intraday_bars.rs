@@ -19,8 +19,8 @@ use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::task::JoinHandle;
 use tokio::time::{interval, sleep, Duration, Instant};
 
-pub const INTRADAY_BAR_SCHEMA_VERSION: u16 = 3;
-pub const INTRADAY_BAR_CALCULATION_REVISION: &str = "qmd-family-bars-v3";
+pub const INTRADAY_BAR_SCHEMA_VERSION: u16 = 4;
+pub const INTRADAY_BAR_CALCULATION_REVISION: &str = "qmd-family-bars-v4";
 pub const BASE_RESOLUTION_US: i64 = 100_000;
 const SESSION_START_US: i64 = 4 * 60 * 60 * 1_000_000;
 const SESSION_END_US: i64 = 20 * 60 * 60 * 1_000_000;
@@ -1554,12 +1554,10 @@ impl IntradayBarWriter {
                 toFloat64(price_primary_int) / if(bitAnd(event_meta, 2) != 0, 10000., 100.) AS price,
                 toFloat64(size_primary) AS size,
                 arrayFilter(token -> token > 0, [toUInt16(condition_token_1), toUInt16(condition_token_2), toUInt16(condition_token_3), toUInt16(condition_token_4), toUInt16(condition_token_5)]) AS condition_tokens,
-                (toHour(event_ts_local) < 9 OR (toHour(event_ts_local) = 9 AND toMinute(event_ts_local) < 30) OR toHour(event_ts_local) >= 16)
-                  AND arrayExists(token -> has(form_t_tokens, token), condition_tokens)
-                  AND arrayAll(token -> has(form_t_tokens, token) OR (has(high_low_tokens, token) AND has(last_tokens, token)), condition_tokens) AS form_t_price_eligible,
-                empty(condition_tokens) OR arrayAll(token -> has(known_tokens, token) AND (has(high_low_tokens, token) OR (has(form_t_tokens, token) AND form_t_price_eligible)), condition_tokens) AS high_low_eligible,
-                empty(condition_tokens) OR arrayAll(token -> has(known_tokens, token) AND (has(last_tokens, token) OR (has(form_t_tokens, token) AND form_t_price_eligible)), condition_tokens) AS last_eligible,
-                empty(condition_tokens) OR arrayAll(token -> has(known_tokens, token) AND (has(volume_tokens, token) OR (has(form_t_tokens, token) AND form_t_price_eligible)), condition_tokens) AS volume_eligible,
+                arrayExists(token -> has(form_t_tokens, token), condition_tokens) AS has_form_t,
+                NOT has_form_t AND (empty(condition_tokens) OR arrayAll(token -> has(known_tokens, token) AND has(high_low_tokens, token), condition_tokens)) AS high_low_eligible,
+                NOT has_form_t AND (empty(condition_tokens) OR arrayAll(token -> has(known_tokens, token) AND has(last_tokens, token), condition_tokens)) AS last_eligible,
+                NOT has_form_t AND (empty(condition_tokens) OR arrayAll(token -> has(known_tokens, token) AND has(volume_tokens, token), condition_tokens)) AS volume_eligible,
                 last_eligible AS price_eligible
               FROM {source} FINAL WHERE bitAnd(event_meta, 1) = 1{source_filter}
               UNION ALL
@@ -2532,6 +2530,21 @@ mod tests {
         let parent = writer.bootstrap_rollup_sql(1_000_000, Some(&request));
         assert!(base.contains("bucket BETWEEN 42 AND 99"));
         assert!(parent.contains("BETWEEN 4 AND 9"));
+    }
+
+    #[test]
+    fn persisted_actionable_bars_exclude_form_t_from_price_and_volume() {
+        let writer = IntradayBarWriter::new(
+            GatewayConfig::from_env(),
+            SharedMetrics::new(),
+            vec![BASE_RESOLUTION_US, 1_000_000],
+        );
+        let sql = writer.bootstrap_base_sql(None);
+        assert!(sql.contains(
+            "arrayExists(token -> has(form_t_tokens, token), condition_tokens) AS has_form_t"
+        ));
+        assert!(sql.contains("NOT has_form_t AND (empty(condition_tokens)"));
+        assert!(!sql.contains("AS form_t_price_eligible"));
     }
 
     #[tokio::test]

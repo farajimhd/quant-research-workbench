@@ -1,3 +1,4 @@
+use crate::bars::TradeAggregationRules;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::America::New_York;
@@ -18,6 +19,7 @@ const LIQUIDITY_MAX_SPREAD_BPS: f64 = 50.0;
 pub struct SharedMarketState {
     inner: Arc<RwLock<MarketState>>,
     liquidity: Arc<RwLock<LiquidityRankCache>>,
+    trade_rules: TradeAggregationRules,
 }
 
 #[derive(Default)]
@@ -118,22 +120,25 @@ pub struct ScannerRowDelta {
 }
 
 impl SharedMarketState {
-    pub fn new() -> Self {
+    pub fn new(trade_rules: TradeAggregationRules) -> Self {
         Self {
             inner: Arc::new(RwLock::new(MarketState::default())),
             liquidity: Arc::new(RwLock::new(LiquidityRankCache::default())),
+            trade_rules,
         }
     }
 
-    pub async fn apply_event(&self, event: &MarketEvent) -> ScannerRowDelta {
+    pub async fn apply_event(&self, event: &MarketEvent) -> Option<ScannerRowDelta> {
         let mut state = self.inner.write().await;
         state.events_received += 1;
-        state.scanner_sequence = state.scanner_sequence.saturating_add(1);
-        let sequence = state.scanner_sequence;
         let ticker = event.ticker().to_ascii_uppercase();
         match event {
             MarketEvent::Trade(trade) => {
                 state.trades_received += 1;
+                let rule = self.trade_rules.resolve(&trade.conditions, trade.ts);
+                if !rule.update_high_low && !rule.update_last && !rule.update_volume {
+                    return None;
+                }
                 let symbol = state
                     .symbols
                     .entry(ticker.clone())
@@ -149,6 +154,8 @@ impl SharedMarketState {
                 symbol.apply_quote(quote.clone());
             }
         }
+        state.scanner_sequence = state.scanner_sequence.saturating_add(1);
+        let sequence = state.scanner_sequence;
         let as_of = state
             .symbols
             .get(&ticker)
@@ -164,11 +171,11 @@ impl SharedMarketState {
             row.liquidity_rank = liquidity.liquidity_rank;
             row.liquidity_score = liquidity.liquidity_score;
         }
-        ScannerRowDelta {
+        Some(ScannerRowDelta {
             as_of,
             row,
             sequence,
-        }
+        })
     }
 
     pub async fn metrics(&self) -> StatusMetrics {
@@ -634,6 +641,7 @@ fn round2(value: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{apply_liquidity_ranking, SharedMarketState, SymbolSnapshot, SymbolState};
+    use crate::bars::{TradeAggregationRules, TradeUpdateRule};
     use crate::event::{MarketEvent, TradeEvent};
     use chrono::{DateTime, Utc};
     use serde_json::Value;
@@ -656,6 +664,12 @@ mod tests {
             trf_ts: None,
             ts: timestamp,
         }
+    }
+
+    fn market_state() -> SharedMarketState {
+        SharedMarketState::new(
+            TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap(),
+        )
     }
 
     fn liquidity_row(
@@ -862,21 +876,23 @@ mod tests {
 
     #[tokio::test]
     async fn scanner_snapshot_and_row_deltas_share_one_sequence() {
-        let state = SharedMarketState::new();
+        let state = market_state();
         let first = state
             .apply_event(&MarketEvent::Trade(trade(
                 "2026-07-14T14:00:00Z",
                 10.0,
                 5.0,
             )))
-            .await;
+            .await
+            .unwrap();
         let second = state
             .apply_event(&MarketEvent::Trade(trade(
                 "2026-07-14T14:00:01Z",
                 11.0,
                 7.0,
             )))
-            .await;
+            .await
+            .unwrap();
         let snapshot = state.scanner_snapshot(10).await;
 
         assert_eq!(first.sequence, 1);
@@ -887,7 +903,7 @@ mod tests {
 
     #[tokio::test]
     async fn ticker_state_snapshot_is_versioned_and_sequence_aligned() {
-        let state = SharedMarketState::new();
+        let state = market_state();
         let missing = state.ticker_state_snapshot("missing").await;
         assert!(!missing.found);
         assert_eq!(missing.state, "missing");
@@ -900,7 +916,8 @@ mod tests {
                 10.0,
                 5.0,
             )))
-            .await;
+            .await
+            .unwrap();
         let snapshot = state.ticker_state_snapshot("test").await;
 
         assert!(snapshot.found);
@@ -908,5 +925,21 @@ mod tests {
         assert_eq!(snapshot.sequence, delta.sequence);
         assert_eq!(snapshot.row.unwrap().last_price, 10.0);
         assert!(snapshot.age_ms.is_some());
+    }
+
+    #[tokio::test]
+    async fn form_t_is_raw_only_and_does_not_advance_scanner_liquidity_state() {
+        let state = market_state();
+        let mut late = trade("2026-07-14T14:00:00Z", 99.0, 50_000.0);
+        late.conditions = vec![12];
+
+        assert!(state.apply_event(&MarketEvent::Trade(late)).await.is_none());
+        let snapshot = state.scanner_snapshot(10).await;
+
+        assert_eq!(snapshot.sequence, 0);
+        assert!(snapshot.rows.is_empty());
+        let metrics = state.metrics().await;
+        assert_eq!(metrics.events_received, 1);
+        assert_eq!(metrics.trades_received, 1);
     }
 }

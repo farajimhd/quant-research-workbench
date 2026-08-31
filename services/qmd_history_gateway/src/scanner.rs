@@ -293,7 +293,7 @@ impl CrossSectionEngine {
             last_base_indicators: HashMap::new(),
             latest_indicators: HashMap::new(),
             market_signals: MarketSignalEngine::default(),
-            market_state: SharedMarketState::new(),
+            market_state: SharedMarketState::new(trade_rules.clone()),
             microstructure: HashMap::new(),
             one_second_trade_volumes: HashMap::new(),
             recent_signal_events: VecDeque::with_capacity(SIGNAL_EVENT_LIMIT),
@@ -327,7 +327,7 @@ impl CrossSectionEngine {
                 }
             }
         }
-        self.market_state.apply_event(&event).await;
+        let _ = self.market_state.apply_event(&event).await;
         let Some(bars) = self.bars.clone() else {
             return Ok(());
         };

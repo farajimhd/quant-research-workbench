@@ -62,7 +62,8 @@ class DailySessionBarsTests(unittest.TestCase):
         )
 
         self.assertIn("`q_live`.`intraday_family_bars_v3`", sql)
-        self.assertIn("calculation_revision = 'qmd-family-bars-v3'", sql)
+        self.assertIn("schema_version = 4", sql)
+        self.assertIn("calculation_revision = 'qmd-family-bars-v4'", sql)
         self.assertIn("complete = 1", sql)
         self.assertIn("close > 0", sql)
         self.assertIn("local_date < toDate('2026-08-21')", sql)
