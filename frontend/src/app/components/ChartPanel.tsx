@@ -281,6 +281,7 @@ type LegendSeriesSettings = {
   showLabels?: boolean;
   showUnifiedActive?: boolean;
   showUnifiedBroken?: boolean;
+  showUnifiedHoldProbability?: boolean;
   showUnifiedResistance?: boolean;
   showUnifiedRoleFlipped?: boolean;
   showUnifiedSupport?: boolean;
@@ -1904,6 +1905,7 @@ type LegendItem = {
   showLabels?: boolean;
   showUnifiedActive?: boolean;
   showUnifiedBroken?: boolean;
+  showUnifiedHoldProbability?: boolean;
   showUnifiedResistance?: boolean;
   showUnifiedRoleFlipped?: boolean;
   showUnifiedSupport?: boolean;
@@ -2247,6 +2249,10 @@ function LegendEditor({
             <UnifiedVisibilityToggle checked={item.showUnifiedActive !== false} label="Active" onChange={(showUnifiedActive) => onUpdate({ showUnifiedActive })} />
             <UnifiedVisibilityToggle checked={item.showUnifiedBroken !== false} label="Broken" onChange={(showUnifiedBroken) => onUpdate({ showUnifiedBroken })} />
             <UnifiedVisibilityToggle checked={item.showUnifiedRoleFlipped !== false} label="Role-flipped" onChange={(showUnifiedRoleFlipped) => onUpdate({ showUnifiedRoleFlipped })} />
+          </span>
+          <span className="legend-filter-subtitle">Chart labels</span>
+          <span className="legend-filter-grid">
+            <UnifiedVisibilityToggle checked={item.showUnifiedHoldProbability !== false} label="Hold probability" onChange={(showUnifiedHoldProbability) => onUpdate({ showUnifiedHoldProbability })} />
           </span>
         </fieldset>
       ) : null}
@@ -3275,6 +3281,7 @@ function buildPriceZoneLegendItems(
       showHistoricalLabels: settings.showHistoricalLabels,
       showUnifiedActive: settings.showUnifiedActive,
       showUnifiedBroken: settings.showUnifiedBroken,
+      showUnifiedHoldProbability: settings.showUnifiedHoldProbability,
       showUnifiedResistance: settings.showUnifiedResistance,
       showUnifiedRoleFlipped: settings.showUnifiedRoleFlipped,
       showUnifiedSupport: settings.showUnifiedSupport,
@@ -3758,6 +3765,7 @@ function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettin
     showLabels: true,
     showUnifiedActive: true,
     showUnifiedBroken: true,
+    showUnifiedHoldProbability: true,
     showUnifiedResistance: true,
     showUnifiedRoleFlipped: true,
     showUnifiedSupport: true,
@@ -3793,6 +3801,7 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
     showLabels: stored.showLabels ?? defaults.showLabels,
     showUnifiedActive: stored.showUnifiedActive ?? defaults.showUnifiedActive,
     showUnifiedBroken: stored.showUnifiedBroken ?? defaults.showUnifiedBroken,
+    showUnifiedHoldProbability: stored.showUnifiedHoldProbability ?? defaults.showUnifiedHoldProbability,
     showUnifiedResistance: stored.showUnifiedResistance ?? defaults.showUnifiedResistance,
     showUnifiedRoleFlipped: stored.showUnifiedRoleFlipped ?? defaults.showUnifiedRoleFlipped,
     showUnifiedSupport: stored.showUnifiedSupport ?? defaults.showUnifiedSupport,
@@ -3824,6 +3833,7 @@ type ResolvedPriceZoneLegendSettings = {
   showHistoricalLabels: boolean;
   showUnifiedActive: boolean;
   showUnifiedBroken: boolean;
+  showUnifiedHoldProbability: boolean;
   showUnifiedResistance: boolean;
   showUnifiedRoleFlipped: boolean;
   showUnifiedSupport: boolean;
@@ -3860,6 +3870,7 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
     showHistoricalLabels: stored.showHistoricalLabels ?? zone?.historicalLabelsDefault ?? false,
     showUnifiedActive: stored.showUnifiedActive !== false,
     showUnifiedBroken: stored.showUnifiedBroken !== false,
+    showUnifiedHoldProbability: stored.showUnifiedHoldProbability !== false,
     showUnifiedResistance: stored.showUnifiedResistance !== false,
     showUnifiedRoleFlipped: stored.showUnifiedRoleFlipped !== false,
     showUnifiedSupport: stored.showUnifiedSupport !== false,
@@ -5332,6 +5343,25 @@ function drawPriceZonePrimitiveLabels(
           : coordinates.end;
         labelSpan = settings.showConnectors ? clippedHorizontalSpan(coordinates.start, eventX ?? coordinates.end, width) : null;
       }
+      if (
+        zone.annotationKind === "unified-structure-level"
+        && zone.latest
+        && settings.showUnifiedHoldProbability
+        && Number.isFinite(zone.holdProbability)
+      ) {
+        drawUnifiedHoldProbabilityLabel(
+          context,
+          `H${Math.round(clampNumber(zone.holdProbability, 0, 1, 0) * 100)}%`,
+          span,
+          center,
+          borderColor,
+          chartBackground,
+          settings,
+          lineLabelBoxes,
+          width,
+          plotBottom,
+        );
+      }
       if (zone.currentLevelSide && zone.compactLabel && labelSpan) {
         candleBoxes ??= visibleCandleBoxes(chart, priceSeries, candles, barWidth, width, plotBottom);
         drawCurrentLevelConfidenceLabel(
@@ -5414,6 +5444,64 @@ function drawPriceZonePrimitiveLabels(
       }
     });
   });
+}
+
+function drawUnifiedHoldProbabilityLabel(
+  context: CanvasRenderingContext2D,
+  text: string,
+  span: HorizontalSpan,
+  centerY: number,
+  color: string,
+  chartBackground: string,
+  settings: ResolvedPriceZoneLegendSettings,
+  placed: CanvasBox[],
+  layerWidth: number,
+  plotBottom: number,
+) {
+  const fontSize = Math.max(8, Math.min(10, settings.labelFontSize - 1));
+  context.save();
+  context.font = `700 ${fontSize}px ${canvasInterfaceFont()}`;
+  const labelWidth = Math.ceil(context.measureText(text).width) + 6;
+  const labelHeight = fontSize + 4;
+  const horizontalFractions = [1, 0.82, 0.64, 0.46, 0.28];
+  const verticalOffsets = [0, -(labelHeight + 1), labelHeight + 1];
+  let selected: CanvasBox | null = null;
+  for (const offsetY of verticalOffsets) {
+    for (const fraction of horizontalFractions) {
+      const right = span.left + span.width * fraction - 3;
+      const left = right - labelWidth;
+      const top = centerY - labelHeight / 2 + offsetY;
+      const box = { bottom: top + labelHeight, left, right, top };
+      const insideSpan = box.left >= span.left + 2 && box.right <= span.right - 2;
+      const insidePlot = box.left >= 2 && box.right <= layerWidth - 2 && box.top >= 2 && box.bottom <= plotBottom - 2;
+      if (!insideSpan || !insidePlot) continue;
+      if (placed.some((item) => boxesOverlap(box, item, 2))) continue;
+      selected = box;
+      break;
+    }
+    if (selected) break;
+  }
+  if (!selected) {
+    context.restore();
+    return false;
+  }
+  if (Math.abs((selected.top + selected.bottom) / 2 - centerY) > 1) {
+    const connectorX = selected.right;
+    context.strokeStyle = rgbaFromHex(color, Math.max(0.45, settings.opacity));
+    context.lineWidth = 1;
+    context.beginPath();
+    context.moveTo(connectorX, centerY);
+    context.lineTo(connectorX, selected.top > centerY ? selected.top : selected.bottom);
+    context.stroke();
+  }
+  context.fillStyle = rgbaFromHex(chartBackground, 0.92);
+  context.fillRect(selected.left, selected.top, labelWidth, labelHeight);
+  context.fillStyle = rgbaFromHex(color, Math.max(0.72, settings.opacity));
+  context.textBaseline = "middle";
+  context.fillText(text, selected.left + 3, selected.top + labelHeight / 2);
+  placed.push(selected);
+  context.restore();
+  return true;
 }
 
 function canvasInterfaceFont() {
