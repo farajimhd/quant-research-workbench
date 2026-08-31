@@ -1618,7 +1618,7 @@ class OrderManagementEngine:
                     "canonical_metadata": canonical_metadata,
                 },
             )
-            now = datetime.now(timezone.utc)
+            now = self._causal_group_time(intent)
             group = _ManagedOrderGroup(
                 group_id=str(uuid4()),
                 intent=intent,
