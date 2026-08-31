@@ -211,6 +211,8 @@ class TradingRuntime:
                     config.mode in {RunMode.LIVE, RunMode.PAPER}
                     and bool(getattr(broker, "requires_fresh_execution_state", False))
                 ),
+                causal_execution_clock=config.mode
+                in {RunMode.REPLAY, RunMode.BACKTEST, RunMode.BACKTEST_DEBUG},
                 control_plane=self.control_plane,
             )
             if intent_planner is not None
@@ -295,6 +297,10 @@ class TradingRuntime:
     ) -> None:
         self._record_market_event_state(event)
         if self.order_manager is not None:
+            # Historical adaptive orders use this same causal event clock.
+            # Reprice from the quote just observed above before either expiry
+            # or matching, making fills invariant to replay processing speed.
+            await self.order_manager.advance_entry_execution(event.ts)
             # Expire stale entries before the simulated/live broker is allowed
             # to match this event.  This keeps Replay and Backtest deadlines on
             # the causal market clock instead of machine processing speed.

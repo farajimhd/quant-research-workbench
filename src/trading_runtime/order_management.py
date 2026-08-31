@@ -244,6 +244,7 @@ class _ManagedOrderGroup:
     reprice_task: asyncio.Task[None] | None = None
     reprice_event: asyncio.Event = field(default_factory=asyncio.Event)
     reprice_count: int = 0
+    last_reprice_at: datetime | None = None
     current_limit_price: float | None = None
     internal_reaction_ms: float | None = None
     protection_task: asyncio.Task[None] | None = None
@@ -334,6 +335,7 @@ class OrderManagementEngine:
         state_callback: StateCallback | None = None,
         execution_market_data: ExecutionMarketDataProvider | None = None,
         enforce_wall_clock_quote_freshness: bool = False,
+        causal_execution_clock: bool = False,
         control_plane: TradingControlPlane | None = None,
     ) -> None:
         self.broker = broker
@@ -349,6 +351,7 @@ class OrderManagementEngine:
         self.state_callback = state_callback
         self.execution_market_data = execution_market_data or ExecutionMarketDataProvider()
         self.enforce_wall_clock_quote_freshness = enforce_wall_clock_quote_freshness
+        self.causal_execution_clock = causal_execution_clock
         self.control_plane = control_plane
         self._command_lanes: dict[str, asyncio.Lock] = {}
         self._warning_lane = (
@@ -426,6 +429,64 @@ class OrderManagementEngine:
         if expired:
             await self.reconcile()
         return tuple(group.snapshot(self.policy.version) for group in expired)
+
+    async def advance_entry_execution(
+        self,
+        event_time: datetime,
+    ) -> tuple[OrderGroupSnapshot, ...]:
+        """Advance adaptive entry orders on the causal historical clock.
+
+        Replay and Backtest can traverse seconds of market time before an
+        asyncio wall-clock timer is scheduled. Reprice a due entry from the
+        latest already-observed quote before the broker matches the current
+        event. At most one modification is attempted per market event, so a
+        sparse stream never applies a later quote retroactively.
+        """
+
+        if not self.causal_execution_clock:
+            return ()
+        at = event_time.astimezone(timezone.utc)
+        advanced: list[_ManagedOrderGroup] = []
+        for group in tuple(self._groups.values()):
+            if str(group.intent.action) not in {
+                "enter_long",
+                "enter_short",
+                "add_long",
+                "add_short",
+            }:
+                continue
+            if group.tactic is None:
+                continue
+            if (
+                group.state in TERMINAL_MANAGEMENT_STATES
+                or group.state == OrderManagementState.CANCEL_PENDING
+                or not _open_entry_roots(group)
+            ):
+                continue
+            execution_policy = group.intent.resolved_execution_policy()
+            envelope = execution_policy.envelope
+            if group.reprice_count >= envelope.maximum_reprices:
+                continue
+            elapsed_ms = (
+                at - group.intent.event_time.astimezone(timezone.utc)
+            ).total_seconds() * 1_000
+            reprice_interval_ms = (
+                envelope.minimum_reprice_interval_ms
+                if envelope.minimum_reprice_interval_ms > 0
+                else _adaptive_interval_ms(execution_policy.name)
+            )
+            last_reprice_at = group.last_reprice_at or group.intent.event_time
+            if (
+                at - last_reprice_at.astimezone(timezone.utc)
+            ).total_seconds() * 1_000 < reprice_interval_ms:
+                continue
+            if envelope.deadline_ms > 0 and elapsed_ms >= envelope.deadline_ms:
+                continue
+            if await self._attempt_reprice(group, record_time=at):
+                advanced.append(group)
+        if advanced:
+            await self.reconcile()
+        return tuple(group.snapshot(self.policy.version) for group in advanced)
 
     async def configure_broker_session(self) -> None:
         suppress = getattr(self.broker, "suppress_order_replies", None)
@@ -1453,7 +1514,14 @@ class OrderManagementEngine:
                 },
             )
         self._transition(group, OrderManagementState.ACKNOWLEDGED, {"event": "submission_acknowledged"})
-        if group.tactic and len(group.tactic.steps) > 1 and group.broker_order_ids:
+        if (
+            not self.causal_execution_clock
+            and group.tactic
+            and group.broker_order_ids
+            and str(group.intent.action)
+            in {"enter_long", "enter_short", "add_long", "add_short"}
+            and group.intent.resolved_execution_policy().envelope.maximum_reprices > 0
+        ):
             group.reprice_task = asyncio.create_task(self._run_repricing(group))
 
     async def _replace_existing_profit_targets(
@@ -1918,7 +1986,11 @@ class OrderManagementEngine:
         execution_policy = group.intent.resolved_execution_policy()
         envelope = execution_policy.envelope
         started = perf_counter()
-        interval_ms = _adaptive_interval_ms(execution_policy.name)
+        interval_ms = (
+            envelope.minimum_reprice_interval_ms
+            if envelope.minimum_reprice_interval_ms > 0
+            else _adaptive_interval_ms(execution_policy.name)
+        )
         while group.reprice_count < envelope.maximum_reprices:
             elapsed_ms = (perf_counter() - started) * 1_000
             if elapsed_ms >= envelope.deadline_ms:
@@ -1929,104 +2001,10 @@ class OrderManagementEngine:
             except TimeoutError:
                 pass
             group.reprice_event.clear()
-            reaction_started = perf_counter()
-            if group.filled_quantity >= float(group.intent.quantity):
-                return
-            if group.state in {
-                OrderManagementState.CANCELLED,
-                OrderManagementState.REJECTED,
-                OrderManagementState.POLICY_BLOCKED,
-                OrderManagementState.OUTCOME_UNKNOWN,
-            }:
-                return
-            if group.filled_quantity > 0:
-                if execution_policy.partial_fill_policy == PartialFillPolicy.CANCEL_REMAINDER:
-                    await self._cancel_open_entry_roots(group, "partial_fill_policy")
-                    return
-                if execution_policy.partial_fill_policy == PartialFillPolicy.ACCEPT_PARTIAL:
-                    await self._cancel_open_entry_roots(group, "accept_partial")
-                    return
-            quote = self._execution_quote(group.intent) or group.tactic.quote
-            age_ms = (
-                datetime.now(timezone.utc) - quote.observed_at.astimezone(timezone.utc)
-            ).total_seconds() * 1_000
-            if self.enforce_wall_clock_quote_freshness and age_ms > self.policy.maximum_quote_age_ms:
-                self._record(
-                    "order_management",
-                    "adaptive_reprice_skipped",
-                    group.group_id,
-                    group.account_id,
-                    self._causal_group_time(
-                        group.intent,
-                        previous=group.updated_at,
-                    ),
-                    {"reason": "quote_stale", "quote_age_ms": age_ms},
-                )
-                continue
-            requested_price = _adaptive_price(
-                side=group.tactic.side,
-                policy_name=execution_policy.name,
-                quote=quote,
-                reprice_index=group.reprice_count + 1,
-                maximum_reprice_ticks=self.policy.maximum_reprice_ticks,
+            await self._attempt_reprice(
+                group,
+                record_time=datetime.now(timezone.utc),
             )
-            requested_price = envelope.bound(group.tactic.side, requested_price)
-            if group.current_limit_price is not None and math.isclose(
-                requested_price,
-                group.current_limit_price,
-                abs_tol=quote.tick_size / 2,
-            ):
-                continue
-            modified = False
-            for root_order_id, request_index in _open_entry_roots(group):
-                replacement = replace(group.orders[request_index], price=requested_price)
-                try:
-                    async with self._command_lane(group.account_id):
-                        response = await self.broker.modify_order(
-                            group.account_id,
-                            root_order_id,
-                            replacement,
-                        )
-                    if _warning_response(response):
-                        async with self._warning_lane:
-                            response = await self._resolve_warning_chain_locked(group, response)
-                except Exception as exc:
-                    self._record(
-                        "broker",
-                        "order_reprice_error",
-                        root_order_id,
-                        group.account_id,
-                        datetime.now(timezone.utc),
-                        {
-                            "order_group_id": group.group_id,
-                            "error": str(exc),
-                            "requested_price": requested_price,
-                        },
-                    )
-                    await self.reconcile()
-                    continue
-                group.orders[request_index] = replacement
-                modified = True
-                self._record(
-                    "broker",
-                    "order_repriced",
-                    root_order_id,
-                    group.account_id,
-                    datetime.now(timezone.utc),
-                    {
-                        "order_group_id": group.group_id,
-                        "requested_price": requested_price,
-                        "remaining_quantity": group.remaining_quantity,
-                        "quote_observed_at": quote.observed_at.isoformat(),
-                        "quote_bid": quote.bid,
-                        "quote_ask": quote.ask,
-                        "broker_response": response,
-                    },
-                )
-            if modified:
-                group.reprice_count += 1
-                group.current_limit_price = requested_price
-                group.internal_reaction_ms = (perf_counter() - reaction_started) * 1_000
         if group.remaining_quantity > 0 and (
             execution_policy.name == ExecutionPolicyName.CANCEL_IF_NOT_FILLED
             or (
@@ -2036,6 +2014,119 @@ class OrderManagementEngine:
             )
         ):
             await self._cancel_open_entry_roots(group, "execution_deadline")
+
+    async def _attempt_reprice(
+        self,
+        group: _ManagedOrderGroup,
+        *,
+        record_time: datetime,
+    ) -> bool:
+        """Apply one adaptive modification from the latest allowed quote."""
+
+        assert group.tactic is not None
+        reaction_started = perf_counter()
+        execution_policy = group.intent.resolved_execution_policy()
+        envelope = execution_policy.envelope
+        if group.filled_quantity >= float(group.intent.quantity):
+            return False
+        if group.state in {
+            OrderManagementState.CANCELLED,
+            OrderManagementState.REJECTED,
+            OrderManagementState.POLICY_BLOCKED,
+            OrderManagementState.OUTCOME_UNKNOWN,
+        }:
+            return False
+        if group.filled_quantity > 0:
+            if execution_policy.partial_fill_policy == PartialFillPolicy.CANCEL_REMAINDER:
+                await self._cancel_open_entry_roots(group, "partial_fill_policy")
+                return False
+            if execution_policy.partial_fill_policy == PartialFillPolicy.ACCEPT_PARTIAL:
+                await self._cancel_open_entry_roots(group, "accept_partial")
+                return False
+        quote = self._execution_quote(group.intent) or group.tactic.quote
+        if quote.observed_at.astimezone(timezone.utc) > record_time.astimezone(timezone.utc):
+            raise RuntimeError("Adaptive repricing cannot consume a future execution quote")
+        age_ms = (
+            datetime.now(timezone.utc) - quote.observed_at.astimezone(timezone.utc)
+        ).total_seconds() * 1_000
+        if self.enforce_wall_clock_quote_freshness and age_ms > self.policy.maximum_quote_age_ms:
+            self._record(
+                "order_management",
+                "adaptive_reprice_skipped",
+                group.group_id,
+                group.account_id,
+                self._causal_group_time(group.intent, previous=group.updated_at),
+                {"reason": "quote_stale", "quote_age_ms": age_ms},
+            )
+            return False
+        requested_price = envelope.bound(
+            group.tactic.side,
+            _adaptive_price(
+                side=group.tactic.side,
+                policy_name=execution_policy.name,
+                quote=quote,
+                reprice_index=group.reprice_count + 1,
+                maximum_reprice_ticks=self.policy.maximum_reprice_ticks,
+            ),
+        )
+        if group.current_limit_price is not None and math.isclose(
+            requested_price,
+            group.current_limit_price,
+            abs_tol=quote.tick_size / 2,
+        ):
+            return False
+        modified = False
+        for root_order_id, request_index in _open_entry_roots(group):
+            replacement = replace(group.orders[request_index], price=requested_price)
+            try:
+                async with self._command_lane(group.account_id):
+                    response = await self.broker.modify_order(
+                        group.account_id,
+                        root_order_id,
+                        replacement,
+                    )
+                if _warning_response(response):
+                    async with self._warning_lane:
+                        response = await self._resolve_warning_chain_locked(group, response)
+            except Exception as exc:
+                self._record(
+                    "broker",
+                    "order_reprice_error",
+                    root_order_id,
+                    group.account_id,
+                    record_time,
+                    {
+                        "order_group_id": group.group_id,
+                        "error": str(exc),
+                        "requested_price": requested_price,
+                    },
+                )
+                await self.reconcile()
+                continue
+            group.orders[request_index] = replacement
+            modified = True
+            self._record(
+                "broker",
+                "order_repriced",
+                root_order_id,
+                group.account_id,
+                record_time,
+                {
+                    "order_group_id": group.group_id,
+                    "requested_price": requested_price,
+                    "remaining_quantity": group.remaining_quantity,
+                    "quote_observed_at": quote.observed_at.isoformat(),
+                    "quote_bid": quote.bid,
+                    "quote_ask": quote.ask,
+                    "broker_response": response,
+                },
+            )
+        if modified:
+            group.reprice_count += 1
+            group.last_reprice_at = record_time.astimezone(timezone.utc)
+            group.current_limit_price = requested_price
+            group.internal_reaction_ms = (perf_counter() - reaction_started) * 1_000
+        return modified
 
     async def _cancel_open_entry_roots(self, group: _ManagedOrderGroup, reason: str) -> bool:
         roots = _open_entry_roots(group)

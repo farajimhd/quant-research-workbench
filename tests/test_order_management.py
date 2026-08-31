@@ -421,6 +421,7 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
         policy: BrokerCommunicationPolicy,
         shortability_provider=None,
         state_callback=None,
+        causal_execution_clock: bool = False,
     ) -> tuple[OrderManagementEngine, TradingJournal]:
         journal = TradingJournal(Path(directory) / "orders.sqlite3")
         await broker.initialize()
@@ -437,6 +438,7 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
             policy=policy,
             shortability_provider=shortability_provider,
             state_callback=state_callback,
+            causal_execution_clock=causal_execution_clock,
         )
         return manager, journal
 
@@ -530,6 +532,83 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                 ]
                 self.assertEqual(records[-1].payload["reason"], "execution_deadline")
                 self.assertEqual(records[-1].event_time, NOW + timedelta(seconds=13))
+            finally:
+                await manager.close()
+                journal.close()
+
+    async def test_causal_adaptive_entry_reprices_before_historical_deadline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            broker = SimulatedBrokerAdapter(["DU1"], mode=TradingMode.BACKTEST)
+            manager, journal = await self._manager(
+                directory,
+                broker,
+                policy=BrokerCommunicationPolicy(),
+                causal_execution_clock=True,
+            )
+            try:
+                request = replace(
+                    intent(side_quote=(10.00, 10.02), quantity=100),
+                    reference_price=10.01,
+                    execution_policy=ExecutionPolicy(
+                        policy_id="test-causal-urgent",
+                        name=ExecutionPolicyName.ADAPTIVE_URGENT,
+                        envelope=ExecutionEnvelope(
+                            maximum_buy_price=10.20,
+                            deadline_ms=5_000,
+                            maximum_reprices=4,
+                        ),
+                    ),
+                )
+                submitted = await manager.submit_intent(
+                    portfolio_approved(journal, request),
+                    account_id="DU1",
+                    event=None,
+                )
+                self.assertEqual(submitted.current_limit_price, 10.02)
+                self.assertIsNone(manager.snapshots()[0].internal_reaction_ms)
+
+                causal_time = NOW + timedelta(milliseconds=100)
+                manager.on_market_snapshot(
+                    ExecutionMarketSnapshot(
+                        "TEST",
+                        10.04,
+                        10.06,
+                        0.01,
+                        causal_time,
+                        "qmd-history",
+                    )
+                )
+                repriced = await manager.advance_entry_execution(causal_time)
+
+                self.assertEqual(len(repriced), 1)
+                self.assertGreater(float(repriced[0].current_limit_price or 0), 10.02)
+                live = await broker.live_orders()
+                self.assertEqual(live[0].price, repriced[0].current_limit_price)
+                records = [
+                    row
+                    for row in journal.records("run-1")
+                    if row.entity_type == "order_repriced"
+                ]
+                self.assertEqual(records[-1].event_time, causal_time)
+                self.assertEqual(
+                    records[-1].payload["quote_observed_at"],
+                    causal_time.isoformat(),
+                )
+
+                manager.on_market_snapshot(
+                    ExecutionMarketSnapshot(
+                        "TEST",
+                        10.05,
+                        10.07,
+                        0.01,
+                        causal_time,
+                        "qmd-history",
+                    )
+                )
+                self.assertEqual(
+                    await manager.advance_entry_execution(causal_time),
+                    (),
+                )
             finally:
                 await manager.close()
                 journal.close()
