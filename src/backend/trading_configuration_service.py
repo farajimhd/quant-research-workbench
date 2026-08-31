@@ -4100,8 +4100,7 @@ def _default_draft() -> dict[str, Any]:
     }
     system_profiles[0]["parameters"]["protection"]["profit_ladder"].update({
         "maximum_targets": 1,
-        "selection_mode": "second_next_level",
-        "target_level_ordinal": 2,
+        "selection_mode": "highest_price_below_cap",
         "minimum_level_strength": 0.0,
         "minimum_level_confidence": 0.0,
         "minimum_reaction_probability": 0.0,

@@ -5149,7 +5149,14 @@ def _structural_profit_targets(
                 maximum_price is None or candidate_value <= maximum_price
             ):
                 ranked_candidates.append((score, candidate_value))
-    if not ranked_candidates:
+    # The scalar nearest-level fields do not carry the Unified Level Book's
+    # hold/break lifecycle evidence.  They may remain a compatibility fallback
+    # only when the configured strategy does not require that evidence; using
+    # them under an 85% hold gate would silently bypass the agreed contract.
+    if (
+        not ranked_candidates
+        and float(policy.get("minimum_hold_probability") or 0.0) <= 0.0
+    ):
         nearest_price = (
             observation.structural_resistance_lower
             if side == "long"

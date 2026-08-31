@@ -24,6 +24,7 @@ from src.trading_runtime.strategy_engine import (
     StrategyPermissions,
     default_long_momentum_parameters,
     _execution_policy_from_phase,
+    _structural_profit_targets,
     entry_stage_without_rule_set,
     evaluate_entry_decision_rules,
     long_momentum_strategy_definition,
@@ -1306,6 +1307,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
         parameters = default_long_momentum_parameters()
         parameters["protection"]["profit_ladder"].update({
             "maximum_targets": 5,
+            "selection_mode": "ranked",
             "minimum_level_strength": 0.55,
             "minimum_level_confidence": 0.60,
             "minimum_reaction_probability": 0.60,
@@ -1377,6 +1379,32 @@ class LongMomentumStrategyTests(unittest.TestCase):
             ),
         )
         self.assertEqual(result.evaluation.signals[0].metadata["profit_targets"], [8.9])
+
+    def test_hold_filtered_target_does_not_use_scalar_fallback(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["protection"]["profit_ladder"].update({
+            "maximum_targets": 1,
+            "selection_mode": "highest_price_below_cap",
+            "minimum_level_strength": 0.0,
+            "minimum_level_confidence": 0.0,
+            "minimum_hold_probability": 0.85,
+            "maximum_break_probability": 1.0,
+        })
+        targets = _structural_profit_targets(
+            confirmed_observation(
+                price=3.0,
+                structural_resistance_lower=3.8,
+                structural_resistance_strength=1.0,
+                structural_resistance_confidence=1.0,
+                structural_resistance_levels=(),
+                upper_luld_price=None,
+            ),
+            parameters,
+            stop=2.8,
+            side="long",
+            luld_target=None,
+        )
+        self.assertEqual(targets, [])
 
     def test_single_target_uses_the_causal_level_price_not_its_lower_band_edge(self) -> None:
         parameters = default_long_momentum_parameters()
@@ -1496,6 +1524,49 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(advanced.evaluation.signals[0].action, "replace_profit_target")
         self.assertEqual(advanced.evaluation.intents[0].profit_target_price, 104.0)
         self.assertEqual(advanced.evaluation.intents[0].quantity, 100)
+
+    def test_highest_capped_target_does_not_ratchet_through_intermediate_levels(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["protection"]["profit_ladder"].update({
+            "maximum_targets": 1,
+            "selection_mode": "highest_price_below_cap",
+            "minimum_level_strength": 0.0,
+            "minimum_level_confidence": 0.0,
+            "minimum_hold_probability": 0.85,
+            "maximum_break_probability": 1.0,
+        })
+        managed = assignment(
+            parameters=parameters,
+            status=AssignmentStatus.MANAGING,
+            state={
+                "active_stop": 99.0,
+                "initial_stop": 99.0,
+                "entry_reference_price": 101.0,
+                "entry_at": NOW.isoformat(),
+                "high_water_price": 102.0,
+                "structural_profit_targets": [105.0],
+            },
+        )
+        result = LongMomentumStrategyEngine().evaluate(
+            managed,
+            confirmed_observation(
+                price=102.1,
+                position_quantity=100,
+                average_price=101.0,
+                source_timeframe="1s",
+                evaluation_events=("indicator_update", "bar_close"),
+                structural_resistance_levels=tuple(
+                    {"side": -1, "price": price, "hold_probability": 0.90}
+                    for price in (102.0, 103.0, 104.0, 105.0)
+                ),
+                source_values={
+                    "indicator.macd.line@1s": {"value": 0.4},
+                    "indicator.macd.signal@1s": {"value": 0.2},
+                },
+            ),
+        )
+        self.assertEqual(result.evaluation.signals[0].action, "hold")
+        self.assertEqual(result.state["structural_profit_targets"], [105.0])
 
     def test_background_evaluation_emits_autonomous_causal_lineage(self) -> None:
         result = LongMomentumStrategyEngine().evaluate(
