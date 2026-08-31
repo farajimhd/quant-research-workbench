@@ -192,7 +192,7 @@ def main() -> int:
         int(row["label_resolution_us"])
         for row in client.json_rows(
             f"SELECT DISTINCT label_resolution_us FROM {bars_table} "
-            f"WHERE schema_version = 4 AND calculation_revision = 'qmd-family-bars-v4' "
+            f"WHERE schema_version = 3 AND calculation_revision = 'qmd-family-bars-v3' "
             f"AND complete = 1 AND label_resolution_us > {BASE_RESOLUTION_US} "
             "ORDER BY label_resolution_us FORMAT JSONEachRow"
         )

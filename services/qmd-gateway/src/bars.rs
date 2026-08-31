@@ -15,10 +15,12 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, Duration};
 
-pub const BAR_SCHEMA_VERSION: u16 = 4;
+pub const BAR_SCHEMA_VERSION: u16 = 3;
 const ESTIMATED_LULD_WINDOW_SECONDS: i64 = 300;
 const ESTIMATED_LULD_NEAR_BAND_PCT: f64 = 1.0;
-pub const FORM_T_EXTENDED_HOURS_CONDITION: u16 = 12;
+const FORM_T_EXTENDED_HOURS_CONDITION: u16 = 12;
+const REGULAR_SESSION_START_SECONDS: u32 = 9 * 60 * 60 + 30 * 60;
+const REGULAR_SESSION_END_SECONDS: u32 = 16 * 60 * 60;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TradeUpdateRule {
@@ -61,21 +63,36 @@ impl TradeAggregationRules {
         })
     }
 
-    pub fn resolve(&self, conditions: &[u16], _timestamp: DateTime<Utc>) -> TradeUpdateRule {
+    pub fn resolve(&self, conditions: &[u16], timestamp: DateTime<Utc>) -> TradeUpdateRule {
         if conditions.is_empty() {
             return TradeUpdateRule::regular();
         }
-        // Form T is a late-reported sale. Preserve it in the raw event stream,
-        // but never let its report-time price or size manufacture immediately
-        // executable OHLCV, VWAP, MACD, liquidity, or structure evidence. This
-        // invariant is session-independent and therefore identical in live,
-        // Replay, Backtest, and persisted bar rebuilds.
-        if conditions.contains(&FORM_T_EXTENDED_HOURS_CONDITION) {
-            return TradeUpdateRule::excluded();
-        }
+        let local_seconds = timestamp
+            .with_timezone(&New_York)
+            .time()
+            .num_seconds_from_midnight();
+        let extended_hours =
+            !(REGULAR_SESSION_START_SECONDS..REGULAR_SESSION_END_SECONDS).contains(&local_seconds);
+        // Massive includes Form T in extended-hours custom bars only when every
+        // additional non-regular condition is itself fully price-eligible. A
+        // partial rule such as Prior Reference Price must not leak a Form T
+        // print into the bar high/low while remaining ineligible for open/close.
+        let form_t_price_eligible = extended_hours
+            && conditions.contains(&FORM_T_EXTENDED_HOURS_CONDITION)
+            && conditions.iter().all(|condition| {
+                if *condition == FORM_T_EXTENDED_HOURS_CONDITION || *condition == 0 {
+                    return true;
+                }
+                self.by_condition
+                    .get(condition)
+                    .is_some_and(|rule| rule.update_high_low && rule.update_last)
+            });
         conditions
             .iter()
             .fold(TradeUpdateRule::regular(), |current, condition| {
+                if *condition == FORM_T_EXTENDED_HOURS_CONDITION && form_t_price_eligible {
+                    return current;
+                }
                 let Some(rule) = self.by_condition.get(condition) else {
                     return TradeUpdateRule::excluded();
                 };
@@ -2536,9 +2553,9 @@ mod tests {
                 start + chrono::Duration::seconds(1),
                 331.7827,
                 27.0,
-                vec![2],
+                vec![12, 37],
             ),
-            rules.resolve(&[2], start + chrono::Duration::seconds(1)),
+            rules.resolve(&[12, 37], start + chrono::Duration::seconds(1)),
         );
         bar.apply_trade(
             &trade(start + chrono::Duration::seconds(2), 315.16, 50.0, vec![0]),
@@ -2554,7 +2571,7 @@ mod tests {
     }
 
     #[test]
-    fn form_t_is_preserved_raw_but_never_updates_actionable_bars() {
+    fn form_t_prices_extended_hours_but_not_regular_session() {
         let rules = TradeAggregationRules::new([
             (0, TradeUpdateRule::regular()),
             (
@@ -2579,16 +2596,27 @@ mod tests {
         let extended = Utc.with_ymd_and_hms(2026, 7, 10, 21, 20, 0).unwrap();
         let regular = Utc.with_ymd_and_hms(2026, 7, 10, 15, 20, 0).unwrap();
 
-        assert_eq!(rules.resolve(&[12], extended), TradeUpdateRule::excluded());
+        assert_eq!(rules.resolve(&[12], extended), TradeUpdateRule::regular());
         assert_eq!(
             rules.resolve(&[12, 22], extended),
-            TradeUpdateRule::excluded()
+            TradeUpdateRule {
+                update_high_low: false,
+                update_last: false,
+                update_volume: true,
+            }
         );
         assert_eq!(
             rules.resolve(&[12, 41], extended),
-            TradeUpdateRule::excluded()
+            TradeUpdateRule::regular()
         );
-        assert_eq!(rules.resolve(&[12], regular), TradeUpdateRule::excluded());
+        assert_eq!(
+            rules.resolve(&[12], regular),
+            TradeUpdateRule {
+                update_high_low: false,
+                update_last: false,
+                update_volume: true,
+            }
+        );
     }
 
     #[test]

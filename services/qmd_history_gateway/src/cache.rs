@@ -40,7 +40,7 @@ use std::sync::Mutex as StdMutex;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, OnceCell, Semaphore};
 
 pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v35";
-pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v43";
+pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v42";
 pub const HISTORICAL_CORPORATE_ACTION_REVISION: &str = "retrospective-split-adjusted-v2";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
 const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 5;

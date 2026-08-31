@@ -134,7 +134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .map_err(startup_error)?;
     let compact_event_decoder = compact_references.decoder();
     let computation_targets = SharedComputationTargets::default();
-    let market = SharedMarketState::new(trade_aggregation_rules.clone());
+    let market = SharedMarketState::new();
     let bars = SharedBarStore::new_for_computational_funnel(
         config.bar_timeframes.clone(),
         config.bar_history_limit,

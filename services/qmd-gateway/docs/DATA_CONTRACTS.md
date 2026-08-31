@@ -335,12 +335,11 @@ Trade price and volume eligibility follows the consolidated Massive condition
 rules loaded through `event_condition_token_reference`. Multiple conditions are
 combined conservatively: a print updates a field only when every recognized
 condition permits that field, and unknown conditions do not alter OHLCV. Form T
-is a late-reported sale: QMD preserves the raw event and its condition identity,
-but it never updates actionable OHLCV, volume, VWAP, MACD, liquidity, or market
-structure at report time. This invariant is identical in live computation,
-Replay, Backtest, and persisted bar rebuilds. A bucket with no price-eligible
-trade is omitted from price-bar snapshots rather than rendered as a zero or
-synthetic candle.
+prints are price-eligible only outside the 09:30-16:00 New York regular session
+and only when every additional condition is fully price-eligible, matching
+Massive's extended-hours custom-bar behavior. A bucket with no
+price-eligible trade is omitted from price-bar snapshots rather than rendered as
+a zero or synthetic candle.
 
 ### Trade Rates And Movement
 

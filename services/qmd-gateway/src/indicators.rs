@@ -1,4 +1,4 @@
-use crate::bars::{BarRow, SharedBarStore, TradeAggregationRules, TradeUpdateRule};
+use crate::bars::{BarRow, SharedBarStore, TradeAggregationRules};
 use crate::computation_targets::SharedComputationTargets;
 use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
@@ -25,7 +25,7 @@ use tokio::time::{interval, sleep, Duration, MissedTickBehavior};
 
 const STRUCTURE_CHECKPOINT_BATCH_LIMIT: usize = 256;
 
-pub const INDICATOR_SCHEMA_VERSION: u16 = 25;
+pub const INDICATOR_SCHEMA_VERSION: u16 = 24;
 pub const INDICATOR_CALCULATION_REVISION: &str = "qmd-indicators-v25";
 const MICROSTRUCTURE_AGGREGATE_TIMEFRAMES: [&str; 7] = ["1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 const INDICATOR_STATE_RECLAIM_INTERVAL_SECONDS: u64 = 30;
@@ -1439,10 +1439,7 @@ impl IndicatorStore {
             .entry(ticker.clone())
             .or_insert_with(|| TickState::new(tick_window_seconds));
         match event {
-            MarketEvent::Trade(trade) => {
-                let rule = self.trade_rules.resolve(&trade.conditions, trade.ts);
-                tick.apply_trade(trade, rule);
-            }
+            MarketEvent::Trade(trade) => tick.apply_trade(trade),
             MarketEvent::Quote(quote) => tick.apply_quote(quote),
         }
         self.microstructure
@@ -1708,23 +1705,13 @@ impl TickState {
         }
     }
 
-    fn apply_trade(&mut self, trade: &TradeEvent, rule: TradeUpdateRule) {
-        if trade.price <= 0.0 || trade.size <= 0.0 || (!rule.update_last && !rule.update_volume) {
+    fn apply_trade(&mut self, trade: &TradeEvent) {
+        if trade.price <= 0.0 || trade.size <= 0.0 {
             return;
         }
-        let signed_volume = if rule.update_last {
-            let side = self.classify_trade_side(trade.price);
-            if side >= 0 {
-                trade.size
-            } else {
-                -trade.size
-            }
-        } else {
-            0.0
-        };
-        if rule.update_last {
-            self.last_price = trade.price;
-        }
+        let side = self.classify_trade_side(trade.price);
+        let signed_volume = if side >= 0 { trade.size } else { -trade.size };
+        self.last_price = trade.price;
         self.last_ts = Some(trade.ts.clone());
         self.recent_trades.push_back(TradeSample {
             ts: trade.ts.clone(),

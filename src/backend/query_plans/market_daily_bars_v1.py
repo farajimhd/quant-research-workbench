@@ -126,8 +126,8 @@ def live_intraday_previous_close_projection(
           AND local_date < toDate({sql_string(before_date.isoformat())})
           AND label_resolution_us = 60000000
           AND bar_family = 'trade'
-          AND schema_version = 4
-          AND calculation_revision = 'qmd-family-bars-v4'
+          AND schema_version = 3
+          AND calculation_revision = 'qmd-family-bars-v3'
           AND complete = 1
           AND close > 0
         GROUP BY ticker
