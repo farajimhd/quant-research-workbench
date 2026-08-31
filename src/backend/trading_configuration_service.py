@@ -4038,6 +4038,7 @@ def _default_draft() -> dict[str, Any]:
         "minimum_confidence": 0.0,
         "minimum_reaction_probability": 0.0,
         "minimum_hold_probability": 0.80,
+        "maximum_break_count": 100,
         "maximum_break_probability": 1.0,
         "minimum_independent_pivot_count": 0,
         "minimum_level_age_ms": 0,
@@ -4100,12 +4101,17 @@ def _default_draft() -> dict[str, Any]:
     }
     system_profiles[0]["parameters"]["protection"]["profit_ladder"].update({
         "maximum_targets": 1,
-        "selection_mode": "highest_price_below_cap",
+        # The target is the second nearest qualifying level above the current
+        # price.  As completed one-second bars accept successive levels while
+        # MACD remains positive/open, the same rule advances the live target.
+        "selection_mode": "second_next_level",
+        "target_level_ordinal": 2,
         "minimum_level_strength": 0.0,
         "minimum_level_confidence": 0.0,
         "minimum_reaction_probability": 0.0,
         "minimum_reversal_probability": 0.0,
         "minimum_hold_probability": 0.85,
+        "maximum_break_count": 100,
         "maximum_break_probability": 1.0,
         "minimum_composite_score": 0.0,
         "premarket_maximum_gain_pct": 200.0,

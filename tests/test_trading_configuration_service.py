@@ -1367,7 +1367,11 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertEqual(
             default_profile["parameters"]["protection"]["profit_ladder"]["selection_mode"],
-            "highest_price_below_cap",
+            "second_next_level",
+        )
+        self.assertEqual(
+            default_profile["parameters"]["protection"]["profit_ladder"]["target_level_ordinal"],
+            2,
         )
         self.assertEqual(
             default_profile["parameters"]["protection"]["profit_ladder"]["minimum_hold_probability"],
@@ -1376,6 +1380,14 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(
             default_profile["parameters"]["structural_entry"]["minimum_hold_probability"],
             0.80,
+        )
+        self.assertEqual(
+            default_profile["parameters"]["structural_entry"]["maximum_break_count"],
+            100,
+        )
+        self.assertEqual(
+            default_profile["parameters"]["protection"]["profit_ladder"]["maximum_break_count"],
+            100,
         )
         self.assertFalse(
             default_profile["parameters"]["structural_entry"]["require_swing_high_frontier"]

@@ -1226,6 +1226,8 @@ def _level_is_entry_quality(
     break_probability = _level_metric(row, "break_probability")
     if "break_probability" not in row:
         break_probability = max(0.0, 1.0 - hold_probability)
+    break_count = _level_metric(row, "break_count")
+    maximum_break_count = policy.get("maximum_break_count")
     return bool(
         _level_metric(row, "salience", "strength")
         >= float(policy.get("minimum_salience") or 0)
@@ -1237,6 +1239,10 @@ def _level_is_entry_quality(
         >= float(policy.get("minimum_hold_probability") or 0)
         and break_probability
         <= float(policy.get("maximum_break_probability", 1.0))
+        and (
+            maximum_break_count is None
+            or break_count <= float(maximum_break_count)
+        )
         and _level_metric(row, "independent_pivot_count")
         >= float(policy.get("minimum_independent_pivot_count") or 0)
         and age_ms >= float(policy.get("minimum_level_age_ms") or 0)
@@ -5124,6 +5130,8 @@ def _structural_profit_targets(
         break_probability = _level_metric(dict(row), "break_probability")
         if "break_probability" not in row:
             break_probability = max(0.0, 1.0 - hold)
+        break_count = _level_metric(dict(row), "break_count")
+        maximum_break_count = policy.get("maximum_break_count")
         score = _profit_level_score(dict(row))
         candidate = row.get("price")
         if candidate is None:
@@ -5137,6 +5145,10 @@ def _structural_profit_targets(
             and hold >= float(policy.get("minimum_hold_probability") or 0.0)
             and break_probability
             <= float(policy.get("maximum_break_probability", 1.0))
+            and (
+                maximum_break_count is None
+                or break_count <= float(maximum_break_count)
+            )
             and score >= float(policy.get("minimum_composite_score") or 0.0)
         ):
             candidate_value = float(candidate)

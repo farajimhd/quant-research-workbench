@@ -830,6 +830,49 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(entered.evaluation.signals[0].action, "enter_long")
         self.assertEqual(entered.state["breakout_level"], 101.0)
 
+    def test_entry_rejects_level_over_maximum_break_count(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["structural_entry"].update({
+            "enabled": True,
+            "minimum_salience": 0.0,
+            "minimum_confidence": 0.0,
+            "minimum_reaction_probability": 0.0,
+            "minimum_hold_probability": 0.80,
+            "maximum_break_count": 100,
+            "maximum_break_probability": 1.0,
+            "minimum_independent_pivot_count": 0,
+            "minimum_level_age_ms": 0,
+        })
+        levels = (
+            {
+                "unified_level_id": "over-broken",
+                "side": -1,
+                "upper": 101.0,
+                "hold_probability": 0.90,
+                "break_count": 101,
+            },
+            {
+                "unified_level_id": "qualified",
+                "side": -1,
+                "upper": 102.0,
+                "hold_probability": 0.90,
+                "break_count": 100,
+            },
+        )
+
+        result = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=parameters, state={"last_price": 100.5}),
+            confirmed_observation(
+                price=101.1,
+                swing_high=102.0,
+                structural_resistance_upper=102.0,
+                structural_resistance_levels=levels,
+            ),
+        )
+
+        self.assertEqual(result.evaluation.signals[0].action, "wait")
+        self.assertEqual(result.state["pending_entry_resistance"]["boundary"], 102.0)
+
     def test_unified_entry_can_tighten_to_a_new_closer_level(self) -> None:
         parameters = default_long_momentum_parameters()
         parameters["structural_entry"].update({"enabled": True})
@@ -1468,6 +1511,37 @@ class LongMomentumStrategyTests(unittest.TestCase):
             ),
         )
         self.assertEqual(result.evaluation.signals[0].metadata["profit_targets"], [103.0])
+
+    def test_second_next_target_rejects_levels_over_maximum_break_count(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["protection"]["profit_ladder"].update({
+            "enabled": True,
+            "maximum_targets": 1,
+            "selection_mode": "second_next_level",
+            "target_level_ordinal": 2,
+            "minimum_level_strength": 0.0,
+            "minimum_level_confidence": 0.0,
+            "minimum_hold_probability": 0.85,
+            "maximum_break_count": 100,
+        })
+        observation = confirmed_observation(
+            price=100.0,
+            structural_resistance_levels=(
+                {"side": -1, "price": 101.0, "hold_probability": 0.90, "break_count": 101},
+                {"side": -1, "price": 102.0, "hold_probability": 0.90, "break_count": 50},
+                {"side": -1, "price": 103.0, "hold_probability": 0.90, "break_count": 75},
+            ),
+        )
+
+        targets = _structural_profit_targets(
+            observation,
+            parameters,
+            stop=99.0,
+            side="long",
+            luld_target=None,
+        )
+
+        self.assertEqual(targets, [103.0])
 
     def test_target_advances_only_on_completed_one_second_bar_with_open_macd(self) -> None:
         parameters = default_long_momentum_parameters()
