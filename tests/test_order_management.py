@@ -398,6 +398,7 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
         *,
         policy: BrokerCommunicationPolicy,
         shortability_provider=None,
+        state_callback=None,
     ) -> tuple[OrderManagementEngine, TradingJournal]:
         journal = TradingJournal(Path(directory) / "orders.sqlite3")
         await broker.initialize()
@@ -413,8 +414,35 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
             strategy_revision=1,
             policy=policy,
             shortability_provider=shortability_provider,
+            state_callback=state_callback,
         )
         return manager, journal
+
+    async def test_reconcile_does_not_reproject_unchanged_terminal_orders(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            broker = SimulatedBrokerAdapter(["DU1"], mode=TradingMode.PAPER)
+            projected = []
+
+            async def record_projection(snapshot) -> None:
+                projected.append(snapshot)
+
+            manager, journal = await self._manager(
+                directory,
+                broker,
+                policy=BrokerCommunicationPolicy(),
+                state_callback=record_projection,
+            )
+            requested = portfolio_approved(journal, intent())
+            await manager.submit_intent(requested, account_id="DU1", event=None)
+
+            await manager.reconcile()
+            first_count = len(projected)
+            await manager.reconcile()
+
+            self.assertGreater(first_count, 0)
+            self.assertEqual(len(projected), first_count)
+            await manager.close()
+            journal.close()
 
     async def test_oms_rejects_missing_or_mismatched_portfolio_authority(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

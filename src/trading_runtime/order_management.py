@@ -219,6 +219,7 @@ class _ManagedOrderGroup:
     broker_order_slices: dict[str, str] = field(default_factory=dict)
     broker_order_request_indexes: dict[str, int] = field(default_factory=dict)
     filled_by_broker_order: dict[str, float] = field(default_factory=dict)
+    broker_order_state_fingerprints: dict[str, tuple[Any, ...]] = field(default_factory=dict)
     terminal_broker_order_ids: set[str] = field(default_factory=set)
     warning_message_ids: list[str] = field(default_factory=list)
     rejection_reason: str = ""
@@ -1049,10 +1050,20 @@ class OrderManagementEngine:
             request_index = _request_index_for_identity(group, str(order.cOID or order.parentId or ""))
             if request_index is not None:
                 group.broker_order_request_indexes[order.orderId] = request_index
+        order_id = str(order.orderId)
         fill_role = group.broker_order_roles.get(str(order.orderId), "")
+        fingerprint = _live_order_state_fingerprint(order)
+        if group.broker_order_state_fingerprints.get(order_id) == fingerprint:
+            return group.snapshot(
+                self.policy.version,
+                fill_role=fill_role,
+                broker_order_id=order_id,
+                slice_id=group.broker_order_slices.get(order_id, ""),
+            )
+        group.broker_order_state_fingerprints[order_id] = fingerprint
         incremental = _apply_cumulative_fill(
             group,
-            str(order.orderId),
+            order_id,
             float(order.filledQuantity),
             fill_role,
         )
@@ -1985,6 +1996,15 @@ class OrderManagementEngine:
             if request_index is not None:
                 group.broker_order_request_indexes[order.broker_order_id] = request_index
         fill_role = group.broker_order_roles.get(order.broker_order_id, "")
+        fingerprint = _canonical_order_state_fingerprint(order)
+        if group.broker_order_state_fingerprints.get(order.broker_order_id) == fingerprint:
+            return group.snapshot(
+                self.policy.version,
+                fill_role=fill_role,
+                broker_order_id=order.broker_order_id,
+                slice_id=group.broker_order_slices.get(order.broker_order_id, ""),
+            )
+        group.broker_order_state_fingerprints[order.broker_order_id] = fingerprint
         incremental = _apply_cumulative_fill(
             group,
             order.broker_order_id,
@@ -3346,6 +3366,35 @@ def _management_state(order: LiveOrder) -> OrderManagementState:
     if order.order_status in OPEN_ORDER_STATUSES:
         return OrderManagementState.WORKING
     return OrderManagementState.OUTCOME_UNKNOWN
+
+
+def _live_order_state_fingerprint(order: LiveOrder) -> tuple[Any, ...]:
+    """Return only fields whose change requires a new OMS projection."""
+
+    return (
+        str(order.order_status),
+        float(order.filledQuantity),
+        float(order.remainingQuantity),
+        float(order.avgPrice),
+        float(order.price or 0),
+        float(order.auxPrice or 0),
+        str(order.statusDescription or ""),
+    )
+
+
+def _canonical_order_state_fingerprint(order: OrderState) -> tuple[Any, ...]:
+    return (
+        str(order.lifecycle_state),
+        str(order.broker_status_raw),
+        float(order.filled_quantity),
+        float(order.remaining_quantity),
+        float(order.average_fill_price),
+        float(order.limit_price or 0),
+        float(order.stop_price or 0),
+        str(order.warning or ""),
+        str(order.rejection_code or ""),
+        str(order.rejection_reason or ""),
+    )
 
 
 def _canonical_management_state(order: OrderState) -> OrderManagementState:
