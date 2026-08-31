@@ -1221,6 +1221,10 @@ def _level_is_entry_quality(
         if created_at_ms > 0
         else 0.0
     )
+    hold_probability = _level_metric(row, "hold_probability")
+    break_probability = _level_metric(row, "break_probability")
+    if "break_probability" not in row:
+        break_probability = max(0.0, 1.0 - hold_probability)
     return bool(
         _level_metric(row, "salience", "strength")
         >= float(policy.get("minimum_salience") or 0)
@@ -1228,8 +1232,10 @@ def _level_is_entry_quality(
         >= float(policy.get("minimum_confidence") or 0)
         and _level_metric(row, "reaction_probability")
         >= float(policy.get("minimum_reaction_probability") or 0)
-        and _level_metric(row, "hold_probability")
+        and hold_probability
         >= float(policy.get("minimum_hold_probability") or 0)
+        and break_probability
+        <= float(policy.get("maximum_break_probability", 1.0))
         and _level_metric(row, "independent_pivot_count")
         >= float(policy.get("minimum_independent_pivot_count") or 0)
         and age_ms >= float(policy.get("minimum_level_age_ms") or 0)
@@ -1467,11 +1473,31 @@ def _unified_entry_trigger(
         armed_at = str(pending.get("armed_at") or observation.observed_at.isoformat())
 
     threshold = boundary * (1 + buffer_bps / 10_000)
-    crossed = bool(
+    crossed_after_arming = bool(
         previous_price is not None
         and float(previous_price) <= threshold
         and observation.price > threshold
     )
+    # Early-squeeze and liquidity admission are campaign latches. If the
+    # campaign first becomes actionable after price has already cleared the
+    # highest qualifying resistance, admit that causal state instead of
+    # demanding an artificial second cross of the same level.
+    first_post_admission_evaluation = bool(
+        state.get("liquidity_admitted_at")
+        and not state.get("structural_entry_initialized_at")
+        and int(state.get("reentries") or 0) == 0
+        and not state.get("last_entry_resistance")
+    )
+    state.setdefault(
+        "structural_entry_initialized_at", observation.observed_at.isoformat()
+    )
+    already_cleared_on_admission = bool(
+        first_post_admission_evaluation
+        and pending_boundary <= 0
+        and not overhead
+        and observation.price > threshold
+    )
+    crossed = crossed_after_arming or already_cleared_on_admission
     breakout_extension_bps = (
         (observation.price / threshold - 1.0) * 10_000.0
         if threshold > 0
@@ -1500,7 +1526,9 @@ def _unified_entry_trigger(
     return {
         "passed": passed,
         "reason": (
-            "unified_resistance_accepted"
+            "unified_resistance_already_cleared"
+            if passed and already_cleared_on_admission
+            else "unified_resistance_accepted"
             if passed
             else "waiting_for_unified_resistance_retest"
             if crossed and breakout_extension_bps > maximum_breakout_extension_bps
@@ -2234,6 +2262,17 @@ class LongMomentumStrategyEngine:
                 trailing_amount=_trailing_amount(observation, parameters),
             )
 
+        target_replacement = self._structural_target_replacement_result(
+            assignment,
+            observation,
+            parameters,
+            state,
+            side=side,
+            stop=stop,
+        )
+        if target_replacement is not None:
+            return target_replacement
+
         confirmation: dict[str, bool] = {}
         add_steps = list(
             dict(
@@ -2464,6 +2503,73 @@ class LongMomentumStrategyEngine:
                 metadata={"reentry_pullback": evidence},
             )
         return None
+
+    def _structural_target_replacement_result(
+        self,
+        assignment: StrategyAssignment,
+        observation: StrategyObservation,
+        parameters: dict[str, Any],
+        state: dict[str, Any],
+        *,
+        side: str,
+        stop: float,
+    ) -> StrategyEngineResult | None:
+        policy = dict(parameters["protection"].get("profit_ladder") or {})
+        if (
+            not bool(policy.get("enabled", True))
+            or str(policy.get("selection_mode") or "") != "second_next_level"
+            or observation.source_timeframe != "1s"
+            or "bar_close" not in observation.evaluation_events
+        ):
+            return None
+        macd_open, macd_evidence = _exact_positive_open_macd(observation, "1s")
+        if not macd_open:
+            return None
+        existing = [
+            float(value)
+            for value in state.get("structural_profit_targets") or ()
+            if isinstance(value, (int, float)) and float(value) > 0
+        ]
+        if not existing:
+            return None
+        current_target = existing[0]
+        candidate_targets = _structural_profit_targets(
+            observation,
+            parameters,
+            stop=stop,
+            side=side,
+            luld_target=_luld_target(observation, parameters, side=side),
+        )
+        if not candidate_targets:
+            return None
+        candidate = candidate_targets[0]
+        advances = (
+            candidate > current_target + 1e-9
+            if side == "long"
+            else candidate < current_target - 1e-9
+        )
+        if not advances:
+            return None
+        state["structural_profit_targets"] = [candidate]
+        state["last_profit_target_replaced_at"] = observation.observed_at.isoformat()
+        return self._result(
+            assignment,
+            observation,
+            "replace_profit_target",
+            "structural_profit_target_advanced",
+            observation.qmd_score,
+            _confirmation_confidence(observation),
+            state,
+            AssignmentStatus.MANAGING,
+            quantity=observation.position_quantity,
+            profit_target_price=candidate,
+            metadata={
+                "previous_profit_target": current_target,
+                "profit_target": candidate,
+                "macd": macd_evidence,
+                "ratchet_clock": "completed_1s_bar",
+            },
+        )
 
     def _target_replenishment_result(
         self,
@@ -2709,7 +2815,7 @@ class LongMomentumStrategyEngine:
             },
         )
         intents: tuple[StrategyIntent, ...] = ()
-        if action in {"enter_long", "add_long", "reduce_long", "take_profit", "exit", "enter_short", "add_short", "reduce_short", "cover"}:
+        if action in {"enter_long", "add_long", "reduce_long", "take_profit", "exit", "enter_short", "add_short", "reduce_short", "cover", "replace_profit_target"}:
             resolved_order_intent = dict(order_intent or {})
             if "time_in_force" in resolved_order_intent or "outside_rth" in resolved_order_intent:
                 raise ValueError(
@@ -3263,6 +3369,25 @@ class AssignedLongMomentumStrategy:
             if assignment.assignment_id != assignment_id:
                 continue
             state = dict(assignment.state)
+            if str(intent.action) == "replace_profit_target":
+                previous = float(intent.metadata.get("previous_profit_target") or 0)
+                if previous > 0:
+                    state["structural_profit_targets"] = [previous]
+                state["last_intent_rejection"] = {
+                    "intent_id": intent.intent_id,
+                    "reasons": list(reasons),
+                    "rejected_at": event_time.isoformat(),
+                    "execution_role": "profit_target_replacement",
+                }
+                updated = replace(
+                    assignment,
+                    status=AssignmentStatus.MANAGING,
+                    state=state,
+                    updated_at=event_time,
+                )
+                self._assignments[key] = updated
+                self._campaigns.register(updated)
+                return
             if str(intent.metadata.get("execution_role") or "") == "target_replenishment":
                 restored = float(
                     state.pop("target_replenishment_pending_quantity", 0.0)
@@ -3898,9 +4023,10 @@ def _decision_reason_detail(
             f"gain={float(metadata.get('gain_pct') or 0):+.3f}%."
         )
     labels = {
-        "entry_confirmed": "Enter: latched liquidity, executable spread/activity, VWAP, strengthening positive/open one-second MACD, and Unified resistance acceptance all passed.",
-        "reentry_confirmed": "Re-enter: executable spread/activity, VWAP, strengthening positive/open one-second MACD, and a fresh Unified resistance recovery all passed.",
+        "entry_confirmed": "Enter: latched liquidity, executable spread/activity, VWAP, exact positive/open one-second MACD (line > signal, line > 0, signal > 0), and Unified resistance acceptance all passed.",
+        "reentry_confirmed": "Re-enter: executable spread/activity, VWAP, exact positive/open one-second MACD (line > signal, line > 0, signal > 0), and a fresh Unified resistance recovery all passed.",
         "target_profit_replenishment": "Profit-target replenishment: a target filled, price made a causal pullback, Unified support held, and VWAP plus exact positive/open one-second MACD remained valid.",
+        "structural_profit_target_advanced": "Target update: a completed one-second candle held above another qualifying level while MACD remained positive and open; the live profit target advanced to the second next qualifying level.",
         "failure_to_extend_partial": "Profit reduction: price stopped extending while QMD flow deteriorated; sell half and keep the protected remainder.",
         "qmd_flow_geometry_exhaustion": "Exit: QMD flow structure weakened with confident flow-price divergence.",
         "loss_of_confirmed_higher_low": "Exit: price lost the latest causally confirmed one-second higher low.",
@@ -4879,7 +5005,7 @@ def _structural_profit_targets(
     side: str,
     luld_target: float | None,
 ) -> list[float]:
-    """Build a variable causal ladder from important, high-probability levels."""
+    """Build causal targets from level-book resistance/support evidence."""
     policy = dict(parameters["protection"].get("profit_ladder") or {})
     if not bool(policy.get("enabled", True)):
         return [luld_target] if luld_target is not None else []
@@ -4905,6 +5031,10 @@ def _structural_profit_targets(
         confidence = _level_metric(dict(row), "confidence")
         reaction = _level_metric(dict(row), "reaction_probability")
         reversal = _level_metric(dict(row), "reversal_probability")
+        hold = _level_metric(dict(row), "hold_probability")
+        break_probability = _level_metric(dict(row), "break_probability")
+        if "break_probability" not in row:
+            break_probability = max(0.0, 1.0 - hold)
         score = _profit_level_score(dict(row))
         candidate = row.get("price")
         if candidate is None:
@@ -4915,10 +5045,20 @@ def _structural_profit_targets(
             and confidence >= float(policy.get("minimum_level_confidence") or 0.0)
             and reaction >= float(policy.get("minimum_reaction_probability") or 0.0)
             and reversal >= float(policy.get("minimum_reversal_probability") or 0.0)
+            and hold >= float(policy.get("minimum_hold_probability") or 0.0)
+            and break_probability
+            <= float(policy.get("maximum_break_probability", 1.0))
             and score >= float(policy.get("minimum_composite_score") or 0.0)
         ):
             candidate_value = float(candidate)
-            if maximum_price is None or candidate_value <= maximum_price:
+            favorable_side = (
+                candidate_value > entry
+                if side == "long"
+                else candidate_value < entry
+            )
+            if favorable_side and (
+                maximum_price is None or candidate_value <= maximum_price
+            ):
                 ranked_candidates.append((score, candidate_value))
     if not ranked_candidates:
         nearest_price = (
@@ -4970,7 +5110,18 @@ def _structural_profit_targets(
                 return
 
     selection_mode = str(policy.get("selection_mode") or "ranked")
-    if selection_mode == "highest_price_below_cap":
+    if selection_mode == "second_next_level":
+        ordered_prices = sorted(
+            {candidate for _, candidate in ranked_candidates},
+            reverse=side == "short",
+        )
+        target_ordinal = max(1, int(policy.get("target_level_ordinal") or 2))
+        selected = (
+            [ordered_prices[target_ordinal - 1]]
+            if len(ordered_prices) >= target_ordinal
+            else []
+        )
+    elif selection_mode == "highest_price_below_cap":
         ordered_prices = sorted(
             {candidate for _, candidate in ranked_candidates},
             reverse=side == "long",

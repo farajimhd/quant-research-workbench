@@ -580,6 +580,11 @@ class TradingRuntime:
                     account_id=account_id,
                     event=event,
                 )
+                if str(approved_intent.action) == "replace_profit_target":
+                    self.portfolio.release_intent(
+                        approved_intent.intent_id,
+                        reason="profit_target_replaced",
+                    )
                 if order_group.filled_quantity > 0:
                     # Historical orders may fill synchronously from the
                     # decision's already-observed causal quote. Project that

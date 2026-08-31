@@ -1367,7 +1367,22 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertEqual(
             default_profile["parameters"]["protection"]["profit_ladder"]["selection_mode"],
-            "highest_price_below_cap",
+            "second_next_level",
+        )
+        self.assertEqual(
+            default_profile["parameters"]["protection"]["profit_ladder"]["target_level_ordinal"],
+            2,
+        )
+        self.assertEqual(
+            default_profile["parameters"]["protection"]["profit_ladder"]["minimum_hold_probability"],
+            0.85,
+        )
+        self.assertEqual(
+            default_profile["parameters"]["structural_entry"]["minimum_hold_probability"],
+            0.80,
+        )
+        self.assertFalse(
+            default_profile["parameters"]["structural_entry"]["require_swing_high_frontier"]
         )
         self.assertFalse(default_profile["parameters"]["profit_pocket"]["enabled"])
         self.assertEqual(default_profile["action_policy_ids"], [])
@@ -1591,15 +1606,19 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertEqual(
             profile["parameters"]["structural_entry"]["minimum_level_age_ms"],
-            120_000,
+            0,
         )
         self.assertEqual(
             profile["parameters"]["structural_entry"]["minimum_hold_probability"],
-            0.75,
+            0.80,
+        )
+        self.assertEqual(
+            profile["parameters"]["structural_entry"]["maximum_break_probability"],
+            1.0,
         )
         self.assertEqual(
             profile["parameters"]["structural_entry"]["maximum_breakout_extension_bps"],
-            75.0,
+            500.0,
         )
         self.assertEqual(
             profile["parameters"]["liquidity_admission"]["minimum_current_trade_rate_10s"],
@@ -1628,7 +1647,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(
             profile["parameters"]["entry_momentum_confirmation"],
             {
-                "enabled": True,
+                "enabled": False,
                 "timeframe": "1s",
                 "histogram_lookback_ms": 5_000,
                 "minimum_histogram_increase": 0.0,

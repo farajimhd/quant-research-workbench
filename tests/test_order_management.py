@@ -628,6 +628,88 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
             await manager.close()
             journal.close()
 
+    async def test_partial_entry_repair_restores_target_and_stop_as_one_oca_pair(self) -> None:
+        broker = ReconciliationRaceBroker(position_quantity=10.0, live_orders=[])
+        with tempfile.TemporaryDirectory() as directory:
+            manager, journal = await self._manager(
+                directory,
+                broker,
+                policy=BrokerCommunicationPolicy(),
+            )
+            broker._positions["DU1"][123] = _Position(
+                conid=123,
+                ticker="TEST",
+                quantity=10.0,
+                avg_cost=10.0,
+            )
+            profile = ProtectionProfile(
+                profile_id="structural-single-target",
+                revision=1,
+                slices=(
+                    ProtectionSlice(
+                        "position",
+                        1.0,
+                        StopRule(StopRuleType.FIXED_PRICE, price=9.8),
+                        profit_target_price=10.5,
+                    ),
+                ),
+            )
+            entry_intent = replace(
+                intent(quantity=100),
+                intent_id="generic-partial-entry",
+                protection_profile=profile,
+                profit_target_price=10.5,
+            )
+            entry_request = OrderRequest(
+                acctId="DU1",
+                conid=123,
+                cOID="generic-partial-entry",
+                ticker="TEST",
+                orderType="LMT",
+                side="BUY",
+                quantity=100,
+                price=10.01,
+            )
+            group = _ManagedOrderGroup(
+                group_id="generic-partial-entry-group",
+                intent=entry_intent,
+                account_id="DU1",
+                plan=StrategyOrderPlan((entry_request,)),
+                state=OrderManagementState.PARTIALLY_FILLED,
+                created_at=NOW,
+                updated_at=NOW,
+                orders=[entry_request],
+                broker_order_ids=["100"],
+                broker_order_request_indexes={"100": 0},
+                broker_order_roles={"100": "entry"},
+                filled_by_broker_order={"100": 10.0},
+                filled_quantity=10.0,
+                remaining_quantity=90.0,
+            )
+            manager._groups[group.group_id] = group
+            manager._group_by_broker_id["100"] = group.group_id
+
+            result = await manager.reconcile_protection(group)
+
+            self.assertEqual(result["required_quantity"], 10.0)
+            self.assertEqual(result["protected_quantity"], 0)
+            self.assertEqual(result["actions"][0]["action"], "place_missing_oca_protection")
+            target, stop = group.orders[-2:]
+            self.assertEqual((target.orderType, target.side, target.quantity), ("LMT", "SELL", 10.0))
+            self.assertEqual(target.price, 10.5)
+            self.assertTrue(target.isSingleGroup)
+            self.assertEqual((stop.orderType, stop.side, stop.quantity), ("STP", "SELL", 10.0))
+            self.assertEqual(stop.auxPrice, 9.8)
+            self.assertTrue(stop.isSingleGroup)
+            repaired_roles = {
+                group.broker_order_roles[order_id]
+                for order_id in group.broker_order_ids
+                if order_id != "100"
+            }
+            self.assertEqual(repaired_roles, {"profit_target", "protective_stop"})
+            await manager.close()
+            journal.close()
+
     async def test_sliced_entry_reconciliation_uses_only_causally_processed_slice(self) -> None:
         prefix = "strategy-1-v1-"
         slice_sizes = (60.0, 60.0, 60.0, 59.0, 59.0)

@@ -442,7 +442,7 @@ def strategy_canvas_payload(*, as_of: datetime, ticker: str) -> dict[str, Any]:
     for record in records:
         if record.entity_type not in {"strategy_evaluation", "signal"}:
             continue
-        if record.payload.get("action") not in {"enter_long", "add_long", "reduce_long", "take_profit", "exit", "hold", "wait"}:
+        if record.payload.get("action") not in {"enter_long", "add_long", "reduce_long", "take_profit", "exit", "replace_profit_target", "hold", "wait"}:
             continue
         metadata = dict(record.payload.get("metadata") or {})
         decisions.append(

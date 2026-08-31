@@ -246,7 +246,7 @@ def taxonomy_catalog_payload() -> dict[str, Any]:
         "evaluation_modes": [item.value for item in EvaluationMode],
         "update_triggers": [item.value for item in UpdateTrigger],
         "publication_cadences": [item.value for item in PublicationCadence],
-        "strategy_actions": ["enter_long", "add_long", "reduce_long", "take_profit", "exit", "hold", "wait"],
+        "strategy_actions": ["enter_long", "add_long", "reduce_long", "take_profit", "exit", "replace_profit_target", "hold", "wait"],
         "strategy_input_roles": ["trigger", "confirmation", "veto", "sizing", "exit", "context"],
     }
 

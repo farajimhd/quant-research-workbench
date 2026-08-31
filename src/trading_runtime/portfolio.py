@@ -23,6 +23,7 @@ from src.trading_runtime.signals import StrategyIntent
 
 ENTRY_ACTIONS = {"enter_long", "add_long", "enter_short", "add_short"}
 REDUCTION_ACTIONS = {"reduce_long", "take_profit", "exit", "reduce_short", "cover"}
+PROTECTION_ACTIONS = {"replace_profit_target"}
 
 
 class PortfolioDecisionStatus(StrEnum):
@@ -926,6 +927,7 @@ class PortfolioManagementEngine:
         reasons: list[str] = []
         entry = intent.action in ENTRY_ACTIONS
         reduction = intent.action in REDUCTION_ACTIONS
+        protection_update = intent.action in PROTECTION_ACTIONS
         control_mode = state.control_mode
         if self.control_plane is not None:
             control_mode = PortfolioControlMode(
@@ -942,7 +944,7 @@ class PortfolioManagementEngine:
             reasons.append("entries_paused")
         if entry and self.allocation_identity in state.disabled_strategy_allocations:
             reasons.append("strategy_allocation_disabled")
-        if not entry and not reduction:
+        if not entry and not reduction and not protection_update:
             reasons.append("unsupported_portfolio_action")
         if state.sync_state not in {PortfolioSyncState.SYNCHRONIZED, PortfolioSyncState.DEGRADED}:
             reasons.append("account_not_synchronized")
@@ -1059,6 +1061,11 @@ class PortfolioManagementEngine:
             approved = min(requested, available)
             if approved <= 0:
                 reasons.append("no_broker_position_to_reduce")
+        elif protection_update:
+            available = abs(current_quantity)
+            approved = min(requested, available)
+            if approved <= 0:
+                reasons.append("no_broker_position_to_protect")
         else:
             approved, capacity_reasons = self._entry_capacity(intent, state, requested, base_price)
             reasons.extend(capacity_reasons)

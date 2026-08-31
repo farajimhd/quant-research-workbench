@@ -39,6 +39,7 @@ StrategyAction = Literal[
     "add_short",
     "reduce_short",
     "cover",
+    "replace_profit_target",
     "hold",
     "wait",
 ]

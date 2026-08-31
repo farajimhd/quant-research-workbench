@@ -15,11 +15,12 @@ use crate::source::{
 };
 use crate::structure_checkpoint::{
     advance_historical_structure_snapshot, advance_structure_checkpoint,
-    materialize_structure_snapshot, rebuild_structure_checkpoint,
-    HistoricalStructureSessionRegistry, StructureCheckpointAdvanceRequest,
-    StructureCheckpointAdvanceResponse, StructureCheckpointRebuildRequest,
-    StructureCheckpointRebuildResponse, StructureSnapshotRequest,
-    StructureSnapshotSessionAdvanceRequest, StructureSnapshotSessionAdvanceResponse,
+    materialize_structure_snapshot, materialize_structure_snapshot_from_seed,
+    rebuild_structure_checkpoint, HistoricalStructureSessionRegistry,
+    StructureCheckpointAdvanceRequest, StructureCheckpointAdvanceResponse,
+    StructureCheckpointRebuildRequest, StructureCheckpointRebuildResponse,
+    StructureSnapshotRequest, StructureSnapshotSessionAdvanceRequest,
+    StructureSnapshotSessionAdvanceResponse,
 };
 use crate::watchlist_timeline::{
     validate_plan, HistoricalWatchlistPlan, HistoricalWatchlistPlanValidation,
@@ -473,9 +474,17 @@ async fn materialize_generic_structure_snapshot(
                 })),
             )
         })?;
-    let response = materialize_structure_snapshot(&state.config, &state.source, request)
+    let prepared_seed = state
+        .cache
+        .structure_session_seed(&request.ticker, request.as_of)
         .await
         .map_err(structure_checkpoint_advancement_error)?;
+    let response = if let Some(seed) = prepared_seed {
+        materialize_structure_snapshot_from_seed(&state.config, &state.source, request, seed).await
+    } else {
+        materialize_structure_snapshot(&state.config, &state.source, request).await
+    }
+    .map_err(structure_checkpoint_advancement_error)?;
     let session_id = state
         .structure_snapshot_sessions
         .register(response.checkpoint.clone())

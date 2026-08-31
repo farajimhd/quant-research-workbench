@@ -1,6 +1,7 @@
 use crate::config::HistoricalGatewayConfig;
 use crate::source::{
-    EventWindow, HistoricalCursor, HistoricalEventSource, SessionVwapSeed, SourceRevision,
+    EventWindow, HistoricalCursor, HistoricalEventSource, PersistedStructureCheckpointSeed,
+    SessionVwapSeed, SourceRevision,
 };
 use crate::structure_checkpoint::{
     persisted_structure_book_seed, rebuild_trade_structure_checkpoint,
@@ -553,6 +554,39 @@ enum IndicatorWork {
 }
 
 impl HistoricalDerivedCache {
+    /// Return the checkpoint used to seed the current extended-hours session.
+    ///
+    /// Chart preparation and causal strategy snapshots must share this seed.
+    /// Re-querying the daily checkpoint tables after preparation duplicated the
+    /// 180-day level-book warm-up on the first actionable strategy frame.
+    pub async fn structure_session_seed(
+        &self,
+        ticker: &str,
+        as_of: DateTime<Utc>,
+    ) -> Result<Option<PersistedStructureCheckpointSeed>, String> {
+        let session_start = session_anchor(as_of)?;
+        let authority_start =
+            structure_rebuild_start(session_start, self.config.structure_book_lookback_days)?;
+        let ticker = ticker.trim().to_ascii_uppercase();
+        let revision = self
+            .source
+            .source_revision(&EventWindow {
+                start: authority_start,
+                end: session_start,
+                tickers: vec![ticker.clone()],
+            })
+            .await?;
+        Ok(self
+            .structure_seed_checkpoint(&ticker, session_start)
+            .await?
+            .map(|checkpoint| PersistedStructureCheckpointSeed {
+                authority_start,
+                checkpoint,
+                source_plan_hash: revision.source_plan_hash,
+                source_revision_token: revision.token,
+            }))
+    }
+
     pub fn new(config: HistoricalGatewayConfig, source: HistoricalEventSource) -> Self {
         let max_concurrent_builds = config.cache_max_concurrent_builds;
         let max_concurrent_fetches = config.cache_max_concurrent_fetches;

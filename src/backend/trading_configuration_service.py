@@ -4019,17 +4019,25 @@ def _default_draft() -> dict[str, Any]:
     }
     system_profiles[0]["parameters"]["structural_entry"] = {
         "enabled": True,
-        "minimum_salience": 0.45,
-        "minimum_confidence": 0.50,
-        "minimum_reaction_probability": 0.50,
-        "minimum_hold_probability": 0.75,
-        "minimum_independent_pivot_count": 2,
-        "minimum_level_age_ms": 120_000,
+        # Structural admission is ticker-independent and owned exclusively by
+        # the causal Unified Structural Level Book. Other level scores remain
+        # observable, but they do not silently veto a level that satisfies the
+        # configured hold/break contract.
+        "minimum_salience": 0.0,
+        "minimum_confidence": 0.0,
+        "minimum_reaction_probability": 0.0,
+        "minimum_hold_probability": 0.80,
+        "maximum_break_probability": 1.0,
+        "minimum_independent_pivot_count": 0,
+        "minimum_level_age_ms": 0,
         "acceptance_buffer_bps": 0.0,
         "acceptance_hold_ms": 15_000,
-        "maximum_breakout_extension_bps": 75.0,
-        "require_swing_high_frontier": True,
-        "require_active_resistance_frontier": True,
+        # VWAP extension remains the shared anti-chase authority. The
+        # structural trigger must not reject a valid already-cleared level
+        # with a second, tighter and contradictory distance ceiling.
+        "maximum_breakout_extension_bps": 500.0,
+        "require_swing_high_frontier": False,
+        "require_active_resistance_frontier": False,
     }
     system_profiles[0]["parameters"]["liquidity_admission"] = {
         "enabled": True,
@@ -4043,27 +4051,22 @@ def _default_draft() -> dict[str, Any]:
         "minimum_current_trade_rate_10s": 5.0,
         "minimum_current_trade_rate_60s": 2.0,
         "minimum_vwap_extension_bps": 100.0,
-        # The first campaign entry must clear the noisy near-VWAP opening
-        # structure. Once a real breakout has established the campaign,
-        # pullback re-entries may occur closer to VWAP without discarding the
-        # 05:02 and 06:52 SUGP continuation regimes.
+        # The first campaign entry must clear noisy near-VWAP opening
+        # structure. Once a breakout establishes the campaign, pullback
+        # re-entries may occur closer to VWAP.
         "minimum_initial_vwap_extension_bps": 250.0,
         "minimum_reentry_vwap_extension_bps": 100.0,
         "maximum_vwap_extension_bps": 500.0,
-        # SUGP UAT showed that a causal structural break at 04:10:28 ET was
-        # executable at 55.4 bps but the former 50 bps ceiling delayed entry
-        # until 04:10:32.  Keep this an instantaneous (non-latched) execution
-        # check and admit up to 60 bps for the small-cap premarket profile.
+        # This is an instantaneous (non-latched) execution check for volatile
+        # small-cap premarket names.
         "maximum_spread_bps": 60.0,
     }
     system_profiles[0]["parameters"]["entry_momentum_confirmation"] = {
-        # A positive/open MACD regime is necessary but not sufficient for a
-        # breakout.  Require its one-second histogram to be stronger than its
-        # causal value five seconds earlier.  SUGP UAT separates the durable
-        # 04:10, 05:02, 06:52 and 07:10 impulses from contracting false breaks
-        # without tightening the liquidity, VWAP, or level-quality gates that
-        # those strong campaigns need.
-        "enabled": True,
+        # The causal one-second MACD contract is complete: line above signal,
+        # with both values positive. Do not add a second histogram-slope gate;
+        # that would reject valid entries even though the agreed MACD regime
+        # is open.
+        "enabled": False,
         "timeframe": "1s",
         "histogram_lookback_ms": 5_000,
         "minimum_histogram_increase": 0.0,
@@ -4083,11 +4086,14 @@ def _default_draft() -> dict[str, Any]:
     }
     system_profiles[0]["parameters"]["protection"]["profit_ladder"].update({
         "maximum_targets": 1,
-        "selection_mode": "highest_price_below_cap",
+        "selection_mode": "second_next_level",
+        "target_level_ordinal": 2,
         "minimum_level_strength": 0.0,
         "minimum_level_confidence": 0.0,
         "minimum_reaction_probability": 0.0,
         "minimum_reversal_probability": 0.0,
+        "minimum_hold_probability": 0.85,
+        "maximum_break_probability": 1.0,
         "minimum_composite_score": 0.0,
         "premarket_maximum_gain_pct": 200.0,
     })

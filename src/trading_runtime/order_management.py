@@ -679,6 +679,12 @@ class OrderManagementEngine:
         plan = self.planner(working_intent, account_id, event)
         if not plan.orders:
             raise ValueError(f"Strategy intent produced no broker order plan: {working_intent.action}")
+        if str(working_intent.action) == "replace_profit_target":
+            return await self._replace_existing_profit_targets(
+                working_intent,
+                account_id=account_id,
+                plan=plan,
+            )
         await self._require_shortability(working_intent, plan)
         quote = self._execution_quote(working_intent)
         tactic = execution_tactic(
@@ -1449,6 +1455,109 @@ class OrderManagementEngine:
         self._transition(group, OrderManagementState.ACKNOWLEDGED, {"event": "submission_acknowledged"})
         if group.tactic and len(group.tactic.steps) > 1 and group.broker_order_ids:
             group.reprice_task = asyncio.create_task(self._run_repricing(group))
+
+    async def _replace_existing_profit_targets(
+        self,
+        intent: StrategyIntent,
+        *,
+        account_id: str,
+        plan: StrategyOrderPlan,
+    ) -> OrderGroupSnapshot:
+        """Reprice every live target child without disturbing its OCA protection."""
+
+        target_price = float(plan.orders[0].price or 0)
+        if target_price <= 0:
+            raise ValueError("Profit-target replacement requires a positive limit price")
+        live_by_id = {
+            str(order.orderId): order
+            for order in await self.broker.live_orders()
+            if order.order_status in OPEN_ORDER_STATUSES
+        }
+        candidates: list[tuple[_ManagedOrderGroup, str, int, OrderRequest, LiveOrder]] = []
+        for group in self._groups.values():
+            if group.account_id != account_id:
+                continue
+            if group.intent.ticker.upper() != intent.ticker.upper():
+                continue
+            if str(group.intent.action) not in {
+                "enter_long", "enter_short", "add_long", "add_short",
+            }:
+                continue
+            for broker_order_id in group.broker_order_ids:
+                if group.broker_order_roles.get(broker_order_id) != "profit_target":
+                    continue
+                live = live_by_id.get(str(broker_order_id))
+                request_index = group.broker_order_request_indexes.get(
+                    str(broker_order_id)
+                )
+                if live is None or request_index is None:
+                    continue
+                candidates.append(
+                    (group, str(broker_order_id), request_index, group.orders[request_index], live)
+                )
+        capacity = sum(float(live.remainingQuantity) for *_, live in candidates)
+        if not candidates or capacity + 1e-9 < float(intent.quantity):
+            raise ValueError(
+                "Cannot replace profit target: live target protection does not cover "
+                "the current strategy position"
+            )
+        responses: list[dict[str, Any]] = []
+        touched: dict[str, _ManagedOrderGroup] = {}
+        async with self._command_lane(account_id):
+            for group, broker_order_id, request_index, request, _ in candidates:
+                replacement = replace(
+                    request,
+                    price=target_price,
+                    raw={
+                        **dict(request.raw or {}),
+                        "canonical_metadata": {
+                            **dict(request.raw.get("canonical_metadata") or {}),
+                            "reason": str(
+                                intent.metadata.get("reason_code")
+                                or "structural_profit_target_advanced"
+                            ),
+                            "replacement_intent_id": intent.intent_id,
+                            "target_price": target_price,
+                        },
+                    },
+                )
+                response = await self.broker.modify_order(
+                    account_id,
+                    broker_order_id,
+                    replacement,
+                )
+                responses.extend(response)
+                group.orders[request_index] = replacement
+                touched[group.group_id] = group
+        if not touched:
+            raise ValueError("Profit-target replacement changed no live order")
+        for group in touched.values():
+            self._transition(
+                group,
+                group.state,
+                {
+                    "event": "profit_target_replaced",
+                    "replacement_intent_id": intent.intent_id,
+                    "target_price": target_price,
+                },
+            )
+            if self.state_callback is not None:
+                await self.state_callback(group.snapshot(self.policy.version))
+        self._record(
+            "broker",
+            "profit_target_replaced",
+            intent.intent_id,
+            account_id,
+            intent.event_time,
+            {
+                "ticker": intent.ticker,
+                "quantity": intent.quantity,
+                "target_price": target_price,
+                "source_group_ids": sorted(touched),
+                "broker_response": responses,
+            },
+        )
+        return next(iter(touched.values())).snapshot(self.policy.version)
 
     async def _modify_existing_protected_exit(
         self,
@@ -2339,31 +2448,114 @@ class OrderManagementEngine:
                     raw=_protective_repair_raw(group.orders[0].raw),
                 )
             if repair is not None:
-                async with self._command_lane(group.account_id):
-                    response = await self.broker.place_orders(group.account_id, [repair])
-                request_index = len(group.orders)
-                group.orders.append(repair)
-                group.plan = _extend_managed_plan(
-                    group.plan,
-                    group.orders,
-                    slice_id="repair-backstop",
+                target_prices = [
+                    float(item.profit_target_price)
+                    for item in profile.slices
+                    if item.profit_target_price is not None
+                    and float(item.profit_target_price) > 0
+                ]
+                target_price = (
+                    target_prices[0]
+                    if target_prices
+                    else float(group.intent.profit_target_price or 0)
                 )
-                if repair.cOID:
-                    self._group_by_client_id[repair.cOID] = group.group_id
-                for row in response:
+                valid_target = bool(
+                    target_price > 0
+                    and (
+                        target_price > float(group.intent.reference_price)
+                        if position_side == "long"
+                        else target_price < float(group.intent.reference_price)
+                    )
+                )
+                repairs = [repair]
+                if valid_target:
+                    target_raw = {
+                        **dict(group.orders[0].raw or {}),
+                        "canonical_metadata": {
+                            **dict(
+                                dict(group.orders[0].raw or {}).get(
+                                    "canonical_metadata"
+                                )
+                                or {}
+                            ),
+                            "execution_role": "profit_target",
+                            "reason": "restore_position_profit_target",
+                        },
+                    }
+                    repairs.insert(
+                        0,
+                        OrderRequest(
+                            acctId=group.account_id,
+                            conid=group.orders[0].conid,
+                            secType=group.orders[0].secType,
+                            cOID=(
+                                f"{self._protective_order_prefix()}"
+                                f"repair-target-{uuid4().hex[:12]}"
+                            ),
+                            ticker=group.orders[0].ticker,
+                            orderType="LMT",
+                            side="SELL" if position_side == "long" else "BUY",
+                            quantity=missing,
+                            tif=group.orders[0].tif,
+                            outsideRTH=group.orders[0].outsideRTH,
+                            price=target_price,
+                            listingExchange=group.orders[0].listingExchange,
+                            isSingleGroup=True,
+                            raw=target_raw,
+                        ),
+                    )
+                    repair = replace(repair, isSingleGroup=True)
+                    repairs[-1] = repair
+                async with self._command_lane(group.account_id):
+                    response = await self.broker.place_orders(group.account_id, repairs)
+                for request, role in zip(
+                    repairs,
+                    (
+                        ("profit_target", "protective_stop")
+                        if valid_target
+                        else ("protective_stop",)
+                    ),
+                    strict=True,
+                ):
+                    request_index = len(group.orders)
+                    group.orders.append(request)
+                    group.plan = _extend_managed_plan(
+                        group.plan,
+                        group.orders,
+                        slice_id="repair-protection",
+                    )
+                    if request.cOID:
+                        self._group_by_client_id[request.cOID] = group.group_id
+                for row, request, role in zip(
+                    response,
+                    repairs,
+                    (
+                        ("profit_target", "protective_stop")
+                        if valid_target
+                        else ("protective_stop",)
+                    ),
+                    strict=True,
+                ):
                     order_id = str(row.get("order_id") or row.get("orderId") or "")
                     if not order_id:
                         continue
                     if order_id not in group.broker_order_ids:
                         group.broker_order_ids.append(order_id)
                     self._group_by_broker_id[order_id] = group.group_id
-                    group.broker_order_roles[order_id] = "protective_stop"
-                    group.broker_order_request_indexes[order_id] = request_index
+                    group.broker_order_roles[order_id] = role
+                    group.broker_order_request_indexes[order_id] = group.orders.index(
+                        request
+                    )
                 actions.append(
                     {
-                        "action": "place_missing_backstop",
+                        "action": (
+                            "place_missing_oca_protection"
+                            if valid_target
+                            else "place_missing_backstop"
+                        ),
                         "quantity": repair.quantity,
                         "stop_price": stop_price,
+                        "target_price": target_price if valid_target else None,
                         "response": response,
                     }
                 )

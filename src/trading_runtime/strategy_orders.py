@@ -56,6 +56,30 @@ class IbkrStrategyOrderPlanner:
             raise ValueError("Order planning requires at least one executable share")
         prefix = f"{strategy_id[:14]}-v{strategy_revision}-{uuid4().hex[:12]}"
         position_side = str(intent.metadata.get("position_side") or "long").lower()
+        if intent.action == "replace_profit_target":
+            target = float(intent.profit_target_price or 0)
+            short_position = position_side == "short"
+            if target <= 0 or (
+                target >= intent.reference_price
+                if short_position
+                else target <= intent.reference_price
+            ):
+                raise ValueError("Replacement profit target is on the wrong side of the market")
+            return StrategyOrderPlan(
+                orders=(
+                    _order(
+                        account_id,
+                        instrument,
+                        f"{prefix}-target-replacement",
+                        "BUY" if short_position else "SELL",
+                        "LMT",
+                        quantity,
+                        intent,
+                        price=target,
+                        grouped=True,
+                    ),
+                ),
+            )
         if intent.action == "exit":
             side = "BUY" if position_side == "short" else "SELL"
             price = _aggressive_limit(intent.reference_price, side, limit_offset_bps)

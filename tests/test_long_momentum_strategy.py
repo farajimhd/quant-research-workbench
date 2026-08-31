@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from src.trading_runtime.domain import InstrumentContract, TradingMode
+from src.market_engine.events import QuoteEvent
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.strategy_engine import (
     AssignedLongMomentumStrategy,
@@ -752,6 +753,50 @@ class LongMomentumStrategyTests(unittest.TestCase):
         )
         self.assertEqual(mature.evaluation.signals[0].action, "enter_long")
 
+    def test_entry_uses_only_level_book_boundaries_at_or_above_hold_threshold(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["structural_entry"].update({
+            "enabled": True,
+            "minimum_salience": 0.0,
+            "minimum_confidence": 0.0,
+            "minimum_reaction_probability": 0.0,
+            "minimum_hold_probability": 0.80,
+            "maximum_break_probability": 1.0,
+            "minimum_independent_pivot_count": 0,
+            "minimum_level_age_ms": 0,
+            "require_swing_high_frontier": False,
+            "require_active_resistance_frontier": False,
+        })
+        levels = (
+            {"unified_level_id": "weak", "side": -1, "upper": 100.50, "hold_probability": 0.79},
+            {"unified_level_id": "qualified", "side": -1, "upper": 101.00, "hold_probability": 0.80},
+        )
+        engine = LongMomentumStrategyEngine()
+        waiting = engine.evaluate(
+            assignment(parameters=parameters, state={"last_price": 100.40}),
+            confirmed_observation(
+                price=100.60,
+                swing_high=100.50,
+                structural_resistance_upper=100.50,
+                structural_resistance_levels=levels,
+            ),
+        )
+        self.assertEqual(waiting.evaluation.signals[0].action, "wait")
+        self.assertEqual(waiting.state["pending_entry_resistance"]["boundary"], 101.0)
+
+        entered = engine.evaluate(
+            assignment(parameters=parameters, state=dict(waiting.state)),
+            confirmed_observation(
+                observed_at=NOW + timedelta(seconds=1),
+                price=101.10,
+                swing_high=102.0,
+                structural_resistance_upper=102.0,
+                structural_resistance_levels=levels,
+            ),
+        )
+        self.assertEqual(entered.evaluation.signals[0].action, "enter_long")
+        self.assertEqual(entered.state["breakout_level"], 101.0)
+
     def test_unified_entry_can_tighten_to_a_new_closer_level(self) -> None:
         parameters = default_long_momentum_parameters()
         parameters["structural_entry"].update({"enabled": True})
@@ -842,6 +887,39 @@ class LongMomentumStrategyTests(unittest.TestCase):
         )
         self.assertEqual(advanced.evaluation.signals[0].action, "enter_long")
         self.assertEqual(advanced.state["breakout_level"], 3.56)
+
+    def test_unified_entry_accepts_highest_qualified_level_already_cleared_on_admission(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["structural_entry"].update({
+            "enabled": True,
+            "maximum_breakout_extension_bps": 500.0,
+        })
+        entered = LongMomentumStrategyEngine().evaluate(
+            assignment(
+                parameters=parameters,
+                state={"liquidity_admitted_at": (NOW - timedelta(seconds=1)).isoformat()},
+            ),
+            confirmed_observation(
+                price=3.56,
+                vwap=3.48,
+                structural_resistance_levels=({
+                    "unified_level_id": 7,
+                    "side": -1,
+                    "price": 3.51,
+                    "lower": 3.50,
+                    "upper": 3.52,
+                    "hold_probability": 0.90,
+                    "salience": 0.9,
+                    "confidence": 0.9,
+                    "reaction_probability": 0.9,
+                },),
+            ),
+        )
+
+        self.assertEqual(entered.evaluation.signals[0].action, "enter_long")
+        trigger = entered.evaluation.signals[0].metadata["unified_structural_trigger"]
+        self.assertEqual(trigger["reason"], "unified_resistance_already_cleared")
+        self.assertEqual(trigger["reference_price"], 3.52)
 
     def test_unified_entry_expires_a_stale_accepted_level_after_the_book_advances(self) -> None:
         parameters = default_long_momentum_parameters()
@@ -1202,6 +1280,90 @@ class LongMomentumStrategyTests(unittest.TestCase):
             ),
         )
         self.assertEqual(result.evaluation.signals[0].metadata["profit_targets"], [3.95])
+
+    def test_second_next_target_filters_level_book_by_hold_probability(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["protection"]["profit_ladder"].update({
+            "maximum_targets": 1,
+            "selection_mode": "second_next_level",
+            "target_level_ordinal": 2,
+            "minimum_level_strength": 0.0,
+            "minimum_level_confidence": 0.0,
+            "minimum_reaction_probability": 0.0,
+            "minimum_reversal_probability": 0.0,
+            "minimum_hold_probability": 0.85,
+            "maximum_break_probability": 1.0,
+            "minimum_composite_score": 0.0,
+        })
+        result = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=parameters),
+            confirmed_observation(
+                price=101.0,
+                structural_resistance_levels=(
+                    {"side": -1, "price": 101.5, "hold_probability": 0.84},
+                    {"side": -1, "price": 102.0, "hold_probability": 0.85},
+                    {"side": -1, "price": 103.0, "hold_probability": 0.90},
+                    {"side": -1, "price": 104.0, "hold_probability": 0.95},
+                ),
+            ),
+        )
+        self.assertEqual(result.evaluation.signals[0].metadata["profit_targets"], [103.0])
+
+    def test_target_advances_only_on_completed_one_second_bar_with_open_macd(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["protection"]["profit_ladder"].update({
+            "maximum_targets": 1,
+            "selection_mode": "second_next_level",
+            "target_level_ordinal": 2,
+            "minimum_level_strength": 0.0,
+            "minimum_level_confidence": 0.0,
+            "minimum_reaction_probability": 0.0,
+            "minimum_reversal_probability": 0.0,
+            "minimum_hold_probability": 0.85,
+            "maximum_break_probability": 1.0,
+            "minimum_composite_score": 0.0,
+        })
+        managed = assignment(
+            parameters=parameters,
+            status=AssignmentStatus.MANAGING,
+            state={
+                "active_stop": 99.0,
+                "initial_stop": 99.0,
+                "breakout_level": 100.5,
+                "entry_reference_price": 101.0,
+                "entry_at": NOW.isoformat(),
+                "high_water_price": 101.0,
+                "structural_profit_targets": [103.0],
+            },
+        )
+        levels = tuple(
+            {"side": -1, "price": price, "hold_probability": 0.90}
+            for price in (102.0, 103.0, 104.0, 105.0)
+        )
+        common = dict(
+            price=102.1,
+            position_quantity=100,
+            average_price=101.0,
+            structural_resistance_levels=levels,
+            source_values={
+                "indicator.macd.line@1s": {"value": 0.4},
+                "indicator.macd.signal@1s": {"value": 0.2},
+            },
+            evaluation_events=("indicator_update", "bar_close"),
+        )
+        not_one_second = LongMomentumStrategyEngine().evaluate(
+            managed,
+            confirmed_observation(source_timeframe="10s", **common),
+        )
+        self.assertEqual(not_one_second.evaluation.signals[0].action, "hold")
+
+        advanced = LongMomentumStrategyEngine().evaluate(
+            managed,
+            confirmed_observation(source_timeframe="1s", **common),
+        )
+        self.assertEqual(advanced.evaluation.signals[0].action, "replace_profit_target")
+        self.assertEqual(advanced.evaluation.intents[0].profit_target_price, 104.0)
+        self.assertEqual(advanced.evaluation.intents[0].quantity, 100)
 
     def test_background_evaluation_emits_autonomous_causal_lineage(self) -> None:
         result = LongMomentumStrategyEngine().evaluate(
@@ -2636,6 +2798,28 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertTrue(plan.orders)
         self.assertTrue(all(order.quantity == 143 for order in plan.orders))
 
+    def test_profit_target_replacement_plan_is_not_an_entry_or_sale_at_market(self) -> None:
+        entry = LongMomentumStrategyEngine().evaluate(assignment(), confirmed_observation())
+        intent = replace(
+            entry.evaluation.intents[0],
+            action="replace_profit_target",
+            quantity=100,
+            profit_target_price=104.0,
+            protection_profile=None,
+            invalidation_price=None,
+        )
+        plan = IbkrStrategyOrderPlanner().plan(
+            account_id="DU123",
+            instrument=InstrumentContract("ibkr:265598", 265598, "AAPL", "STK", "USD"),
+            intent=intent,
+            strategy_id=STRATEGY_ID,
+            strategy_revision=STRATEGY_REVISION,
+        )
+        self.assertEqual(len(plan.orders), 1)
+        self.assertEqual(plan.orders[0].orderType, "LMT")
+        self.assertEqual(plan.orders[0].side, "SELL")
+        self.assertEqual(plan.orders[0].price, 104.0)
+
     def test_full_exit_replaces_existing_protection_with_one_oca_group(self) -> None:
         managed = assignment(
             status=AssignmentStatus.MANAGING,
@@ -2696,6 +2880,114 @@ class LongMomentumStrategyTests(unittest.TestCase):
 
 
 class LongMomentumRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_completed_one_second_close_reprices_live_target_in_place(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["protection"]["profit_ladder"].update({
+            "maximum_targets": 1,
+            "selection_mode": "second_next_level",
+            "target_level_ordinal": 2,
+            "minimum_level_strength": 0.0,
+            "minimum_level_confidence": 0.0,
+            "minimum_reaction_probability": 0.0,
+            "minimum_reversal_probability": 0.0,
+            "minimum_hold_probability": 0.85,
+            "maximum_break_probability": 1.0,
+            "minimum_composite_score": 0.0,
+        })
+        levels = tuple(
+            {"side": -1, "price": price, "hold_probability": 0.90}
+            for price in (102.0, 103.0, 104.0, 105.0)
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            assigned = assignment(parameters=parameters)
+            strategy = AssignedLongMomentumStrategy([assigned])
+            broker = SimulatedBrokerAdapter(["DU123"], mode=TradingMode.BACKTEST)
+            runtime = TradingRuntime(
+                RunConfig(
+                    mode=RunMode.BACKTEST,
+                    strategy_id=STRATEGY_ID,
+                    strategy_revision=STRATEGY_REVISION,
+                    account_ids=("DU123",),
+                    anchor_date=date(2026, 7, 24),
+                    run_id="target-replacement-runtime",
+                ),
+                broker,
+                strategy,
+                journal,
+                intent_planner=RuntimeIbkrStrategyOrderPlanner(
+                    {"AAPL": InstrumentContract("ibkr:265598", 265598, "AAPL", "STK", "USD")},
+                    strategy_id=STRATEGY_ID,
+                    strategy_revision=STRATEGY_REVISION,
+                ),
+            )
+            await runtime.initialize()
+            await broker.on_market_event(
+                QuoteEvent(
+                    ask_exchange=11,
+                    ask_price=101.01,
+                    ask_size=1_000,
+                    bid_exchange=12,
+                    bid_price=100.99,
+                    bid_size=1_000,
+                    conditions=(),
+                    indicators=(),
+                    ingest_ts=NOW - timedelta(milliseconds=100),
+                    raw={"conid": 265598},
+                    sequence=1,
+                    source="test",
+                    tape=3,
+                    ticker="AAPL",
+                    ts=NOW - timedelta(milliseconds=100),
+                )
+            )
+            await runtime.process_strategy_observation(
+                confirmed_observation(structural_resistance_levels=levels)
+            )
+            initial_targets = [
+                order for order in await broker.live_orders()
+                if order.orderType == "LMT" and bool(order.parentId)
+            ]
+            self.assertEqual([order.price for order in initial_targets], [103.0])
+
+            await runtime.process_strategy_observation(
+                confirmed_observation(
+                    observed_at=NOW + timedelta(seconds=1),
+                    price=102.1,
+                    bid=102.09,
+                    ask=102.10,
+                    position_quantity=100,
+                    average_price=101.0,
+                    structural_resistance_levels=levels,
+                    source_values={
+                        "indicator.macd.line@1s": {"value": 0.4},
+                        "indicator.macd.signal@1s": {"value": 0.2},
+                    },
+                    source_timeframe="1s",
+                    evaluation_events=("indicator_update", "bar_close"),
+                )
+            )
+            replaced_targets = [
+                order for order in await broker.live_orders()
+                if order.orderType == "LMT" and bool(order.parentId)
+            ]
+            self.assertEqual(
+                [order.price for order in replaced_targets],
+                [104.0],
+                [
+                    (
+                        row.entity_type,
+                        row.payload.get("action"),
+                        row.payload.get("reason"),
+                        row.payload.get("rejection_reasons"),
+                    )
+                    for row in journal.records("target-replacement-runtime")
+                    if row.category in {"strategy", "strategy_decision"}
+                ],
+            )
+            await runtime.finish()
+            journal.close()
+
     async def test_profit_target_fill_replenishes_same_integer_quantity_on_pullback(self) -> None:
         parameters = default_long_momentum_parameters()
         parameters["reentry"]["target_replenishment"]["enabled"] = True

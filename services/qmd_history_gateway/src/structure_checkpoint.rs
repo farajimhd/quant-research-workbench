@@ -1,6 +1,7 @@
 use crate::config::HistoricalGatewayConfig;
 use crate::source::{
-    EventWindow, HistoricalEventSource, MarketSourcePlan, MarketSourceTier, SourceRevision,
+    EventWindow, HistoricalEventSource, MarketSourcePlan, MarketSourceTier,
+    PersistedStructureCheckpointSeed, SourceRevision,
 };
 use chrono::{DateTime, Datelike, Duration, TimeZone, Timelike, Utc};
 use chrono_tz::America::New_York;
@@ -641,6 +642,72 @@ pub async fn materialize_structure_snapshot(
             complete: rebuilt.complete,
         });
     };
+    let advanced = advance_structure_checkpoint_inner(
+        config,
+        source,
+        StructureCheckpointAdvanceRequest {
+            schema_version: STRUCTURE_CHECKPOINT_ADVANCEMENT_SCHEMA_VERSION,
+            checkpoint: seed.checkpoint,
+            as_of: request.as_of,
+            expected_source_plan_hash: None,
+            event_limit: request.event_limit,
+        },
+        false,
+    )
+    .await?;
+    let mut engine = GenericStructureEngine::new(&ticker);
+    engine.seed_checkpoint(&advanced.checkpoint);
+    let snapshot = engine.snapshot(request.as_of);
+    Ok(StructureSnapshotResponse {
+        schema_version: STRUCTURE_SNAPSHOT_SCHEMA_VERSION,
+        ticker,
+        as_of: request.as_of,
+        seed_authority_start: seed.authority_start,
+        seed_source_plan_hash: seed.source_plan_hash,
+        seed_source_revision_token: seed.source_revision_token,
+        event_count: advanced.event_count,
+        advanced_event_count: advanced.advanced_event_count,
+        source_plan: advanced.source_plan,
+        source_revision_before: advanced.source_revision_before,
+        source_revision_after: advanced.source_revision_after,
+        checkpoint: advanced.checkpoint,
+        snapshot,
+        complete: advanced.complete,
+    })
+}
+
+/// Materialize a causal snapshot from the exact session seed already used by
+/// the prepared chart/derived cache. This prevents replay from rebuilding the
+/// same historical level book when a ticker first becomes actionable.
+pub async fn materialize_structure_snapshot_from_seed(
+    config: &HistoricalGatewayConfig,
+    source: &HistoricalEventSource,
+    request: StructureSnapshotRequest,
+    seed: PersistedStructureCheckpointSeed,
+) -> Result<StructureSnapshotResponse, String> {
+    if request.schema_version != STRUCTURE_SNAPSHOT_SCHEMA_VERSION {
+        return Err(format!(
+            "invalid Generic Structure snapshot schema_version {}; expected {}",
+            request.schema_version, STRUCTURE_SNAPSHOT_SCHEMA_VERSION
+        ));
+    }
+    let ticker = request.ticker.trim().to_ascii_uppercase();
+    if ticker.is_empty()
+        || ticker.len() > 32
+        || !ticker
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+    {
+        return Err("invalid Generic Structure snapshot ticker".to_string());
+    }
+    if seed.checkpoint.sym.trim().to_ascii_uppercase() != ticker {
+        return Err(
+            "prepared Generic Structure session seed belongs to another ticker".to_string(),
+        );
+    }
+    if request.as_of > Utc::now() + Duration::seconds(1) {
+        return Err("Generic Structure snapshot as_of cannot be in the future".to_string());
+    }
     let advanced = advance_structure_checkpoint_inner(
         config,
         source,
