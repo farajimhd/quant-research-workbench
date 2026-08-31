@@ -1564,6 +1564,11 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(plan["campaign_lifecycle"]["reentry_cooldown_ms"], 0)
         self.assertTrue(profile["lifecycle"]["reentry"]["unlimited_attempts"])
         self.assertEqual(profile["lifecycle"]["reentry"]["maximum_attempts"], 0)
+        self.assertEqual(profile["lifecycle"]["reentry"]["pullback_reclaim"], {
+            "enabled": True,
+            "minimum_pullback_atr_multiple": 0.50,
+            "minimum_pullback_bps": 25.0,
+        })
         self.assertEqual(profile["lifecycle"]["trading_behavior"]["eligible_sessions"], ["premarket"])
         self.assertEqual(profile["lifecycle"]["trading_behavior"]["entry_cutoff_time"], "09:29:59")
         self.assertEqual(profile["lifecycle"]["trading_behavior"]["flatten_time"], "09:29:59")

@@ -33,7 +33,7 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 17
+STRATEGY_REVISION = 18
 
 RULE_COMPARATORS = {
     "above_by_bps",
@@ -493,6 +493,11 @@ def default_long_momentum_parameters() -> dict[str, Any]:
             "maximum_attempts": 3,
             "unlimited_attempts": False,
             "require_new_confirmation": True,
+            "pullback_reclaim": {
+                "enabled": False,
+                "minimum_pullback_atr_multiple": 0.50,
+                "minimum_pullback_bps": 25.0,
+            },
             "target_replenishment": {
                 "enabled": False,
                 "minimum_pullback_atr_multiple": 0.50,
@@ -648,6 +653,13 @@ def resolve_long_momentum_parameters(overrides: dict[str, Any] | None = None) ->
         raise ValueError("Unsupported profit-pocket trigger")
     if int(parameters["reentry"]["cooldown_ms"]) < 0:
         raise ValueError("Re-entry cooldown cannot be negative")
+    pullback_reclaim = dict(
+        parameters["reentry"].get("pullback_reclaim") or {}
+    )
+    if float(pullback_reclaim.get("minimum_pullback_atr_multiple") or 0) < 0:
+        raise ValueError("Re-entry pullback ATR multiple cannot be negative")
+    if float(pullback_reclaim.get("minimum_pullback_bps") or 0) < 0:
+        raise ValueError("Re-entry pullback basis points cannot be negative")
     required_signal_stream_id = str(
         parameters["reentry"].get("require_new_signal_stream_id") or ""
     ).strip()
@@ -1447,20 +1459,6 @@ class LongMomentumStrategyEngine:
                 AssignmentStatus.COMPLETED,
             )
 
-        # Structural acceptance is an event in the watched campaign, not a
-        # side-effect of whichever confirmation gate happens to finish last.
-        # Arm one causal frontier, allow only a newly observed closer frontier
-        # to tighten it, and latch its fresh cross before liquidity, VWAP, and
-        # MACD can return early. Later frames may enter while that acceptance
-        # remains above the same boundary.
-        unified_trigger: dict[str, Any] | None = None
-        if bool(dict(parameters.get("structural_entry") or {}).get("enabled", False)):
-            unified_trigger = _unified_entry_trigger(
-                observation,
-                parameters,
-                state,
-            )
-
         replenishment = dict(reentry.get("target_replenishment") or {})
         entitlement = float(state.get("target_replenishment_quantity") or 0)
         if (
@@ -1477,6 +1475,30 @@ class LongMomentumStrategyEngine:
             )
             if replenishment_result is not None:
                 return replenishment_result
+
+        if reentries:
+            pullback_result = self._regular_reentry_pullback_result(
+                assignment,
+                observation,
+                parameters,
+                state,
+            )
+            if pullback_result is not None:
+                return pullback_result
+
+        # Structural acceptance is an event in the watched campaign, not a
+        # side-effect of whichever confirmation gate happens to finish last.
+        # Arm one causal frontier, allow only a newly observed closer frontier
+        # to tighten it, and latch its fresh cross before liquidity, VWAP, and
+        # MACD can return early. Later frames may enter while that acceptance
+        # remains above the same boundary.
+        unified_trigger: dict[str, Any] | None = None
+        if bool(dict(parameters.get("structural_entry") or {}).get("enabled", False)):
+            unified_trigger = _unified_entry_trigger(
+                observation,
+                parameters,
+                state,
+            )
 
         liquidity_policy = dict(parameters.get("liquidity_admission") or {})
         if bool(liquidity_policy.get("enabled", False)):
@@ -1713,6 +1735,12 @@ class LongMomentumStrategyEngine:
         )
         state.pop("accepted_entry_resistance", None)
         state.pop("pending_entry_resistance", None)
+        for field_name in (
+            "reentry_pullback_peak_price",
+            "reentry_pullback_low_price",
+            "reentry_pullback_confirmed_at",
+        ):
+            state.pop(field_name, None)
         return self._result(
             assignment,
             observation,
@@ -2127,6 +2155,73 @@ class LongMomentumStrategyEngine:
             state, AssignmentStatus.MANAGING, invalidation_price=stop,
             metadata={"confirmation": confirmation, "gain_pct": gain_pct},
         )
+
+    def _regular_reentry_pullback_result(
+        self,
+        assignment: StrategyAssignment,
+        observation: StrategyObservation,
+        parameters: dict[str, Any],
+        state: dict[str, Any],
+    ) -> StrategyEngineResult | None:
+        policy = dict(
+            dict(parameters.get("reentry") or {}).get("pullback_reclaim") or {}
+        )
+        if not bool(policy.get("enabled", False)):
+            return None
+        peak = max(
+            float(state.get("reentry_pullback_peak_price") or 0),
+            observation.price,
+        )
+        low = min(
+            float(state.get("reentry_pullback_low_price") or observation.price),
+            observation.price,
+        )
+        state["reentry_pullback_peak_price"] = peak
+        state["reentry_pullback_low_price"] = low
+        pullback_required = max(
+            observation.volatility
+            * float(policy.get("minimum_pullback_atr_multiple") or 0),
+            peak * float(policy.get("minimum_pullback_bps") or 0) / 10_000.0,
+        )
+        pullback = peak - low
+        evidence = {
+            "peak_price": peak,
+            "low_price": low,
+            "last_price": observation.price,
+            "pullback": pullback,
+            "pullback_required": pullback_required,
+        }
+        if not state.get("reentry_pullback_confirmed_at"):
+            if pullback_required <= 0 or pullback < pullback_required:
+                return self._result(
+                    assignment,
+                    observation,
+                    "wait",
+                    "waiting_for_reentry_pullback",
+                    0.0,
+                    _confirmation_confidence(observation),
+                    state,
+                    AssignmentStatus.REENTRY_COOLDOWN,
+                    metadata={"reentry_pullback": evidence},
+                )
+            state["reentry_pullback_confirmed_at"] = observation.observed_at.isoformat()
+            # A structural acceptance observed before the pullback cannot
+            # authorize the next campaign. Re-arm from the pullback low so the
+            # next order requires a causal post-pullback reclaim.
+            state.pop("accepted_entry_resistance", None)
+            state.pop("pending_entry_resistance", None)
+            return self._result(
+                assignment,
+                observation,
+                "wait",
+                "waiting_for_reentry_reclaim",
+                0.0,
+                _confirmation_confidence(observation),
+                state,
+                AssignmentStatus.REENTRY_COOLDOWN,
+                metadata={"reentry_pullback": evidence},
+            )
+        return None
 
     def _target_replenishment_result(
         self,
@@ -3203,6 +3298,13 @@ class AssignedLongMomentumStrategy:
                     state["last_exit_at"] = getattr(
                         snapshot, "updated_at", datetime.now(timezone.utc)
                     ).isoformat()
+                    state["reentry_pullback_peak_price"] = float(
+                        state.get("last_price") or 0
+                    )
+                    state.pop("reentry_pullback_low_price", None)
+                    state.pop("reentry_pullback_confirmed_at", None)
+                    state.pop("accepted_entry_resistance", None)
+                    state.pop("pending_entry_resistance", None)
                     status = AssignmentStatus.REENTRY_COOLDOWN
                 else:
                     status = AssignmentStatus.COMPLETED
@@ -3519,6 +3621,10 @@ def _decision_reason_detail(
         detail = dict(metadata.get("target_replenishment") or {})
         failed = ", ".join(str(value) for value in detail.get("failed") or [])
         return f"Hold: profit target filled; replenishment is armed but waiting — {failed or 'pullback confirmation unavailable'}."
+    if reason == "waiting_for_reentry_pullback":
+        return "Wait: the prior campaign is flat; waiting for the configured ATR/basis-point pullback before another entry can arm."
+    if reason == "waiting_for_reentry_reclaim":
+        return "Wait: the post-exit pullback is confirmed; waiting for a fresh causal Unified resistance reclaim with positive/open one-second MACD."
     if reason == "target_replenishment_fill_pending":
         return "Hold: a profit-target replenishment order is working; duplicate replenishment is prohibited."
     if reason == "waiting_for_renewed_early_squeeze":

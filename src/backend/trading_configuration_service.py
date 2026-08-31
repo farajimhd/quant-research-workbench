@@ -1434,6 +1434,9 @@ def _default_strategy_lifecycle(parameters: dict[str, Any]) -> dict[str, Any]:
             "require_new_confirmation": bool(
                 reentry.get("require_new_confirmation", True)
             ),
+            "pullback_reclaim": deepcopy(
+                dict(reentry.get("pullback_reclaim") or {})
+            ),
             "rules": deepcopy(initial_rules),
             "capital_request": _default_capital_request("mandate_fraction", 0.20),
             "order_intent": _default_order_intent("adaptive_urgent"),
@@ -3954,6 +3957,15 @@ def _default_draft() -> dict[str, Any]:
     # scanner occurrence that may never be emitted during continuation.
     squeeze_lifecycle["reentry"]["require_new_signal_stream_id"] = ""
     squeeze_lifecycle["reentry"]["after_protective_exit"] = True
+    squeeze_lifecycle["reentry"]["pullback_reclaim"] = {
+        # Re-entry is unlimited, but it is not an immediate chase. Each flat
+        # campaign must first form a causal pullback and then reclaim a
+        # qualifying Unified resistance while the exact 1-second MACD regime
+        # is positive and open.
+        "enabled": True,
+        "minimum_pullback_atr_multiple": 0.50,
+        "minimum_pullback_bps": 25.0,
+    }
     squeeze_lifecycle["reentry"]["rules"] = {
         "opportunity": deepcopy(squeeze_lifecycle["initial_entry"]["opportunity"]),
         "confirmation": deepcopy(squeeze_lifecycle["initial_entry"]["confirmation"]),

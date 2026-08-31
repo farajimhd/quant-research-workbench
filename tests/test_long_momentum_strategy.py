@@ -392,6 +392,91 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(entered.evaluation.signals[0].action, "enter_long")
         self.assertEqual(entered.state["breakout_level"], 101.2)
 
+    def test_regular_reentry_requires_pullback_then_fresh_structural_reclaim(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["structural_entry"]["enabled"] = True
+        parameters["reentry"].update({
+            "cooldown_ms": 0,
+            "require_new_confirmation": False,
+            "pullback_reclaim": {
+                "enabled": True,
+                "minimum_pullback_atr_multiple": 0.50,
+                "minimum_pullback_bps": 25.0,
+            },
+        })
+        engine = LongMomentumStrategyEngine()
+        waiting = assignment(
+            parameters=parameters,
+            status=AssignmentStatus.REENTRY_COOLDOWN,
+            state={
+                "reentries": 1,
+                "last_exit_at": (NOW - timedelta(seconds=1)).isoformat(),
+                "last_price": 101.0,
+                "reentry_pullback_peak_price": 101.0,
+            },
+        )
+
+        shallow = engine.evaluate(
+            waiting,
+            confirmed_observation(
+                price=100.90,
+                volatility=0.40,
+                structural_resistance_levels=(),
+            ),
+        )
+        self.assertEqual(
+            shallow.evaluation.signals[0].reason,
+            "waiting_for_reentry_pullback",
+        )
+        self.assertAlmostEqual(
+            shallow.evaluation.signals[0].metadata["reentry_pullback"][
+                "pullback_required"
+            ],
+            0.2525,
+        )
+
+        pulled_back = engine.evaluate(
+            assignment(
+                parameters=parameters,
+                status=AssignmentStatus.REENTRY_COOLDOWN,
+                state=dict(shallow.state),
+            ),
+            confirmed_observation(
+                observed_at=NOW + timedelta(seconds=1),
+                price=100.70,
+                volatility=0.40,
+                structural_resistance_levels=(),
+            ),
+        )
+        self.assertEqual(
+            pulled_back.evaluation.signals[0].reason,
+            "waiting_for_reentry_reclaim",
+        )
+
+        reclaimed = engine.evaluate(
+            assignment(
+                parameters=parameters,
+                status=AssignmentStatus.REENTRY_COOLDOWN,
+                state=dict(pulled_back.state),
+            ),
+            confirmed_observation(
+                observed_at=NOW + timedelta(seconds=2),
+                price=101.01,
+                structural_resistance_levels=({
+                    "unified_level_id": 8,
+                    "side": -1,
+                    "lower": 100.90,
+                    "upper": 101.00,
+                    "salience": 0.9,
+                    "confidence": 0.9,
+                    "reaction_probability": 0.9,
+                },),
+            ),
+        )
+        self.assertEqual(reclaimed.evaluation.signals[0].action, "enter_long")
+        self.assertEqual(reclaimed.evaluation.signals[0].reason, "reentry_confirmed")
+        self.assertNotIn("reentry_pullback_confirmed_at", reclaimed.state)
+
     def test_unified_entry_crosses_the_merged_overlapping_band_upper_edge(self) -> None:
         parameters = default_long_momentum_parameters()
         parameters["structural_entry"].update({"enabled": True})
@@ -2605,6 +2690,40 @@ class LongMomentumRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated.status, AssignmentStatus.REENTRY_COOLDOWN)
         self.assertEqual(updated.state["reentries"], 1)
         self.assertEqual(updated.state["last_exit_at"], NOW.isoformat())
+
+    async def test_flat_exit_rearms_regular_reentry_pullback_lifecycle(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["reentry"]["after_protective_exit"] = True
+        assigned = assignment(
+            parameters=parameters,
+            status=AssignmentStatus.EXIT_PENDING,
+            state={
+                "last_price": 4.25,
+                "accepted_entry_resistance": {"boundary": 4.20},
+                "pending_entry_resistance": {"boundary": 4.30},
+                "reentry_pullback_confirmed_at": NOW.isoformat(),
+            },
+        )
+        strategy = AssignedLongMomentumStrategy([assigned])
+
+        await strategy.on_order_group_update(
+            SimpleNamespace(
+                action="exit",
+                assignment_id=assigned.assignment_id,
+                fill_role="protective_exit",
+                reentry_after_fill=True,
+                state="filled",
+                updated_at=NOW,
+            ),
+            aggregate_position_quantity=0,
+        )
+
+        updated = strategy.assignments()[0]
+        self.assertEqual(updated.status, AssignmentStatus.REENTRY_COOLDOWN)
+        self.assertEqual(updated.state["reentry_pullback_peak_price"], 4.25)
+        self.assertNotIn("reentry_pullback_confirmed_at", updated.state)
+        self.assertNotIn("accepted_entry_resistance", updated.state)
+        self.assertNotIn("pending_entry_resistance", updated.state)
 
     async def test_partial_managed_exit_keeps_campaign_exit_pending(self) -> None:
         assigned = assignment(
