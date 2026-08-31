@@ -4049,7 +4049,10 @@ def _default_draft() -> dict[str, Any]:
         "minimum_trade_rate_10s": 1.0,
         "minimum_trade_rate_60s": 0.5,
         "minimum_current_trade_rate_10s": 5.0,
-        "minimum_current_trade_rate_60s": 2.0,
+        # Require sustained participation as well as a short burst. A weak
+        # tape can briefly clear the ten-second rate while remaining too thin
+        # to enter and manage a whole-account small-cap position.
+        "minimum_current_trade_rate_60s": 5.0,
         "minimum_vwap_extension_bps": 100.0,
         # The first campaign entry must clear noisy near-VWAP opening
         # structure. Once a breakout establishes the campaign, pullback

@@ -1626,7 +1626,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertEqual(
             profile["parameters"]["liquidity_admission"]["minimum_current_trade_rate_60s"],
-            2.0,
+            5.0,
         )
         self.assertEqual(
             profile["parameters"]["liquidity_admission"]["minimum_vwap_extension_bps"],
