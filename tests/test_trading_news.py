@@ -35,19 +35,19 @@ class TradingNewsTests(unittest.TestCase):
         self.assertNotIn("source", payload)
         sql = query_mock.call_args_list[0].args[0]
         self.assertIn("has(n.tickers, 'AAPL')", sql)
-        self.assertIn("benzinga_news_rendered_v2", sql)
-        self.assertIn("r.source_revision_key=n.source_revision_key", sql)
+        self.assertIn("benzinga_news_rendered_v3", sql)
+        self.assertNotIn("r.source_revision_key=n.source_revision_key", sql)
         self.assertIn("n.published_date >= toDate(window_start)", sql)
         self.assertIn("PREWHERE published_date >= toDate('2026-07-09')", sql)
         self.assertEqual(sql.count("FROM `q_live`.`benzinga_news_event_v2` FINAL"), 1)
-        self.assertEqual(sql.count("FROM `q_live`.`benzinga_news_rendered_v2` FINAL"), 1)
+        self.assertEqual(sql.count("FROM `q_live`.`benzinga_news_rendered_v3` FINAL"), 1)
         self.assertIn("arrayMap(value -> upperUTF8(trimBoth(value)), n.tickers)", sql)
         self.assertNotIn("ticker_counts AS", sql)
         self.assertIn("positionCaseInsensitiveUTF8", sql)
         self.assertIn("ifNull(n.canonical_news_id, '')", sql)
         self.assertIn("ifNull(n.provider_article_id, '')", sql)
         self.assertIn("arrayStringConcat(n.tickers, ' ')", sql)
-        self.assertIn("ifNull(r.source_count, 0) > 0", sql)
+        self.assertIn("ifNull(r.body_status, 'missing') IN ('complete', 'partial')", sql)
         self.assertIn("n.published_at_utc <= window_end", sql)
         self.assertIn("AS news_kind", sql)
         self.assertIn("AS news_scope", sql)
@@ -103,8 +103,8 @@ class TradingNewsTests(unittest.TestCase):
 
         self.assertEqual(payload["rows"][0]["canonical_news_id"], source_id)
         self.assertEqual(payload["ticker_options"], ["AYTU"])
-        self.assertNotIn("ifNull(r.source_count, 0) > 0", query_mock.call_args_list[0].args[0])
-        self.assertNotIn("ifNull(r.source_count, 0) > 0", query_mock.call_args_list[1].args[0])
+        self.assertNotIn("ifNull(r.body_status, 'missing') IN ('complete', 'partial')", query_mock.call_args_list[0].args[0])
+        self.assertNotIn("ifNull(r.body_status, 'missing') IN ('complete', 'partial')", query_mock.call_args_list[1].args[0])
 
     @patch("src.backend.app.clickhouse_status_query")
     def test_exact_source_identity_bypasses_window_and_toolbar_refinements(self, query_mock) -> None:
@@ -134,7 +134,7 @@ class TradingNewsTests(unittest.TestCase):
         main_sql = query_mock.call_args_list[0].args[0]
         self.assertNotIn("has(n.tickers, 'AAPL')", main_sql)
         self.assertNotIn("l.ticker = 'AAPL'", main_sql)
-        self.assertNotIn("ifNull(r.source_count, 0) > 0", main_sql)
+        self.assertNotIn("ifNull(r.body_status, 'missing') IN ('complete', 'partial')", main_sql)
         self.assertNotIn("countIf(l.content_role = 'primary_event')", main_sql)
 
     @patch("src.backend.app.clickhouse_status_query")

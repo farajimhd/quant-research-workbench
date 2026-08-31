@@ -78,7 +78,12 @@
       "launcher": "scripts/run_news_gateway.ps1",
       "readiness": {"kind": "service", "accepted_statuses": ["running", "idle"]},
       "arguments": ["-CondaEnv", "ml4t", "-PythonExe", "{python}"],
-      "environment": {"NEWS_TERMINAL_RICH_ENABLED": "true", "NEWS_TERMINAL_SCREEN_ENABLED": "true"},
+      "environment": {
+        "NEWS_TERMINAL_RICH_ENABLED": "true",
+        "NEWS_TERMINAL_SCREEN_ENABLED": "true",
+        "NEWS_BENZINGA_BODY_V3_SHADOW_ENABLED": "true",
+        "NEWS_BENZINGA_BODY_V3_SHADOW_END_UTC": "2026-10-31T00:00:00Z"
+      },
       "start_priority": 20,
       "fingerprint_env": ["NEWS_GATEWAY_BIND", "NEWS_BENZINGA_BODY_V3_SHADOW_ENABLED", "NEWS_BENZINGA_BODY_V3_SHADOW_END_UTC"],
       "dependencies": [],

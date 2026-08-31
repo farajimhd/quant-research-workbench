@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from research.mlops.clickhouse import sql_string
 
 
-PLAN_VERSION = 1
+PLAN_VERSION = 2
 
 
 def intraday_histogram(
@@ -105,8 +105,8 @@ def today_rows(
             n.provider_tags,
             length(n.tickers) AS ticker_link_count,
             arraySort(n.tickers) AS ticker_link_sample,
-            ifNull(r.source_count, 0) > 0 AS has_body,
-            notEmpty(r.canonical_news_id) AND ifNull(r.source_count, 0) = 0 AS is_title_only,
+            ifNull(r.body_status, 'missing') IN ('complete', 'partial') AS has_body,
+            ifNull(r.body_status, 'missing') = 'missing' AS is_title_only,
             has(n.content_quality_flags, 'external_text') AS has_external_text,
             has(n.content_quality_flags, 'pdf_text') AS has_pdf,
             '' AS external_fetch_status,
@@ -115,13 +115,12 @@ def today_rows(
             0 AS body_chars,
             0 AS external_chars,
             0 AS pdf_chars,
-            lengthUTF8(ifNull(r.rendered_text, '')) AS full_text_chars,
-            substring(ifNull(r.rendered_text, ''), 1, 240) AS text_preview
+            lengthUTF8(ifNull(r.canonical_body_text, '')) AS full_text_chars,
+            substring(ifNull(r.canonical_body_text, ''), 1, 240) AS text_preview
         FROM `q_live`.`benzinga_news_event_v2` AS n FINAL
-        LEFT JOIN `q_live`.`benzinga_news_rendered_v2` AS r FINAL
+        LEFT JOIN `q_live`.`benzinga_news_rendered_v3` AS r FINAL
             ON r.published_date=n.published_date
             AND r.provider_article_id=n.provider_article_id
-            AND r.source_revision_key=n.source_revision_key
         WHERE n.published_at_utc >= window_start
           AND n.published_at_utc < window_end
         ORDER BY n.published_at_utc {direction}, n.provider_article_id {direction}

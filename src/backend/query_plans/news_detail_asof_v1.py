@@ -3,7 +3,7 @@ from __future__ import annotations
 from research.mlops.clickhouse import sql_string
 
 
-PLAN_VERSION = 1
+PLAN_VERSION = 2
 
 
 def service_article(canonical_news_id: str) -> str:
@@ -11,10 +11,10 @@ def service_article(canonical_news_id: str) -> str:
     return f"""
         SELECT
             n.* EXCEPT(published_at_utc, downloaded_at_utc, last_updated_at_utc, updated_at_utc),
-            ifNull(r.rendered_text, '') AS normalized_full_text,
-            ifNull(r.rendered_text_hash, '') AS text_hash,
+            ifNull(r.canonical_body_text, '') AS normalized_full_text,
+            ifNull(r.body_hash, '') AS text_hash,
             ifNull(r.source_count, 0) AS source_count,
-            ifNull(r.block_count, 0) AS block_count,
+            ifNull(r.included_block_count, 0) AS block_count,
             formatDateTime(n.published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc,
             formatDateTime(n.downloaded_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS downloaded_at_utc,
             if(
@@ -24,10 +24,9 @@ def service_article(canonical_news_id: str) -> str:
             ) AS last_updated_at_utc,
             formatDateTime(n.updated_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS updated_at_utc
         FROM `q_live`.`benzinga_news_event_v2` AS n FINAL
-        LEFT JOIN `q_live`.`benzinga_news_rendered_v2` AS r FINAL
+        LEFT JOIN `q_live`.`benzinga_news_rendered_v3` AS r FINAL
             ON r.published_date=n.published_date
             AND r.provider_article_id=n.provider_article_id
-            AND r.source_revision_key=n.source_revision_key
         WHERE n.canonical_news_id = {identity}
         LIMIT 1
         FORMAT JSONEachRow
@@ -79,12 +78,11 @@ def rendered_article(
     if not provider_article_id or not source_revision_key:
         raise ValueError("provider article identity is incomplete")
     return f"""
-        SELECT rendered_text AS text,
-               if(source_count = 0, 'title_only', 'rendered') AS render_status
-        FROM q_live.benzinga_news_rendered_v2 FINAL
+        SELECT canonical_body_text AS text,
+               body_status AS render_status
+        FROM q_live.benzinga_news_rendered_v3 FINAL
         PREWHERE published_date = toDate({sql_string(published_date)})
         WHERE provider_article_id = {sql_string(provider_article_id)}
-          AND source_revision_key = {sql_string(source_revision_key)}
         LIMIT 1
         FORMAT JSONEachRow
     """

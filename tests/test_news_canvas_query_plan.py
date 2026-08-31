@@ -43,7 +43,7 @@ class NewsCanvasQueryPlanTests(unittest.TestCase):
             set(plan.source_paths),
             {
                 "q_live.benzinga_news_event_v2",
-                "q_live.benzinga_news_rendered_v2",
+                "q_live.benzinga_news_rendered_v3",
                 "q_live.news_synthesis_v1",
             },
         )
@@ -66,7 +66,7 @@ class NewsCanvasQueryPlanTests(unittest.TestCase):
         )
         self.assertIn(f"canonical_news_id = '{source_id}'", page)
         self.assertNotIn("has(tickers, 'MSFT')", page)
-        self.assertNotIn("ifNull(r.source_count, 0) > 0", page)
+        self.assertNotIn("ifNull(r.body_status, 'missing') IN ('complete', 'partial')", page)
 
 
 if __name__ == "__main__":

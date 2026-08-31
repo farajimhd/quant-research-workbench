@@ -6,7 +6,7 @@ from research.mlops.clickhouse import quote_ident, sql_string
 
 
 QUERY_PLAN_ID = "news.canvas_asof.v1"
-QUERY_PLAN_VERSION = 1
+QUERY_PLAN_VERSION = 2
 
 
 def trading_news_queries(
@@ -32,7 +32,7 @@ def trading_news_queries(
 ) -> tuple[str, str]:
     database = "q_live"
     normalized_table = "benzinga_news_event_v2"
-    rendered_table = "benzinga_news_rendered_v2"
+    rendered_table = "benzinga_news_rendered_v3"
     start_sql = f"toDateTime64({sql_string(window_start.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
     end_sql = f"toDateTime64({sql_string(cutoff.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
     start_date_sql = sql_string(window_start.date().isoformat())
@@ -136,7 +136,7 @@ def trading_news_queries(
                 "positionCaseInsensitiveUTF8(concat("
                 "ifNull(n.canonical_news_id, ''), ' ', ifNull(n.provider_article_id, ''), ' ', "
                 "arrayStringConcat(n.tickers, ' '), ' ', ifNull(n.title, ''), ' ', "
-                "ifNull(r.rendered_text, ''), ' ', ifNull(n.author, ''), ' ', "
+                "ifNull(r.canonical_body_text, ''), ' ', ifNull(n.author, ''), ' ', "
                 f"ifNull(n.url_domain, '')), {escaped}) > 0"
             )
             filters.append(search_filter)
@@ -144,11 +144,11 @@ def trading_news_queries(
     # Exact source identity is authoritative. Completeness is presentation
     # metadata and must never make a known record undiscoverable.
     if safe_content == "full" and not exact_source_id:
-        filters.append("ifNull(r.source_count, 0) > 0")
-        facet_filters.append("ifNull(r.source_count, 0) > 0")
+        filters.append("ifNull(r.body_status, 'missing') IN ('complete', 'partial')")
+        facet_filters.append("ifNull(r.body_status, 'missing') IN ('complete', 'partial')")
     elif safe_content == "title" and not exact_source_id:
-        filters.append("ifNull(r.source_count, 0) = 0")
-        facet_filters.append("ifNull(r.source_count, 0) = 0")
+        filters.append("ifNull(r.body_status, 'missing') = 'missing'")
+        facet_filters.append("ifNull(r.body_status, 'missing') = 'missing'")
     ticker_links_sql = (
         "arraySort(arrayDistinct(arrayFilter(value -> notEmpty(value), "
         "arrayMap(value -> upperUTF8(trimBoth(value)), n.tickers))))"
@@ -239,11 +239,10 @@ def trading_news_queries(
             {classification_sql["evidence"]} AS classification_evidence,
             has(n.content_quality_flags, 'external_text') AS has_external_text,
             has(n.content_quality_flags, 'pdf_text') AS has_pdf,
-            ifNull(r.source_count, 0) = 0 AS is_title_only,
-            if(empty(ifNull(r.source_revision_key, '')), 'unrendered',
-               if(r.source_count = 0, 'title_only', 'rendered')) AS render_status,
-            lengthUTF8(ifNull(r.rendered_text, '')) AS full_text_chars,
-            substring(ifNull(r.rendered_text, ''), 1, 320) AS text_preview
+            ifNull(r.body_status, 'missing') = 'missing' AS is_title_only,
+            ifNull(r.body_status, 'missing') AS render_status,
+            lengthUTF8(ifNull(r.canonical_body_text, '')) AS full_text_chars,
+            substring(ifNull(r.canonical_body_text, ''), 1, 320) AS text_preview
         FROM
         (
             SELECT *
@@ -268,7 +267,6 @@ def trading_news_queries(
         ) AS r
             ON r.published_date=n.published_date
             AND r.provider_article_id=n.provider_article_id
-            AND r.source_revision_key=n.source_revision_key
         WHERE {where_sql}
         ORDER BY n.published_at_utc DESC, n.canonical_news_id DESC
         LIMIT {safe_limit + 1}
@@ -302,7 +300,6 @@ def trading_news_queries(
             ) AS r
                 ON r.published_date=n.published_date
                 AND r.provider_article_id=n.provider_article_id
-                AND r.source_revision_key=n.source_revision_key
             WHERE {facet_where_sql}
         )
         FORMAT JSONEachRow

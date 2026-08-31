@@ -129,6 +129,8 @@ def serving_feature_row(
     tickers = tuple(sorted({str(value).strip().upper() for value in source_row.get("tickers") or () if str(value).strip()}))
     history = dict(ticker_history or {})
     text = str(source_row.get("text") or source_row.get("title") or "")
+    body_status = str(source_row.get("body_status") or "").strip().casefold()
+    body_present = body_status not in {"", "missing"} if body_status else None
     return {
         "source_id": str(source_row["source_id"]),
         "published_at_text": published.isoformat(),
@@ -150,7 +152,11 @@ def serving_feature_row(
         "all_tickers_first_session": bool(history.get("all_tickers_first_session")),
         "any_ticker_news_within_5m": bool(history.get("any_ticker_news_within_5m")),
         "any_ticker_news_within_30m": bool(history.get("any_ticker_news_within_30m")),
-        **text_flags(text),
+        **text_flags(
+            text,
+            title=str(source_row.get("title") or "") if source_row.get("title") is not None else None,
+            body_present=body_present,
+        ),
     }
 
 

@@ -525,20 +525,20 @@ def run_control_action(
     if not table_exists(client, target.database, target.authority_table):
         raise RuntimeError("body authority table does not exist; run a full certified rebuild first")
     table = f"{quote_ident(target.database)}.{quote_ident(target.authority_table)}"
-    rows = client.execute(
+    rows = parse_json_each_rows(client.execute(
         f"SELECT * FROM {table} FINAL WHERE renderer_version={sql_string(BODY_RENDERER_VERSION)} FORMAT JSONEachRow"
-    ).split("\n")
+    ))
     if not rows:
         raise RuntimeError(f"no authority row for {BODY_RENDERER_VERSION}")
-    current = json.loads(rows[-1])
+    current = rows[-1]
     current_status = str(current.get("status") or "")
     if action == "promote" and current_status != "certified":
         raise RuntimeError(f"promotion requires certified status, found {current_status}")
     if action == "rollback" and current_status != "promoted":
         raise RuntimeError(f"rollback requires promoted status, found {current_status}")
-    active_rows = [json.loads(line) for line in client.execute(
+    active_rows = parse_json_each_rows(client.execute(
         f"SELECT * FROM {table} FINAL WHERE is_active=1 FORMAT JSONEachRow"
-    ).split("\n") if line.strip()]
+    ))
     previous_active = next(
         (str(row.get("renderer_version") or "") for row in active_rows if row.get("renderer_version") != BODY_RENDERER_VERSION),
         str(current.get("previous_active_renderer_version") or ""),

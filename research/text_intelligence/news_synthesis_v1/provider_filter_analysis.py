@@ -269,17 +269,24 @@ def extract_title(rendered_text: str) -> str:
     return first[6:].strip() if first.casefold().startswith("title:") else first
 
 
-def text_flags(rendered_text: str) -> dict[str, bool]:
-    title = extract_title(rendered_text)
+def text_flags(
+    rendered_text: str,
+    *,
+    title: str | None = None,
+    body_present: bool | None = None,
+) -> dict[str, bool]:
+    resolved_title = extract_title(rendered_text) if title is None else str(title).strip()
     bounded = rendered_text[:12_000]
     result = {
-        name: bool(pattern.search(title if name in {
+        name: bool(pattern.search(resolved_title if name in {
             "earnings_preview", "why_moving", "list_or_screener", "market_recap"
         } else bounded))
         for name, pattern in TEXT_PATTERNS.items()
     }
-    result["question_title"] = "?" in title
-    result["title_only"] = "\n" not in rendered_text.strip()
+    result["question_title"] = "?" in resolved_title
+    result["title_only"] = (
+        not body_present if body_present is not None else "\n" not in rendered_text.strip()
+    )
     return result
 
 

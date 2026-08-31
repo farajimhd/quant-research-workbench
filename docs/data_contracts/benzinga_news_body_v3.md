@@ -104,7 +104,7 @@ After a full certified rebuild, enable temporary live comparison with:
 
 ```text
 NEWS_BENZINGA_BODY_V3_SHADOW_ENABLED=1
-NEWS_BENZINGA_BODY_V3_SHADOW_END_UTC=2026-09-14T00:00:00Z
+NEWS_BENZINGA_BODY_V3_SHADOW_END_UTC=2026-10-31T00:00:00Z
 ```
 
 The end timestamp is mandatory: the shared writer stops shadow writes after it,
@@ -113,6 +113,10 @@ prevents permanent dual storage. The News Gateway preflight also requires a
 certified body authority whenever the flag is enabled. V2 remains production authority. Shadow failures are emitted
 as `body_v3_shadow_failed:*` publish warnings and do not reinterpret an already
 acknowledged V2 write as failed.
+
+The managed News Gateway catalog currently bounds this compatibility window at
+2026-10-31T00:00:00Z. Before that deadline, either promote the V3 model-input
+successors and retire V2 writes, or explicitly review and extend the deadline.
 
 Record an explicit promotion or rollback state only after comparison review:
 
@@ -124,3 +128,34 @@ python -m pipelines.news.benzinga.run_news_body_v3_rebuild rollback --execute
 These commands do not repoint downstream readers. Repointing, recomputation,
 TF-IDF/DeepFM drift measurement, News Synthesis regression review, embeddings,
 and application cutover belong to the subsequent downstream migration.
+
+## Downstream model-text migration
+
+Body V3 remains the body authority. It must not be widened with a title fallback,
+teaser, source header, or other model wrapper. Downstream models use the separate
+`benzinga_title_plus_canonical_body_v1` contract:
+
+```text
+<trimmed title>\n\n<trimmed canonical_body_text>
+```
+
+If either field is empty, the non-empty field is used. If the body is missing,
+the model input may therefore contain only the explicit title, but
+`canonical_body_text` remains empty and `body_status` remains `missing`.
+
+Run the non-mutating paired drift gate with:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+C:\Users\g835l\miniconda3\envs\ml4t\python.exe scripts\audit_news_body_v3_downstream_drift.py --limit 1000
+```
+
+Use `--offset` and `--limit` for deterministic restartable tranches. Use
+`--full` only for the complete 352,559-row assigned population. The audit
+compares V2 and V3 News Synthesis signatures, frozen TF-IDF vectors, and the
+promoted V2 DeepFM release at the diagnostic live threshold of 0.5. It does not
+mutate gold labels, operator labels, model artifacts, or live authorities. A
+material paired change blocks direct repointing: train a versioned V3 successor
+after operator labels are frozen, then evaluate it once on a later sealed
+time-forward holdout before promotion. The August 2026 review split is
+measurement-only and must not tune the text composition, model, or threshold.

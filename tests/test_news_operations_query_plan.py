@@ -30,7 +30,9 @@ class NewsOperationsQueryPlanTests(unittest.TestCase):
         for sql in (summary, rows):
             self.assertIn("toDateTime64('2026-08-11 04:00:00.000000'", sql)
             self.assertIn("toDateTime64('2026-08-12 04:00:00.000000'", sql)
-        self.assertIn("r.source_revision_key=n.source_revision_key", rows)
+        self.assertIn("benzinga_news_rendered_v3", rows)
+        self.assertIn("r.provider_article_id=n.provider_article_id", rows)
+        self.assertNotIn("r.source_revision_key=n.source_revision_key", rows)
         self.assertIn("ORDER BY n.published_at_utc ASC", rows)
         self.assertIn("LIMIT 250", rows)
 

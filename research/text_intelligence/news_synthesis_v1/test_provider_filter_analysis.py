@@ -59,6 +59,20 @@ class ProviderFilterAnalysisTests(unittest.TestCase):
         self.assertTrue(flags["material_event"])
         self.assertEqual(extract_title(text), "Trading Halted Pending News")
 
+    def test_body_v3_uses_explicit_title_for_title_patterns(self) -> None:
+        flags = text_flags(
+            "The company reported revenue growth in the quarter.",
+            title="Why Is Example Corp Stock Moving Today?",
+            body_present=True,
+        )
+        self.assertTrue(flags["why_moving"])
+        self.assertTrue(flags["question_title"])
+        self.assertFalse(flags["title_only"])
+
+    def test_body_v3_missing_body_is_title_only(self) -> None:
+        flags = text_flags("Example Corp Announces Update", title="Example Corp Announces Update", body_present=False)
+        self.assertTrue(flags["title_only"])
+
     def test_ticker_history_uses_only_prior_rows(self) -> None:
         rows = [
             {
