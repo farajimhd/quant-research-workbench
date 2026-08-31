@@ -14,6 +14,8 @@ This package contains the Benzinga news workflow:
 - deterministic phrase-presence and causal post-news reaction reference tables.
 - versioned deterministic issuer relevance, structured language, and calibrated reaction intelligence.
 - certified V2 tables with structured renderer v3 and original-versus-rendered audit samples.
+- a separate certified body-only V3 table family with source/block dispositions,
+  old-to-new hash lineage, and opt-in temporary live shadow writes.
 - one-embedding-per-article OpenAI extraction with separate multi-ticker links.
 
 Structured v2 rebuild and audit (stop the live news gateway first):
@@ -38,6 +40,19 @@ and retained provenance remain unchanged for forensic audit.
 
 After the rebuild reports `status=ready`, restart the news gateway. The gateway
 preflight deliberately refuses to write until that certification exists.
+
+Body-only successor authority (one-day read-only validation by default):
+
+```powershell
+python -m pipelines.news.benzinga.run_news_body_v3_rebuild
+python -m pipelines.news.benzinga.run_news_body_v3_rebuild rebuild --execute
+```
+
+See the [body V3 contract](../../../docs/data_contracts/benzinga_news_body_v3.md).
+This stage does not repoint News Synthesis, TF-IDF/DeepFM, embeddings,
+hypotheses, the reviewer, or application readers. After full certification,
+`NEWS_BENZINGA_BODY_V3_SHADOW_ENABLED=1` enables temporary live comparison
+writes while V2 remains production authority.
 
 Embed the complete article population once per article:
 

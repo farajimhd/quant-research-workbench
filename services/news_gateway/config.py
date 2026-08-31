@@ -85,6 +85,8 @@ class NewsGatewayConfig:
     live_url_max_html_bytes: int
     live_url_max_pdf_bytes: int
     live_url_max_retries: int
+    body_v3_shadow_enabled: bool
+    body_v3_shadow_end_utc: str
     run_log_enabled: bool
     run_log_queue_size: int
     run_log_skip_sample_size: int
@@ -195,6 +197,8 @@ class NewsGatewayConfig:
             live_url_max_html_bytes=env_int("NEWS_BENZINGA_LIVE_URL_MAX_HTML_BYTES", 4_000_000),
             live_url_max_pdf_bytes=env_int("NEWS_BENZINGA_LIVE_URL_MAX_PDF_BYTES", 12_000_000),
             live_url_max_retries=env_int("NEWS_BENZINGA_LIVE_URL_MAX_RETRIES", 0),
+            body_v3_shadow_enabled=env_bool("NEWS_BENZINGA_BODY_V3_SHADOW_ENABLED", False),
+            body_v3_shadow_end_utc=env_string("NEWS_BENZINGA_BODY_V3_SHADOW_END_UTC", ""),
             run_log_enabled=env_bool("NEWS_GATEWAY_RUN_LOG_ENABLED", True),
             run_log_queue_size=env_int("NEWS_GATEWAY_RUN_LOG_QUEUE_SIZE", 10_000),
             run_log_skip_sample_size=env_int("NEWS_GATEWAY_RUN_LOG_SKIP_SAMPLE_SIZE", 100),

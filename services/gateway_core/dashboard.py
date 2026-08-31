@@ -124,6 +124,8 @@ def compact_config(config: dict[str, Any]) -> dict[str, Any]:
         "market_status_enabled",
         "market_status_refresh_seconds",
         "terminal_refresh_seconds",
+        "body_v3_shadow_enabled",
+        "body_v3_shadow_end_utc",
     ]
     return {key: config.get(key) for key in keys if key in config}
 

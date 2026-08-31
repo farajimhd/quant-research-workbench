@@ -17,6 +17,7 @@ from pipelines.news.benzinga.news_benzinga_normalize import (
     stable_hash,
 )
 from pipelines.news.benzinga.news_benzinga_render_v2 import build_v2_rows, render_news_article
+from pipelines.news.benzinga.news_benzinga_body_v3 import build_body_v3_rows, render_canonical_body
 from pipelines.news.benzinga.news_benzinga_url_fetch_plan import (
     ACTIONABLE_ACTIONS,
     apply_domain_policy,
@@ -32,6 +33,7 @@ class ItemPipelineOptions:
     max_enriched_text_chars_per_url: int = 24_000
     max_enriched_urls_per_article: int = 5
     include_enrichment_rows: bool = True
+    build_body_v3: bool = False
 
 
 def process_benzinga_news_item(
@@ -95,6 +97,22 @@ def process_benzinga_news_item(
 
     rendered = render_news_article(payload, normalized_row=row, enrichment_rows=enrichment_rows or [])
     v2 = build_v2_rows(payload, row, rendered, updated_at_utc=str(row["updated_at_utc"]))
+    body_v3_rows: dict[str, Any] = {}
+    if opts.build_body_v3:
+        body_v3 = render_canonical_body(
+            payload,
+            normalized_row=row,
+            enrichment_rows=enrichment_rows or [],
+            rendered_article=rendered,
+        )
+        body_v3_rows = build_body_v3_rows(
+            payload,
+            row,
+            body_v3,
+            previous_rendered_text_hash=rendered.packed_text_hash,
+            previous_renderer_version=str(v2["rendered"]["renderer_version"]),
+            updated_at_utc=str(row["updated_at_utc"]),
+        )
     # Memory/API consumers still use normalized_row. Make its text semantics
     # match the durable v2 authority without imposing an embedding-size cap.
     row["normalized_full_text"] = rendered.packed_text
@@ -114,6 +132,12 @@ def process_benzinga_news_item(
         v2_block_rows=list(v2["blocks"]),
         v2_rendered_row=dict(v2["rendered"]),
         v2_ticker_links=list(v2["tickers"]),
+        body_v3_event_row=dict(body_v3_rows.get("event") or {}),
+        body_v3_source_rows=list(body_v3_rows.get("sources") or []),
+        body_v3_block_rows=list(body_v3_rows.get("blocks") or []),
+        body_v3_rendered_row=dict(body_v3_rows.get("rendered") or {}),
+        body_v3_ticker_links=list(body_v3_rows.get("tickers") or []),
+        body_v3_lineage_row=dict(body_v3_rows.get("lineage") or {}),
     )
 
 
