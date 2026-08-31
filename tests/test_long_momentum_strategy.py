@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 import os
@@ -763,6 +764,63 @@ class LongMomentumStrategyTests(unittest.TestCase):
         trigger = entered.evaluation.signals[0].metadata["unified_structural_trigger"]
         self.assertEqual(trigger["reference_price"], 3.59)
         self.assertEqual(trigger["level"]["active_resistance_boundary"], 3.59)
+
+    def test_unified_frontier_state_keeps_compact_identity_not_full_level_evidence(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["structural_entry"].update({
+            "enabled": True,
+            "require_active_resistance_frontier": False,
+            "require_swing_high_frontier": False,
+        })
+        source = {
+            "level_id": 700,
+            "source_kind": "level_book",
+            "timeframe": "event-native",
+            "price": 3.55,
+            "payload": "evidence" * 2_000,
+        }
+        resistance = ({
+            "unified_level_id": 7,
+            "side": -1,
+            "price": 3.55,
+            "lower": 3.54,
+            "upper": 3.56,
+            "salience": 0.9,
+            "confidence": 0.9,
+            "reaction_probability": 0.9,
+            "sources": [source],
+            "component_levels": [{
+                "unified_level_id": 8,
+                "price": 3.555,
+                "sources": [source],
+            }],
+        },)
+        engine = LongMomentumStrategyEngine()
+        armed = engine.evaluate(
+            assignment(parameters=parameters, state={"last_price": 3.55}),
+            confirmed_observation(
+                price=3.55,
+                vwap=3.50,
+                structural_resistance_levels=resistance,
+            ),
+        )
+        pending = armed.state["pending_entry_resistance"]["level"]
+        self.assertNotIn("sources", pending)
+        self.assertEqual(pending["component_levels"], [{"unified_level_id": 7}])
+        self.assertLess(len(json.dumps(armed.state)), 2_000)
+
+        entered = engine.evaluate(
+            assignment(parameters=parameters, state=dict(armed.state)),
+            confirmed_observation(
+                observed_at=NOW + timedelta(seconds=1),
+                price=3.57,
+                vwap=3.50,
+                structural_resistance_levels=resistance,
+            ),
+        )
+        self.assertEqual(entered.evaluation.signals[0].action, "enter_long")
+        self.assertNotIn("sources", entered.state["last_entry_resistance"])
+        self.assertLess(len(json.dumps(entered.state)), 4_000)
 
     def test_profit_targets_are_variable_ranked_and_premarket_capped(self) -> None:
         parameters = default_long_momentum_parameters()

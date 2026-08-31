@@ -992,6 +992,48 @@ def _level_metric(row: dict[str, Any], *names: str) -> float:
     return 0.0
 
 
+def _compact_structural_level_reference(row: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Persist only the stable identity and frontier facts needed by the strategy."""
+
+    if not isinstance(row, Mapping):
+        return {}
+    scalar_fields = (
+        "unified_level_id",
+        "side",
+        "price",
+        "lower",
+        "upper",
+        "salience",
+        "confidence",
+        "reaction_probability",
+        "hold_probability",
+        "reversal_probability",
+        "created_at_ms",
+        "confirmed_at_ms",
+        "unified_break_boundary",
+        "swing_high_boundary",
+        "active_resistance_boundary",
+        "combined_entry_boundary",
+    )
+    compact = {
+        field: row[field]
+        for field in scalar_fields
+        if field in row and row[field] is not None
+    }
+    component_ids = [
+        component.get("unified_level_id")
+        for component in row.get("component_levels") or ()
+        if isinstance(component, Mapping)
+        and component.get("unified_level_id") is not None
+    ]
+    if component_ids:
+        compact["component_levels"] = [
+            {"unified_level_id": level_id}
+            for level_id in dict.fromkeys(component_ids)
+        ]
+    return compact
+
+
 def _level_is_entry_quality(row: dict[str, Any], policy: dict[str, Any]) -> bool:
     return bool(
         _level_metric(row, "salience", "strength")
@@ -1233,14 +1275,14 @@ def _unified_entry_trigger(
     if passed:
         state["accepted_entry_resistance"] = {
             "boundary": boundary,
-            "level": dict(level),
+            "level": _compact_structural_level_reference(level),
             "accepted_at": observation.observed_at.isoformat(),
         }
         state.pop("pending_entry_resistance", None)
     else:
         state["pending_entry_resistance"] = {
             "boundary": boundary,
-            "level": dict(level),
+            "level": _compact_structural_level_reference(level),
             "armed_at": armed_at,
         }
     return {
@@ -1664,8 +1706,8 @@ class LongMomentumStrategyEngine:
                 "previous_post_entry_swing_low": None,
                 "higher_low_confirmed": False,
                 "structural_profit_targets": profit_targets,
-                "last_entry_resistance": dict(
-                    (unified_trigger or {}).get("level") or {}
+                "last_entry_resistance": _compact_structural_level_reference(
+                    (unified_trigger or {}).get("level")
                 ),
             }
         )
