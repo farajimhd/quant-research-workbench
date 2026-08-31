@@ -938,7 +938,19 @@ class SimulatedBrokerAdapter:
             raise ValueError("Simulation must resolve cashQty before submission")
         if order.side.upper() == "BUY":
             price = order.price or self._reference_price(order.conid)
-            if price > 0 and price * order.quantity + self._commission(order.quantity) > self._cash[order.acctId]:
+            # A modification retains the order's total-quantity contract. Cash
+            # already spent on partial fills is reflected in account cash, so
+            # only the unfilled remainder must still be affordable. Validating
+            # the original total again double-counts filled shares and rejects
+            # legitimate reprices for whole-account entries.
+            quantity_to_fund = order.quantity
+            if existing_order_quantity is not None:
+                quantity_to_fund = max(0.0, order.quantity - existing_order_filled)
+            if (
+                price > 0
+                and price * quantity_to_fund + self._commission(quantity_to_fund)
+                > self._cash[order.acctId]
+            ):
                 raise ValueError("Order exceeds available cash")
         elif not self.config.allow_short:
             held = self._positions[order.acctId].get(order.conid, _Position(order.conid, order.ticker)).quantity

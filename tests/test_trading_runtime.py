@@ -161,6 +161,57 @@ class SimulatedBrokerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(modified[0]["order_status"], "Submitted")
 
+    async def test_partially_filled_whole_account_buy_can_reprice_remaining_quantity(self) -> None:
+        entry = OrderRequest(
+            acctId="DU123",
+            conid=265598,
+            cOID="whole-account-entry",
+            ticker="AAPL",
+            orderType="LMT",
+            side="BUY",
+            quantity=99,
+            price=100,
+        )
+        response = await self.broker.place_orders("DU123", [entry])
+        fills = await self.broker.on_market_event(
+            quote(bid=99, ask=100, bid_size=10, ask_size=10)
+        )
+        self.assertEqual(sum(fill.size for fill in fills), 5)
+
+        modified = await self.broker.modify_order(
+            "DU123",
+            response[0]["order_id"],
+            replace(entry, price=101),
+        )
+
+        self.assertEqual(modified[0]["order_status"], "Submitted")
+        orders = await self.broker.live_orders()
+        self.assertEqual(orders[0].remainingQuantity, 94)
+        self.assertEqual(orders[0].price, 101)
+
+    async def test_partially_filled_buy_reprice_still_enforces_remaining_cash(self) -> None:
+        entry = OrderRequest(
+            acctId="DU123",
+            conid=265598,
+            cOID="bounded-reprice-entry",
+            ticker="AAPL",
+            orderType="LMT",
+            side="BUY",
+            quantity=100,
+            price=100,
+        )
+        response = await self.broker.place_orders("DU123", [entry])
+        await self.broker.on_market_event(
+            quote(bid=99, ask=100, bid_size=10, ask_size=10)
+        )
+
+        with self.assertRaisesRegex(ValueError, "Order exceeds available cash"):
+            await self.broker.modify_order(
+                "DU123",
+                response[0]["order_id"],
+                replace(entry, price=106),
+            )
+
     async def test_sell_capacity_tolerates_only_floating_point_roundoff(self) -> None:
         entry = OrderRequest(
             acctId="DU123", conid=265598, cOID="fractional-entry", ticker="AAPL",
