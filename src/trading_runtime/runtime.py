@@ -580,6 +580,20 @@ class TradingRuntime:
                     account_id=account_id,
                     event=event,
                 )
+                if order_group.filled_quantity > 0:
+                    # Historical orders may fill synchronously from the
+                    # decision's already-observed causal quote. Project that
+                    # fill through the same canonical Portfolio authority used
+                    # by later market-event fills before another strategy
+                    # decision can attempt to reduce or exit the position.
+                    if self._canonical_session is not None:
+                        await self._canonical_session.reconcile()
+                        self.portfolio.synchronize_canonical(
+                            self._canonical_session.projector.snapshot(),
+                            persist=not self._review_only,
+                        )
+                    else:
+                        await self.portfolio.synchronize(self.broker)
                 results.append({
                     "decision": decision.payload(),
                     "order_group": asdict(order_group),
