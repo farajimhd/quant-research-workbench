@@ -2103,7 +2103,13 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
             "complete": True,
             "session_id": "gslb-uat-1",
             "checkpoint": {"sym": "SUGP", "last_arrival_sequence": 10},
-            "snapshot": {"unified_levels": []},
+            "snapshot": {
+                "unified_levels": [],
+                "timeframe_states": [
+                    {"timeframe": "1s", "swing_high": 3.55, "swing_low": 3.41},
+                    {"timeframe": "5s", "swing_high": 3.60, "swing_low": 3.35},
+                ],
+            },
             "source_plan": {"plan_hash": "seed-plan"},
             "seed_authority_start": "2026-08-20T08:00:00Z",
             "seed_source_plan_hash": "seed-plan",
@@ -2133,7 +2139,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         )
         second = replace(first, as_of=first.as_of + timedelta(seconds=1), sequence=2)
 
-        await controller._historical_entry_structure_context(first)
+        first_context = await controller._historical_entry_structure_context(first)
         await controller._historical_entry_structure_context(second)
 
         initial_snapshot.assert_called_once()
@@ -2142,6 +2148,8 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
             advance_snapshot.call_args.kwargs["session_id"],
             "gslb-uat-1",
         )
+        self.assertEqual(first_context["structure_swing_high"], 3.55)
+        self.assertEqual(first_context["structure_swing_low"], 3.41)
 
     def test_structure_enrichment_uses_exact_cached_entry_contract(self) -> None:
         now = datetime(2026, 8, 21, 8, 10, 37, tzinfo=UTC)

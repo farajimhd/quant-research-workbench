@@ -1532,7 +1532,11 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(real["maximum_position_fraction"], 0.8)
         self.assertEqual(real["maximum_ticker_fraction"], 0.8)
         self.assertEqual(real["maximum_protection_slices"], 5)
-        self.assertEqual(replay["maximum_planned_risk_fraction"], 0.0025)
+        self.assertEqual(replay["maximum_planned_risk_fraction"], 0.06)
+        self.assertEqual(replay["maximum_open_risk_fraction"], 0.06)
+        self.assertEqual(replay["maximum_buying_power_utilization"], 0.995)
+        self.assertEqual(real["maximum_planned_risk_fraction"], 0.0025)
+        self.assertEqual(real["maximum_open_risk_fraction"], 0.0075)
         self.assertEqual(replay["maximum_open_positions"], 3)
         self.assertEqual(plan["watchlist_ids"], ["squeeze-tradable-candidates"])
         self.assertEqual(plan["universe_id"], "configured-watch-universe")
@@ -1577,6 +1581,60 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             "value": 1.0,
             "allow_replacement": False,
         })
+        self.assertEqual(
+            profile["lifecycle"]["initial_entry"]["order_intent"]["deadline_ms"],
+            5_000,
+        )
+        self.assertEqual(
+            profile["lifecycle"]["reentry"]["order_intent"]["deadline_ms"],
+            5_000,
+        )
+        self.assertEqual(
+            profile["parameters"]["structural_entry"]["minimum_level_age_ms"],
+            120_000,
+        )
+        self.assertEqual(
+            profile["parameters"]["structural_entry"]["minimum_hold_probability"],
+            0.75,
+        )
+        self.assertEqual(
+            profile["parameters"]["structural_entry"]["maximum_breakout_extension_bps"],
+            75.0,
+        )
+        self.assertEqual(
+            profile["parameters"]["liquidity_admission"]["minimum_current_trade_rate_10s"],
+            5.0,
+        )
+        self.assertEqual(
+            profile["parameters"]["liquidity_admission"]["minimum_current_trade_rate_60s"],
+            2.0,
+        )
+        self.assertEqual(
+            profile["parameters"]["liquidity_admission"]["minimum_vwap_extension_bps"],
+            100.0,
+        )
+        self.assertEqual(
+            profile["parameters"]["liquidity_admission"]["minimum_initial_vwap_extension_bps"],
+            250.0,
+        )
+        self.assertEqual(
+            profile["parameters"]["liquidity_admission"]["minimum_reentry_vwap_extension_bps"],
+            100.0,
+        )
+        self.assertEqual(
+            profile["parameters"]["liquidity_admission"]["maximum_vwap_extension_bps"],
+            500.0,
+        )
+        self.assertEqual(
+            profile["parameters"]["entry_momentum_confirmation"],
+            {
+                "enabled": True,
+                "timeframe": "1s",
+                "histogram_lookback_ms": 5_000,
+                "minimum_histogram_increase": 0.0,
+                "minimum_histogram_increase_bps": 0.25,
+            },
+        )
 
     def test_approved_canvas_projection_exposes_only_published_profile_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

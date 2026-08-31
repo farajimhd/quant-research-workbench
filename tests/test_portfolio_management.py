@@ -581,6 +581,63 @@ class PortfolioManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reservation.reserved_notional, 0)
         self.assertEqual(next(iter(engine.allocations.values())).quantity, 8)
 
+    async def test_partial_exit_never_converts_remaining_quantity_to_reserved_notional(self) -> None:
+        policy = PortfolioPolicy(
+            policy_id="partial-exit",
+            maximum_position_fraction=1,
+            maximum_ticker_fraction=1,
+            maximum_planned_risk_fraction=1,
+            maximum_open_risk_fraction=1,
+        )
+        profile = PortfolioAccountProfile("margin", "M1", "paper", "margin", policy)
+        engine = self.engine([profile])
+        engine.synchronize_snapshot(
+            "M1",
+            summary=summary("M1"),
+            ledger=ledger("M1"),
+            positions=[position("M1", "AAPL", 20)],
+        )
+        decision, approved = await engine.approve(
+            intent(
+                "partial-exit",
+                action="exit",
+                quantity=20,
+                invalidation=None,
+            ),
+            account_id="M1",
+        )
+        self.assertIsNotNone(approved)
+        self.assertEqual(engine.reservations[decision.reservation_id].reserved_notional, 0)
+
+        engine.on_order_group_update(
+            OrderGroupSnapshot(
+                group_id="group",
+                intent_id="partial-exit",
+                account_id="M1",
+                ticker="AAPL",
+                action="exit",
+                state=OrderManagementState.PARTIALLY_FILLED,
+                client_order_ids=("client",),
+                broker_order_ids=("broker",),
+                submitted_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+                filled_quantity=5,
+                remaining_quantity=15,
+                warning_message_ids=(),
+                rejection_reason="",
+                decision_to_submit_ms=1,
+                policy_version=1,
+                reentry_after_fill=False,
+                assignment_id="assignment-AAPL",
+                fill_incremental_quantity=5,
+                fill_role="exit",
+            )
+        )
+
+        reservation = engine.reservations[decision.reservation_id]
+        self.assertEqual(reservation.status, "reserved")
+        self.assertEqual(reservation.reserved_notional, 0)
+
     async def test_reconciliation_differences_are_durable_and_change_journaled(self) -> None:
         profile = PortfolioAccountProfile(
             "cash", "C1", "live", "cash", PortfolioPolicy(policy_id="restart")
@@ -668,6 +725,46 @@ class PortfolioManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decision.status, PortfolioDecisionStatus.RESIZED)
         self.assertIsNotNone(approved)
         self.assertEqual(approved.quantity, 300)
+
+    async def test_all_available_long_uses_current_ask_for_cash_capacity(self) -> None:
+        policy = PortfolioPolicy(
+            policy_id="ask-capacity",
+            maximum_position_fraction=1,
+            maximum_ticker_fraction=1,
+            maximum_planned_risk_fraction=1,
+            maximum_open_risk_fraction=1,
+        )
+        profile = PortfolioAccountProfile(
+            "primary",
+            "C1",
+            "replay",
+            "simulated",
+            policy,
+            strategy_allocations={"strategy-a": 1.0},
+        )
+        engine = self.engine([profile])
+        engine.synchronize_snapshot(
+            "C1",
+            summary=summary("C1", available=100_000),
+            ledger=ledger("C1", cash=100_000),
+            positions=[],
+        )
+        request = intent("ask-priced", quantity=1, price=100)
+        request = StrategyIntent(
+            **{
+                **request.payload(),
+                "capital_request": CapitalRequest(mode="all_available"),
+                "metadata": {**request.metadata, "ask": 102.0, "bid": 99.0},
+            }
+        )
+
+        decision, approved = await engine.approve(request, account_id="C1")
+
+        self.assertEqual(decision.status, PortfolioDecisionStatus.RESIZED)
+        self.assertIsNotNone(approved)
+        assert approved is not None
+        self.assertAlmostEqual(approved.quantity, 100_000 / 102.0, places=5)
+        self.assertLessEqual(approved.quantity * 102.0, 100_000)
 
     async def test_capacity_rejection_can_create_explicit_rebalance_proposal(self) -> None:
         policy = PortfolioPolicy(

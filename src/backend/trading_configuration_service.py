@@ -3948,9 +3948,11 @@ def _default_draft() -> dict[str, Any]:
     squeeze_lifecycle["initial_entry"]["order_intent"][
         "protection_profile"
     ] = "structural-single-target"
+    squeeze_lifecycle["initial_entry"]["order_intent"]["deadline_ms"] = 5_000
     squeeze_lifecycle["reentry"]["order_intent"][
         "protection_profile"
     ] = "structural-single-target"
+    squeeze_lifecycle["reentry"]["order_intent"]["deadline_ms"] = 5_000
     squeeze_lifecycle["reentry"]["cooldown_ms"] = 0
     # The original Early Squeeze occurrence owns the campaign. A re-entry in
     # that same episode needs fresh post-exit market evidence, not a duplicate
@@ -4020,8 +4022,12 @@ def _default_draft() -> dict[str, Any]:
         "minimum_salience": 0.45,
         "minimum_confidence": 0.50,
         "minimum_reaction_probability": 0.50,
+        "minimum_hold_probability": 0.75,
+        "minimum_independent_pivot_count": 2,
+        "minimum_level_age_ms": 120_000,
         "acceptance_buffer_bps": 0.0,
         "acceptance_hold_ms": 15_000,
+        "maximum_breakout_extension_bps": 75.0,
         "require_swing_high_frontier": True,
         "require_active_resistance_frontier": True,
     }
@@ -4034,11 +4040,34 @@ def _default_draft() -> dict[str, Any]:
         "minimum_session_share_volume": 100_000.0,
         "minimum_trade_rate_10s": 1.0,
         "minimum_trade_rate_60s": 0.5,
+        "minimum_current_trade_rate_10s": 5.0,
+        "minimum_current_trade_rate_60s": 2.0,
+        "minimum_vwap_extension_bps": 100.0,
+        # The first campaign entry must clear the noisy near-VWAP opening
+        # structure. Once a real breakout has established the campaign,
+        # pullback re-entries may occur closer to VWAP without discarding the
+        # 05:02 and 06:52 SUGP continuation regimes.
+        "minimum_initial_vwap_extension_bps": 250.0,
+        "minimum_reentry_vwap_extension_bps": 100.0,
+        "maximum_vwap_extension_bps": 500.0,
         # SUGP UAT showed that a causal structural break at 04:10:28 ET was
         # executable at 55.4 bps but the former 50 bps ceiling delayed entry
         # until 04:10:32.  Keep this an instantaneous (non-latched) execution
         # check and admit up to 60 bps for the small-cap premarket profile.
         "maximum_spread_bps": 60.0,
+    }
+    system_profiles[0]["parameters"]["entry_momentum_confirmation"] = {
+        # A positive/open MACD regime is necessary but not sufficient for a
+        # breakout.  Require its one-second histogram to be stronger than its
+        # causal value five seconds earlier.  SUGP UAT separates the durable
+        # 04:10, 05:02, 06:52 and 07:10 impulses from contracting false breaks
+        # without tightening the liquidity, VWAP, or level-quality gates that
+        # those strong campaigns need.
+        "enabled": True,
+        "timeframe": "1s",
+        "histogram_lookback_ms": 5_000,
+        "minimum_histogram_increase": 0.0,
+        "minimum_histogram_increase_bps": 0.25,
     }
     squeeze_lifecycle["reentry"]["target_replenishment"] = {
         # A profit-target fill reduces an otherwise valid momentum campaign;
@@ -4136,6 +4165,12 @@ def _default_draft() -> dict[str, Any]:
         profile.pop("rule_set_catalog", None)
     policy = asdict(PortfolioPolicy())
     policy.update({
+        # "Whole account" is the test allocation authority, but submitting
+        # exactly net liquidation / reference price leaves no room for the
+        # simulated per-share commission or a one-tick aggressive limit. Keep
+        # a bounded execution reserve while allowing the strategy to use the
+        # rest of the account.
+        "maximum_buying_power_utilization": 0.995,
         "maximum_position_fraction": 1.0,
         "maximum_ticker_fraction": 1.0,
         # The squeeze campaign intentionally decomposes one position into five
@@ -4143,8 +4178,8 @@ def _default_draft() -> dict[str, Any]:
         # same topology that Strategy and OMS publish; otherwise a valid entry
         # is rejected before any order reaches the broker.
         "maximum_protection_slices": 5,
-        "maximum_planned_risk_fraction": 0.0025,
-        "maximum_open_risk_fraction": 0.0075,
+        "maximum_planned_risk_fraction": 0.06,
+        "maximum_open_risk_fraction": 0.06,
         "maximum_open_positions": 3,
         "allow_outside_rth": True,
         "allow_overnight": False,
@@ -4156,6 +4191,8 @@ def _default_draft() -> dict[str, Any]:
         "eligible_equity_fraction": 0.80,
         "maximum_position_fraction": 0.80,
         "maximum_ticker_fraction": 0.80,
+        "maximum_planned_risk_fraction": 0.0025,
+        "maximum_open_risk_fraction": 0.0075,
     })
     bindings = [
         {
@@ -4182,7 +4219,7 @@ def _default_draft() -> dict[str, Any]:
             "account_key": binding["account_key"],
             "enabled": True,
             "maximum_cash_fraction": 1.0,
-            "maximum_planned_risk_fraction": 0.0025,
+            "maximum_planned_risk_fraction": 0.06,
             "maximum_positions": 3,
             "assignment_mode": "single",
             "allocation_weight": 1.0,

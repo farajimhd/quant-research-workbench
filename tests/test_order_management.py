@@ -34,6 +34,7 @@ from src.trading_runtime.order_management import (
     OrderManagementState,
     ShortabilitySnapshot,
     _ManagedOrderGroup,
+    _protective_repair_raw,
     _intent_from_payload,
     _extend_managed_plan,
     _protection_group_key,
@@ -52,6 +53,27 @@ from src.trading_runtime.strategy_orders import (
     RuntimeIbkrStrategyOrderPlanner,
     StrategyOrderPlan,
 )
+
+
+class ProtectionRepairMetadataTests(unittest.TestCase):
+    def test_repair_stop_overrides_parent_entry_role_without_losing_lineage(self) -> None:
+        raw = _protective_repair_raw({
+            "canonical_run_id": "run-1",
+            "canonical_metadata": {
+                "action": "enter_long",
+                "execution_role": "entry",
+                "reason": "reentry_confirmed",
+            },
+        })
+
+        self.assertEqual(raw["canonical_run_id"], "run-1")
+        self.assertEqual(raw["canonical_metadata"]["action"], "enter_long")
+        self.assertEqual(
+            raw["canonical_metadata"]["execution_role"], "protective_stop"
+        )
+        self.assertEqual(
+            raw["canonical_metadata"]["reason"], "protective_stop_filled"
+        )
 
 
 NOW = datetime.now(timezone.utc)

@@ -2947,6 +2947,12 @@ class ReplayRunController:
             structural = await self._historical_entry_structure_context(frame)
             base = replace(
                 base,
+                swing_high=_optional_positive(
+                    structural.get("structure_swing_high")
+                ),
+                swing_low=_optional_positive(
+                    structural.get("structure_swing_low")
+                ),
                 structural_support_price=_optional_positive(
                     structural.get("qmd_structure_support_price")
                 ),
@@ -3148,11 +3154,26 @@ class ReplayRunController:
         snapshot = dict(payload.get("snapshot") or {})
         support = dict(snapshot.get("support") or {})
         resistance = dict(snapshot.get("resistance") or {})
+        one_second_structure = next(
+            (
+                dict(row)
+                for row in snapshot.get("timeframe_states") or ()
+                if isinstance(row, Mapping)
+                and str(row.get("timeframe") or "").lower() == "1s"
+            ),
+            {},
+        )
         unified_levels = [
             dict(row) for row in snapshot.get("unified_levels") or ()
             if isinstance(row, Mapping)
         ]
         context = {
+            # Full-session prepared frames can omit sparse generic swing
+            # columns. The causal historical Structure snapshot carries the
+            # same 1s frontier explicitly, so historical entry must project it
+            # instead of silently degrading to the nearest Unified band.
+            "structure_swing_high": one_second_structure.get("swing_high"),
+            "structure_swing_low": one_second_structure.get("swing_low"),
             "qmd_structure_support_price": support.get("price"),
             "qmd_structure_support_lower": support.get("lower"),
             "qmd_structure_support_upper": support.get("upper"),

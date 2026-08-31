@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
-from datetime import datetime, time as clock_time, timezone
+from datetime import datetime, time as clock_time, timedelta, timezone
 from enum import StrEnum
 from math import exp, floor
 from typing import Any, Mapping
@@ -33,7 +33,7 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 18
+STRATEGY_REVISION = 20
 
 RULE_COMPARATORS = {
     "above_by_bps",
@@ -435,6 +435,13 @@ def default_long_momentum_parameters() -> dict[str, Any]:
             "minimum_trade_rate_10s": 1.0,
             "minimum_trade_rate_60s": 0.5,
             "maximum_spread_bps": 60.0,
+        },
+        "entry_momentum_confirmation": {
+            "enabled": False,
+            "timeframe": "1s",
+            "histogram_lookback_ms": 5_000,
+            "minimum_histogram_increase": 0.0,
+            "minimum_histogram_increase_bps": 0.0,
         },
         "sizing": {
             "request_mode": "fixed_quantity",
@@ -923,6 +930,100 @@ def _exact_positive_open_macd(
     ), evidence
 
 
+def _record_macd_histogram_history(
+    state: dict[str, Any], observation: StrategyObservation
+) -> None:
+    """Keep a small causal 1-second MACD history in durable strategy state."""
+
+    line = _numeric_source_value(observation, "indicator.macd.line", "1s")
+    signal = _numeric_source_value(observation, "indicator.macd.signal", "1s")
+    if line is None or signal is None:
+        return
+    sample = {
+        "observed_at": observation.observed_at.isoformat(),
+        "histogram": line - signal,
+    }
+    history = [
+        dict(row)
+        for row in state.get("macd_histogram_history_1s") or []
+        if isinstance(row, dict)
+    ]
+    if history and str(history[-1].get("observed_at") or "") == sample["observed_at"]:
+        history[-1] = sample
+    else:
+        history.append(sample)
+    cutoff = observation.observed_at - timedelta(seconds=30)
+    retained: list[dict[str, Any]] = []
+    for row in history[-64:]:
+        try:
+            observed_at = datetime.fromisoformat(
+                str(row.get("observed_at") or "").replace("Z", "+00:00")
+            )
+        except ValueError:
+            continue
+        if observed_at >= cutoff:
+            retained.append(row)
+    state["macd_histogram_history_1s"] = retained
+
+
+def _entry_momentum_strengthening_result(
+    observation: StrategyObservation,
+    policy: dict[str, Any],
+    state: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    timeframe = str(policy.get("timeframe") or "1s")
+    line = _numeric_source_value(observation, "indicator.macd.line", timeframe)
+    signal = _numeric_source_value(observation, "indicator.macd.signal", timeframe)
+    current = line - signal if line is not None and signal is not None else None
+    lookback_ms = max(1, int(policy.get("histogram_lookback_ms") or 5_000))
+    boundary = observation.observed_at - timedelta(milliseconds=lookback_ms)
+    baseline: float | None = None
+    baseline_at: datetime | None = None
+    for row in state.get("macd_histogram_history_1s") or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            observed_at = datetime.fromisoformat(
+                str(row.get("observed_at") or "").replace("Z", "+00:00")
+            )
+            value = float(row.get("histogram"))
+        except (TypeError, ValueError):
+            continue
+        if observed_at <= boundary and (baseline_at is None or observed_at > baseline_at):
+            baseline_at = observed_at
+            baseline = value
+    minimum_increase = float(policy.get("minimum_histogram_increase") or 0)
+    increase = current - baseline if current is not None and baseline is not None else None
+    increase_bps = (
+        increase / observation.price * 10_000.0
+        if increase is not None and observation.price > 0
+        else None
+    )
+    minimum_increase_bps = float(
+        policy.get("minimum_histogram_increase_bps") or 0
+    )
+    checks = {
+        "history_ready": baseline is not None,
+        "histogram_strengthening": increase is not None and increase > minimum_increase,
+        "histogram_strengthening_bps": (
+            increase_bps is not None and increase_bps >= minimum_increase_bps
+        ),
+    }
+    return all(checks.values()), {
+        "checks": checks,
+        "failed": [name for name, passed in checks.items() if not passed],
+        "timeframe": timeframe,
+        "lookback_ms": lookback_ms,
+        "current_histogram": current,
+        "baseline_histogram": baseline,
+        "baseline_observed_at": baseline_at.isoformat() if baseline_at else "",
+        "histogram_increase": increase,
+        "histogram_increase_bps": increase_bps,
+        "minimum_histogram_increase": minimum_increase,
+        "minimum_histogram_increase_bps": minimum_increase_bps,
+    }
+
+
 def _spread_bps(observation: StrategyObservation) -> float | None:
     explicit = _numeric_source_value(observation, "market.spread_bps")
     if explicit is not None:
@@ -977,17 +1078,73 @@ def _liquidity_admission_result(
 def _current_execution_quality_result(
     observation: StrategyObservation,
     policy: dict[str, Any],
+    *,
+    reentry: bool = False,
 ) -> tuple[bool, dict[str, Any]]:
     spread = _spread_bps(observation)
-    trade_rate = _numeric_source_value(observation, "market.trade_rate_10s")
+    trade_rate_10s = _numeric_source_value(observation, "market.trade_rate_10s")
+    trade_rate_60s = _numeric_source_value(observation, "market.trade_rate_60s")
+    vwap_extension_bps = (
+        (observation.price / observation.vwap - 1.0) * 10_000.0
+        if observation.vwap is not None and observation.vwap > 0
+        else None
+    )
+    minimum_trade_rate_10s = float(
+        policy.get("minimum_current_trade_rate_10s")
+        if policy.get("minimum_current_trade_rate_10s") is not None
+        else policy.get("minimum_trade_rate_10s") or 0
+    )
+    minimum_trade_rate_60s = float(
+        policy.get("minimum_current_trade_rate_60s") or 0
+    )
+    phase_vwap_key = (
+        "minimum_reentry_vwap_extension_bps"
+        if reentry
+        else "minimum_initial_vwap_extension_bps"
+    )
+    minimum_vwap_extension_bps = float(
+        policy.get(phase_vwap_key)
+        if policy.get(phase_vwap_key) is not None
+        else policy.get("minimum_vwap_extension_bps") or 0
+    )
+    maximum_vwap_extension_bps = float(
+        policy.get("maximum_vwap_extension_bps") or float("inf")
+    )
     checks = {
-        "current_trade_rate_10s": trade_rate is not None
-        and trade_rate >= float(policy.get("minimum_trade_rate_10s") or 0),
+        "current_trade_rate_10s": trade_rate_10s is not None
+        and trade_rate_10s >= minimum_trade_rate_10s,
+        "current_trade_rate_60s": minimum_trade_rate_60s <= 0
+        or (
+            trade_rate_60s is not None
+            and trade_rate_60s >= minimum_trade_rate_60s
+        ),
         "current_spread": spread is not None
         and spread <= float(policy.get("maximum_spread_bps") or float("inf")),
+        "vwap_extension_floor": minimum_vwap_extension_bps <= 0
+        or (
+            vwap_extension_bps is not None
+            and vwap_extension_bps >= minimum_vwap_extension_bps
+        ),
+        "vwap_extension_ceiling": maximum_vwap_extension_bps == float("inf")
+        or (
+            vwap_extension_bps is not None
+            and vwap_extension_bps <= maximum_vwap_extension_bps
+        ),
     }
     return all(checks.values()), {
-        "facts": {"trade_rate_10s": trade_rate, "spread_bps": spread},
+        "facts": {
+            "trade_rate_10s": trade_rate_10s,
+            "trade_rate_60s": trade_rate_60s,
+            "spread_bps": spread,
+            "vwap_extension_bps": vwap_extension_bps,
+        },
+        "thresholds": {
+            "phase": "reentry" if reentry else "initial_entry",
+            "minimum_trade_rate_10s": minimum_trade_rate_10s,
+            "minimum_trade_rate_60s": minimum_trade_rate_60s,
+            "minimum_vwap_extension_bps": minimum_vwap_extension_bps,
+            "maximum_vwap_extension_bps": maximum_vwap_extension_bps,
+        },
         "checks": checks,
         "failed": [name for name, passed in checks.items() if not passed],
     }
@@ -1020,6 +1177,12 @@ def _compact_structural_level_reference(row: Mapping[str, Any] | None) -> dict[s
         "reaction_probability",
         "hold_probability",
         "reversal_probability",
+        "independent_pivot_count",
+        "source_count",
+        "touch_count",
+        "hold_count",
+        "break_count",
+        "role_flip_count",
         "created_at_ms",
         "confirmed_at_ms",
         "unified_break_boundary",
@@ -1046,7 +1209,18 @@ def _compact_structural_level_reference(row: Mapping[str, Any] | None) -> dict[s
     return compact
 
 
-def _level_is_entry_quality(row: dict[str, Any], policy: dict[str, Any]) -> bool:
+def _level_is_entry_quality(
+    row: dict[str, Any],
+    policy: dict[str, Any],
+    *,
+    observed_at: datetime,
+) -> bool:
+    created_at_ms = _level_metric(row, "created_at_ms")
+    age_ms = (
+        observed_at.timestamp() * 1_000.0 - created_at_ms
+        if created_at_ms > 0
+        else 0.0
+    )
     return bool(
         _level_metric(row, "salience", "strength")
         >= float(policy.get("minimum_salience") or 0)
@@ -1054,6 +1228,11 @@ def _level_is_entry_quality(row: dict[str, Any], policy: dict[str, Any]) -> bool
         >= float(policy.get("minimum_confidence") or 0)
         and _level_metric(row, "reaction_probability")
         >= float(policy.get("minimum_reaction_probability") or 0)
+        and _level_metric(row, "hold_probability")
+        >= float(policy.get("minimum_hold_probability") or 0)
+        and _level_metric(row, "independent_pivot_count")
+        >= float(policy.get("minimum_independent_pivot_count") or 0)
+        and age_ms >= float(policy.get("minimum_level_age_ms") or 0)
     )
 
 
@@ -1114,7 +1293,10 @@ def _unified_entry_trigger(
     rows = _consolidated_structure_levels([
         dict(row)
         for row in observation.structural_resistance_levels
-        if isinstance(row, dict) and _level_is_entry_quality(dict(row), policy)
+        if isinstance(row, dict)
+        and _level_is_entry_quality(
+            dict(row), policy, observed_at=observation.observed_at
+        )
     ], side="long")
     if not rows and observation.structural_resistance_upper is not None:
         rows = [{
@@ -1161,12 +1343,25 @@ def _unified_entry_trigger(
     acceptance_hold_ms = max(0.0, float(policy.get("acceptance_hold_ms") or 0))
     accepted_threshold = accepted_boundary * (1 + buffer_bps / 10_000)
     if accepted_boundary > 0 and acceptance_age_ms <= acceptance_hold_ms:
-        passed = observation.price > accepted_threshold
+        breakout_extension_bps = (
+            (observation.price / accepted_threshold - 1.0) * 10_000.0
+            if accepted_threshold > 0
+            else float("inf")
+        )
+        maximum_breakout_extension_bps = float(
+            policy.get("maximum_breakout_extension_bps") or float("inf")
+        )
+        passed = bool(
+            observation.price > accepted_threshold
+            and breakout_extension_bps <= maximum_breakout_extension_bps
+        )
         return {
             "passed": passed,
             "reason": (
                 "unified_resistance_acceptance_held"
                 if passed
+                else "waiting_for_unified_resistance_retest"
+                if observation.price > accepted_threshold
                 else "waiting_for_accepted_resistance_frontier"
             ),
             "level": accepted_level,
@@ -1176,6 +1371,8 @@ def _unified_entry_trigger(
             "accepted_at": accepted.get("accepted_at"),
             "acceptance_age_ms": acceptance_age_ms,
             "acceptance_hold_ms": acceptance_hold_ms,
+            "breakout_extension_bps": breakout_extension_bps,
+            "maximum_breakout_extension_bps": maximum_breakout_extension_bps,
         }
     state.pop("accepted_entry_resistance", None)
 
@@ -1275,15 +1472,18 @@ def _unified_entry_trigger(
         and float(previous_price) <= threshold
         and observation.price > threshold
     )
-    repeats_last_entry_level = bool(
-        level_ids(level) & last_entry_ids
+    breakout_extension_bps = (
+        (observation.price / threshold - 1.0) * 10_000.0
+        if threshold > 0
+        else float("inf")
     )
-    already_above_new_frontier = bool(
-        frontier_changed
-        and observation.price > threshold
-        and not repeats_last_entry_level
+    maximum_breakout_extension_bps = float(
+        policy.get("maximum_breakout_extension_bps") or float("inf")
     )
-    passed = crossed or already_above_new_frontier
+    passed = bool(
+        crossed
+        and breakout_extension_bps <= maximum_breakout_extension_bps
+    )
     if passed:
         state["accepted_entry_resistance"] = {
             "boundary": boundary,
@@ -1299,11 +1499,19 @@ def _unified_entry_trigger(
         }
     return {
         "passed": passed,
-        "reason": "unified_resistance_accepted" if passed else "waiting_for_unified_resistance_break",
+        "reason": (
+            "unified_resistance_accepted"
+            if passed
+            else "waiting_for_unified_resistance_retest"
+            if crossed and breakout_extension_bps > maximum_breakout_extension_bps
+            else "waiting_for_unified_resistance_break"
+        ),
         "level": level,
         "reference_price": boundary,
         "threshold_price": threshold,
         "previous_price": previous_price,
+        "breakout_extension_bps": breakout_extension_bps,
+        "maximum_breakout_extension_bps": maximum_breakout_extension_bps,
     }
 
 
@@ -1350,6 +1558,7 @@ class LongMomentumStrategyEngine:
         state["previous_observed_price"] = state.get("last_price")
         state["last_observed_at"] = observation.observed_at.isoformat()
         state["last_price"] = observation.price
+        _record_macd_histogram_history(state, observation)
         _record_structural_anchors(state, observation)
         if observation.position_quantity > 0:
             return self._evaluate_position(assignment, observation, parameters, state)
@@ -1501,6 +1710,7 @@ class LongMomentumStrategyEngine:
             )
 
         liquidity_policy = dict(parameters.get("liquidity_admission") or {})
+        execution_detail: dict[str, Any] = {}
         if bool(liquidity_policy.get("enabled", False)):
             admitted = bool(state.get("liquidity_admitted_at"))
             admission_detail: dict[str, Any] = {}
@@ -1524,7 +1734,7 @@ class LongMomentumStrategyEngine:
                     metadata={"liquidity_admission": admission_detail},
                 )
             execution_ready, execution_detail = _current_execution_quality_result(
-                observation, liquidity_policy
+                observation, liquidity_policy, reentry=bool(reentries)
             )
             if not execution_ready:
                 return self._result(
@@ -1653,6 +1863,36 @@ class LongMomentumStrategyEngine:
                     "unified_structural_trigger": unified_trigger,
                 },
             )
+
+        momentum_detail: dict[str, Any] = {}
+        momentum_policy = dict(parameters.get("entry_momentum_confirmation") or {})
+        if bool(momentum_policy.get("enabled", False)) and not observation.force_entry:
+            momentum_ready, momentum_detail = _entry_momentum_strengthening_result(
+                observation,
+                momentum_policy,
+                state,
+            )
+            if not momentum_ready:
+                return self._result(
+                    assignment,
+                    observation,
+                    "wait",
+                    "entry_momentum_not_strengthening",
+                    confirmation_score,
+                    _confirmation_confidence(observation),
+                    state,
+                    AssignmentStatus.REENTRY_COOLDOWN
+                    if reentries
+                    else AssignmentStatus.WATCHING,
+                    metadata={
+                        "triggers": triggered,
+                        "vetoes": vetoes,
+                        "confirmation": confirmation,
+                        "entry_rules": rule_result,
+                        "unified_structural_trigger": unified_trigger,
+                        "entry_momentum_confirmation": momentum_detail,
+                    },
+                )
         if authority == "confirm" and not observation.manual_entry_request and not observation.force_entry:
             return self._result(
                 assignment,
@@ -1772,6 +2012,8 @@ class LongMomentumStrategyEngine:
                 "initial_stop": stop,
                 "profit_targets": profit_targets,
                 "unified_structural_trigger": unified_trigger,
+                "execution_quality": execution_detail,
+                "entry_momentum_confirmation": momentum_detail,
             },
         )
 
@@ -3617,6 +3859,15 @@ def _decision_reason_detail(
         detail = dict(metadata.get("execution_quality") or {})
         failed = ", ".join(str(value) for value in detail.get("failed") or [])
         return f"Wait: current order execution is unsafe — failed: {failed or 'spread or activity unavailable'}."
+    if reason == "entry_momentum_not_strengthening":
+        detail = dict(metadata.get("entry_momentum_confirmation") or {})
+        return (
+            "Wait: price cleared structural resistance while one-second MACD remained positive/open, "
+            "but breakout momentum was contracting — histogram "
+            f"{_display_value(detail.get('current_histogram'))} versus "
+            f"{_display_value(detail.get('baseline_histogram'))} "
+            f"{int(detail.get('lookback_ms') or 0)} ms earlier."
+        )
     if reason == "waiting_for_target_replenishment_pullback":
         detail = dict(metadata.get("target_replenishment") or {})
         failed = ", ".join(str(value) for value in detail.get("failed") or [])
@@ -3647,8 +3898,8 @@ def _decision_reason_detail(
             f"gain={float(metadata.get('gain_pct') or 0):+.3f}%."
         )
     labels = {
-        "entry_confirmed": "Enter: latched liquidity, executable spread/activity, VWAP, exact positive/open one-second MACD, and Unified resistance acceptance all passed.",
-        "reentry_confirmed": "Re-enter: executable spread/activity, VWAP, exact positive/open one-second MACD, and a fresh Unified resistance recovery all passed.",
+        "entry_confirmed": "Enter: latched liquidity, executable spread/activity, VWAP, strengthening positive/open one-second MACD, and Unified resistance acceptance all passed.",
+        "reentry_confirmed": "Re-enter: executable spread/activity, VWAP, strengthening positive/open one-second MACD, and a fresh Unified resistance recovery all passed.",
         "target_profit_replenishment": "Profit-target replenishment: a target filled, price made a causal pullback, Unified support held, and VWAP plus exact positive/open one-second MACD remained valid.",
         "failure_to_extend_partial": "Profit reduction: price stopped extending while QMD flow deteriorated; sell half and keep the protected remainder.",
         "qmd_flow_geometry_exhaustion": "Exit: QMD flow structure weakened with confident flow-price divergence.",

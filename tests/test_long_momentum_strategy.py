@@ -321,6 +321,96 @@ class LongMomentumStrategyTests(unittest.TestCase):
             ["current_spread"],
         )
 
+    def test_initial_entry_requires_more_vwap_separation_than_reentry(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["liquidity_admission"].update({
+            "enabled": True,
+            "minimum_initial_vwap_extension_bps": 250.0,
+            "minimum_reentry_vwap_extension_bps": 100.0,
+        })
+        observation = confirmed_observation(
+            price=10.20,
+            bid=10.19,
+            ask=10.20,
+            previous_close=9.0,
+            previous_high=9.5,
+            swing_high=9.5,
+            vwap=10.0,
+            source_values=self._liquidity_values(),
+        )
+        initial_state = {
+            "liquidity_admitted_at": (NOW - timedelta(seconds=1)).isoformat(),
+        }
+        initial = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=parameters, state=initial_state),
+            observation,
+        )
+        reentry = LongMomentumStrategyEngine().evaluate(
+            assignment(
+                parameters=parameters,
+                state={
+                    **initial_state,
+                    "reentries": 1,
+                    "last_exit_at": (NOW - timedelta(seconds=10)).isoformat(),
+                    "reentry_pullback_confirmed_at": (
+                        NOW - timedelta(seconds=5)
+                    ).isoformat(),
+                },
+            ),
+            observation,
+        )
+
+        self.assertEqual(
+            initial.evaluation.signals[0].reason,
+            "current_execution_quality_incomplete",
+        )
+        self.assertIn(
+            "vwap_extension_floor",
+            initial.evaluation.signals[0].metadata["execution_quality"]["failed"],
+        )
+        self.assertNotEqual(
+            reentry.evaluation.signals[0].reason,
+            "current_execution_quality_incomplete",
+        )
+
+    def test_entry_requires_macd_histogram_to_strengthen_over_causal_lookback(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["entry_momentum_confirmation"].update({
+            "enabled": True,
+            "histogram_lookback_ms": 5_000,
+            "minimum_histogram_increase": 0.0,
+        })
+        base_state = {
+            "macd_histogram_history_1s": [{
+                "observed_at": (NOW - timedelta(seconds=5)).isoformat(),
+                "histogram": 0.25,
+            }],
+        }
+        engine = LongMomentumStrategyEngine()
+
+        contracting = engine.evaluate(
+            assignment(parameters=parameters, state=base_state),
+            confirmed_observation(macd_line=0.4, macd_signal=0.2),
+        )
+        strengthening = engine.evaluate(
+            assignment(parameters=parameters, state=base_state),
+            confirmed_observation(macd_line=0.6, macd_signal=0.2),
+        )
+
+        self.assertEqual(
+            contracting.evaluation.signals[0].reason,
+            "entry_momentum_not_strengthening",
+        )
+        detail = contracting.evaluation.signals[0].metadata[
+            "entry_momentum_confirmation"
+        ]
+        self.assertEqual(
+            detail["failed"],
+            ["histogram_strengthening", "histogram_strengthening_bps"],
+        )
+        self.assertAlmostEqual(detail["histogram_increase"], -0.05)
+        self.assertEqual(strengthening.evaluation.signals[0].action, "enter_long")
+
     def test_campaign_reentry_requires_a_new_unified_resistance_break(self) -> None:
         parameters = default_long_momentum_parameters()
         parameters["structural_entry"].update({
@@ -566,6 +656,101 @@ class LongMomentumStrategyTests(unittest.TestCase):
         )
         self.assertEqual(entered.evaluation.signals[0].action, "enter_long")
         self.assertEqual(entered.state["breakout_level"], 100.5)
+
+    def test_unified_entry_does_not_treat_a_new_level_behind_price_as_a_break(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["structural_entry"].update({"enabled": True})
+        result = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=parameters, state={"last_price": 100.60}),
+            confirmed_observation(
+                price=100.65,
+                structural_resistance_levels=({
+                    "unified_level_id": 12,
+                    "side": -1,
+                    "upper": 100.50,
+                    "salience": 0.9,
+                    "confidence": 0.9,
+                    "reaction_probability": 0.9,
+                },),
+            ),
+        )
+
+        self.assertEqual(result.evaluation.signals[0].action, "wait")
+        self.assertEqual(
+            result.evaluation.signals[0].reason,
+            "waiting_for_unified_resistance_break",
+        )
+        self.assertEqual(
+            result.state["pending_entry_resistance"]["boundary"], 100.50
+        )
+
+    def test_unified_entry_requires_established_high_hold_level_evidence(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["structural_entry"].update({
+            "enabled": True,
+            "minimum_hold_probability": 0.75,
+            "minimum_independent_pivot_count": 2,
+            "minimum_level_age_ms": 120_000,
+        })
+        common = {
+            "unified_level_id": 14,
+            "side": -1,
+            "upper": 100.50,
+            "salience": 0.9,
+            "confidence": 0.9,
+            "reaction_probability": 0.9,
+            "independent_pivot_count": 3,
+        }
+        engine = LongMomentumStrategyEngine()
+        immature = engine.evaluate(
+            assignment(parameters=parameters, state={"last_price": 100.40}),
+            confirmed_observation(
+                price=100.60,
+                structural_resistance_levels=({
+                    **common,
+                    "hold_probability": 0.9,
+                    "created_at_ms": int(
+                        (NOW - timedelta(seconds=30)).timestamp() * 1_000
+                    ),
+                },),
+            ),
+        )
+        weak_hold = engine.evaluate(
+            assignment(parameters=parameters, state={"last_price": 100.40}),
+            confirmed_observation(
+                price=100.60,
+                structural_resistance_levels=({
+                    **common,
+                    "hold_probability": 0.70,
+                    "created_at_ms": int(
+                        (NOW - timedelta(minutes=3)).timestamp() * 1_000
+                    ),
+                },),
+            ),
+        )
+        mature = engine.evaluate(
+            assignment(parameters=parameters, state={"last_price": 100.40}),
+            confirmed_observation(
+                price=100.60,
+                structural_resistance_levels=({
+                    **common,
+                    "hold_probability": 0.90,
+                    "created_at_ms": int(
+                        (NOW - timedelta(minutes=3)).timestamp() * 1_000
+                    ),
+                },),
+            ),
+        )
+
+        self.assertEqual(
+            immature.evaluation.signals[0].reason,
+            "waiting_for_unified_resistance",
+        )
+        self.assertEqual(
+            weak_hold.evaluation.signals[0].reason,
+            "waiting_for_unified_resistance",
+        )
+        self.assertEqual(mature.evaluation.signals[0].action, "enter_long")
 
     def test_unified_entry_can_tighten_to_a_new_closer_level(self) -> None:
         parameters = default_long_momentum_parameters()

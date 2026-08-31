@@ -733,7 +733,16 @@ class PortfolioManagementEngine:
             status=status,
             filled_quantity=filled,
             remaining_quantity=remaining,
-            reserved_notional=remaining * reservation.reference_price,
+            # Reduction/exit reservations never consume buying power.  Keep
+            # their zero-capital reservation at zero while partial exit fills
+            # arrive; deriving notional from the remaining exit quantity here
+            # stranded a full-position reservation and blocked every later
+            # entry for the account.
+            reserved_notional=(
+                remaining * reservation.reference_price
+                if entry_update
+                else reservation.reserved_notional
+            ),
             reserved_planned_risk=(
                 reservation.reserved_planned_risk * remaining / reservation.quantity
                 if reservation.quantity > 0
@@ -1925,9 +1934,14 @@ def _worst_entry_price(intent: StrategyIntent) -> float:
     reference = float(intent.reference_price)
     envelope = intent.resolved_execution_policy().envelope
     if intent.action in {"enter_long", "add_long"}:
-        return float(envelope.maximum_buy_price or reference)
+        ask = float(intent.metadata.get("ask") or 0)
+        return float(envelope.maximum_buy_price or max(reference, ask))
     if intent.action in {"enter_short", "add_short"}:
-        return float(envelope.minimum_sell_price or reference)
+        bid = float(intent.metadata.get("bid") or 0)
+        return float(
+            envelope.minimum_sell_price
+            or (min(reference, bid) if bid > 0 else reference)
+        )
     return reference
 
 

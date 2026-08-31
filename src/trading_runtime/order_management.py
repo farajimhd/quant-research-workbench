@@ -64,6 +64,20 @@ def _is_terminal_modify_race(exc: ValueError) -> bool:
     return str(exc).strip().lower() == "only open orders may be modified"
 
 
+def _protective_repair_raw(parent_raw: dict[str, Any]) -> dict[str, Any]:
+    """Retain entry lineage while assigning the repair fill its true role."""
+
+    raw = dict(parent_raw)
+    return {
+        **raw,
+        "canonical_metadata": {
+            **dict(raw.get("canonical_metadata") or {}),
+            "execution_role": "protective_stop",
+            "reason": "protective_stop_filled",
+        },
+    }
+
+
 class ExecutionUrgency(StrEnum):
     VERY_URGENT = "very_urgent"
     URGENT = "urgent"
@@ -2322,7 +2336,7 @@ class OrderManagementEngine:
                     outsideRTH=group.orders[0].outsideRTH,
                     auxPrice=stop_price,
                     listingExchange=group.orders[0].listingExchange,
-                    raw=dict(group.orders[0].raw),
+                    raw=_protective_repair_raw(group.orders[0].raw),
                 )
             if repair is not None:
                 async with self._command_lane(group.account_id):
