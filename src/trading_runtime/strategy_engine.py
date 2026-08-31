@@ -33,7 +33,7 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 21
+STRATEGY_REVISION = 22
 
 RULE_COMPARATORS = {
     "above_by_bps",
@@ -1296,9 +1296,17 @@ def _unified_entry_trigger(
     policy = dict(parameters.get("structural_entry") or {})
     buffer_bps = float(policy.get("acceptance_buffer_bps") or 0)
     previous_price = state.get("previous_observed_price")
+    # A level's stored side is its last confirmed lifecycle role, not an
+    # immutable geometric role.  A former support band above current price is
+    # overhead structure and must be eligible for a long breakout; excluding
+    # it makes the strategy skip causal swing highs after gaps and pullbacks.
+    # Consolidate the complete level book, then classify by price below.
     rows = _consolidated_structure_levels([
         dict(row)
-        for row in observation.structural_resistance_levels
+        for row in (
+            *observation.structural_support_levels,
+            *observation.structural_resistance_levels,
+        )
         if isinstance(row, dict)
         and _level_is_entry_quality(
             dict(row), policy, observed_at=observation.observed_at
@@ -1348,56 +1356,41 @@ def _unified_entry_trigger(
     )
     acceptance_hold_ms = max(0.0, float(policy.get("acceptance_hold_ms") or 0))
     accepted_threshold = accepted_boundary * (1 + buffer_bps / 10_000)
-    superseded_accepted_boundary = 0.0
     if accepted_boundary > 0 and acceptance_age_ms <= acceptance_hold_ms:
-        # Acceptance latches the crossing event, not an obsolete frontier. If
-        # the causal level book now exposes another qualifying resistance
-        # above price, that current frontier must be cleared before entry. This
-        # keeps the executor aligned with the visible structural rule result.
-        current_overhead = [item for item in usable if item[0] >= observation.price]
-        nearest_overhead_boundary = (
-            min(current_overhead, key=lambda item: item[0])[0]
-            if current_overhead
-            else 0.0
+        # Acceptance belongs to the local structural crossing. Higher levels
+        # are subsequent resistance/target evidence; they do not invalidate a
+        # breakout while MACD or liquidity confirmation is catching up.
+        breakout_extension_bps = (
+            (observation.price / accepted_threshold - 1.0) * 10_000.0
+            if accepted_threshold > 0
+            else float("inf")
         )
-        accepted_is_superseded = bool(
-            nearest_overhead_boundary > accepted_threshold + 1e-9
+        maximum_breakout_extension_bps = float(
+            policy.get("maximum_breakout_extension_bps") or float("inf")
         )
-        if accepted_is_superseded:
-            superseded_accepted_boundary = accepted_boundary
-            state.pop("accepted_entry_resistance", None)
-        else:
-            breakout_extension_bps = (
-                (observation.price / accepted_threshold - 1.0) * 10_000.0
-                if accepted_threshold > 0
-                else float("inf")
-            )
-            maximum_breakout_extension_bps = float(
-                policy.get("maximum_breakout_extension_bps") or float("inf")
-            )
-            passed = bool(
-                observation.price > accepted_threshold
-                and breakout_extension_bps <= maximum_breakout_extension_bps
-            )
-            return {
-                "passed": passed,
-                "reason": (
-                    "unified_resistance_acceptance_held"
-                    if passed
-                    else "waiting_for_unified_resistance_retest"
-                    if observation.price > accepted_threshold
-                    else "waiting_for_accepted_resistance_frontier"
-                ),
-                "level": accepted_level,
-                "reference_price": accepted_boundary,
-                "threshold_price": accepted_threshold,
-                "previous_price": previous_price,
-                "accepted_at": accepted.get("accepted_at"),
-                "acceptance_age_ms": acceptance_age_ms,
-                "acceptance_hold_ms": acceptance_hold_ms,
-                "breakout_extension_bps": breakout_extension_bps,
-                "maximum_breakout_extension_bps": maximum_breakout_extension_bps,
-            }
+        passed = bool(
+            observation.price > accepted_threshold
+            and breakout_extension_bps <= maximum_breakout_extension_bps
+        )
+        return {
+            "passed": passed,
+            "reason": (
+                "unified_resistance_acceptance_held"
+                if passed
+                else "waiting_for_unified_resistance_retest"
+                if observation.price > accepted_threshold
+                else "waiting_for_accepted_resistance_frontier"
+            ),
+            "level": accepted_level,
+            "reference_price": accepted_boundary,
+            "threshold_price": accepted_threshold,
+            "previous_price": previous_price,
+            "accepted_at": accepted.get("accepted_at"),
+            "acceptance_age_ms": acceptance_age_ms,
+            "acceptance_hold_ms": acceptance_hold_ms,
+            "breakout_extension_bps": breakout_extension_bps,
+            "maximum_breakout_extension_bps": maximum_breakout_extension_bps,
+        }
     state.pop("accepted_entry_resistance", None)
 
     # Arm one causal frontier and wait for price to clear that frontier.  A
@@ -1558,7 +1551,6 @@ def _unified_entry_trigger(
         "previous_price": previous_price,
         "breakout_extension_bps": breakout_extension_bps,
         "maximum_breakout_extension_bps": maximum_breakout_extension_bps,
-        "superseded_accepted_boundary": superseded_accepted_boundary or None,
     }
 
 
@@ -5072,10 +5064,11 @@ def _structural_profit_targets(
     if not bool(policy.get("enabled", True)):
         return [luld_target] if luld_target is not None else []
     entry = observation.price
+    # Profit targets are geometric: any qualifying level above a long entry
+    # (or below a short entry) is relevant even when its last lifecycle role
+    # was the opposite side.  Price-relative filtering below assigns the role.
     level_rows = _consolidated_structure_levels(list(
-        observation.structural_resistance_levels
-        if side == "long"
-        else observation.structural_support_levels
+        (*observation.structural_support_levels, *observation.structural_resistance_levels)
     ), side=side)
     local_time = observation.observed_at.astimezone(NEW_YORK).time().replace(tzinfo=None)
     regular_session = clock_time(9, 30) <= local_time < clock_time(16, 0)
