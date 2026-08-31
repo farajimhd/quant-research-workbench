@@ -3030,7 +3030,21 @@ class AssignedLongMomentumStrategy:
     ) -> None:
         assignment_id = str(getattr(snapshot, "assignment_id", "") or "")
         snapshot_state = str(getattr(snapshot, "state", ""))
-        if not assignment_id or snapshot_state not in {"filled", "cancelled"}:
+        incremental_fill = float(
+            getattr(snapshot, "fill_incremental_quantity", 0.0) or 0.0
+        )
+        # Protected children can fill incrementally while the parent order
+        # group remains PARTIALLY_FILLED (for example when the entry itself
+        # completed only partially before its deadline).  The fill callback is
+        # authoritative for each positive increment, so consume it now rather
+        # than waiting for a terminal group state that may never become
+        # FILLED.  Otherwise profit-target replenishment silently loses the
+        # target fills that created its entitlement.
+        if (
+            not assignment_id
+            or snapshot_state not in {"filled", "cancelled"}
+            and incremental_fill <= 0
+        ):
             return
         for key, assignment in self._assignments.items():
             if assignment.assignment_id != assignment_id:
@@ -3089,9 +3103,7 @@ class AssignedLongMomentumStrategy:
                 status = AssignmentStatus.MANAGING
             elif action in {"exit", "take_profit", "cover"}:
                 fill_role = str(getattr(snapshot, "fill_role", "") or "")
-                incremental = float(
-                    getattr(snapshot, "fill_incremental_quantity", 0.0) or 0.0
-                )
+                incremental = incremental_fill
                 if fill_role == "profit_target" and incremental > 0:
                     targets = [
                         float(value)

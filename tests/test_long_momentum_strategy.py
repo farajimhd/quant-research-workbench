@@ -2394,7 +2394,10 @@ class LongMomentumRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 fill_role="profit_target",
                 fill_incremental_quantity=20,
                 slice_id="target-slice-1",
-                state="filled",
+                # The protected child can fill while the parent entry group
+                # remains partial; this exact runtime state must still create
+                # the replenishment entitlement.
+                state="partially_filled",
                 updated_at=NOW,
             ),
             aggregate_position_quantity=80,
