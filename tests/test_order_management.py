@@ -1324,6 +1324,83 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                 await manager.close()
                 journal.close()
 
+    async def test_full_exit_reuses_partially_filled_target_at_cumulative_quantity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            broker = RecordingBroker()
+            real_planner = IbkrStrategyOrderPlanner()
+            instrument = InstrumentContract("TEST", 123, "TEST", "STK", "USD")
+
+            def bracket_planner(strategy_intent, account_id, _event):
+                return real_planner.plan(
+                    account_id=account_id,
+                    instrument=instrument,
+                    intent=strategy_intent,
+                    strategy_id="strategy-1",
+                    strategy_revision=1,
+                )
+
+            journal = TradingJournal(Path(directory) / "orders.sqlite3")
+            await broker.initialize()
+            risk = RiskAuthority()
+            await risk.prime(broker, ["DU1"])
+            manager = OrderManagementEngine(
+                broker=broker,
+                planner=bracket_planner,
+                risk=risk,
+                journal=journal,
+                run_id="run-1",
+                strategy_id="strategy-1",
+                strategy_revision=1,
+                policy=BrokerCommunicationPolicy(),
+            )
+            try:
+                entry = StrategyIntent(
+                    **{
+                        **intent(quantity=100).payload(),
+                        "intent_id": "partially-targeted-entry",
+                        "profit_target_price": 10.50,
+                    }
+                )
+                entry_snapshot = await manager.submit_intent(
+                    portfolio_approved(journal, entry), account_id="DU1", event=None
+                )
+                parent_id, target_id = entry_snapshot.broker_order_ids[:2]
+                broker._orders[parent_id].status = OrderStatus.FILLED
+                broker._orders[parent_id].filled = 100.0
+                broker._orders[target_id].status = OrderStatus.SUBMITTED
+                broker._orders[target_id].filled = 40.0
+                broker._positions["DU1"][123] = _Position(
+                    conid=123,
+                    ticker="TEST",
+                    quantity=60.0,
+                    avg_cost=10.0,
+                )
+                exit_request = replace(
+                    intent(action="exit", urgency="very_urgent", quantity=60),
+                    intent_id="exit-after-partial-target",
+                    metadata={
+                        **intent(action="exit").metadata,
+                        "position_quantity": 60.0,
+                        "reason_code": "macd_signal_crossed_above_line",
+                    },
+                )
+
+                exit_snapshot = await manager.submit_intent(
+                    portfolio_approved(journal, exit_request),
+                    account_id="DU1",
+                    event=None,
+                )
+
+                self.assertEqual(exit_snapshot.state, OrderManagementState.ACKNOWLEDGED)
+                self.assertEqual(exit_snapshot.remaining_quantity, 60.0)
+                self.assertEqual(broker.modifications[-1][0], target_id)
+                self.assertEqual(broker.modifications[-1][1].quantity, 100.0)
+                adopted = manager._groups[exit_snapshot.group_id]
+                self.assertEqual(adopted.filled_by_broker_order[target_id], 40.0)
+            finally:
+                await manager.close()
+                journal.close()
+
     async def test_full_exit_reprices_every_sliced_target_without_resizing_one_child(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             broker = RecordingBroker()

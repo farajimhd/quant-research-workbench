@@ -1548,6 +1548,13 @@ class OrderManagementEngine:
                     broker_order_id: index
                     for index, broker_order_id in enumerate(broker_order_ids)
                 },
+                # These target children may already have cumulative fills.
+                # Seed the adopted managed-exit group at that broker baseline
+                # so subsequent order updates count only new exit shares.
+                filled_by_broker_order={
+                    broker_order_id: float(live.filledQuantity)
+                    for _, broker_order_id, _, _, live in sliced_targets
+                },
                 remaining_quantity=float(intent.quantity),
                 current_limit_price=initial_price,
             )
@@ -1603,6 +1610,18 @@ class OrderManagementEngine:
             if target_index is None:
                 continue
             existing = protected.orders[target_index]
+            broker_order_id = protected.broker_order_ids[target_index]
+            live = live_by_id.get(str(broker_order_id))
+            if live is None or not math.isclose(
+                float(live.remainingQuantity),
+                float(intent.quantity),
+                rel_tol=0.0,
+                abs_tol=1e-6,
+            ):
+                # Reuse is safe only when the open child owns exactly the
+                # remaining position. Otherwise the caller must use the fresh
+                # managed-exit path and reconcile the old protection.
+                continue
             initial_price = tactic.steps[0].price if tactic else float(plan.orders[0].price or intent.reference_price)
             canonical_metadata = {
                 **dict(existing.raw.get("canonical_metadata") or {}),
@@ -1611,7 +1630,10 @@ class OrderManagementEngine:
             }
             replacement = replace(
                 existing,
-                quantity=float(intent.quantity),
+                # Broker modifications use total cumulative order quantity,
+                # not remaining quantity. Preserve shares already filled and
+                # add the current position that this managed exit must close.
+                quantity=float(live.filledQuantity) + float(intent.quantity),
                 price=initial_price,
                 raw={
                     **dict(existing.raw or {}),
@@ -1631,12 +1653,15 @@ class OrderManagementEngine:
                 tactic=tactic,
                 broker_order_ids=[protected.broker_order_ids[target_index]],
                 broker_order_roles={
-                    protected.broker_order_ids[target_index]: "managed_exit",
+                    broker_order_id: "managed_exit",
+                },
+                broker_order_request_indexes={broker_order_id: 0},
+                filled_by_broker_order={
+                    broker_order_id: float(live.filledQuantity),
                 },
                 remaining_quantity=float(intent.quantity),
             )
             self._groups[group.group_id] = group
-            broker_order_id = group.broker_order_ids[0]
             self._group_by_broker_id[broker_order_id] = group.group_id
             # The replacement can fill synchronously (the simulator does this,
             # and a live broker may publish the fill before modify_order
