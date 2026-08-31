@@ -1551,6 +1551,114 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                 await manager.close()
                 journal.close()
 
+    async def test_historical_reused_target_matches_immediately_at_exit_quote(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            from src.market_engine.events import QuoteEvent
+
+            event_time = datetime(2026, 8, 21, 14, 0, tzinfo=timezone.utc)
+            broker = SimulatedBrokerAdapter(["DU1"], mode=TradingMode.BACKTEST)
+            instrument = InstrumentContract("TEST", 123, "TEST", "STK", "USD")
+            runtime_planner = RuntimeIbkrStrategyOrderPlanner(
+                {"TEST": instrument},
+                strategy_id="strategy-1",
+                strategy_revision=1,
+                run_id="run-1",
+            )
+
+            def bracket_planner(strategy_intent, account_id, event):
+                return runtime_planner.plan(
+                    intent=strategy_intent,
+                    account_id=account_id,
+                    event=event,
+                )
+
+            journal = TradingJournal(Path(directory) / "orders.sqlite3")
+            await broker.initialize()
+            risk = RiskAuthority()
+            await risk.prime(broker, ["DU1"])
+            manager = OrderManagementEngine(
+                broker=broker,
+                planner=bracket_planner,
+                risk=risk,
+                journal=journal,
+                run_id="run-1",
+                strategy_id="strategy-1",
+                strategy_revision=1,
+                policy=BrokerCommunicationPolicy(),
+            )
+            try:
+                await broker.on_market_event(
+                    QuoteEvent(
+                        ask_exchange=11,
+                        ask_price=10.02,
+                        ask_size=1_000,
+                        bid_exchange=12,
+                        bid_price=10.00,
+                        bid_size=1_000,
+                        conditions=(),
+                        indicators=(),
+                        ingest_ts=event_time - timedelta(milliseconds=100),
+                        raw={"conid": 123},
+                        sequence=1,
+                        source="test",
+                        tape=3,
+                        ticker="TEST",
+                        ts=event_time - timedelta(milliseconds=100),
+                    )
+                )
+                entry = replace(
+                    intent(quantity=100),
+                    intent_id="historical-entry-with-target",
+                    event_time=event_time,
+                    reference_price=10.02,
+                    profit_target_price=10.50,
+                    metadata={
+                        **intent(quantity=100).metadata,
+                        "quote_observed_at": event_time.isoformat(),
+                    },
+                )
+                entry_snapshot = await manager.submit_intent(
+                    portfolio_approved(journal, entry),
+                    account_id="DU1",
+                    event=None,
+                )
+                target_id = entry_snapshot.broker_order_ids[1]
+                self.assertEqual((await broker.positions("DU1"))[0].position, 100)
+                exit_intent = replace(
+                    intent(action="exit", urgency="very_urgent", quantity=100),
+                    intent_id="historical-reused-target-exit",
+                    event_time=event_time,
+                    reference_price=10.00,
+                    metadata={
+                        **intent(action="exit").metadata,
+                        "position_quantity": 100.0,
+                        "position_side": "long",
+                        "quote_observed_at": event_time.isoformat(),
+                    },
+                )
+
+                exit_snapshot = await manager.submit_intent(
+                    portfolio_approved(journal, exit_intent),
+                    account_id="DU1",
+                    event=None,
+                )
+
+                self.assertEqual(exit_snapshot.broker_order_ids, (target_id,))
+                self.assertEqual(exit_snapshot.filled_quantity, 100)
+                self.assertEqual(exit_snapshot.remaining_quantity, 0)
+                self.assertEqual(await broker.positions("DU1"), [])
+                sell_fills = [
+                    row
+                    for row in journal.records("run-1")
+                    if row.category == "execution"
+                    and row.payload.get("side") == "S"
+                ]
+                self.assertEqual(len(sell_fills), 1)
+                self.assertEqual(sell_fills[0].event_time, event_time)
+            finally:
+                await manager.close()
+                journal.close()
+
     async def test_exit_cancels_partially_filled_entry_before_submitting_sell(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             broker = SequencedCommandBroker()

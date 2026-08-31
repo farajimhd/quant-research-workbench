@@ -835,7 +835,11 @@ class OrderManagementEngine:
                 event_time=working_intent.event_time,
             )
         if protected_exit is not None:
-            return protected_exit
+            return await self._match_current_historical_group(
+                protected_exit,
+                intent=working_intent,
+                quote=quote,
+            )
         orders = _apply_initial_tactic(plan.orders, tactic)
         now = self._causal_group_time(working_intent)
         group = _ManagedOrderGroup(
@@ -902,29 +906,46 @@ class OrderManagementEngine:
                 event_time=intent.event_time,
                 exclude_order_ids=tuple(group.broker_order_ids),
             )
+        return await self._match_current_historical_group(
+            group.snapshot(self.policy.version),
+            intent=working_intent,
+            quote=quote,
+        )
+
+    async def _match_current_historical_group(
+        self,
+        snapshot: OrderGroupSnapshot,
+        *,
+        intent: StrategyIntent,
+        quote: ExecutionQuote | None,
+    ) -> OrderGroupSnapshot:
+        """Match a new or modified marketable group at its causal decision quote."""
+
         match_current = getattr(self.broker, "match_current_orders", None)
-        if match_current is not None:
-            executions = await match_current(
-                working_intent.ticker,
-                working_intent.event_time,
-                tuple(group.broker_order_ids),
-                quote.bid if quote is not None else None,
-                quote.ask if quote is not None else None,
-                quote.observed_at if quote is not None else None,
+        if match_current is None:
+            return snapshot
+        executions = await match_current(
+            intent.ticker,
+            intent.event_time,
+            tuple(snapshot.broker_order_ids),
+            quote.bid if quote is not None else None,
+            quote.ask if quote is not None else None,
+            quote.observed_at if quote is not None else None,
+        )
+        for execution in executions:
+            self.journal.append(
+                run_id=self.run_id,
+                category="execution",
+                entity_type="fill",
+                entity_id=execution.execution_id,
+                account_id=execution.account,
+                event_time=execution.trade_time,
+                payload=execution.to_cpapi(),
             )
-            for execution in executions:
-                self.journal.append(
-                    run_id=self.run_id,
-                    category="execution",
-                    entity_type="fill",
-                    entity_id=execution.execution_id,
-                    account_id=execution.account,
-                    event_time=execution.trade_time,
-                    payload=execution.to_cpapi(),
-                )
-            if executions:
-                await self.reconcile()
-        return group.snapshot(self.policy.version)
+        if not executions:
+            return snapshot
+        await self.reconcile()
+        return self.snapshot_for_intent(intent.intent_id) or snapshot
 
     async def _reconcile_stale_protected_exit(
         self,
