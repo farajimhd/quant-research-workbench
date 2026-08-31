@@ -293,6 +293,8 @@ def main() -> None:
                 derived = body_v3_source_row(row)
                 old_text = str(row.get("v2_text") or row.get("title") or "")
                 new_text = str(derived["text"])
+                old_model_text_hash = hashlib.sha256(old_text.encode("utf-8")).hexdigest()
+                model_text_hash_changed = old_model_text_hash != str(derived["model_text_hash"])
                 old = _source(row, old_text, str(row.get("v2_text_hash") or ""))
                 new = _source(
                     row, new_text, str(derived["model_text_hash"]), body_status=str(derived["body_status"])
@@ -315,6 +317,7 @@ def main() -> None:
                 for counter in (counters, split_counter):
                     counter["articles"] += 1
                     counter[f"body_status:{derived['body_status']}"] += 1
+                    counter["model_text_hash_changes"] += int(model_text_hash_changed)
                     counter["tfidf_changed"] += int(cosine < 1.0 - 1e-12)
                     counter["deepfm_label_flips_at_0.5"] += int(label_flip)
                     counter["synthesis_signature_changes"] += int(synthesis_flip)
@@ -326,6 +329,7 @@ def main() -> None:
                     "body_status": derived["body_status"],
                     "v2_chars": len(old_text),
                     "v3_model_chars": len(new_text),
+                    "model_text_hash_changed": model_text_hash_changed,
                     "tfidf_cosine": cosine,
                     "v2_synthesis": old_synthesis,
                     "v3_synthesis": new_synthesis,
@@ -381,6 +385,7 @@ def main() -> None:
         "failures": failures,
         "interpretation": {
             "deepfm": "Diagnostic replay through the frozen V2 model; not a V3 promotion result.",
+            "embeddings": "A model-text hash change invalidates the V2 embedding input; vector drift requires a separately versioned paid rebuild.",
             "holdout": "Any holdout rows are measurement-only and must not tune text composition or thresholds.",
             "next_gate": "Freeze operator labels, train a versioned V3 successor, then evaluate once on a later sealed time-forward holdout.",
         },
