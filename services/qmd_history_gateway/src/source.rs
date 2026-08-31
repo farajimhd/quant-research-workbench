@@ -895,12 +895,13 @@ impl HistoricalEventSource {
         live_continuation_sequence: Option<u64>,
         event_type_filter: Option<u8>,
     ) -> Result<mpsc::Receiver<Result<Vec<LiveCompactEvent>, String>>, String> {
-        // Structural reconstruction is single-ticker and response-streamed in
-        // bounded batches. Keep the ClickHouse response window bounded as well:
-        // a batch only bounds decoded in-process rows, while a dense ticker can
-        // still make a daily HTTP response too large for the transport. The
-        // dedicated setting allows structural rebuilds to be tuned independently
-        // from Scanner without changing causal ordering across adjacent chunks.
+        // Structural reconstruction is single-ticker and the ClickHouse body
+        // is consumed incrementally into bounded decoded batches. Four-hour
+        // source chunks avoid thousands of 30-minute query round trips during
+        // a complete multi-month cold seed while keeping each remote response
+        // below the reliable transport envelope observed for dense symbols.
+        // The dedicated setting remains configurable without changing causal
+        // ordering across adjacent chunks.
         self.stream_ordered_filtered_chunked(
             window,
             batch_size,

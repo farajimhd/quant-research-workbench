@@ -37,11 +37,12 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, OnceCell, Semaphore};
 
-pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v34";
-pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v41";
+pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v35";
+pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v42";
 pub const HISTORICAL_CORPORATE_ACTION_REVISION: &str = "retrospective-split-adjusted-v2";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
 const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 5;
+const PREPARED_STRUCTURE_SEED_CACHE_SCHEMA_VERSION: u16 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CacheProfile {
@@ -168,6 +169,14 @@ struct PreparedBarCacheArtifact {
     bars: Vec<ChartBarRow>,
     bar_indicator_projection: Vec<Value>,
     structure_projection: Vec<Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct PreparedStructureSeedCacheArtifact {
+    schema_version: u16,
+    key: String,
+    ticker: String,
+    checkpoint: GenericStructureCheckpoint,
 }
 
 fn bar_indicator_projection(selected: &[&BarUpdate]) -> Result<Vec<Value>, String> {
@@ -570,7 +579,7 @@ impl HistoricalDerivedCache {
         profile: CacheProfile,
     ) -> Result<CacheLease, String> {
         let revision_window =
-            revision_window(&window, &profile, self.config.structure_book_rebuild_days)?;
+            revision_window(&window, &profile, self.config.structure_book_lookback_days)?;
         let source_revision = self.source.source_revision(&revision_window).await?;
         let key = cache_key(&window, &ticker, &source_revision, &profile);
         let mut index = self.inner.lock().await;
@@ -757,7 +766,7 @@ impl HistoricalDerivedCache {
         };
         if matches!(&profile, CacheProfile::Bars(_)) {
             let revision_window =
-                revision_window(&window, &profile, self.config.structure_book_rebuild_days)?;
+                revision_window(&window, &profile, self.config.structure_book_lookback_days)?;
             let source_revision = self.source.source_revision(&revision_window).await?;
             let key = cache_key(&window, &ticker, &source_revision, &profile);
             if let Some(artifact) = self
@@ -1593,8 +1602,12 @@ impl HistoricalDerivedCache {
         ticker: &str,
         before: DateTime<Utc>,
     ) -> StructureSeedResult {
+        // A missing or algorithm-incompatible persisted checkpoint must
+        // rebuild the same complete horizon promised by the ticker level-book
+        // contract. A shorter fallback silently deleted older levels exactly
+        // when a new algorithm revision invalidated the persisted seed.
         let rebuild_start =
-            structure_rebuild_start(before, self.config.structure_book_rebuild_days)?;
+            structure_rebuild_start(before, self.config.structure_book_lookback_days)?;
         let rebuild_as_of = before
             .checked_sub_signed(Duration::microseconds(1))
             .ok_or_else(|| "historical structure warm-start underflow".to_string())?;
@@ -1627,14 +1640,33 @@ impl HistoricalDerivedCache {
                     }
                 }
                 let cell = Arc::new(OnceCell::new());
-                seeds.insert(key, cell.clone());
+                seeds.insert(key.clone(), cell.clone());
                 cell
             }
         };
         let config = self.config.clone();
         let source = self.source.clone();
         let ticker = ticker.to_string();
+        let seed_key = key.clone();
         cell.get_or_init(|| async move {
+            let prepared_root = config.prepared_bar_cache_root.join("structure-seeds");
+            let prepared_path = prepared_structure_seed_cache_path(&prepared_root, &seed_key);
+            let expected_key = seed_key.clone();
+            let expected_ticker = ticker.clone();
+            match tokio::task::spawn_blocking(move || {
+                read_prepared_structure_seed_cache(&prepared_path, &expected_key, &expected_ticker)
+            })
+            .await
+            {
+                Ok(Ok(Some(artifact))) => return Ok(Some(artifact.checkpoint)),
+                Ok(Ok(None)) => {}
+                Ok(Err(error)) => {
+                    eprintln!("QMD History ignored invalid prepared structure seed: {error}");
+                }
+                Err(error) => {
+                    eprintln!("QMD History prepared structure seed reader panicked: {error}");
+                }
+            }
             let mut stale_daily_checkpoint = false;
             if let Some(seed) = source
                 .persisted_structure_checkpoint_before(&ticker, before)
@@ -1700,7 +1732,43 @@ impl HistoricalDerivedCache {
             )
             .await
             {
-                Ok(rebuilt) => Ok(Some(rebuilt.checkpoint)),
+                Ok(rebuilt) => {
+                    let checkpoint = rebuilt.checkpoint;
+                    let artifact = PreparedStructureSeedCacheArtifact {
+                        schema_version: PREPARED_STRUCTURE_SEED_CACHE_SCHEMA_VERSION,
+                        key: seed_key.clone(),
+                        ticker: ticker.to_ascii_uppercase(),
+                        checkpoint: checkpoint.clone(),
+                    };
+                    let prepared_root = prepared_root.clone();
+                    let max_entries = config.cache_max_entries;
+                    match tokio::task::spawn_blocking(move || {
+                        let bytes = serde_json::to_vec(&artifact).map_err(|error| {
+                            format!("failed to serialize prepared structure seed: {error}")
+                        })?;
+                        write_prepared_structure_seed_cache(
+                            &prepared_root,
+                            &artifact.key,
+                            &bytes,
+                            max_entries,
+                        )
+                    })
+                    .await
+                    {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(error)) => {
+                            eprintln!(
+                                "QMD History could not persist prepared structure seed: {error}"
+                            );
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "QMD History prepared structure seed writer panicked: {error}"
+                            );
+                        }
+                    }
+                    Ok(Some(checkpoint))
+                }
                 Err(error)
                     if error.starts_with("Generic Structure rebuild found no canonical events") =>
                 {
@@ -2462,6 +2530,111 @@ fn prepared_bar_cache_path(root: &Path, key: &str) -> PathBuf {
     ))
 }
 
+fn prepared_structure_seed_cache_path(root: &Path, key: &str) -> PathBuf {
+    root.join(format!(
+        "v{PREPARED_STRUCTURE_SEED_CACHE_SCHEMA_VERSION}-{}.json",
+        stable_hash_hex(key)
+    ))
+}
+
+fn read_prepared_structure_seed_cache(
+    path: &Path,
+    expected_key: &str,
+    expected_ticker: &str,
+) -> Result<Option<PreparedStructureSeedCacheArtifact>, String> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("failed to read {}: {error}", path.display())),
+    };
+    let artifact = serde_json::from_slice::<PreparedStructureSeedCacheArtifact>(&bytes)
+        .map_err(|error| format!("failed to decode {}: {error}", path.display()))?;
+    if artifact.schema_version != PREPARED_STRUCTURE_SEED_CACHE_SCHEMA_VERSION {
+        return Err(format!(
+            "{} has schema {}, expected {}",
+            path.display(),
+            artifact.schema_version,
+            PREPARED_STRUCTURE_SEED_CACHE_SCHEMA_VERSION,
+        ));
+    }
+    if artifact.key != expected_key {
+        return Err(format!(
+            "{} does not match its cache identity",
+            path.display()
+        ));
+    }
+    if !artifact.ticker.eq_ignore_ascii_case(expected_ticker)
+        || !artifact
+            .checkpoint
+            .sym
+            .eq_ignore_ascii_case(expected_ticker)
+    {
+        return Err(format!(
+            "{} contains a checkpoint outside {expected_ticker}",
+            path.display(),
+        ));
+    }
+    Ok(Some(artifact))
+}
+
+fn write_prepared_structure_seed_cache(
+    root: &Path,
+    key: &str,
+    bytes: &[u8],
+    max_entries: usize,
+) -> Result<bool, String> {
+    fs::create_dir_all(root)
+        .map_err(|error| format!("failed to create {}: {error}", root.display()))?;
+    let path = prepared_structure_seed_cache_path(root, key);
+    if path.is_file() {
+        return Ok(false);
+    }
+    let temporary = root.join(format!(
+        ".{}.{}.tmp",
+        stable_hash_hex(key),
+        std::process::id(),
+    ));
+    fs::write(&temporary, bytes)
+        .map_err(|error| format!("failed to write {}: {error}", temporary.display()))?;
+    if let Err(error) = fs::rename(&temporary, &path) {
+        let _ = fs::remove_file(&temporary);
+        if path.is_file() {
+            return Ok(false);
+        }
+        return Err(format!(
+            "failed to promote {} to {}: {error}",
+            temporary.display(),
+            path.display(),
+        ));
+    }
+    let prefix = format!("v{PREPARED_STRUCTURE_SEED_CACHE_SCHEMA_VERSION}-");
+    let mut artifacts = fs::read_dir(root)
+        .map_err(|error| format!("failed to inspect {}: {error}", root.display()))?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry.file_name().to_string_lossy().starts_with(&prefix)
+                && entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "json")
+        })
+        .collect::<Vec<_>>();
+    artifacts.sort_by_key(|entry| {
+        entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+    });
+    let remove_count = artifacts.len().saturating_sub(max_entries.max(1));
+    for entry in artifacts.into_iter().take(remove_count) {
+        if entry.path() != path {
+            fs::remove_file(entry.path())
+                .map_err(|error| format!("failed to prune prepared structure seeds: {error}"))?;
+        }
+    }
+    Ok(true)
+}
+
 fn read_prepared_bar_cache(
     path: &Path,
     expected_key: &str,
@@ -2715,12 +2888,15 @@ mod tests {
         apply_structure_projection_row, bounded_encountered_structure_levels, cache_key,
         encountered_structure_levels_for_session, ensure_monotonic_bar_start,
         historical_requirement, prepared_bar_cache_path, prepared_indicator_projection,
-        read_prepared_bar_cache, revision_window, session_anchor, split_event_window,
-        stable_hash_hex, structure_events_overlapping, write_prepared_bar_cache, CacheEntry,
-        CacheProfile, ChartBarRow, EntryState, PreparedBarCacheArtifact, SourceRevision,
+        prepared_structure_seed_cache_path, read_prepared_bar_cache,
+        read_prepared_structure_seed_cache, revision_window, session_anchor, split_event_window,
+        stable_hash_hex, structure_events_overlapping, write_prepared_bar_cache,
+        write_prepared_structure_seed_cache, CacheEntry, CacheProfile, ChartBarRow, EntryState,
+        PreparedBarCacheArtifact, PreparedStructureSeedCacheArtifact, SourceRevision,
         StructureProjectionBuilder, HISTORICAL_CALCULATION_REVISION,
         HISTORICAL_CORPORATE_ACTION_REVISION, HISTORICAL_ENGINE_VERSION,
         MAX_ENCOUNTERED_STRUCTURE_LEVELS, PREPARED_BAR_CACHE_SCHEMA_VERSION,
+        PREPARED_STRUCTURE_SEED_CACHE_SCHEMA_VERSION,
     };
     use crate::source::EventWindow;
     use chrono::{DateTime, Duration, TimeZone, Utc};
@@ -2986,6 +3162,36 @@ mod tests {
     }
 
     #[test]
+    fn prepared_structure_seed_is_restart_safe_and_identity_checked() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "qmd-history-prepared-structure-{}-{nonce}",
+            std::process::id()
+        ));
+        let artifact = PreparedStructureSeedCacheArtifact {
+            schema_version: PREPARED_STRUCTURE_SEED_CACHE_SCHEMA_VERSION,
+            key: "revisioned-structure-key".to_string(),
+            ticker: "SUGP".to_string(),
+            checkpoint: GenericStructureEngine::new("SUGP").checkpoint(),
+        };
+        let bytes = serde_json::to_vec(&artifact).unwrap();
+
+        assert!(write_prepared_structure_seed_cache(&root, &artifact.key, &bytes, 4).unwrap());
+        let path = prepared_structure_seed_cache_path(&root, &artifact.key);
+        let restored = read_prepared_structure_seed_cache(&path, &artifact.key, "SUGP")
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.checkpoint.sym, "SUGP");
+        assert!(read_prepared_structure_seed_cache(&path, "wrong-key", "SUGP").is_err());
+        assert!(read_prepared_structure_seed_cache(&path, &artifact.key, "NOK").is_err());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn prepared_structure_projection_rehydrates_full_state_and_deltas() {
         let first = json!({
             "bar_start": "2026-08-21T08:00:00Z",
@@ -3103,13 +3309,16 @@ mod tests {
         };
 
         let derived =
-            revision_window(&window, &CacheProfile::Derived("1s".to_string()), 7).unwrap();
+            revision_window(&window, &CacheProfile::Derived("1s".to_string()), 180).unwrap();
         let structure =
-            revision_window(&window, &CacheProfile::Structure("1s".to_string()), 7).unwrap();
+            revision_window(&window, &CacheProfile::Structure("1s".to_string()), 180).unwrap();
 
         assert_eq!(derived.start, start);
         assert_eq!(derived.end, end);
-        assert!(structure.start < start);
+        assert_eq!(
+            structure.start,
+            Utc.with_ymd_and_hms(2026, 2, 21, 9, 0, 0).unwrap()
+        );
         assert_eq!(structure.end, end);
     }
 

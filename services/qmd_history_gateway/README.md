@@ -87,13 +87,18 @@ Historical chart reconstruction seeds one causal ticker-level Structure book,
 including still-valid prior-session levels, from the preceding
 `QMD_HISTORY_STRUCTURE_BOOK_LOOKBACK_DAYS` (default `180`). The seed is complete
 or fails closed: `QMD_HISTORY_STRUCTURE_BOOK_MAX_SEED_EVENTS` (default
-`2000000`) is an explicit resource ceiling, never a tail-truncation policy. For
-archive dates that predate persisted Structure events, QMD History causally
-rebuilds the same book from canonical tape over
-`QMD_HISTORY_STRUCTURE_BOOK_REBUILD_DAYS` (default `7`), which includes the
-prior trading session across weekends and ordinary holidays. Concurrent chart
-pages and timeframes for the same ticker and causal boundary share one in-flight
-checkpoint rebuild.
+`2000000`) is an explicit resource ceiling, never a tail-truncation policy. If
+persisted Structure events or a compatible daily checkpoint are unavailable,
+QMD History causally rebuilds that same complete horizon from canonical tape;
+there is no shorter fallback authority. Concurrent chart pages and timeframes
+for the same ticker and causal boundary share one in-flight checkpoint rebuild.
+The trade-only cold seed uses streamed four-hour ClickHouse chunks by default
+(`QMD_HISTORY_STRUCTURE_FETCH_CHUNK_MINUTES=240`), so memory and remote response
+sizes remain bounded without paying one query round trip every 30 minutes.
+Completed cold seeds are written atomically beneath the configured prepared-bar
+runtime root and keyed by ticker, full source revision, causal boundary, and
+calculation revision. A service restart therefore restores the exact seed rather
+than rebuilding the multi-month book; corrupt or mismatched artifacts fail closed.
 Single-ticker deployment-gap repair evidence is read from
 `QMD_HISTORY_RECENT_FOCUSED_REPAIR_TABLE` (default
 `q_live.qmd_gap_fill_symbol_universe_v1`). A completed, error-free repair whose

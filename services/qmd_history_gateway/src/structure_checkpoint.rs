@@ -607,7 +607,7 @@ pub async fn materialize_structure_snapshot(
         // event-native book from canonical trades instead of failing the
         // entire market-wide run or silently treating structure as absent.
         let rebuild_start =
-            structure_rebuild_start(request.as_of, config.structure_book_rebuild_days)?;
+            structure_rebuild_start(request.as_of, config.structure_book_lookback_days)?;
         let rebuilt = rebuild_trade_structure_checkpoint(
             config,
             source,

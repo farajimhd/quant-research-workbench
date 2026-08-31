@@ -32,6 +32,10 @@ Scores can strengthen when independent event-native pivots merge, a range holds,
 
 Chart bars use the same retrospective split basis as the checkpoint: every bar before a split boundary is multiplied by the cumulative `split_from / split_to` price factor and its share volume by the inverse factor. Daily and macro responses expose `coverage_status`, `latest_session_date`, and `split_adjusted`; stale daily authority is shown to the operator rather than silently presented as current context.
 
+Persisted checkpoints and cold historical reconstruction share the same configured ticker-book horizon (`QMD_HISTORY_STRUCTURE_BOOK_LOOKBACK_DAYS`, 180 days by default). An algorithm revision or missing checkpoint must not fall back to a shorter seed because that would silently remove older structural levels.
+
+A complete cold reconstruction is stored atomically as a runtime prepared seed keyed by the ticker, full source revision, causal boundary, and calculation revision. Historical service restarts reuse that exact identity; partial, corrupt, or stale prepared seeds are never accepted.
+
 ## Daily checkpoints
 
 End-of-day checkpoints are immutable, versioned seeds, not mutable forecasts. Their identity includes ticker, session date, algorithm version, source-plan hash, source-revision token, exact event cursor, and checkpoint payload. A checkpoint is publishable only after the canonical source window is complete and its revision is unchanged across construction.
