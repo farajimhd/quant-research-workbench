@@ -1630,15 +1630,15 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertEqual(
             profile["parameters"]["liquidity_admission"]["minimum_vwap_extension_bps"],
-            100.0,
+            0.0,
         )
         self.assertEqual(
             profile["parameters"]["liquidity_admission"]["minimum_initial_vwap_extension_bps"],
-            250.0,
+            0.0,
         )
         self.assertEqual(
             profile["parameters"]["liquidity_admission"]["minimum_reentry_vwap_extension_bps"],
-            100.0,
+            0.0,
         )
         self.assertEqual(
             profile["parameters"]["liquidity_admission"]["maximum_vwap_extension_bps"],

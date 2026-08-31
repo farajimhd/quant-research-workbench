@@ -4053,12 +4053,12 @@ def _default_draft() -> dict[str, Any]:
         # tape can briefly clear the ten-second rate while remaining too thin
         # to enter and manage a whole-account small-cap position.
         "minimum_current_trade_rate_60s": 5.0,
-        "minimum_vwap_extension_bps": 100.0,
-        # The first campaign entry must clear noisy near-VWAP opening
-        # structure. Once a breakout establishes the campaign, pullback
-        # re-entries may occur closer to VWAP.
-        "minimum_initial_vwap_extension_bps": 250.0,
-        "minimum_reentry_vwap_extension_bps": 100.0,
+        # Price-above-VWAP is already an exact protected confirmation rule.
+        # Do not add an arbitrary distance floor that makes a fast causal
+        # structural break wait until much of the squeeze has already traded.
+        "minimum_vwap_extension_bps": 0.0,
+        "minimum_initial_vwap_extension_bps": 0.0,
+        "minimum_reentry_vwap_extension_bps": 0.0,
         "maximum_vwap_extension_bps": 500.0,
         # This is an instantaneous (non-latched) execution check for volatile
         # small-cap premarket names.
