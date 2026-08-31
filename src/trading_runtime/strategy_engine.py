@@ -33,7 +33,7 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 20
+STRATEGY_REVISION = 21
 
 RULE_COMPARATORS = {
     "above_by_bps",
@@ -1348,38 +1348,56 @@ def _unified_entry_trigger(
     )
     acceptance_hold_ms = max(0.0, float(policy.get("acceptance_hold_ms") or 0))
     accepted_threshold = accepted_boundary * (1 + buffer_bps / 10_000)
+    superseded_accepted_boundary = 0.0
     if accepted_boundary > 0 and acceptance_age_ms <= acceptance_hold_ms:
-        breakout_extension_bps = (
-            (observation.price / accepted_threshold - 1.0) * 10_000.0
-            if accepted_threshold > 0
-            else float("inf")
+        # Acceptance latches the crossing event, not an obsolete frontier. If
+        # the causal level book now exposes another qualifying resistance
+        # above price, that current frontier must be cleared before entry. This
+        # keeps the executor aligned with the visible structural rule result.
+        current_overhead = [item for item in usable if item[0] >= observation.price]
+        nearest_overhead_boundary = (
+            min(current_overhead, key=lambda item: item[0])[0]
+            if current_overhead
+            else 0.0
         )
-        maximum_breakout_extension_bps = float(
-            policy.get("maximum_breakout_extension_bps") or float("inf")
+        accepted_is_superseded = bool(
+            nearest_overhead_boundary > accepted_threshold + 1e-9
         )
-        passed = bool(
-            observation.price > accepted_threshold
-            and breakout_extension_bps <= maximum_breakout_extension_bps
-        )
-        return {
-            "passed": passed,
-            "reason": (
-                "unified_resistance_acceptance_held"
-                if passed
-                else "waiting_for_unified_resistance_retest"
-                if observation.price > accepted_threshold
-                else "waiting_for_accepted_resistance_frontier"
-            ),
-            "level": accepted_level,
-            "reference_price": accepted_boundary,
-            "threshold_price": accepted_threshold,
-            "previous_price": previous_price,
-            "accepted_at": accepted.get("accepted_at"),
-            "acceptance_age_ms": acceptance_age_ms,
-            "acceptance_hold_ms": acceptance_hold_ms,
-            "breakout_extension_bps": breakout_extension_bps,
-            "maximum_breakout_extension_bps": maximum_breakout_extension_bps,
-        }
+        if accepted_is_superseded:
+            superseded_accepted_boundary = accepted_boundary
+            state.pop("accepted_entry_resistance", None)
+        else:
+            breakout_extension_bps = (
+                (observation.price / accepted_threshold - 1.0) * 10_000.0
+                if accepted_threshold > 0
+                else float("inf")
+            )
+            maximum_breakout_extension_bps = float(
+                policy.get("maximum_breakout_extension_bps") or float("inf")
+            )
+            passed = bool(
+                observation.price > accepted_threshold
+                and breakout_extension_bps <= maximum_breakout_extension_bps
+            )
+            return {
+                "passed": passed,
+                "reason": (
+                    "unified_resistance_acceptance_held"
+                    if passed
+                    else "waiting_for_unified_resistance_retest"
+                    if observation.price > accepted_threshold
+                    else "waiting_for_accepted_resistance_frontier"
+                ),
+                "level": accepted_level,
+                "reference_price": accepted_boundary,
+                "threshold_price": accepted_threshold,
+                "previous_price": previous_price,
+                "accepted_at": accepted.get("accepted_at"),
+                "acceptance_age_ms": acceptance_age_ms,
+                "acceptance_hold_ms": acceptance_hold_ms,
+                "breakout_extension_bps": breakout_extension_bps,
+                "maximum_breakout_extension_bps": maximum_breakout_extension_bps,
+            }
     state.pop("accepted_entry_resistance", None)
 
     # Arm one causal frontier and wait for price to clear that frontier.  A
@@ -1540,7 +1558,45 @@ def _unified_entry_trigger(
         "previous_price": previous_price,
         "breakout_extension_bps": breakout_extension_bps,
         "maximum_breakout_extension_bps": maximum_breakout_extension_bps,
+        "superseded_accepted_boundary": superseded_accepted_boundary or None,
     }
+
+
+def _entry_rule_result_with_unified_trigger(
+    rule_result: dict[str, Any],
+    unified_trigger: Mapping[str, Any],
+    observation: StrategyObservation,
+) -> dict[str, Any]:
+    """Project the executor's structural authority into the decision audit."""
+
+    group_id = "strategy-squeeze-unified-resistance-break"
+    passed = bool(unified_trigger.get("passed"))
+    reference = unified_trigger.get("reference_price")
+    threshold = unified_trigger.get("threshold_price")
+    trigger_stage = {
+        "operator": "any",
+        "groups": {group_id: passed},
+        "group_scores": {group_id: 1.0 if passed else 0.0},
+        "matched_groups": [group_id] if passed else [],
+        "condition_evidence": {
+            group_id: [{
+                "condition_id": "squeeze-price-over-unified-resistance",
+                "comparator": "above_by_bps",
+                "left_source_id": "data.market.last_price@1:value",
+                "left_timeframe": "",
+                "left_value": observation.price,
+                "right_source_id": "data.indicator.structure.unified_resistance_upper@1:value",
+                "right_timeframe": "1s",
+                "right_value": reference,
+                "buffer_bps": 0.0,
+                "threshold_value": threshold,
+                "passed": passed,
+            }],
+        },
+        "passed": passed,
+        "score": 1.0 if passed else 0.0,
+    }
+    return {**rule_result, "trigger": trigger_stage}
 
 
 class LongMomentumStrategyEngine:
@@ -1810,6 +1866,12 @@ class LongMomentumStrategyEngine:
                 AssignmentStatus.REENTRY_COOLDOWN,
             )
         rule_result = evaluate_entry_decision_rules(phase_rules, observation)
+        if unified_trigger is not None:
+            rule_result = _entry_rule_result_with_unified_trigger(
+                rule_result,
+                unified_trigger,
+                observation,
+            )
         reference_name, reference, reference_buffer_bps = _trigger_reference(
             phase_rules,
             rule_result,

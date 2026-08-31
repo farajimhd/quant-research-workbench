@@ -835,7 +835,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(entered.evaluation.signals[0].action, "enter_long")
         self.assertEqual(entered.state["breakout_level"], 100.5)
 
-    def test_unified_entry_holds_a_broken_level_briefly_after_the_book_advances(self) -> None:
+    def test_unified_entry_rearms_when_the_book_advances_to_overhead_resistance(self) -> None:
         parameters = default_long_momentum_parameters()
         parameters["structural_entry"].update({
             "enabled": True,
@@ -885,8 +885,9 @@ class LongMomentumStrategyTests(unittest.TestCase):
                 },),
             ),
         )
-        self.assertEqual(advanced.evaluation.signals[0].action, "enter_long")
-        self.assertEqual(advanced.state["breakout_level"], 3.56)
+        self.assertEqual(advanced.evaluation.signals[0].action, "wait")
+        self.assertNotIn("accepted_entry_resistance", advanced.state)
+        self.assertEqual(advanced.state["pending_entry_resistance"]["boundary"], 3.66)
 
     def test_unified_entry_accepts_highest_qualified_level_already_cleared_on_admission(self) -> None:
         parameters = default_long_momentum_parameters()
@@ -920,6 +921,14 @@ class LongMomentumStrategyTests(unittest.TestCase):
         trigger = entered.evaluation.signals[0].metadata["unified_structural_trigger"]
         self.assertEqual(trigger["reason"], "unified_resistance_already_cleared")
         self.assertEqual(trigger["reference_price"], 3.52)
+        rule_trigger = entered.evaluation.signals[0].metadata["entry_rules"]["trigger"]
+        self.assertTrue(rule_trigger["passed"])
+        self.assertEqual(
+            rule_trigger["condition_evidence"][
+                "strategy-squeeze-unified-resistance-break"
+            ][0]["right_value"],
+            3.52,
+        )
 
     def test_unified_entry_expires_a_stale_accepted_level_after_the_book_advances(self) -> None:
         parameters = default_long_momentum_parameters()
@@ -963,6 +972,61 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(expired.evaluation.signals[0].action, "wait")
         self.assertNotIn("accepted_entry_resistance", expired.state)
         self.assertEqual(expired.state["pending_entry_resistance"]["boundary"], 3.66)
+
+    def test_unified_entry_rebases_live_acceptance_to_current_overhead_frontier(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["structural_entry"].update({
+            "enabled": True,
+            "acceptance_hold_ms": 15_000,
+            "minimum_salience": 0.0,
+            "minimum_confidence": 0.0,
+            "minimum_reaction_probability": 0.0,
+            "minimum_hold_probability": 0.80,
+            "minimum_independent_pivot_count": 0,
+            "minimum_level_age_ms": 0,
+        })
+        old_level = {
+            "unified_level_id": "cleared",
+            "side": -1,
+            "price": 3.55,
+            "lower": 3.54,
+            "upper": 3.56,
+            "hold_probability": 0.90,
+        }
+        overhead_level = {
+            "unified_level_id": "overhead",
+            "side": -1,
+            "price": 3.65,
+            "lower": 3.64,
+            "upper": 3.66,
+            "hold_probability": 0.90,
+        }
+        result = LongMomentumStrategyEngine().evaluate(
+            assignment(
+                parameters=parameters,
+                state={
+                    "last_price": 3.59,
+                    "accepted_entry_resistance": {
+                        "boundary": 3.56,
+                        "level": old_level,
+                        "accepted_at": (NOW - timedelta(seconds=5)).isoformat(),
+                    },
+                },
+            ),
+            confirmed_observation(
+                price=3.60,
+                bid=3.59,
+                ask=3.60,
+                vwap=3.40,
+                structural_resistance_levels=(old_level, overhead_level),
+            ),
+        )
+
+        self.assertEqual(result.evaluation.signals[0].action, "wait")
+        self.assertNotIn("accepted_entry_resistance", result.state)
+        self.assertEqual(result.state["pending_entry_resistance"]["boundary"], 3.66)
+        trigger = result.evaluation.signals[0].metadata["unified_structural_trigger"]
+        self.assertEqual(trigger["superseded_accepted_boundary"], 3.56)
 
     def test_unified_break_latches_before_confirmation_finishes(self) -> None:
         parameters = default_long_momentum_parameters()
