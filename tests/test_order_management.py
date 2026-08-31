@@ -507,7 +507,7 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                         conditions=(),
                         indicators=(),
                         ingest_ts=event_time - timedelta(milliseconds=100),
-                        raw={"conid": 123},
+                        raw={},
                         sequence=1,
                         source="test",
                         tape=3,

@@ -193,6 +193,8 @@ class SimulatedBrokerAdapter:
         self._executions: list[Execution] = []
         self._quotes: dict[int, QuoteEvent] = {}
         self._trades: dict[int, TradeEvent] = {}
+        self._quotes_by_ticker: dict[str, QuoteEvent] = {}
+        self._trades_by_ticker: dict[str, TradeEvent] = {}
         self._marks: dict[int, float] = {}
         self._next_order_id = 1
         self._next_execution_id = 1
@@ -205,7 +207,7 @@ class SimulatedBrokerAdapter:
     def checkpoint_state(self) -> dict[str, Any]:
         """Return the complete deterministic broker state required for restart."""
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "account_ids": list(self._account_ids),
             "cash": dict(self._cash),
             "realized_pnl": dict(self._realized_pnl),
@@ -241,6 +243,14 @@ class SimulatedBrokerAdapter:
                 str(conid): _market_event_checkpoint(event)
                 for conid, event in self._trades.items()
             },
+            "quotes_by_ticker": {
+                ticker: _market_event_checkpoint(event)
+                for ticker, event in self._quotes_by_ticker.items()
+            },
+            "trades_by_ticker": {
+                ticker: _market_event_checkpoint(event)
+                for ticker, event in self._trades_by_ticker.items()
+            },
             "marks": {str(conid): value for conid, value in self._marks.items()},
             "next_order_id": self._next_order_id,
             "next_execution_id": self._next_execution_id,
@@ -248,7 +258,8 @@ class SimulatedBrokerAdapter:
 
     def restore_checkpoint_state(self, payload: dict[str, Any]) -> None:
         """Restore only an exact, complete simulator checkpoint."""
-        if int(payload.get("schema_version") or 0) != 1:
+        schema_version = int(payload.get("schema_version") or 0)
+        if schema_version not in {1, 2}:
             raise ValueError("Unsupported simulated broker checkpoint schema")
         account_ids = [str(value) for value in payload.get("account_ids") or ()]
         if account_ids != self._account_ids:
@@ -310,6 +321,21 @@ class SimulatedBrokerAdapter:
             int(conid): _trade_from_checkpoint(dict(row))
             for conid, row in dict(payload.get("trades") or {}).items()
         }
+        self._quotes_by_ticker = {
+            str(ticker).upper(): _quote_from_checkpoint(dict(row))
+            for ticker, row in dict(payload.get("quotes_by_ticker") or {}).items()
+        }
+        self._trades_by_ticker = {
+            str(ticker).upper(): _trade_from_checkpoint(dict(row))
+            for ticker, row in dict(payload.get("trades_by_ticker") or {}).items()
+        }
+        if schema_version == 1:
+            self._quotes_by_ticker = {
+                event.ticker.upper(): event for event in self._quotes.values()
+            }
+            self._trades_by_ticker = {
+                event.ticker.upper(): event for event in self._trades.values()
+            }
         self._marks = {
             int(conid): float(value)
             for conid, value in dict(payload.get("marks") or {}).items()
@@ -574,6 +600,11 @@ class SimulatedBrokerAdapter:
         """Update causal quote/trade marks without running order matching."""
 
         self._require_initialized()
+        ticker = event.ticker.upper()
+        if isinstance(event, QuoteEvent):
+            self._quotes_by_ticker[ticker] = event
+        else:
+            self._trades_by_ticker[ticker] = event
         conid = self._event_conid(event)
         if conid <= 0:
             return 0
@@ -629,7 +660,9 @@ class SimulatedBrokerAdapter:
         }
         executions: list[Execution] = []
         for conid in sorted(conids):
-            quote = self._quotes.get(conid)
+            quote = self._quotes.get(conid) or self._quotes_by_ticker.get(
+                ticker.upper()
+            )
             if quote is None or quote.ts.astimezone(timezone.utc) > at:
                 continue
             if (
