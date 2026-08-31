@@ -763,7 +763,9 @@ class PortfolioManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decision.status, PortfolioDecisionStatus.RESIZED)
         self.assertIsNotNone(approved)
         assert approved is not None
-        self.assertAlmostEqual(approved.quantity, 100_000 / 102.0, places=5)
+        self.assertEqual(approved.quantity, 980)
+        self.assertEqual(decision.approved_quantity, 980)
+        self.assertIn("rounded_to_whole_share_lot", decision.reasons)
         self.assertLessEqual(approved.quantity * 102.0, 100_000)
 
     async def test_capacity_rejection_can_create_explicit_rebalance_proposal(self) -> None:

@@ -1089,7 +1089,18 @@ class PortfolioManagementEngine:
             return decision, None
 
         approved = min(approved, policy.maximum_order_quantity)
-        approved = math.floor((approved + 1e-12) * 1_000_000) / 1_000_000
+        # Portfolio is the sizing authority, so its approval and reservation
+        # must already be executable by the downstream order planner.  The
+        # application trades exchange-listed stocks in whole shares; leaving a
+        # fractional stock quantity here made the decision audit disagree with
+        # the integer parent/protection orders produced by OMS.
+        if entry and security_type == "STK":
+            whole_share_quantity = float(math.floor(approved + 1e-9))
+            if whole_share_quantity + 1e-9 < approved:
+                reasons.append("rounded_to_whole_share_lot")
+            approved = whole_share_quantity
+        else:
+            approved = math.floor((approved + 1e-12) * 1_000_000) / 1_000_000
         if approved <= 0:
             decision = self._decision(
                 intent,
