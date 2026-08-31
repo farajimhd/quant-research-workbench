@@ -191,6 +191,22 @@ class RecordingBroker(SimulatedBrokerAdapter):
         return await super().modify_order(account_id, order_id, order)
 
 
+class SequencedCommandBroker(RecordingBroker):
+    def __init__(self) -> None:
+        super().__init__()
+        self.command_sequence: list[str] = []
+
+    async def place_orders(self, account_id: str, orders: list[OrderRequest]):
+        self.command_sequence.append(
+            "place:" + ",".join(str(order.side).upper() for order in orders)
+        )
+        return await super().place_orders(account_id, orders)
+
+    async def cancel_order(self, account_id: str, order_id: str):
+        self.command_sequence.append(f"cancel:{order_id}")
+        return await super().cancel_order(account_id, order_id)
+
+
 class TerminalTargetRaceBroker(RecordingBroker):
     def __init__(self) -> None:
         super().__init__()
@@ -1531,6 +1547,105 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                     )
                 )
                 self.assertEqual(await broker.positions("DU1"), [])
+            finally:
+                await manager.close()
+                journal.close()
+
+    async def test_exit_cancels_partially_filled_entry_before_submitting_sell(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            broker = SequencedCommandBroker()
+            real_planner = IbkrStrategyOrderPlanner()
+            instrument = InstrumentContract("TEST", 123, "TEST", "STK", "USD")
+
+            def bracket_planner(strategy_intent, account_id, _event):
+                return real_planner.plan(
+                    account_id=account_id,
+                    instrument=instrument,
+                    intent=strategy_intent,
+                    strategy_id="strategy-1",
+                    strategy_revision=1,
+                )
+
+            journal = TradingJournal(Path(directory) / "orders.sqlite3")
+            await broker.initialize()
+            risk = RiskAuthority()
+            await risk.prime(broker, ["DU1"])
+            manager = OrderManagementEngine(
+                broker=broker,
+                planner=bracket_planner,
+                risk=risk,
+                journal=journal,
+                run_id="run-1",
+                strategy_id="strategy-1",
+                strategy_revision=1,
+                policy=BrokerCommunicationPolicy(),
+            )
+            try:
+                entry = replace(
+                    intent(quantity=100),
+                    intent_id="partial-entry-before-exit",
+                    profit_target_price=10.50,
+                )
+                entry_snapshot = await manager.submit_intent(
+                    portfolio_approved(journal, entry),
+                    account_id="DU1",
+                    event=None,
+                )
+                parent_id = entry_snapshot.broker_order_ids[0]
+                parent = broker._orders[parent_id]
+                parent.filled = 40.0
+                parent.status = OrderStatus.SUBMITTED
+                source_group = manager._groups[entry_snapshot.group_id]
+                source_group.filled_quantity = 40.0
+                source_group.remaining_quantity = 60.0
+                source_group.filled_by_broker_order[parent_id] = 40.0
+                source_group.state = OrderManagementState.PARTIALLY_FILLED
+                broker._positions["DU1"][123] = _Position(
+                    conid=123,
+                    ticker="TEST",
+                    quantity=40.0,
+                    avg_cost=10.01,
+                )
+                broker.command_sequence.clear()
+                exit_request = replace(
+                    intent(action="exit", urgency="very_urgent", quantity=40),
+                    intent_id="exit-while-entry-remainder-working",
+                    metadata={
+                        **intent(action="exit").metadata,
+                        "position_quantity": 40.0,
+                        "position_side": "long",
+                        "reason_code": "downside_macd_closed",
+                    },
+                )
+
+                exit_snapshot = await manager.submit_intent(
+                    portfolio_approved(journal, exit_request),
+                    account_id="DU1",
+                    event=None,
+                )
+
+                self.assertEqual(
+                    broker.command_sequence[0],
+                    f"cancel:{parent_id}",
+                )
+                self.assertTrue(
+                    any(step.startswith("place:SELL") for step in broker.command_sequence[1:])
+                )
+                self.assertEqual(parent.status, OrderStatus.CANCELLED)
+                self.assertEqual(exit_snapshot.action, "exit")
+                self.assertEqual(exit_snapshot.remaining_quantity, 40.0)
+                self.assertEqual(source_group.state, OrderManagementState.CANCEL_PENDING)
+                records = [
+                    row
+                    for row in journal.records("run-1")
+                    if row.category == "order_management"
+                    and row.entity_type == "entry_acquisition_frozen_before_exit"
+                ]
+                self.assertEqual(len(records), 1)
+                self.assertEqual(
+                    records[0].payload["command_order"],
+                    "cancel_entries_then_submit_exit",
+                )
             finally:
                 await manager.close()
                 journal.close()

@@ -748,6 +748,10 @@ class OrderManagementEngine:
             group.intent.intent_id for group in self._groups.values()
         ):
             raise ValueError(f"Strategy intent has already been submitted: {intent.intent_id}")
+        await self._cancel_pending_acquisition_before_exit(
+            intent,
+            account_id=account_id,
+        )
         working_intent = intent
         plan = self.planner(working_intent, account_id, event)
         if not plan.orders:
@@ -2140,10 +2144,36 @@ class OrderManagementEngine:
             group.internal_reaction_ms = (perf_counter() - reaction_started) * 1_000
         return modified
 
-    async def _cancel_open_entry_roots(self, group: _ManagedOrderGroup, reason: str) -> bool:
+    async def _cancel_open_entry_roots(
+        self,
+        group: _ManagedOrderGroup,
+        reason: str,
+        *,
+        eligible_order_ids: set[str] | None = None,
+    ) -> bool:
         roots = _open_entry_roots(group)
+        if eligible_order_ids is not None:
+            roots = tuple(
+                row for row in roots if str(row[0]) in eligible_order_ids
+            )
         if not roots:
             return False
+        # Freeze every path that can modify or match the entry before yielding
+        # to the broker cancellation call.  In live trading the adaptive
+        # repricer is a separate task; leaving it active allows a reprice to
+        # race the risk-reduction command and make the cancelled buy executable
+        # again at a newer ask.
+        if (
+            group.reprice_task is not None
+            and not group.reprice_task.done()
+            and group.reprice_task is not asyncio.current_task()
+        ):
+            group.reprice_task.cancel()
+        self._transition(
+            group,
+            OrderManagementState.CANCEL_PENDING,
+            {"event": "adaptive_cancel_requested", "reason": reason},
+        )
         for broker_order_id, _ in roots:
             async with self._command_lane(group.account_id):
                 response = await self.broker.cancel_order(group.account_id, broker_order_id)
@@ -2155,8 +2185,86 @@ class OrderManagementEngine:
                 self._causal_group_time(group.intent, previous=group.updated_at),
                 {"order_group_id": group.group_id, "reason": reason, "broker_response": response},
             )
-        self._transition(group, OrderManagementState.CANCEL_PENDING, {"event": "adaptive_cancel_requested", "reason": reason})
         return True
+
+    async def _cancel_pending_acquisition_before_exit(
+        self,
+        intent: StrategyIntent,
+        *,
+        account_id: str,
+    ) -> None:
+        """Request cancellation of every compatible entry root before reducing risk.
+
+        A partially filled parent remains a live acquisition order.  Submitting
+        a sell while that buy can still fill creates a race that can reopen the
+        position behind the exit.  The broker command lane therefore observes
+        one strict order: cancel acquisition roots first, then modify or submit
+        the managed exit.  Protective children are reconciled by the existing
+        managed-exit path after the parent cancellation.
+        """
+
+        action = str(intent.action)
+        if action not in {
+            "exit",
+            "take_profit",
+            "reduce_long",
+            "cover",
+            "reduce_short",
+        }:
+            return
+        desired_exit_side = _intent_side(intent)
+        live_open_order_ids = {
+            str(order.orderId)
+            for order in await self.broker.live_orders()
+            if order.order_status in OPEN_ORDER_STATUSES
+        }
+        cancelled_group_ids: list[str] = []
+        for group in tuple(self._groups.values()):
+            if group.account_id != account_id:
+                continue
+            if group.intent.ticker.upper() != intent.ticker.upper():
+                continue
+            # A zero-fill entry has not created the position being reduced.
+            # Preserve its abstract protection contract for callers that are
+            # only replacing protection, while actual partial acquisitions are
+            # frozen before their held shares are sold.
+            if group.filled_quantity <= 1e-9:
+                continue
+            roots = [
+                (broker_order_id, request_index)
+                for broker_order_id, request_index in _open_entry_roots(group)
+                if str(broker_order_id) in live_open_order_ids
+                if group.orders[request_index].side.upper() != desired_exit_side
+            ]
+            if not roots:
+                continue
+            if await self._cancel_open_entry_roots(
+                group,
+                "risk_reduction_authorized",
+                eligible_order_ids={str(row[0]) for row in roots},
+            ):
+                cancelled_group_ids.append(group.group_id)
+        if not cancelled_group_ids:
+            return
+        # Do not reconcile the source group between cancellation and exit
+        # submission. Reconciliation may repair temporarily missing
+        # protection; doing it in this narrow transition would manufacture a
+        # fresh sell OCA before the managed exit owns the position. The normal
+        # managed-exit path delegates protection immediately after submission,
+        # and later reconciliation then observes that authority.
+        self._record(
+            "order_management",
+            "entry_acquisition_frozen_before_exit",
+            intent.intent_id,
+            account_id,
+            intent.event_time,
+            {
+                "ticker": intent.ticker.upper(),
+                "exit_action": action,
+                "source_group_ids": cancelled_group_ids,
+                "command_order": "cancel_entries_then_submit_exit",
+            },
+        )
 
     async def _require_shortability(self, intent: StrategyIntent, plan: StrategyOrderPlan) -> None:
         if str(intent.action) not in {"enter_short", "add_short"}:
