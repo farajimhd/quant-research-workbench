@@ -83,6 +83,7 @@ class SimulationConfig:
     commission_per_share: float = 0.005
     minimum_commission: float = 1.0
     liquidity_participation: float = 0.25
+    marketable_liquidity_participation: float | None = None
     market_slippage_bps: float = 0.0
     allow_short: bool = False
 
@@ -91,6 +92,13 @@ class SimulationConfig:
             raise ValueError("initial_cash cannot be negative")
         if not 0 < self.liquidity_participation <= 1:
             raise ValueError("liquidity_participation must be in (0, 1]")
+        if (
+            self.marketable_liquidity_participation is not None
+            and not 0 < self.marketable_liquidity_participation <= 1
+        ):
+            raise ValueError(
+                "marketable_liquidity_participation must be in (0, 1]"
+            )
         if self.commission_per_share < 0 or self.minimum_commission < 0:
             raise ValueError("commission values cannot be negative")
 
@@ -747,6 +755,7 @@ class SimulatedBrokerAdapter:
         request = state.request
         side = request.side.upper()
         order_type = request.orderType.upper()
+        marketable = order_type == "MKT"
         market_price = self._executable_price(request.conid, side, event)
         if market_price <= 0:
             return None
@@ -757,6 +766,7 @@ class SimulatedBrokerAdapter:
                 return None
             if order_type == "STP":
                 order_type = "MKT"
+                marketable = True
         if order_type == "TRAIL":
             trailing_amount = float(request.trailingAmt or 0)
             if trailing_amount <= 0:
@@ -786,10 +796,12 @@ class SimulatedBrokerAdapter:
                 if market_price < trigger_price:
                     return None
             order_type = "MKT"
+            marketable = True
         if order_type in {"LMT", "STOP_LIMIT", "TRAILLMT"}:
             limit = float(request.price or 0)
             if (side == "BUY" and market_price > limit) or (side == "SELL" and market_price < limit):
                 return None
+            marketable = True
             market_price = min(market_price, limit) if side == "BUY" else max(market_price, limit)
         elif order_type == "MIDPRICE":
             quote = self._quotes.get(request.conid)
@@ -815,9 +827,21 @@ class SimulatedBrokerAdapter:
                     state.request,
                     quantity=state.filled + held,
                 )
+        participation = self.config.liquidity_participation
+        if (
+            marketable
+            and self.config.marketable_liquidity_participation is not None
+        ):
+            # An aggressive routed order consumes executable displayed
+            # liquidity; the passive queue-participation haircut is not an
+            # appropriate proxy once the limit crosses the touch. Deeper and
+            # hidden liquidity remain unobserved, so this still caps the fill
+            # at the causal quote/trade event rather than granting an instant
+            # full fill.
+            participation = self.config.marketable_liquidity_participation
         available_quantity = min(
             state.remaining,
-            max(0.0, available * self.config.liquidity_participation),
+            max(0.0, available * participation),
         )
         quantity = (
             float(floor(available_quantity + 1e-9))

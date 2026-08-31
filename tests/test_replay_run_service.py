@@ -148,8 +148,10 @@ class ReplayRunDefinitionTests(unittest.TestCase):
         self.assertEqual(baseline_config.commission_per_share, 0.005)
         self.assertEqual(baseline_config.minimum_commission, 1.0)
         self.assertEqual(baseline_config.liquidity_participation, 0.25)
+        self.assertEqual(baseline_config.marketable_liquidity_participation, 1.0)
         self.assertEqual(baseline_config.market_slippage_bps, 5.0)
         self.assertEqual(stress_config.liquidity_participation, 0.10)
+        self.assertEqual(stress_config.marketable_liquidity_participation, 0.25)
         self.assertEqual(stress_config.market_slippage_bps, 10.0)
 
     def test_definition_builds_timezone_aware_session_boundaries(self) -> None:

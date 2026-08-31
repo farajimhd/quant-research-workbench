@@ -718,6 +718,12 @@ def _simulation_config(definition: ReplayRunDefinition) -> SimulationConfig:
         commission_per_share=0.005,
         minimum_commission=1.0,
         liquidity_participation=0.10 if stress else 0.25,
+        # Aggressive limits and market orders consume the full causal
+        # top-of-book/event size in the baseline profile. The former 25%
+        # passive participation haircut made a routed order at the ask wait
+        # through several seconds of quotes even when displayed liquidity was
+        # immediately executable. Stress retains a conservative 25% sweep.
+        marketable_liquidity_participation=0.25 if stress else 1.0,
         market_slippage_bps=10.0 if stress else 5.0 if definition.mode == RunMode.BACKTEST else 0.0,
     )
 

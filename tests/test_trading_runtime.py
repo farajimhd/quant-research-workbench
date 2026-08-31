@@ -79,6 +79,39 @@ class SimulatedBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(positions[0].position, 100)
         self.assertEqual(positions[0].avgCost, 100.6)
 
+    async def test_marketable_sweep_uses_full_causal_displayed_liquidity(self) -> None:
+        broker = SimulatedBrokerAdapter(
+            ["DU-SWEEP"],
+            SimulationConfig(
+                initial_cash=20_000,
+                commission_per_share=0.0,
+                minimum_commission=0.0,
+                liquidity_participation=0.25,
+                marketable_liquidity_participation=1.0,
+            ),
+        )
+        await broker.initialize()
+        await broker.on_market_event(quote(bid=99, ask=100, ask_size=80))
+        order = OrderRequest(
+            acctId="DU-SWEEP",
+            conid=265598,
+            cOID="marketable-sweep",
+            ticker="AAPL",
+            orderType="LMT",
+            side="BUY",
+            quantity=100,
+            price=100,
+        )
+        await broker.place_orders("DU-SWEEP", [order])
+
+        fills = await broker.on_market_event(
+            quote(bid=99, ask=100, ask_size=80)
+        )
+
+        self.assertEqual(fills[0].size, 80)
+        live = await broker.live_orders()
+        self.assertEqual(live[0].remainingQuantity, 20)
+
     async def test_stock_participation_fill_is_whole_shares(self) -> None:
         broker = SimulatedBrokerAdapter(
             ["DU-WHOLE"],
