@@ -87,7 +87,7 @@ import { marketSessionDate, useCanvasHistoricalChart } from "../features/canvas/
 import { finiteNumber } from "../features/canvas/numbers";
 import { nestedValue } from "../features/canvas/presentationFormat";
 import { cloneDefaultSettings, instanceSettings, normalizeSettings } from "../features/canvas/settings";
-import { openTickerChartsQuotes } from "../app/tickerNavigation";
+import { ensureHistoricalChartsQuotesIndicators, openTickerChartsQuotes } from "../app/tickerNavigation";
 import { useCanvasLiveScannerSnapshot, useCanvasScannerSnapshot } from "../features/canvas/scannerData";
 import { dateInTimeZone } from "../features/canvas/time";
 
@@ -476,7 +476,10 @@ function ApprovedCanvasFocusPage({ canvasId, requestedInstanceId, requestedNewsI
 }
 
 function ReplayCanvasFocusPage({ focusToken, runId, runMode }: { focusToken: string; runId: string; runMode: "backtest" | "backtest_debug" | "replay" }) {
-  const [handoff] = useState(() => readReplayCanvasFocusHandoff(focusToken));
+  const [handoff] = useState(() => {
+    const stored = readReplayCanvasFocusHandoff(focusToken);
+    return stored ? { ...stored, profile: ensureHistoricalChartsQuotesIndicators(stored.profile, stored.state) } : null;
+  });
   const [run, setRun] = useState<CanvasReplayRun | null>(null);
   const [error, setError] = useState(handoff ? "" : "This Replay focus link is missing or expired.");
   const mergeFocusRun = useCallback((update: CanvasReplayRun) => {

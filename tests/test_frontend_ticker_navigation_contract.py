@@ -52,10 +52,15 @@ def test_replay_chart_refresh_tracks_closed_timeframe_boundaries() -> None:
 
 def test_replay_focus_chart_settings_survive_reload() -> None:
     canvas_source = source("pages/CanvasConfigurationPage.tsx")
+    navigation_source = source("app/tickerNavigation.ts")
 
     assert "transient && !replayRun ? runtimeBase : readCanvasRuntimeRegistry" in canvas_source
     assert "if (transient && !replayRun) return;" in canvas_source
     assert "window.localStorage.setItem(runtimeRegistryStorageKey, JSON.stringify(registry));" in canvas_source
+    assert "ensureHistoricalChartsQuotesIndicators(stored.profile, stored.state)" in canvas_source
+    assert '"indicator.qmd_unified_structure"' in navigation_source
+    assert "HISTORICAL_STRATEGY_REVIEW_INDICATORS" in navigation_source
+    assert "Boolean(options.replayRunId)" in navigation_source
 
 
 def test_service_tables_use_explicit_cell_controls_instead_of_interactive_rows() -> None:

@@ -16,6 +16,12 @@ import type { WorkspaceWindowLayout } from "./components/WorkspaceCanvas";
 import { TRADING_WORKSPACE_LAYOUT_VERSION, type WorkspaceContainerId } from "./tradingWorkspace";
 
 const CHARTS_QUOTES_FOCUS_INSTANCE_ID = "charts_quotes-focus";
+const HISTORICAL_STRATEGY_REVIEW_INDICATORS = [
+  "indicator.vwap",
+  "indicator.macd",
+  "indicator.qmd_unified_structure",
+  "strategy.presentation",
+] as const;
 
 export type TickerChartsQuotesOpenOptions = {
   historicalRunMode?: "backtest" | "backtest_debug" | "replay";
@@ -35,7 +41,12 @@ export function openTickerChartsQuotes(
   if (!symbol) return "invalid-ticker";
   const registry = options.registry ?? readCanvasRegistry();
   const workspaceState = options.workspaceState ?? readCanvasWorkspaceState(MAIN_CANVAS_ID) ?? registry.defaultState ?? null;
-  const { profile, state } = chartsQuotesFocusProfile(registry, workspaceState, symbol);
+  const { profile, state } = chartsQuotesFocusProfile(
+    registry,
+    workspaceState,
+    symbol,
+    Boolean(options.replayRunId),
+  );
   const token = options.replayRunId
     ? writeReplayCanvasFocusHandoff(profile, state)
     : writeCanvasFocusHandoff(profile, state, "Charts & Quotes");
@@ -60,6 +71,7 @@ function chartsQuotesFocusProfile(
   registry: CanvasRegistry,
   workspaceState: CanvasWorkspaceState | null,
   symbol: string,
+  historicalReview: boolean,
 ) {
   const sourceInstanceId = (workspaceState?.openIds ?? []).find(
     (instanceId) => workspaceContainerKind(instanceId, workspaceState) === "charts_quotes",
@@ -73,8 +85,7 @@ function chartsQuotesFocusProfile(
   const main = recordValue(chartsQuotes.main);
   const month = recordValue(chartsQuotes.month);
   const focusedIndicators = Array.from(new Set([
-    "indicator.vwap",
-    "indicator.macd",
+    ...(historicalReview ? HISTORICAL_STRATEGY_REVIEW_INDICATORS : ["indicator.vwap", "indicator.macd"]),
     ...stringArray(main.visibleIndicators),
   ]));
   const focusedSettings = {
@@ -104,6 +115,38 @@ function chartsQuotesFocusProfile(
     workspaceStates: { [MAIN_CANVAS_ID]: state },
   };
   return { profile, state };
+}
+
+export function ensureHistoricalChartsQuotesIndicators(
+  profile: CanvasRegistry,
+  state: CanvasWorkspaceState,
+): CanvasRegistry {
+  let changed = false;
+  const instanceSettings = { ...profile.instanceSettings };
+  for (const instanceId of state.openIds) {
+    if (workspaceContainerKind(instanceId, state) !== "charts_quotes") continue;
+    const settings = recordValue(instanceSettings[instanceId]);
+    const chartsQuotes = recordValue(settings.charts_quotes);
+    const main = recordValue(chartsQuotes.main);
+    const visibleIndicators = Array.from(new Set([
+      ...HISTORICAL_STRATEGY_REVIEW_INDICATORS,
+      ...stringArray(main.visibleIndicators),
+    ]));
+    const currentIndicators = stringArray(main.visibleIndicators);
+    if (
+      visibleIndicators.length === currentIndicators.length
+      && visibleIndicators.every((indicator, index) => indicator === currentIndicators[index])
+    ) continue;
+    changed = true;
+    instanceSettings[instanceId] = {
+      ...settings,
+      charts_quotes: {
+        ...chartsQuotes,
+        main: { ...main, visibleIndicators },
+      },
+    };
+  }
+  return changed ? { ...profile, instanceSettings } : profile;
 }
 
 function focusLayout(): WorkspaceWindowLayout {
