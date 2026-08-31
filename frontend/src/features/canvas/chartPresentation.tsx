@@ -551,7 +551,7 @@ function pushUnifiedStructureLevels(
       historicalLabelsDefault: false,
       historyBarsDefault: 0,
       holdProbability: boundedUnit(level.hold_probability),
-      label: `${low ? "Support" : "Resistance"} · ${percentLabel(reactionProbability)} react · ${percentLabel(level.hold_probability)} hold · ${percentLabel(breakProbability)} break · ${percentLabel(reversalProbability)} reversal · ${pressureBias >= 0 ? "+" : ""}${Math.round(pressureBias * 100)}% pressure · ${level.touch_count} tests · ${level.role_flip_count} flips · ${level.independent_pivot_count} pivots (${timeframes})`,
+      label: `${low ? "Support" : "Resistance"} · ${String(level.lifecycle || "active").replaceAll("_", " ")} · ${percentLabel(reactionProbability)} react · ${percentLabel(level.hold_probability)} hold · ${percentLabel(breakProbability)} break · ${percentLabel(reversalProbability)} reversal · ${pressureBias >= 0 ? "+" : ""}${Math.round(pressureBias * 100)}% pressure · ${level.touch_count} tests · ${level.role_flip_count} flips · ${level.independent_pivot_count} pivots (${timeframes})`,
       latest,
       legendLabel: "Unified structural level book",
       lower: level.lower,
@@ -608,11 +608,21 @@ function unifiedStructureSegments(rows: HistoricalIndicator[], chartEnd: number)
       return;
     }
     const confirmed = Number(level.confirmed_at_ms) / 1000;
+    const created = Number(level.created_at_ms) / 1000;
+    // A full snapshot may carry a level confirmed before the first projected
+    // row (for example a prior-day checkpoint). Preserve that causal start;
+    // the chart clips it to its loaded boundary. Anchoring to `time` made
+    // every historical level falsely begin at 04:00 on each session.
+    const causalStart = Number.isFinite(confirmed) && confirmed > 0
+      ? confirmed
+      : Number.isFinite(created) && created > 0
+        ? created
+        : time;
     active.set(key, {
       end: chartEnd,
       latest: true,
       level,
-      start: Math.max(time, Number.isFinite(confirmed) ? confirmed : time),
+      start: causalStart,
     });
   };
   ordered.forEach(({ row, time }) => {

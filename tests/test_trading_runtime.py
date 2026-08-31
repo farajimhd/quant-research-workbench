@@ -1287,7 +1287,10 @@ class HistoricalContractTests(unittest.TestCase):
                     "size_sum": 10_000.0,
                 }
             ],
+            "coverage_status": "stale",
+            "latest_session_date": "2023-08-01",
             "source": "market_sip_compact.daily_session_bars_by_symbol_time_v1",
+            "split_adjusted": True,
         }
 
         result = historical_bar_history_before(
@@ -1308,6 +1311,9 @@ class HistoricalContractTests(unittest.TestCase):
         self.assertEqual(params["start"], "2023-07-01T00:00:00+00:00")
         self.assertEqual(params["limit"], 37)
         self.assertEqual(result["history"][0]["volume"], 10_000.0)
+        self.assertEqual(result["coverage_status"], "stale")
+        self.assertEqual(result["latest_session_date"], "2023-08-01")
+        self.assertTrue(result["split_adjusted"])
         self.assertFalse(result["indicators_available"])
         self.assertFalse(result["has_more"])
         self.assertEqual(result["next_before"], "")

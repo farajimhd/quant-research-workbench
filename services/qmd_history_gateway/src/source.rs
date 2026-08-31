@@ -142,7 +142,10 @@ pub struct HistoricalMacroChartRow {
 pub struct HistoricalMacroChartSnapshot {
     pub as_of: DateTime<Utc>,
     pub bars: Vec<HistoricalMacroChartRow>,
+    pub coverage_status: String,
+    pub latest_session_date: Option<String>,
     pub source: String,
+    pub split_adjusted: bool,
     pub ticker: String,
     pub timeframe: String,
 }
@@ -1576,6 +1579,14 @@ impl HistoricalEventSource {
         let has_more = bars.len() > limit;
         bars.truncate(limit);
         bars.reverse();
+        let adjustments = self
+            .structure_split_adjustments(
+                &ticker,
+                window.start - chrono::Duration::milliseconds(1),
+                as_of,
+            )
+            .await?;
+        adjust_intraday_chart_bars_for_splits(&mut bars, &adjustments);
         let next_before = has_more.then(|| bars[0].bar_start);
         Ok(Some(HistoricalIntradayChartSnapshot {
             bars,
@@ -1663,7 +1674,7 @@ impl HistoricalEventSource {
         };
         let sql = projection;
         let text = self.query(&sql).await?;
-        let bars = text
+        let mut bars = text
             .lines()
             .filter(|line| !line.trim().is_empty())
             .map(|line| {
@@ -1687,10 +1698,36 @@ impl HistoricalEventSource {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
+        let adjustments = self
+            .structure_split_adjustments(
+                &ticker,
+                window.start - chrono::Duration::milliseconds(1),
+                as_of,
+            )
+            .await?;
+        adjust_macro_chart_bars_for_splits(&mut bars, &adjustments);
+        let latest_session_date = bars.last().map(|bar| bar.session_date.clone());
+        let freshness_floor =
+            as_of.with_timezone(&New_York).date_naive() - chrono::Duration::days(7);
+        let coverage_status = bars
+            .last()
+            .map(|bar| bar.bar_end.with_timezone(&New_York).date_naive())
+            .map(|date| {
+                if date >= freshness_floor {
+                    "ready"
+                } else {
+                    "stale"
+                }
+            })
+            .unwrap_or("unavailable")
+            .to_string();
         Ok(HistoricalMacroChartSnapshot {
             as_of,
             bars,
+            coverage_status,
+            latest_session_date,
             source: table,
+            split_adjusted: true,
             ticker,
             timeframe: timeframe.to_string(),
         })
@@ -2092,6 +2129,49 @@ impl HistoricalEventSource {
             return Err(format!("ClickHouse HTTP {status}: {}", text.trim()));
         }
         Ok(text)
+    }
+}
+
+pub(crate) fn split_adjustment_factors(
+    observed_at: DateTime<Utc>,
+    adjustments: &[StructureSplitAdjustment],
+) -> (f64, f64) {
+    adjustments
+        .iter()
+        .filter(|adjustment| observed_at < adjustment.effective_at)
+        .fold((1.0, 1.0), |(price_factor, share_factor), adjustment| {
+            (
+                price_factor * adjustment.split_from / adjustment.split_to,
+                share_factor * adjustment.split_to / adjustment.split_from,
+            )
+        })
+}
+
+fn adjust_intraday_chart_bars_for_splits(
+    bars: &mut [HistoricalIntradayChartRow],
+    adjustments: &[StructureSplitAdjustment],
+) {
+    for bar in bars {
+        let (price_factor, share_factor) = split_adjustment_factors(bar.bar_start, adjustments);
+        bar.open *= price_factor;
+        bar.high *= price_factor;
+        bar.low *= price_factor;
+        bar.close *= price_factor;
+        bar.size_sum *= share_factor;
+    }
+}
+
+fn adjust_macro_chart_bars_for_splits(
+    bars: &mut [HistoricalMacroChartRow],
+    adjustments: &[StructureSplitAdjustment],
+) {
+    for bar in bars {
+        let (price_factor, share_factor) = split_adjustment_factors(bar.bar_start, adjustments);
+        bar.open *= price_factor;
+        bar.high *= price_factor;
+        bar.low *= price_factor;
+        bar.close *= price_factor;
+        bar.size_sum *= share_factor;
     }
 }
 
@@ -2907,13 +2987,16 @@ mod tests {
         latest_coverage_target_date_sql, macro_bar_is_closed,
         materialize_confirmed_recent_coverage, merge_coverage_intervals, normalize_ticker,
         parse_historical_tsv_row, persisted_structure_events_sql, recent_coverage_sql,
-        row_to_event, session_vwap_seed_select, ticker_filter, CoverageInterval, EventWindow,
-        HistoricalRow, LatestEventCoverage, MarketSourceTier, RecentCoverageRow,
+        row_to_event, session_vwap_seed_select, split_adjustment_factors, ticker_filter,
+        CoverageInterval, EventWindow, HistoricalRow, LatestEventCoverage, MarketSourceTier,
+        RecentCoverageRow,
     };
     use crate::config::HistoricalGatewayConfig;
     use chrono::{NaiveDate, TimeZone, Utc};
+    use chrono_tz::America::New_York;
     use qmd_core::compact_event::{CompactEventDecoder, LIVE_COMPACT_EVENT_SCHEMA_VERSION};
     use qmd_core::event::MarketEvent;
+    use qmd_core::generic_structure::StructureSplitAdjustment;
 
     #[test]
     fn session_vwap_seed_sql_aggregates_only_exact_volume_eligible_trades() {
@@ -3334,5 +3417,33 @@ mod tests {
         assert!(recent.contains("source.arrival_sequence AS ordinal"));
         assert!(recent.contains("source.source_sequence AS source_sequence"));
         assert!(recent.contains("FROM q_live.events AS source FINAL"));
+    }
+
+    #[test]
+    fn retrospective_split_factors_normalize_price_and_share_units() {
+        let effective_at = New_York
+            .with_ymd_and_hms(2026, 8, 6, 4, 0, 0)
+            .single()
+            .unwrap()
+            .with_timezone(&Utc);
+        let adjustments = vec![StructureSplitAdjustment {
+            execution_date: chrono::NaiveDate::from_ymd_opt(2026, 8, 6).unwrap(),
+            effective_at,
+            split_from: 5.0,
+            split_to: 1.0,
+            source_inserted_at: effective_at,
+        }];
+
+        assert_eq!(
+            split_adjustment_factors(
+                effective_at - chrono::Duration::milliseconds(1),
+                &adjustments
+            ),
+            (5.0, 0.2)
+        );
+        assert_eq!(
+            split_adjustment_factors(effective_at, &adjustments),
+            (1.0, 1.0)
+        );
     }
 }

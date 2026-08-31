@@ -39,6 +39,16 @@ const CHART_SNAPSHOT_CACHE_TTL_MS = 2 * 60_000;
 const CHART_SNAPSHOT_CACHE_LIMIT = 48;
 const UNIFIED_STRUCTURE_TIMEFRAME: CanvasChartTimeframe = "1s";
 
+function macroCoverageNotice(payload: QmdBarHistory): string {
+  if (payload.coverage_status === "stale") {
+    return `Daily authority is stale${payload.latest_session_date ? ` after ${payload.latest_session_date}` : ""}; historical structure and chart context may be incomplete.`;
+  }
+  if (payload.coverage_status === "unavailable") {
+    return "Daily authority is unavailable; historical structure and chart context are incomplete.";
+  }
+  return "";
+}
+
 // These indicators are deterministic functions of the canonical closed bars
 // and are prepared with the bar artifact. Event-flow and microstructure fields
 // remain on the full derived path; they must never be approximated from OHLCV.
@@ -305,6 +315,12 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
             ...current,
             indicators: limitIndicatorRowsToLatest(mergeIndicatorRowsByTime(current.indicators, rows), rowBudget),
             indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
+            // Unified structure is fetched independently from the ordinary
+            // indicator projection. When it is the only deferred request it
+            // owns completion of the loading notice as well as the rows.
+            historyNotice: !standardIndicatorsRequested && current.historyNotice === "Loading requested indicators..."
+              ? ""
+              : current.historyNotice,
           }));
         };
       barsRequest
@@ -333,7 +349,10 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
               canLoadEarlier: payload.has_more && !merged.atCapacity,
               marketSignalEvents: mergeMarketSignalEvents(replaceDisplayedTimeframe ? [] : current.marketSignalEvents, payload.market_signal_events),
               historyError: "",
-              historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : progressive ? liveTail ? "Loading current QMD indicators..." : standardIndicatorsRequested || unifiedStructureSelected ? "Loading requested indicators..." : "" : liveTail ? "Historical base loaded; connecting the QMD live tail..." : "",
+              historyNotice: merged.atCapacity
+                ? chartHistoryLimitNotice(rowBudget)
+                : macroCoverageNotice(payload)
+                  || (progressive ? liveTail ? "Loading current QMD indicators..." : standardIndicatorsRequested || unifiedStructureSelected ? "Loading requested indicators..." : "" : liveTail ? "Historical base loaded; connecting the QMD live tail..." : ""),
               indicators: merged.indicators,
               indicatorsAvailable: progressive ? current.indicatorsAvailable : payload.indicators_available,
               indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,

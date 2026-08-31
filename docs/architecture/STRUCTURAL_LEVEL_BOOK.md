@@ -2,7 +2,7 @@
 
 ## Authority
 
-Generic Structure algorithm v14 is the single deterministic authority for a ticker's structural level book. It consumes canonical, event-time-ordered eligible trades and quotes. Live, Replay, Backtest, Debug, QMD History, and chart presentation must restore or advance the same checkpoint contract; none may recalculate a competing chart-timeframe book.
+Generic Structure algorithm v15 is the single deterministic authority for a ticker's structural level book. It consumes canonical, event-time-ordered eligible trades and quotes. Live, Replay, Backtest, Debug, QMD History, and chart presentation must restore or advance the same checkpoint contract; none may recalculate a competing chart-timeframe book.
 
 The current canonical market-event contract identifies a listing by normalized SIP ticker. A future security-master listing identifier may be added only as a versioned identity migration. Symbol changes or reuse must not be silently joined across that boundary.
 
@@ -11,12 +11,14 @@ The current canonical market-event contract identifies a listing by normalized S
 1. Eligible trades update a streaming geometry state: tick size, quoted spread, exponentially weighted absolute trade movement, executed volume, and aggressor-classified buy/sell footprint.
 2. A directional leg confirms an event-native high or low only after price reverses by an adaptive distance. The distance is bounded by tick, spread, and streaming price movement; it does not depend on the selected chart interval.
 3. A confirmed pivot creates or reinforces a nearby active price range. Range geometry is fixed for that role episode. Retests strengthen the same identity; they do not split the range.
-4. A tentative penetration keeps the range active. Only accepted event-native continuation beyond the far boundary closes its role. A later causal retest and rejection may flip resistance to support or support to resistance while preserving lineage.
-5. Completed 100 ms through 1 hour swing calculations are corroborating evidence only. They may strengthen an existing event-native range but cannot originate, delete, or move one.
+4. A tentative penetration keeps the range active. Acceptance requires adaptive distance beyond the far boundary plus trade-count and time-or-volume persistence derived from tick size, range width, streaming absolute movement, spread, and typical trade size. Two small prints or a 100 ms wick cannot accept a break by themselves.
+5. An accepted break remains published as `awaiting_retest`, then `retest_contact`, until the retest either confirms a role flip or fails. Pending retests are protected from capacity eviction.
+6. Completed 100 ms through 1 week swing calculations are corroborating evidence only. Daily and weekly buckets use the 04:00 New York session boundary. They may strengthen an existing event-native range but cannot originate, delete, or move one.
+7. Overlapping same-role episodes consolidate into the oldest causal identity before the bounded 256-track capacity is ranked. Duplicate geometry strengthens one episode instead of occupying independent slots.
 
 ## Evidence fields
 
-- `salience`: combined structural importance from independent pivots, persistence, holds, corroboration, and role flips.
+- `salience`: a diminishing weighted combination of mean and best source quality, logarithmic independent-pivot breadth, timeframe diversity, persistence, and role flips. It intentionally does not use a saturating noisy-OR.
 - `confidence`: quality and breadth of the evidence supporting the range.
 - `reaction_probability`: smoothed estimate that a future encounter produces a meaningful reaction. It is not directional alpha.
 - `hold_probability` and `break_probability`: beta-smoothed lifecycle frequencies in the current role.
@@ -27,6 +29,8 @@ The current canonical market-event contract identifies a listing by normalized S
 - `confirmed_at_ms`: first instant at which the episode was tradable without lookahead.
 
 Scores can strengthen when independent event-native pivots merge, a range holds, compatible timeframe structure confirms it, executed activity accumulates, or the range survives a role flip. Accepted breaks weaken the old role. Scores never rewrite the earlier range geometry or confirmation time.
+
+Chart bars use the same retrospective split basis as the checkpoint: every bar before a split boundary is multiplied by the cumulative `split_from / split_to` price factor and its share volume by the inverse factor. Daily and macro responses expose `coverage_status`, `latest_session_date`, and `split_adjusted`; stale daily authority is shown to the operator rather than silently presented as current context.
 
 ## Daily checkpoints
 

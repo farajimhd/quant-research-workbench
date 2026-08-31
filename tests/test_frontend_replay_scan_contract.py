@@ -110,6 +110,9 @@ def test_structural_history_can_span_all_loaded_chart_bars() -> None:
     assert "active.delete(key)" in chart_source
     assert "existing.level = level" in chart_source
     assert "Evidence changes reinforce the same causal level episode" in chart_source
+    assert "const causalStart" in chart_source
+    assert "start: causalStart" in chart_source
+    assert "start: Math.max(time" not in chart_source
     assert "unifiedEvidenceSignature" not in chart_source
     assert "historyBarsDefault: 0" in chart_source
     assert 'annotationKind: "unified-structure-level"' in chart_source
@@ -134,6 +137,8 @@ def test_structural_history_can_span_all_loaded_chart_bars() -> None:
     assert 'const unifiedStructureAsPrimary' not in chart_data_source
     assert 'indicator_columns: baseIndicatorColumns, stage: "bars"' in chart_data_source
     assert "const unifiedStructureRequest = progressive && unifiedStructureSelected" in chart_data_source
+    assert 'current.historyNotice === "Loading requested indicators..."' in chart_data_source
+    assert "!standardIndicatorsRequested" in chart_data_source
     assert "indicator_columns: unifiedStructureColumns" in chart_data_source
     assert "full_session: true" in chart_data_source
     assert "stage: \"full\", timeframe: UNIFIED_STRUCTURE_TIMEFRAME" in chart_data_source
@@ -165,6 +170,8 @@ def test_structural_history_can_span_all_loaded_chart_bars() -> None:
     assert ".chart-update-status.centered" in styles_source
     assert "transform: translate(-50%, -50%)" in styles_source
     assert "Loading ${timeframe} chart…" in chart_data_source
+    assert "macroCoverageNotice(payload)" in chart_data_source
+    assert "Daily authority is stale" in chart_data_source
     assert "prepared_bar_cache_root" in history_cache_source
     assert "load_prepared_bar_cache" in history_cache_source
     assert "store_prepared_bar_cache" in history_cache_source

@@ -10,7 +10,7 @@ use crate::scanner::{
     HistoricalWatchlistTimelineMaterialization,
 };
 use crate::source::{
-    EventCoverage, EventWindow, HistoricalCursor, HistoricalEventSource,
+    split_adjustment_factors, EventCoverage, EventWindow, HistoricalCursor, HistoricalEventSource,
     HistoricalScannerMarketSnapshot, LatestEventCoverage, MarketSourcePlan, SourceRevision,
 };
 use crate::structure_checkpoint::{
@@ -1079,12 +1079,12 @@ async fn chart_bar_snapshot(
             })));
         }
     }
-    let snapshot = state
+    let mut snapshot = state
         .cache
         .chart_snapshot(
-            window,
-            ticker,
-            timeframe,
+            window.clone(),
+            ticker.clone(),
+            timeframe.clone(),
             product_query.limit.unwrap_or(5_000).clamp(1, 50_000),
             as_of,
             before,
@@ -1093,6 +1093,16 @@ async fn chart_bar_snapshot(
         )
         .await
         .map_err(service_error)?;
+    let split_adjustments = state
+        .source
+        .structure_split_adjustments(
+            &ticker,
+            window.start - chrono::Duration::milliseconds(1),
+            as_of,
+        )
+        .await
+        .map_err(service_error)?;
+    adjust_chart_snapshot_for_splits(&mut snapshot, &split_adjustments);
     project_chart_snapshot(
         snapshot,
         indicator_columns.as_ref(),
@@ -1100,6 +1110,24 @@ async fn chart_bar_snapshot(
         query.include_structure.unwrap_or(true),
     )
     .map(Json)
+}
+
+fn adjust_chart_snapshot_for_splits(
+    snapshot: &mut ChartSnapshot,
+    adjustments: &[qmd_core::generic_structure::StructureSplitAdjustment],
+) {
+    for bar in &mut snapshot.bars {
+        let (price_factor, share_factor) = split_adjustment_factors(bar.bar_start, adjustments);
+        bar.open *= price_factor;
+        bar.high *= price_factor;
+        bar.low *= price_factor;
+        bar.close *= price_factor;
+        bar.volume *= share_factor;
+        bar.vwap = bar.vwap.map(|value| value * price_factor);
+        bar.estimated_luld_reference_price *= price_factor;
+        bar.estimated_luld_lower_price *= price_factor;
+        bar.estimated_luld_upper_price *= price_factor;
+    }
 }
 
 fn parse_chart_stage(raw: Option<&str>) -> Result<bool, ApiError> {

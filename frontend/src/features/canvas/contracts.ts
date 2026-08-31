@@ -92,6 +92,8 @@ export type QmdUnifiedStructureLevel = {
   break_count: number;
   role_flip_count: number;
   last_test_at_ms: number;
+  lifecycle: "active" | "crossed" | "awaiting_retest" | "retest_contact" | "retired" | string;
+  pending_side: number;
   sources: QmdUnifiedStructureSource[];
 };
 export type QmdUnifiedStructureLevelDelta = {
@@ -322,6 +324,8 @@ export type BarGptScopePayload = {
 };
 export type QmdBarHistory = {
   as_of: string;
+  coverage_status?: "ready" | "stale" | "unavailable" | string;
+  latest_session_date?: string | null;
   market_signal_events: QmdMarketSignalEvent[];
   earliest_session_date: string;
   has_more: boolean;
@@ -335,6 +339,7 @@ export type QmdBarHistory = {
   next_before: string;
   previous_session_before: string;
   stage?: "bars" | "full";
+  split_adjusted?: boolean;
   ticker: string;
   timeframe: string;
 };
