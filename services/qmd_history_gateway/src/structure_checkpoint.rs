@@ -6,10 +6,11 @@ use chrono::{DateTime, Datelike, Duration, TimeZone, Timelike, Utc};
 use chrono_tz::America::New_York;
 use qmd_core::event::MarketEvent;
 use qmd_core::generic_structure::{
-    GenericStructureCheckpoint, GenericStructureEngine, GenericStructureSnapshot,
-    GENERIC_STRUCTURE_ALGORITHM_VERSION,
+    GenericStructureCheckpoint, GenericStructureEngine, GenericStructureEvent,
+    GenericStructureSnapshot, StructureSplitAdjustment, GENERIC_STRUCTURE_ALGORITHM_VERSION,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -45,6 +46,65 @@ pub struct StructureSnapshotResponse {
     pub checkpoint: GenericStructureCheckpoint,
     pub snapshot: GenericStructureSnapshot,
     pub complete: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PersistedStructureBookSeed {
+    pub authority_start: DateTime<Utc>,
+    pub checkpoint: GenericStructureCheckpoint,
+    pub revision_token: String,
+}
+
+pub(crate) async fn persisted_structure_book_seed(
+    source: &HistoricalEventSource,
+    ticker: &str,
+    before: DateTime<Utc>,
+) -> Result<Option<PersistedStructureBookSeed>, String> {
+    let events = source
+        .persisted_structure_events_before(ticker, before)
+        .await?;
+    if events.is_empty() {
+        return Ok(None);
+    }
+    let authority_start = events
+        .first()
+        .map(|event| event.confirmed_at)
+        .unwrap_or(before);
+    let adjustments = source
+        .structure_split_adjustments(ticker, authority_start, before)
+        .await?;
+    let revision_bytes = serde_json::to_vec(&(&events, &adjustments))
+        .map_err(|error| format!("failed to hash persisted structure seed: {error}"))?;
+    let revision_token = format!("sha256:{:x}", Sha256::digest(revision_bytes));
+    let checkpoint = checkpoint_from_persisted_structure_events(ticker, &events, &adjustments)?;
+    Ok(Some(PersistedStructureBookSeed {
+        authority_start,
+        checkpoint,
+        revision_token,
+    }))
+}
+
+fn checkpoint_from_persisted_structure_events(
+    ticker: &str,
+    events: &[GenericStructureEvent],
+    adjustments: &[StructureSplitAdjustment],
+) -> Result<GenericStructureCheckpoint, String> {
+    let mut engine = GenericStructureEngine::new(ticker);
+    let mut next_split = 0_usize;
+    for event in events {
+        while next_split < adjustments.len()
+            && adjustments[next_split].effective_at <= event.confirmed_at
+        {
+            engine.apply_split_adjustment(&adjustments[next_split])?;
+            next_split += 1;
+        }
+        engine.seed_events(std::slice::from_ref(event));
+    }
+    while next_split < adjustments.len() {
+        engine.apply_split_adjustment(&adjustments[next_split])?;
+        next_split += 1;
+    }
+    Ok(engine.checkpoint())
 }
 
 #[derive(Clone)]
@@ -507,6 +567,40 @@ pub async fn materialize_structure_snapshot(
         .persisted_structure_checkpoint_before(&ticker, request.as_of)
         .await?
     else {
+        if let Some(seed) = persisted_structure_book_seed(source, &ticker, request.as_of).await? {
+            let advanced = advance_structure_checkpoint_inner(
+                config,
+                source,
+                StructureCheckpointAdvanceRequest {
+                    schema_version: STRUCTURE_CHECKPOINT_ADVANCEMENT_SCHEMA_VERSION,
+                    checkpoint: seed.checkpoint,
+                    as_of: request.as_of,
+                    expected_source_plan_hash: None,
+                    event_limit: request.event_limit,
+                },
+                false,
+            )
+            .await?;
+            let mut engine = GenericStructureEngine::new(&ticker);
+            engine.seed_checkpoint(&advanced.checkpoint);
+            let snapshot = engine.snapshot(request.as_of);
+            return Ok(StructureSnapshotResponse {
+                schema_version: STRUCTURE_SNAPSHOT_SCHEMA_VERSION,
+                ticker,
+                as_of: request.as_of,
+                seed_authority_start: seed.authority_start,
+                seed_source_plan_hash: seed.revision_token.clone(),
+                seed_source_revision_token: seed.revision_token,
+                event_count: advanced.event_count,
+                advanced_event_count: advanced.advanced_event_count,
+                source_plan: advanced.source_plan,
+                source_revision_before: advanced.source_revision_before,
+                source_revision_after: advanced.source_revision_after,
+                checkpoint: advanced.checkpoint,
+                snapshot,
+                complete: advanced.complete,
+            });
+        }
         // A ticker can become actionable before its first daily checkpoint
         // exists (new listing, sparse historical use, or a newly introduced
         // algorithm revision).  Historical modes must cold-build the same
@@ -747,12 +841,15 @@ impl CheckpointCursor for GenericStructureCheckpoint {
 #[cfg(test)]
 mod tests {
     use super::{
-        validate_exact_cursor_plan, validate_rebuild_source_plan,
-        HistoricalStructureSessionRegistry, MarketSourcePlan,
+        checkpoint_from_persisted_structure_events, validate_exact_cursor_plan,
+        validate_rebuild_source_plan, HistoricalStructureSessionRegistry, MarketSourcePlan,
     };
     use crate::source::{MarketSourceSegment, MarketSourceTier};
-    use chrono::{TimeZone, Utc};
-    use qmd_core::generic_structure::GenericStructureEngine;
+    use chrono::{NaiveDate, TimeZone, Utc};
+    use qmd_core::generic_structure::{
+        GenericStructureEngine, GenericStructureEvent, StructureSplitAdjustment,
+        GENERIC_STRUCTURE_ALGORITHM_VERSION,
+    };
 
     fn plan(tier: MarketSourceTier) -> MarketSourcePlan {
         let start = Utc.with_ymd_and_hms(2026, 8, 11, 13, 30, 0).unwrap();
@@ -791,6 +888,51 @@ mod tests {
         assert!(validate_rebuild_source_plan(&plan(MarketSourceTier::Archive)).is_ok());
         assert!(validate_rebuild_source_plan(&plan(MarketSourceTier::Recent)).is_ok());
         assert!(validate_rebuild_source_plan(&plan(MarketSourceTier::Gap)).is_err());
+    }
+
+    #[test]
+    fn persisted_level_book_keeps_prior_month_levels_and_applies_splits() {
+        let confirmed_at = Utc.with_ymd_and_hms(2026, 2, 2, 14, 0, 0).unwrap();
+        let event = GenericStructureEvent {
+            algorithm_version: GENERIC_STRUCTURE_ALGORITHM_VERSION,
+            event_id: 1,
+            level_id: 1,
+            sym: "SUGP".to_string(),
+            timeframe: "100ms".to_string(),
+            event_kind: "level_created".to_string(),
+            direction: -1,
+            price: 8.0,
+            lower: 7.9,
+            upper: 8.1,
+            strength: 0.9,
+            confidence: 0.9,
+            lifecycle: "active".to_string(),
+            total_volume: 10_000.0,
+            buy_volume: 4_000.0,
+            sell_volume: 6_000.0,
+            neutral_volume: 0.0,
+            trade_count: 100,
+            pivot_at: confirmed_at,
+            confirmed_at,
+        };
+        let adjustment = StructureSplitAdjustment {
+            execution_date: NaiveDate::from_ymd_opt(2026, 8, 1).unwrap(),
+            effective_at: Utc.with_ymd_and_hms(2026, 8, 1, 8, 0, 0).unwrap(),
+            split_from: 1.0,
+            split_to: 2.0,
+            source_inserted_at: Utc.with_ymd_and_hms(2026, 8, 1, 9, 0, 0).unwrap(),
+        };
+
+        let checkpoint =
+            checkpoint_from_persisted_structure_events("SUGP", &[event], &[adjustment]).unwrap();
+        let mut engine = GenericStructureEngine::new("SUGP");
+        engine.seed_checkpoint(&checkpoint);
+        let snapshot = engine.snapshot(Utc.with_ymd_and_hms(2026, 8, 21, 8, 0, 0).unwrap());
+
+        assert!(snapshot
+            .active_levels
+            .iter()
+            .any(|level| level.side < 0 && (level.price - 4.0).abs() < 0.000_001));
     }
 
     #[tokio::test]

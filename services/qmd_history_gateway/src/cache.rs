@@ -3,8 +3,8 @@ use crate::source::{
     EventWindow, HistoricalCursor, HistoricalEventSource, SessionVwapSeed, SourceRevision,
 };
 use crate::structure_checkpoint::{
-    rebuild_trade_structure_checkpoint, StructureCheckpointRebuildRequest,
-    STRUCTURE_CHECKPOINT_REBUILD_SCHEMA_VERSION,
+    persisted_structure_book_seed, rebuild_trade_structure_checkpoint,
+    StructureCheckpointRebuildRequest, STRUCTURE_CHECKPOINT_REBUILD_SCHEMA_VERSION,
 };
 use chrono::{DateTime, Datelike, Duration, TimeZone, Timelike, Utc};
 use chrono_tz::America::New_York;
@@ -38,7 +38,7 @@ use std::sync::Mutex as StdMutex;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, OnceCell, Semaphore};
 
 pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v33";
-pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v39";
+pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v40";
 pub const HISTORICAL_CORPORATE_ACTION_REVISION: &str = "raw-unadjusted-v1";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
 const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 5;
@@ -1678,33 +1678,8 @@ impl HistoricalDerivedCache {
                 stale_daily_checkpoint = true;
             }
             if !stale_daily_checkpoint {
-                let events = source
-                    .persisted_structure_events_before(&ticker, before)
-                    .await?;
-                if !events.is_empty() {
-                    let mut engine = GenericStructureEngine::new(&ticker);
-                    let first_event_at = events
-                        .first()
-                        .map(|event| event.confirmed_at)
-                        .unwrap_or(before);
-                    let adjustments = source
-                        .structure_split_adjustments(&ticker, first_event_at, before)
-                        .await?;
-                    let mut next_split = 0_usize;
-                    for event in &events {
-                        while next_split < adjustments.len()
-                            && adjustments[next_split].effective_at <= event.confirmed_at
-                        {
-                            engine.apply_split_adjustment(&adjustments[next_split])?;
-                            next_split += 1;
-                        }
-                        engine.seed_events(std::slice::from_ref(event));
-                    }
-                    while next_split < adjustments.len() {
-                        engine.apply_split_adjustment(&adjustments[next_split])?;
-                        next_split += 1;
-                    }
-                    return Ok(Some(engine.checkpoint()));
+                if let Some(seed) = persisted_structure_book_seed(&source, &ticker, before).await? {
+                    return Ok(Some(seed.checkpoint));
                 }
             }
             // The dedicated level-book profile is trade-driven end to end.
