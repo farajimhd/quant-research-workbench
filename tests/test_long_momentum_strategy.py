@@ -3098,7 +3098,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(plan.orders[0].side, "SELL")
         self.assertEqual(plan.orders[0].price, 104.0)
 
-    def test_full_exit_replaces_existing_protection_with_one_oca_group(self) -> None:
+    def test_full_exit_replaces_existing_protection_with_one_managed_order(self) -> None:
         managed = assignment(
             status=AssignmentStatus.MANAGING,
             state={
@@ -3120,7 +3120,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
             strategy_id=STRATEGY_ID,
             strategy_revision=STRATEGY_REVISION,
         )
-        self.assertEqual([order.orderType for order in plan.orders], ["LMT", "STP", "TRAIL"])
+        self.assertEqual([order.orderType for order in plan.orders], ["LMT"])
         self.assertTrue(plan.cancel_strategy_protection)
         self.assertTrue(all(order.isSingleGroup for order in plan.orders))
         self.assertTrue(all(order.parentId is None for order in plan.orders))

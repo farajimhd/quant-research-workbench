@@ -83,27 +83,20 @@ class IbkrStrategyOrderPlanner:
         if intent.action == "exit":
             side = "BUY" if position_side == "short" else "SELL"
             price = _aggressive_limit(intent.reference_price, side, limit_offset_bps)
-            if intent.invalidation_price is None or intent.invalidation_price <= 0:
-                raise ValueError("Full exit requires a broker-held fallback stop")
-            orders = [
+            # A full-exit decision owns one executable broker path. Submitting
+            # an aggressive limit beside an already-triggerable fallback stop
+            # lets partial liquidity route the same semantic exit through both
+            # members at different prices. The adaptive urgent limit is the
+            # liquidation order; superseded entry protection is cancelled by
+            # the OMS before this independently identified order is submitted.
+            orders = (
                 _order(
                     account_id, instrument, f"{prefix}-exit", side, "LMT", quantity,
                     intent, price=price, grouped=True,
                 ),
-                _order(
-                    account_id, instrument, f"{prefix}-fallback-stop", side, "STP", quantity,
-                    intent, stop=intent.invalidation_price, grouped=True,
-                ),
-            ]
-            if intent.trailing_amount is not None and intent.trailing_amount > 0:
-                orders.append(
-                    _order(
-                        account_id, instrument, f"{prefix}-fallback-trail", side, "TRAIL", quantity,
-                        intent, trailing=intent.trailing_amount, grouped=True,
-                    )
-                )
+            )
             return StrategyOrderPlan(
-                orders=tuple(orders),
+                orders=orders,
                 cancel_strategy_protection=True,
             )
         if intent.action in {"reduce_long", "take_profit"}:

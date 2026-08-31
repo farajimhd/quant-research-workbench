@@ -1643,7 +1643,7 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                     event=None,
                 )
 
-                self.assertEqual(len(exit_snapshot.broker_order_ids), 2)
+                self.assertEqual(len(exit_snapshot.broker_order_ids), 1)
                 self.assertNotIn(target_id, exit_snapshot.broker_order_ids)
                 self.assertEqual(exit_snapshot.filled_quantity, 100)
                 self.assertEqual(exit_snapshot.remaining_quantity, 0)
@@ -1947,7 +1947,7 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
             )
 
             self.assertEqual(exit_snapshot.action, "exit")
-            self.assertEqual(len(exit_snapshot.broker_order_ids), 2)
+            self.assertEqual(len(exit_snapshot.broker_order_ids), 1)
             self.assertEqual(broker.modifications, [])
             self.assertTrue(
                 set(exit_snapshot.broker_order_ids).isdisjoint(
