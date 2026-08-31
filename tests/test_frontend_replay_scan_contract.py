@@ -267,4 +267,20 @@ def test_completed_backtest_chart_uses_durable_trading_evidence_and_full_session
     assert 'const fullSession = runtimeMode === "backtest" || runtimeMode === "backtest_debug"' in canvas_source
     assert "full_session: fullSession" in chart_data_source
     assert "chartFullSessionPageSize" in chart_data_source
-    assert "chartPanelRef.current?.fitFirstDay()" in (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "chartPresentation.tsx").read_text(encoding="utf-8")
+    chart_presentation_source = (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "chartPresentation.tsx").read_text(encoding="utf-8")
+    renderer_source = (REPO_ROOT / "frontend" / "src" / "app" / "components" / "ChartPanel.tsx").read_text(encoding="utf-8")
+    assert "deferInitialFitUntilLoaded={fullSessionReview}" in chart_presentation_source
+    assert "chartPanelRef.current?.fitFirstDay()" not in chart_presentation_source
+    assert "userViewportClaimedRef.current" in renderer_source
+    assert "shouldAutoFit && deferInitialFitUntilLoaded && loading" in renderer_source
+    explicit_command = renderer_source.index("function executeViewportCommand")
+    assert "userViewportClaimedRef.current = true;" in renderer_source[explicit_command:explicit_command + 500]
+
+
+def test_chart_does_not_autoscale_on_transient_coordinate_read_failure() -> None:
+    renderer_source = (REPO_ROOT / "frontend" / "src" / "app" / "components" / "ChartPanel.tsx").read_text(encoding="utf-8")
+
+    transient_failure = renderer_source.index("Lightweight Charts can reject coordinate reads")
+    invalid_transform = renderer_source.index("if (invalidTransform)", transient_failure)
+    assert "return { recovered: false, retry: true };" in renderer_source[transient_failure:invalid_transform]
+    assert "applyOptions({ autoScale: true })" not in renderer_source[transient_failure:invalid_transform]

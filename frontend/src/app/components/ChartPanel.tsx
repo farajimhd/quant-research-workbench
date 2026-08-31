@@ -495,6 +495,7 @@ type ChartPanelProps = {
   initialFitMode?: "default" | "last_market_day" | "live_first_10" | "recent";
   labelOptions?: ChartLabelOption[];
   canLoadEarlier?: boolean;
+  deferInitialFitUntilLoaded?: boolean;
   loadingEarlier?: boolean;
   loading?: boolean;
   normalizeTicker?: boolean;
@@ -579,6 +580,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   initialFitMode = "default",
   labelOptions = [],
   canLoadEarlier = false,
+  deferInitialFitUntilLoaded = false,
   loadingEarlier = false,
   loading = false,
   normalizeTicker = true,
@@ -647,6 +649,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const overlayRedrawFrameRef = useRef<number | null>(null);
   const overlayRedrawTimerRef = useRef<number | null>(null);
   const scaleStabilizationFrameRef = useRef<number | null>(null);
+  const scaleStabilizationRetryCountRef = useRef(0);
   const scaleRecoveryCountRef = useRef(0);
   const regionDrawRef = useRef<((range: LogicalRange | null) => void) | null>(null);
   const canLoadEarlierRef = useRef(canLoadEarlier);
@@ -654,6 +657,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const onLoadEarlierRef = useRef(onLoadEarlier);
   const suppressEarlierLoadUntilRef = useRef(0);
   const fittedChartKeyRef = useRef("");
+  const viewportIdentityRef = useRef("");
+  const userViewportClaimedRef = useRef(false);
   const candleWindowRef = useRef<{ first: number; last: number } | null>(null);
   const candleBoundsRef = useRef<NumericBounds>(null);
   const normalizeTickerValue = (value: string) => (normalizeTicker ? value.toUpperCase() : value);
@@ -833,6 +838,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   }
 
   function claimViewportForUser(_target: EventTarget | null) {
+    userViewportClaimedRef.current = true;
     cancelPendingInitialFit();
   }
 
@@ -844,6 +850,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
 
   function scheduleScaleStabilization() {
     if (scaleStabilizationFrameRef.current !== null) return;
+    scaleStabilizationRetryCountRef.current = 0;
     scaleStabilizationFrameRef.current = window.requestAnimationFrame(() => {
       scaleStabilizationFrameRef.current = null;
       stabilizeNativePaneScales();
@@ -854,21 +861,33 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const chart = priceChartRef.current;
     const candle = candleRef.current;
     if (!chart || !candle) return;
-    let recovered = stabilizeSeriesScale(candle, chart.panes()[0]?.getHeight() ?? 0, candleBoundsRef.current);
+    let result = stabilizeSeriesScale(candle, chart.panes()[0]?.getHeight() ?? 0, candleBoundsRef.current);
     oscillatorPaneRuntimesRef.current.forEach((runtime) => {
       const paneHeight = chart.panes()[runtime.paneIndex]?.getHeight() ?? 0;
       runtime.seriesKeys.forEach((key) => {
         const renderer = indicatorSeriesRef.current.get(key);
-        if (renderer) recovered = stabilizeSeriesScale(renderer, paneHeight, indicatorBoundsRef.current.get(key) ?? null) || recovered;
+        if (renderer) result = mergeScaleStabilizationResults(result, stabilizeSeriesScale(renderer, paneHeight, indicatorBoundsRef.current.get(key) ?? null));
       });
     });
-    if (recovered && shellRef.current) {
+    if (result.retry && scaleStabilizationRetryCountRef.current < 2) {
+      scaleStabilizationRetryCountRef.current += 1;
+      scaleStabilizationFrameRef.current = window.requestAnimationFrame(() => {
+        scaleStabilizationFrameRef.current = null;
+        stabilizeNativePaneScales();
+      });
+      return;
+    }
+    scaleStabilizationRetryCountRef.current = 0;
+    if (result.recovered && shellRef.current) {
       scaleRecoveryCountRef.current += 1;
       shellRef.current.dataset.chartScaleRecoveries = String(scaleRecoveryCountRef.current);
     }
   }
 
   function executeViewportCommand(command: () => void) {
+    // Toolbar and imperative viewport commands are explicit ownership choices.
+    // Later data enrichment or history paging must preserve their result too.
+    userViewportClaimedRef.current = true;
     cancelPendingInitialFit();
     suppressEarlierLoad();
     command();
@@ -1020,6 +1039,14 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   useEffect(() => {
     payloadRef.current = payload;
     if (!payload || !priceChartRef.current || !candleRef.current || !volumeRef.current) return;
+    const viewportIdentity = `${ticker}:${timeframe}:${referenceKey || "no-reference"}`;
+    if (viewportIdentityRef.current !== viewportIdentity) {
+      cancelPendingInitialFit();
+      viewportIdentityRef.current = viewportIdentity;
+      userViewportClaimedRef.current = false;
+      fittedChartKeyRef.current = "";
+      candleWindowRef.current = null;
+    }
     const fitKey = buildChartFitKey(ticker, timeframe, referenceKey, payload.candles);
     const nextCandleWindow = candleWindow(payload.candles);
     const earlierBarsPrepended = Boolean(
@@ -1027,16 +1054,18 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       && nextCandleWindow
       && nextCandleWindow.first < candleWindowRef.current.first
     );
-    const shouldAutoFit = fitKey !== fittedChartKeyRef.current;
-    const currentRange = shouldAutoFit ? null : priceChartRef.current.timeScale().getVisibleLogicalRange();
-    const currentTimeRange = !shouldAutoFit && earlierBarsPrepended ? priceChartRef.current.timeScale().getVisibleRange() : null;
+    const shouldAutoFit = fitKey !== fittedChartKeyRef.current && !userViewportClaimedRef.current;
+    const autoFitDeferred = shouldAutoFit && deferInitialFitUntilLoaded && loading;
+    const preserveViewport = !shouldAutoFit || autoFitDeferred;
+    const currentRange = preserveViewport ? priceChartRef.current.timeScale().getVisibleLogicalRange() : null;
+    const currentTimeRange = preserveViewport && earlierBarsPrepended ? priceChartRef.current.timeScale().getVisibleRange() : null;
     const timeline = chartTimelineData(payload.candles, timeframe, chartSettingsRef.current.hideEmptyIntervals);
     candleBoundsRef.current = candleValueBounds(payload.candles);
     syncRendererData(candleRef.current, timeline as unknown as RendererDatum[], `candles:${timeframe}`);
     syncRendererData(volumeRef.current, volumeDataForSettings(payload, chartSettingsRef.current) as unknown as RendererDatum[], volumeStyleKey(chartSettingsRef.current));
     candleWindowRef.current = nextCandleWindow;
     updateCandleMarkers();
-    if (shouldAutoFit) {
+    if (shouldAutoFit && !autoFitDeferred) {
       fittedChartKeyRef.current = fitKey;
       if (initialFitTimerRef.current !== null) {
         window.clearTimeout(initialFitTimerRef.current);
@@ -1062,7 +1091,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       }
       drawCurrentRegions();
     }
-  }, [effectiveChartSettings.hideEmptyIntervals, initialFitMode, payload, reference, referenceKey, ticker, timeframe]);
+  }, [deferInitialFitUntilLoaded, effectiveChartSettings.hideEmptyIntervals, initialFitMode, loading, payload, reference, referenceKey, ticker, timeframe]);
 
   useEffect(() => {
     if (!priceChartRef.current || !payload?.candles.length || !reference) return;
@@ -1433,6 +1462,9 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     candleWindowRef.current = null;
     candleBoundsRef.current = null;
     scaleRecoveryCountRef.current = 0;
+    scaleStabilizationRetryCountRef.current = 0;
+    viewportIdentityRef.current = "";
+    userViewportClaimedRef.current = false;
     if (shellRef.current) delete shellRef.current.dataset.chartScaleRecoveries;
   }
 
@@ -3534,16 +3566,20 @@ function seriesValueBounds(series: ChartSeries): NumericBounds {
   return Number.isFinite(min) && Number.isFinite(max) ? { max, min } : null;
 }
 
-function stabilizeSeriesScale(renderer: AnySeriesApi, paneHeight: number, bounds: NumericBounds) {
-  if (!bounds || paneHeight <= 1) return false;
+type ScaleStabilizationResult = { recovered: boolean; retry: boolean };
+
+function stabilizeSeriesScale(renderer: AnySeriesApi, paneHeight: number, bounds: NumericBounds): ScaleStabilizationResult {
+  if (!bounds || paneHeight <= 1) return { recovered: false, retry: false };
   let top: number | null = null;
   let bottom: number | null = null;
   try {
     top = renderer.coordinateToPrice(0);
     bottom = renderer.coordinateToPrice(paneHeight);
   } catch {
-    renderer.priceScale().applyOptions({ autoScale: true });
-    return true;
+    // Lightweight Charts can reject coordinate reads for one paint while
+    // series data or pane geometry is changing. Retry after rendering settles;
+    // a transient read failure must not erase a user's manual price scale.
+    return { recovered: false, retry: true };
   }
 
   const topValue = Number(top);
@@ -3567,9 +3603,13 @@ function stabilizeSeriesScale(renderer: AnySeriesApi, paneHeight: number, bounds
   );
   if (invalidTransform) {
     renderer.priceScale().applyOptions({ autoScale: true });
-    return true;
+    return { recovered: true, retry: false };
   }
-  return false;
+  return { recovered: false, retry: false };
+}
+
+function mergeScaleStabilizationResults(left: ScaleStabilizationResult, right: ScaleStabilizationResult): ScaleStabilizationResult {
+  return { recovered: left.recovered || right.recovered, retry: left.retry || right.retry };
 }
 
 function buildTimelineDataSignature(timeline: CandleSeriesDatum[]) {
