@@ -5297,6 +5297,30 @@ button {
   flex-direction: column;
   padding: 8px;
 }
+
+.app-loading-state {
+  align-items: center;
+  color: var(--muted-foreground);
+  display: flex;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 550;
+  gap: 8px;
+  justify-content: center;
+  min-height: 90px;
+  padding: 16px;
+  text-align: center;
+}
+
+.app-loading-state.is-fill {
+  height: 100%;
+  min-height: 160px;
+  width: 100%;
+}
+
+.app-loading-state .loading-spinner {
+  flex: 0 0 auto;
+}
 .news-icon-legend { display: grid; gap: 8px; }
 .news-icon-legend-title { align-items: baseline; display: flex; justify-content: space-between; }
 .news-icon-legend-title strong { font-size: 11px; }
@@ -5323,38 +5347,6 @@ button {
 }
 
 .chart-state-overlay.error {
-  color: var(--danger);
-}
-
-.chart-update-status {
-  position: absolute;
-  top: 14px;
-  right: 16px;
-  z-index: 6;
-  border: 1px solid color-mix(in oklab, var(--surface-border) 72%, transparent);
-  border-radius: 999px;
-  background: color-mix(in oklab, var(--surface) 88%, transparent);
-  color: var(--muted-foreground);
-  font-size: 11px;
-  font-weight: 500;
-  padding: 4px 9px;
-  pointer-events: none;
-}
-
-.chart-update-status.centered {
-  top: 50%;
-  right: auto;
-  left: 50%;
-  max-width: min(420px, calc(100% - 48px));
-  padding: 8px 12px;
-  transform: translate(-50%, -50%);
-  box-shadow: var(--shadow-sm);
-  text-align: center;
-}
-
-.chart-update-status.error {
-  border-color: color-mix(in oklab, var(--danger) 20%, var(--border));
-  background: color-mix(in oklab, var(--danger) 7%, var(--surface));
   color: var(--danger);
 }
 
@@ -5398,16 +5390,6 @@ button {
 
 .chart-native-pane-overlay :is(.chart-legend, .chart-pane-close) {
   pointer-events: auto;
-}
-
-.chart-update-status.loading {
-  align-items: center;
-  display: flex;
-  gap: 6px;
-  left: 50%;
-  right: auto;
-  top: 50%;
-  transform: translate(-50%, -50%);
 }
 
 .chart-renderer-error {
@@ -7980,7 +7962,6 @@ button {
   color: var(--foreground);
 }
 
-.canvas-preview-loading,
 .canvas-preview-empty {
   align-items: center;
   color: var(--muted-foreground);
@@ -7991,38 +7972,15 @@ button {
   min-height: 90px;
 }
 
-.canvas-preview-loading {
-  gap: 8px;
-}
-
-.canvas-preview-loading::before {
-  animation: qrw-spin 0.72s linear infinite;
-  border: 2px solid color-mix(in oklab, var(--border) 76%, transparent);
-  border-radius: 999px;
-  border-top-color: var(--primary);
-  box-sizing: border-box;
-  content: "";
-  flex: 0 0 auto;
-  height: 13px;
-  width: 13px;
-}
-
 .news-status > span:has(.loading-spinner) {
   align-items: center;
   display: inline-flex;
   gap: 6px;
 }
 
-.news-status .loading-spinner,
-.chart-update-status .loading-spinner {
+.news-status .loading-spinner {
   height: 11px;
   width: 11px;
-}
-
-.chart-update-status:has(.loading-spinner) {
-  align-items: center;
-  display: flex;
-  gap: 6px;
 }
 
 .canvas-preview-table-wrap { overflow: auto; }

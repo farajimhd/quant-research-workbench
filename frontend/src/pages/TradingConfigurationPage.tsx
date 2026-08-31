@@ -40,6 +40,7 @@ import "../app/configurationVisuals.css";
 import { AbstractionCard } from "../app/components/AbstractionCard";
 import { DefinitionRegistryProvider, type InformationRegistry } from "../app/components/DefinitionRegistry";
 import { InventoryFilterSelect } from "../app/components/InventoryFilterSelect";
+import { LoadingState } from "../app/components/LoadingState";
 import { formatSemanticNumber } from "../app/format";
 import type { TradingConfigurationSection } from "../app/routes";
 import { DataCatalogPage, RuleSetLibraryPage, dataFieldRuleDefinitions, type DataRuleSet } from "./DataConfigurationPages";
@@ -1155,7 +1156,7 @@ function GuidedConfiguration({ approved, candidates, draft, label, omsStage, onC
 }
 
 function ConfigurationLoading() {
-  return <div aria-live="polite" className="configuration-empty configuration-loading" role="status"><span className="loading-spinner" aria-hidden="true" /><span><strong>Loading configuration</strong><small>Reading the approved base for this browser session…</small></span></div>;
+  return <LoadingState fill label="Loading configuration" />;
 }
 
 

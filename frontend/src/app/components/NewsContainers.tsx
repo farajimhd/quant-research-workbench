@@ -8,6 +8,7 @@ import { NEWS_READER_CANVAS_ID, ensureNewsReaderCanvas, focusCanvasUrl } from ".
 import { timeRecency, type TimeRecency } from "../timeRecency";
 import { FilterOverflowMenu } from "./FilterOverflowMenu";
 import { InventoryFilterSelect, inventoryEligibilityOptions, type InventoryFilterOption } from "./InventoryFilterSelect";
+import { LoadingState } from "./LoadingState";
 import { MarketTime } from "./MarketTime";
 import { normalizeSemanticDirection, SemanticDirectionMetric } from "./SemanticDirectionMetric";
 import { TickerIdentity, TickerIdentityWithChange, useTickerPresentations, type TickerPresentation } from "./TickerIdentity";
@@ -487,7 +488,7 @@ export function NewsDetailContainer({ asOf, canvasId, live = false, requestedNew
   const detailTickers = detail?.tickers ?? [];
   const presentations = useTickerPresentations(detailTickers);
   if (!newsId) return <NewsEmpty label="Choose a headline in All News or Ticker News to read it here." />;
-  if (loading && !detail) return <div className="canvas-preview-loading">Loading article…</div>;
+  if (loading && !detail) return <LoadingState fill label="Loading article" />;
   if (error) return <NewsEmpty label={error} />;
   if (!detail) return null;
   const row = detail.article;

@@ -413,22 +413,6 @@
 .account-config-card > header span { color: var(--muted-foreground); font-size: 9px; }
 .configuration-empty { color: var(--muted-foreground); display: grid; font-size: 11px; gap: 4px; padding: 18px; text-align: center; }
 .configuration-empty strong { color: var(--foreground); font-size: 12px; }
-.configuration-loading { align-items: center; display: flex; gap: 8px; justify-content: center; }
-.configuration-loading > span:last-child { display: grid; gap: 2px; text-align: left; }
-.configuration-loading small { color: var(--muted-foreground); font-size: 11px; }
-
-.canvas-empty-state.is-loading {
-  align-items: center;
-  color: var(--muted-foreground);
-  display: flex;
-  gap: 8px;
-  justify-content: center;
-  min-height: 160px;
-}
-.canvas-empty-state.is-loading > span:last-child { display: grid; gap: 2px; }
-.canvas-empty-state.is-loading strong { color: var(--foreground); font-size: 12px; }
-.canvas-empty-state.is-loading small { font-size: 10px; }
-
 .strategy-rule-editor { display: grid; gap: 16px; }
 .strategy-source-legend {
   align-items: flex-start;

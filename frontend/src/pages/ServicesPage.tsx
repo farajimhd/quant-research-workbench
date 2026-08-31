@@ -1,9 +1,10 @@
-import { Activity, CheckCircle2, Clock3, Layers3, Loader2, RadioTower, RefreshCcw, Search, Settings2, X } from "lucide-react";
+import { Activity, CheckCircle2, Clock3, Layers3, RadioTower, RefreshCcw, Search, Settings2, X } from "lucide-react";
 import { lazy, Suspense, useMemo, useState } from "react";
 
 import { api } from "../api/client";
 import { Button } from "../app/components/Button";
 import { DataTable } from "../app/components/DataTable";
+import { LoadingState } from "../app/components/LoadingState";
 import { MetricRatio } from "../app/components/MetricRatio";
 import { Modal } from "../app/components/Modal";
 import { useWallClock } from "../app/components/useWallClock";
@@ -116,7 +117,7 @@ export type { ServiceId, ServicePageMode } from "../app/routes";
 const LazyBarGptOperationalConfigurationPanel = lazy(() => import("../features/services/BarGptOperationalConfigurationPanel").then((module) => ({ default: module.BarGptOperationalConfigurationPanel })));
 
 function BarGptOperationalConfigurationPanel() {
-  return <Suspense fallback={<Panel title="BarGPT Operational Configuration"><div className="bar-gpt-config-state"><Loader2 size={18} /><span>Loading service-owned configuration…</span></div></Panel>}>
+  return <Suspense fallback={<Panel title="BarGPT Operational Configuration"><LoadingState label="Loading configuration" /></Panel>}>
     <LazyBarGptOperationalConfigurationPanel />
   </Suspense>;
 }
@@ -156,10 +157,7 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
         <ServicesDashboard budgets={workloadBudgets} budgetError={workloadBudgetError} now={now} services={services} onNavigate={onNavigate} />
       )}
       {showBlockingLoader ? (
-        <div className="services-page-loading-overlay" aria-label="Loading service data">
-          <Loader2 size={22} />
-          <span>{loading ? "Loading service status..." : "Loading service details..."}</span>
-        </div>
+        <LoadingState className="services-page-loading-overlay" label={loading ? "Loading service status" : "Loading service details"} />
       ) : null}
     </div>
   );

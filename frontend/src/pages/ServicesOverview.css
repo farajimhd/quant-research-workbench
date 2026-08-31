@@ -422,13 +422,7 @@
   z-index: 20;
 }
 
-.services-page-loading-overlay svg {
-  animation: spin 0.9s linear infinite;
-  color: var(--primary);
-  flex: 0 0 auto;
-}
-
-.services-page-loading-overlay span {
+.services-page-loading-overlay > span:last-child {
   font-size: 13px;
   font-weight: 560;
   white-space: nowrap;

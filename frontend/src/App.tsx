@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 
 import { Layout } from "./app/components/Layout";
+import { LoadingState } from "./app/components/LoadingState";
 import { MarketStatusBadge, liveMarketStatus, type MarketStatus } from "./app/components/MarketStatusBadge";
 import { TickerSecPopoverProvider } from "./app/components/TickerSecPopoverHost";
 import {
@@ -67,7 +68,7 @@ export function App() {
 }
 
 function PageSuspense({ children }: { children: ReactNode }) {
-  return <Suspense fallback={<div aria-live="polite" className="page-route-loading" role="status">Loading workspace…</div>}>{children}</Suspense>;
+  return <Suspense fallback={<LoadingState fill label="Loading workspace" />}>{children}</Suspense>;
 }
 
 function RouteContent({ onMarketStatusChange, onPageChange, onTopbarCenterChange, page }: {

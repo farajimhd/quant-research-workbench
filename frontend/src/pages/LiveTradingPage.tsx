@@ -19,6 +19,7 @@ import type { Time } from "lightweight-charts";
 
 import { api, query } from "../api/client";
 import type { BackendTableQuery } from "../app/components/DataTable";
+import { LoadingState } from "../app/components/LoadingState";
 import { PageIntro } from "../app/components/PageIntro";
 import {
   WorkspaceCanvasManager,
@@ -1285,7 +1286,7 @@ function LiveTradingStart({
             <LiveStartProgress label="Bars" progress={preloadProgress.bars} status={preloadProgress.barsStatus} />
             <LiveStartProgress label="News" progress={preloadProgress.news} status={preloadProgress.newsStatus} />
           </div>
-          {message ? <div aria-live="polite" className="live-start-message" role="status">{loading ? <span className="loading-spinner" aria-hidden="true" /> : null}<span>{message}</span></div> : null}
+          {message ? loading ? <LoadingState label={message} /> : <div aria-live="polite" className="live-start-message" role="status"><span>{message}</span></div> : null}
           <button className="button primary" disabled={!session.sessionDate || loading} onClick={onStart} type="button">
             {loading ? <span className="loading-spinner" aria-hidden="true" /> : <Play size={15} />} {loading ? "Loading..." : "Load Session"}
           </button>

@@ -23,6 +23,7 @@ import { createPortal } from "react-dom";
 import "./DataTable.css";
 import { displayName, formatCell } from "../format";
 import { openTickerChartsQuotes } from "../tickerNavigation";
+import { LoadingState } from "./LoadingState";
 import { Modal } from "./Modal";
 import { CategoryBadge, PresentedValue, SecurityIdentityCell, tableCellClass } from "./TablePresentation";
 
@@ -1183,7 +1184,7 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
             ) : (
               <tr>
                 <td className="data-table-empty" colSpan={Math.max(usableColumns.length, 1)}>
-                  <span className={emptyIsLoading ? "data-table-empty-message is-loading" : "data-table-empty-message"}>{emptyIsLoading ? <span className="loading-spinner" aria-hidden="true" /> : null}<span>{empty}</span></span>
+                  {emptyIsLoading ? <LoadingState className="data-table-loading-state" label={empty.replace(/\.{3}$|…$/, "")} /> : <span className="data-table-empty-message">{empty}</span>}
                 </td>
               </tr>
             )}

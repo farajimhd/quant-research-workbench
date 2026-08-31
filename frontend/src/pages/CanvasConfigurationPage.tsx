@@ -48,6 +48,7 @@ import {
 import { isTerminalReplayStatus, latestReplayRun, useReplayRunEvents, type CanvasReplayRun } from "../app/replayRun";
 import { AllNewsContainer, NEWS_ARTICLE_CLASS_OPTIONS, NewsDetailContainer, TickerNewsContainer } from "../app/components/NewsContainers";
 import { AllSecContainer, SecDetailContainer, TickerSecContainer } from "../app/components/SecContainers";
+import { LoadingState } from "../app/components/LoadingState";
 import { MarketTime } from "../app/components/MarketTime";
 import { MarketStatusBadge, historicalMarketStatus } from "../app/components/MarketStatusBadge";
 import { ChartsQuotesMarketLayout, QuotesTapeContainer, type ChartsQuotesLayoutSettings } from "../app/components/MarketMicrostructureContainers";
@@ -105,19 +106,19 @@ const LazyStrategyOrderEntry = lazy(() => import("../features/canvas/tradingPres
 const LazyCanvasManagementPanel = lazy(() => import("../features/canvas/CanvasManagementPanel"));
 
 function ChartPreview(props: CanvasChartPreviewProps) {
-  return <Suspense fallback={<div aria-live="polite" className="canvas-preview-loading" role="status">Loading chart renderer…</div>}>
+  return <Suspense fallback={<LoadingState fill label="Loading chart" />}>
     <LazyCanvasChartPreview {...props} />
   </Suspense>;
 }
 
 function TradingContainerPreview(props: TradingContainerPreviewProps) {
-  return <Suspense fallback={<div aria-live="polite" className="canvas-preview-loading" role="status">Loading trading view…</div>}>
+  return <Suspense fallback={<LoadingState fill label="Loading trading view" />}>
     <LazyTradingContainerPreview {...props} />
   </Suspense>;
 }
 
 function StrategyOrderEntry(props: StrategyOrderEntryProps) {
-  return <Suspense fallback={<div aria-live="polite" className="canvas-preview-loading" role="status">Loading order entry…</div>}>
+  return <Suspense fallback={<LoadingState fill label="Loading order entry" />}>
     <LazyStrategyOrderEntry {...props} />
   </Suspense>;
 }
@@ -368,7 +369,7 @@ export function ApprovedCanvasRuntimePage({ accountKeys, mode, modeControls }: {
     return () => { cancelled = true; };
   }, []);
   if (error) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-inline-error">{error}</div></div>;
-  if (!approved) return <div className="canvas-config-page canvas-focus-page"><div aria-live="polite" className="canvas-empty-state is-loading" role="status"><span className="loading-spinner" aria-hidden="true" /><span><strong>Loading approved Canvas</strong><small>Resolving the published default for this {mode} workspace.</small></span></div></div>;
+  if (!approved) return <div className="canvas-config-page canvas-focus-page"><LoadingState fill label={`Loading ${mode} workspace`} /></div>;
   return <CanvasWorkspaceSurface accountKeys={accountKeys} approvedCanvas={approved} canvasId={MAIN_CANVAS_ID} manager={false} modeControls={modeControls} runtimeMode={mode} />;
 }
 
@@ -471,7 +472,7 @@ function ApprovedCanvasFocusPage({ canvasId, requestedInstanceId, requestedNewsI
     return () => { cancelled = true; };
   }, []);
   if (error) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-inline-error">{error}</div></div>;
-  if (!approved) return <div className="canvas-config-page canvas-focus-page"><div aria-live="polite" className="canvas-empty-state is-loading" role="status"><span className="loading-spinner" aria-hidden="true" /><span><strong>Loading approved Canvas</strong><small>Resolving the published default and this workspace's saved overlay.</small></span></div></div>;
+  if (!approved) return <div className="canvas-config-page canvas-focus-page"><LoadingState fill label="Loading Canvas workspace" /></div>;
   return <CanvasWorkspaceSurface approvedCanvas={approved} canvasId={canvasId} manager={false} requestedInstanceId={requestedInstanceId} requestedNewsId={requestedNewsId} requestedSecAccession={requestedSecAccession} requestedSecCik={requestedSecCik} runtimeMode={runtimeMode} />;
 }
 
@@ -513,7 +514,7 @@ function ReplayCanvasFocusPage({ focusToken, runId, runMode }: { focusToken: str
   useReplayRunEvents(handoff && runMode === "replay" ? runId : undefined, mergeFocusRun, setError);
 
   if (error && !run) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-inline-error">{error}</div></div>;
-  if (!run) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-empty-state"><strong>Opening Replay focus canvas</strong><span>Restoring the selected container against the active run clock.</span></div></div>;
+  if (!run) return <div className="canvas-config-page canvas-focus-page"><LoadingState fill label="Loading Replay workspace" /></div>;
   return <CanvasWorkspaceSurface canvasId={MAIN_CANVAS_ID} manager={false} modeControls={<ReplayFocusTransportStatus run={run} />} readOnly={runMode !== "replay"} replayRun={run} runtimeWorkspaceId={focusToken} transient />;
 }
 
@@ -1410,7 +1411,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
 }
 
 function CanvasManager(props: import("../features/canvas/CanvasManagementPanel").CanvasManagementPanelProps) {
-  return <Suspense fallback={<section aria-label="Canvas manager" className="canvas-manager-strip"><p>Loading workspace persistence…</p></section>}><LazyCanvasManagementPanel {...props} /></Suspense>;
+  return <Suspense fallback={<section aria-label="Canvas manager" className="canvas-manager-strip"><LoadingState label="Loading workspace settings" /></section>}><LazyCanvasManagementPanel {...props} /></Suspense>;
 }
 
 function RuntimeCanvasScope({ mode, onApplyRebase, onKeepApproved, onReset, onSaveAs, rebase, revision }: { mode: "Backtest" | "Backtest Debug" | "Canvas" | "Live" | "Paper" | "Replay" | "Research"; onApplyRebase: () => void; onKeepApproved: () => void; onReset: () => void; onSaveAs: () => void; rebase: CanvasRuntimeRebase | null; revision: string }) {
@@ -1486,7 +1487,7 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
         ? <XbrlAnalysisContainer asOf={new Date(chartCutoffMs).toISOString()} onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined} settings={settings.xbrl} symbol={linkContext.symbol} />
       : definition.id === "scanner"
         ? (scannerLoading || scannerSnapshot?.meta.status === "building") && !scannerSnapshot?.rows.length
-          ? <div className="canvas-preview-loading">Building the complete {liveMode ? "live" : "historical"} scanner snapshot…</div>
+          ? <LoadingState fill label="Loading scanner" />
           : scannerError && !scannerSnapshot
             ? <div className="canvas-inline-error">{liveMode ? "Live" : "Historical"} scanner unavailable: {scannerError}</div>
             : <MarketScannerContainer asOf={scannerSnapshot?.as_of ?? new Date(chartCutoffMs).toISOString()} live={liveMode} meta={scannerSnapshot?.meta ?? preview?.scanner_meta} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, scanner: { ...state.scanner, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} rows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.scanner} />
@@ -1494,14 +1495,14 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
         ? <SignalStreamContainer asOf={new Date(chartCutoffMs).toISOString()} live={signalStreamLive} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, signal_stream: { ...state.signal_stream, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} runId={signalStreamRunId} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.signal_stream} />
       : definition.id === "watchlist"
         ? (scannerLoading || scannerSnapshot?.meta.status === "building") && !scannerSnapshot?.rows.length
-          ? <div className="canvas-preview-loading">Loading the {liveMode ? "live" : "historical"} watchlist snapshot…</div>
+          ? <LoadingState fill label="Loading watchlist" />
           : scannerError && !scannerSnapshot
             ? <div className="canvas-inline-error">{liveMode ? "Live" : "Historical"} watchlist unavailable: {scannerError}</div>
             : <WatchUniverseContainer asOf={new Date(chartCutoffMs).toISOString()} live={liveMode} onSettingsChange={(change) => updateSettings((state) => ({ ...state, watchlist: { ...state.watchlist, ...(typeof change === "function" ? change(state.watchlist) : change) } }))} onTickerSelect={onTickerWorkspaceOpen} runtime={replayWatchlistRuntime ?? scannerSnapshot?.watchlist_runtime ?? null} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.watchlist} />
       : definition.id === "strategy_activity"
         ? <StrategyActivityContainer asOf={new Date(chartCutoffMs).toISOString()} focusSequence={strategyActivityFocusSequence} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, strategy_activity: { ...state.strategy_activity, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} runId={signalStreamRunId} settings={settings.strategy_activity} />
       : loading && !preview
-        ? <div className="canvas-preview-loading">Loading {definition.title.toLowerCase()}…</div>
+        ? <LoadingState fill label={`Loading ${definition.title.toLowerCase()}`} />
         : renderPreview(definition.id, preview, settings, linkGroup, onLinkContextChange, onTickerWorkspaceOpen)}</div>
   </div>;
 }

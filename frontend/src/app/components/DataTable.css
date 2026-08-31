@@ -1023,7 +1023,7 @@
 }
 
 .data-table-empty-message { display: inline-flex; }
-.data-table-empty-message.is-loading { align-items: center; gap: 7px; }
+.data-table-loading-state { min-height: 72px; }
 
 .data-table-floating-popover {
   position: fixed;

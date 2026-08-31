@@ -42,6 +42,7 @@ import { createPortal } from "react-dom";
 
 import { displayName } from "../format";
 import { buildSegmentButtonClassName } from "../selectionStyles";
+import { LoadingState } from "./LoadingState";
 import { Modal } from "./Modal";
 import { TickerChangeBadge, TickerIdentity, TickerLogo } from "./TickerIdentity";
 
@@ -518,7 +519,6 @@ type ChartPanelProps = {
   showReferenceLine?: boolean;
   showIndicatorControls?: boolean;
   showSupervisionControls?: boolean;
-  statusMessage?: string;
   settingsStorageKey?: string;
   ticker: string;
   tickerChangeAsOf?: string;
@@ -603,7 +603,6 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   showReferenceLine = true,
   showIndicatorControls = true,
   showSupervisionControls = false,
-  statusMessage = "",
   settingsStorageKey,
   ticker,
   tickerChangeAsOf,
@@ -1686,14 +1685,9 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         />
       ) : null}
       <div className="chart-canvas-stack">
-        {hasChartData && statusMessage ? <div className={`chart-update-status${loading ? " centered" : ""}`} role="status">
-          {loading ? <span className="loading-spinner" aria-hidden="true" /> : null}
-          {statusMessage}
-        </div> : null}
         {!hasChartData ? (
-          <div className={`chart-state-overlay${errorMessage ? " error" : ""}`} role={errorMessage ? "alert" : "status"}>
-            {loading ? <span className="loading-spinner" aria-hidden="true" /> : null}
-            {loading ? "Loading chart data..." : errorMessage ? `Chart data request failed: ${errorMessage}` : emptyMessage}
+          <div className={`chart-state-overlay${errorMessage ? " error" : ""}`} role={errorMessage ? "alert" : loading ? undefined : "status"}>
+            {loading ? <LoadingState label="Loading chart data" /> : errorMessage ? `Chart data request failed: ${errorMessage}` : emptyMessage}
           </div>
         ) : null}
           <div className="chart-native-surface chart-price" style={{ height: nativeChartHeight }}>

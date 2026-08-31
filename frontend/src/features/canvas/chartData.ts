@@ -39,16 +39,6 @@ const CHART_SNAPSHOT_CACHE_TTL_MS = 2 * 60_000;
 const CHART_SNAPSHOT_CACHE_LIMIT = 48;
 const UNIFIED_STRUCTURE_TIMEFRAME: CanvasChartTimeframe = "1s";
 
-function macroCoverageNotice(payload: QmdBarHistory): string {
-  if (payload.coverage_status === "stale") {
-    return `Daily authority is stale${payload.latest_session_date ? ` after ${payload.latest_session_date}` : ""}; historical structure and chart context may be incomplete.`;
-  }
-  if (payload.coverage_status === "unavailable") {
-    return "Daily authority is unavailable; historical structure and chart context are incomplete.";
-  }
-  return "";
-}
-
 // These indicators are deterministic functions of the canonical closed bars
 // and are prepared with the bar artifact. Event-flow and microstructure fields
 // remain on the full derived path; they must never be approximated from OHLCV.
@@ -351,8 +341,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
               historyError: "",
               historyNotice: merged.atCapacity
                 ? chartHistoryLimitNotice(rowBudget)
-                : macroCoverageNotice(payload)
-                  || (progressive ? liveTail ? "Loading current QMD indicators..." : standardIndicatorsRequested || unifiedStructureSelected ? "Loading requested indicators..." : "" : liveTail ? "Historical base loaded; connecting the QMD live tail..." : ""),
+                : progressive ? liveTail ? "Loading current QMD indicators..." : standardIndicatorsRequested || unifiedStructureSelected ? "Loading requested indicators..." : "" : liveTail ? "Historical base loaded; connecting the QMD live tail..." : "",
               indicators: merged.indicators,
               indicatorsAvailable: progressive ? current.indicatorsAvailable : payload.indicators_available,
               indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,

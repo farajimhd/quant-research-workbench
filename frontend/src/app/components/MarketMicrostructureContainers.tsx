@@ -2,6 +2,7 @@ import { Activity, BookOpen, ChevronRight, CircleHelp, Radio, ShieldAlert, WifiO
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 
 import { api, apiWebSocketUrl, query } from "../../api/client";
+import { LoadingState } from "./LoadingState";
 import { usePollingTask } from "../hooks/usePollingTask";
 import { CompactTapeQuoteCharts, QuoteChartGallery, TapeChartGallery } from "./MarketMicrostructureChartGallery";
 import { Modal } from "./Modal";
@@ -767,7 +768,7 @@ function QuoteGuide() { return <><section className="guide-intro"><h3>From updat
 function GuideSignal({ label, text }: { label: string; text: string }) { return <article><strong>{label}</strong><p>{text}</p></article>; }
 function GuideTable({ headings, rows }: { headings: string[]; rows: string[][] }) { return <div className="guide-table-scroll"><table className="guide-table"><thead><tr>{headings.map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{rows.map((row) => <tr key={row[0]}>{row.map((cell, index) => <td data-tone={index === 1 && (cell === "Bullish" || cell === "Bearish") ? (cell === "Bullish" ? "buy" : "sell") : undefined} key={`${row[0]}-${index}`}>{cell}</td>)}</tr>)}</tbody></table></div>; }
 function QuoteSide({ exchange, label, price, size, tone }: { exchange: { code: string; name: string }; label: string; price?: number; size?: number; tone: "buy" | "sell" }) { return <div className="quote-side" data-tone={tone}><span><MetricLabel help={`${label} is the current consolidated national best ${label.toLowerCase()}; ${exchange.name} is posting it.`} label={label} /><abbr title={exchange.name}>{exchange.code}</abbr></span><strong>{price ? formatPrice(price) : "—"}</strong><em>{size != null ? `${formatSize(size)} shares` : "No quote"}</em></div>; }
-function MicrostructureEmpty({ message }: { message: string }) { const waiting = /^(Connecting|Waiting)/i.test(message); return <div className="microstructure-empty">{waiting ? <span className="loading-spinner" aria-hidden="true" /> : <Activity size={18} />}<span>{message}</span></div>; }
+function MicrostructureEmpty({ message }: { message: string }) { const waiting = /^(Connecting|Waiting)/i.test(message); return waiting ? <LoadingState fill label={message.replace(/…$/, "")} /> : <div className="microstructure-empty"><Activity size={18} /><span>{message}</span></div>; }
 function compareEvents(left: CompactEvent, right: CompactEvent) { return left.sip_timestamp_us - right.sip_timestamp_us || left.source_sequence - right.source_sequence || left.arrival_sequence - right.arrival_sequence; }
 function formatPrice(value: number) { return value >= 100 ? value.toFixed(2) : value.toFixed(4).replace(/0+$/, "").replace(/\.$/, ""); }
 function formatSize(value: number) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value); }

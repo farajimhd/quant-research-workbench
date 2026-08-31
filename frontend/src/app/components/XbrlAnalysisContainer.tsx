@@ -2,6 +2,7 @@ import { BookOpen, CalendarDays, ChevronDown, Database, HelpCircle, Sparkles, Tr
 import { useEffect, useId, useMemo, useState } from "react";
 
 import { api, query } from "../../api/client";
+import { LoadingState } from "./LoadingState";
 import { Modal } from "./Modal";
 import { TickerIdentityWithChange, useTickerPresentations } from "./TickerIdentity";
 
@@ -45,7 +46,7 @@ export function XbrlAnalysisContainer({ asOf, onSymbolChange, settings, symbol }
       <span><strong>XBRL financial quality</strong><small>Auditable operating strength from public SEC filings</small></span>
       <button onClick={() => setGuideOpen(true)} type="button"><BookOpen size={15} /> Guide</button>
     </header>
-    {error ? <div className="xbrl-state" data-error="true">{error}</div> : !analysis ? <div className="xbrl-state"><span className="loading-spinner" aria-hidden="true" />Loading causal filing evidence…</div> : <div className="xbrl-analysis-scroll">
+    {error ? <div className="xbrl-state" data-error="true">{error}</div> : !analysis ? <LoadingState fill label="Loading filing analysis" /> : <div className="xbrl-analysis-scroll">
       <section className="xbrl-hero" data-tone={analysis.decision.tone}>
         <div className="xbrl-score"><span>Overall financial quality</span><strong>{score(analysis.current.score)}<small>/100</small></strong><em data-tone={analysis.current.tone}>{analysis.current.label}</em><small>{Math.round(analysis.current.coverage_percent)}% of weighted evidence available</small></div>
         <div className="xbrl-decision"><span><Sparkles size={15} /> Latest filing decision</span><strong>{analysis.decision.label}</strong><b data-tone={analysis.decision.tone}>{signed(analysis.decision.delta_from_previous)} pts</b><small>Change versus the previous scored filing state</small></div>

@@ -165,18 +165,33 @@ def test_structural_history_can_span_all_loaded_chart_bars() -> None:
     assert "let bars_only = matches!(&profile, CacheProfile::Bars(_))" in history_cache_source
     assert "StructureProjectionBuilder" in history_cache_source
     assert "apply_event_without_snapshot" in history_cache_source
-    assert "statusMessage={liveChart.historyNotice}" in chart_source
-    assert 'chart-update-status${loading ? " centered" : ""}' in renderer_source
-    assert ".chart-update-status.centered" in styles_source
-    assert "transform: translate(-50%, -50%)" in styles_source
+    assert "statusMessage={liveChart.historyNotice}" not in chart_source
+    assert "statusMessage?: string" not in renderer_source
+    assert "chart-update-status" not in renderer_source
+    assert ".chart-update-status" not in styles_source
     assert "Loading ${timeframe} chart…" in chart_data_source
-    assert "macroCoverageNotice(payload)" in chart_data_source
-    assert "Daily authority is stale" in chart_data_source
+    assert "macroCoverageNotice(payload)" not in chart_data_source
+    assert "Daily authority is stale" not in chart_data_source
     assert "prepared_bar_cache_root" in history_cache_source
     assert "load_prepared_bar_cache" in history_cache_source
     assert "store_prepared_bar_cache" in history_cache_source
     structure_followup = chart_data_source.split(".then((payload) => {", 2)[2].split(".catch((reason) => {", 1)[0]
     assert 'historyError: ""' not in structure_followup
+
+
+def test_frontend_loading_states_use_shared_centered_treatment() -> None:
+    loading_state = (REPO_ROOT / "frontend" / "src" / "app" / "components" / "LoadingState.tsx").read_text(encoding="utf-8")
+    styles = (REPO_ROOT / "frontend" / "src" / "app" / "styles.css").read_text(encoding="utf-8")
+    canvas_source = CANVAS_PAGE.read_text(encoding="utf-8")
+
+    assert 'className={classes}' in loading_state
+    assert 'className="loading-spinner"' in loading_state
+    assert 'role="status"' in loading_state
+    assert ".app-loading-state" in styles
+    assert "justify-content: center" in styles
+    assert "Opening Replay focus canvas" not in canvas_source
+    assert "Restoring the selected container against the active run clock" not in canvas_source
+    assert "LoadingState fill" in canvas_source
 
 
 def test_canvas_registry_retries_transient_failures_before_blocking_container_adds() -> None:

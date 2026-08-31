@@ -16,6 +16,7 @@ import { useRef, useState, type ReactNode } from "react";
 
 import { api } from "../../api/client";
 import { Button } from "../../app/components/Button";
+import { LoadingState } from "../../app/components/LoadingState";
 import { displayName, formatCompactNumber } from "../../app/format";
 import { usePollingTask } from "../../app/hooks/usePollingTask";
 import { ServicePanel as Panel } from "./ServicePanel";
@@ -153,7 +154,7 @@ export function BarGptOperationalConfigurationPanel() {
   }
 
   if (loading && !payload) {
-    return <Panel title="BarGPT Operational Configuration"><div className="bar-gpt-config-state"><Loader2 size={18} /><span>Loading service-owned configuration…</span></div></Panel>;
+    return <Panel title="BarGPT Operational Configuration"><LoadingState label="Loading configuration" /></Panel>;
   }
   if (!payload || !draft) {
     return <Panel title="BarGPT Operational Configuration"><div className="bar-gpt-config-state is-error"><WifiOff size={18} /><div><strong>Configuration authority unavailable</strong><span>{error || "Start BarGPT to inspect or change its operational settings."}</span></div><Button onClick={() => void load(true)} variant="secondary"><RefreshCcw size={14} /> Retry</Button></div></Panel>;

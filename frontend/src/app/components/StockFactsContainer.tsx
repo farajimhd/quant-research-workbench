@@ -2,6 +2,7 @@ import { Activity, AlertTriangle, ArrowDown, ArrowRight, ArrowUp, BookOpen, Buil
 import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 import { api, query } from "../../api/client";
+import { LoadingState } from "./LoadingState";
 import { Modal } from "./Modal";
 import { TickerIdentityWithChange, useTickerPresentations } from "./TickerIdentity";
 
@@ -150,7 +151,7 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
         <button className="facts-guide-button" onClick={() => setGuideOpen(true)} type="button"><BookOpen size={13} /> Guide</button>
       </div>
     </header>
-    {loading && !payload ? <FactsState loading label="Loading canonical issuer, market, SEC, FINRA, and IBKR facts…" />
+    {loading && !payload ? <LoadingState fill label="Loading stock facts" />
       : error ? <FactsState error label={error} />
         : payload?.status === "not_found" ? <FactsState error label={payload.warnings[0] || `No facts found for ${symbol}.`} />
           : <div className="facts-scroll">
@@ -538,7 +539,7 @@ function FactHistoryModal({ asOf, descriptor, onClose, symbol }: { asOf: string;
   }, [asOf, descriptor.metric, symbol]);
   return <Modal className="facts-history-modal" onClose={onClose} title={`${symbol} · ${history?.label || descriptor.label}`}>
     <div className="facts-history-content">
-      {historyLoading ? <FactsState loading label="Loading reported history…" />
+      {historyLoading ? <LoadingState fill label="Loading reported history" />
         : historyError ? <FactsState error label={historyError} />
           : history?.points.length ? <FactHistoryChart history={history} />
             : <FactsState label="No historical observations are available for this metric." />}
@@ -633,7 +634,7 @@ function FactsGuide({ onClose }: { onClose: () => void }) {
 }
 
 function GuideItem({ text: body, title }: { text: string; title: string }) { return <article><strong>{title}</strong><p>{body}</p></article>; }
-function FactsState({ error = false, label, loading = false }: { error?: boolean; label: string; loading?: boolean }) { return <div className="facts-state" data-error={error ? "true" : "false"}>{loading ? <span className="loading-spinner" aria-hidden="true" /> : error ? <AlertTriangle size={18} /> : <Database size={18} />}<span>{label}</span></div>; }
+function FactsState({ error = false, label }: { error?: boolean; label: string }) { return <div className="facts-state" data-error={error ? "true" : "false"}>{error ? <AlertTriangle size={18} /> : <Database size={18} />}<span>{label}</span></div>; }
 function FactsInlineEmpty({ label }: { label: string }) { return <div className="facts-inline-empty">{label}</div>; }
 
 function number(...values: unknown[]): number | null { for (const value of values) { const parsed = Number(value); if (value != null && value !== "" && Number.isFinite(parsed)) return parsed; } return null; }
