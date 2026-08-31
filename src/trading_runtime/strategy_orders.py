@@ -197,7 +197,7 @@ class IbkrStrategyOrderPlanner:
                     _order(
                         account_id,
                         instrument,
-                        None,
+                        f"{prefix}-s{index + 1}-target",
                         exit_side,
                         "LMT",
                         slice_quantity,
@@ -211,7 +211,7 @@ class IbkrStrategyOrderPlanner:
                 _order(
                     account_id,
                     instrument,
-                    None,
+                    f"{prefix}-s{index + 1}-stop",
                     exit_side,
                     stop_type,
                     slice_quantity,
@@ -228,7 +228,7 @@ class IbkrStrategyOrderPlanner:
                     _order(
                         account_id,
                         instrument,
-                        None,
+                        f"{prefix}-s{index + 1}-trail",
                         exit_side,
                         "TRAIL",
                         slice_quantity,

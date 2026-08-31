@@ -867,15 +867,14 @@ class OrderManagementEngine:
             intent=working_intent,
             require_fresh=self.enforce_wall_clock_quote_freshness,
         )
-        self.risk.reserve(account_id, group.orders)
-        self._transition(group, OrderManagementState.RISK_RESERVED, {"event": "risk_reserved"})
-        await self._submit(group)
+        delegated_sources: list[_ManagedOrderGroup] = []
         if plan.cancel_strategy_protection:
-            # A fresh full-exit OCA owns the entire broker-held position as soon
-            # as it is acknowledged. Delegate the source entry groups before
-            # cancelling their old children: those cancellation callbacks can
-            # run synchronously in Replay and must not manufacture a duplicate
-            # full-position repair stop while the managed exit is already live.
+            # A semantic full exit replaces every older protective sell path.
+            # Delegate the source groups first so synchronous cancellation
+            # callbacks cannot manufacture repair stops, then cancel the old
+            # children before submitting the new exit.  Keeping both sets
+            # live at once over-reserves the held position and is rejected by
+            # both the simulator and real broker short-sale protection.
             for protected in self._groups.values():
                 if protected.group_id == group.group_id:
                     continue
@@ -891,6 +890,7 @@ class OrderManagementEngine:
                 }:
                     continue
                 protected.protection_delegated = True
+                delegated_sources.append(protected)
                 self._transition(
                     protected,
                     protected.state,
@@ -901,11 +901,32 @@ class OrderManagementEngine:
                 )
             await self.cancel_strategy_protection(
                 account_id=account_id,
-                ticker=intent.ticker,
+                ticker=working_intent.ticker,
                 client_id_prefix=self._protective_order_prefix(),
-                event_time=intent.event_time,
-                exclude_order_ids=tuple(group.broker_order_ids),
+                event_time=working_intent.event_time,
             )
+        try:
+            self.risk.reserve(account_id, group.orders)
+            self._transition(group, OrderManagementState.RISK_RESERVED, {"event": "risk_reserved"})
+            await self._submit(group)
+        except Exception:
+            # If the replacement never became live, restore broker-held
+            # protection before surfacing the failure. If a fresh exit member
+            # is already working, restoring old children would over-sell.
+            live_order_ids = {
+                str(order.orderId)
+                for order in await self.broker.live_orders()
+                if order.order_status in OPEN_ORDER_STATUSES
+            }
+            fresh_exit_is_live = any(
+                str(order_id) in live_order_ids for order_id in group.broker_order_ids
+            )
+            if not fresh_exit_is_live:
+                for protected in delegated_sources:
+                    protected.protection_delegated = False
+                    await self.reconcile_protection(protected)
+            self.risk.release(account_id, group.orders)
+            raise
         return await self._match_current_historical_group(
             group.snapshot(self.policy.version),
             intent=working_intent,
@@ -1672,7 +1693,17 @@ class OrderManagementEngine:
         plan: StrategyOrderPlan,
         tactic: ExecutionTactic | None,
     ) -> OrderGroupSnapshot | None:
-        if str(intent.action) not in {"exit", "take_profit", "reduce_long", "cover", "reduce_short"}:
+        action = str(intent.action)
+        if action not in {"exit", "take_profit", "reduce_long", "cover", "reduce_short"}:
+            return None
+        if action == "exit":
+            # A semantic full exit must retain its own immutable command and
+            # execution identity.  Repricing an entry's profit-target child
+            # made the resulting sell executions inherit the entry action,
+            # reason, and client-order identity (or no identity at all), and
+            # allowed the entry group to appear to fill again during exit.
+            # The normal fresh-exit path below delegates and cancels superseded
+            # children, then submits a dedicated marketable exit OCA.
             return None
         position_quantity = float(intent.metadata.get("position_quantity") or intent.quantity)
         # Portfolio admission floors executable quantities to six decimal places.

@@ -1366,7 +1366,7 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
             await manager.close()
             journal.close()
 
-    async def test_fresh_full_exit_delegates_before_old_protection_is_cancelled(self) -> None:
+    async def test_fresh_full_exit_delegates_then_cancels_old_protection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             broker = RecordingBroker()
             real_planner = IbkrStrategyOrderPlanner()
@@ -1551,7 +1551,7 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                 await manager.close()
                 journal.close()
 
-    async def test_historical_reused_target_matches_immediately_at_exit_quote(self) -> None:
+    async def test_historical_full_exit_uses_fresh_identity_at_exit_quote(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             from src.market_engine.events import QuoteEvent
 
@@ -1643,7 +1643,8 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                     event=None,
                 )
 
-                self.assertEqual(exit_snapshot.broker_order_ids, (target_id,))
+                self.assertEqual(len(exit_snapshot.broker_order_ids), 2)
+                self.assertNotIn(target_id, exit_snapshot.broker_order_ids)
                 self.assertEqual(exit_snapshot.filled_quantity, 100)
                 self.assertEqual(exit_snapshot.remaining_quantity, 0)
                 self.assertEqual(await broker.positions("DU1"), [])
@@ -1655,6 +1656,15 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                 ]
                 self.assertEqual(len(sell_fills), 1)
                 self.assertEqual(sell_fills[0].event_time, event_time)
+                self.assertTrue(sell_fills[0].payload["order_ref"])
+                self.assertEqual(
+                    sell_fills[0].payload["canonical_metadata"]["action"],
+                    "exit",
+                )
+                self.assertEqual(
+                    sell_fills[0].payload["canonical_metadata"]["execution_role"],
+                    "managed_exit",
+                )
             finally:
                 await manager.close()
                 journal.close()
@@ -1758,7 +1768,7 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                 await manager.close()
                 journal.close()
 
-    async def test_full_exit_reuses_partially_filled_target_at_cumulative_quantity(self) -> None:
+    async def test_full_exit_replaces_partially_filled_target_with_fresh_order(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             broker = RecordingBroker()
             real_planner = IbkrStrategyOrderPlanner()
@@ -1827,15 +1837,21 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
 
                 self.assertEqual(exit_snapshot.state, OrderManagementState.ACKNOWLEDGED)
                 self.assertEqual(exit_snapshot.remaining_quantity, 60.0)
-                self.assertEqual(broker.modifications[-1][0], target_id)
-                self.assertEqual(broker.modifications[-1][1].quantity, 100.0)
-                adopted = manager._groups[exit_snapshot.group_id]
-                self.assertEqual(adopted.filled_by_broker_order[target_id], 40.0)
+                self.assertEqual(broker.modifications, [])
+                self.assertNotIn(target_id, exit_snapshot.broker_order_ids)
+                self.assertEqual(
+                    broker._orders[target_id].status,
+                    OrderStatus.CANCELLED,
+                )
+                self.assertEqual(exit_snapshot.client_order_ids, tuple(
+                    order.cOID for order in manager._groups[exit_snapshot.group_id].orders
+                ))
+                self.assertTrue(all(exit_snapshot.client_order_ids))
             finally:
                 await manager.close()
                 journal.close()
 
-    async def test_full_exit_reprices_every_sliced_target_without_resizing_one_child(self) -> None:
+    async def test_full_exit_replaces_all_sliced_targets_with_one_fresh_exit_group(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             broker = RecordingBroker()
             real_planner = IbkrStrategyOrderPlanner()
@@ -1892,6 +1908,27 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                 account_id="DU1",
                 event=None,
             )
+            self.assertEqual(
+                len(entry_snapshot.client_order_ids),
+                len(entry_snapshot.broker_order_ids),
+            )
+            self.assertEqual(
+                len(set(entry_snapshot.client_order_ids)),
+                len(entry_snapshot.client_order_ids),
+            )
+            self.assertTrue(all(entry_snapshot.client_order_ids))
+            for broker_order_id in (
+                entry_snapshot.broker_order_ids[0],
+                entry_snapshot.broker_order_ids[3],
+            ):
+                broker._orders[broker_order_id].status = OrderStatus.FILLED
+                broker._orders[broker_order_id].filled = 50.0
+            broker._positions["DU1"][123] = _Position(
+                conid=123,
+                ticker="TEST",
+                quantity=100.0,
+                avg_cost=10.0,
+            )
             exit_intent = replace(
                 intent(action="exit", urgency="very_urgent", quantity=100),
                 intent_id="two-slice-exit",
@@ -1911,14 +1948,20 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(exit_snapshot.action, "exit")
             self.assertEqual(len(exit_snapshot.broker_order_ids), 2)
-            self.assertEqual(len(broker.modifications), 2)
+            self.assertEqual(broker.modifications, [])
+            self.assertTrue(
+                set(exit_snapshot.broker_order_ids).isdisjoint(
+                    entry_snapshot.broker_order_ids
+                )
+            )
+            self.assertTrue(all(exit_snapshot.client_order_ids))
             self.assertEqual(
-                {replacement.quantity for _, replacement in broker.modifications},
-                {50.0},
+                broker._orders[entry_snapshot.broker_order_ids[1]].status,
+                OrderStatus.CANCELLED,
             )
             self.assertEqual(
-                set(exit_snapshot.broker_order_ids),
-                {entry_snapshot.broker_order_ids[1], entry_snapshot.broker_order_ids[4]},
+                broker._orders[entry_snapshot.broker_order_ids[4]].status,
+                OrderStatus.CANCELLED,
             )
             source_group = next(
                 group
@@ -1933,7 +1976,7 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
             await manager.close()
             journal.close()
 
-    async def test_full_exit_reconciles_target_fill_race_without_duplicate_sell(self) -> None:
+    async def test_full_exit_cancels_target_instead_of_modifying_its_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             broker = TerminalTargetRaceBroker()
             real_planner = IbkrStrategyOrderPlanner()
@@ -2001,18 +2044,12 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                 event=None,
             )
 
-            self.assertTrue(broker.raced)
-            self.assertEqual(exit_snapshot.state, OrderManagementState.FILLED)
-            self.assertEqual(exit_snapshot.remaining_quantity, 0.0)
-            self.assertEqual(exit_snapshot.broker_order_ids, ())
-            self.assertEqual(len(await broker.live_orders()), len(entry_snapshot.broker_order_ids))
-            events = journal.order_management_records()
-            self.assertTrue(
-                any(
-                    row.entity_type == "protected_exit_already_satisfied"
-                    for row in events
-                )
-            )
+            self.assertFalse(broker.raced)
+            self.assertEqual(exit_snapshot.state, OrderManagementState.ACKNOWLEDGED)
+            self.assertEqual(exit_snapshot.remaining_quantity, 16.0)
+            self.assertEqual(broker.modifications, [])
+            self.assertEqual(broker._orders[target_id].status, OrderStatus.CANCELLED)
+            self.assertTrue(all(exit_snapshot.client_order_ids))
             await manager.close()
             journal.close()
 
