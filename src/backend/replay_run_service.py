@@ -3092,6 +3092,19 @@ class ReplayRunController:
                 AssignmentStatus.REENTRY_COOLDOWN,
             }:
                 continue
+            if (
+                assignment.state.get("liquidity_admitted_at")
+                or frame.ticker in self._strategy_quality_admitted_tickers
+            ):
+                # Liquidity admission is the durable start of campaign
+                # monitoring. Advance the causal level book on every closed
+                # one-second bar from that point onward, independently of
+                # VWAP, MACD, spread, and other entry confirmations. Waiting
+                # for those confirmations before loading structure loses a
+                # breakout that happens on the same bar confirmation becomes
+                # true and incorrectly advances the watched frontier to the
+                # next overhead level.
+                return True
             phase_name = (
                 "reentry"
                 if int(assignment.state.get("reentries") or 0) > 0
@@ -3103,20 +3116,6 @@ class ReplayRunController:
                 if phase_name == "reentry"
                 else dict(assignment.parameters.get("entry_rules") or {})
             )
-            if (
-                assignment.state.get("liquidity_admitted_at")
-                or frame.ticker in self._strategy_quality_admitted_tickers
-            ):
-                # Liquidity admission is a campaign latch.  Structural
-                # enrichment must use the same post-admission contract as the
-                # Strategy evaluator; otherwise a later drop in cumulative
-                # session metrics can suppress the Unified Level Book fetch
-                # even though the campaign remains admitted.
-                confirmation_stage = entry_stage_without_rule_set(
-                    dict(rules.get("confirmation") or {}),
-                    "strategy-squeeze-volume-spread-quality",
-                )
-                rules = {**rules, "confirmation": confirmation_stage}
             result = evaluate_entry_decision_rules(rules, observation)
             if (
                 bool(dict(result.get("confirmation") or {}).get("passed"))

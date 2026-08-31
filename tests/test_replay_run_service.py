@@ -2151,7 +2151,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first_context["structure_swing_high"], 3.55)
         self.assertEqual(first_context["structure_swing_low"], 3.41)
 
-    def test_structure_enrichment_uses_exact_cached_entry_contract(self) -> None:
+    def test_structure_enrichment_runs_continuously_after_liquidity_admission(self) -> None:
         now = datetime(2026, 8, 21, 8, 10, 37, tzinfo=UTC)
         rules = {
             "trigger": {
@@ -2249,10 +2249,13 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         values = {
             key: {"observed_at": now.isoformat(), "value": value}
             for key, value in {
-                "market.last_price": 3.6694,
+                # Entry confirmation is deliberately false. Structural
+                # monitoring must already be active so a later VWAP/MACD
+                # confirmation cannot lose a same-bar level crossing.
+                "market.last_price": 3.40,
                 "indicator.structure.swing_high": 3.62,
                 "indicator.vwap.value": 3.47,
-                "indicator.macd.line": 0.04,
+                "indicator.macd.line": 0.02,
                 "indicator.macd.signal": 0.03,
                 "signal.liquidity_dislocation.score": 0.0,
             }.items()
@@ -2260,15 +2263,15 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         observation = StrategyObservation(
             ticker="SUGP",
             observed_at=now,
-            price=3.6694,
+            price=3.40,
             # Deliberately absent direct fields reproduce the prepared-bar
             # case; the compiled Strategy contract reads causal source values.
             source_values=values,
         )
         frame = ReplayDerivedFrame(
             as_of=now,
-            bar={"close": 3.6694},
-            indicator={"close": 3.6694},
+            bar={"close": 3.40},
+            indicator={"close": 3.40},
             sequence=1,
             ticker="SUGP",
             timeframe="1s",
