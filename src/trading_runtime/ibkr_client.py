@@ -353,6 +353,7 @@ class _PersistentJsonTransport:
                     "Accept": "application/json",
                     "Connection": "keep-alive",
                     "Content-Type": "application/json",
+                    "User-Agent": "quant-research-workbench/1.0",
                 },
             )
             response = connection.getresponse()

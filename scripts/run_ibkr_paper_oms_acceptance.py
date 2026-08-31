@@ -144,6 +144,12 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
                 intent=strategy_intent,
                 strategy_id="paper-acceptance",
                 strategy_revision=1,
+                # Preview the same touch-priced root that OMS will submit
+                # after applying its fresh execution quote. The planner's
+                # generic five-basis-point fallback can violate an
+                # instrument's minimum tick before OMS has a chance to
+                # normalize it.
+                limit_offset_bps=0,
             )
 
         planned = plan(intent, args.account_id, None)
