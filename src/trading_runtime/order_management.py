@@ -197,6 +197,7 @@ class OrderGroupSnapshot:
     protection_required_quantity: float = 0.0
     protection_coverage_quantity: float = 0.0
     protection_delegated: bool = False
+    entry_submission_closed: bool = False
     high_water_price: float = 0.0
     low_water_price: float = 0.0
     protection_task: asyncio.Task[None] | None = None
@@ -283,6 +284,9 @@ class _ManagedOrderGroup:
             protection_required_quantity=self.protection_required_quantity,
             protection_coverage_quantity=self.protection_coverage_quantity,
             protection_delegated=self.protection_delegated,
+            entry_submission_closed=bool(
+                self.filled_quantity > 0 and not _open_entry_roots(self)
+            ),
         )
 
 

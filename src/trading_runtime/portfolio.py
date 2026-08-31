@@ -716,7 +716,17 @@ class PortfolioManagementEngine:
             OrderManagementState.REJECTED,
             OrderManagementState.POLICY_BLOCKED,
         }
-        status = snapshot.state.value if entry_update else reservation.status
+        entry_submission_closed = bool(
+            entry_update and snapshot.entry_submission_closed
+        )
+        terminal = terminal or entry_submission_closed
+        status = (
+            OrderManagementState.FILLED.value
+            if entry_submission_closed
+            else snapshot.state.value
+            if entry_update
+            else reservation.status
+        )
         remaining = 0.0 if terminal else max(0.0, reservation.quantity - filled)
         self.reservations[reservation.reservation_id] = replace(
             reservation,

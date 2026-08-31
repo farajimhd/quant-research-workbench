@@ -537,6 +537,50 @@ class PortfolioManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(next(iter(recovered.allocations.values())).quantity, 20)
         self.assertEqual(recovered.reservations[decision.reservation_id].status, "filled")
 
+    async def test_closed_partial_entry_releases_unfilled_reservation_capacity(self) -> None:
+        policy = PortfolioPolicy(
+            policy_id="partial-entry",
+            maximum_position_fraction=1,
+            maximum_ticker_fraction=1,
+            maximum_planned_risk_fraction=1,
+            maximum_open_risk_fraction=1,
+        )
+        profile = PortfolioAccountProfile("margin", "M1", "paper", "margin", policy)
+        engine = self.engine([profile])
+        engine.synchronize_snapshot("M1", summary=summary("M1"), ledger=ledger("M1"), positions=[])
+        decision, _ = await engine.approve(intent("partial-fill", quantity=20), account_id="M1")
+
+        engine.on_order_group_update(
+            OrderGroupSnapshot(
+                group_id="group",
+                intent_id="partial-fill",
+                account_id="M1",
+                ticker="AAPL",
+                action="enter_long",
+                state=OrderManagementState.PARTIALLY_FILLED,
+                client_order_ids=("client",),
+                broker_order_ids=("broker",),
+                submitted_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+                filled_quantity=8,
+                remaining_quantity=12,
+                warning_message_ids=(),
+                rejection_reason="",
+                decision_to_submit_ms=1,
+                policy_version=1,
+                reentry_after_fill=False,
+                assignment_id="assignment-AAPL",
+                fill_incremental_quantity=8,
+                entry_submission_closed=True,
+            )
+        )
+
+        reservation = engine.reservations[decision.reservation_id]
+        self.assertEqual(reservation.status, "filled")
+        self.assertEqual(reservation.remaining_quantity, 0)
+        self.assertEqual(reservation.reserved_notional, 0)
+        self.assertEqual(next(iter(engine.allocations.values())).quantity, 8)
+
     async def test_reconciliation_differences_are_durable_and_change_journaled(self) -> None:
         profile = PortfolioAccountProfile(
             "cash", "C1", "live", "cash", PortfolioPolicy(policy_id="restart")
