@@ -3948,10 +3948,20 @@ def _default_draft() -> dict[str, Any]:
     squeeze_lifecycle["initial_entry"]["order_intent"][
         "protection_profile"
     ] = "structural-single-target"
+    # A small-cap squeeze can leave the displayed offer before another quote
+    # update arrives. Follow the executable touch by bounded ticks during the
+    # causal entry deadline instead of leaving a whole-account order stranded
+    # at its first ask after one partial fill.
+    squeeze_lifecycle["initial_entry"]["order_intent"][
+        "execution_policy"
+    ] = "adaptive_very_urgent"
     squeeze_lifecycle["initial_entry"]["order_intent"]["deadline_ms"] = 5_000
     squeeze_lifecycle["reentry"]["order_intent"][
         "protection_profile"
     ] = "structural-single-target"
+    squeeze_lifecycle["reentry"]["order_intent"][
+        "execution_policy"
+    ] = "adaptive_very_urgent"
     squeeze_lifecycle["reentry"]["order_intent"]["deadline_ms"] = 5_000
     squeeze_lifecycle["reentry"]["cooldown_ms"] = 0
     # The original Early Squeeze occurrence owns the campaign. A re-entry in

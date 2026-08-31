@@ -1601,8 +1601,16 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             5_000,
         )
         self.assertEqual(
+            profile["lifecycle"]["initial_entry"]["order_intent"]["execution_policy"],
+            "adaptive_very_urgent",
+        )
+        self.assertEqual(
             profile["lifecycle"]["reentry"]["order_intent"]["deadline_ms"],
             5_000,
+        )
+        self.assertEqual(
+            profile["lifecycle"]["reentry"]["order_intent"]["execution_policy"],
+            "adaptive_very_urgent",
         )
         self.assertEqual(
             profile["parameters"]["structural_entry"]["minimum_level_age_ms"],
