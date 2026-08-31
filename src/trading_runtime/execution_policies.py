@@ -7,6 +7,9 @@ from enum import StrEnum
 from typing import Any, Mapping
 
 
+DEFAULT_VERY_URGENT_PRICE_DISCRETION_TICKS = 4
+
+
 class ExecutionPolicyName(StrEnum):
     PASSIVE = "passive"
     MIDPOINT = "midpoint"

@@ -1538,6 +1538,11 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         real = policies["long-momentum-real-80"]
         plan = next(row for row in draft["run_plans"]["plans"] if row["run_plan_id"] == "balanced-replay")
         profile = next(row for row in draft["strategy"]["profiles"] if row["profile_id"] == "long-momentum-balanced")
+        very_urgent_execution = next(
+            row
+            for row in draft["oms"]["execution_policies"]
+            if row["policy_id"] == "adaptive_very_urgent"
+        )
 
         self.assertEqual(replay["eligible_equity_fraction"], 1.0)
         self.assertEqual(real["eligible_equity_fraction"], 0.8)
@@ -1611,6 +1616,10 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(
             profile["lifecycle"]["reentry"]["order_intent"]["execution_policy"],
             "adaptive_very_urgent",
+        )
+        self.assertEqual(
+            very_urgent_execution["maximum_price_discretion_ticks"],
+            4,
         )
         self.assertEqual(
             profile["parameters"]["structural_entry"]["minimum_level_age_ms"],

@@ -17,6 +17,7 @@ from src.trading_runtime.control_plane import TradingControlPlane
 from src.trading_runtime.domain import OrderLifecycleState, OrderState
 from src.trading_runtime.execution_policies import (
     AddProtectionPolicy,
+    DEFAULT_VERY_URGENT_PRICE_DISCRETION_TICKS,
     ExecutionMarketDataProvider,
     ExecutionMarketSnapshot,
     ExecutionPolicyName,
@@ -130,7 +131,7 @@ class BrokerCommunicationPolicy:
     maximum_reply_chain: int = 8
     maximum_quote_age_ms: int = 750
     unknown_warning_action: str = "decline"
-    maximum_reprice_ticks: int = 4
+    maximum_reprice_ticks: int = DEFAULT_VERY_URGENT_PRICE_DISCRETION_TICKS
 
     def __post_init__(self) -> None:
         if len(self.suppressed_message_ids) > 51:
@@ -153,7 +154,18 @@ class BrokerCommunicationPolicy:
             auto_confirm_message_ids=confirmed,
             maximum_reply_chain=max(1, int(os.environ.get("IBKR_MAXIMUM_REPLY_CHAIN", "8"))),
             maximum_quote_age_ms=max(50, int(os.environ.get("IBKR_MAXIMUM_EXECUTION_QUOTE_AGE_MS", "750"))),
-            maximum_reprice_ticks=max(0, min(6, int(os.environ.get("IBKR_MAXIMUM_REPRICE_TICKS", "4")))),
+            maximum_reprice_ticks=max(
+                0,
+                min(
+                    6,
+                    int(
+                        os.environ.get(
+                            "IBKR_MAXIMUM_REPRICE_TICKS",
+                            str(DEFAULT_VERY_URGENT_PRICE_DISCRETION_TICKS),
+                        )
+                    ),
+                ),
+            ),
         )
 
     def warning_decision(self, message_ids: tuple[str, ...]) -> bool:

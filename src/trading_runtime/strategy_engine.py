@@ -12,6 +12,7 @@ from src.request_context import causal_identity
 
 from src.trading_runtime.execution_policies import (
     AddProtectionPolicy,
+    DEFAULT_VERY_URGENT_PRICE_DISCRETION_TICKS,
     ExecutionEnvelope,
     ExecutionPolicy,
     ExecutionPolicyName,
@@ -3050,7 +3051,40 @@ def _execution_policy_from_phase(
         configured["envelope"] = envelope
         if payload.get("partial_fill_policy"):
             configured["partial_fill_policy"] = str(payload["partial_fill_policy"])
-        return execution_policy_from_payload(configured)
+        policy = execution_policy_from_payload(configured)
+        if policy.name == ExecutionPolicyName.ADAPTIVE_VERY_URGENT:
+            discretion_ticks = max(
+                0,
+                int(
+                    configured.get(
+                        "maximum_price_discretion_ticks",
+                        DEFAULT_VERY_URGENT_PRICE_DISCRETION_TICKS,
+                    )
+                ),
+            )
+            tick_size = float(
+                dict(parameters.get("execution") or {}).get("tick_size") or 0.01
+            )
+            if buying and policy.envelope.maximum_buy_price is None:
+                touch = max(float(observation.price), float(observation.ask or 0))
+                policy = replace(
+                    policy,
+                    envelope=replace(
+                        policy.envelope,
+                        maximum_buy_price=touch + tick_size * discretion_ticks,
+                    ),
+                )
+            elif not buying and policy.envelope.minimum_sell_price is None:
+                bid = float(observation.bid or 0)
+                touch = min(float(observation.price), bid) if bid > 0 else float(observation.price)
+                policy = replace(
+                    policy,
+                    envelope=replace(
+                        policy.envelope,
+                        minimum_sell_price=max(tick_size, touch - tick_size * discretion_ticks),
+                    ),
+                )
+        return policy
     return ExecutionPolicy(
         policy_id=f"strategy-{name.value}",
         name=name,

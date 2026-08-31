@@ -51,6 +51,7 @@ from src.trading_runtime.portfolio import (
     portfolio_policy_from_payload,
 )
 from src.trading_runtime.execution_policies import (
+    DEFAULT_VERY_URGENT_PRICE_DISCRETION_TICKS,
     execution_policy_from_payload,
     protection_profile_from_payload,
 )
@@ -7339,6 +7340,11 @@ def _default_execution_policies() -> list[dict[str, Any]]:
             "editable": True,
             "quote_source": "qmd",
             "partial_fill_policy": "complete_remainder",
+            "maximum_price_discretion_ticks": (
+                DEFAULT_VERY_URGENT_PRICE_DISCRETION_TICKS
+                if name == "adaptive_very_urgent"
+                else 0
+            ),
             "envelope": {
                 "maximum_buy_price": None,
                 "minimum_sell_price": None,

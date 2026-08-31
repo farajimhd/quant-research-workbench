@@ -23,6 +23,7 @@ from src.trading_runtime.strategy_engine import (
     StrategyObservation,
     StrategyPermissions,
     default_long_momentum_parameters,
+    _execution_policy_from_phase,
     entry_stage_without_rule_set,
     evaluate_entry_decision_rules,
     long_momentum_strategy_definition,
@@ -88,6 +89,37 @@ def confirmed_observation(**overrides) -> StrategyObservation:
 
 
 class LongMomentumStrategyTests(unittest.TestCase):
+    def test_very_urgent_entry_reserves_its_full_reprice_envelope(self) -> None:
+        policy = _execution_policy_from_phase(
+            {
+                "execution_policy": "adaptive_very_urgent",
+                "deadline_ms": 5_000,
+            },
+            observation=confirmed_observation(),
+            action="enter_long",
+            parameters={
+                "execution": {"tick_size": 0.01},
+                "execution_policy_catalog": {
+                    "adaptive_very_urgent": {
+                        "policy_id": "adaptive_very_urgent",
+                        "revision": 1,
+                        "name": "adaptive_very_urgent",
+                        "quote_source": "qmd",
+                        "partial_fill_policy": "complete_remainder",
+                        "maximum_price_discretion_ticks": 4,
+                        "envelope": {
+                            "deadline_ms": 300,
+                            "maximum_reprices": 8,
+                            "minimum_reprice_interval_ms": 25,
+                        },
+                    }
+                },
+            },
+        )
+
+        self.assertEqual(policy.envelope.deadline_ms, 5_000)
+        self.assertAlmostEqual(policy.envelope.maximum_buy_price, 101.05)
+
     def test_latched_rule_removal_prunes_compiled_expression_reference(self) -> None:
         stage = {
             "operator": "all",
