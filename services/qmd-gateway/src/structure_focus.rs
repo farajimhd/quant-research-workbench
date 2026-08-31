@@ -557,6 +557,12 @@ impl StructureFocusCoordinator {
             .checkpoint_store
             .load_daily_structure_checkpoint_before(&ticker, session_date)
             .await?;
+        // A daily seed is usable only when it covers at least the caller's
+        // requested historical authority. This lets an operator replace a
+        // shallow checkpoint with a months-long book instead of silently
+        // advancing the incomplete seed forever.
+        let seed = seed
+            .filter(|seed| daily_seed_covers_rebuild_start(seed.authority_start, rebuild_start));
         let (
             checkpoint,
             replay_start,
@@ -1155,9 +1161,19 @@ fn next_checkpoint_slice_end(start: DateTime<Utc>, as_of: DateTime<Utc>) -> Date
     (start + ChronoDuration::hours(CHECKPOINT_ADVANCE_SLICE_HOURS)).min(as_of)
 }
 
+fn daily_seed_covers_rebuild_start(
+    seed_authority_start: DateTime<Utc>,
+    requested_rebuild_start: DateTime<Utc>,
+) -> bool {
+    seed_authority_start <= requested_rebuild_start
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{next_checkpoint_slice_end, non_retryable_history_error, SymbolActivationLocks};
+    use super::{
+        daily_seed_covers_rebuild_start, next_checkpoint_slice_end, non_retryable_history_error,
+        SymbolActivationLocks,
+    };
     use chrono::{Duration as ChronoDuration, TimeZone, Utc};
     use std::time::Duration;
 
@@ -1202,6 +1218,16 @@ mod tests {
         );
         let near_end = start + ChronoDuration::hours(12);
         assert_eq!(next_checkpoint_slice_end(start, near_end), near_end);
+    }
+
+    #[test]
+    fn shallow_daily_seed_cannot_override_a_longer_requested_book() {
+        let requested = Utc.with_ymd_and_hms(2026, 2, 21, 9, 0, 0).unwrap();
+        let shallow = Utc.with_ymd_and_hms(2026, 8, 14, 8, 0, 0).unwrap();
+        let complete = Utc.with_ymd_and_hms(2026, 1, 1, 9, 0, 0).unwrap();
+
+        assert!(!daily_seed_covers_rebuild_start(shallow, requested));
+        assert!(daily_seed_covers_rebuild_start(complete, requested));
     }
 
     #[test]

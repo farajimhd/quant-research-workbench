@@ -327,8 +327,11 @@ impl GatewayConfig {
                 1_800,
             )
             .clamp(60, 7_200),
-            structure_focus_cold_rebuild_days: env_u64("QMD_STRUCTURE_FOCUS_COLD_REBUILD_DAYS", 7)
-                .clamp(2, 30),
+            structure_focus_cold_rebuild_days: env_u64(
+                "QMD_STRUCTURE_FOCUS_COLD_REBUILD_DAYS",
+                180,
+            )
+            .clamp(2, 3_650),
             structure_focus_inactive_advance_hours: env_u64(
                 "QMD_STRUCTURE_FOCUS_INACTIVE_ADVANCE_HOURS",
                 24,
