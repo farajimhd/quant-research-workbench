@@ -3769,6 +3769,9 @@ class ReplayRunController:
 
     def _selected_assignments(self) -> list[dict[str, Any]]:
         configuration = self.definition.configuration_revision["payload"]
+        explicit_tickers = {
+            _ticker(value) for value in self.definition.tickers if str(value).strip()
+        }
         account_keys = [
             str(row.get("account_key") or "")
             for row in dict(configuration.get("accounts") or {}).get("bindings") or []
@@ -3781,8 +3784,17 @@ class ReplayRunController:
             for row in self.definition.configuration_revision["payload"]["assignments"]
             if str(row.get("status") or "") not in {"disabled", "completed", "error"}
             and str(row.get("account_key") or "") in allowed_account_keys
+            and (
+                not explicit_tickers
+                or _ticker(row.get("ticker")) in explicit_tickers
+            )
         ]
-        historical_members = self._historical_watchlist_members()
+        historical_members = [
+            member
+            for member in self._historical_watchlist_members()
+            if not explicit_tickers
+            or _ticker(member.get("ticker")) in explicit_tickers
+        ]
         existing_member_tickers = {
             str(member.get("ticker") or "").upper() for member in historical_members
         }
@@ -3798,6 +3810,7 @@ class ReplayRunController:
             }
             for event in self._historical_external_signal_events
             if event.ticker not in existing_member_tickers
+            and (not explicit_tickers or event.ticker in explicit_tickers)
             and _strategy_can_enter_at(configuration, event.available_at)
         }
         run_plan = dict(configuration.get("run_plan") or {})

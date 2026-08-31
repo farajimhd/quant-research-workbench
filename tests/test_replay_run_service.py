@@ -902,6 +902,30 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
 
 
 class HistoricalWatchlistTimelineTests(unittest.TestCase):
+    def test_explicit_uat_tickers_bound_dynamic_strategy_assignments(self) -> None:
+        approved = approved_configuration()
+        approved["payload"]["assignments"] = []
+        controller = ReplayRunController(
+            ReplayRunDefinition(
+                session_date=date(2026, 8, 21),
+                start_time=time(4, 0),
+                tickers=("SUGP",),
+                configuration_revision=approved,
+            ),
+            runtime_root=Path(tempfile.gettempdir()),
+        )
+        controller._historical_watchlist_cache = [
+            {"ticker": "NOK", "ibkr_conid": 101},
+            {"ticker": "SUGP", "ibkr_conid": 202},
+        ]
+
+        assignments = controller._selected_assignments()
+
+        self.assertEqual(
+            [(row["ticker"], row["conid"]) for row in assignments],
+            [("SUGP", 202)],
+        )
+
     def test_explicit_uat_tickers_filter_historical_signals_only_when_requested(self) -> None:
         events = [
             ReplaySignalEvent(
