@@ -4029,7 +4029,13 @@ def _default_draft() -> dict[str, Any]:
         "maximum_spread_bps": 60.0,
     }
     squeeze_lifecycle["reentry"]["target_replenishment"] = {
-        "enabled": False,
+        # A profit-target fill reduces an otherwise valid momentum campaign;
+        # replenish those shares on the first causal pullback that preserves
+        # the exact positive/open 1-second MACD, VWAP, structure, and current
+        # execution-quality gates.  This entitlement is created by the fill,
+        # so it does not require another Early Squeeze event or resistance
+        # breakout.
+        "enabled": True,
         "minimum_pullback_atr_multiple": 0.50,
         "minimum_pullback_bps": 25.0,
         "support_buffer_bps": 10.0,
