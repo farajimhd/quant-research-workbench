@@ -1894,7 +1894,7 @@ impl HistoricalEventSource {
         let authority_start = DateTime::parse_from_rfc3339(&row.authority_start)
             .map_err(|error| format!("invalid structure checkpoint authority start: {error}"))?
             .with_timezone(&Utc);
-        let checkpoint = serde_json::from_str::<GenericStructureCheckpoint>(&row.snapshot_json)
+        let mut checkpoint = serde_json::from_str::<GenericStructureCheckpoint>(&row.snapshot_json)
             .map_err(|error| format!("invalid persisted structure checkpoint payload: {error}"))?;
         if checkpoint.algorithm_version != GENERIC_STRUCTURE_ALGORITHM_VERSION
             || checkpoint.sym.to_ascii_uppercase() != ticker
@@ -1903,6 +1903,20 @@ impl HistoricalEventSource {
             || row.source_revision_token.trim().is_empty()
         {
             return Err("persisted structure checkpoint identity is invalid".to_string());
+        }
+        // Split rows are an independently corrected authority. Reapply the
+        // complete checkpoint horizon on every checkout so a split inserted
+        // or corrected after the daily checkpoint was built still adjusts all
+        // surviving historical levels. The checkpoint records applied split
+        // identities, making this idempotent for already-correct checkpoints.
+        let split_start = authority_start
+            .checked_sub_signed(chrono::Duration::microseconds(1))
+            .ok_or_else(|| "structure checkpoint split horizon underflow".to_string())?;
+        for adjustment in self
+            .structure_split_adjustments(&ticker, split_start, before)
+            .await?
+        {
+            checkpoint.apply_split_adjustment(&adjustment)?;
         }
         Ok(Some(PersistedStructureCheckpointSeed {
             authority_start,

@@ -29,6 +29,7 @@ use qmd_core::market_signal::{MarketSignalEngine, MarketSignalEvent};
 use qmd_core::microstructure_interval::MicrostructureIntervalWindow;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs;
 use std::mem::size_of;
@@ -43,7 +44,7 @@ pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v42";
 pub const HISTORICAL_CORPORATE_ACTION_REVISION: &str = "retrospective-split-adjusted-v2";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
 const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 5;
-const PREPARED_STRUCTURE_SEED_CACHE_SCHEMA_VERSION: u16 = 1;
+const PREPARED_STRUCTURE_SEED_CACHE_SCHEMA_VERSION: u16 = 2;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CacheProfile {
@@ -1651,14 +1652,25 @@ impl HistoricalDerivedCache {
             tickers: vec![ticker.to_string()],
         };
         let seed_revision = self.source.source_revision(&seed_window).await?;
-        let key = format!(
-            "{}:{}:{}:{}:{}",
-            ticker.to_ascii_uppercase(),
-            rebuild_start.timestamp_micros(),
-            before.timestamp_micros(),
-            seed_revision.token,
-            HISTORICAL_CALCULATION_REVISION,
-        );
+        // Corporate actions are a separate authority from canonical SIP
+        // events. A late split correction therefore does not change the event
+        // source revision. Include the exact split rows (including their
+        // insertion timestamps) in the restart-safe seed identity so a cached
+        // pre-adjustment level book can never survive a corrected split table.
+        let split_horizon_start = rebuild_start
+            .checked_sub_signed(Duration::microseconds(1))
+            .ok_or_else(|| "historical structure split horizon underflow".to_string())?;
+        let split_adjustments = self
+            .source
+            .structure_split_adjustments(ticker, split_horizon_start, before)
+            .await?;
+        let key = structure_seed_cache_key(
+            ticker,
+            rebuild_start,
+            before,
+            &seed_revision.token,
+            &split_adjustments,
+        )?;
         let cell = {
             let mut seeds = self.structure_seeds.lock().await;
             if let Some(existing) = seeds.get(&key) {
@@ -1902,6 +1914,28 @@ impl HistoricalDerivedCache {
             }
         }
     }
+}
+
+fn structure_seed_cache_key(
+    ticker: &str,
+    rebuild_start: DateTime<Utc>,
+    before: DateTime<Utc>,
+    source_revision_token: &str,
+    split_adjustments: &[qmd_core::generic_structure::StructureSplitAdjustment],
+) -> Result<String, String> {
+    let split_bytes = serde_json::to_vec(split_adjustments)
+        .map_err(|error| format!("failed to hash structure split authority: {error}"))?;
+    let split_revision = format!("{:x}", Sha256::digest(split_bytes));
+    Ok(format!(
+        "{}:{}:{}:{}:{}:{}:{}",
+        ticker.trim().to_ascii_uppercase(),
+        rebuild_start.timestamp_micros(),
+        before.timestamp_micros(),
+        source_revision_token,
+        HISTORICAL_CALCULATION_REVISION,
+        HISTORICAL_CORPORATE_ACTION_REVISION,
+        split_revision,
+    ))
 }
 
 fn structure_events_overlapping(
@@ -2924,24 +2958,61 @@ mod tests {
         historical_requirement, prepared_bar_cache_path, prepared_indicator_projection,
         prepared_structure_seed_cache_path, read_prepared_bar_cache,
         read_prepared_structure_seed_cache, revision_window, session_anchor, split_event_window,
-        stable_hash_hex, structure_events_overlapping, write_prepared_bar_cache,
-        write_prepared_structure_seed_cache, CacheEntry, CacheProfile, ChartBarRow, EntryState,
-        PreparedBarCacheArtifact, PreparedStructureSeedCacheArtifact, SourceRevision,
-        StructureProjectionBuilder, HISTORICAL_CALCULATION_REVISION,
+        stable_hash_hex, structure_events_overlapping, structure_seed_cache_key,
+        write_prepared_bar_cache, write_prepared_structure_seed_cache, CacheEntry, CacheProfile,
+        ChartBarRow, EntryState, PreparedBarCacheArtifact, PreparedStructureSeedCacheArtifact,
+        SourceRevision, StructureProjectionBuilder, HISTORICAL_CALCULATION_REVISION,
         HISTORICAL_CORPORATE_ACTION_REVISION, HISTORICAL_ENGINE_VERSION,
         MAX_ENCOUNTERED_STRUCTURE_LEVELS, PREPARED_BAR_CACHE_SCHEMA_VERSION,
         PREPARED_STRUCTURE_SEED_CACHE_SCHEMA_VERSION,
     };
     use crate::source::EventWindow;
-    use chrono::{DateTime, Duration, TimeZone, Utc};
+    use chrono::{DateTime, Duration, NaiveDate, TimeZone, Utc};
     use qmd_core::generic_structure::{
         GenericStructureEngine, GenericStructureEvent, StructureLevelCandidate,
+        StructureSplitAdjustment,
     };
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::{broadcast, Mutex, Notify};
+
+    #[test]
+    fn prepared_structure_seed_identity_changes_with_split_authority() {
+        let rebuild_start = Utc.with_ymd_and_hms(2026, 2, 22, 9, 0, 0).unwrap();
+        let before = Utc.with_ymd_and_hms(2026, 8, 21, 8, 0, 0).unwrap();
+        let adjustment = StructureSplitAdjustment {
+            execution_date: NaiveDate::from_ymd_opt(2026, 8, 1).unwrap(),
+            effective_at: Utc.with_ymd_and_hms(2026, 8, 1, 8, 0, 0).unwrap(),
+            split_from: 1.0,
+            split_to: 2.0,
+            source_inserted_at: Utc.with_ymd_and_hms(2026, 8, 1, 9, 0, 0).unwrap(),
+        };
+        let original = structure_seed_cache_key(
+            "SUGP",
+            rebuild_start,
+            before,
+            "event-revision",
+            std::slice::from_ref(&adjustment),
+        )
+        .unwrap();
+        let mut corrected = adjustment;
+        corrected.source_inserted_at += Duration::hours(1);
+        let corrected = structure_seed_cache_key(
+            "SUGP",
+            rebuild_start,
+            before,
+            "event-revision",
+            &[corrected],
+        )
+        .unwrap();
+        let no_split =
+            structure_seed_cache_key("SUGP", rebuild_start, before, "event-revision", &[]).unwrap();
+
+        assert_ne!(original, corrected);
+        assert_ne!(original, no_split);
+    }
 
     #[test]
     fn structure_timeline_has_one_initial_and_one_terminal_authority() {
