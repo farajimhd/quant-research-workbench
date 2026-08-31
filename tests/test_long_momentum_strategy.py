@@ -2548,6 +2548,34 @@ class LongMomentumRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated.state["reentries"], 1)
         self.assertEqual(updated.state["last_exit_at"], NOW.isoformat())
 
+    async def test_partial_managed_exit_keeps_campaign_exit_pending(self) -> None:
+        assigned = assignment(
+            status=AssignmentStatus.EXIT_PENDING,
+            state={
+                "entry_reference_price": 101.0,
+                "entry_at": (NOW - timedelta(seconds=10)).isoformat(),
+                "active_stop": 99.0,
+            },
+        )
+        strategy = AssignedLongMomentumStrategy([assigned])
+
+        await strategy.on_order_group_update(
+            SimpleNamespace(
+                action="exit",
+                assignment_id=assigned.assignment_id,
+                fill_role="managed_exit",
+                fill_incremental_quantity=50,
+                state="partially_filled",
+                updated_at=NOW,
+            ),
+            aggregate_position_quantity=450,
+        )
+
+        self.assertEqual(
+            strategy.assignments()[0].status,
+            AssignmentStatus.EXIT_PENDING,
+        )
+
     async def test_portfolio_rejection_clears_phantom_entry_pending_state(self) -> None:
         assigned = assignment(
             status=AssignmentStatus.ENTRY_PENDING,

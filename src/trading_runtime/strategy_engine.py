@@ -3140,10 +3140,17 @@ class AssignedLongMomentumStrategy:
                     aggregate_position_quantity is not None
                     and abs(float(aggregate_position_quantity)) > 1e-9
                 ):
-                    # A protected position can have several independently held
-                    # target/stop slices. One child fill reduces the position;
-                    # it does not terminate the campaign.
-                    status = AssignmentStatus.MANAGING
+                    # A profit target is a planned partial reduction and may
+                    # return the remaining campaign to management. A partial
+                    # managed/protective exit still owns the entire liquidation
+                    # mandate; keep the campaign EXIT_PENDING so a subsequent
+                    # market frame cannot submit a duplicate full-position
+                    # sell while the first exit and its fallback remain open.
+                    status = (
+                        AssignmentStatus.MANAGING
+                        if fill_role == "profit_target"
+                        else AssignmentStatus.EXIT_PENDING
+                    )
                 elif assignment.status in {
                     AssignmentStatus.REENTRY_COOLDOWN,
                     AssignmentStatus.COMPLETED,
