@@ -72,6 +72,11 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert '"Short" : "Long"' in chart_source
     assert "actions.slice(1, -1)" in chart_source
     assert 'profit_target: "Target filled"' in chart_source
+    assert 'if (reason.includes("macd")) return "MACD exit"' in chart_source
+    assert 'if (reason.includes("stop")) return "Stop exit"' in chart_source
+    assert 'if (reason.includes("target") || fallbackKind === "profit_target") return "Target filled"' in chart_source
+    assert 'String(row.exit_reason || "")' in chart_source
+    assert '"Targets complete"' not in chart_source
     assert '"Trim"' not in chart_source
     assert 'execution_role' in chart_source
     assert '`${role}:${action.side}:${second}:${priceTick}`' in chart_source

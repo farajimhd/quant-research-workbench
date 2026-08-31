@@ -352,6 +352,7 @@ function positionLifecycleAnnotations(trading: CanonicalTradingPreview | undefin
     const exitKind = exitAction
       ? normalizedExecutionRole(exitAction.executionRole, exitAction.price, entryPrice, side)
       : "position_exit";
+    const exitLabel = positionExitLabel(String(row.exit_reason || ""), exitKind);
     return [{
       color: pnl >= 0 ? "var(--success)" : "var(--danger)",
       entryColor: side === "SHORT" ? "#dc2626" : "#16a34a",
@@ -359,7 +360,7 @@ function positionLifecycleAnnotations(trading: CanonicalTradingPreview | undefin
       entryPrice,
       entryTime,
       exitColor: side === "SHORT" ? "#16a34a" : "#dc2626",
-      exitLabel: `${exitKind === "profit_target" ? "Targets complete" : "Exit"} ${formatQuantity(exitQuantity)} @ ${exitPrice.toFixed(2)} · ${signedMoneyShort(pnl)}`,
+      exitLabel: `${exitLabel} ${formatQuantity(exitQuantity)} @ ${exitPrice.toFixed(2)} · ${signedMoneyShort(pnl)}`,
       exitPrice,
       exitTime,
       fills,
@@ -367,6 +368,16 @@ function positionLifecycleAnnotations(trading: CanonicalTradingPreview | undefin
       pnl,
     }];
   });
+}
+
+function positionExitLabel(exitReason: string, fallbackKind: string): string {
+  const reason = exitReason.trim().toLowerCase();
+  if (reason.includes("macd")) return "MACD exit";
+  if (reason.includes("vwap")) return "VWAP exit";
+  if (reason.includes("stop")) return "Stop exit";
+  if (reason.includes("target") || fallbackKind === "profit_target") return "Target filled";
+  if (reason.includes("breakout") || reason.includes("structure")) return "Structure exit";
+  return "Exit";
 }
 
 type PositionExecutionRole = "entry" | "managed_exit" | "profit_target" | "protective_stop" | "trailing_stop" | "protective_exit" | "";
