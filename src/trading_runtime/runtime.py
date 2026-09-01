@@ -300,7 +300,7 @@ class TradingRuntime:
             # Historical adaptive orders use this same causal event clock.
             # Reprice from the quote just observed above before either expiry
             # or matching, making fills invariant to replay processing speed.
-            await self.order_manager.advance_entry_execution(event.ts)
+            await self.order_manager.advance_adaptive_execution(event.ts)
             # Expire stale entries before the simulated/live broker is allowed
             # to match this event.  This keeps Replay and Backtest deadlines on
             # the causal market clock instead of machine processing speed.

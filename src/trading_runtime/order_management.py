@@ -442,17 +442,22 @@ class OrderManagementEngine:
             await self.reconcile()
         return tuple(group.snapshot(self.policy.version) for group in expired)
 
-    async def advance_entry_execution(
+    async def advance_adaptive_execution(
         self,
         event_time: datetime,
     ) -> tuple[OrderGroupSnapshot, ...]:
-        """Advance adaptive entry orders on the causal historical clock.
+        """Advance every adaptive root order on the causal historical clock.
 
         Replay and Backtest can traverse seconds of market time before an
-        asyncio wall-clock timer is scheduled. Reprice a due entry from the
-        latest already-observed quote before the broker matches the current
-        event. At most one modification is attempted per market event, so a
-        sparse stream never applies a later quote retroactively.
+        asyncio wall-clock timer is scheduled. Reprice a due entry or managed
+        exit from the latest already-observed quote before the broker matches
+        the current event. At most one modification is attempted per market
+        event, so a sparse stream never applies a later quote retroactively.
+
+        Managed exits are intentionally included. Leaving them on the
+        wall-clock repricer made a fast historical run keep a partially filled
+        sell at its original bid for minutes of event time, blocking the next
+        strategy campaign even though fresh executable quotes were available.
         """
 
         if not self.causal_execution_clock:
@@ -460,19 +465,12 @@ class OrderManagementEngine:
         at = event_time.astimezone(timezone.utc)
         advanced: list[_ManagedOrderGroup] = []
         for group in tuple(self._groups.values()):
-            if str(group.intent.action) not in {
-                "enter_long",
-                "enter_short",
-                "add_long",
-                "add_short",
-            }:
-                continue
             if group.tactic is None:
                 continue
             if (
                 group.state in TERMINAL_MANAGEMENT_STATES
                 or group.state == OrderManagementState.CANCEL_PENDING
-                or not _open_entry_roots(group)
+                or not _open_adaptive_roots(group)
             ):
                 continue
             execution_policy = group.intent.resolved_execution_policy()
@@ -2144,7 +2142,7 @@ class OrderManagementEngine:
         ):
             return False
         modified = False
-        for root_order_id, request_index in _open_entry_roots(group):
+        for root_order_id, request_index in _open_adaptive_roots(group):
             replacement = replace(group.orders[request_index], price=requested_price)
             try:
                 async with self._command_lane(group.account_id):
@@ -3643,9 +3641,28 @@ def _request_index_for_identity(group: _ManagedOrderGroup, identity: str) -> int
 
 
 def _open_entry_roots(group: _ManagedOrderGroup) -> tuple[tuple[str, int], ...]:
+    return _open_roots_for_role(group, "entry")
+
+
+def _open_adaptive_roots(
+    group: _ManagedOrderGroup,
+) -> tuple[tuple[str, int], ...]:
+    role = (
+        "managed_exit"
+        if str(group.intent.action)
+        in {"reduce_long", "take_profit", "exit", "reduce_short", "cover"}
+        else "entry"
+    )
+    return _open_roots_for_role(group, role)
+
+
+def _open_roots_for_role(
+    group: _ManagedOrderGroup,
+    role: str,
+) -> tuple[tuple[str, int], ...]:
     rows: list[tuple[str, int]] = []
     for broker_order_id in group.broker_order_ids:
-        if group.broker_order_roles.get(broker_order_id) != "entry":
+        if group.broker_order_roles.get(broker_order_id) != role:
             continue
         if broker_order_id in group.terminal_broker_order_ids:
             continue

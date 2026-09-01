@@ -594,7 +594,7 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                         "qmd-history",
                     )
                 )
-                repriced = await manager.advance_entry_execution(causal_time)
+                repriced = await manager.advance_adaptive_execution(causal_time)
 
                 self.assertEqual(len(repriced), 1)
                 self.assertGreater(float(repriced[0].current_limit_price or 0), 10.02)
@@ -622,7 +622,7 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                     )
                 )
                 self.assertEqual(
-                    await manager.advance_entry_execution(causal_time),
+                    await manager.advance_adaptive_execution(causal_time),
                     (),
                 )
             finally:
@@ -686,6 +686,112 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(executions), 1)
                 self.assertEqual(executions[0].event_time, event_time)
                 self.assertEqual(executions[0].payload["price"], 10.02)
+            finally:
+                await manager.close()
+                journal.close()
+
+    async def test_causal_adaptive_exit_reprices_partial_fill_from_fresh_quote(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            from src.market_engine.events import QuoteEvent
+
+            event_time = datetime(2026, 8, 21, 14, 0, tzinfo=timezone.utc)
+            broker = SimulatedBrokerAdapter(["DU1"], mode=TradingMode.BACKTEST)
+            manager, journal = await self._manager(
+                directory,
+                broker,
+                policy=BrokerCommunicationPolicy(),
+                causal_execution_clock=True,
+            )
+            try:
+                broker._positions["DU1"][123] = _Position(
+                    conid=123,
+                    ticker="TEST",
+                    quantity=100.0,
+                    avg_cost=9.50,
+                )
+                initial_quote = QuoteEvent(
+                    ask_exchange=11,
+                    ask_price=10.02,
+                    ask_size=100,
+                    bid_exchange=12,
+                    bid_price=10.00,
+                    bid_size=40,
+                    conditions=(),
+                    indicators=(),
+                    ingest_ts=event_time,
+                    raw={"conid": 123},
+                    sequence=1,
+                    source="test",
+                    tape=3,
+                    ticker="TEST",
+                    ts=event_time,
+                )
+                await broker.on_market_event(initial_quote)
+                manager.on_market_snapshot(
+                    ExecutionMarketSnapshot(
+                        "TEST", 10.00, 10.02, 0.01, event_time, "qmd-history"
+                    )
+                )
+                request = replace(
+                    intent(action="exit", urgency="very_urgent", quantity=100),
+                    intent_id="causal-partial-exit",
+                    event_time=event_time,
+                    reference_price=10.00,
+                    execution_policy=ExecutionPolicy(
+                        policy_id="test-causal-exit",
+                        name=ExecutionPolicyName.ADAPTIVE_VERY_URGENT,
+                        envelope=ExecutionEnvelope(
+                            deadline_ms=5_000,
+                            maximum_reprices=8,
+                            minimum_reprice_interval_ms=50,
+                        ),
+                    ),
+                    metadata={
+                        **intent(action="exit").metadata,
+                        "position_quantity": 100.0,
+                        "position_side": "long",
+                        "quote_observed_at": event_time.isoformat(),
+                    },
+                )
+                submitted = await manager.submit_intent(
+                    portfolio_approved(journal, request),
+                    account_id="DU1",
+                    event=None,
+                )
+                self.assertEqual(submitted.filled_quantity, 10)
+                self.assertEqual(submitted.remaining_quantity, 90)
+
+                causal_time = event_time + timedelta(milliseconds=100)
+                next_quote = replace(
+                    initial_quote,
+                    ask_price=9.97,
+                    bid_price=9.95,
+                    bid_size=360,
+                    ingest_ts=causal_time,
+                    sequence=2,
+                    ts=causal_time,
+                )
+                manager.on_market_snapshot(
+                    ExecutionMarketSnapshot(
+                        "TEST", 9.95, 9.97, 0.01, causal_time, "qmd-history"
+                    )
+                )
+                repriced = await manager.advance_adaptive_execution(causal_time)
+                self.assertEqual(len(repriced), 1)
+                self.assertLessEqual(
+                    float(repriced[0].current_limit_price or 0), 9.95
+                )
+                await broker.on_market_event(next_quote)
+                await manager.reconcile()
+
+                completed = next(
+                    row
+                    for row in manager.snapshots()
+                    if row.intent_id == request.intent_id
+                )
+                self.assertEqual(completed.filled_quantity, 100)
+                self.assertEqual(completed.remaining_quantity, 0)
+                self.assertEqual(await broker.positions("DU1"), [])
             finally:
                 await manager.close()
                 journal.close()
