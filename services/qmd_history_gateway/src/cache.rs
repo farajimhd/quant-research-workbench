@@ -40,10 +40,10 @@ use std::sync::Mutex as StdMutex;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, OnceCell, Semaphore};
 
 pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v35";
-pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v47";
+pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v48";
 pub const HISTORICAL_CORPORATE_ACTION_REVISION: &str = "retrospective-split-adjusted-v2";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
-const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 10;
+const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 11;
 const PREPARED_STRUCTURE_SEED_CACHE_SCHEMA_VERSION: u16 = 2;
 // Prepared structure books have their own algorithm authority. Bar-indicator
 // changes (for example MACD or VWAP warm-up fixes) must not invalidate and
@@ -1678,7 +1678,7 @@ impl HistoricalDerivedCache {
             active.push_back(self.spawn_chunk_fetch(
                 chunks[next_chunk].clone(),
                 source_revision.live_continuation_sequence,
-                (bars_only || structure_only).then_some(1),
+                cache_event_type_filter(&profile),
             ));
             next_chunk += 1;
         }
@@ -1771,7 +1771,7 @@ impl HistoricalDerivedCache {
                 active.push_back(self.spawn_chunk_fetch(
                     chunks[next_chunk].clone(),
                     source_revision.live_continuation_sequence,
-                    (bars_only || structure_only).then_some(1),
+                    cache_event_type_filter(&profile),
                 ));
                 next_chunk += 1;
             }
@@ -3126,6 +3126,14 @@ fn revision_window(
     })
 }
 
+fn cache_event_type_filter(profile: &CacheProfile) -> Option<u8> {
+    // Structural checkpoints need eligible prints only. Bar/derived products
+    // must retain both quotes and trades: execution VWAP is defined from
+    // volume-eligible trades inside the causal prevailing NBBO, so a
+    // trade-only optimization silently collapses that authority to zero.
+    matches!(profile, CacheProfile::Structure(_)).then_some(1)
+}
+
 fn indicator_warmup_start(timestamp: DateTime<Utc>) -> Result<DateTime<Utc>, String> {
     let lookback = timestamp
         .checked_sub_signed(Duration::days(INDICATOR_EMA_WARMUP_DAYS))
@@ -3250,10 +3258,10 @@ fn valid_price_bar(bar: &BarRow) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_structure_projection_row, bounded_encountered_structure_levels, cache_key,
-        encountered_structure_levels_for_session, ensure_monotonic_bar_start,
-        historical_requirement, prepared_bar_cache_path, prepared_indicator_projection,
-        prepared_structure_seed_cache_path, read_prepared_bar_cache,
+        apply_structure_projection_row, bounded_encountered_structure_levels,
+        cache_event_type_filter, cache_key, encountered_structure_levels_for_session,
+        ensure_monotonic_bar_start, historical_requirement, prepared_bar_cache_path,
+        prepared_indicator_projection, prepared_structure_seed_cache_path, read_prepared_bar_cache,
         read_prepared_structure_seed_cache, revision_window, session_anchor, split_event_window,
         stable_hash_hex, structure_events_overlapping, structure_seed_cache_key,
         structure_seed_cache_key_for_revision, write_prepared_bar_cache,
@@ -3275,6 +3283,22 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::{broadcast, Mutex, Notify};
+
+    #[test]
+    fn bars_and_derived_fetch_quotes_required_by_execution_vwap() {
+        assert_eq!(
+            cache_event_type_filter(&CacheProfile::Bars("1s".to_string())),
+            None
+        );
+        assert_eq!(
+            cache_event_type_filter(&CacheProfile::Derived("1s".to_string())),
+            None
+        );
+        assert_eq!(
+            cache_event_type_filter(&CacheProfile::Structure("1s".to_string())),
+            Some(1),
+        );
+    }
 
     #[test]
     fn prepared_structure_seed_identity_changes_with_split_authority() {

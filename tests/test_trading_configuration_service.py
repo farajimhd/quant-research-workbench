@@ -15,6 +15,7 @@ from src.backend.trading_configuration_service import (
     _compiled_observation_dependencies,
     _compile_run_plans,
     _migrate_draft,
+    _refresh_builtin_system_strategy_profiles,
     _normalize_rule_set_conditions,
     _profile_rule_set_ids,
     _qmd_family_capabilities,
@@ -48,6 +49,42 @@ from src.trading_runtime.strategy_engine import long_momentum_strategy_definitio
 
 
 class TradingConfigurationServiceTests(unittest.TestCase):
+    def test_new_release_refreshes_only_builtin_system_strategy_profiles(self) -> None:
+        draft = _default_draft()
+        system_profile = draft["strategy"]["profiles"][0]
+        system_profile["definition_revision"] = 1
+        system_profile["name"] = "Stale built-in projection"
+        system_profile["protected"] = False
+        user_profile = deepcopy(system_profile)
+        user_profile.update(
+            profile_id="user-published-revision-one",
+            name="User historical profile",
+            origin="user",
+            protected=False,
+            publication_status="published",
+        )
+        draft["strategy"]["profiles"].append(user_profile)
+
+        _refresh_builtin_system_strategy_profiles(draft)
+
+        refreshed_system = next(
+            row
+            for row in draft["strategy"]["profiles"]
+            if row["profile_id"] == system_profile["profile_id"]
+        )
+        preserved_user = next(
+            row
+            for row in draft["strategy"]["profiles"]
+            if row["profile_id"] == user_profile["profile_id"]
+        )
+        self.assertEqual(
+            refreshed_system["definition_revision"],
+            long_momentum_strategy_definition()["revision"],
+        )
+        self.assertNotEqual(refreshed_system["name"], "Stale built-in projection")
+        self.assertEqual(preserved_user["definition_revision"], 1)
+        self.assertEqual(preserved_user["name"], "User historical profile")
+
     def test_candidate_runtime_snapshot_reuses_immutable_projection(self) -> None:
         candidate = {
             "candidate_id": "candidate-cache-test",
@@ -1596,6 +1633,9 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(plan["campaign_lifecycle"]["reentry_cooldown_ms"], 0)
         self.assertTrue(profile["lifecycle"]["reentry"]["unlimited_attempts"])
         self.assertEqual(profile["lifecycle"]["reentry"]["maximum_attempts"], 0)
+        self.assertFalse(
+            profile["lifecycle"]["reentry"]["require_new_confirmation"]
+        )
         self.assertEqual(profile["lifecycle"]["reentry"]["pullback_reclaim"], {
             "enabled": True,
             "minimum_pullback_atr_multiple": 0.50,

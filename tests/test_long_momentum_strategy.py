@@ -689,6 +689,56 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(entered.evaluation.signals[0].action, "enter_long")
         self.assertEqual(entered.state["breakout_level"], 100.7)
 
+    def test_unified_entry_uses_intrasecond_market_event_with_latest_macd(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["structural_entry"]["enabled"] = True
+        levels = ({
+            "unified_level_id": 23,
+            "side": -1,
+            "lower": 100.40,
+            "upper": 100.50,
+            "salience": 0.9,
+            "confidence": 0.9,
+            "reaction_probability": 0.9,
+        },)
+        engine = LongMomentumStrategyEngine()
+        armed = engine.evaluate(
+            assignment(parameters=parameters),
+            confirmed_observation(
+                price=100.45,
+                structural_resistance_levels=levels,
+            ),
+        )
+
+        entered = engine.evaluate(
+            assignment(parameters=parameters, state=dict(armed.state)),
+            confirmed_observation(
+                observed_at=NOW + timedelta(milliseconds=275),
+                price=100.51,
+                source_timeframe="",
+                source_signal_ids=("qmd-market-event:AAPL:trade:91",),
+                evaluation_events=("market_data_update",),
+                changed_source_ids=("market.last_price",),
+                structural_resistance_levels=levels,
+                source_values={
+                    "indicator.macd.line@1s": {
+                        "observed_at": NOW.isoformat(),
+                        "value": 0.40,
+                    },
+                    "indicator.macd.signal@1s": {
+                        "observed_at": NOW.isoformat(),
+                        "value": 0.20,
+                    },
+                },
+            ),
+        )
+
+        self.assertEqual(entered.evaluation.signals[0].action, "enter_long")
+        self.assertEqual(
+            entered.evaluation.signals[0].metadata["causation_id"],
+            "event:qmd-market-event:AAPL:trade:91",
+        )
+
     def test_unified_entry_does_not_chase_a_higher_level_after_arming(self) -> None:
         parameters = default_long_momentum_parameters()
         parameters["structural_entry"].update({"enabled": True})
@@ -1708,6 +1758,18 @@ class LongMomentumStrategyTests(unittest.TestCase):
             [103.0, 104.0, 105.0],
         )
 
+        intrasecond = LongMomentumStrategyEngine().evaluate(
+            managed,
+            confirmed_observation(
+                source_timeframe="",
+                evaluation_events=("market_data_update",),
+                changed_source_ids=("market.last_price",),
+                **{key: value for key, value in common.items() if key != "evaluation_events"},
+            ),
+        )
+        self.assertEqual(intrasecond.evaluation.signals[0].action, "hold")
+        self.assertEqual(intrasecond.state["structural_profit_targets"], [103.0])
+
     def test_highest_capped_target_does_not_ratchet_through_intermediate_levels(self) -> None:
         parameters = default_long_momentum_parameters()
         parameters["protection"]["profit_ladder"].update({
@@ -2556,7 +2618,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
             ),
             (
                 "downside_vwap_lost",
-                dict(vwap=100.5),
+                dict(vwap=102.0, execution_vwap=100.5),
             ),
         )
         for reason, overrides in cases:
@@ -2573,6 +2635,42 @@ class LongMomentumStrategyTests(unittest.TestCase):
                 )
                 self.assertEqual(result.evaluation.signals[0].action, "exit")
                 self.assertEqual(result.evaluation.signals[0].reason, reason)
+
+    def test_below_entry_vwap_guard_ignores_non_executable_session_vwap(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["phase_policy"] = {"exit": {"mode": "automatic", "rule_sets": []}}
+        parameters["profit_pocket"]["enabled"] = False
+        parameters["protection"]["trailing"]["enabled"] = False
+        parameters["momentum_management"]["downside_loss_guard"]["enabled"] = True
+        managed = assignment(
+            parameters=parameters,
+            status=AssignmentStatus.MANAGING,
+            state={
+                "active_stop": 95.0,
+                "initial_stop": 95.0,
+                "breakout_level": 90.0,
+                "entry_at": (NOW - timedelta(seconds=10)).isoformat(),
+                "entry_reference_price": 101.0,
+                "high_water_price": 102.0,
+            },
+        )
+
+        result = LongMomentumStrategyEngine().evaluate(
+            managed,
+            confirmed_observation(
+                price=100.0,
+                average_price=101.0,
+                position_quantity=100,
+                source_timeframe="1s",
+                vwap=100.5,
+                execution_vwap=99.5,
+                macd_line=0.2,
+                macd_signal=0.1,
+                macd_histogram=0.1,
+            ),
+        )
+
+        self.assertEqual(result.evaluation.signals[0].action, "hold")
 
     def test_downside_loss_guard_does_not_apply_above_entry(self) -> None:
         parameters = default_long_momentum_parameters()

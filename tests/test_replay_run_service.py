@@ -2899,6 +2899,92 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
             event, evaluate_strategy=False
         )
 
+    async def test_market_event_evaluates_latest_indicators_without_claiming_bar_close(self) -> None:
+        now = datetime(2026, 8, 21, 4, 2, 57, tzinfo=NEW_YORK)
+        controller = ReplayRunController(
+            ReplayRunDefinition(
+                session_date=date(2026, 8, 21),
+                start_time=time(4, 0),
+                end_time=time(4, 12),
+                tickers=("SUGP",),
+                configuration_revision=approved_configuration(),
+                mode=RunMode.BACKTEST,
+            ),
+            runtime_root=Path(tempfile.gettempdir()),
+        )
+        assigned = StrategyAssignment(
+            assignment_id="sugp-event-clock",
+            strategy_id=STRATEGY_ID,
+            strategy_revision=STRATEGY_REVISION,
+            account_id="DU123456",
+            ticker="SUGP",
+            conid=1,
+            status=AssignmentStatus.WATCHING,
+            permissions=StrategyPermissions(observe=True, enter=True),
+            parameters=default_long_momentum_parameters(),
+            state={"liquidity_admitted_at": now.isoformat()},
+            created_at=now,
+            updated_at=now,
+        )
+        strategy = MagicMock()
+        strategy.assignments.return_value = (assigned,)
+        runtime = MagicMock()
+        runtime.broker.positions = AsyncMock(return_value=[])
+        runtime.process_account_strategy_observation = AsyncMock()
+        controller._strategy = strategy
+        controller._runtime = runtime
+        controller._strategy_engaged_tickers.add("SUGP")
+        controller._active_historical_watchlist_tickers.add("SUGP")
+        controller._latest_strategy_observations["SUGP"] = StrategyObservation(
+            ticker="SUGP",
+            observed_at=now,
+            price=3.44,
+            bid=3.43,
+            ask=3.45,
+            macd_line=0.02,
+            macd_signal=0.01,
+            source_timeframe="1s",
+            evaluation_events=("indicator_update", "bar_close"),
+            source_values={
+                "market.last_price@1s": {
+                    "observed_at": now.isoformat(),
+                    "value": 3.44,
+                },
+                "indicator.macd.line@1s": {
+                    "observed_at": now.isoformat(),
+                    "value": 0.02,
+                },
+                "indicator.macd.signal@1s": {
+                    "observed_at": now.isoformat(),
+                    "value": 0.01,
+                },
+            },
+        )
+        event = _debug_market_events(({
+            "kind": "trade",
+            "ticker": "SUGP",
+            "ts": "2026-08-21T04:02:57.250-04:00",
+            "sequence": 91,
+            "price": 3.47,
+            "size": 100,
+        },))[0]
+
+        processed = await controller._process_strategy_market_event(event)
+
+        self.assertTrue(processed)
+        observation = runtime.process_account_strategy_observation.await_args.args[0]
+        self.assertEqual(observation.observed_at, event.ts)
+        self.assertEqual(observation.price, 3.47)
+        self.assertEqual(observation.source_timeframe, "")
+        self.assertEqual(observation.evaluation_events, ("market_data_update",))
+        self.assertNotIn("bar_close", observation.evaluation_events)
+        self.assertEqual(
+            observation.source_values["market.last_price@1s"]["value"], 3.47
+        )
+        self.assertEqual(
+            observation.source_values["indicator.macd.line@1s"]["value"], 0.02
+        )
+
     async def test_source_native_squeeze_loader_preserves_available_clock_and_authority(self) -> None:
         configuration = approved_configuration()
         configuration["payload"]["signal_activation"] = {

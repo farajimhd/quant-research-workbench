@@ -34,7 +34,7 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 24
+STRATEGY_REVISION = 25
 
 RULE_COMPARATORS = {
     "above_by_bps",
@@ -523,6 +523,7 @@ def default_long_momentum_parameters() -> dict[str, Any]:
                 "bearish_choch": True,
                 "macd_closed": True,
                 "below_vwap": True,
+                "vwap_source_id": "indicator.vwap.execution_value",
             },
             "failure_to_extend": {
                 "enabled": False,
@@ -787,7 +788,8 @@ def _active_rule_source_dependencies(
         if bool(downside.get("enabled", False)):
             timeframe = str(downside.get("timeframe") or "1s")
             vwap_source_id = str(
-                downside.get("vwap_source_id") or "indicator.vwap.value"
+                downside.get("vwap_source_id")
+                or "indicator.vwap.execution_value"
             )
             dependencies.update({
                 ("indicator.structure.bearish_choch", timeframe),
@@ -4583,7 +4585,8 @@ def _matching_momentum_management_route(
                 },
             }
         vwap_source_id = str(
-            downside.get("vwap_source_id") or "indicator.vwap.value"
+            downside.get("vwap_source_id")
+            or "indicator.vwap.execution_value"
         )
         vwap = _source_value(observation, vwap_source_id, downside_timeframe)
         if (

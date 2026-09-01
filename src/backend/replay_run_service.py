@@ -799,6 +799,11 @@ class ReplayRunController:
         self._pending_passive_market_events: list[MarketEvent] = []
         self._previous_vwap: dict[tuple[str, str], tuple[datetime, float]] = {}
         self._strategy_source_values: dict[str, dict[str, Any]] = {}
+        # Derived frames update indicator state, but entry, protection, and
+        # exit decisions run on the source-native market-event clock.  Keep
+        # the latest causal indicator snapshot so each quote/trade can be
+        # evaluated without pretending that the event is a completed bar.
+        self._latest_strategy_observations: dict[str, StrategyObservation] = {}
         self._signal_stream_states: dict[tuple[str, str], dict[str, Any]] = {}
         self._signal_activated_tickers: set[str] = set()
         # Once a source-native signal has admitted a ticker, keep evaluating
@@ -2080,6 +2085,8 @@ class ReplayRunController:
                         # only reduces Replay throughput.
                         evaluate_strategy=False,
                     )
+                    if event.ts >= self.definition.requested_start:
+                        await self._process_strategy_market_event(event)
                     if event.ts < self.definition.requested_start:
                         self.warmup_events += 1
                     else:
@@ -3025,6 +3032,92 @@ class ReplayRunController:
                 ),
                 source_values=deepcopy(source_cache),
             )
+        self._latest_strategy_observations[frame.ticker] = base
+        await self._evaluate_strategy_observation(base, ticker_assignments)
+        self._frame_cursor = {
+            "as_of": frame.as_of.astimezone(UTC).isoformat(),
+            "ticker": frame.ticker,
+            "timeframe": frame.timeframe,
+            "sequence": frame.sequence,
+        }
+        self._processed_frames += 1
+        await asyncio.sleep(0)
+        return True
+
+    async def _process_strategy_market_event(self, event: MarketEvent) -> bool:
+        """Evaluate active strategy rules on the causal quote/trade clock.
+
+        Indicator values retain their original frame timestamps.  Only the
+        event-native price/quote facts advance here.  In particular, this path
+        never publishes ``bar_close``; completed one-second bars remain the
+        sole authority allowed to ratchet a structural profit target.
+        """
+
+        if self._runtime is None or self._strategy is None:
+            return False
+        # Commit the triggering event to broker/market state before an order is
+        # created.  Otherwise the passive-event coalescer could replay that
+        # already-observed trade after submission and grant a non-causal fill.
+        self._flush_passive_market_events()
+        base = self._latest_strategy_observations.get(event.ticker)
+        if base is None or event.ticker not in self._strategy_engaged_tickers:
+            return False
+        quote = self._quotes.get(event.ticker)
+        price = float(event.price) if isinstance(event, TradeEvent) else float(base.price)
+        if price <= 0:
+            return False
+        source_values = deepcopy(base.source_values)
+        market_price = {
+            "observed_at": event.ts.isoformat(),
+            "value": price,
+        }
+        # Market price is event-native.  Replace every timeframe projection so
+        # a rule comparing the latest trade with a 1s/5s indicator does not
+        # accidentally compare that indicator with the stale bar close.
+        source_values["market.last_price"] = market_price
+        for key in tuple(source_values):
+            if key.startswith("market.last_price@"):
+                source_values[key] = dict(market_price)
+        changed_source_ids = ["market.last_price"] if isinstance(event, TradeEvent) else []
+        if quote is not None and quote.midpoint > 0 and quote.ask_price >= quote.bid_price > 0:
+            spread_bps = (
+                (quote.ask_price - quote.bid_price) / quote.midpoint * 10_000.0
+            )
+            source_values["market.spread_bps"] = {
+                "observed_at": event.ts.isoformat(),
+                "value": spread_bps,
+            }
+            changed_source_ids.append("market.spread_bps")
+        observation = replace(
+            base,
+            observed_at=event.ts,
+            price=price,
+            bid=float(quote.bid_price if quote else base.bid),
+            ask=float(quote.ask_price if quote else base.ask),
+            source_timeframe="",
+            source_signal_ids=(
+                f"qmd-market-event:{event.ticker}:{event.kind}:{event.sequence}",
+            ),
+            changed_source_ids=tuple(dict.fromkeys(changed_source_ids)),
+            evaluation_events=("market_data_update",),
+            source_values=source_values,
+        )
+        self._latest_strategy_observations[event.ticker] = observation
+        ticker_assignments = tuple(
+            assignment
+            for assignment in self._strategy.assignments()
+            if assignment.ticker == event.ticker
+        )
+        await self._evaluate_strategy_observation(observation, ticker_assignments)
+        return True
+
+    async def _evaluate_strategy_observation(
+        self,
+        base: StrategyObservation,
+        ticker_assignments: Sequence[StrategyAssignment],
+    ) -> None:
+        if self._runtime is None:
+            raise RuntimeError("Replay runtime was not initialized")
         for assignment in ticker_assignments:
             positions = await self._runtime.broker.positions(assignment.account_id)
             position = next(
@@ -3067,15 +3160,6 @@ class ReplayRunController:
                 observation,
                 assignment.account_id,
             )
-        self._frame_cursor = {
-            "as_of": frame.as_of.astimezone(UTC).isoformat(),
-            "ticker": frame.ticker,
-            "timeframe": frame.timeframe,
-            "sequence": frame.sequence,
-        }
-        self._processed_frames += 1
-        await asyncio.sleep(0)
-        return True
 
     def _entry_structure_context_is_actionable(
         self,

@@ -509,6 +509,7 @@ def _build_configuration_release(
     base_configuration = configuration_base()
     draft_candidate = _without_timestamp(_migrate_draft(deepcopy(configuration)))
     _assert_published_profiles_unchanged(base_configuration, draft_candidate)
+    _refresh_builtin_system_strategy_profiles(draft_candidate)
     profiles = list(dict(draft_candidate["strategy"]).get("profiles") or [])
     run_plans = list(dict(draft_candidate["run_plans"]).get("plans") or [])
     selected_run_plan = next(
@@ -589,6 +590,33 @@ def _build_configuration_release(
     encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     content_hash = hashlib.sha256(encoded).hexdigest()
     return runtime_candidate, payload, content_hash
+
+
+def _refresh_builtin_system_strategy_profiles(model: dict[str, Any]) -> None:
+    """Advance built-in profiles only at the new-release boundary.
+
+    Migration and runtime resolution must preserve immutable historical
+    profiles. After the published-profile integrity check succeeds, however,
+    a newly created Test Candidate must pin the currently installed built-in
+    executor rather than copying an obsolete system revision forever.
+    """
+
+    defaults = _default_draft()
+    installed = {
+        str(profile.get("profile_id") or ""): deepcopy(profile)
+        for profile in defaults["strategy"].get("profiles") or []
+        if str(profile.get("origin") or "") == "system"
+    }
+    profiles = list(dict(model.get("strategy") or {}).get("profiles") or [])
+    model["strategy"]["profiles"] = [
+        deepcopy(installed[profile_id])
+        if (
+            (profile_id := str(profile.get("profile_id") or "")) in installed
+            and str(profile.get("origin") or "") == "system"
+        )
+        else profile
+        for profile in profiles
+    ]
 
 
 def replay_configuration_snapshot(
@@ -3965,6 +3993,10 @@ def _default_draft() -> dict[str, Any]:
     ] = "adaptive_very_urgent"
     squeeze_lifecycle["reentry"]["order_intent"]["deadline_ms"] = 5_000
     squeeze_lifecycle["reentry"]["cooldown_ms"] = 0
+    # Early Squeeze admits the ticker once for the whole campaign. Re-entry is
+    # driven by the live structural/MACD state; it must not wait for every
+    # confirmation source to publish a post-exit sample before trading again.
+    squeeze_lifecycle["reentry"]["require_new_confirmation"] = False
     # The original Early Squeeze occurrence owns the campaign. A re-entry in
     # that same episode needs fresh post-exit market evidence, not a duplicate
     # scanner occurrence that may never be emitted during continuation.
