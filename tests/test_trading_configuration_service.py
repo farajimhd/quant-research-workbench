@@ -1426,6 +1426,10 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             default_profile["parameters"]["protection"]["profit_ladder"]["maximum_break_count"],
             100,
         )
+        self.assertEqual(
+            default_profile["parameters"]["protection"]["profit_ladder"]["minimum_entry_target_gap_bps"],
+            0.0,
+        )
         self.assertFalse(
             default_profile["parameters"]["structural_entry"]["require_swing_high_frontier"]
         )

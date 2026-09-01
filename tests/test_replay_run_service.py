@@ -22,6 +22,7 @@ from src.backend.replay_run_service import (
     ReplayRunDefinition,
     ReplayRunService,
     ReplaySignalEvent,
+    _ProvisionalMacdState,
     _STRATEGY_LAZY_STRUCTURE_FIELDS,
     _append_historical_derived_message,
     _attach_historical_signals,
@@ -2960,6 +2961,13 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
                 },
             },
         )
+        controller._provisional_macd_states["SUGP"] = _ProvisionalMacdState(
+            ema_fast=3.40,
+            ema_slow=3.38,
+            signal=0.015,
+            committed_at=now,
+            sample_count=26,
+        )
         event = _debug_market_events(({
             "kind": "trade",
             "ticker": "SUGP",
@@ -2981,9 +2989,51 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             observation.source_values["market.last_price@1s"]["value"], 3.47
         )
-        self.assertEqual(
-            observation.source_values["indicator.macd.line@1s"]["value"], 0.02
+        expected_line = (
+            (2 / 13) * 3.47 + (11 / 13) * 3.40
+        ) - (
+            (2 / 27) * 3.47 + (25 / 27) * 3.38
         )
+        expected_signal = (2 / 10) * expected_line + (8 / 10) * 0.015
+        self.assertAlmostEqual(
+            observation.source_values["indicator.macd.line@1s"]["value"],
+            expected_line,
+        )
+        self.assertAlmostEqual(observation.macd_line or 0, expected_line)
+        self.assertAlmostEqual(observation.macd_signal or 0, expected_signal)
+        self.assertIn("indicator.macd.line@1s", observation.changed_source_ids)
+        self.assertIn("indicator.macd.signal@1s", observation.changed_source_ids)
+
+    async def test_quote_updates_execution_state_without_strategy_evaluation(self) -> None:
+        now = datetime(2026, 8, 21, 4, 2, 57, tzinfo=NEW_YORK)
+        controller = ReplayRunController(
+            ReplayRunDefinition(
+                session_date=date(2026, 8, 21),
+                start_time=time(4, 0),
+                end_time=time(4, 12),
+                tickers=("SUGP",),
+                configuration_revision=approved_configuration(),
+                mode=RunMode.BACKTEST,
+            ),
+            runtime_root=Path(tempfile.gettempdir()),
+        )
+        controller._strategy = MagicMock()
+        controller._runtime = MagicMock()
+        event = _debug_market_events(({
+            "kind": "quote",
+            "ticker": "SUGP",
+            "ts": "2026-08-21T04:02:57.250-04:00",
+            "sequence": 90,
+            "bid_price": 3.46,
+            "ask_price": 3.47,
+            "bid_size": 500,
+            "ask_size": 500,
+        },))[0]
+
+        processed = await controller._process_strategy_market_event(event)
+
+        self.assertFalse(processed)
+        controller._runtime.process_account_strategy_observation.assert_not_called()
 
     async def test_source_native_squeeze_loader_preserves_available_clock_and_authority(self) -> None:
         configuration = approved_configuration()

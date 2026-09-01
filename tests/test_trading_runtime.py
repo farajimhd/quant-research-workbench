@@ -130,6 +130,64 @@ class SimulatedBrokerTests(unittest.IsolatedAsyncioTestCase):
         live = await broker.live_orders()
         self.assertEqual(live[0].remainingQuantity, 20)
 
+    async def test_marketable_limit_remains_aggressive_on_causal_trade_events(self) -> None:
+        broker = SimulatedBrokerAdapter(
+            ["DU-SWEEP"],
+            SimulationConfig(
+                initial_cash=20_000,
+                commission_per_share=0.0,
+                minimum_commission=0.0,
+                liquidity_participation=0.25,
+                marketable_liquidity_participation=1.0,
+            ),
+        )
+        await broker.initialize()
+        await broker.on_market_event(quote(bid=99, ask=100, ask_size=80))
+        await broker.place_orders("DU-SWEEP", [OrderRequest(
+            acctId="DU-SWEEP",
+            conid=265598,
+            cOID="marketable-trade-continuation",
+            ticker="AAPL",
+            orderType="LMT",
+            side="BUY",
+            quantity=100,
+            price=100,
+        )])
+        await broker.on_market_event(quote(bid=99, ask=100, ask_size=80))
+
+        fills = await broker.on_market_event(trade(price=100, size=20))
+
+        self.assertEqual(fills[0].price, 100)
+        self.assertEqual(fills[0].size, 20)
+        live = await broker.live_orders()
+        self.assertEqual(live[0].remainingQuantity, 0)
+
+    async def test_order_submission_time_uses_ticker_quote_without_conid(self) -> None:
+        broker = SimulatedBrokerAdapter(
+            ["DU-TIME"],
+            SimulationConfig(
+                initial_cash=20_000,
+                commission_per_share=0.0,
+                minimum_commission=0.0,
+            ),
+        )
+        await broker.initialize()
+        broker.observe_market_event(replace(quote(bid=99, ask=100), raw={}))
+        await broker.place_orders("DU-TIME", [OrderRequest(
+            acctId="DU-TIME",
+            conid=265598,
+            cOID="causal-submission-time",
+            ticker="AAPL",
+            orderType="LMT",
+            side="BUY",
+            quantity=10,
+            price=100,
+        )])
+
+        live = await broker.live_orders()
+
+        self.assertEqual(live[0].lastExecutionTime, TS)
+
     async def test_resting_sell_limit_fills_from_trade_through_with_passive_participation(self) -> None:
         broker = SimulatedBrokerAdapter(
             ["DU-TARGET"],
@@ -173,6 +231,53 @@ class SimulatedBrokerTests(unittest.IsolatedAsyncioTestCase):
         live = await broker.live_orders()
         target = next(item for item in live if item.cOID == "resting-target")
         self.assertEqual(target.remainingQuantity, 50)
+
+    async def test_crossed_target_uses_aggressive_trade_participation(self) -> None:
+        broker = SimulatedBrokerAdapter(
+            ["DU-TARGET"],
+            SimulationConfig(
+                initial_cash=20_000,
+                commission_per_share=0.0,
+                minimum_commission=0.0,
+                liquidity_participation=0.25,
+                marketable_liquidity_participation=1.0,
+            ),
+        )
+        await broker.initialize()
+        await broker.on_market_event(
+            quote(bid=99, ask=100, bid_size=100, ask_size=100)
+        )
+        await broker.place_orders("DU-TARGET", [OrderRequest(
+            acctId="DU-TARGET",
+            conid=265598,
+            cOID="entry-for-crossed-target",
+            ticker="AAPL",
+            orderType="LMT",
+            side="BUY",
+            quantity=100,
+            price=100,
+        )])
+        await broker.on_market_event(
+            quote(bid=99, ask=100, bid_size=100, ask_size=100)
+        )
+        await broker.place_orders("DU-TARGET", [OrderRequest(
+            acctId="DU-TARGET",
+            conid=265598,
+            cOID="crossed-target",
+            ticker="AAPL",
+            orderType="LMT",
+            side="SELL",
+            quantity=100,
+            price=105,
+        )])
+        broker.observe_market_event(
+            quote(bid=105.10, ask=105.20, bid_size=100, ask_size=100)
+        )
+
+        fills = await broker.on_market_event(trade(price=105.25, size=100))
+
+        self.assertEqual(fills[0].price, 105.10)
+        self.assertEqual(fills[0].size, 100)
 
     async def test_resting_sell_limit_does_not_fill_from_trade_below_limit(self) -> None:
         broker = SimulatedBrokerAdapter(

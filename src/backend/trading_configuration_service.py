@@ -4155,6 +4155,9 @@ def _default_draft() -> dict[str, Any]:
         "maximum_break_count": 100,
         "maximum_break_probability": 1.0,
         "minimum_composite_score": 0.0,
+        # Target geometry must not veto an otherwise valid causal entry. The
+        # resting target can still be advanced as higher levels are accepted.
+        "minimum_entry_target_gap_bps": 0.0,
         "premarket_maximum_gain_pct": 200.0,
     })
     system_profiles[0]["parameters"]["protection"]["luld_profit_target"].update({

@@ -757,6 +757,7 @@ export function WatchUniverseContainer({ asOf, live = false, onSettingsChange, o
 export function StrategyActivityContainer({ asOf, focusSequence, onSettingsChange, onTickerSelect, runId, settings }: { asOf: string; focusSequence?: number; onSettingsChange: (patch: Partial<StrategyActivitySettings>) => void; onTickerSelect: (ticker: string) => void; runId?: string; settings: StrategyActivitySettings }) {
   const [payload, setPayload] = useState<StrategyActivityResponse | null>(null);
   const [error, setError] = useState("");
+  const activityLimit = Math.max(2_000, Math.min(settings.limit, 5_000));
   const asOfRef = useRef(asOf);
   asOfRef.current = asOf;
   useEffect(() => {
@@ -765,7 +766,7 @@ export function StrategyActivityContainer({ asOf, focusSequence, onSettingsChang
     const refresh = () => {
       const query = new URLSearchParams({
         as_of: asOfRef.current,
-        limit: String(Math.max(1, Math.min(settings.limit, 500))),
+        limit: String(activityLimit),
       });
       if (runId) query.set("run_id", runId);
       if (settings.strategyId) query.set("strategy_id", settings.strategyId);
@@ -778,7 +779,7 @@ export function StrategyActivityContainer({ asOf, focusSequence, onSettingsChang
     };
     refresh();
     return () => { controller.abort(); window.clearTimeout(timer); };
-  }, [focusSequence, runId, settings.eventType, settings.limit, settings.strategyId, settings.ticker]);
+  }, [activityLimit, focusSequence, runId, settings.eventType, settings.strategyId, settings.ticker]);
   const rows = useMemo(() => (payload?.rows ?? []).filter((row) =>
     (!settings.strategyId || String(row.strategy_id) === settings.strategyId)
     && (!settings.runId || String(row.run_id) === settings.runId)
@@ -796,7 +797,7 @@ export function StrategyActivityContainer({ asOf, focusSequence, onSettingsChang
       <ActivityFilter label="Ticker" onChange={(ticker) => onSettingsChange({ ticker })} options={tickers} value={settings.ticker} />
       <ActivityFilter label="Event" onChange={(eventType) => onSettingsChange({ eventType })} options={STRATEGY_ACTIVITY_EVENT_OPTIONS.map(({ value }) => value)} value={settings.eventType} />
     </div>
-    {error ? <div className="canvas-inline-error">Strategy activity unavailable: {error}</div> : <MarketListTable chronological columns={["event_time", "ticker", "event_type", "action", "state", "reason", "reason_code", "trigger_reference_price", "trigger_threshold_price", "score", "confidence", "reference_price", "source"]} customColumns={[]} empty="No causal strategy events match these filters yet. Press Play or advance to the next strategy action." limit={settings.limit} lockedColumns={[]} onColumnsChange={() => undefined} onCustomColumnsChange={() => undefined} onTickerSelect={onTickerSelect} pinnedSequence={focusSequence} rows={rows} title="Strategy activity" />}
+    {error ? <div className="canvas-inline-error">Strategy activity unavailable: {error}</div> : <MarketListTable chronological columns={["event_time", "ticker", "event_type", "action", "state", "reason", "reason_code", "trigger_reference_price", "trigger_threshold_price", "score", "confidence", "reference_price", "source"]} customColumns={[]} empty="No causal strategy events match these filters yet. Press Play or advance to the next strategy action." limit={activityLimit} lockedColumns={[]} onColumnsChange={() => undefined} onCustomColumnsChange={() => undefined} onTickerSelect={onTickerSelect} pinnedSequence={focusSequence} rows={rows} title="Strategy activity" />}
   </section>;
 }
 

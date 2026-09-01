@@ -477,6 +477,7 @@ def default_long_momentum_parameters() -> dict[str, Any]:
                 "minimum_reaction_probability": 0.0,
                 "minimum_reversal_probability": 0.0,
                 "minimum_composite_score": 0.0,
+                "minimum_entry_target_gap_bps": 0.0,
                 "premarket_maximum_gain_pct": 200.0,
             },
             "luld_profit_target": {
@@ -2050,6 +2051,7 @@ class LongMomentumStrategyEngine:
             else 0.0
         )
         target = _luld_target(observation, parameters, side=side)
+        luld_target = target
         profit_target_selection: dict[str, Any] = {}
         profit_targets = _structural_profit_targets(
             observation,
@@ -2061,6 +2063,135 @@ class LongMomentumStrategyEngine:
         )
         if profit_targets:
             target = profit_targets[0]
+        profit_policy = dict(parameters["protection"].get("profit_ladder") or {})
+        minimum_entry_target_gap_bps = max(
+            0.0,
+            float(profit_policy.get("minimum_entry_target_gap_bps") or 0.0),
+        )
+        blocked_room = dict(state.get("entry_target_room_retest") or {})
+        blocked_boundary = _level_metric(blocked_room, "boundary")
+        if blocked_boundary > 0:
+            still_beyond_boundary = (
+                observation.price > blocked_boundary
+                if side == "long"
+                else observation.price < blocked_boundary
+            )
+            if still_beyond_boundary:
+                return self._result(
+                    assignment,
+                    observation,
+                    "wait",
+                    "structural_target_room_retest_required",
+                    confirmation_score,
+                    _confirmation_confidence(observation),
+                    state,
+                    AssignmentStatus.REENTRY_COOLDOWN
+                    if reentries
+                    else AssignmentStatus.WATCHING,
+                    metadata={
+                        "triggers": triggered,
+                        "confirmation": confirmation,
+                        "entry_rules": rule_result,
+                        "unified_structural_trigger": unified_trigger,
+                        "entry_target_room_retest": blocked_room,
+                        "current_price": observation.price,
+                    },
+                )
+            state.pop("entry_target_room_retest", None)
+        entry_target_room_selection: dict[str, Any] = {}
+        entry_target_room_reference = float(observation.price)
+        entry_target_room_targets = profit_targets
+        if minimum_entry_target_gap_bps > 0:
+            previous_price = (unified_trigger or {}).get("previous_price")
+            try:
+                previous_price_value = float(previous_price)
+            except (TypeError, ValueError):
+                previous_price_value = 0.0
+            if previous_price_value > 0:
+                # Assess room from the last causal price before this market
+                # event. Otherwise crossing a nearby level can instantly
+                # remove it from the ordered ladder and make the third target
+                # jump to a distant level, admitting the same campaign that
+                # failed the room gate one event earlier.
+                entry_target_room_reference = (
+                    min(previous_price_value, float(observation.price))
+                    if side == "long"
+                    else max(previous_price_value, float(observation.price))
+                )
+                entry_target_room_targets = _structural_profit_targets(
+                    replace(observation, price=entry_target_room_reference),
+                    parameters,
+                    stop=stop,
+                    side=side,
+                    luld_target=luld_target,
+                    selection_evidence=entry_target_room_selection,
+                )
+        selected_target = (
+            entry_target_room_targets[0] if entry_target_room_targets else None
+        )
+        structural_target_gap_bps = (
+            (
+                (float(selected_target) - entry_target_room_reference)
+                / entry_target_room_reference
+                * 10_000.0
+            )
+            * (1.0 if side == "long" else -1.0)
+            if selected_target is not None and entry_target_room_reference > 0
+            else None
+        )
+        if minimum_entry_target_gap_bps > 0 and (
+            structural_target_gap_bps is None
+            or structural_target_gap_bps < minimum_entry_target_gap_bps
+        ):
+            qualified_room_levels = list(
+                entry_target_room_selection.get("qualified_levels") or ()
+            )
+            first_room_level = (
+                _level_metric(dict(qualified_room_levels[0]), "target_price", "price")
+                if qualified_room_levels
+                else 0.0
+            )
+            crossed_room_boundary = bool(
+                first_room_level > 0
+                and (
+                    entry_target_room_reference <= first_room_level < observation.price
+                    if side == "long"
+                    else entry_target_room_reference >= first_room_level > observation.price
+                )
+            )
+            if crossed_room_boundary:
+                state["entry_target_room_retest"] = {
+                    "boundary": first_room_level,
+                    "blocked_at": observation.observed_at.isoformat(),
+                    "side": side,
+                    "selected_target": selected_target,
+                    "target_gap_bps": structural_target_gap_bps,
+                    "minimum_target_gap_bps": minimum_entry_target_gap_bps,
+                }
+            return self._result(
+                assignment,
+                observation,
+                "wait",
+                "insufficient_structural_target_room",
+                confirmation_score,
+                _confirmation_confidence(observation),
+                state,
+                AssignmentStatus.REENTRY_COOLDOWN
+                if reentries
+                else AssignmentStatus.WATCHING,
+                metadata={
+                    "triggers": triggered,
+                    "confirmation": confirmation,
+                    "entry_rules": rule_result,
+                    "unified_structural_trigger": unified_trigger,
+                    "profit_target_selection": profit_target_selection,
+                    "entry_target_room_selection": entry_target_room_selection,
+                    "entry_target_room_reference": entry_target_room_reference,
+                    "selected_structural_target": selected_target,
+                    "structural_target_gap_bps": structural_target_gap_bps,
+                    "minimum_entry_target_gap_bps": minimum_entry_target_gap_bps,
+                },
+            )
         order_intent = dict(phase.get("order_intent") or {})
         missing_anchor = _missing_protection_anchor(
             order_intent,
@@ -2106,6 +2237,7 @@ class LongMomentumStrategyEngine:
                 ),
             }
         )
+        state.pop("entry_target_room_retest", None)
         state.pop("accepted_entry_resistance", None)
         state.pop("pending_entry_resistance", None)
         for field_name in (
@@ -2145,6 +2277,10 @@ class LongMomentumStrategyEngine:
                 "initial_stop": stop,
                 "profit_targets": profit_targets,
                 "profit_target_selection": profit_target_selection,
+                "entry_target_room_selection": entry_target_room_selection,
+                "entry_target_room_reference": entry_target_room_reference,
+                "structural_target_gap_bps": structural_target_gap_bps,
+                "minimum_entry_target_gap_bps": minimum_entry_target_gap_bps,
                 "unified_structural_trigger": unified_trigger,
                 "execution_quality": execution_detail,
                 "entry_momentum_confirmation": momentum_detail,
@@ -4143,6 +4279,21 @@ def _decision_reason_detail(
             f"{_display_value(detail.get('current_histogram'))} versus "
             f"{_display_value(detail.get('baseline_histogram'))} "
             f"{int(detail.get('lookback_ms') or 0)} ms earlier."
+        )
+    if reason == "insufficient_structural_target_room":
+        return (
+            "Wait: the configured structural profit target does not leave enough room for entry — "
+            f"reference={_display_value(metadata.get('entry_target_room_reference'))}, "
+            f"target={_display_value(metadata.get('selected_structural_target'))}, "
+            f"room={_display_value(metadata.get('structural_target_gap_bps'))} bps; requires at least "
+            f"{_display_value(metadata.get('minimum_entry_target_gap_bps'))} bps."
+        )
+    if reason == "structural_target_room_retest_required":
+        detail = dict(metadata.get("entry_target_room_retest") or {})
+        return (
+            "Wait: the prior resistance crossing failed the structural target-room gate and price "
+            "has not retested that boundary — "
+            f"price={observation.price:.4g}, boundary={_display_value(detail.get('boundary'))}."
         )
     if reason == "waiting_for_target_replenishment_pullback":
         detail = dict(metadata.get("target_replenishment") or {})

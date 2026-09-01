@@ -255,6 +255,7 @@ def _instrument_id(instrument: Any) -> str:
 def _attach_lifecycle_orders(
     rows: list[dict[str, Any]], orders: Iterable[OrderState]
 ) -> None:
+    order_rows = list(orders)
     by_key: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         instrument_id = _instrument_id(row.get("instrument"))
@@ -264,7 +265,7 @@ def _attach_lifecycle_orders(
         candidates.sort(key=lambda row: row["opened_at"])
 
     for order in sorted(
-        orders,
+        order_rows,
         key=lambda row: (
             row.source_event_time,
             row.broker_order_id or row.client_order_id,
@@ -290,6 +291,33 @@ def _attach_lifecycle_orders(
         selected["order_ids"].append(order_id)
     for row in rows:
         row["order_ids"] = tuple(dict.fromkeys(row["order_ids"]))
+        linked_orders = [
+            order
+            for order in order_rows
+            if (order.broker_order_id or order.client_order_id) in row["order_ids"]
+        ]
+        requested_times = [
+            requested_at
+            for order in linked_orders
+            if (requested_at := _order_requested_at(order)) is not None
+        ]
+        row["requested_at"] = min(requested_times) if requested_times else None
+        row["requested_at_known"] = bool(requested_times)
+
+
+def _order_requested_at(order: OrderState) -> datetime | None:
+    for key in ("submitted_at", "created_at", "order_time", "orderTime"):
+        raw_value = order.raw.get(key)
+        if isinstance(raw_value, datetime) and raw_value.tzinfo is not None:
+            return raw_value
+        if isinstance(raw_value, str) and raw_value.strip():
+            try:
+                parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if parsed.tzinfo is not None:
+                return parsed
+    return None
 
 
 def episodes_from_round_trips(rows: Iterable[RoundTripTrade]) -> list[TradeEpisode]:

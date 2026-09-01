@@ -80,6 +80,8 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert '"Trim"' not in chart_source
     assert 'execution_role' in chart_source
     assert '`${role}:${action.side}:${second}:${priceTick}`' in chart_source
+    assert "const exitQuantity = exitAction?.quantity || quantity" in chart_source
+    assert "current.time = Math.min(current.time, time)" in chart_source
     assert "closedTradeAnnotations" not in chart_source
     assert "class TradeAnnotationPrimitive implements ISeriesPrimitive<Time>" in renderer_source
     assert "candleSeries.attachPrimitive(tradeAnnotationPrimitive)" in renderer_source
@@ -93,6 +95,14 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     draw_source = renderer_source.split("function drawRegions", 1)[1].split("function drawSessionRegions", 1)[0]
     assert "drawTradeAnnotations(" not in draw_source
     assert "drawExecutionAnnotations(" not in draw_source
+
+
+def test_strategy_activity_loads_a_reviewable_history_window() -> None:
+    container_source = (REPO_ROOT / "frontend" / "src" / "app" / "components" / "MarketScreenerContainers.tsx").read_text(encoding="utf-8")
+    configuration_source = (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "configuration.ts").read_text(encoding="utf-8")
+
+    assert "Math.max(2_000, Math.min(settings.limit, 5_000))" in container_source
+    assert 'strategy_activity: { eventType: "", limit: 2_000' in configuration_source
 
 
 def test_structural_history_can_span_all_loaded_chart_bars() -> None:

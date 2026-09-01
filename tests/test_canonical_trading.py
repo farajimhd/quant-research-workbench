@@ -273,7 +273,7 @@ class CanonicalProjectionTests(unittest.TestCase):
             Execution("close-2", "DU1", instrument(), "SELL", Decimal("15"), Decimal("104"), NOW + timedelta(minutes=2), broker_order_id="exit"),
         ]
         orders = [
-            OrderState(account_id="DU1", instrument=instrument(), lifecycle_state=OrderLifecycleState.FILLED, broker_status_raw="Filled", broker_order_id="entry", side="BUY", total_quantity=Decimal("20"), filled_quantity=Decimal("20"), source_event_time=NOW),
+            OrderState(account_id="DU1", instrument=instrument(), lifecycle_state=OrderLifecycleState.FILLED, broker_status_raw="Filled", broker_order_id="entry", side="BUY", total_quantity=Decimal("20"), filled_quantity=Decimal("20"), source_event_time=NOW, raw={"submitted_at": (NOW - timedelta(milliseconds=20)).isoformat()}),
             OrderState(account_id="DU1", instrument=instrument(), lifecycle_state=OrderLifecycleState.FILLED, broker_status_raw="Filled", broker_order_id="exit", side="SELL", total_quantity=Decimal("20"), filled_quantity=Decimal("20"), source_event_time=NOW + timedelta(minutes=1)),
             OrderState(account_id="DU1", instrument=instrument(), lifecycle_state=OrderLifecycleState.CANCELLED, broker_status_raw="Cancelled", broker_order_id="protective", side="SELL", total_quantity=Decimal("20"), source_event_time=NOW + timedelta(seconds=2)),
         ]
@@ -291,6 +291,11 @@ class CanonicalProjectionTests(unittest.TestCase):
             lifecycles[0]["execution_ids"],
             ["open-1", "open-2", "close-1", "close-2"],
         )
+        self.assertEqual(
+            lifecycles[0]["requested_at"],
+            (NOW - timedelta(milliseconds=20)).isoformat(),
+        )
+        self.assertTrue(lifecycles[0]["requested_at_known"])
 
     def test_open_execution_lifecycle_is_not_duplicated_by_position_snapshot(self) -> None:
         executions = [

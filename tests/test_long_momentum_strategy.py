@@ -1695,6 +1695,173 @@ class LongMomentumStrategyTests(unittest.TestCase):
 
         self.assertEqual(targets, [103.0])
 
+    def test_entry_requires_configured_room_to_selected_structural_target(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["protection"]["profit_ladder"].update({
+            "maximum_targets": 1,
+            "selection_mode": "ordinal_qualified_level",
+            "target_level_ordinal": 3,
+            "minimum_level_strength": 0.0,
+            "minimum_level_confidence": 0.0,
+            "minimum_hold_probability": 0.85,
+            "maximum_break_count": 100,
+            "minimum_entry_target_gap_bps": 250.0,
+        })
+        levels = tuple(
+            {
+                "side": -1,
+                "price": price,
+                "hold_probability": 0.90,
+                "break_count": 0,
+            }
+            for price in (101.0, 102.0, 102.4)
+        )
+        result = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=parameters),
+            confirmed_observation(
+                price=100.0,
+                previous_high=99.0,
+                swing_high=99.0,
+                vwap=98.0,
+                structural_resistance_levels=levels,
+            ),
+        )
+
+        signal = result.evaluation.signals[0]
+        self.assertEqual(signal.action, "wait")
+        self.assertEqual(signal.reason, "insufficient_structural_target_room")
+        self.assertAlmostEqual(signal.metadata["structural_target_gap_bps"], 240.0)
+        self.assertEqual(signal.metadata["minimum_entry_target_gap_bps"], 250.0)
+
+        adequate = tuple(
+            {
+                "side": -1,
+                "price": price,
+                "hold_probability": 0.90,
+                "break_count": 0,
+            }
+            for price in (101.0, 102.0, 103.0)
+        )
+        result = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=parameters),
+            confirmed_observation(
+                price=100.0,
+                previous_high=99.0,
+                swing_high=99.0,
+                vwap=98.0,
+                structural_resistance_levels=adequate,
+            ),
+        )
+        self.assertEqual(result.evaluation.signals[0].action, "enter_long")
+        self.assertEqual(result.evaluation.intents[0].profit_target_price, 103.0)
+
+        ordinal_shift = LongMomentumStrategyEngine().evaluate(
+            assignment(
+                parameters={
+                    **parameters,
+                    "structural_entry": {
+                        **parameters["structural_entry"],
+                        "enabled": True,
+                        "minimum_salience": 0.0,
+                        "minimum_confidence": 0.0,
+                        "minimum_reaction_probability": 0.0,
+                        "minimum_hold_probability": 0.80,
+                        "maximum_break_count": 100,
+                        "maximum_break_probability": 1.0,
+                        "minimum_independent_pivot_count": 0,
+                        "minimum_level_age_ms": 0,
+                        "acceptance_expires": False,
+                        "maximum_breakout_extension_bps": 500.0,
+                    },
+                },
+                state={
+                    "last_price": 100.0,
+                    "accepted_entry_resistance": {
+                        "boundary": 99.0,
+                        "level": {
+                            "price": 99.0,
+                            "lower": 98.99,
+                            "upper": 99.0,
+                            "hold_probability": 0.90,
+                            "break_count": 0,
+                        },
+                        "accepted_at": NOW.isoformat(),
+                    },
+                },
+            ),
+            confirmed_observation(
+                price=100.10,
+                previous_high=99.0,
+                swing_high=99.0,
+                vwap=98.0,
+                structural_resistance_levels=tuple(
+                    {
+                        "side": -1,
+                        "price": price,
+                        "hold_probability": 0.90,
+                        "break_count": 0,
+                    }
+                    for price in (100.05, 100.20, 100.30, 103.0)
+                ),
+            ),
+        )
+        signal = ordinal_shift.evaluation.signals[0]
+        self.assertEqual(signal.action, "wait")
+        self.assertEqual(signal.reason, "insufficient_structural_target_room")
+        self.assertEqual(signal.metadata["entry_target_room_reference"], 100.0)
+        self.assertEqual(
+            signal.metadata["entry_target_room_selection"]["selected_target_prices"],
+            [100.3],
+        )
+        self.assertEqual(
+            ordinal_shift.state["entry_target_room_retest"]["boundary"],
+            100.05,
+        )
+
+        same_price = LongMomentumStrategyEngine().evaluate(
+            assignment(
+                parameters={
+                    **parameters,
+                    "structural_entry": {
+                        **parameters["structural_entry"],
+                        "enabled": True,
+                        "minimum_salience": 0.0,
+                        "minimum_confidence": 0.0,
+                        "minimum_reaction_probability": 0.0,
+                        "minimum_hold_probability": 0.80,
+                        "maximum_break_count": 100,
+                        "maximum_break_probability": 1.0,
+                        "minimum_independent_pivot_count": 0,
+                        "minimum_level_age_ms": 0,
+                        "acceptance_expires": False,
+                        "maximum_breakout_extension_bps": 500.0,
+                    },
+                },
+                state=ordinal_shift.state,
+            ),
+            confirmed_observation(
+                observed_at=NOW + timedelta(milliseconds=1),
+                price=100.10,
+                previous_high=99.0,
+                swing_high=99.0,
+                vwap=98.0,
+                structural_resistance_levels=tuple(
+                    {
+                        "side": -1,
+                        "price": price,
+                        "hold_probability": 0.90,
+                        "break_count": 0,
+                    }
+                    for price in (100.05, 100.20, 100.30, 103.0)
+                ),
+            ),
+        )
+        self.assertEqual(same_price.evaluation.signals[0].action, "wait")
+        self.assertEqual(
+            same_price.evaluation.signals[0].reason,
+            "structural_target_room_retest_required",
+        )
+
     def test_target_advances_only_on_completed_one_second_bar_with_open_macd(self) -> None:
         parameters = default_long_momentum_parameters()
         parameters["protection"]["profit_ladder"].update({

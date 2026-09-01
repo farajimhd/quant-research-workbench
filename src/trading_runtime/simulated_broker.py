@@ -161,6 +161,7 @@ class _OrderState:
             statusDescription=self.status_description,
             raw={
                 "oca_group": self.oca_group,
+                "submitted_at": self.submitted_at.isoformat(),
                 "canonical_strategy_id": self.request.raw.get(
                     "canonical_strategy_id", ""
                 ),
@@ -378,7 +379,7 @@ class SimulatedBrokerAdapter:
         previews: list[dict[str, Any]] = []
         for order in orders:
             self._require_matching_account(account_id, order)
-            mark = self._reference_price(order.conid)
+            mark = self._reference_price(order.conid, order.ticker)
             quantity = self._resolved_quantity(order, mark)
             notional = quantity * mark
             commission = self._commission(quantity)
@@ -432,7 +433,7 @@ class SimulatedBrokerAdapter:
                     resolved,
                     order_id,
                     status,
-                    self._event_time(resolved.conid),
+                    self._event_time(resolved.conid, resolved.ticker),
                     oca_group=standalone_oca_group,
                 )
                 self._orders[order_id] = state
@@ -800,11 +801,12 @@ class SimulatedBrokerAdapter:
         if order_type in {"LMT", "STOP_LIMIT", "TRAILLMT"}:
             limit = float(request.price or 0)
             if isinstance(event, TradeEvent):
-                # A resting limit participates when the tape trades at or
-                # through its price even if the prevailing opposite quote has
-                # not crossed the limit. Using the cached ask/bid for a trade
-                # event silently discards valid passive fills, which
-                # materially under-fills profit targets in Replay/Backtest.
+                # Preserve the distinction between an aggressive limit that
+                # still crosses the latest causal touch and a genuinely
+                # resting limit. Treating every tape-driven continuation fill
+                # as passive applies the queue-participation haircut to an
+                # already marketable entry/exit and creates artificial
+                # multi-second fills in Replay/Backtest.
                 trade_price = float(event.price or 0)
                 crossed = (
                     trade_price <= limit
@@ -813,12 +815,36 @@ class SimulatedBrokerAdapter:
                 )
                 if not crossed:
                     return None
-                marketable = False
-                # A tape print proves executable quantity, not price priority
-                # or improvement for our resting order. Fill conservatively
-                # at the submitted limit and apply passive participation to
-                # the print size below.
-                market_price = limit
+                quote = self._quotes.get(
+                    request.conid
+                ) or self._quotes_by_ticker.get(request.ticker.upper())
+                opposite_touch = (
+                    float(quote.ask_price)
+                    if quote is not None and side == "BUY"
+                    else float(quote.bid_price)
+                    if quote is not None
+                    else 0.0
+                )
+                marketable = bool(
+                    opposite_touch > 0
+                    and (
+                        opposite_touch <= limit
+                        if side == "BUY"
+                        else opposite_touch >= limit
+                    )
+                )
+                if marketable:
+                    market_price = (
+                        min(opposite_touch, limit)
+                        if side == "BUY"
+                        else max(opposite_touch, limit)
+                    )
+                else:
+                    # A tape print proves executable quantity, not price
+                    # priority or improvement for a resting order. Fill it
+                    # conservatively at the submitted limit and apply passive
+                    # participation to the print size below.
+                    market_price = limit
             else:
                 if (side == "BUY" and market_price > limit) or (
                     side == "SELL" and market_price < limit
@@ -988,7 +1014,7 @@ class SimulatedBrokerAdapter:
         if order.quantity is None:
             raise ValueError("Simulation must resolve cashQty before submission")
         if order.side.upper() == "BUY":
-            price = order.price or self._reference_price(order.conid)
+            price = order.price or self._reference_price(order.conid, order.ticker)
             # A modification retains the order's total-quantity contract. Cash
             # already spent on partial fills is reflected in account cash, so
             # only the unfilled remainder must still be affordable. Validating
@@ -1129,7 +1155,7 @@ class SimulatedBrokerAdapter:
     def _resolve_cash_quantity(self, order: OrderRequest) -> OrderRequest:
         if order.cashQty is None:
             return order
-        price = self._reference_price(order.conid)
+        price = self._reference_price(order.conid, order.ticker)
         if price <= 0:
             raise ValueError("cashQty orders require current market data")
         return replace(order, quantity=order.cashQty / price, cashQty=None)
@@ -1140,12 +1166,22 @@ class SimulatedBrokerAdapter:
         return float(order.cashQty or 0.0) / price if price > 0 else 0.0
 
     def _executable_price(self, conid: int, side: str, event: MarketEvent) -> float:
-        quote = event if isinstance(event, QuoteEvent) else self._quotes.get(conid)
+        quote = (
+            event
+            if isinstance(event, QuoteEvent)
+            else self._quotes.get(conid)
+            or self._quotes_by_ticker.get(event.ticker.upper())
+        )
         if quote is not None:
             price = quote.ask_price if side == "BUY" else quote.bid_price
             if price > 0:
                 return price
-        trade = event if isinstance(event, TradeEvent) else self._trades.get(conid)
+        trade = (
+            event
+            if isinstance(event, TradeEvent)
+            else self._trades.get(conid)
+            or self._trades_by_ticker.get(event.ticker.upper())
+        )
         return trade.price if trade is not None else 0.0
 
     def _event_liquidity(self, event: MarketEvent, side: str) -> float:
@@ -1215,8 +1251,18 @@ class SimulatedBrokerAdapter:
         state.commission_paid = cumulative
         return incremental
 
-    def _reference_price(self, conid: int) -> float:
-        return self._marks.get(conid, 0.0)
+    def _reference_price(self, conid: int, ticker: str = "") -> float:
+        direct = self._marks.get(conid, 0.0)
+        if direct > 0 or not ticker:
+            return direct
+        event = self._trades_by_ticker.get(ticker.upper()) or self._quotes_by_ticker.get(
+            ticker.upper()
+        )
+        if isinstance(event, TradeEvent):
+            return float(event.price)
+        if isinstance(event, QuoteEvent):
+            return float(event.midpoint)
+        return 0.0
 
     def _event_conid(self, event: MarketEvent) -> int:
         for source in (event.raw,):
@@ -1226,12 +1272,24 @@ class SimulatedBrokerAdapter:
         matching = {state.request.conid for state in self._orders.values() if state.request.ticker == event.ticker}
         return next(iter(matching)) if len(matching) == 1 else 0
 
-    def _event_time(self, conid: int) -> datetime:
+    def _event_time(self, conid: int, ticker: str = "") -> datetime:
         event = self._trades.get(conid) or self._quotes.get(conid)
+        if event is None and ticker:
+            event = self._trades_by_ticker.get(
+                ticker.upper()
+            ) or self._quotes_by_ticker.get(ticker.upper())
         return event.ts if event is not None else datetime.now(timezone.utc)
 
     def _latest_event_time(self) -> datetime:
-        times = [event.ts for event in [*self._trades.values(), *self._quotes.values()]]
+        times = [
+            event.ts
+            for event in [
+                *self._trades.values(),
+                *self._quotes.values(),
+                *self._trades_by_ticker.values(),
+                *self._quotes_by_ticker.values(),
+            ]
+        ]
         return max(times) if times else datetime.now(timezone.utc)
 
     def _sorted_orders(self) -> list[_OrderState]:

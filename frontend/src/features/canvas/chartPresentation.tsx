@@ -346,9 +346,7 @@ function positionLifecycleAnnotations(trading: CanonicalTradingPreview | undefin
       };
     });
     const entryQuantity = entryAction?.quantity ?? quantity;
-    const exitQuantity = actions
-      .filter((action) => action.side !== openingSide)
-      .reduce((total, action) => total + action.quantity, 0) || exitAction?.quantity || quantity;
+    const exitQuantity = exitAction?.quantity || quantity;
     const exitKind = exitAction
       ? normalizedExecutionRole(exitAction.executionRole, exitAction.price, entryPrice, side)
       : "position_exit";
@@ -399,7 +397,7 @@ function positionExecutionActions(executions: PreviewRow[], positionSide: string
     const orderId = String(row.broker_order_id || clientOrderId || row.execution_id || `fill:${index}`);
     const key = `${orderId}:${side}`;
     const current = byOrderAndSide.get(key) ?? { executionRole, orderId, time, notional: 0, price: 0, quantity: 0, side };
-    current.time = Math.max(current.time, time);
+    current.time = Math.min(current.time, time);
     current.notional += quantity * price;
     current.quantity += quantity;
     current.price = current.notional / current.quantity;
@@ -413,7 +411,7 @@ function positionExecutionActions(executions: PreviewRow[], positionSide: string
     const role = action.executionRole || (action.side === openingSide ? "entry" : "");
     const key = `${role}:${action.side}:${second}:${priceTick}`;
     const current = byLevel.get(key) ?? { ...action, executionRole: role as PositionExecutionRole, notional: 0, quantity: 0 };
-    current.time = Math.max(current.time, action.time);
+    current.time = Math.min(current.time, action.time);
     current.notional += action.notional;
     current.quantity += action.quantity;
     current.price = current.notional / current.quantity;

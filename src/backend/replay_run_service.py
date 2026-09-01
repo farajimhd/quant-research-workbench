@@ -122,6 +122,71 @@ _PREPARED_FRAME_CACHE_LOCKS: WeakValueDictionary[str, asyncio.Lock] = (
 )
 
 
+@dataclass(slots=True)
+class _ProvisionalMacdState:
+    """Causal completed-bar MACD state with a non-committing intrabar preview."""
+
+    ema_fast: float | None = None
+    ema_slow: float | None = None
+    signal: float | None = None
+    committed_at: datetime | None = None
+    sample_count: int = 0
+
+    @staticmethod
+    def _ema(previous: float | None, value: float, period: int) -> float:
+        if previous is None:
+            return value
+        alpha = 2.0 / (period + 1.0)
+        return alpha * value + (1.0 - alpha) * previous
+
+    def commit(self, close: float, observed_at: datetime) -> None:
+        if close <= 0 or (
+            self.committed_at is not None and observed_at <= self.committed_at
+        ):
+            return
+        self.ema_fast = self._ema(self.ema_fast, close, 12)
+        self.ema_slow = self._ema(self.ema_slow, close, 26)
+        line = self.ema_fast - self.ema_slow
+        self.signal = self._ema(self.signal, line, 9)
+        self.committed_at = observed_at
+        self.sample_count += 1
+
+    def preview(self, price: float) -> tuple[float, float, float] | None:
+        if (
+            price <= 0
+            or self.ema_fast is None
+            or self.ema_slow is None
+            or self.sample_count < 26
+        ):
+            return None
+        fast = self._ema(self.ema_fast, price, 12)
+        slow = self._ema(self.ema_slow, price, 26)
+        line = fast - slow
+        signal = self._ema(self.signal, line, 9)
+        return line, signal, line - signal
+
+    def checkpoint(self) -> dict[str, Any]:
+        return {
+            "ema_fast": self.ema_fast,
+            "ema_slow": self.ema_slow,
+            "signal": self.signal,
+            "committed_at": (
+                self.committed_at.isoformat() if self.committed_at else None
+            ),
+            "sample_count": self.sample_count,
+        }
+
+    @classmethod
+    def restore(cls, payload: Mapping[str, Any]) -> "_ProvisionalMacdState":
+        return cls(
+            ema_fast=_optional_number(payload.get("ema_fast")),
+            ema_slow=_optional_number(payload.get("ema_slow")),
+            signal=_optional_number(payload.get("signal")),
+            committed_at=_optional_checkpoint_time(payload.get("committed_at")),
+            sample_count=max(0, int(payload.get("sample_count") or 0)),
+        )
+
+
 def _replay_navigation_action(
     record: JournalRecord, target_event_type: str = ""
 ) -> dict[str, Any] | None:
@@ -799,6 +864,7 @@ class ReplayRunController:
         self._pending_passive_market_events: list[MarketEvent] = []
         self._previous_vwap: dict[tuple[str, str], tuple[datetime, float]] = {}
         self._strategy_source_values: dict[str, dict[str, Any]] = {}
+        self._provisional_macd_states: dict[str, _ProvisionalMacdState] = {}
         # Derived frames update indicator state, but entry, protection, and
         # exit decisions run on the source-native market-event clock.  Keep
         # the latest causal indicator snapshot so each quote/trade can be
@@ -1613,6 +1679,12 @@ class ReplayRunController:
                     )
                 ],
                 "strategy_source_values": deepcopy(self._strategy_source_values),
+                "provisional_macd_states": {
+                    ticker: state.checkpoint()
+                    for ticker, state in sorted(
+                        self._provisional_macd_states.items()
+                    )
+                },
                 "quotes": {
                     ticker: _market_event_checkpoint(event)
                     for ticker, event in self._quotes.items()
@@ -2173,10 +2245,13 @@ class ReplayRunController:
             # page. Subsequent pages are prefetched at 100k while Replay
             # consumes this smaller first causal window.
             initial_batch_size=10_000,
-            # Strategy indicators already include causal trade/volume data;
-            # simulated execution consumes quote liquidity. Raw trade prints
-            # are therefore redundant in the strategy transport.
-            event_kinds=("quote",),
+            # Quotes are required by simulated execution and raw trades are
+            # required by event-driven strategy rules.  Completed derived
+            # frames remain the indicator-state authority, but a trade between
+            # closes must be able to update price and provisional indicators
+            # immediately instead of forcing the strategy to wait for the next
+            # completed bar.
+            event_kinds=("quote", "trade"),
             start_cursor=(
                 {
                     "sip_timestamp_us": int(
@@ -2202,12 +2277,13 @@ class ReplayRunController:
                 "market_events",
                 {
                     "authority": "qmd_history_events",
-                    # Replay consumes source-native quotes only.  Strategy
-                    # trade/volume indicators come from the separately pinned
-                    # QMD derived-frame authority below, so transporting raw
-                    # trades here would duplicate the dominant event volume.
-                    "event_kinds": ["quote"],
+                    # Completed trade/volume aggregates remain owned by the
+                    # separately pinned QMD derived-frame authority. Raw trade
+                    # events provide the causal intrabar clock used by price
+                    # and provisional indicator decisions.
+                    "event_kinds": ["quote", "trade"],
                     "trade_volume_authority": "qmd_derived_frames",
+                    "intrabar_trade_authority": "qmd_history_events",
                     **source.source_revision,
                 },
             )
@@ -2484,6 +2560,12 @@ class ReplayRunController:
         self._strategy_source_values = deepcopy(
             dict(controller.get("strategy_source_values") or {})
         )
+        self._provisional_macd_states = {
+            str(ticker).upper(): _ProvisionalMacdState.restore(dict(payload))
+            for ticker, payload in dict(
+                controller.get("provisional_macd_states") or {}
+            ).items()
+        }
         self._quotes = {
             str(ticker): _quote_from_checkpoint(dict(row))
             for ticker, row in dict(controller.get("quotes") or {}).items()
@@ -2662,6 +2744,13 @@ class ReplayRunController:
         if self._runtime is None or self._strategy is None:
             return False
         self._flush_passive_market_events()
+        if frame.timeframe == "1s":
+            close = float(
+                frame.indicator.get("close") or frame.bar.get("close") or 0
+            )
+            self._provisional_macd_states.setdefault(
+                frame.ticker, _ProvisionalMacdState()
+            ).commit(close, frame.as_of)
         self._refresh_source_native_signal_activation(frame.as_of)
         source_cache = self._strategy_source_values.setdefault(frame.ticker, {})
         self._project_historical_market_quality(frame, source_cache)
@@ -3047,13 +3136,21 @@ class ReplayRunController:
     async def _process_strategy_market_event(self, event: MarketEvent) -> bool:
         """Evaluate active strategy rules on the causal quote/trade clock.
 
-        Indicator values retain their original frame timestamps.  Only the
-        event-native price/quote facts advance here.  In particular, this path
-        never publishes ``bar_close``; completed one-second bars remain the
-        sole authority allowed to ratchet a structural profit target.
+        Completed indicators retain their original frame timestamps, while the
+        one-second MACD is previewed from the latest trade exactly as a forming
+        one-second candle would be. This path never publishes ``bar_close``;
+        completed bars remain the sole authority allowed to ratchet a
+        structural profit target.
         """
 
         if self._runtime is None or self._strategy is None:
+            return False
+        # Quotes update the broker/NBBO state in ``_process_market_event``.
+        # They must not independently re-evaluate a strategy against the last
+        # trade price: doing so both invents a stale-price decision and floods
+        # the historical journal. The next trade observes the latest quote and
+        # evaluates price, spread, and provisional indicators together.
+        if not isinstance(event, TradeEvent):
             return False
         # Commit the triggering event to broker/market state before an order is
         # created.  Otherwise the passive-event coalescer could replay that
@@ -3079,6 +3176,23 @@ class ReplayRunController:
             if key.startswith("market.last_price@"):
                 source_values[key] = dict(market_price)
         changed_source_ids = ["market.last_price"] if isinstance(event, TradeEvent) else []
+        provisional_macd = self._provisional_macd_states.get(event.ticker)
+        preview = provisional_macd.preview(price) if provisional_macd else None
+        macd_line = base.macd_line
+        macd_signal = base.macd_signal
+        macd_histogram = base.macd_histogram
+        if preview is not None:
+            macd_line, macd_signal, macd_histogram = preview
+            for source_id, value in (
+                ("indicator.macd.line@1s", macd_line),
+                ("indicator.macd.signal@1s", macd_signal),
+                ("indicator.macd.histogram@1s", macd_histogram),
+            ):
+                source_values[source_id] = {
+                    "observed_at": event.ts.isoformat(),
+                    "value": value,
+                }
+                changed_source_ids.append(source_id)
         if quote is not None and quote.midpoint > 0 and quote.ask_price >= quote.bid_price > 0:
             spread_bps = (
                 (quote.ask_price - quote.bid_price) / quote.midpoint * 10_000.0
@@ -3094,6 +3208,9 @@ class ReplayRunController:
             price=price,
             bid=float(quote.bid_price if quote else base.bid),
             ask=float(quote.ask_price if quote else base.ask),
+            macd_line=macd_line,
+            macd_signal=macd_signal,
+            macd_histogram=macd_histogram,
             source_timeframe="",
             source_signal_ids=(
                 f"qmd-market-event:{event.ticker}:{event.kind}:{event.sequence}",
