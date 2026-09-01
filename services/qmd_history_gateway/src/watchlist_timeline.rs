@@ -109,6 +109,7 @@ pub struct WatchlistCandidate {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg(test)]
 pub struct WatchlistCandidateFrame {
     pub effective_at: String,
     pub candidates: Vec<WatchlistCandidate>,
@@ -488,6 +489,7 @@ pub fn plan_evaluation_clock(
     ))
 }
 
+#[cfg(test)]
 pub fn materialize_candidate_chunk(
     plan: &HistoricalWatchlistPlan,
     frames: &[WatchlistCandidateFrame],
@@ -552,6 +554,7 @@ impl<'a> WatchlistTimelineReducer<'a> {
         Ok(reducer)
     }
 
+    #[cfg(test)]
     pub fn apply(&mut self, frame: &WatchlistCandidateFrame) -> Result<(), String> {
         let incoming = frame
             .candidates

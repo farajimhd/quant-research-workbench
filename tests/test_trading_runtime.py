@@ -1025,6 +1025,11 @@ class JournalTests(unittest.TestCase):
                     "ticker": "AAPL",
                     "action": "wait",
                     "metadata": {
+                        "entry_rules": {
+                            "trigger": {"passed": True},
+                            "confirmation": {"passed": False},
+                            "veto": {"passed": False},
+                        },
                         "execution_quality": {
                             "checks": {"spread": True, "trade_rate": True},
                             "failed": [],
@@ -1058,7 +1063,10 @@ class JournalTests(unittest.TestCase):
                 ["order", "decision", "decision", "watchlist", "signal"],
             )
             self.assertEqual(activity["rows"][2]["action"], "wait")
-            self.assertEqual(activity["rows"][2]["gates"], "execution:pass")
+            self.assertEqual(
+                activity["rows"][2]["gates"],
+                "trigger:pass · confirmation:fail · veto:clear · execution:pass",
+            )
             self.assertEqual(
                 activity["rows"][0]["reason"],
                 "Order is submitted.",

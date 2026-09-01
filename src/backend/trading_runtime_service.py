@@ -619,7 +619,7 @@ def strategy_activity_payload(
 def _strategy_gate_summary(gate_snapshot: dict[str, Any]) -> str:
     """Render compact, stable gate evidence without replacing the raw contract."""
 
-    def passed(gate: dict[str, Any]) -> bool:
+    def gate_passed(gate: dict[str, Any]) -> bool:
         if "passed" in gate:
             return bool(gate.get("passed"))
         checks = dict(gate.get("checks") or {})
@@ -632,8 +632,10 @@ def _strategy_gate_summary(gate_snapshot: dict[str, Any]) -> str:
     for name in ("trigger", "confirmation", "veto"):
         gate = dict(entry_rules.get(name) or {})
         if gate:
-            passed = bool(gate.get("passed"))
-            labels.append(f"{name}:{'pass' if passed else 'clear' if name == 'veto' else 'fail'}")
+            entry_gate_passed = bool(gate.get("passed"))
+            labels.append(
+                f"{name}:{'pass' if entry_gate_passed else 'clear' if name == 'veto' else 'fail'}"
+            )
     for key, label in (
         ("liquidity_admission", "liquidity"),
         ("execution_quality", "execution"),
@@ -641,7 +643,7 @@ def _strategy_gate_summary(gate_snapshot: dict[str, Any]) -> str:
     ):
         gate = dict(gate_snapshot.get(key) or {})
         if gate:
-            labels.append(f"{label}:{'pass' if passed(gate) else 'fail'}")
+            labels.append(f"{label}:{'pass' if gate_passed(gate) else 'fail'}")
     macd = dict(gate_snapshot.get("macd") or {})
     if macd:
         labels.append(f"macd:{'open' if bool(macd.get('open')) else 'closed'}")
