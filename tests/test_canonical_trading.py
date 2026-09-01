@@ -297,6 +297,23 @@ class CanonicalProjectionTests(unittest.TestCase):
         )
         self.assertTrue(lifecycles[0]["requested_at_known"])
 
+    def test_position_lifecycle_does_not_attach_reused_order_id_after_close(self) -> None:
+        executions = [
+            Execution("open", "DU1", instrument(), "BUY", Decimal("10"), Decimal("100"), NOW, broker_order_id="1"),
+            Execution("close", "DU1", instrument(), "SELL", Decimal("10"), Decimal("101"), NOW + timedelta(seconds=10), broker_order_id="2"),
+        ]
+        orders = [
+            OrderState(account_id="DU1", instrument=instrument(), lifecycle_state=OrderLifecycleState.FILLED, broker_status_raw="Filled", broker_order_id="1", side="BUY", total_quantity=Decimal("10"), filled_quantity=Decimal("10"), source_event_time=NOW),
+            OrderState(account_id="DU1", instrument=instrument(), lifecycle_state=OrderLifecycleState.FILLED, broker_status_raw="Filled", broker_order_id="2", side="SELL", total_quantity=Decimal("10"), filled_quantity=Decimal("10"), source_event_time=NOW + timedelta(seconds=10)),
+            OrderState(account_id="DU1", instrument=instrument(), lifecycle_state=OrderLifecycleState.CANCELLED, broker_status_raw="Cancelled", broker_order_id="2", side="SELL", total_quantity=Decimal("10"), source_event_time=NOW + timedelta(days=1), raw={"submitted_at": (NOW + timedelta(days=1)).isoformat()}),
+        ]
+
+        lifecycles = derive_position_lifecycles(executions, orders)
+
+        self.assertEqual(lifecycles[0]["order_ids"], ["1", "2"])
+        self.assertEqual(lifecycles[0]["requested_at"], None)
+        self.assertFalse(lifecycles[0]["requested_at_known"])
+
     def test_open_execution_lifecycle_is_not_duplicated_by_position_snapshot(self) -> None:
         executions = [
             Execution(

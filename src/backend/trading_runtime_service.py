@@ -553,6 +553,8 @@ def strategy_activity_payload(
                 "level_price": metadata.get("level_price"),
                 "profit_targets": metadata.get("profit_targets"),
                 "forming_candle": metadata.get("forming_candle"),
+                "completed_candle": metadata.get("completed_candle"),
+                "entry_frame": metadata.get("entry_frame"),
             }.items()
             if value is not None
         }

@@ -264,6 +264,14 @@ def _attach_lifecycle_orders(
     for candidates in by_key.values():
         candidates.sort(key=lambda row: row["opened_at"])
 
+    lower_bounds: dict[int, datetime | None] = {}
+    for candidates in by_key.values():
+        previous_closed_at = None
+        for candidate in candidates:
+            lower_bounds[id(candidate)] = previous_closed_at
+            if candidate.get("closed_at") is not None:
+                previous_closed_at = candidate["closed_at"]
+
     for order in sorted(
         order_rows,
         key=lambda row: (
@@ -282,19 +290,24 @@ def _attach_lifecycle_orders(
         exact = [row for row in candidates if order_id in row["order_ids"]]
         if exact:
             continue
-        selected = candidates[0]
+        selected = None
         for candidate in candidates:
-            if candidate["opened_at"] <= order.source_event_time:
+            closed_at = candidate.get("closed_at")
+            if closed_at is None or order.source_event_time <= closed_at:
                 selected = candidate
-            else:
                 break
-        selected["order_ids"].append(order_id)
+        # Numeric broker order identifiers can be reused by later simulator or
+        # broker sessions.  An order observed after the last completed
+        # flat-to-flat lifecycle is not evidence for that earlier position.
+        if selected is not None:
+            selected["order_ids"].append(order_id)
     for row in rows:
         row["order_ids"] = tuple(dict.fromkeys(row["order_ids"]))
         linked_orders = [
             order
             for order in order_rows
             if (order.broker_order_id or order.client_order_id) in row["order_ids"]
+            and _order_within_lifecycle(order, row, lower_bounds.get(id(row)))
         ]
         requested_times = [
             requested_at
@@ -303,6 +316,20 @@ def _attach_lifecycle_orders(
         ]
         row["requested_at"] = min(requested_times) if requested_times else None
         row["requested_at_known"] = bool(requested_times)
+
+
+def _order_within_lifecycle(
+    order: OrderState,
+    row: dict[str, Any],
+    previous_closed_at: datetime | None,
+) -> bool:
+    """Reject reused order identifiers whose event time is outside a lifecycle."""
+
+    closed_at = row.get("closed_at")
+    return (
+        (previous_closed_at is None or order.source_event_time > previous_closed_at)
+        and (closed_at is None or order.source_event_time <= closed_at)
+    )
 
 
 def _order_requested_at(order: OrderState) -> datetime | None:

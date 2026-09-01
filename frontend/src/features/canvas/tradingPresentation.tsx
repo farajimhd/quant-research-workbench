@@ -391,10 +391,18 @@ function PositionsPreview({ data, onSymbolSelect, settings }: { data: CanonicalT
     const account = String(lifecycle.account_id || "");
     const lifecycleOrderIds = new Set(((lifecycle.order_ids as unknown[]) ?? []).map(String));
     const lifecycleExecutionIds = new Set(((lifecycle.execution_ids as unknown[]) ?? []).map(String));
-    const relatedOrders = data.orders.filter((order) => String(order.account_id || "") === account && lifecycleOrderIds.has(String(order.broker_order_id || order.client_order_id || "")));
-    const relatedExecutions = data.executions.filter((execution) => String(execution.account_id || "") === account && lifecycleExecutionIds.has(String(execution.execution_id || "")));
     const requestedAt = Date.parse(String(lifecycle.requested_at || lifecycle.opened_at || ""));
-    const closedAt = Date.parse(String(lifecycle.closed_at || data.as_of || ""));
+    const lifecycleClosedAt = Date.parse(String(lifecycle.closed_at || data.as_of || ""));
+    const relatedOrders = data.orders.filter((order) => {
+      const raw = (order.raw as PreviewRow | undefined) ?? {};
+      const orderAt = Date.parse(String(raw.submitted_at ?? order.source_event_time ?? ""));
+      return String(order.account_id || "") === account
+        && lifecycleOrderIds.has(String(order.broker_order_id || order.client_order_id || ""))
+        && (!Number.isFinite(requestedAt) || !Number.isFinite(orderAt) || orderAt >= requestedAt)
+        && (!Number.isFinite(lifecycleClosedAt) || !Number.isFinite(orderAt) || orderAt <= lifecycleClosedAt);
+    });
+    const relatedExecutions = data.executions.filter((execution) => String(execution.account_id || "") === account && lifecycleExecutionIds.has(String(execution.execution_id || "")));
+    const closedAt = lifecycleClosedAt;
     const relatedDecisions = (data.strategy_activity ?? []).filter((activity) => {
       const eventAt = Date.parse(String(activity.event_time || ""));
       const activityAccount = String(activity.account_id || "");
@@ -439,25 +447,78 @@ function PositionLifecycleModal({ onClose, row }: { onClose: () => void; row: Pr
   const executions = (row._executions as PreviewRow[] | undefined) ?? [];
   const position = (row._position as PreviewRow | undefined) ?? {};
   const lifecycle = (row._lifecycle as PreviewRow | undefined) ?? {};
-  const decisions = ((row._decisions as PreviewRow[] | undefined) ?? []).map(positionDecisionRow);
-  const orderRows = orders.map((order) => {
+  const decisionItems = ((row._decisions as PreviewRow[] | undefined) ?? []).map(positionDecisionTimelineItem);
+  const orderItems = orders.map((order) => {
     const orderExecutions = executions.filter((execution) => String(execution.broker_order_id || "") === String(order.broker_order_id || ""));
-    return positionOrderRow(order, orderExecutions);
+    return positionOrderTimelineItem(order, orderExecutions);
   });
   const instrument = (lifecycle.instrument as PreviewRow | undefined) ?? (position.instrument as PreviewRow | undefined) ?? {};
   const requestedAt = Date.parse(String(lifecycle.requested_at || ""));
   const openedAt = Date.parse(String(lifecycle.opened_at || ""));
   const closedAt = Date.parse(String(lifecycle.closed_at || ""));
   const symbol = String(row.symbol || instrument.symbol || "Position");
+  const lifecycleItems: PositionTimelineItem[] = [
+    {
+      id: `requested-${String(lifecycle.lifecycle_id || symbol)}`,
+      occurredAt: String(lifecycle.requested_at || lifecycle.opened_at || ""),
+      priority: -1,
+      tone: "entry",
+      eyebrow: "Position lifecycle",
+      title: "Position requested",
+      description: `Requested ${String(lifecycle.side || row.side || "").toLowerCase()} exposure for ${formatQuantity(Number(lifecycle.quantity || row.quantity || 0))} shares.`,
+      facts: [
+        { label: "Requested", value: positionTimestamp(lifecycle.requested_at) },
+        { label: "First fill", value: positionTimestamp(lifecycle.opened_at) },
+        { label: "Request → fill", value: Number.isFinite(requestedAt) && Number.isFinite(openedAt) ? `${Math.max(0, openedAt - requestedAt).toFixed(0)} ms` : "Unavailable" },
+      ],
+      executions: [],
+    },
+    ...(lifecycle.closed_at ? [{
+      id: `flat-${String(lifecycle.lifecycle_id || symbol)}`,
+      occurredAt: String(lifecycle.closed_at),
+      priority: 2,
+      tone: "exit" as const,
+      eyebrow: "Position lifecycle",
+      title: "Position flat",
+      description: `All open quantity reached zero. Final average exit was ${formatCell(lifecycle.exit_price, "exit_price")}.`,
+      facts: [
+        { label: "Flat", value: positionTimestamp(lifecycle.closed_at) },
+        { label: "Average exit", value: formatCell(lifecycle.exit_price, "exit_price") },
+        { label: "Net P&L", value: signedMoney(Number(lifecycle.net_pnl || 0)), tone: numberTone(Number(lifecycle.net_pnl || 0)) },
+      ],
+      executions: [],
+    }] : []),
+  ];
+  const timeline = [...lifecycleItems, ...decisionItems, ...orderItems].sort((left, right) => {
+    const timeDifference = timelineTimestamp(left.occurredAt) - timelineTimestamp(right.occurredAt);
+    return timeDifference || left.priority - right.priority || left.id.localeCompare(right.id);
+  });
   return <Modal className="position-lifecycle-modal" onClose={onClose} title={`${symbol} position lifecycle`}><div className="position-lifecycle-content">
     <div className="position-lifecycle-hero"><span><small>Side · size</small><strong>{String(lifecycle.side || row.side || "—")} {formatQuantity(Number(lifecycle.quantity || row.quantity || 0))}</strong></span><span><small>Average entry → exit</small><strong>{formatCell(lifecycle.entry_price, "entry_price")} → {formatCell(lifecycle.exit_price, "exit_price")}</strong></span><span data-tone={numberTone(Number(lifecycle.net_pnl || 0))}><small>Net P&amp;L</small><strong>{signedMoney(Number(lifecycle.net_pnl || 0))}</strong></span><span><small>Lifetime</small><strong>{Number.isFinite(openedAt) && Number.isFinite(closedAt) ? compactDuration((closedAt - openedAt) / 1_000) : "Open"}</strong></span></div>
     <section className="position-lifecycle-section"><header><div><strong>Lifecycle timing</strong><span>Strategy intent and OMS evidence use the same causal clock.</span></div><span>{String(lifecycle.lifecycle_id || "")}</span></header><div className="position-lifecycle-timing"><span><small>Requested</small><strong>{positionTimestamp(lifecycle.requested_at)}</strong></span><span><small>First fill / open</small><strong>{positionTimestamp(lifecycle.opened_at)}</strong><em>{Number.isFinite(requestedAt) && Number.isFinite(openedAt) ? `${Math.max(0, openedAt - requestedAt).toFixed(0)} ms after request` : ""}</em></span><span><small>Flat</small><strong>{lifecycle.closed_at ? positionTimestamp(lifecycle.closed_at) : "Still open"}</strong></span><span><small>Orders · fills</small><strong>{orders.length} · {executions.length}</strong></span><span><small>Contract</small><strong>{String(instrument.conid || "—")}</strong></span></div></section>
-    <section className="position-lifecycle-section"><header><div><strong>Why the strategy acted</strong><span>Actual price, MACD, VWAP, structure, and stop values at each decision.</span></div><span>{decisions.length} decisions</span></header>{decisions.length ? <PreviewTable columns={["time", "action", "reason", "price", "macd", "vwap", "level", "stop_target"]} rows={decisions} /> : <p>No durable strategy decision is linked to this lifecycle.</p>}</section>
-    <section className="position-lifecycle-section"><header><div><strong>Order and fill chronology</strong><span>Submission, first partial fill, final fill, quantity, and realized average.</span></div><span>{orders.length} orders</span></header>{orderRows.length ? <PreviewTable columns={["role", "side", "status", "submitted", "first_fill", "last_fill", "progress", "average_fill", "limit", "order_id"]} rows={orderRows} /> : <p>No canonical order is linked to this lifecycle.</p>}</section>
+    <section className="position-lifecycle-section position-lifecycle-timeline-section"><header><div><strong>Causal timeline</strong><span>Earliest to latest · full strategy reasons, market values, orders, and execution parts.</span></div><span>{decisionItems.length} decisions · {orderItems.length} orders</span></header>{timeline.length ? <ol className="position-lifecycle-timeline">{timeline.map((item) => <PositionTimelineCard item={item} key={item.id} />)}</ol> : <p>No durable strategy or order evidence is linked to this lifecycle.</p>}</section>
   </div></Modal>;
 }
 
-function positionDecisionRow(decision: PreviewRow): PreviewRow {
+type PositionTimelineTone = "entry" | "exit" | "target" | "hold" | "neutral";
+type PositionTimelineFact = { label: string; value: string; tone?: string };
+type PositionTimelineItem = {
+  id: string;
+  occurredAt: string;
+  priority: number;
+  tone: PositionTimelineTone;
+  eyebrow: string;
+  title: string;
+  description: string;
+  facts: PositionTimelineFact[];
+  executions: PreviewRow[];
+};
+
+function PositionTimelineCard({ item }: { item: PositionTimelineItem }) {
+  return <li className="position-timeline-item" data-tone={item.tone}><span aria-hidden="true" className="position-timeline-marker" /><article className="position-timeline-card"><header><div><span>{item.eyebrow}</span><time dateTime={item.occurredAt}>{positionTimestamp(item.occurredAt)}</time></div><strong>{item.title}</strong></header>{item.description ? <p>{item.description}</p> : null}{item.facts.length ? <dl>{item.facts.map((fact) => <div data-tone={fact.tone} key={`${item.id}-${fact.label}`}><dt>{fact.label}</dt><dd>{fact.value}</dd></div>)}</dl> : null}{item.executions.length ? <details className="position-timeline-fills"><summary>{item.executions.length} execution part{item.executions.length === 1 ? "" : "s"}<span>Show exact fills</span></summary><div>{item.executions.map((execution, index) => <article key={String(execution.execution_id || `${item.id}-${index}`)}><time>{positionTimestamp(execution.source_event_time)}</time><strong>{formatQuantity(Number(execution.quantity || 0))} @ {formatCell(execution.price, "price")}</strong><span>{String(execution.exchange || "Unknown venue")}</span><small>{execution.commission !== null && execution.commission !== undefined ? `Commission ${money(Number(execution.commission || 0))}` : "Commission pending"}</small></article>)}</div></details> : null}</article></li>;
+}
+
+function positionDecisionTimelineItem(decision: PreviewRow): PositionTimelineItem {
   const gateSnapshot = (decision.gate_snapshot as PreviewRow | undefined) ?? {};
   const values = (gateSnapshot.decision_values as PreviewRow | undefined) ?? {};
   const rules = (gateSnapshot.entry_rules as PreviewRow | undefined) ?? {};
@@ -477,37 +538,85 @@ function positionDecisionRow(decision: PreviewRow): PreviewRow {
   const macd = (gateSnapshot.macd as PreviewRow | undefined) ?? {};
   const macdLine = values.macd_line ?? macd.macd_line ?? macdCross?.left_value;
   const macdSignal = values.macd_signal ?? macd.macd_signal ?? macdCross?.right_value;
+  const action = String(decision.action || "decision");
+  const completedCandle = (values.completed_candle as PreviewRow | undefined) ?? {};
+  const formingCandle = (values.forming_candle as PreviewRow | undefined) ?? {};
+  const candle = Object.keys(completedCandle).length ? completedCandle : formingCandle;
+  const facts: PositionTimelineFact[] = [
+    price !== "" ? { label: "Reference price", value: formatCell(price, "price") } : null,
+    macdLine !== undefined ? { label: "MACD line", value: Number(macdLine).toFixed(5) } : null,
+    macdSignal !== undefined ? { label: "MACD signal", value: Number(macdSignal).toFixed(5) } : null,
+    vwap?.right_value !== undefined ? { label: "VWAP", value: formatCell(vwap.right_value, "price") } : null,
+    level ? { label: "Structural level", value: formatCell(level, "price") } : null,
+    values.initial_stop ? { label: "Protective stop", value: formatCell(values.initial_stop, "price") } : null,
+    target ? { label: "Profit target", value: formatCell(target, "price") } : null,
+    candle.open !== undefined ? { label: "1s candle", value: `O ${formatCell(candle.open, "price")} → ${completedCandle.close !== undefined ? "C" : "Now"} ${formatCell(completedCandle.close ?? formingCandle.current_price, "price")}` } : null,
+  ].filter((fact): fact is PositionTimelineFact => fact !== null);
   return {
-    time: decision.event_time,
-    action: decision.action,
-    reason: decision.reason,
-    price,
-    macd: macdLine !== undefined && macdSignal !== undefined ? `L ${Number(macdLine).toFixed(5)} · S ${Number(macdSignal).toFixed(5)}` : "—",
-    vwap: vwap?.right_value ?? "—",
-    level: level || "—",
-    stop_target: values.initial_stop ? `Stop ${formatCell(values.initial_stop, "price")}` : target ? `Target ${formatCell(target, "price")}` : values.level_price ? `Target ${formatCell(values.level_price, "price")}` : "—",
+    id: String(decision.record_id || decision.entity_id || `${decision.event_time}-${action}`),
+    occurredAt: String(decision.event_time || ""),
+    priority: 0,
+    tone: positionDecisionTone(action),
+    eyebrow: "Strategy decision",
+    title: labelFor(action),
+    description: String(decision.reason || "No reason was recorded."),
+    facts,
+    executions: [],
   };
 }
 
-function positionOrderRow(order: PreviewRow, executions: PreviewRow[]): PreviewRow {
+function positionOrderTimelineItem(order: PreviewRow, executions: PreviewRow[]): PositionTimelineItem {
   const raw = (order.raw as PreviewRow | undefined) ?? {};
   const metadata = (raw.canonical_metadata as PreviewRow | undefined) ?? {};
   const orderedExecutions = [...executions].sort((left, right) => Date.parse(String(left.source_event_time || "")) - Date.parse(String(right.source_event_time || "")));
   const clientOrderId = String(order.client_order_id || "").toLowerCase();
   const inferredRole = clientOrderId.includes("target") ? "Profit target" : clientOrderId.includes("stop") ? "Protective stop" : clientOrderId.includes("exit") ? "Managed exit" : String(order.side).toUpperCase() === "BUY" ? "Entry" : "Protection";
   const role = String(metadata.execution_role || metadata.fill_role || inferredRole);
+  const submittedAt = String(raw.submitted_at ?? order.source_event_time ?? "");
+  const totalQuantity = Number(order.total_quantity || 0);
+  const filledQuantity = Number(order.filled_quantity || 0);
+  const side = String(order.side || "").toUpperCase();
   return {
-    role: role.replaceAll("_", " "),
-    side: order.side,
-    status: order.lifecycle_state ?? order.status,
-    submitted: positionTimestamp(raw.submitted_at ?? order.source_event_time),
-    first_fill: positionTimestamp(orderedExecutions[0]?.source_event_time),
-    last_fill: positionTimestamp(orderedExecutions.at(-1)?.source_event_time),
-    progress: `${formatQuantity(Number(order.filled_quantity || 0))}/${formatQuantity(Number(order.total_quantity || 0))}`,
-    average_fill: order.average_fill_price || "—",
-    limit: order.limit_price || "—",
-    order_id: order.broker_order_id,
+    id: `order-${String(order.broker_order_id || order.client_order_id || submittedAt)}`,
+    occurredAt: submittedAt,
+    priority: 1,
+    tone: positionOrderTone(role, side),
+    eyebrow: "OMS order",
+    title: `${labelFor(role.replaceAll("_", " "))} · ${side || "Unknown side"}`,
+    description: `${labelFor(String(order.order_type || "order"))} order ${String(order.lifecycle_state ?? order.status ?? "unknown").replaceAll("_", " ")}.`,
+    facts: [
+      { label: "Status", value: String(order.lifecycle_state ?? order.status ?? "Unknown").replaceAll("_", " ") },
+      { label: "Filled / requested", value: `${formatQuantity(filledQuantity)} / ${formatQuantity(totalQuantity)}` },
+      { label: "Average fill", value: order.average_fill_price ? formatCell(order.average_fill_price, "price") : "Not filled" },
+      { label: "Limit", value: order.limit_price ? formatCell(order.limit_price, "price") : "Market / none" },
+      { label: "First fill", value: orderedExecutions.length ? positionTimestamp(orderedExecutions[0]?.source_event_time) : "No fills" },
+      { label: "Final fill", value: orderedExecutions.length ? positionTimestamp(orderedExecutions.at(-1)?.source_event_time) : "No fills" },
+      { label: "Order ID", value: String(order.broker_order_id || "Unavailable") },
+    ],
+    executions: orderedExecutions,
   };
+}
+
+function positionDecisionTone(action: string): PositionTimelineTone {
+  const normalized = action.toLowerCase();
+  if (normalized.includes("enter") || normalized.includes("add")) return "entry";
+  if (normalized.includes("exit") || normalized.includes("stop") || normalized.includes("reduce")) return "exit";
+  if (normalized.includes("target")) return "target";
+  if (normalized === "hold" || normalized === "wait") return "hold";
+  return "neutral";
+}
+
+function positionOrderTone(role: string, side: string): PositionTimelineTone {
+  const normalized = role.toLowerCase();
+  if (normalized.includes("target")) return "target";
+  if (normalized.includes("exit") || normalized.includes("stop") || side === "SELL") return "exit";
+  if (normalized.includes("entry") || side === "BUY") return "entry";
+  return "neutral";
+}
+
+function timelineTimestamp(value: string) {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER;
 }
 
 function positionTimestamp(value: unknown) {
