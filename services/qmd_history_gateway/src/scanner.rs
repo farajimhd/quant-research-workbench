@@ -50,7 +50,7 @@ fn watchlist_derived_timeframes(qmd_sources: &BTreeSet<String>) -> BTreeSet<Stri
             if !timeframe.is_empty() {
                 timeframes.insert(timeframe.to_ascii_lowercase());
             }
-        } else if source == "indicator.vwap.value" {
+        } else if source == "indicator.vwap.execution_value" {
             timeframes.insert(SCANNER_INDICATOR_TIMEFRAME.to_string());
         }
     }
@@ -408,8 +408,8 @@ impl CrossSectionEngine {
                     "liquidity-rank" | "market.liquidity_rank" if market.liquidity_rank > 0 => {
                         Some(f64::from(market.liquidity_rank))
                     }
-                    "indicator.vwap.value" => indicator
-                        .map(|row| row.vwap)
+                    "indicator.vwap.execution_value" => indicator
+                        .map(|row| row.execution_vwap)
                         .filter(|value| value.is_finite() && *value > 0.0),
                     "market.change_pct"
                         if market.last_price.is_finite()
@@ -948,7 +948,7 @@ pub async fn materialize_watchlist_timeline(
     if request.plan.qmd_sources.iter().any(|source| {
         matches!(
             source.as_str(),
-            "indicator.vwap.value" | "market.relative_volume"
+            "indicator.vwap.execution_value" | "market.relative_volume"
         )
     }) {
         return materialize_watchlist_timelines(
@@ -1287,7 +1287,7 @@ pub async fn materialize_watchlist_timelines(
         let focused = request.plan.qmd_sources.iter().any(|source| {
             matches!(
                 source.as_str(),
-                "indicator.vwap.value" | "market.relative_volume"
+                "indicator.vwap.execution_value" | "market.relative_volume"
             )
         });
         let focused_seed_limit = if focused {
@@ -2411,7 +2411,7 @@ mod tests {
                 "AAPL",
                 start + chrono::Duration::seconds(1),
                 &BTreeSet::from([
-                    "indicator.vwap.value".to_string(),
+                    "indicator.vwap.execution_value".to_string(),
                     "liquidity-rank".to_string(),
                     "market.change_actual".to_string(),
                     "market.change_pct".to_string(),
@@ -2429,7 +2429,12 @@ mod tests {
         assert_eq!(candidate.values["market.change_actual"], json!(1.0));
         assert!((candidate.values["market.change_pct"].as_f64().unwrap() - 0.5).abs() < 1e-9);
         assert!(candidate.values["liquidity-rank"].as_f64().unwrap() > 0.0);
-        assert!(candidate.values["indicator.vwap.value"].as_f64().unwrap() > 0.0);
+        assert!(
+            candidate.values["indicator.vwap.execution_value"]
+                .as_f64()
+                .unwrap()
+                > 0.0
+        );
         let snapshot = engine
             .into_snapshot(
                 start + chrono::Duration::seconds(1),
@@ -2511,7 +2516,9 @@ mod tests {
             BTreeSet::from(["5s".to_string()]),
         );
         assert_eq!(
-            watchlist_derived_timeframes(&BTreeSet::from(["indicator.vwap.value".to_string(),])),
+            watchlist_derived_timeframes(&BTreeSet::from([
+                "indicator.vwap.execution_value".to_string(),
+            ])),
             BTreeSet::from(["100ms".to_string()]),
         );
         assert!(watchlist_derived_timeframes(&BTreeSet::from([

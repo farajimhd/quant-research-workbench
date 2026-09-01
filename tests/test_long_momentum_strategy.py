@@ -76,6 +76,7 @@ def confirmed_observation(**overrides) -> StrategyObservation:
         "swing_high": 100.5,
         "swing_low": 99.5,
         "vwap": 100.2,
+        "execution_vwap": 100.2,
         "vwap_slope_bps_per_second": 1.0,
         "macd_line": 0.4,
         "macd_signal": 0.2,
@@ -87,6 +88,8 @@ def confirmed_observation(**overrides) -> StrategyObservation:
         "upper_luld_price": 110.0,
     }
     payload.update(overrides)
+    if "vwap" in overrides and "execution_vwap" not in overrides:
+        payload["execution_vwap"] = overrides["vwap"]
     return StrategyObservation(**payload)
 
 
@@ -999,6 +1002,91 @@ class LongMomentumStrategyTests(unittest.TestCase):
 
         self.assertEqual(entered.evaluation.signals[0].action, "enter_long")
         self.assertEqual(entered.state["breakout_level"], 100.5)
+
+    def test_unified_entry_prioritizes_crossed_level_over_next_overhead_level(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["structural_entry"].update({"enabled": True})
+        levels = (
+            {
+                "unified_level_id": "crossed",
+                "side": -1,
+                "lower": 100.45,
+                "upper": 100.50,
+                "hold_probability": 0.90,
+                "salience": 0.90,
+                "confidence": 0.90,
+                "reaction_probability": 0.90,
+            },
+            {
+                "unified_level_id": "overhead",
+                "side": -1,
+                "lower": 100.95,
+                "upper": 101.00,
+                "hold_probability": 0.90,
+                "salience": 0.90,
+                "confidence": 0.90,
+                "reaction_probability": 0.90,
+            },
+        )
+
+        entered = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=parameters, state={"last_price": 100.40}),
+            confirmed_observation(
+                price=100.60,
+                structural_resistance_levels=levels,
+            ),
+        )
+
+        self.assertEqual(entered.evaluation.signals[0].action, "enter_long")
+        self.assertEqual(entered.state["breakout_level"], 100.50)
+        trigger = entered.evaluation.signals[0].metadata[
+            "unified_structural_trigger"
+        ]
+        self.assertEqual(trigger["reference_price"], 100.50)
+
+    def test_return_below_old_acceptance_allows_a_new_lower_level_cross(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["structural_entry"].update({
+            "enabled": True,
+            "acceptance_expires": False,
+        })
+        old_level = {
+            "unified_level_id": "old-high",
+            "side": -1,
+            "lower": 100.95,
+            "upper": 101.00,
+            "hold_probability": 0.90,
+            "salience": 0.90,
+            "confidence": 0.90,
+            "reaction_probability": 0.90,
+        }
+        lower_level = {
+            **old_level,
+            "unified_level_id": "new-lower-cross",
+            "lower": 100.45,
+            "upper": 100.50,
+        }
+
+        entered = LongMomentumStrategyEngine().evaluate(
+            assignment(
+                parameters=parameters,
+                state={
+                    "last_price": 100.40,
+                    "accepted_entry_resistance": {
+                        "boundary": 101.00,
+                        "level": old_level,
+                        "accepted_at": (NOW - timedelta(seconds=30)).isoformat(),
+                    },
+                },
+            ),
+            confirmed_observation(
+                price=100.60,
+                structural_resistance_levels=(lower_level, old_level),
+            ),
+        )
+
+        self.assertEqual(entered.evaluation.signals[0].action, "enter_long")
+        self.assertEqual(entered.state["breakout_level"], 100.50)
 
     def test_unified_entry_keeps_local_break_while_confirmation_finishes(self) -> None:
         parameters = default_long_momentum_parameters()
@@ -2007,7 +2095,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
         )
         self.assertEqual(config["taxonomy"]["indicators"][0]["timeframe"], "100ms")
         self.assertNotIn("evaluation_triggers", config["taxonomy"])
-        self.assertIn("signal.vwap_transition.score", {
+        self.assertNotIn("signal.vwap_transition.score", {
             row["source_id"] for row in config["input_catalog"]
         })
         self.assertIn("signal.sec_filing.score", {
@@ -2216,8 +2304,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
                 "indicator.flow_structure.score@100ms": {"value": 0.7},
                 "indicator.flow_structure.confidence@100ms": {"value": 0.8},
                 "market.last_price@5s": {"value": 101.0},
-                "indicator.vwap.value@5s": {"value": 100.2},
-                "indicator.vwap.slope@5s": {"value": 0.5},
+                "indicator.vwap.execution_value@5s": {"value": 100.2},
                 "indicator.macd.line@5s": {"value": 0.4},
                 "indicator.macd.signal@5s": {"value": 0.2},
                 "indicator.macd.histogram@5s": {"value": 0.2},
@@ -2227,7 +2314,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertTrue(result["confirmation"]["passed"])
         self.assertEqual(
             set(result["confirmation"]["matched_groups"]),
-            {"qmd-alignment", "vwap-confirmation", "macd-confirmation"},
+            {"qmd-alignment", "macd-confirmation"},
         )
 
     def test_required_score_is_local_to_each_rule_set(self) -> None:
@@ -2271,7 +2358,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
                         "operator": "or",
                         "children": [
                             {"kind": "rule_set", "rule_set_id": confirmation_sets[1]["rule_set_id"]},
-                            {"kind": "rule_set", "rule_set_id": confirmation_sets[2]["rule_set_id"]},
+                            {"kind": "rule_set", "rule_set_id": confirmation_sets[0]["rule_set_id"]},
                         ],
                     },
                 ],
@@ -2282,7 +2369,6 @@ class LongMomentumStrategyTests(unittest.TestCase):
             confirmed_observation(macd_histogram=-0.2),
         )
         self.assertTrue(result["confirmation"]["groups"]["qmd-alignment"])
-        self.assertTrue(result["confirmation"]["groups"]["vwap-confirmation"])
         self.assertFalse(result["confirmation"]["groups"]["macd-confirmation"])
         self.assertTrue(result["confirmation"]["passed"])
 
@@ -3702,7 +3788,7 @@ class LongMomentumRuntimeTests(unittest.IsolatedAsyncioTestCase):
             await runtime.finish()
             journal.close()
 
-    async def test_profit_target_fill_replenishes_same_integer_quantity_on_pullback(self) -> None:
+    async def test_partial_profit_target_fill_liquidates_exact_remainder(self) -> None:
         parameters = default_long_momentum_parameters()
         parameters["reentry"]["target_replenishment"]["enabled"] = True
         parameters["liquidity_admission"]["enabled"] = True
@@ -3737,7 +3823,8 @@ class LongMomentumRuntimeTests(unittest.IsolatedAsyncioTestCase):
             aggregate_position_quantity=80,
         )
         armed = strategy.assignments()[0]
-        self.assertEqual(armed.state["target_replenishment_quantity"], 20)
+        self.assertTrue(armed.state["profit_target_liquidation_required"])
+        self.assertEqual(armed.state["target_replenishment_quantity"], 0)
 
         values = LongMomentumStrategyTests._liquidity_values()
         result = LongMomentumStrategyEngine().evaluate(
@@ -3752,10 +3839,9 @@ class LongMomentumRuntimeTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
         signal = result.evaluation.signals[0]
-        self.assertEqual(signal.action, "add_long")
-        self.assertEqual(signal.reason, "target_profit_replenishment")
-        self.assertEqual(result.evaluation.intents[0].quantity, 20)
-        self.assertEqual(signal.metadata["execution_role"], "target_replenishment")
+        self.assertEqual(signal.action, "exit")
+        self.assertEqual(signal.reason, "profit_target_incomplete")
+        self.assertEqual(result.evaluation.intents[0].quantity, 80)
 
     async def test_small_target_replenishment_caps_structural_slices_to_whole_shares(self) -> None:
         parameters = default_long_momentum_parameters()
@@ -3835,20 +3921,9 @@ class LongMomentumRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
         intent = result.evaluation.intents[0]
-        self.assertEqual(intent.quantity, 2.0)
-        self.assertEqual(result.evaluation.signals[0].metadata["profit_targets"], [102.0, 103.0])
-        self.assertEqual(len(intent.protection_profile.slices), 2)
-        plan = IbkrStrategyOrderPlanner().plan(
-            account_id="DU123",
-            instrument=InstrumentContract("ibkr:265598", 265598, "AAPL", "STK", "USD"),
-            intent=intent,
-            strategy_id=STRATEGY_ID,
-            strategy_revision=STRATEGY_REVISION,
-        )
-        self.assertEqual(
-            [order.quantity for order in plan.orders if not order.parentId],
-            [1.0, 1.0],
-        )
+        self.assertEqual(intent.quantity, 80.0)
+        self.assertEqual(intent.action, "exit")
+        self.assertEqual(result.evaluation.signals[0].reason, "profit_target_incomplete")
 
     async def test_profit_target_slice_keeps_campaign_managing_until_position_is_flat(self) -> None:
         parameters = default_long_momentum_parameters()

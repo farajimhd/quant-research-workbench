@@ -23,7 +23,8 @@ from src.backend.replay_run_service import (
     ReplayRunService,
     ReplaySignalEvent,
     _ProvisionalMacdState,
-    _STRATEGY_LAZY_STRUCTURE_FIELDS,
+    _STRATEGY_INDICATOR_FIELDS,
+    _STRATEGY_STATEFUL_STRUCTURE_FIELDS,
     _append_historical_derived_message,
     _attach_historical_signals,
     _canvas_profile_tickers,
@@ -412,8 +413,11 @@ class ReplayRunDefinitionTests(unittest.TestCase):
 
 class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
     def test_strategy_carries_latest_confirmed_swing_frontier_across_frames(self) -> None:
-        self.assertIn("structure_swing_high", _STRATEGY_LAZY_STRUCTURE_FIELDS)
-        self.assertIn("structure_swing_low", _STRATEGY_LAZY_STRUCTURE_FIELDS)
+        self.assertIn("structure_swing_high", _STRATEGY_STATEFUL_STRUCTURE_FIELDS)
+        self.assertIn("structure_swing_low", _STRATEGY_STATEFUL_STRUCTURE_FIELDS)
+        self.assertTrue(
+            _STRATEGY_STATEFUL_STRUCTURE_FIELDS.issubset(_STRATEGY_INDICATOR_FIELDS)
+        )
 
     def fixture(self) -> HistoricalDebugFixture:
         return HistoricalDebugFixture(

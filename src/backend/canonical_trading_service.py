@@ -190,6 +190,25 @@ def trading_state_payload(snapshot: TradingStateSnapshot) -> dict[str, Any]:
         snapshot.orders,
         snapshot.positions,
     )
+    run_ids = sorted(
+        {
+            str(row.run_id).strip()
+            for row in snapshot.executions
+            if str(row.run_id).strip()
+        }
+    )
+    payload["strategy_activity"] = []
+    if len(run_ids) == 1:
+        # A historical canonical state is scoped to one immutable run. Include
+        # the durable strategy decisions so Position Manager can present the
+        # complete request -> order -> fill -> management -> exit lifecycle.
+        from src.backend.trading_runtime_service import strategy_activity_payload
+
+        payload["strategy_activity"] = strategy_activity_payload(
+            as_of=snapshot.as_of,
+            run_id=run_ids[0],
+            limit=50_000,
+        )["rows"]
     episodes = (
         derive_trade_episodes(snapshot.executions)
         if snapshot.executions

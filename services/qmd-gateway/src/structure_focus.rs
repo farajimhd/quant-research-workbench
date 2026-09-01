@@ -553,6 +553,52 @@ impl StructureFocusCoordinator {
             );
         }
         let _activation_guards = self.activation_locks.acquire(&[ticker.clone()]).await;
+        let authority_end = as_of
+            .checked_add_signed(ChronoDuration::microseconds(1))
+            .ok_or_else(|| "daily structure checkpoint authority end overflow".to_string())?;
+        let next_session_date = session_date
+            .succ_opt()
+            .ok_or_else(|| "daily structure checkpoint session date overflow".to_string())?;
+        if let Some(existing) = self
+            .checkpoint_store
+            .load_daily_structure_checkpoint_before(&ticker, next_session_date)
+            .await?
+            .filter(|row| row.session_date == session_date)
+            .filter(|row| daily_seed_covers_rebuild_start(row.authority_start, rebuild_start))
+        {
+            let current = self
+                .history_source_revision(&ticker, existing.authority_start, authority_end)
+                .await?;
+            if current.complete_for_history
+                && current.request_complete
+                && current.source_plan_hash == existing.source_plan_hash
+                && current.token == existing.source_revision_token
+            {
+                let checkpoint_updated_at = existing
+                    .checkpoint
+                    .updated_at
+                    .ok_or_else(|| "daily structure checkpoint lacks updated_at".to_string())?;
+                let replay_start = existing
+                    .checkpoint
+                    .replayed_through
+                    .or(existing.checkpoint.updated_at)
+                    .ok_or_else(|| "daily structure checkpoint lacks replay cursor".to_string())?;
+                return Ok(DailyStructureCheckpointBuild {
+                    ticker,
+                    session_date,
+                    seeded_from_session_date: Some(existing.session_date),
+                    replay_start,
+                    as_of,
+                    event_count: 0,
+                    advanced_event_count: 0,
+                    checkpoint_updated_at,
+                    checkpoint_arrival_sequence: existing.checkpoint.last_arrival_sequence,
+                    source_plan_hash: existing.source_plan_hash,
+                    source_revision_token: existing.source_revision_token,
+                    status: "already_current".to_string(),
+                });
+            }
+        }
         let seed = self
             .checkpoint_store
             .load_daily_structure_checkpoint_before(&ticker, session_date)
@@ -579,7 +625,7 @@ impl StructureFocusCoordinator {
                 .or(seed.checkpoint.updated_at)
                 .ok_or_else(|| "daily structure seed lacks replay cursor".to_string())?;
             match self
-                .advance_checkpoint_through(seed.checkpoint.clone(), as_of)
+                .advance_historical_checkpoint_through(seed.checkpoint.clone(), as_of)
                 .await
             {
                 Ok(advanced) => {
@@ -712,9 +758,6 @@ impl StructureFocusCoordinator {
         {
             return Err("daily structure checkpoint payload identity is invalid".to_string());
         }
-        let authority_end = as_of
-            .checked_add_signed(ChronoDuration::microseconds(1))
-            .ok_or_else(|| "daily structure checkpoint authority end overflow".to_string())?;
         let authority_revision = self
             .history_source_revision(&ticker, authority_start, authority_end)
             .await?;
@@ -929,8 +972,9 @@ impl StructureFocusCoordinator {
         let response = self
             .client
             .post(format!(
-                "{}/materialize/generic-structure-checkpoint",
-                self.history_url
+                "{}{}",
+                self.history_url,
+                checkpoint_advance_endpoint(false)
             ))
             .json(&json!({
                 "schema_version": 1,
@@ -951,6 +995,47 @@ impl StructureFocusCoordinator {
             .json::<HistoryAdvanceResponse>()
             .await
             .map_err(|error| format!("invalid QMD History checkpoint response: {error}"))
+    }
+
+    async fn advance_historical_checkpoint(
+        &self,
+        checkpoint: GenericStructureCheckpoint,
+        as_of: DateTime<Utc>,
+    ) -> Result<HistoryAdvanceResponse, String> {
+        let response = self
+            // Archive checkpoint advancement is an operator/rebuild-class
+            // workload.  Large but bounded slices can legitimately exceed
+            // the interactive history timeout while QMD History continues
+            // computing, so use the independently bounded rebuild client.
+            // Live checkpoint and chart paths remain on the low-latency
+            // history client.
+            .rebuild_client
+            .post(format!(
+                "{}{}",
+                self.history_url,
+                checkpoint_advance_endpoint(true)
+            ))
+            .json(&json!({
+                "schema_version": 1,
+                "checkpoint": checkpoint,
+                "as_of": as_of,
+            }))
+            .send()
+            .await
+            .map_err(|error| {
+                format!("QMD History historical checkpoint request failed: {error}")
+            })?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(format!(
+                "QMD History historical checkpoint advancement returned HTTP {status}: {body}"
+            ));
+        }
+        response
+            .json::<HistoryAdvanceResponse>()
+            .await
+            .map_err(|error| format!("invalid QMD History historical checkpoint response: {error}"))
     }
 
     async fn latest_compatible_daily_seed(
@@ -1045,8 +1130,27 @@ impl StructureFocusCoordinator {
 
     async fn advance_checkpoint_through(
         &self,
+        checkpoint: GenericStructureCheckpoint,
+        as_of: DateTime<Utc>,
+    ) -> Result<HistoryAdvanceResponse, String> {
+        self.advance_checkpoint_through_mode(checkpoint, as_of, false)
+            .await
+    }
+
+    async fn advance_historical_checkpoint_through(
+        &self,
+        checkpoint: GenericStructureCheckpoint,
+        as_of: DateTime<Utc>,
+    ) -> Result<HistoryAdvanceResponse, String> {
+        self.advance_checkpoint_through_mode(checkpoint, as_of, true)
+            .await
+    }
+
+    async fn advance_checkpoint_through_mode(
+        &self,
         mut checkpoint: GenericStructureCheckpoint,
         as_of: DateTime<Utc>,
+        historical_archive: bool,
     ) -> Result<HistoryAdvanceResponse, String> {
         let mut total_event_count = 0_u64;
         let mut total_advanced_event_count = 0_u64;
@@ -1057,7 +1161,12 @@ impl StructureFocusCoordinator {
             let start = checkpoint.replayed_through.unwrap_or(cursor_at);
             let slice_end = next_checkpoint_slice_end(start, as_of);
             let previous_cursor = (start, checkpoint.last_arrival_sequence);
-            let mut response = self.advance_checkpoint(checkpoint, slice_end).await?;
+            let mut response = if historical_archive {
+                self.advance_historical_checkpoint(checkpoint, slice_end)
+                    .await?
+            } else {
+                self.advance_checkpoint(checkpoint, slice_end).await?
+            };
             total_event_count = total_event_count.saturating_add(response.event_count);
             total_advanced_event_count =
                 total_advanced_event_count.saturating_add(response.advanced_event_count);
@@ -1157,6 +1266,14 @@ fn non_retryable_history_error(message: &str) -> Option<HistoryErrorResponse> {
         .then_some(parsed)
 }
 
+fn checkpoint_advance_endpoint(historical_archive: bool) -> &'static str {
+    if historical_archive {
+        "/materialize/generic-structure-snapshot-advance"
+    } else {
+        "/materialize/generic-structure-checkpoint"
+    }
+}
+
 fn next_checkpoint_slice_end(start: DateTime<Utc>, as_of: DateTime<Utc>) -> DateTime<Utc> {
     (start + ChronoDuration::hours(CHECKPOINT_ADVANCE_SLICE_HOURS)).min(as_of)
 }
@@ -1171,8 +1288,8 @@ fn daily_seed_covers_rebuild_start(
 #[cfg(test)]
 mod tests {
     use super::{
-        daily_seed_covers_rebuild_start, next_checkpoint_slice_end, non_retryable_history_error,
-        SymbolActivationLocks,
+        checkpoint_advance_endpoint, daily_seed_covers_rebuild_start, next_checkpoint_slice_end,
+        non_retryable_history_error, SymbolActivationLocks,
     };
     use chrono::{Duration as ChronoDuration, TimeZone, Utc};
     use std::time::Duration;
@@ -1228,6 +1345,18 @@ mod tests {
 
         assert!(!daily_seed_covers_rebuild_start(shallow, requested));
         assert!(daily_seed_covers_rebuild_start(complete, requested));
+    }
+
+    #[test]
+    fn daily_archive_advancement_does_not_use_the_live_exact_cursor_endpoint() {
+        assert_eq!(
+            checkpoint_advance_endpoint(true),
+            "/materialize/generic-structure-snapshot-advance"
+        );
+        assert_eq!(
+            checkpoint_advance_endpoint(false),
+            "/materialize/generic-structure-checkpoint"
+        );
     }
 
     #[test]

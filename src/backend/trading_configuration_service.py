@@ -111,7 +111,7 @@ DISCOVERY_EXECUTION_SCOPES = {
 DISCOVERY_CONFIGURATION_POLICIES = {"locked", "configurable", "generated", "retired"}
 _QMD_RUNTIME_CATALOG_CACHE: tuple[float, list[dict[str, Any]]] = (0.0, [])
 QMD_CORE_SCANNER_FIELDS = {
-    "core_bars": ["market.last_price", "market.volume", "indicator.vwap.value"],
+    "core_bars": ["market.last_price", "market.volume", "indicator.vwap.execution_value"],
     "quote_mid_spread_bars": ["market.spread_bps"],
     "tape_rates": ["market.trade_rate_10s", "market.trade_rate_60s"],
     "nbbo_liquidity": ["market.spread_bps", "market.liquidity_score"],
@@ -1588,7 +1588,6 @@ def _strategy_rule_set_description(
         "break-vwap": "Requires last price to clear current VWAP by the configured breakout buffer.",
         "bullish-choch": "Requires QMD to publish a true bullish change-of-character event on the configured breakout timeframe.",
         "price-volume-expansion": "Requires the QMD price-and-volume expansion score to meet the configured entry minimum.",
-        "vwap-transition": "Requires the QMD VWAP-transition score to meet the configured entry minimum.",
         "company-news": "Requires the causal company-news score to meet the configured entry minimum.",
         "qmd-alignment": "Requires both QMD flow-and-structure score and confidence to meet their configured confirmation minimums.",
         "vwap-confirmation": "Requires last price at or above VWAP while the VWAP slope meets its configured minimum.",
@@ -2966,7 +2965,7 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
             "Allows immediate event-driven entry only while the latest quoted spread is no wider than 60 basis points.",
             [_watchlist_condition("live-spread-quality", "market.spread_bps", "less_or_equal", 60.0)],
         ),
-        _watchlist_rule("watchlist-vwap-breakout", "VWAP breakout", "Requires last price to trade at least 5 basis points above current VWAP.", [{**_watchlist_condition("vwap-breakout-price", "market.last_price", "above_by_bps", 5), "right_source_id": "indicator.vwap.value"}]),
+        _watchlist_rule("watchlist-vwap-breakout", "VWAP breakout", "Requires last price to trade at least 5 basis points above current executable VWAP.", [{**_watchlist_condition("vwap-breakout-price", "market.last_price", "above_by_bps", 5), "right_source_id": "indicator.vwap.execution_value"}]),
         _watchlist_rule("watchlist-news-bullish", "Bullish AI-reviewed news", "Requires a persisted issuer-specific AI review with forecast relevance and positive language implication.", [_watchlist_condition("news-ai-forecast-eligible", "news.llm.forecast_eligible", "is_true", True), _watchlist_condition("news-ai-positive-sentiment", "news.llm.language_sentiment", "equals", "positive")]),
         _watchlist_rule("watchlist-news-bearish", "Bearish AI-reviewed news", "Requires a persisted issuer-specific AI review with forecast relevance and negative language implication.", [_watchlist_condition("news-ai-forecast-eligible-negative", "news.llm.forecast_eligible", "is_true", True), _watchlist_condition("news-ai-negative-sentiment", "news.llm.language_sentiment", "equals", "negative")]),
         _watchlist_rule("signal-news-synthesis-deepfm-bullish", "Bullish Synthesis + DeepFM", "Requires positive issuer direction from News Synthesis and an eligible decision from the promoted DeepFM release for the same canonical news event.", [_watchlist_condition("news-synthesis-positive-direction", "news.composite_sentiment", "equals", "positive"), _watchlist_condition("news-synthesis-deepfm-eligible", "news.deepfm.forecast_eligible", "is_true", True)]),
@@ -3744,6 +3743,85 @@ def _default_market_discovery(
     return result
 
 
+_RETIRED_VWAP_SOURCE_IDS = {
+    "signal.vwap_transition.score",
+    "indicator.vwap.slope",
+}
+_LEGACY_VWAP_SOURCE_ID = "indicator.vwap.value"
+_EXECUTION_VWAP_SOURCE_ID = "indicator.vwap.execution_value"
+
+
+def _retire_legacy_vwap_rule_sets(discovery: dict[str, Any]) -> None:
+    """Migrate executable VWAP references and remove retired derivative rules."""
+
+    execution_vwap_ref = next(
+        (
+            str(output.get("field_ref") or "")
+            for data_field in discovery.get("data_fields") or []
+            for output in data_field.get("outputs") or []
+            if str(output.get("source_id") or "") == _EXECUTION_VWAP_SOURCE_ID
+            and str(output.get("field_ref") or "")
+        ),
+        "",
+    )
+    for rule_set in discovery.get("rule_sets") or []:
+        for condition in rule_set.get("conditions") or []:
+            for side in ("left", "right"):
+                source_key = f"{side}_source_id"
+                if str(condition.get(source_key) or "") != _LEGACY_VWAP_SOURCE_ID:
+                    continue
+                condition[source_key] = _EXECUTION_VWAP_SOURCE_ID
+                if execution_vwap_ref:
+                    condition[f"{side}_field_ref"] = execution_vwap_ref
+
+    retired_rule_set_ids = {
+        str(rule_set.get("rule_set_id") or "")
+        for rule_set in discovery.get("rule_sets") or []
+        if any(
+            {
+                str(condition.get("left_source_id") or ""),
+                str(condition.get("right_source_id") or ""),
+            }
+            & _RETIRED_VWAP_SOURCE_IDS
+            for condition in rule_set.get("conditions") or []
+        )
+    }
+    if retired_rule_set_ids:
+        discovery["rule_sets"] = [
+            rule_set
+            for rule_set in discovery.get("rule_sets") or []
+            if str(rule_set.get("rule_set_id") or "") not in retired_rule_set_ids
+        ]
+    retired_column_ids = {
+        str(column.get("column_id") or "")
+        for column in discovery.get("column_catalog") or []
+        if str(column.get("source_kind") or "") == "rule_set"
+        and str(column.get("source_id") or "") in retired_rule_set_ids
+    }
+    discovery["column_catalog"] = [
+        column
+        for column in discovery.get("column_catalog") or []
+        if str(column.get("column_id") or "") not in retired_column_ids
+    ]
+    compositions = [dict(discovery.get("core_scan") or {})]
+    compositions.extend(discovery.get("watchlists") or [])
+    compositions.extend(discovery.get("signal_streams") or [])
+    for composition in compositions:
+        for key in ("inclusion_rule_sets", "exclusion_rule_sets"):
+            composition[key] = [
+                str(rule_set_id)
+                for rule_set_id in composition.get(key) or []
+                if str(rule_set_id) not in retired_rule_set_ids
+            ]
+        if "columns" in composition:
+            composition["columns"] = [
+                str(column_id)
+                for column_id in composition.get("columns") or []
+                if str(column_id) not in retired_column_ids
+            ]
+    discovery["data_field_plan"] = compile_data_field_plan(discovery)
+
+
 def _default_data_plan_ids() -> dict[str, str]:
     return {
         "replay": "market.historical_scanner_materialization.v1",
@@ -4226,9 +4304,32 @@ def _default_draft() -> dict[str, Any]:
         }
         for row in source_assignments
     ]
+    # Retire the legacy consolidated VWAP from every catalogued rule, including
+    # superseded profile rules retained for configuration explainability.  The
+    # catalog may preserve those rule identities, but it must expose only the
+    # execution-eligible VWAP authority to current scanners and strategies.
+    for rule_set in system_profiles[0].get("rule_set_catalog") or []:
+        for condition in rule_set.get("conditions") or []:
+            if condition.get("left_source_id") == "indicator.vwap.value":
+                condition["left_source_id"] = "indicator.vwap.execution_value"
+            if condition.get("right_source_id") == "indicator.vwap.value":
+                condition["right_source_id"] = "indicator.vwap.execution_value"
+    rule_set_catalog = list(system_profiles[0].get("rule_set_catalog") or [])
+    rule_set_catalog = [
+        rule_set
+        for rule_set in rule_set_catalog
+        if not any(
+            {
+                str(condition.get("left_source_id") or ""),
+                str(condition.get("right_source_id") or ""),
+            }
+            & _RETIRED_VWAP_SOURCE_IDS
+            for condition in rule_set.get("conditions") or []
+        )
+    ]
     discovery = _default_market_discovery(
         runtime_assignments,
-        list(system_profiles[0].get("rule_set_catalog") or []),
+        rule_set_catalog,
     )
     for profile in [*system_profiles, *profile_templates]:
         profile.pop("rule_set_catalog", None)
@@ -6233,6 +6334,13 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             str(row.get("column_id") or "")
             for row in result["market_discovery"].get("column_catalog") or []
         }
+        core_scan["columns"] = [
+            column_id
+            for raw_column_id in core_scan.get("columns") or []
+            if (column_id := (
+                "execution_vwap" if str(raw_column_id) == "vwap" else str(raw_column_id)
+            )) in column_ids
+        ]
         if source_schema_version < 39:
             core_columns = list(core_scan.get("columns") or [])
             for column_id in ("liquidity_score", "liquidity_rank"):
@@ -6877,6 +6985,7 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             else:
                 mandate.setdefault("principal_kind", "session")
                 mandate.setdefault("principal_id", "")
+        _retire_legacy_vwap_rule_sets(result["market_discovery"])
         return result
     if not isinstance(raw.get("strategy"), dict) or "strategy_id" not in dict(raw.get("strategy") or {}):
         return deepcopy(raw)
@@ -7314,18 +7423,25 @@ def _normalize_entry_rule_sources(entry_rules: dict[str, Any]) -> None:
             continue
         for group in stage.get("groups") or []:
             for condition in group.get("conditions") or []:
-                if (
-                    str(condition.get("left_source_id") or "")
-                    == "signal.vwap_transition.score"
-                    and str(condition.get("left_timeframe") or "") == "5s"
-                ):
-                    condition["left_timeframe"] = "10s"
-                if (
-                    str(condition.get("right_source_id") or "")
-                    == "signal.vwap_transition.score"
-                    and str(condition.get("right_timeframe") or "") == "5s"
-                ):
-                    condition["right_timeframe"] = "10s"
+                for side in ("left", "right"):
+                    source_key = f"{side}_source_id"
+                    if str(condition.get(source_key) or "") == _LEGACY_VWAP_SOURCE_ID:
+                        condition[source_key] = _EXECUTION_VWAP_SOURCE_ID
+        stage["groups"] = [
+            group
+            for group in stage.get("groups") or []
+            if not any(
+                {
+                    str(condition.get("left_source_id") or ""),
+                    str(condition.get("right_source_id") or ""),
+                }
+                & {
+                    "signal.vwap_transition.score",
+                    "indicator.vwap.slope",
+                }
+                for condition in group.get("conditions") or []
+            )
+        ]
 
 
 def _default_oms_profile() -> dict[str, Any]:

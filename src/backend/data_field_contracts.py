@@ -54,7 +54,6 @@ _FIXED_WINDOWS = {
     "market.trade_rate_60s": "60s",
 }
 _EXECUTION_INTERVAL_DEFAULTS = {
-    "indicator.vwap.value": ["1s"],
     "indicator.vwap.execution_value": ["1s"],
 }
 

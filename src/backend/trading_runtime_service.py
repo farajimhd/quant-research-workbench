@@ -515,6 +515,7 @@ def strategy_activity_payload(
         limit=50_000 if event_type else requested_limit,
     )
     rows: list[dict[str, Any]] = []
+    seen_decision_entities: set[str] = set()
     for record in records:
         payload = dict(record.payload)
         row_type = strategy_activity_event_type(
@@ -523,8 +524,30 @@ def strategy_activity_payload(
         )
         if event_type and row_type != event_type:
             continue
+        if row_type == "decision":
+            decision_identity = str(record.entity_id).strip()
+            if decision_identity and decision_identity in seen_decision_entities:
+                continue
+            if decision_identity:
+                seen_decision_entities.add(decision_identity)
         metadata = dict(payload.get("metadata") or {})
+        gate_snapshot = {
+            key: metadata.get(key)
+            for key in (
+                "entry_rules",
+                "execution_quality",
+                "liquidity_admission",
+                "unified_structural_trigger",
+                "macd",
+                "profit_target_selection",
+            )
+            if metadata.get(key) is not None
+        }
         action = _strategy_activity_action(record.category, payload)
+        recording_latency_ms = max(
+            0.0,
+            (record.recorded_at - record.event_time).total_seconds() * 1_000.0,
+        )
         rows.append(
             {
                 "record_id": record.record_id,
@@ -565,6 +588,12 @@ def strategy_activity_payload(
                     or payload.get("source")
                     or record.entity_type
                 ),
+                "recording_latency_ms": round(recording_latency_ms, 3),
+                "gates": _strategy_gate_summary(gate_snapshot),
+                "decision_evidence": json.dumps(
+                    gate_snapshot, sort_keys=True, separators=(",", ":")
+                ) if gate_snapshot else "",
+                "gate_snapshot": gate_snapshot,
             }
         )
         if len(rows) >= requested_limit:
@@ -573,7 +602,7 @@ def strategy_activity_payload(
     runs = sorted({str(row["run_id"]) for row in rows if row["run_id"]})
     tickers = sorted({str(row["ticker"]) for row in rows if row["ticker"]})
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "as_of": (as_of or datetime.now(ZoneInfo("UTC"))).isoformat(),
         "source": "trading_journal",
         "complete": True,
@@ -585,6 +614,42 @@ def strategy_activity_payload(
             "event_types": list(STRATEGY_ACTIVITY_EVENT_TYPES),
         },
     }
+
+
+def _strategy_gate_summary(gate_snapshot: dict[str, Any]) -> str:
+    """Render compact, stable gate evidence without replacing the raw contract."""
+
+    def passed(gate: dict[str, Any]) -> bool:
+        if "passed" in gate:
+            return bool(gate.get("passed"))
+        checks = dict(gate.get("checks") or {})
+        if checks:
+            return all(bool(value) for value in checks.values())
+        return not bool(gate.get("failed"))
+
+    labels: list[str] = []
+    entry_rules = dict(gate_snapshot.get("entry_rules") or {})
+    for name in ("trigger", "confirmation", "veto"):
+        gate = dict(entry_rules.get(name) or {})
+        if gate:
+            passed = bool(gate.get("passed"))
+            labels.append(f"{name}:{'pass' if passed else 'clear' if name == 'veto' else 'fail'}")
+    for key, label in (
+        ("liquidity_admission", "liquidity"),
+        ("execution_quality", "execution"),
+        ("unified_structural_trigger", "structure"),
+    ):
+        gate = dict(gate_snapshot.get(key) or {})
+        if gate:
+            labels.append(f"{label}:{'pass' if passed(gate) else 'fail'}")
+    macd = dict(gate_snapshot.get("macd") or {})
+    if macd:
+        labels.append(f"macd:{'open' if bool(macd.get('open')) else 'closed'}")
+    target = dict(gate_snapshot.get("profit_target_selection") or {})
+    if target:
+        price = target.get("target_price") or target.get("selected_price")
+        labels.append(f"target:{price}" if price is not None else "target:none")
+    return " · ".join(labels)
 
 
 def strategy_activity_event_type(entity_type: str, *, category: str = "") -> str:

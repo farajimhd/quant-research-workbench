@@ -8,7 +8,7 @@ pub const WATCHLIST_TIMELINE_PLAN_SCHEMA_VERSION: u16 = 4;
 pub const MAX_EVALUATIONS_PER_CHUNK: u64 = 1_800;
 pub const MAX_MEMBERSHIP_SLOTS_PER_CHUNK: u64 = 2_000_000;
 const QMD_SOURCES: [&str; 17] = [
-    "indicator.vwap.value",
+    "indicator.vwap.execution_value",
     "liquidity-rank",
     "market.liquidity_rank",
     "market.change_pct",

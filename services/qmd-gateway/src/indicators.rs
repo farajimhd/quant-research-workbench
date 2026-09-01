@@ -842,16 +842,14 @@ impl BarIndicatorCalculator {
     }
 
     pub fn apply_session_vwaps_only(&mut self, bar: &BarRow) -> (f64, f64) {
-        let canonical = self
-            .state
-            .session_vwap
-            .update(bar.bar_start, bar.volume, bar.vwap);
         let execution = self.state.execution_session_vwap.update(
             bar.bar_start,
             bar.nbbo_consistent_volume,
             bar.nbbo_vwap,
         );
-        (canonical, execution)
+        // The legacy `vwap` projection is retained only as a serialization
+        // alias. Exec VWAP is the sole active session authority.
+        (execution, execution)
     }
 
     /// Seed only the additive, session-anchored VWAP state before processing a
@@ -859,14 +857,11 @@ impl BarIndicatorCalculator {
     pub fn seed_session_vwap(
         &mut self,
         bar_start: DateTime<Utc>,
-        cumulative_volume: f64,
-        cumulative_trade_notional: f64,
+        _cumulative_volume: f64,
+        _cumulative_trade_notional: f64,
         cumulative_execution_volume: f64,
         cumulative_execution_trade_notional: f64,
     ) -> Result<(), String> {
-        self.state
-            .session_vwap
-            .seed(bar_start, cumulative_volume, cumulative_trade_notional)?;
         self.state.execution_session_vwap.seed(
             bar_start,
             cumulative_execution_volume,
@@ -1075,7 +1070,6 @@ struct BarIndicatorState {
     last_close: f64,
     macd_signal_9: EmaState,
     rsi_14: RsiState,
-    session_vwap: SessionVwapState,
     execution_session_vwap: SessionVwapState,
     volume_sma_20: RollingStats,
     market_structure_references: MarketStructureReferenceLevels,
@@ -1931,7 +1925,6 @@ impl BarIndicatorState {
             last_close: 0.0,
             macd_signal_9: EmaState::new(9),
             rsi_14: RsiState::new(14),
-            session_vwap: SessionVwapState::new(),
             execution_session_vwap: SessionVwapState::new(),
             volume_sma_20: RollingStats::new(20),
             market_structure_references: MarketStructureReferenceLevels::default(),
@@ -1965,14 +1958,12 @@ impl BarIndicatorState {
         self.volume_sma_20.push(bar.volume);
         self.bollinger_20.push(bar.close);
         self.last_close = bar.close;
-        let session_vwap = self
-            .session_vwap
-            .update(bar.bar_start, bar.volume, bar.vwap);
         let execution_session_vwap = self.execution_session_vwap.update(
             bar.bar_start,
             bar.nbbo_consistent_volume,
             bar.nbbo_vwap,
         );
+        let session_vwap = execution_session_vwap;
         let structure = &bar.qmd_structure;
         let state_for = |timeframe: &str| {
             structure
@@ -3906,7 +3897,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn higher_timeframes_project_canonical_base_vwap_including_volume_only_buckets() {
+    async fn higher_timeframes_project_exec_vwap_including_volume_only_buckets() {
         let store = SharedIndicatorStore::new(
             100,
             HashMap::new(),
@@ -3920,6 +3911,8 @@ mod tests {
         first.timeframe = "100ms".to_string();
         first.volume = 100.0;
         first.vwap = 10.0;
+        first.nbbo_consistent_volume = 100.0;
+        first.nbbo_vwap = 10.0;
         store.apply_reconciliation_bar(first.clone()).await;
 
         let mut volume_only = first.clone();
@@ -3931,8 +3924,11 @@ mod tests {
         volume_only.close = 0.0;
         volume_only.volume = 300.0;
         volume_only.vwap = 20.0;
+        volume_only.nbbo_consistent_volume = 300.0;
+        volume_only.nbbo_vwap = 20.0;
         let carried = store.apply_reconciliation_bar(volume_only.clone()).await;
         assert!((carried.vwap - 17.5).abs() < 1e-9);
+        assert!((carried.execution_vwap - 17.5).abs() < 1e-9);
 
         let mut minute = first;
         minute.timeframe = "1m".to_string();
@@ -3942,6 +3938,7 @@ mod tests {
         let projected = store.apply_reconciliation_bar(minute).await;
 
         assert!((projected.vwap - 17.5).abs() < 1e-9);
+        assert!((projected.execution_vwap - 17.5).abs() < 1e-9);
         assert!(
             (projected.price_vs_vwap_pct - (projected.close / 17.5 - 1.0) * 100.0).abs() < 1e-9
         );

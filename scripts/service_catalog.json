@@ -34,9 +34,12 @@
       "health_url": "http://127.0.0.1:8801/health",
       "launcher": "scripts/run_qmd_history_gateway.ps1",
       "readiness": {"kind": "service", "accepted_statuses": ["ready"], "require_running": true},
-      "environment": {"QMD_HISTORY_BIND": "127.0.0.1:8801"},
+      "environment": {
+        "QMD_HISTORY_BIND": "127.0.0.1:8801",
+        "QMD_HISTORY_STRUCTURE_CHECKPOINT_MAX_CONCURRENT_ADVANCEMENTS": "32"
+      },
       "start_priority": 10,
-      "fingerprint_env": ["QMD_HISTORY_BIND", "QMD_HISTORY_CARGO_TARGET_DIR"],
+      "fingerprint_env": ["QMD_HISTORY_BIND", "QMD_HISTORY_CARGO_TARGET_DIR", "QMD_HISTORY_STRUCTURE_CHECKPOINT_MAX_CONCURRENT_ADVANCEMENTS"],
       "dependencies": [],
       "graceful_timeout_seconds": 20,
       "watch": ["services/qmd_history_gateway/**", "services/qmd-gateway/**", "scripts/run_qmd_history_gateway.ps1"]

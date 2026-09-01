@@ -36,7 +36,7 @@ export function normalizeDraft(payload: any): Draft {
     const legacyInterval = String(dataField.context?.timeframes?.[0] ?? "");
     const fixedWindow = /(?:^|[_.])(\d+)(ms|s|m|h|d)$/.exec(sourceId.toLowerCase());
     const currentSources = new Set(["market.last_price", "market.spread_bps", "market.event_at", "market.event_age_ms", "market.quality_state", "market.quality_flags", "market.degradation_reason", "market.liquidity_rank", "market.liquidity_score"]);
-    const anchoredSources = new Set(["market.previous_close", "market.change_pct", "market.volume", "market.relative_volume", "indicator.vwap.value"]);
+    const anchoredSources = new Set(["market.previous_close", "market.change_pct", "market.volume", "market.relative_volume", "indicator.vwap.execution_value"]);
     const dimension = dataField.context?.dimension_kind
       ? dataField.context
       : fixedWindow

@@ -12,6 +12,7 @@ use crate::scanner::{
 use crate::source::{
     split_adjustment_factors, EventCoverage, EventWindow, HistoricalCursor, HistoricalEventSource,
     HistoricalScannerMarketSnapshot, LatestEventCoverage, MarketSourcePlan, SourceRevision,
+    StructureTradeCountEstimateRequest, StructureTradeCountEstimateResponse,
 };
 use crate::structure_checkpoint::{
     advance_historical_structure_snapshot, advance_structure_checkpoint,
@@ -215,6 +216,8 @@ type ApiError = (StatusCode, Json<Value>);
 
 pub fn app(state: AppState) -> Router {
     let watchlist_request_max_bytes = state.config.watchlist_request_max_bytes;
+    let structure_checkpoint_request_max_bytes =
+        state.config.structure_checkpoint_request_max_bytes;
     Router::new()
         .route("/health", get(health))
         .route("/config", get(config))
@@ -236,8 +239,16 @@ pub fn app(state: AppState) -> Router {
         .route("/snapshot/scanner-market", get(scanner_market_snapshot))
         .route("/snapshot/scanner-derived", get(scanner_derived_snapshot))
         .route(
+            "/estimate/generic-structure-trade-counts",
+            post(generic_structure_trade_count_estimates).layer(DefaultBodyLimit::max(
+                structure_checkpoint_request_max_bytes,
+            )),
+        )
+        .route(
             "/materialize/generic-structure-checkpoint",
-            post(materialize_generic_structure_checkpoint),
+            post(materialize_generic_structure_checkpoint).layer(DefaultBodyLimit::max(
+                structure_checkpoint_request_max_bytes,
+            )),
         )
         .route(
             "/materialize/generic-structure-snapshot",
@@ -245,7 +256,9 @@ pub fn app(state: AppState) -> Router {
         )
         .route(
             "/materialize/generic-structure-snapshot-advance",
-            post(materialize_generic_structure_snapshot_advance),
+            post(materialize_generic_structure_snapshot_advance).layer(DefaultBodyLimit::max(
+                structure_checkpoint_request_max_bytes,
+            )),
         )
         .route(
             "/materialize/generic-structure-snapshot-session-advance",
@@ -543,6 +556,29 @@ async fn materialize_generic_structure_rebuild(
         .await
         .map(Json)
         .map_err(structure_checkpoint_advancement_error)
+}
+
+async fn generic_structure_trade_count_estimates(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<StructureTradeCountEstimateRequest>,
+) -> Result<Json<StructureTradeCountEstimateResponse>, ApiError> {
+    if !is_loopback_bind(&state.config.bind) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "Generic Structure planning estimates are available only when QMD History is bound to loopback",
+                "error_code": "structure_checkpoint_estimate_not_local",
+                "retryable": false,
+                "source": "qmd_history_gateway",
+            })),
+        ));
+    }
+    state
+        .source
+        .structure_trade_count_estimates(request)
+        .await
+        .map(Json)
+        .map_err(service_error)
 }
 
 fn is_loopback_bind(bind: &str) -> bool {

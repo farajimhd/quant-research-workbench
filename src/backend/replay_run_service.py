@@ -748,13 +748,18 @@ _STRATEGY_INDICATOR_FIELDS = frozenset(
         "structure_swing_low",
         "sym",
         "timeframe",
-        "vwap",
         "execution_vwap",
         "price_vs_execution_vwap_pct",
-        "vwap_transition_score",
     }
 )
-_STRATEGY_LAZY_STRUCTURE_FIELDS = frozenset(
+# Structural fields are stateful: a prepared row can contain either a full
+# level-book snapshot or a compact delta that must be carried into later rows.
+# They are intentionally part of the durable prepared-frame contract.  A
+# former "lazy" path omitted them from preparation and synchronously asked QMD
+# History for a multi-megabyte snapshot on every completed second after
+# liquidity admission, making a twelve-minute replay take several minutes and
+# coupling strategy latency to an online historical query.
+_STRATEGY_STATEFUL_STRUCTURE_FIELDS = frozenset(
     {
         "qmd_structure_support_field",
         "qmd_structure_resistance_field",
@@ -1775,18 +1780,22 @@ class ReplayRunController:
                     as_of=self.current_time or self.definition.requested_start,
                 )
             )
+            trading["strategy_activity"] = self.strategy_activity_snapshot(
+                as_of=self.current_time or self.definition.requested_start,
+                limit=50_000,
+            )["rows"]
             self._canvas_state_cache = (now, trading)
         ticker = _ticker(symbol)
         records = [
             *self._journal.strategy_records(
                 ticker=ticker,
                 as_of=self.current_time or self.definition.requested_start,
-                limit=250,
+                limit=50_000,
             ),
             *self._journal.order_management_records(
                 ticker=ticker,
                 as_of=self.current_time or self.definition.requested_start,
-                limit=250,
+                limit=50_000,
             ),
         ]
         records.sort(key=lambda record: record.sequence)
@@ -2810,17 +2819,6 @@ class ReplayRunController:
         quote = self._quotes.get(frame.ticker)
         indicator = frame.indicator
         bar = frame.bar
-        previous = self._previous_vwap.get((frame.ticker, frame.timeframe))
-        current_vwap = _positive(indicator.get("vwap"))
-        slope = 0.0
-        if previous and current_vwap:
-            elapsed = max(0.001, (frame.as_of - previous[0]).total_seconds())
-            slope = (current_vwap / previous[1] - 1.0) * 10_000 / elapsed
-        if current_vwap:
-            self._previous_vwap[(frame.ticker, frame.timeframe)] = (
-                frame.as_of,
-                current_vwap,
-            )
         direction = int(indicator.get("structure_choch_direction") or 0)
         structure_event = "choch" if direction else ""
         if not direction:
@@ -2830,7 +2828,7 @@ class ReplayRunController:
         prepared_structure = self._historical_prepared_structure.setdefault(
             frame.ticker, {}
         )
-        for key in _STRATEGY_LAZY_STRUCTURE_FIELDS:
+        for key in _STRATEGY_STATEFUL_STRUCTURE_FIELDS:
             if key in indicator:
                 prepared_structure[key] = deepcopy(indicator[key])
         if "qmd_structure_unified_levels" in indicator:
@@ -2921,9 +2919,7 @@ class ReplayRunController:
             ),
             structure_event=structure_event,
             structure_direction="bullish" if direction > 0 else "bearish" if direction < 0 else "",
-            vwap=current_vwap,
             execution_vwap=_optional_positive(indicator.get("execution_vwap")),
-            vwap_slope_bps_per_second=slope,
             macd_line=_optional_number(indicator.get("macd_line")),
             macd_signal=_optional_number(indicator.get("macd_signal")),
             macd_histogram=_optional_number(indicator.get("macd_histogram")),
@@ -2937,11 +2933,6 @@ class ReplayRunController:
             price_volume_expansion_score=float(
                 frame.signals.get(f"price_volume_expansion@{frame.timeframe}")
                 or indicator.get("price_volume_expansion_score")
-                or 0
-            ),
-            vwap_transition_score=float(
-                frame.signals.get(f"vwap_transition@{frame.timeframe}")
-                or indicator.get("vwap_transition_score")
                 or 0
             ),
             flow_price_divergence_score=float(
@@ -3694,12 +3685,10 @@ class ReplayRunController:
             self._signal_stream_states[key] = next_state
 
     def _remember_strategy_frame(self, frame: ReplayDerivedFrame) -> None:
-        current_vwap = _positive(frame.indicator.get("vwap"))
-        if current_vwap:
-            self._previous_vwap[(frame.ticker, frame.timeframe)] = (
-                frame.as_of,
-                current_vwap,
-            )
+        # Historical artifacts can still contain consolidated VWAP fields, but
+        # current replay decisions must not hydrate or derive state from them.
+        # Execution VWAP is carried directly on each causal indicator frame.
+        return None
 
     async def _wait_until_active(self) -> None:
         async with self._condition:
@@ -4569,7 +4558,7 @@ class ReplayRunController:
                 self._strategy_frame_cache_status = "run_checkpoint"
                 return spool
         indicator_columns = (
-            tuple(sorted(_STRATEGY_INDICATOR_FIELDS - _STRATEGY_LAZY_STRUCTURE_FIELDS))
+            tuple(sorted(_STRATEGY_INDICATOR_FIELDS))
             if source_native_only
             else None
         )

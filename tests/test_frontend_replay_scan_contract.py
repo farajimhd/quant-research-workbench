@@ -101,7 +101,7 @@ def test_strategy_activity_loads_a_reviewable_history_window() -> None:
     container_source = (REPO_ROOT / "frontend" / "src" / "app" / "components" / "MarketScreenerContainers.tsx").read_text(encoding="utf-8")
     configuration_source = (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "configuration.ts").read_text(encoding="utf-8")
 
-    assert "Math.max(2_000, Math.min(settings.limit, 5_000))" in container_source
+    assert "Math.max(2_000, Math.min(settings.limit, 50_000))" in container_source
     assert 'strategy_activity: { eventType: "", limit: 2_000' in configuration_source
 
 

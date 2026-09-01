@@ -206,7 +206,9 @@ class OrderSafetyExitTests(unittest.IsolatedAsyncioTestCase):
             strategy_revision=7,
         )
 
-        self.assertEqual(len(plan.orders), 2)
+        self.assertEqual(len(plan.orders), 1)
+        self.assertTrue(plan.cancel_strategy_protection)
+        self.assertEqual(plan.orders[0].quantity, 100)
         await risk.validate(
             broker,
             "DU1",
@@ -233,10 +235,11 @@ class PortfolioAndContinuousRiskTests(unittest.IsolatedAsyncioTestCase):
             strategy_id="strategy",
             strategy_revision=7,
         )
+        snapshot_time = datetime.now(timezone.utc)
         engine.synchronize_snapshot(
             "DU1",
-            summary=AccountSummary("DU1", 100_000, 100_000, 100_000, 0, 100_000, 100_000, timestamp=NOW),
-            ledger=AccountLedger("DU1", 100_000, 100_000, 0, 100_000, 0, 0, timestamp=NOW),
+            summary=AccountSummary("DU1", 100_000, 100_000, 100_000, 0, 100_000, 100_000, timestamp=snapshot_time),
+            ledger=AccountLedger("DU1", 100_000, 100_000, 0, 100_000, 0, 0, timestamp=snapshot_time),
             positions=[],
         )
         return engine
@@ -255,7 +258,7 @@ class PortfolioAndContinuousRiskTests(unittest.IsolatedAsyncioTestCase):
         decision, approved = await engine.approve(adaptive_intent(quantity=1_000), account_id="DU1")
 
         self.assertIsNotNone(approved)
-        self.assertAlmostEqual(decision.approved_quantity, 57.142857, places=6)
+        self.assertEqual(decision.approved_quantity, 57)
         reservation = next(iter(engine.reservations.values()))
         self.assertAlmostEqual(reservation.reference_price, 110)
         self.assertLessEqual(reservation.reserved_planned_risk, 1_000.00001)
@@ -282,6 +285,27 @@ class PortfolioAndContinuousRiskTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(latched.state, AccountRiskState.ENTRIES_PAUSED)
         resumed = await supervisor.resume("DU1", reason="operator_reviewed")
         self.assertEqual(resumed.state, AccountRiskState.NORMAL)
+
+    async def test_historical_runtime_does_not_enforce_wall_clock_reaction_latency(self) -> None:
+        engine = self.engine(
+            PortfolioPolicy(policy_id="historical", maximum_internal_reaction_ms=100)
+        )
+        supervisor = ContinuousRiskSupervisor(
+            engine,
+            journal=self.journal,
+            run_id="risk-backtest",
+            mode="backtest",
+        )
+
+        evaluation = await supervisor.evaluate(
+            "DU1",
+            reason="order_group:partially_filled",
+            internal_reaction_ms=750,
+        )
+
+        self.assertEqual(evaluation.state, AccountRiskState.NORMAL)
+        self.assertEqual(evaluation.internal_reaction_ms, 750)
+        self.assertNotIn("internal_reaction_latency", evaluation.reasons)
 
     async def test_broker_refresh_preserves_externally_queued_operator_command(self) -> None:
         engine = self.engine(PortfolioPolicy(policy_id="operator-state"))

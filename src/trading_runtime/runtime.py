@@ -1055,6 +1055,11 @@ class TradingRuntime:
             protection_required=float(snapshot.protection_required_quantity),
             protection_coverage=float(snapshot.protection_coverage_quantity),
             internal_reaction_ms=snapshot.internal_reaction_ms,
+            # OMS snapshots use the causal market clock in historical modes
+            # and wall time in live/paper. Preserve that authority in the risk
+            # journal instead of stamping replay decisions with today's wall
+            # clock.
+            now=snapshot.updated_at,
         )
 
     def _assignment_for_snapshot(self, snapshot):

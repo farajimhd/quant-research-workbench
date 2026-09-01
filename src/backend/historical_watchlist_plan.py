@@ -31,7 +31,7 @@ SUPPORTED_COMPARATORS = {
     "less_than",
 }
 QMD_SOURCE_IDS = {
-    "indicator.vwap.value",
+    "indicator.vwap.execution_value",
     "liquidity-rank",
     "market.liquidity_rank",
     "market.liquidity_score",

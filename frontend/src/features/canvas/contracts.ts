@@ -148,6 +148,7 @@ export type CanonicalTradingPreview = {
   executions: PreviewRow[];
   closed_trades: PreviewRow[];
   activity: PreviewRow[];
+  strategy_activity?: PreviewRow[];
   closed_trades_note: string;
   performance_snapshot?: PerformanceSnapshot;
   performance_journal: PerformanceJournalReport;

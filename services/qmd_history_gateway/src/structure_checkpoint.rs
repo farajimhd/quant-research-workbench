@@ -330,6 +330,7 @@ async fn rebuild_structure_checkpoint_inner(
         batch_size,
         source_revision_before.live_continuation_sequence,
         event_type_filter,
+        source_revision_before.event_count,
     )?;
     let mut event_count = 0_u64;
     let mut advanced_event_count = 0_u64;
@@ -420,7 +421,7 @@ async fn advance_structure_checkpoint_inner(
     mut request: StructureCheckpointAdvanceRequest,
     exact_live_cursor: bool,
 ) -> Result<StructureCheckpointAdvanceResponse, String> {
-    let replay_start = validate_request(config, &request)?;
+    let replay_start = validate_request(config, &request, exact_live_cursor)?;
     let ticker = request.checkpoint.sym.trim().to_ascii_uppercase();
     let replay_end = request
         .as_of
@@ -472,6 +473,7 @@ async fn advance_structure_checkpoint_inner(
             .then_some(source_revision_before.live_continuation_sequence)
             .flatten(),
         None,
+        source_revision_before.event_count,
     )?;
     let mut event_count = 0_u64;
     let mut advanced_event_count = 0_u64;
@@ -766,6 +768,7 @@ fn structure_rebuild_start(
 fn validate_request(
     config: &HistoricalGatewayConfig,
     request: &StructureCheckpointAdvanceRequest,
+    require_exact_cursor: bool,
 ) -> Result<DateTime<Utc>, String> {
     if request.schema_version != STRUCTURE_CHECKPOINT_ADVANCEMENT_SCHEMA_VERSION {
         return Err(format!(
@@ -782,7 +785,7 @@ fn validate_request(
     if request.checkpoint.sym.trim().is_empty() {
         return Err("Generic Structure checkpoint sym must not be empty".to_string());
     }
-    if request.checkpoint.last_arrival_sequence == 0 {
+    if require_exact_cursor && request.checkpoint.last_arrival_sequence == 0 {
         return Err(
             "Generic Structure checkpoint must have an exact nonzero arrival cursor".to_string(),
         );
@@ -909,8 +912,10 @@ impl CheckpointCursor for GenericStructureCheckpoint {
 mod tests {
     use super::{
         checkpoint_from_persisted_structure_events, validate_exact_cursor_plan,
-        validate_rebuild_source_plan, HistoricalStructureSessionRegistry, MarketSourcePlan,
+        validate_rebuild_source_plan, validate_request, HistoricalStructureSessionRegistry,
+        MarketSourcePlan, StructureCheckpointAdvanceRequest,
     };
+    use crate::config::HistoricalGatewayConfig;
     use crate::source::{MarketSourceSegment, MarketSourceTier};
     use chrono::{NaiveDate, TimeZone, Utc};
     use qmd_core::generic_structure::{
@@ -939,6 +944,29 @@ mod tests {
             start,
             tickers: vec!["AAPL".to_string()],
         }
+    }
+
+    #[test]
+    fn historical_boundary_checkpoint_does_not_require_archive_ordinal_cursor() {
+        let as_of = Utc.with_ymd_and_hms(2026, 3, 10, 20, 0, 0).unwrap();
+        let mut checkpoint = GenericStructureEngine::new("SUGP").checkpoint();
+        checkpoint.updated_at = Some(as_of - chrono::Duration::hours(1));
+        checkpoint.replayed_through = Some(as_of - chrono::Duration::hours(1));
+        checkpoint.last_arrival_sequence = 0;
+        let request = StructureCheckpointAdvanceRequest {
+            schema_version: 1,
+            checkpoint,
+            as_of,
+            expected_source_plan_hash: None,
+            event_limit: None,
+        };
+        let config = HistoricalGatewayConfig::from_env();
+
+        assert!(validate_request(&config, &request, false).is_ok());
+        assert_eq!(
+            validate_request(&config, &request, true).unwrap_err(),
+            "Generic Structure checkpoint must have an exact nonzero arrival cursor"
+        );
     }
 
     #[test]

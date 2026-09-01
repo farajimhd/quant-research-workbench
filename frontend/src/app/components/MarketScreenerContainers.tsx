@@ -35,6 +35,9 @@ export type ScannerSnapshotMeta = {
   status?: "building" | "error" | "ready" | "refreshing";
 };
 export type ScannerTimeframe = "100ms" | "1s" | "5s" | "10s" | "30s" | "1m" | "5m" | "15m" | "30m" | "1h" | "1d";
+// Retain the legacy VWAP identifiers only so persisted scanner settings can be
+// migrated/ignored safely. They are intentionally absent from the active
+// metric catalog below; execution VWAP is the sole current VWAP authority.
 export type TechnicalMetric = "change_pct" | "dollar_volume" | "high" | "low" | "quote_count" | "range_pct" | "relative_volume" | "trade_count" | "volume" | "vwap" | "vwap_distance_pct";
 export type ScannerSessionAnchor = "extended_session" | "regular_session";
 export type ScannerVwapSource = "hlc3" | "trade_price";
@@ -135,8 +138,6 @@ const TECHNICAL_METRICS: Array<Omit<FieldDefinition, "key" | "timeframe"> & { me
   intervalTechnicalMetric("dollar_volume", "Dollar volume", "money", "Exact sum of eligible trade price multiplied by trade size inside the selected interval."),
   intervalTechnicalMetric("trade_count", "Trades", "integer", "Eligible trade-print count inside the selected interval."),
   intervalTechnicalMetric("quote_count", "Quotes", "integer", "Consolidated quote-event count inside the selected interval."),
-  technicalMetric("vwap", "VWAP", "money", "Anchored cumulative source value weighted by eligible share volume. HLC3 is the standard default; exact trade price is also available.", "session"),
-  technicalMetric("vwap_distance_pct", "Price vs VWAP", "percent", "Latest eligible trade relative to the same anchored, source-configured VWAP.", "session"),
   technicalMetric("relative_volume", "Relative volume", "multiple", "Cumulative extended-session volume pace divided by the prior 20 completed extended-session average pace.", "relative-volume"),
   intervalTechnicalMetric("range_pct", "Range", "percentPlain", "High-to-low price range inside the selected interval."),
   intervalTechnicalMetric("high", "High", "money", "Highest eligible trade inside the selected interval."),
@@ -757,7 +758,7 @@ export function WatchUniverseContainer({ asOf, live = false, onSettingsChange, o
 export function StrategyActivityContainer({ asOf, focusSequence, onSettingsChange, onTickerSelect, runId, settings }: { asOf: string; focusSequence?: number; onSettingsChange: (patch: Partial<StrategyActivitySettings>) => void; onTickerSelect: (ticker: string) => void; runId?: string; settings: StrategyActivitySettings }) {
   const [payload, setPayload] = useState<StrategyActivityResponse | null>(null);
   const [error, setError] = useState("");
-  const activityLimit = Math.max(2_000, Math.min(settings.limit, 5_000));
+  const activityLimit = Math.max(2_000, Math.min(settings.limit, 50_000));
   const asOfRef = useRef(asOf);
   asOfRef.current = asOf;
   useEffect(() => {
@@ -797,7 +798,7 @@ export function StrategyActivityContainer({ asOf, focusSequence, onSettingsChang
       <ActivityFilter label="Ticker" onChange={(ticker) => onSettingsChange({ ticker })} options={tickers} value={settings.ticker} />
       <ActivityFilter label="Event" onChange={(eventType) => onSettingsChange({ eventType })} options={STRATEGY_ACTIVITY_EVENT_OPTIONS.map(({ value }) => value)} value={settings.eventType} />
     </div>
-    {error ? <div className="canvas-inline-error">Strategy activity unavailable: {error}</div> : <MarketListTable chronological columns={["event_time", "ticker", "event_type", "action", "state", "reason", "reason_code", "trigger_reference_price", "trigger_threshold_price", "score", "confidence", "reference_price", "source"]} customColumns={[]} empty="No causal strategy events match these filters yet. Press Play or advance to the next strategy action." limit={activityLimit} lockedColumns={[]} onColumnsChange={() => undefined} onCustomColumnsChange={() => undefined} onTickerSelect={onTickerSelect} pinnedSequence={focusSequence} rows={rows} title="Strategy activity" />}
+    {error ? <div className="canvas-inline-error">Strategy activity unavailable: {error}</div> : <MarketListTable chronological columns={["event_time", "recorded_at", "recording_latency_ms", "ticker", "event_type", "action", "state", "reason", "gates", "reason_code", "trigger_reference_price", "trigger_threshold_price", "score", "confidence", "reference_price", "decision_evidence", "source"]} customColumns={[]} empty="No causal strategy events match these filters yet. Press Play or advance to the next strategy action." limit={activityLimit} lockedColumns={[]} onColumnsChange={() => undefined} onCustomColumnsChange={() => undefined} onTickerSelect={onTickerSelect} pinnedSequence={focusSequence} rows={rows} title="Strategy activity" />}
   </section>;
 }
 

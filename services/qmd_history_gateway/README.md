@@ -82,7 +82,11 @@ bounded by `QMD_HISTORY_SCANNER_CACHE_MAX_ENTRIES`,
 Generic Structure checkpoint advancement is bounded by
 `QMD_HISTORY_STRUCTURE_CHECKPOINT_MAX_CONCURRENT_ADVANCEMENTS`,
 `QMD_HISTORY_STRUCTURE_CHECKPOINT_MAX_EVENTS`, and
-`QMD_HISTORY_STRUCTURE_CHECKPOINT_MAX_WINDOW_HOURS`.
+`QMD_HISTORY_STRUCTURE_CHECKPOINT_MAX_WINDOW_HOURS`. Full checkpoint-bearing
+requests have a separate bounded body limit,
+`QMD_HISTORY_STRUCTURE_CHECKPOINT_REQUEST_MAX_BYTES` (default `67108864`), so
+large valid level books can advance without weakening the smaller default limit
+on unrelated endpoints.
 Historical chart reconstruction seeds one causal ticker-level Structure book,
 including still-valid prior-session levels, from the preceding
 `QMD_HISTORY_STRUCTURE_BOOK_LOOKBACK_DAYS` (default `180`). The seed is complete
@@ -190,6 +194,11 @@ Supported bar timeframes are the live QMD set: `100ms`, `1s`, `5s`, `10s`,
   both the successor checkpoint and its point-in-time snapshot. It preserves
   the exact-live-cursor contract above while avoiding a daily-book rebuild on
   every strategy decision second.
+- `POST /estimate/generic-structure-trade-counts` is a loopback-only planning
+  primitive that groups the same compact archive trade authority by ticker and
+  session. Operators use bounded ticker batches to choose restart-safe daily
+  checkpoint intervals without probing each ticker or exceeding rebuild event
+  limits; the estimate never substitutes for the rebuild guard.
 - `POST /materialize/generic-structure-rebuild` reconstructs a checkpoint from
   a fresh shared engine over one explicit, gap-free canonical Archive + Recent
   + Current-Live window. It is an operator recovery primitive, available only

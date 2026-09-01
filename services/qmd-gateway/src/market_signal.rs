@@ -588,41 +588,6 @@ fn evaluate_bar(
             ));
         }
 
-        if let Some(previous) = previous {
-            let bullish = previous.vwap > 0.0
-                && previous.close <= previous.vwap
-                && row.close > row.vwap
-                && row.vwap_distance_pct > 0.0
-                && row.mid_vwap_distance_pct > 0.0
-                && row.tape_imbalance >= -0.05;
-            let bearish = previous.vwap > 0.0
-                && previous.close >= previous.vwap
-                && row.close < row.vwap
-                && row.vwap_distance_pct < 0.0
-                && row.mid_vwap_distance_pct < 0.0
-                && row.tape_imbalance <= 0.05;
-            if bullish || bearish {
-                let direction = if bullish { "bullish" } else { "bearish" };
-                let distance_strength = weighted_score(&[
-                    z_strength(price_z),
-                    (row.vwap_distance_pct.abs() / 0.50).clamp(0.0, 1.0),
-                    (row.mid_vwap_distance_pct.abs() / 0.50).clamp(0.0, 1.0),
-                ]);
-                candidates.push(candidate(
-                    "vwap_transition",
-                    direction,
-                    distance_strength,
-                    confidence,
-                    "price causally crossed VWAP with trade-mid agreement and non-opposing tape"
-                        .to_string(),
-                    Some(row.vwap),
-                    SignalSurprises {
-                        price: price_z,
-                        ..Default::default()
-                    },
-                ));
-            }
-        }
     }
 
     candidates
@@ -800,7 +765,10 @@ fn evidence(row: &BarRow, surprises: SignalSurprises) -> MarketSignalEvidence {
         close: row.close,
         high: row.high,
         low: row.low,
-        vwap: row.vwap,
+        // Retained only so old serialized signal rows remain readable. New
+        // generic signals do not publish or calculate from consolidated VWAP;
+        // consumers obtain the sole authority from IndicatorRow.execution_vwap.
+        vwap: 0.0,
         price_change_pct: row.price_change_pct,
         return_1_bar: row.return_1_bar,
         volume: row.volume,
@@ -833,7 +801,6 @@ fn evidence_confidence(row: &BarRow, baselines: &Baselines) -> f64 {
     weighted_score(&[
         if row.trade_count > 0 { 1.0 } else { 0.0 },
         if row.quote_count > 0 { 1.0 } else { 0.0 },
-        if row.vwap > 0.0 { 1.0 } else { 0.0 },
         if row.spread_bps_close > 0.0 { 1.0 } else { 0.0 },
         baselines.reliability(),
     ])
@@ -1031,6 +998,11 @@ mod tests {
         assert_eq!(event.direction, "bullish");
         assert!(event.score > 0.0);
         assert!(event.rank_score > 0.0);
+        assert_eq!(event.evidence.vwap, 0.0);
+        assert!(engine
+            .update(&bar)
+            .into_iter()
+            .all(|event| event.signal_key != "vwap_transition"));
     }
 
     #[test]
@@ -1082,30 +1054,6 @@ mod tests {
         assert_eq!(divergence.direction, "bearish");
         assert!(divergence.score < 0.0);
         assert!(divergence.evidence.flow_surprise >= 2.5);
-    }
-
-    #[test]
-    fn vwap_transition_requires_a_causal_cross() {
-        let mut engine = MarketSignalEngine::default();
-        let mut prior = warm_up(&mut engine, "10s");
-        prior.close = 9.95;
-        prior.vwap = 10.0;
-        prior.vwap_distance_pct = -0.5;
-        prior.mid_vwap_distance_pct = -0.5;
-        engine.update(&prior);
-
-        let mut crossed = prior.clone();
-        crossed.bar_start = prior.bar_end;
-        crossed.bar_end += Duration::seconds(10);
-        crossed.close = 10.05;
-        crossed.vwap_distance_pct = 0.5;
-        crossed.mid_vwap_distance_pct = 0.5;
-        crossed.tape_imbalance = 0.20;
-        assert!(engine.update(&crossed).iter().any(|event| {
-            event.signal_key == "vwap_transition"
-                && event.direction == "bullish"
-                && event.state == "triggered"
-        }));
     }
 
     #[test]

@@ -34,7 +34,9 @@ export function normalizeSettings(stored: Partial<ContainerSettings>): Container
   const obsoleteDecisionIndicators = ["indicator.microstructure_outlook", "indicator.qmd_architecture", "indicator.qmd_structural_pressure", "indicator.qmd_decision"];
   const replacedStructure = storedIndicators.some((id) => ["indicator.qmd_liquidity_levels", "indicator.market_structure_levels", "indicator.qmd_level_confluence"].includes(id));
   const replacedDecision = storedIndicators.some((id) => obsoleteDecisionIndicators.includes(id));
-  const canonicalIndicators = storedIndicators.filter((id) => ![
+  const canonicalIndicators = storedIndicators.map((id) => (
+    id === "indicator.execution_vwap" ? "indicator.vwap" : id
+  )).filter((id) => ![
     "indicator.qmd_liquidity_levels",
     "indicator.market_structure_levels",
     "indicator.qmd_level_confluence",
@@ -116,7 +118,8 @@ export function normalizeSettings(stored: Partial<ContainerSettings>): Container
 
 function normalizeChartSlot(stored: Partial<CanvasChartSettings> | undefined, defaults: CanvasChartSettings): CanvasChartSettings {
   const timeframe = HISTORICAL_TIMEFRAMES.includes(stored?.timeframe as CanvasChartTimeframe) ? stored!.timeframe! : defaults.timeframe;
-  const visibleIndicators = Array.isArray(stored?.visibleIndicators) ? stored.visibleIndicators.filter((value): value is string => typeof value === "string") : defaults.visibleIndicators;
+  const visibleIndicators = (Array.isArray(stored?.visibleIndicators) ? stored.visibleIndicators.filter((value): value is string => typeof value === "string") : defaults.visibleIndicators)
+    .map((id) => id === "indicator.execution_vwap" ? "indicator.vwap" : id);
   const required = defaults.visibleIndicators.includes("strategy.presentation") ? ["strategy.presentation"] : [];
   return { ...defaults, ...(stored ?? {}), timeframe, visibleIndicators: Array.from(new Set([...visibleIndicators, ...required])) };
 }
@@ -163,7 +166,7 @@ function normalizeTechnicalListSettings<T extends MarketScannerSettings | Signal
 
 function normalizeScannerCustomColumns(value: unknown): ScannerCustomColumn[] {
   if (!Array.isArray(value)) return [];
-  const allowedMetrics = new Set(["change_pct", "dollar_volume", "high", "low", "quote_count", "range_pct", "relative_volume", "trade_count", "volume", "vwap", "vwap_distance_pct"]);
+  const allowedMetrics = new Set(["change_pct", "dollar_volume", "high", "low", "quote_count", "range_pct", "relative_volume", "trade_count", "volume"]);
   const unique = new Map<string, ScannerCustomColumn>();
   for (const item of value) {
     if (!item || typeof item !== "object") continue;

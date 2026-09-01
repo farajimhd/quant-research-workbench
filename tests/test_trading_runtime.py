@@ -1020,7 +1020,17 @@ class JournalTests(unittest.TestCase):
             )
             journal.append(
                 run_id="run-a", category="strategy_decision", entity_type="signal", entity_id="signal-1",
-                event_time=TS, payload={"strategy_id": "momentum", "ticker": "AAPL", "action": "wait"},
+                event_time=TS, payload={
+                    "strategy_id": "momentum",
+                    "ticker": "AAPL",
+                    "action": "wait",
+                    "metadata": {
+                        "execution_quality": {
+                            "checks": {"spread": True, "trade_rate": True},
+                            "failed": [],
+                        }
+                    },
+                },
             )
             journal.append(
                 run_id="run-a", category="strategy", entity_type="strategy_intent", entity_id="intent-1",
@@ -1048,6 +1058,7 @@ class JournalTests(unittest.TestCase):
                 ["order", "decision", "decision", "watchlist", "signal"],
             )
             self.assertEqual(activity["rows"][2]["action"], "wait")
+            self.assertEqual(activity["rows"][2]["gates"], "execution:pass")
             self.assertEqual(
                 activity["rows"][0]["reason"],
                 "Order is submitted.",

@@ -383,17 +383,31 @@ function PositionsPreview({ data, onSymbolSelect, settings }: { data: CanonicalT
     const lifecycleExecutionIds = new Set(((lifecycle.execution_ids as unknown[]) ?? []).map(String));
     const relatedOrders = data.orders.filter((order) => String(order.account_id || "") === account && lifecycleOrderIds.has(String(order.broker_order_id || order.client_order_id || "")));
     const relatedExecutions = data.executions.filter((execution) => String(execution.account_id || "") === account && lifecycleExecutionIds.has(String(execution.execution_id || "")));
-    return { lifecycle, symbol, account, relatedOrders, relatedExecutions };
+    const requestedAt = Date.parse(String(lifecycle.requested_at || lifecycle.opened_at || ""));
+    const closedAt = Date.parse(String(lifecycle.closed_at || data.as_of || ""));
+    const relatedDecisions = (data.strategy_activity ?? []).filter((activity) => {
+      const eventAt = Date.parse(String(activity.event_time || ""));
+      const activityAccount = String(activity.account_id || "");
+      const activityStrategy = String(activity.strategy_id || "");
+      return String(activity.event_type || "") === "decision"
+        && String(activity.ticker || "").toUpperCase() === String(symbol).toUpperCase()
+        && (!activityAccount || activityAccount === account)
+        && (!activityStrategy || activityStrategy === String(lifecycle.strategy_id || ""))
+        && Number.isFinite(eventAt)
+        && (!Number.isFinite(requestedAt) || eventAt >= requestedAt - 1_000)
+        && (!Number.isFinite(closedAt) || eventAt <= closedAt + 1_000);
+    });
+    return { lifecycle, symbol, account, relatedOrders, relatedExecutions, relatedDecisions };
   });
-  const openRows = lifecycleRows.filter(({ lifecycle }) => String(lifecycle.status) === "open").map(({ lifecycle, symbol, account, relatedOrders, relatedExecutions }) => {
+  const openRows = lifecycleRows.filter(({ lifecycle }) => String(lifecycle.status) === "open").map(({ lifecycle, symbol, account, relatedOrders, relatedExecutions, relatedDecisions }) => {
     const position = data.positions.find((row) => String(row.account_id || "") === account && nestedValue(row, "instrument", "instrument_id") === nestedValue(lifecycle, "instrument", "instrument_id"));
     const quantity = Number(lifecycle.current_quantity || 0);
     const averagePrice = Number(lifecycle.entry_price || 0);
     const mark = Number(position?.market_price || 0);
     const returnPct = averagePrice > 0 ? ((mark - averagePrice) / averagePrice) * 100 * (quantity < 0 ? -1 : 1) : 0;
-    return { account, symbol, side: lifecycle.side, quantity, average_price: lifecycle.entry_price, mark: position?.market_price, return_pct: returnPct, market_value: position?.market_value, unrealized_pnl: position?.unrealized_pnl, realized_pnl: lifecycle.gross_pnl, orders: relatedOrders.length, fills: relatedExecutions.length, requested_at: lifecycle.requested_at, opened_at: lifecycle.opened_at, _position: position ?? {}, _lifecycle: lifecycle, _orders: relatedOrders, _executions: relatedExecutions };
+    return { account, symbol, side: lifecycle.side, quantity, average_price: lifecycle.entry_price, mark: position?.market_price, return_pct: returnPct, market_value: position?.market_value, unrealized_pnl: position?.unrealized_pnl, realized_pnl: lifecycle.gross_pnl, orders: relatedOrders.length, fills: relatedExecutions.length, requested_at: lifecycle.requested_at, opened_at: lifecycle.opened_at, _position: position ?? {}, _lifecycle: lifecycle, _orders: relatedOrders, _executions: relatedExecutions, _decisions: relatedDecisions };
   });
-  const closedRows = lifecycleRows.filter(({ lifecycle }) => String(lifecycle.status) === "closed").map(({ lifecycle, symbol, account, relatedOrders, relatedExecutions }) => ({ closed_at: lifecycle.closed_at, requested_at: lifecycle.requested_at, opened_at: lifecycle.opened_at, symbol, side: lifecycle.side, quantity: lifecycle.quantity, entry_price: lifecycle.entry_price, exit_price: lifecycle.exit_price, gross_pnl: lifecycle.gross_pnl, fees: lifecycle.fees, net_pnl: lifecycle.net_pnl, orders: relatedOrders.length, fills: relatedExecutions.length, account, _lifecycle: lifecycle, _orders: relatedOrders, _executions: relatedExecutions }));
+  const closedRows = lifecycleRows.filter(({ lifecycle }) => String(lifecycle.status) === "closed").map(({ lifecycle, symbol, account, relatedOrders, relatedExecutions, relatedDecisions }) => ({ closed_at: lifecycle.closed_at, requested_at: lifecycle.requested_at, opened_at: lifecycle.opened_at, symbol, side: lifecycle.side, quantity: lifecycle.quantity, entry_price: lifecycle.entry_price, exit_price: lifecycle.exit_price, gross_pnl: lifecycle.gross_pnl, fees: lifecycle.fees, net_pnl: lifecycle.net_pnl, orders: relatedOrders.length, fills: relatedExecutions.length, account, _lifecycle: lifecycle, _orders: relatedOrders, _executions: relatedExecutions, _decisions: relatedDecisions }));
   const timelineRows = data.activity.filter((row) => ["position_observed", "position_snapshot_completed", "execution_reported", "commission_reported"].includes(String(row.event_type || ""))).map((row) => ({ time: row.source_event_time, event: row.event_type, account: row.account_id, order_id: row.broker_order_id, execution_id: row.execution_id, provider: row.provider }));
   const netPnl = openRows.reduce((total, row) => total + Number(row.unrealized_pnl || 0), 0);
   const grossValue = openRows.reduce((total, row) => total + Math.abs(Number(row.market_value || 0)), 0);
@@ -414,12 +428,19 @@ function PositionDetail({ row }: { row: PreviewRow }) {
   const executions = (row._executions as PreviewRow[] | undefined) ?? [];
   const position = (row._position as PreviewRow | undefined) ?? {};
   const lifecycle = (row._lifecycle as PreviewRow | undefined) ?? {};
+  const decisions = ((row._decisions as PreviewRow[] | undefined) ?? []).map((decision) => ({
+    time: decision.event_time,
+    action: decision.action,
+    reason: decision.reason,
+    gates: decision.gates,
+    latency_ms: decision.recording_latency_ms,
+  }));
   const orderRows = orders.map((order) => {
     const orderExecutions = executions.filter((execution) => String(execution.broker_order_id || "") === String(order.broker_order_id || ""));
     return { ...orderTableRow(order, orderExecutions), _order: order, _executions: orderExecutions };
   });
   const instrument = (lifecycle.instrument as PreviewRow | undefined) ?? (position.instrument as PreviewRow | undefined) ?? {};
-  return <div className="trading-row-detail"><div className="trading-detail-facts"><span><small>Position lifecycle</small><strong>{String(lifecycle.lifecycle_id || "—")}</strong></span><span><small>Contract</small><strong>{String(instrument.conid || "—")}</strong></span><span><small>Requested / first fill</small><strong>{formatJournalDate(String(lifecycle.requested_at || "")) || "—"} ET · {formatJournalDate(String(lifecycle.opened_at || "")) || "—"} ET</strong></span><span><small>Closed</small><strong>{lifecycle.closed_at ? `${formatJournalDate(String(lifecycle.closed_at))} ET` : "Open"}</strong></span><span><small>Execution parts</small><strong>{executions.length}</strong></span></div><section className="trading-fill-evidence"><header><strong>Orders in this position</strong><span>{orders.length} order{orders.length === 1 ? "" : "s"}</span></header>{orders.length ? <TradingDataTable columns={["status", "side", "progress", "remaining", "type", "limit", "stop", "order_id", "updated_at"]} defaultSort="updated_at" filterColumn="status" filterLabel="All statuses" renderExpanded={(order) => <OrderDetail row={order} />} rows={orderRows} searchPlaceholder="Search this position's orders…" /> : <p>No canonical order is linked to this position lifecycle.</p>}</section></div>;
+  return <div className="trading-row-detail"><div className="trading-detail-facts"><span><small>Position lifecycle</small><strong>{String(lifecycle.lifecycle_id || "—")}</strong></span><span><small>Contract</small><strong>{String(instrument.conid || "—")}</strong></span><span><small>Requested / first fill</small><strong>{formatJournalDate(String(lifecycle.requested_at || "")) || "—"} ET · {formatJournalDate(String(lifecycle.opened_at || "")) || "—"} ET</strong></span><span><small>Closed</small><strong>{lifecycle.closed_at ? `${formatJournalDate(String(lifecycle.closed_at))} ET` : "Open"}</strong></span><span><small>Execution parts</small><strong>{executions.length}</strong></span></div><section className="trading-fill-evidence"><header><strong>Decision timeline</strong><span>{decisions.length} causal event{decisions.length === 1 ? "" : "s"}</span></header>{decisions.length ? <PreviewTable columns={["time", "action", "reason", "gates", "latency_ms"]} rows={decisions} /> : <p>No durable strategy decision is linked to this position interval.</p>}</section><section className="trading-fill-evidence"><header><strong>Orders in this position</strong><span>{orders.length} order{orders.length === 1 ? "" : "s"}</span></header>{orders.length ? <TradingDataTable columns={["status", "side", "progress", "remaining", "type", "limit", "stop", "order_id", "updated_at"]} defaultSort="updated_at" filterColumn="status" filterLabel="All statuses" renderExpanded={(order) => <OrderDetail row={order} />} rows={orderRows} searchPlaceholder="Search this position's orders…" /> : <p>No canonical order is linked to this position lifecycle.</p>}</section></div>;
 }
 
 function OrdersPreview({ data, onSymbolSelect, settings }: { data: CanonicalTradingPreview; onSymbolSelect?: (symbol: string) => void; settings: ContainerSettings["orders"] }) {

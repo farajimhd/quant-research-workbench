@@ -57,16 +57,13 @@ STRATEGY_INPUT_SUMMARIES = {
     "indicator.structure.unified_support_lower": "The lower boundary of the nearest causally available support zone from QMD's persistent Unified Structural Level Book.",
     "indicator.structure.bullish_choch": "A QMD structure event that becomes true when price action confirms a bullish change of character on the selected timeframe.",
     "indicator.structure.bearish_choch": "A QMD structure event that becomes true when price action confirms a bearish change of character on the selected timeframe.",
-    "indicator.vwap.value": "The selected timeframe's volume-weighted average price, used to judge whether trading occurs above, below, or through accepted value.",
-    "indicator.vwap.execution_value": "The causal session VWAP of volume-eligible trades inside the prevailing NBBO no more than one second old, used for executable momentum decisions.",
-    "indicator.vwap.slope": "The rate and direction of VWAP movement in basis points per second, used to distinguish rising, flat, and falling value.",
+    "indicator.vwap.execution_value": "The sole causal VWAP authority: session volume-eligible trades inside the prevailing NBBO no more than one second old.",
     "indicator.flow_structure.score": "QMD's signed composite of directional order flow and market structure, used to rank bullish versus bearish alignment.",
     "indicator.flow_structure.confidence": "QMD's confidence in the current flow-structure composite, used to require stronger evidence before acting on its score.",
     "indicator.macd.line": "The MACD fast-minus-slow momentum line for the selected timeframe, used to measure directional momentum.",
     "indicator.macd.signal": "The smoothed MACD signal line for the selected timeframe, used as the comparison baseline for momentum confirmation.",
     "indicator.macd.histogram": "The distance between the MACD and signal lines, used to measure whether momentum is strengthening or weakening.",
     "signal.price_volume_expansion.score": "A scored QMD event measuring whether price movement is confirmed by expanding trading activity and volume.",
-    "signal.vwap_transition.score": "A scored QMD event measuring the strength of a price transition through VWAP and subsequent acceptance or rejection.",
     "signal.flow_price_divergence.score": "A scored QMD event measuring disagreement between directional order flow and observed price movement.",
     "signal.liquidity_dislocation.score": "A scored QMD event measuring abnormal liquidity loss, spread stress, or order-book displacement.",
     "signal.company_news.score": "A point-in-time company-news signal summarizing the direction and strength of newly available issuer information.",
@@ -89,16 +86,13 @@ def strategy_input_catalog() -> list[dict[str, Any]]:
         _input("indicator.structure.unified_support_lower", "Unified support lower", "QMD level book", "qmd", "structural_support_lower", "price", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"]),
         _input("indicator.structure.bullish_choch", "Bullish change of character", "QMD indicator", "qmd", "bullish_choch", "boolean", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"]),
         _input("indicator.structure.bearish_choch", "Bearish change of character", "QMD indicator", "qmd", "bearish_choch", "boolean", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"]),
-        _input("indicator.vwap.value", "VWAP", "QMD indicator", "qmd", "vwap", "price", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"], parameter="value"),
-        _input("indicator.vwap.execution_value", "Execution VWAP", "QMD indicator", "qmd", "execution_vwap", "price", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"], parameter="execution_value"),
-        _input("indicator.vwap.slope", "VWAP slope", "QMD indicator", "qmd", "vwap_slope_bps_per_second", "bps_per_second", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"], parameter="slope_bps_per_second"),
+        _input("indicator.vwap.execution_value", "VWAP", "QMD indicator", "qmd", "execution_vwap", "price", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"], parameter="execution_value"),
         _input("indicator.flow_structure.score", "Flow-structure score", "QMD indicator", "qmd", "qmd_score", "score", ["100ms"], parameter="score"),
         _input("indicator.flow_structure.confidence", "Flow-structure confidence", "QMD indicator", "qmd", "qmd_confidence", "score", ["100ms"], parameter="confidence"),
         _input("indicator.macd.line", "MACD line", "Market indicator", "qmd", "macd_line", "number", ["1s", "5s", "10s", "30s", "1m", "5m"], parameter="line"),
         _input("indicator.macd.signal", "MACD signal", "Market indicator", "qmd", "macd_signal", "number", ["1s", "5s", "10s", "30s", "1m", "5m"], parameter="signal"),
         _input("indicator.macd.histogram", "MACD histogram", "Market indicator", "qmd", "macd_histogram", "number", ["1s", "5s", "10s", "30s", "1m", "5m"], parameter="histogram"),
         _input("signal.price_volume_expansion.score", "Price-volume expansion score", "QMD market signal", "qmd", "price_volume_expansion_score", "score", ["1s", "10s", "30s", "1m"], parameter="score"),
-        _input("signal.vwap_transition.score", "VWAP transition score", "QMD market signal", "qmd", "vwap_transition_score", "score", ["1s", "10s", "30s", "1m"], parameter="score"),
         _input("signal.flow_price_divergence.score", "Flow-price divergence score", "QMD market signal", "qmd", "flow_price_divergence_score", "score", ["100ms"], parameter="score"),
         _input("signal.liquidity_dislocation.score", "Liquidity dislocation score", "QMD market signal", "qmd", "liquidity_dislocation_score", "score", ["100ms"], parameter="score"),
         _input("signal.company_news.score", "Company news score", "News signal", "news", "news_score", "score", ["event"], parameter="score"),
@@ -125,16 +119,13 @@ def default_entry_decision_rules(parameters: dict[str, Any] | None = None) -> di
                     _condition("price-over-structure", "market.last_price", breakout_timeframe, "above_by_bps", right_source_id=breakout_source, right_timeframe=breakout_timeframe, value=float(entry.get("breakout_buffer_bps") or 5)),
                 ]),
                 _rule_group("break-vwap", "Break VWAP", "all", [
-                    _condition("price-over-vwap", "market.last_price", breakout_timeframe, "above_by_bps", right_source_id="indicator.vwap.value", right_timeframe=breakout_timeframe, value=float(entry.get("breakout_buffer_bps") or 5)),
+                    _condition("price-over-vwap", "market.last_price", breakout_timeframe, "above_by_bps", right_source_id="indicator.vwap.execution_value", right_timeframe=breakout_timeframe, value=float(entry.get("breakout_buffer_bps") or 5)),
                 ]),
                 _rule_group("bullish-choch", "Bullish change of character", "all", [
                     _condition("bullish-choch", "indicator.structure.bullish_choch", breakout_timeframe, "is_true"),
                 ]),
                 _rule_group("price-volume-expansion", "Price-volume expansion", "all", [
                     _condition("price-volume-expansion-score", "signal.price_volume_expansion.score", "1s", "greater_or_equal", value=float(entry.get("price_expansion_minimum_score") or 0.65)),
-                ]),
-                _rule_group("vwap-transition", "VWAP transition", "all", [
-                    _condition("vwap-transition-score", "signal.vwap_transition.score", "10s", "greater_or_equal", value=float(entry.get("vwap_transition_minimum_score") or 0.6)),
                 ]),
                 _rule_group("company-news", "Company news", "all", [
                     _condition("company-news-score", "signal.company_news.score", "event", "greater_or_equal", value=float(entry.get("news_minimum_score") or 0.7)),
@@ -147,10 +138,6 @@ def default_entry_decision_rules(parameters: dict[str, Any] | None = None) -> di
                 _rule_group("qmd-alignment", "QMD flow and structure", "all", [
                     _condition("qmd-score", "indicator.flow_structure.score", "100ms", "greater_or_equal", value=float(dict(entry.get("qmd") or {}).get("minimum_score") or 0.3)),
                     _condition("qmd-confidence", "indicator.flow_structure.confidence", "100ms", "greater_or_equal", value=float(dict(entry.get("qmd") or {}).get("minimum_confidence") or 0.5)),
-                ]),
-                _rule_group("vwap-confirmation", "Price accepted above rising VWAP", "all", [
-                    _condition("price-above-vwap", "market.last_price", "5s", "greater_or_equal", right_source_id="indicator.vwap.value", right_timeframe="5s"),
-                    _condition("vwap-rising", "indicator.vwap.slope", "5s", "greater_or_equal", value=float(dict(entry.get("vwap") or {}).get("minimum_slope_bps_per_second") or 0)),
                 ]),
                 _rule_group("macd-confirmation", "MACD confirms momentum", "all", [
                     _condition("macd-line-over-signal", "indicator.macd.line", "5s", "greater_or_equal", right_source_id="indicator.macd.signal", right_timeframe="5s"),
@@ -1094,9 +1081,12 @@ def _current_execution_quality_result(
     spread = _spread_bps(observation)
     trade_rate_10s = _numeric_source_value(observation, "market.trade_rate_10s")
     trade_rate_60s = _numeric_source_value(observation, "market.trade_rate_60s")
+    execution_vwap = observation.execution_vwap or _numeric_source_value(
+        observation, "indicator.vwap.execution_value", "1s"
+    )
     vwap_extension_bps = (
-        (observation.price / observation.vwap - 1.0) * 10_000.0
-        if observation.vwap is not None and observation.vwap > 0
+        (observation.price / execution_vwap - 1.0) * 10_000.0
+        if execution_vwap is not None and execution_vwap > 0
         else None
     )
     minimum_trade_rate_10s = float(
@@ -1387,40 +1377,53 @@ def _unified_entry_trigger(
         maximum_breakout_extension_bps = float(
             policy.get("maximum_breakout_extension_bps") or float("inf")
         )
-        passed = bool(
-            observation.price > accepted_threshold
-            and breakout_extension_bps <= maximum_breakout_extension_bps
-        )
-        return {
-            "passed": passed,
-            "reason": (
-                "unified_resistance_acceptance_held"
-                if passed
-                else "waiting_for_unified_resistance_retest"
-                if observation.price > accepted_threshold
-                else "waiting_for_accepted_resistance_frontier"
-            ),
-            "level": accepted_level,
-            "reference_price": accepted_boundary,
-            "threshold_price": accepted_threshold,
-            "previous_price": previous_price,
-            "accepted_at": accepted.get("accepted_at"),
-            "acceptance_age_ms": acceptance_age_ms,
-            "acceptance_hold_ms": acceptance_hold_ms,
-            "acceptance_expires": acceptance_expires,
-            "breakout_extension_bps": breakout_extension_bps,
-            "maximum_breakout_extension_bps": maximum_breakout_extension_bps,
-        }
-    state.pop("accepted_entry_resistance", None)
+        if observation.price > accepted_threshold:
+            passed = breakout_extension_bps <= maximum_breakout_extension_bps
+            return {
+                "passed": passed,
+                "reason": (
+                    "unified_resistance_acceptance_held"
+                    if passed
+                    else "waiting_for_unified_resistance_retest"
+                ),
+                "level": accepted_level,
+                "reference_price": accepted_boundary,
+                "threshold_price": accepted_threshold,
+                "previous_price": previous_price,
+                "accepted_at": accepted.get("accepted_at"),
+                "acceptance_age_ms": acceptance_age_ms,
+                "acceptance_hold_ms": acceptance_hold_ms,
+                "acceptance_expires": acceptance_expires,
+                "breakout_extension_bps": breakout_extension_bps,
+                "maximum_breakout_extension_bps": maximum_breakout_extension_bps,
+            }
+        # A breakout acceptance is not a permanent reservation of that price
+        # band. Returning below it invalidates the entry latch, after which a
+        # newly crossed qualified level may become the causal frontier.
+        state.pop("accepted_entry_resistance", None)
+    else:
+        state.pop("accepted_entry_resistance", None)
 
     # Arm one causal frontier and wait for price to clear that frontier.  A
     # newly formed *closer* resistance may tighten the watched threshold, but a
     # later higher band must not make the strategy chase price.  This is the
     # event-driven equivalent of selecting the current swing high and entering
     # on its next pass.
+    crossed_now = [
+        item
+        for item in usable
+        if previous_price is not None
+        and float(previous_price) <= item[0]
+        and observation.price > item[0]
+    ]
     overhead = [item for item in usable if item[0] >= observation.price]
     candidate_boundary, candidate_level = (
-        min(overhead, key=lambda item: item[0])
+        # A real-time cross is the causal entry event. It must take precedence
+        # over a more distant overhead band; otherwise a newly opened MACD
+        # regime is incorrectly forced to wait for the *next* swing high.
+        max(crossed_now, key=lambda item: item[0])
+        if crossed_now
+        else min(overhead, key=lambda item: item[0])
         if overhead
         else max(usable, key=lambda item: item[0])
     )
@@ -2346,7 +2349,19 @@ class LongMomentumStrategyEngine:
         flatten_time = str(
             dict(parameters.get("strategy_behavior") or {}).get("flatten_time") or ""
         )
-        if _at_or_after_session_time(observation.observed_at, flatten_time):
+        target_liquidation_required = bool(
+            state.pop("profit_target_liquidation_required", False)
+        )
+        if target_liquidation_required:
+            exit_route = {
+                "route_id": "profit-target-incomplete",
+                "name": "Profit target touched but not fully filled",
+                "mechanism": "profit_target_incomplete",
+                "position_fraction": 1.0,
+                "priority": 110,
+                "evidence": dict(state.get("last_profit_target_fill") or {}),
+            }
+        elif _at_or_after_session_time(observation.observed_at, flatten_time):
             state["disable_after_exit"] = True
             exit_route = {
                 "route_id": "session-flatten",
@@ -2870,7 +2885,9 @@ class LongMomentumStrategyEngine:
         )
         pullback = peak - observation.price
         macd_open, macd_evidence = _exact_positive_open_macd(observation, "1s")
-        vwap = _numeric_source_value(observation, "indicator.vwap.value", "1s")
+        vwap = _numeric_source_value(
+            observation, "indicator.vwap.execution_value", "1s"
+        )
         above_vwap = vwap is not None and observation.price > vwap
         support_lower = observation.structural_support_lower
         support_buffer = (
@@ -3919,6 +3936,13 @@ class AssignedLongMomentumStrategy:
                         "level_price": target_level,
                         "filled_at": state["target_replenishment_armed_at"],
                     }
+                    if (
+                        aggregate_position_quantity is not None
+                        and abs(float(aggregate_position_quantity)) > 1e-9
+                    ):
+                        state["profit_target_liquidation_required"] = True
+                        state["target_replenishment_quantity"] = 0.0
+                        state["target_replenishment_pending"] = False
                 if (
                     aggregate_position_quantity is not None
                     and abs(float(aggregate_position_quantity)) > 1e-9
@@ -5161,7 +5185,7 @@ def _rule_group(
 
 
 def _confirmation_confidence(observation: StrategyObservation) -> float:
-    return max(0.0, min(1.0, (observation.qmd_confidence + (0.75 if observation.vwap is not None else 0) + (0.75 if observation.macd_line is not None else 0)) / 3))
+    return max(0.0, min(1.0, (observation.qmd_confidence + (0.75 if observation.execution_vwap is not None else 0) + (0.75 if observation.macd_line is not None else 0)) / 3))
 
 
 def _initial_stop(

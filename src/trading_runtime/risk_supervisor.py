@@ -125,7 +125,8 @@ class ContinuousRiskSupervisor:
             target = max(target, AccountRiskState.EMERGENCY_EXIT, key=_risk_severity)
             reasons.append("protection_deficit")
         if (
-            internal_reaction_ms is not None
+            self.mode in {"live", "paper"}
+            and internal_reaction_ms is not None
             and internal_reaction_ms > policy.maximum_internal_reaction_ms
         ):
             target = max(target, AccountRiskState.ENTRIES_PAUSED, key=_risk_severity)

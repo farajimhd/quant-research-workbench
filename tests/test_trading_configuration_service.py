@@ -644,6 +644,35 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertFalse(migrated_vwap_rule["conditions"][0].get("left_interval"))
 
+    def test_current_schema_migrates_saved_legacy_vwap_rule_to_execution_vwap(self) -> None:
+        legacy = self._draft()
+        vwap_rule = next(
+            row
+            for row in legacy["market_discovery"]["rule_sets"]
+            if row["rule_set_id"] == "watchlist-vwap-breakout"
+        )
+        condition = vwap_rule["conditions"][0]
+        condition["right_source_id"] = "indicator.vwap.value"
+        condition["right_field_ref"] = "data.indicator.vwap.value@1:value"
+
+        migrated = _migrate_draft(legacy)
+
+        migrated_rule = next(
+            row
+            for row in migrated["market_discovery"]["rule_sets"]
+            if row["rule_set_id"] == "watchlist-vwap-breakout"
+        )
+        migrated_condition = migrated_rule["conditions"][0]
+        self.assertEqual(
+            migrated_condition["right_source_id"],
+            "indicator.vwap.execution_value",
+        )
+        self.assertEqual(
+            migrated_condition["right_field_ref"],
+            "data.indicator.vwap.execution_value@1:value",
+        )
+        _validate_market_discovery(migrated["market_discovery"])
+
     def test_schema_v28_moves_interval_variants_to_rule_and_composition_instances(self) -> None:
         legacy = self._draft()
         legacy["schema_version"] = 28
