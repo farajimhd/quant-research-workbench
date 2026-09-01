@@ -72,6 +72,8 @@ class BodyOnlyNewsRendererV4Test(unittest.TestCase):
             "To read more about this story, click here.",
             "To read more interviews with other women, you can find them on the forum page.",
             "Continue reading at Benzinga Pro",
+            "- Read more…",
+            "Read Morer At Forexlive",
         )
         for value in variants:
             with self.subTest(value=value):
@@ -97,6 +99,20 @@ class BodyOnlyNewsRendererV4Test(unittest.TestCase):
         }
         body = render_canonical_body(payload, normalized_row=self.row)
         self.assertEqual(body.canonical_body_text, "The trial will evaluate weight loss over 72 weeks.")
+
+    def test_multiline_social_embed_cta_is_removed_without_losing_quote_or_following_body(self) -> None:
+        payload = {
+            "title": self.row["title"],
+            "body": (
+                "<p>Quoted post announced a tournament.\nRead More👇https://example.com/promo\n"
+                "The quoted post listed a giveaway.</p><p>The article analysis resumes here.</p>"
+            ),
+        }
+        body = render_canonical_body(payload, normalized_row=self.row)
+        self.assertNotIn("Read More", body.canonical_body_text)
+        self.assertIn("Quoted post announced", body.canonical_body_text)
+        self.assertIn("listed a giveaway", body.canonical_body_text)
+        self.assertIn("analysis resumes", body.canonical_body_text)
 
     def test_legitimate_lowercase_phrase_is_preserved(self) -> None:
         payload = {

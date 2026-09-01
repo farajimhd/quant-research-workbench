@@ -50,7 +50,8 @@ _RELATED_PREFIX = re.compile(
     re.IGNORECASE,
 )
 _BARE_RELATED_CTA = re.compile(
-    r"^(?:read|see|watch|listen)\s+(?:more|also|next|related)(?:\.{2,}|\s*(?:here|at)\b|https?://|www\.).*$",
+    r"^(?:(?:read|see|watch|listen)\s+(?:more|also|next|related)(?:\.{2,}|…+|\s*(?:here|at)\b|https?://|www\.|[^\w\s].*https?://).*$|"
+    r"read\s+more\w*\s+at\b.*)$",
     re.IGNORECASE,
 )
 _INLINE_TERMINAL_RELATED = re.compile(
@@ -128,7 +129,7 @@ def _classify_blocks(
         original = str(block.text or "")
         cleaned = _clean(original)
         structural = _structural_text(cleaned)
-        included_text = _trim_terminal_related(cleaned)
+        included_text = _strip_related_lines(_trim_terminal_related(cleaned))
         role, disposition, reason = "article_body", "included", "article_content"
         folded_hash = _sha256(cleaned.casefold())
         if not cleaned:
@@ -194,6 +195,27 @@ def _structural_text(value: str) -> str:
 def _trim_terminal_related(value: str) -> str:
     match = _INLINE_TERMINAL_RELATED.search(value)
     return value[: match.start()].rstrip(" -–—|") if match else value
+
+
+def _strip_related_lines(value: str) -> str:
+    if "\n" not in value:
+        return value
+    output: list[str] = []
+    exclude_next = False
+    for line in value.splitlines():
+        structural = _structural_text(line)
+        if _RELATED_MARKER.fullmatch(structural):
+            exclude_next = True
+            continue
+        if _RELATED_PREFIX.fullmatch(structural) or _BARE_RELATED_CTA.fullmatch(structural):
+            exclude_next = False
+            continue
+        if exclude_next and _looks_like_link_title(structural):
+            exclude_next = False
+            continue
+        exclude_next = False
+        output.append(line)
+    return "\n".join(output).strip()
 
 
 def contract_manifest() -> dict[str, str]:
