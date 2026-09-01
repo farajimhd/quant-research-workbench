@@ -34,7 +34,7 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 23
+STRATEGY_REVISION = 24
 
 RULE_COMPARATORS = {
     "above_by_bps",
@@ -2621,7 +2621,8 @@ class LongMomentumStrategyEngine:
         policy = dict(parameters["protection"].get("profit_ladder") or {})
         if (
             not bool(policy.get("enabled", True))
-            or str(policy.get("selection_mode") or "") != "second_next_level"
+            or str(policy.get("selection_mode") or "")
+            not in {"ordinal_qualified_level", "second_next_level"}
             or observation.source_timeframe != "1s"
             or "bar_close" not in observation.evaluation_events
         ):
@@ -4174,7 +4175,7 @@ def _decision_reason_detail(
         "entry_confirmed": "Enter: latched liquidity, executable spread/activity, VWAP, exact positive/open one-second MACD (line > signal, line > 0, signal > 0), and Unified resistance acceptance all passed.",
         "reentry_confirmed": "Re-enter: executable spread/activity, VWAP, exact positive/open one-second MACD (line > signal, line > 0, signal > 0), and a fresh Unified resistance recovery all passed.",
         "target_profit_replenishment": "Profit-target replenishment: a target filled, price made a causal pullback, Unified support held, and VWAP plus exact positive/open one-second MACD remained valid.",
-        "structural_profit_target_advanced": "Target update: a completed one-second candle held above another qualifying level while MACD remained positive and open; the live profit target advanced to the second next qualifying level.",
+        "structural_profit_target_advanced": "Target update: a completed one-second candle held above another qualifying level while MACD remained positive and open; the live profit target advanced to the configured ordinal qualifying level.",
         "failure_to_extend_partial": "Profit reduction: price stopped extending while QMD flow deteriorated; sell half and keep the protected remainder.",
         "qmd_flow_geometry_exhaustion": "Exit: QMD flow structure weakened with confident flow-price divergence.",
         "loss_of_confirmed_higher_low": "Exit: price lost the latest causally confirmed one-second higher low.",
@@ -5273,12 +5274,16 @@ def _structural_profit_targets(
                 return
 
     selection_mode = str(policy.get("selection_mode") or "ranked")
-    if selection_mode == "second_next_level":
+    if selection_mode in {"ordinal_qualified_level", "second_next_level"}:
         ordered_prices = sorted(
             {candidate for _, candidate, _ in ranked_candidates},
             reverse=side == "short",
         )
-        target_ordinal = max(1, int(policy.get("target_level_ordinal") or 2))
+        default_ordinal = 2 if selection_mode == "second_next_level" else 3
+        target_ordinal = max(
+            1,
+            int(policy.get("target_level_ordinal") or default_ordinal),
+        )
         selected = (
             [ordered_prices[target_ordinal - 1]]
             if len(ordered_prices) >= target_ordinal
@@ -5301,7 +5306,11 @@ def _structural_profit_targets(
     append_candidates(selected)
     unique.sort(reverse=side == "short")
     if selection_evidence is not None:
-        target_ordinal = max(1, int(policy.get("target_level_ordinal") or 2))
+        default_ordinal = 2 if selection_mode == "second_next_level" else 3
+        target_ordinal = max(
+            1,
+            int(policy.get("target_level_ordinal") or default_ordinal),
+        )
         ordered_ladder = sorted(
             ranked_candidates,
             key=lambda item: item[1],

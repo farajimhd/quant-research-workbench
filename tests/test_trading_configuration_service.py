@@ -1367,11 +1367,11 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertEqual(
             default_profile["parameters"]["protection"]["profit_ladder"]["selection_mode"],
-            "second_next_level",
+            "ordinal_qualified_level",
         )
         self.assertEqual(
             default_profile["parameters"]["protection"]["profit_ladder"]["target_level_ordinal"],
-            2,
+            3,
         )
         self.assertEqual(
             default_profile["parameters"]["protection"]["profit_ladder"]["minimum_hold_probability"],

@@ -4110,11 +4110,11 @@ def _default_draft() -> dict[str, Any]:
     }
     system_profiles[0]["parameters"]["protection"]["profit_ladder"].update({
         "maximum_targets": 1,
-        # The target is the second nearest qualifying level above the current
-        # price.  As completed one-second bars accept successive levels while
+        # The target is the third nearest qualifying level above the completed
+        # one-second close. As completed bars accept successive levels while
         # MACD remains positive/open, the same rule advances the live target.
-        "selection_mode": "second_next_level",
-        "target_level_ordinal": 2,
+        "selection_mode": "ordinal_qualified_level",
+        "target_level_ordinal": 3,
         "minimum_level_strength": 0.0,
         "minimum_level_confidence": 0.0,
         "minimum_reaction_probability": 0.0,
