@@ -821,10 +821,11 @@ ORDER BY cityHash64(canonical_news_id) LIMIT {int(per_category)} FORMAT JSONEach
 def write_authority(
     client: RetryingClickHouseHttpClient, target: NewsBodyV3TargetConfig, run_id: str, status: str,
     counts: BodyBuildCounts, report_path: str, started_at: str, relational_errors: int = 0,
-    is_active: bool = False, previous_active: str = "", renderer_version: str = BODY_RENDERER_VERSION,
+    is_active: bool = False, previous_active: str = "", renderer_version: str | None = None,
 ) -> None:
+    effective_renderer_version = renderer_version or BODY_RENDERER_VERSION
     row = {
-        "renderer_version": renderer_version, "run_id": run_id, "status": status,
+        "renderer_version": effective_renderer_version, "run_id": run_id, "status": status,
         "is_active": int(is_active), "source_table": target.source_table, "rendered_table": target.rendered_table,
         "source_rows": counts.source_rows, "rendered_rows": counts.rendered_rows,
         "missing_body_rows": counts.missing_body_rows, "partial_body_rows": counts.partial_body_rows,
