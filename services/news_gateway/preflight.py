@@ -9,7 +9,7 @@ from typing import Callable
 
 from pipelines.news.benzinga.core.coverage_manifest import CoverageManifestConfig, ensure_coverage_manifest_table
 from pipelines.news.benzinga.core.clickhouse_writer_v2 import NewsV2TargetConfig, assert_v2_ready
-from pipelines.news.benzinga.core.clickhouse_writer_body_v3 import NewsBodyV3TargetConfig, validate_body_v3_tables
+from pipelines.news.benzinga.core.clickhouse_writer_body_v4 import body_v4_target_config, validate_body_v4_tables
 from pipelines.news.benzinga.news_pipeline.provider import BenzingaProviderClient, BenzingaProviderConfig
 from research.mlops.clickhouse import ClickHouseHttpClient
 from services.news_gateway.config import NewsGatewayConfig
@@ -86,15 +86,15 @@ def check_configuration(config: NewsGatewayConfig, clickhouse_password: str, api
         missing.append("ClickHouse password")
     if missing:
         raise RuntimeError(f"missing required configuration: {missing}")
-    if config.body_v3_shadow_enabled:
-        if not config.body_v3_shadow_end_utc:
-            raise RuntimeError("NEWS_BENZINGA_BODY_V3_SHADOW_END_UTC is required when body-v3 shadow writes are enabled")
+    if config.body_v4_shadow_enabled:
+        if not config.body_v4_shadow_end_utc:
+            raise RuntimeError("NEWS_BENZINGA_BODY_V4_SHADOW_END_UTC is required when body-v4 shadow writes are enabled")
         try:
-            shadow_end = datetime.fromisoformat(config.body_v3_shadow_end_utc.replace("Z", "+00:00"))
+            shadow_end = datetime.fromisoformat(config.body_v4_shadow_end_utc.replace("Z", "+00:00"))
         except ValueError as exc:
-            raise RuntimeError("NEWS_BENZINGA_BODY_V3_SHADOW_END_UTC must be an ISO-8601 timestamp") from exc
+            raise RuntimeError("NEWS_BENZINGA_BODY_V4_SHADOW_END_UTC must be an ISO-8601 timestamp") from exc
         if shadow_end.tzinfo is None or shadow_end.astimezone(UTC) <= datetime.now(UTC):
-            raise RuntimeError("NEWS_BENZINGA_BODY_V3_SHADOW_END_UTC must be a future timezone-aware timestamp")
+            raise RuntimeError("NEWS_BENZINGA_BODY_V4_SHADOW_END_UTC must be a future timezone-aware timestamp")
     return (
         f"bind={config.bind} execute={config.execute} "
         f"clickhouse={config.clickhouse_url} user={config.clickhouse_user}"
@@ -137,16 +137,16 @@ def check_clickhouse(config: NewsGatewayConfig, clickhouse_password: str) -> str
             authority_table=config.render_authority_table,
         ),
     )
-    if config.body_v3_shadow_enabled:
-        validate_body_v3_tables(
+    if config.body_v4_shadow_enabled:
+        validate_body_v4_tables(
             client,
-            NewsBodyV3TargetConfig(database=config.clickhouse_database, require_certified=True),
+            body_v4_target_config(database=config.clickhouse_database, require_certified=True),
         )
     return (
         f"render_authority={config.clickhouse_database}.{config.rendered_table},"
         f"{config.clickhouse_database}.{config.rendered_ticker_table},"
         f"{config.clickhouse_database}.{config.coverage_table} "
-        f"body_v3_shadow={'enabled_until_' + config.body_v3_shadow_end_utc if config.body_v3_shadow_enabled else 'disabled'}"
+        f"body_v4_shadow={'enabled_until_' + config.body_v4_shadow_end_utc if config.body_v4_shadow_enabled else 'disabled'}"
     )
 
 

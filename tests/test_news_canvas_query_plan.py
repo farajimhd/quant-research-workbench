@@ -43,7 +43,7 @@ class NewsCanvasQueryPlanTests(unittest.TestCase):
             set(plan.source_paths),
             {
                 "q_live.benzinga_news_event_v2",
-                "q_live.benzinga_news_rendered_v3",
+                "q_live.benzinga_news_rendered_v4",
                 "q_live.news_synthesis_v1",
             },
         )

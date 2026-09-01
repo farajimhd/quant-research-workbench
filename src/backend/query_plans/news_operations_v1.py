@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from research.mlops.clickhouse import sql_string
 
 
-PLAN_VERSION = 2
+PLAN_VERSION = 3
 
 
 def intraday_histogram(
@@ -118,7 +118,7 @@ def today_rows(
             lengthUTF8(ifNull(r.canonical_body_text, '')) AS full_text_chars,
             substring(ifNull(r.canonical_body_text, ''), 1, 240) AS text_preview
         FROM `q_live`.`benzinga_news_event_v2` AS n FINAL
-        LEFT JOIN `q_live`.`benzinga_news_rendered_v3` AS r FINAL
+        LEFT JOIN `q_live`.`benzinga_news_rendered_v4` AS r FINAL
             ON r.published_date=n.published_date
             AND r.provider_article_id=n.provider_article_id
         WHERE n.published_at_utc >= window_start

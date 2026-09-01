@@ -37,7 +37,7 @@ Use `--prepare-only` to prepare or validate ClickHouse without starting the UI.
 2. Filter in review order: synthesis path, title pattern, V61 forecast-trigger
    rule/reason, ticker count, Gold, then V61. Less-frequent scope and rulebook
    diagnostics are under **More filters**.
-   Search always covers certified Body V3 article bodies plus titles, templates, teaser,
+   Search always covers certified Body V4 article bodies plus titles, templates, teaser,
    author, provider, tickers, channels, tags, and source ID. UTC time-of-day
    filters work independently of date and support ranges that cross midnight.
    Search mode can either require or exclude the text. Structured filters are
@@ -58,8 +58,8 @@ Use `--prepare-only` to prepare or validate ClickHouse without starting the UI.
 6. Add campaign, current-view, or article notes as needed, then mark the
    exact query-defined group complete.
 
-Article titles open the certified Body V3 text and its body authority/status,
-alongside the frozen V61 and gold lineage, in a centered modal. If Body V3 marks
+Article titles open the certified Body V4 text and its body authority/status,
+alongside the frozen V61 and gold lineage, in a centered modal. If Body V4 marks
 an article body missing, the modal uses the teaser or title rather than exposing
 the older contaminated rendered body.
 
@@ -84,7 +84,7 @@ they do not silently change the currently deployed model or its predictions.
 The tables are:
 
 - `q_live.news_synthesis_v61_review_source_v3`: frozen V61/gold source and lineage
-- `q_live.benzinga_news_rendered_v3`: certified body text used by search and the article modal
+- `q_live.benzinga_news_rendered_v4`: certified body text used by search and the article modal
 - `q_live.news_synthesis_v61_review_manifest_v3`: source lineage/readiness
 - `q_live.news_synthesis_v61_operator_label_history_v3`: article decisions
 - `q_live.news_synthesis_v61_review_group_history_v3`: query-group state

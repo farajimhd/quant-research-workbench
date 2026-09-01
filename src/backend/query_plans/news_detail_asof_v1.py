@@ -3,7 +3,7 @@ from __future__ import annotations
 from research.mlops.clickhouse import sql_string
 
 
-PLAN_VERSION = 2
+PLAN_VERSION = 3
 
 
 def service_article(canonical_news_id: str) -> str:
@@ -24,7 +24,7 @@ def service_article(canonical_news_id: str) -> str:
             ) AS last_updated_at_utc,
             formatDateTime(n.updated_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS updated_at_utc
         FROM `q_live`.`benzinga_news_event_v2` AS n FINAL
-        LEFT JOIN `q_live`.`benzinga_news_rendered_v3` AS r FINAL
+        LEFT JOIN `q_live`.`benzinga_news_rendered_v4` AS r FINAL
             ON r.published_date=n.published_date
             AND r.provider_article_id=n.provider_article_id
         WHERE n.canonical_news_id = {identity}
@@ -80,7 +80,7 @@ def rendered_article(
     return f"""
         SELECT canonical_body_text AS text,
                body_status AS render_status
-        FROM q_live.benzinga_news_rendered_v3 FINAL
+        FROM q_live.benzinga_news_rendered_v4 FINAL
         PREWHERE published_date = toDate({sql_string(published_date)})
         WHERE provider_article_id = {sql_string(provider_article_id)}
         LIMIT 1

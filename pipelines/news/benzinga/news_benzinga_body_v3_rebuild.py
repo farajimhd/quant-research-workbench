@@ -23,6 +23,8 @@ from pipelines.news.benzinga.news_benzinga_body_v3 import (
     BODY_CLEANER_VERSION, BODY_RENDERER_VERSION, BODY_TEXT_CONTRACT, body_purity_reasons, build_body_v3_rows,
     contract_manifest, render_canonical_body,
 )
+from pipelines.news.benzinga.core.clickhouse_writer_body_v4 import body_v4_target_config
+from pipelines.news.benzinga import news_benzinga_body_v4
 from pipelines.news.benzinga.news_benzinga_render_v2 import NEWS_RENDERER_VERSION
 from pipelines.news.benzinga.news_benzinga_rendered_v2_rebuild import (
     DEFAULT_PATH_MAP, RetryingClickHouseHttpClient, append_jsonl, parse_path_maps,
@@ -37,6 +39,7 @@ from research.mlops.env import discover_env_files, load_env_files
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_OUTPUT_ROOT = Path("D:/TradingML/runtimes/news/benzinga_news_body_v3")
+DEFAULT_V4_OUTPUT_ROOT = Path("D:/TradingML/runtimes/news/benzinga_news_body_v4")
 
 
 @dataclass(slots=True)
@@ -53,12 +56,12 @@ class BodyBuildCounts:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build, certify, promote, or roll back the Benzinga body-only v3 authority.")
+    parser = argparse.ArgumentParser(description="Build, certify, promote, or roll back a versioned Benzinga body-only authority.")
     parser.add_argument("action", choices=("rebuild", "certify", "promote", "rollback"), nargs="?", default="rebuild")
     parser.add_argument("--execute", action="store_true", help="Allow ClickHouse writes; rebuild otherwise validates only.")
     parser.add_argument("--database", default=os.environ.get("NEWS_BENZINGA_CLICKHOUSE_DATABASE", "q_live"))
     parser.add_argument("--source-table", default="benzinga_news_event_v2")
-    parser.add_argument("--previous-rendered-table", default="benzinga_news_rendered_v2")
+    parser.add_argument("--previous-rendered-table", default="")
     parser.add_argument("--previous-source-table", default="benzinga_news_source_v2")
     parser.add_argument("--start-date", default="")
     parser.add_argument("--end-date-exclusive", default="")
@@ -67,16 +70,39 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=max(4, min(32, os.cpu_count() or 16)))
     parser.add_argument("--window-days", type=int, default=14, help="Bounded restart unit; rows retain daily partitions.")
     parser.add_argument("--insert-batch-size", type=int, default=500)
-    parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
+    parser.add_argument("--body-version", choices=("v3", "v4"), default="v3")
+    parser.add_argument("--output-root", default="")
     parser.add_argument("--path-prefix-map", action="append", default=[])
     parser.add_argument("--clickhouse-attempts", type=int, default=12)
     parser.add_argument("--clickhouse-timeout-seconds", type=float, default=180.0)
     return parser.parse_args(argv)
 
 
+def configure_body_version(version: str) -> None:
+    """Bind this single-process runner to one immutable body contract."""
+    global BODY_CLEANER_VERSION, BODY_RENDERER_VERSION, BODY_TEXT_CONTRACT
+    global body_purity_reasons, build_body_v3_rows, contract_manifest, render_canonical_body
+    if version == "v3":
+        return
+    BODY_CLEANER_VERSION = news_benzinga_body_v4.BODY_CLEANER_VERSION
+    BODY_RENDERER_VERSION = news_benzinga_body_v4.BODY_RENDERER_VERSION
+    BODY_TEXT_CONTRACT = news_benzinga_body_v4.BODY_TEXT_CONTRACT
+    body_purity_reasons = news_benzinga_body_v4.body_purity_reasons
+    build_body_v3_rows = news_benzinga_body_v4.build_body_v4_rows
+    contract_manifest = news_benzinga_body_v4.contract_manifest
+    render_canonical_body = news_benzinga_body_v4.render_canonical_body
+
+
 def main(argv: list[str] | None = None) -> int:
     load_env_files(discover_env_files(REPO_ROOT), verbose=False)
     args = parse_args(argv)
+    configure_body_version(args.body_version)
+    if not args.previous_rendered_table:
+        args.previous_rendered_table = (
+            "benzinga_news_rendered_v3" if args.body_version == "v4" else "benzinga_news_rendered_v2"
+        )
+    if not args.output_root:
+        args.output_root = str(DEFAULT_V4_OUTPUT_ROOT if args.body_version == "v4" else DEFAULT_OUTPUT_ROOT)
     run_id = datetime.now(UTC).strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
     run_root = Path(args.output_root) / run_id
     run_root.mkdir(parents=True, exist_ok=True)
@@ -86,7 +112,11 @@ def main(argv: list[str] | None = None) -> int:
         attempts=args.clickhouse_attempts, retry_base_seconds=2, retry_max_seconds=30,
         request_timeout_seconds=args.clickhouse_timeout_seconds, status_path=status_path,
     )
-    target = NewsBodyV3TargetConfig(database=args.database, execute=args.execute)
+    target = (
+        body_v4_target_config(database=args.database, execute=args.execute)
+        if args.body_version == "v4"
+        else NewsBodyV3TargetConfig(database=args.database, execute=args.execute)
+    )
     try:
         if args.action in {"certify", "promote", "rollback"}:
             if not args.execute:
@@ -124,7 +154,8 @@ def rebuild(
     audit_samples: dict[str, list[dict[str, Any]]] = {}
     before_labels = operator_label_snapshot(client, args.database)
     print(
-        f"NEWS BODY V3 | contract={BODY_TEXT_CONTRACT} days={len(days):,} windows={len(windows):,} "
+        f"NEWS BODY {BODY_RENDERER_VERSION.rsplit('_', 1)[-1].upper()} | contract={BODY_TEXT_CONTRACT} "
+        f"days={len(days):,} windows={len(windows):,} "
         f"source_rows={expected_total:,} execute={args.execute} workers={args.workers}", flush=True,
     )
     if args.execute:
@@ -241,7 +272,7 @@ def rebuild(
         write_authority(client, target, run_id, status, counts, str(report_path), started,
                         relational_errors=len(audit["errors"]))
         if status == "audit_failed":
-            raise RuntimeError(f"Body v3 was not certified: {audit['errors']}; report={report_path}")
+            raise RuntimeError(f"{BODY_RENDERER_VERSION} was not certified: {audit['errors']}; report={report_path}")
     print(f"COMPLETED | status={audit['status']} report={report_path}", flush=True)
     return 0
 
@@ -609,7 +640,7 @@ def certify_existing(
         relational_errors=len(audit["errors"]),
     )
     if status != "certified":
-        raise RuntimeError(f"Body v3 was not certified: {audit['errors']}; report={report_path}")
+        raise RuntimeError(f"{BODY_RENDERER_VERSION} was not certified: {audit['errors']}; report={report_path}")
     print(f"BODY AUTHORITY CERTIFIED | renderer={BODY_RENDERER_VERSION} report={report_path}", flush=True)
     return 0
 
@@ -699,14 +730,25 @@ def load_previous_hashes(
     if not table_exists(client, database, table):
         return {}
     end = end or start + timedelta(days=1)
+    columns = {
+        value
+        for value in client.execute(
+            f"SELECT name FROM system.columns WHERE database={sql_string(database)} "
+            f"AND table={sql_string(table)} FORMAT TSV"
+        ).splitlines()
+        if value
+    }
+    hash_column = "body_hash" if "body_hash" in columns else "rendered_text_hash"
+    if hash_column not in columns or "renderer_version" not in columns:
+        raise RuntimeError(f"previous rendered table has no supported hash contract: {database}.{table}")
     sql = f"""
-SELECT canonical_news_id, rendered_text_hash, renderer_version
+SELECT canonical_news_id, {quote_ident(hash_column)} AS previous_text_hash, renderer_version
 FROM {quote_ident(database)}.{quote_ident(table)} FINAL
 WHERE published_date >= toDate('{start.isoformat()}') AND published_date < toDate('{end.isoformat()}')
 FORMAT JSONEachRow
 """
     return {
-        str(row["canonical_news_id"]): (str(row["rendered_text_hash"]), str(row["renderer_version"]))
+        str(row["canonical_news_id"]): (str(row["previous_text_hash"]), str(row["renderer_version"]))
         for line in client.execute(sql).split("\n") if line.strip() for row in [json.loads(line)]
     }
 
@@ -854,14 +896,21 @@ def body_binary_wrapper_sql(column: str) -> str:
 
 def body_marker_sql(column: str) -> str:
     needles = (
-        "\nRead Also", "\nRead Next", "\nRead full article", "\nDisclosure:", "\nDisclaimer:",
+        "\nRead Also", "\nRead Next", "\nRead More", "\n- Read Also", "\n- Read Next", "\n- Read More",
+        "\n• Read Also", "\n• Read Next", "\n• Read More", "\nRead full article", "\nContinue reading",
+        "\nTo read more", "\nDisclosure:", "\nDisclaimer:",
         "\nReaders are advised", "\nSubscribe now", "\nSign up",
     )
     positions = [f"positionCaseInsensitive({column},{sql_string(needle)})>0" for needle in needles]
     positions.extend(
         f"startsWith(lowerUTF8({column}),{sql_string(prefix)})"
-        for prefix in ("read also", "read next", "read full article", "disclosure:", "disclaimer:", "readers are advised", "subscribe now", "sign up")
+        for prefix in (
+            "read also", "read next", "read more", "- read also", "- read next", "- read more",
+            "• read also", "• read next", "• read more", "read full article", "continue reading",
+            "to read more", "disclosure:", "disclaimer:", "readers are advised", "subscribe now", "sign up",
+        )
     )
+    positions.append(f"match({column},{sql_string(r'(?s).*[[:space:]][-–—|]?[[:space:]]*(READ|SEE|WATCH|LISTEN)[[:space:]]+(ALSO|NEXT|MORE|RELATED)[[:space:]]*:.*')})")
     return " OR ".join(positions)
 
 

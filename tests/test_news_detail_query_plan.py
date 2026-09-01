@@ -12,12 +12,12 @@ from src.backend.query_plans.news_detail_asof_v1 import (
 
 
 class NewsDetailQueryPlanTests(unittest.TestCase):
-    def test_service_detail_joins_body_v3_by_stable_article_and_ticker_identity(self) -> None:
+    def test_service_detail_joins_body_v4_by_stable_article_and_ticker_identity(self) -> None:
         article = service_article("news'1")
         tickers = service_tickers("news'1")
 
         self.assertIn("n.canonical_news_id = 'news\\'1'", article)
-        self.assertIn("benzinga_news_rendered_v3", article)
+        self.assertIn("benzinga_news_rendered_v4", article)
         self.assertIn("r.provider_article_id=n.provider_article_id", article)
         self.assertNotIn("r.source_revision_key=n.source_revision_key", article)
         self.assertIn("LIMIT 1", article)

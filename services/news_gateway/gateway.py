@@ -263,8 +263,8 @@ class NewsGateway:
                 text_limit_chars=config.text_limit_chars,
                 raw_root_win=config.raw_root_win,
                 output_root_win=config.prepared_root_win / "benzinga_news_gateway",
-                body_v3_shadow_enabled=config.body_v3_shadow_enabled,
-                body_v3_shadow_end_utc=config.body_v3_shadow_end_utc,
+                body_v4_shadow_enabled=config.body_v4_shadow_enabled,
+                body_v4_shadow_end_utc=config.body_v4_shadow_end_utc,
             )
         )
         self.enricher = NewsUrlEnricher(

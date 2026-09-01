@@ -67,6 +67,7 @@ class NewsBodyV3TargetConfig:
     ticker_table: str = DEFAULT_TICKER_TABLE
     lineage_table: str = DEFAULT_LINEAGE_TABLE
     authority_table: str = DEFAULT_AUTHORITY_TABLE
+    renderer_version: str = BODY_RENDERER_VERSION
     execute: bool = False
     require_certified: bool = False
     skip_table_validation: bool = False
@@ -163,15 +164,15 @@ def validate_body_v3_tables(client: ClickHouseHttpClient, config: NewsBodyV3Targ
                 config.ticker_table, config.lineage_table, config.authority_table]
     missing = [name for name in required if not table_exists(client, config.database, name)]
     if missing:
-        raise RuntimeError(f"missing Benzinga body-v3 tables in {config.database}: {missing}")
+        raise RuntimeError(f"missing Benzinga body authority tables in {config.database}: {missing}")
     if config.require_certified:
         table = f"{quote_ident(config.database)}.{quote_ident(config.authority_table)}"
         sql = (
-            f"SELECT status FROM {table} FINAL WHERE renderer_version={sql_string(BODY_RENDERER_VERSION)} "
+            f"SELECT status FROM {table} FINAL WHERE renderer_version={sql_string(config.renderer_version)} "
             "ORDER BY updated_at_utc DESC LIMIT 1 FORMAT TSV"
         )
         if client.execute(sql).strip() not in {"certified", "promoted"}:
-            raise RuntimeError("Benzinga body-v3 authority is not certified")
+            raise RuntimeError(f"Benzinga body authority {config.renderer_version} is not certified")
 
 
 def write_many_news_pipeline_results_body_v3(
@@ -191,19 +192,19 @@ def write_many_news_pipeline_results_body_v3(
     seen: set[tuple[str, str]] = set()
     duplicates: list[str] = []
     for result in results:
-        if not result.body_v3_event_row or not result.body_v3_rendered_row:
-            raise RuntimeError(f"pipeline result lacks body-v3 rows: {result.canonical_news_id}")
-        key = (str(result.body_v3_event_row["published_date"]), str(result.provider_article_id))
+        if not result.body_event_row or not result.body_rendered_row:
+            raise RuntimeError(f"pipeline result lacks body authority rows: {result.canonical_news_id}")
+        key = (str(result.body_event_row["published_date"]), str(result.provider_article_id))
         if key in seen:
             duplicates.append(result.canonical_news_id)
             continue
         seen.add(key)
-        events.append(result.body_v3_event_row)
-        sources.extend(result.body_v3_source_rows)
-        blocks.extend(result.body_v3_block_rows)
-        rendered.append(result.body_v3_rendered_row)
-        tickers.extend(result.body_v3_ticker_links)
-        lineage.append(result.body_v3_lineage_row)
+        events.append(result.body_event_row)
+        sources.extend(result.body_source_rows)
+        blocks.extend(result.body_block_rows)
+        rendered.append(result.body_rendered_row)
+        tickers.extend(result.body_ticker_links)
+        lineage.append(result.body_lineage_row)
     if config.execute and events:
         products = [
             (config.event_table, EVENT_COLUMNS, events), (config.source_table, SOURCE_COLUMNS, sources),

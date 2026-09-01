@@ -15,9 +15,9 @@ from pipelines.news.benzinga.core.clickhouse_writer_v2 import (
     write_many_news_pipeline_results_v2,
     write_news_pipeline_result_v2,
 )
-from pipelines.news.benzinga.core.clickhouse_writer_body_v3 import (
-    NewsBodyV3TargetConfig,
-    write_many_news_pipeline_results_body_v3,
+from pipelines.news.benzinga.core.clickhouse_writer_body_v4 import (
+    body_v4_target_config,
+    write_many_news_pipeline_results_body_v4,
 )
 from pipelines.news.benzinga.core.contracts import NewsPipelineResult
 from pipelines.news.benzinga.core.item_pipeline import ItemPipelineOptions, process_benzinga_news_item
@@ -54,7 +54,7 @@ class BenzingaNewsPipeline:
         downloaded_at_utc: datetime | None = None,
         enrichment_rows: list[dict[str, Any]] | None = None,
     ) -> ProcessedNewsItem:
-        shadow_active, _shadow_warning = body_v3_shadow_state(self.config)
+        shadow_active, _shadow_warning = body_v4_shadow_state(self.config)
         result = process_benzinga_news_item(
             payload,
             policy=self.policy,
@@ -66,7 +66,7 @@ class BenzingaNewsPipeline:
                 text_limit_chars=self.config.text_limit_chars,
                 max_enriched_text_chars_per_url=self.config.max_enriched_text_chars_per_url,
                 max_enriched_urls_per_article=self.config.max_enriched_urls_per_article,
-                build_body_v3=shadow_active,
+                build_body_authority=shadow_active,
             ),
         )
         return ProcessedNewsItem(result=result, raw_json_path=raw_artifact_path)
@@ -181,13 +181,13 @@ class BenzingaNewsPipeline:
                     skip_table_validation=skip_table_validation,
                 ),
             )
-            shadow_active, shadow_warning = body_v3_shadow_state(self.config)
+            shadow_active, shadow_warning = body_v4_shadow_state(self.config)
             if shadow_active:
                 try:
-                    write_many_news_pipeline_results_body_v3(
+                    write_many_news_pipeline_results_body_v4(
                         client,
                         [item.result for item in processed],
-                        config=NewsBodyV3TargetConfig(
+                        config=body_v4_target_config(
                             database=target_cfg.database,
                             execute=execute,
                             require_certified=True,
@@ -197,7 +197,7 @@ class BenzingaNewsPipeline:
                     summary = replace(
                         summary,
                         warnings=sorted(set(summary.warnings) | {
-                            f"body_v3_shadow_failed:{type(exc).__name__}:{str(exc)[:180]}"
+                            f"body_v4_shadow_failed:{type(exc).__name__}:{str(exc)[:180]}"
                         }),
                     )
             elif shadow_warning:
@@ -225,18 +225,18 @@ def raw_downloaded_at_now() -> str:
     return to_provider_rfc3339(datetime.now(UTC))
 
 
-def body_v3_shadow_state(config: BenzingaPipelineConfig) -> tuple[bool, str]:
-    if not config.body_v3_shadow_enabled:
+def body_v4_shadow_state(config: BenzingaPipelineConfig) -> tuple[bool, str]:
+    if not config.body_v4_shadow_enabled:
         return False, ""
-    if not config.body_v3_shadow_end_utc:
-        return False, "body_v3_shadow_disabled:missing_end_utc"
-    value = config.body_v3_shadow_end_utc.replace("Z", "+00:00")
+    if not config.body_v4_shadow_end_utc:
+        return False, "body_v4_shadow_disabled:missing_end_utc"
+    value = config.body_v4_shadow_end_utc.replace("Z", "+00:00")
     try:
         end = datetime.fromisoformat(value)
     except ValueError:
-        return False, "body_v3_shadow_disabled:invalid_end_utc"
+        return False, "body_v4_shadow_disabled:invalid_end_utc"
     if end.tzinfo is None:
-        return False, "body_v3_shadow_disabled:naive_end_utc"
+        return False, "body_v4_shadow_disabled:naive_end_utc"
     if datetime.now(UTC) >= end.astimezone(UTC):
-        return False, "body_v3_shadow_expired"
+        return False, "body_v4_shadow_expired"
     return True, ""

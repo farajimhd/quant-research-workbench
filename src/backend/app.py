@@ -400,7 +400,7 @@ SERVICE_DATABASE_TABLES: dict[str, list[dict[str, str]]] = {
     "news": [
         {"database": "q_live", "table": "benzinga_news_event_v2", "role": "news events"},
         {"database": "q_live", "table": "benzinga_news_rendered_v2", "role": "rendered news"},
-        {"database": "q_live", "table": "benzinga_news_rendered_v3", "role": "body-only rendered news"},
+        {"database": "q_live", "table": "benzinga_news_rendered_v4", "role": "body-only rendered news"},
         {"database": "q_live", "table": "benzinga_news_body_authority_v1", "role": "body authority"},
         {"database": "q_live", "table": "benzinga_news_ticker_v2", "role": "ticker links"},
         {"database": "q_live", "table": "benzinga_news_render_authority_v2", "role": "render authority"},

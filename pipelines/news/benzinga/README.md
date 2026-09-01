@@ -46,12 +46,14 @@ Body-only successor authority (one-day read-only validation by default):
 ```powershell
 python -m pipelines.news.benzinga.run_news_body_v3_rebuild
 python -m pipelines.news.benzinga.run_news_body_v3_rebuild rebuild --execute
+python -m pipelines.news.benzinga.run_news_body_v4_rebuild rebuild --execute
 ```
 
-See the [body V3 contract](../../../docs/data_contracts/benzinga_news_body_v3.md).
+See the retained [body V3 contract](../../../docs/data_contracts/benzinga_news_body_v3.md)
+and active successor [body V4 contract](../../../docs/data_contracts/benzinga_news_body_v4.md).
 This stage does not repoint News Synthesis, TF-IDF/DeepFM, embeddings,
 hypotheses, the reviewer, or application readers. After full certification,
-`NEWS_BENZINGA_BODY_V3_SHADOW_ENABLED=1` enables temporary live comparison
+`NEWS_BENZINGA_BODY_V4_SHADOW_ENABLED=1` enables temporary live comparison
 writes while V2 remains production authority.
 
 Embed the complete article population once per article:

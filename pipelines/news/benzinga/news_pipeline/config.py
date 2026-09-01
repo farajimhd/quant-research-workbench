@@ -72,8 +72,8 @@ class BenzingaPipelineConfig:
     url_max_html_bytes: int = 4_000_000
     url_max_pdf_bytes: int = 12_000_000
     url_max_retries: int = 0
-    body_v3_shadow_enabled: bool = False
-    body_v3_shadow_end_utc: str = ""
+    body_v4_shadow_enabled: bool = False
+    body_v4_shadow_end_utc: str = ""
 
     @classmethod
     def from_env(cls) -> "BenzingaPipelineConfig":
@@ -94,8 +94,8 @@ class BenzingaPipelineConfig:
             url_max_html_bytes=int(os.environ.get("NEWS_BENZINGA_URL_MAX_HTML_BYTES") or "4000000"),
             url_max_pdf_bytes=int(os.environ.get("NEWS_BENZINGA_URL_MAX_PDF_BYTES") or "12000000"),
             url_max_retries=int(os.environ.get("NEWS_BENZINGA_URL_MAX_RETRIES") or "0"),
-            body_v3_shadow_enabled=(os.environ.get("NEWS_BENZINGA_BODY_V3_SHADOW_ENABLED") or "0").strip().lower() in {"1", "true", "yes", "on"},
-            body_v3_shadow_end_utc=(os.environ.get("NEWS_BENZINGA_BODY_V3_SHADOW_END_UTC") or "").strip(),
+            body_v4_shadow_enabled=(os.environ.get("NEWS_BENZINGA_BODY_V4_SHADOW_ENABLED") or "0").strip().lower() in {"1", "true", "yes", "on"},
+            body_v4_shadow_end_utc=(os.environ.get("NEWS_BENZINGA_BODY_V4_SHADOW_END_UTC") or "").strip(),
         )
 
 

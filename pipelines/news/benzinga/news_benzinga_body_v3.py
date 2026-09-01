@@ -24,6 +24,22 @@ BODY_CLEANER_VERSION = "benzinga_body_cleaner_v3"
 BODY_RENDERER_VERSION = "benzinga_body_renderer_v3"
 BODY_TEXT_CONTRACT = "benzinga_canonical_body_only_v1"
 
+
+@dataclass(frozen=True, slots=True)
+class BodyContract:
+    source_selection_version: str
+    cleaner_version: str
+    renderer_version: str
+    text_contract: str
+
+
+BODY_V3_CONTRACT = BodyContract(
+    source_selection_version=BODY_SOURCE_SELECTION_VERSION,
+    cleaner_version=BODY_CLEANER_VERSION,
+    renderer_version=BODY_RENDERER_VERSION,
+    text_contract=BODY_TEXT_CONTRACT,
+)
+
 MIN_PROVIDER_BODY_CHARS = 20
 MIN_FALLBACK_BODY_CHARS = 120
 MIN_COMPLETE_PROVIDER_CHARS = 280
@@ -121,6 +137,8 @@ def render_canonical_body(
     normalized_row: dict[str, Any] | None = None,
     enrichment_rows: Iterable[dict[str, Any]] = (),
     rendered_article: RenderedNewsArticle | None = None,
+    contract: BodyContract = BODY_V3_CONTRACT,
+    block_classifier: Any = None,
 ) -> CanonicalBodyArticle:
     """Build one deterministic body authority while retaining every disposition."""
     normalized = normalized_row or {}
@@ -130,10 +148,11 @@ def render_canonical_body(
         payload, normalized_row=normalized, enrichment_rows=enrichment_rows,
     )
     allowed_by_source = _article_container_allowlist(payload, enrichment_rows)
+    classifier = block_classifier or _classify_blocks
     classified: list[BodySource] = []
     for source in legacy.sources:
         allowed = allowed_by_source.get((source.source_kind, source.source_url))
-        blocks = tuple(_classify_blocks(source.blocks, allowed_hashes=allowed))
+        blocks = tuple(classifier(source.blocks, allowed_hashes=allowed))
         classified.append(
             BodySource(
                 source=source,
@@ -197,9 +216,9 @@ def render_canonical_body(
     revision_material = "\0".join(
         [
             str(normalized.get("raw_payload_hash") or ""),
-            BODY_SOURCE_SELECTION_VERSION,
-            BODY_CLEANER_VERSION,
-            BODY_RENDERER_VERSION,
+            contract.source_selection_version,
+            contract.cleaner_version,
+            contract.renderer_version,
             *[
                 f"{item.source.source_kind}:{item.source.source_ordinal}:{item.source.source_hash}:"
                 f"{item.disposition}:{item.reason}"
@@ -229,6 +248,27 @@ def build_body_v3_rows(
     previous_renderer_version: str,
     updated_at_utc: str | datetime | None = None,
 ) -> dict[str, Any]:
+    return build_body_rows(
+        payload,
+        normalized_row,
+        body,
+        previous_rendered_text_hash=previous_rendered_text_hash,
+        previous_renderer_version=previous_renderer_version,
+        updated_at_utc=updated_at_utc,
+        contract=BODY_V3_CONTRACT,
+    )
+
+
+def build_body_rows(
+    payload: dict[str, Any],
+    normalized_row: dict[str, Any],
+    body: CanonicalBodyArticle,
+    *,
+    previous_rendered_text_hash: str,
+    previous_renderer_version: str,
+    updated_at_utc: str | datetime | None = None,
+    contract: BodyContract,
+) -> dict[str, Any]:
     updated = datetime64_utc_text(updated_at_utc)
     canonical = str(normalized_row["canonical_news_id"])
     published_date = str(normalized_row["published_date"])
@@ -245,9 +285,9 @@ def build_body_v3_rows(
     event.update(
         {
             "source_revision_key": body.source_revision_key,
-            "source_selection_version": BODY_SOURCE_SELECTION_VERSION,
-            "cleaner_version": BODY_CLEANER_VERSION,
-            "renderer_version": BODY_RENDERER_VERSION,
+            "source_selection_version": contract.source_selection_version,
+            "cleaner_version": contract.cleaner_version,
+            "renderer_version": contract.renderer_version,
             "content_quality_flags": sorted(set(normalized_row.get("content_quality_flags") or []) | set(body.quality_flags)),
             "updated_at_utc": updated,
         }
@@ -278,9 +318,9 @@ def build_body_v3_rows(
                 "block_count": len(item.blocks),
                 "included_block_count": sum(block.disposition == "included" for block in item.blocks),
                 "quality_flags": list(source.quality_flags),
-                "source_selection_version": BODY_SOURCE_SELECTION_VERSION,
-                "cleaner_version": BODY_CLEANER_VERSION,
-                "renderer_version": BODY_RENDERER_VERSION,
+                "source_selection_version": contract.source_selection_version,
+                "cleaner_version": contract.cleaner_version,
+                "renderer_version": contract.renderer_version,
                 "source_revision_key": body.source_revision_key,
                 "updated_at_utc": updated,
             }
@@ -303,7 +343,7 @@ def build_body_v3_rows(
                     "cleaned_hash": block.cleaned_hash,
                     "table_ordinal": block.table_ordinal,
                     "table_row_ordinal": block.table_row_ordinal,
-                    "cleaner_version": BODY_CLEANER_VERSION,
+                    "cleaner_version": contract.cleaner_version,
                     "source_revision_key": body.source_revision_key,
                     "updated_at_utc": updated,
                 }
@@ -331,10 +371,10 @@ def build_body_v3_rows(
         "excluded_block_count": sum(
             block.disposition == "excluded" for item in body.sources for block in item.blocks
         ),
-        "source_selection_version": BODY_SOURCE_SELECTION_VERSION,
-        "cleaner_version": BODY_CLEANER_VERSION,
-        "renderer_version": BODY_RENDERER_VERSION,
-        "text_contract": BODY_TEXT_CONTRACT,
+        "source_selection_version": contract.source_selection_version,
+        "cleaner_version": contract.cleaner_version,
+        "renderer_version": contract.renderer_version,
+        "text_contract": contract.text_contract,
         "quality_flags": list(body.quality_flags),
         "updated_at_utc": updated,
     }
@@ -352,7 +392,7 @@ def build_body_v3_rows(
             "ticker_count": len(unique_tickers),
             "body_hash": body.body_hash,
             "source_revision_key": body.source_revision_key,
-            "renderer_version": BODY_RENDERER_VERSION,
+            "renderer_version": contract.renderer_version,
             "updated_at_utc": updated,
         }
         for index, ticker in enumerate(unique_tickers, start=1)
@@ -364,7 +404,7 @@ def build_body_v3_rows(
         "previous_rendered_text_hash": previous_rendered_text_hash,
         "previous_renderer_version": previous_renderer_version,
         "body_hash": body.body_hash,
-        "body_renderer_version": BODY_RENDERER_VERSION,
+        "body_renderer_version": contract.renderer_version,
         "source_revision_key": body.source_revision_key,
         "label_mutation_status": "not_mutated",
         "updated_at_utc": updated,

@@ -10,7 +10,7 @@ from pipelines.news.benzinga.news_benzinga_body_v3 import (
     render_canonical_body,
 )
 from pipelines.news.benzinga.news_pipeline.config import BenzingaPipelineConfig
-from pipelines.news.benzinga.news_pipeline.pipeline import body_v3_shadow_state
+from pipelines.news.benzinga.news_pipeline.pipeline import body_v4_shadow_state
 from pipelines.news.benzinga.news_benzinga_body_v3_rebuild import parse_json_each_rows
 
 
@@ -219,18 +219,18 @@ class BodyOnlyNewsRendererTest(unittest.TestCase):
         self.assertFalse(body_purity_reasons(body.canonical_body_text))
 
     def test_shadow_writes_require_a_future_expiration(self) -> None:
-        missing = BenzingaPipelineConfig(body_v3_shadow_enabled=True)
-        self.assertEqual(body_v3_shadow_state(missing), (False, "body_v3_shadow_disabled:missing_end_utc"))
+        missing = BenzingaPipelineConfig(body_v4_shadow_enabled=True)
+        self.assertEqual(body_v4_shadow_state(missing), (False, "body_v4_shadow_disabled:missing_end_utc"))
         future = BenzingaPipelineConfig(
-            body_v3_shadow_enabled=True,
-            body_v3_shadow_end_utc=(datetime.now(UTC) + timedelta(days=2)).isoformat(),
+            body_v4_shadow_enabled=True,
+            body_v4_shadow_end_utc=(datetime.now(UTC) + timedelta(days=2)).isoformat(),
         )
-        self.assertEqual(body_v3_shadow_state(future), (True, ""))
+        self.assertEqual(body_v4_shadow_state(future), (True, ""))
         expired = BenzingaPipelineConfig(
-            body_v3_shadow_enabled=True,
-            body_v3_shadow_end_utc=(datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+            body_v4_shadow_enabled=True,
+            body_v4_shadow_end_utc=(datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
         )
-        self.assertEqual(body_v3_shadow_state(expired), (False, "body_v3_shadow_expired"))
+        self.assertEqual(body_v4_shadow_state(expired), (False, "body_v4_shadow_expired"))
 
 
 if __name__ == "__main__":

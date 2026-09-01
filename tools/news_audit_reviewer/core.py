@@ -13,10 +13,10 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from pipelines.news.benzinga.core.clickhouse_writer_v2 import json_each_row_batches
-from pipelines.news.benzinga.core.clickhouse_writer_body_v3 import (
-    DEFAULT_RENDERED_TABLE as BODY_V3_RENDERED_TABLE,
-    NewsBodyV3TargetConfig,
-    validate_body_v3_tables,
+from pipelines.news.benzinga.core.clickhouse_writer_body_v4 import (
+    DEFAULT_RENDERED_TABLE as BODY_RENDERED_TABLE,
+    body_v4_target_config,
+    validate_body_v4_tables,
 )
 from research.mlops.clickhouse import ClickHouseHttpClient, insert_json_each_row, quote_ident, sql_string
 from scripts.evaluate_news_synthesis_pattern_policy_gold import (
@@ -437,18 +437,18 @@ ORDER BY (campaign_id,batch_id,result_position,source_id)""")
         return rows[0] if rows else None
 
     def validate_source(self) -> dict[str, Any]:
-        validate_body_v3_tables(
+        validate_body_v4_tables(
             self.client,
-            NewsBodyV3TargetConfig(database=self.database, require_certified=True),
+            body_v4_target_config(database=self.database, require_certified=True),
         )
         row = self.rows(f"""
 SELECT count() rows,uniqExact(source_id) unique_ids,countIf(population_split!='training_development') non_training,
        countIf(gold_label IN ('eligible','ineligible') AND gold_label!=synthesis_label) mismatches,
        uniqExact(synthesis_path) paths,
        uniqExact((synthesis_path,title_pattern_id)) groups,
-       countIf(notEmpty(b.canonical_news_id)) body_v3_rows
+       countIf(notEmpty(b.canonical_news_id)) body_rows
 FROM {self.db}.{quote_ident(SOURCE_TABLE)} s FINAL
-LEFT JOIN {self.db}.{quote_ident(BODY_V3_RENDERED_TABLE)} b FINAL ON b.canonical_news_id=s.source_id
+LEFT JOIN {self.db}.{quote_ident(BODY_RENDERED_TABLE)} b FINAL ON b.canonical_news_id=s.source_id
 WHERE s.campaign_id={sql_string(self.campaign_id)} FORMAT JSONEachRow
 """)[0]
         if int(row["rows"]) != EXPECTED_REVIEW_ARTICLES or int(row["unique_ids"]) != EXPECTED_REVIEW_ARTICLES:
@@ -457,16 +457,16 @@ WHERE s.campaign_id={sql_string(self.campaign_id)} FORMAT JSONEachRow
             raise ValueError(f"ClickHouse former-holdout coverage changed: {row['non_training']}")
         if int(row["mismatches"]) != EXPECTED_ALL_MISMATCHES:
             raise ValueError(f"ClickHouse mismatch lineage changed: {row['mismatches']}")
-        if int(row["body_v3_rows"]) != EXPECTED_REVIEW_ARTICLES:
+        if int(row["body_rows"]) != EXPECTED_REVIEW_ARTICLES:
             raise ValueError(
-                f"certified Body V3 coverage changed: {row['body_v3_rows']}/{EXPECTED_REVIEW_ARTICLES}"
+                f"certified Body V4 coverage changed: {row['body_rows']}/{EXPECTED_REVIEW_ARTICLES}"
             )
         return {
             "status": "ready", "articles": int(row["rows"]), "holdout_rows": int(row["non_training"]),
             "mismatches": int(row["mismatches"]), "paths": int(row["paths"]),
             "groups": int(row["groups"]), "database": self.database,
             "source_table": SOURCE_TABLE, "label_history_table": LABEL_HISTORY_TABLE,
-            "body_table": BODY_V3_RENDERED_TABLE,
+            "body_table": BODY_RENDERED_TABLE,
         }
 
     def _current_labels_sql(self) -> str:
@@ -600,7 +600,7 @@ WHERE campaign_id={sql_string(self.campaign_id)} GROUP BY group_id FORMAT JSONEa
         if not required and not str(values.get("q") or "").strip():
             return ""
         return (
-            f"LEFT JOIN {self.db}.{quote_ident(BODY_V3_RENDERED_TABLE)} b FINAL "
+            f"LEFT JOIN {self.db}.{quote_ident(BODY_RENDERED_TABLE)} b FINAL "
             "ON b.canonical_news_id=s.source_id"
         )
 

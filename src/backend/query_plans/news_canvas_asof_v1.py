@@ -6,7 +6,7 @@ from research.mlops.clickhouse import quote_ident, sql_string
 
 
 QUERY_PLAN_ID = "news.canvas_asof.v1"
-QUERY_PLAN_VERSION = 2
+QUERY_PLAN_VERSION = 3
 
 
 def trading_news_queries(
@@ -32,7 +32,7 @@ def trading_news_queries(
 ) -> tuple[str, str]:
     database = "q_live"
     normalized_table = "benzinga_news_event_v2"
-    rendered_table = "benzinga_news_rendered_v3"
+    rendered_table = "benzinga_news_rendered_v4"
     start_sql = f"toDateTime64({sql_string(window_start.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
     end_sql = f"toDateTime64({sql_string(cutoff.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
     start_date_sql = sql_string(window_start.date().isoformat())

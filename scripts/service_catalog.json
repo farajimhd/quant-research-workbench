@@ -81,11 +81,11 @@
       "environment": {
         "NEWS_TERMINAL_RICH_ENABLED": "true",
         "NEWS_TERMINAL_SCREEN_ENABLED": "true",
-        "NEWS_BENZINGA_BODY_V3_SHADOW_ENABLED": "true",
-        "NEWS_BENZINGA_BODY_V3_SHADOW_END_UTC": "2026-10-31T00:00:00Z"
+        "NEWS_BENZINGA_BODY_V4_SHADOW_ENABLED": "true",
+        "NEWS_BENZINGA_BODY_V4_SHADOW_END_UTC": "2026-10-31T00:00:00Z"
       },
       "start_priority": 20,
-      "fingerprint_env": ["NEWS_GATEWAY_BIND", "NEWS_BENZINGA_BODY_V3_SHADOW_ENABLED", "NEWS_BENZINGA_BODY_V3_SHADOW_END_UTC"],
+      "fingerprint_env": ["NEWS_GATEWAY_BIND", "NEWS_BENZINGA_BODY_V4_SHADOW_ENABLED", "NEWS_BENZINGA_BODY_V4_SHADOW_END_UTC"],
       "dependencies": [],
       "graceful_timeout_seconds": 330,
       "watch": ["services/news_gateway/**", "services/gateway_core/**", "pipelines/news/benzinga/**", "scripts/run_news_gateway.ps1"]
