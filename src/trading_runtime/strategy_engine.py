@@ -1953,6 +1953,36 @@ class LongMomentumStrategyEngine:
                 },
             )
 
+        # This strategy's momentum regime is a semantic invariant, not merely
+        # one editable rule-set row. Configuration materialization, re-entry
+        # rule pruning, or a future catalog migration must never authorize an
+        # order unless the latest causal one-second MACD is exactly open and
+        # positive: line > signal, line > 0, signal > 0.
+        entry_macd_open, entry_macd_evidence = _exact_positive_open_macd(
+            observation, "1s"
+        )
+        if not entry_macd_open and not observation.force_entry:
+            return self._result(
+                assignment,
+                observation,
+                "wait",
+                "entry_macd_not_positive_open",
+                confirmation_score,
+                _confirmation_confidence(observation),
+                state,
+                AssignmentStatus.REENTRY_COOLDOWN
+                if reentries
+                else AssignmentStatus.WATCHING,
+                metadata={
+                    "triggers": triggered,
+                    "vetoes": vetoes,
+                    "confirmation": confirmation,
+                    "entry_rules": rule_result,
+                    "unified_structural_trigger": unified_trigger,
+                    "macd": entry_macd_evidence,
+                },
+            )
+
         momentum_detail: dict[str, Any] = {}
         momentum_policy = dict(parameters.get("entry_momentum_confirmation") or {})
         if bool(momentum_policy.get("enabled", False)) and not observation.force_entry:
@@ -4052,6 +4082,14 @@ def _decision_reason_detail(
         failures = _failed_entry_conditions(metadata)
         label = "entry veto passed" if reason == "entry_vetoed" else "entry confirmation is incomplete"
         return f"{prefix}: {label}" + (f" — {'; '.join(failures[:6])}" if failures else "")
+    if reason == "entry_macd_not_positive_open":
+        detail = dict(metadata.get("macd") or {})
+        return (
+            "Wait: exact causal one-second MACD entry regime is closed — "
+            f"line={_display_value(detail.get('macd_line'))}, "
+            f"signal={_display_value(detail.get('macd_signal'))}; requires "
+            "line > signal, line > 0, and signal > 0."
+        )
     if reason == "waiting_for_swing_high_reference":
         return "Wait: no causally confirmed one-second swing high is available yet."
     if reason == "waiting_for_swing_high_cross":
@@ -4513,11 +4551,7 @@ def _matching_momentum_management_route(
         if bool(downside.get("macd_closed", True)) and (
             line is not None
             and signal is not None
-            and (
-                float(line) <= float(signal)
-                or float(line) <= 0
-                or float(signal) <= 0
-            )
+            and float(signal) > float(line)
         ):
             return {
                 "route_id": "downside-macd-closed",

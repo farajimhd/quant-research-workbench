@@ -1704,6 +1704,13 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
             second._data_authority["derived:ABCD:100ms"], authority
         )
         self.assertEqual(len(cache_files), 2)
+        source_start = datetime.fromisoformat(
+            source_revision_fetch.call_args_list[0].kwargs["start"]
+        )
+        self.assertEqual(
+            source_start,
+            definition.session_start - timedelta(days=7),
+        )
 
     async def test_prepared_frame_cache_resumes_completed_streams_after_interruption(self) -> None:
         configuration = approved_configuration()

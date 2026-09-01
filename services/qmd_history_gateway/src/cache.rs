@@ -40,11 +40,13 @@ use std::sync::Mutex as StdMutex;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, OnceCell, Semaphore};
 
 pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v35";
-pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v42";
+pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v43";
 pub const HISTORICAL_CORPORATE_ACTION_REVISION: &str = "retrospective-split-adjusted-v2";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
-const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 5;
+const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 6;
 const PREPARED_STRUCTURE_SEED_CACHE_SCHEMA_VERSION: u16 = 2;
+const INDICATOR_EMA_WARMUP_DAYS: i64 = 7;
+const INDICATOR_EMA_WARMUP_BARS: usize = 200;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CacheProfile {
@@ -181,8 +183,12 @@ struct PreparedStructureSeedCacheArtifact {
     checkpoint: GenericStructureCheckpoint,
 }
 
-fn bar_indicator_projection(selected: &[&BarUpdate]) -> Result<Vec<Value>, String> {
+fn bar_indicator_projection(
+    selected: &[&BarUpdate],
+    warmup_closes: &[f64],
+) -> Result<Vec<Value>, String> {
     let mut calculator = BarIndicatorCalculator::new();
+    calculator.seed_ema_close_history(warmup_closes.iter().copied());
     selected
         .iter()
         .map(|update| {
@@ -607,6 +613,41 @@ impl HistoricalDerivedCache {
         }
     }
 
+    async fn indicator_ema_warmup_closes(
+        &self,
+        window: &EventWindow,
+        ticker: &str,
+        timeframe: &str,
+    ) -> Result<Vec<f64>, String> {
+        let warmup_start = indicator_warmup_start(window.start)?;
+        let warmup_window = EventWindow {
+            start: warmup_start,
+            end: window.start,
+            tickers: vec![ticker.to_ascii_uppercase()],
+        };
+        Ok(self
+            .source
+            .persisted_intraday_chart_bars(
+                &warmup_window,
+                ticker,
+                timeframe,
+                INDICATOR_EMA_WARMUP_BARS,
+                window.start,
+                None,
+            )
+            .await?
+            .map(|snapshot| {
+                snapshot
+                    .bars
+                    .into_iter()
+                    .filter_map(|bar| {
+                        (bar.close.is_finite() && bar.close > 0.0).then_some(bar.close)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     async fn acquire(
         &self,
         window: EventWindow,
@@ -830,7 +871,9 @@ impl HistoricalDerivedCache {
                 .prepared_bar_misses
                 .fetch_add(1, Ordering::Relaxed);
         }
-        let lease = self.acquire(window, ticker.clone(), profile).await?;
+        let lease = self
+            .acquire(window.clone(), ticker.clone(), profile)
+            .await?;
         let event_count = if (bars_only || structure_only)
             && qmd_core::bars::is_supported_timeframe(&timeframe)
         {
@@ -847,6 +890,12 @@ impl HistoricalDerivedCache {
             source_revision: lease.source_revision,
         };
 
+        let bars_only_warmup_closes = if bars_only {
+            self.indicator_ema_warmup_closes(&window, &ticker, &timeframe)
+                .await?
+        } else {
+            Vec::new()
+        };
         if qmd_core::bars::is_supported_timeframe(&timeframe) {
             let state = lease.entry.state.lock().await;
             if bars_only {
@@ -862,7 +911,8 @@ impl HistoricalDerivedCache {
                     .filter(|update| update.bar.timeframe.eq_ignore_ascii_case(&timeframe))
                     .collect::<Vec<_>>();
                 let structure_projection = unified_structure_projection(&all_updates)?;
-                let bar_indicator_projection = bar_indicator_projection(&all_updates)?;
+                let bar_indicator_projection =
+                    bar_indicator_projection(&all_updates, &bars_only_warmup_closes)?;
                 drop(state);
                 let artifact = PreparedBarCacheArtifact {
                     schema_version: PREPARED_BAR_CACHE_SCHEMA_VERSION,
@@ -1286,6 +1336,16 @@ impl HistoricalDerivedCache {
         } else {
             SessionVwapSeed::default()
         };
+        let indicator_ema_warmup_closes = if matches!(&profile, CacheProfile::Derived(_)) {
+            self.indicator_ema_warmup_closes(
+                &window,
+                &ticker,
+                requested_timeframe.as_deref().unwrap_or("1s"),
+            )
+            .await?
+        } else {
+            Vec::new()
+        };
         let mut structure_engine = structure_only.then(|| GenericStructureEngine::new(&ticker));
         if matches!(
             &profile,
@@ -1330,6 +1390,8 @@ impl HistoricalDerivedCache {
             let worker_structure_references = structure_references;
             let worker_session_vwap_seed = session_vwap_seed;
             let worker_page_start = window.start;
+            let worker_requested_timeframe = requested_timeframe.clone();
+            let worker_indicator_ema_warmup_closes = indicator_ema_warmup_closes;
             let handle = tokio::spawn(async move {
                 let mut calculators = HashMap::<String, BarIndicatorCalculator>::new();
                 let mut microstructure = MicrostructureIntervalWindow::default();
@@ -1350,6 +1412,13 @@ impl HistoricalDerivedCache {
                             let calculator =
                                 calculators.entry(bar.timeframe.clone()).or_insert_with(|| {
                                     let mut calculator = BarIndicatorCalculator::new();
+                                    if worker_requested_timeframe.as_deref().is_some_and(
+                                        |timeframe| bar.timeframe.eq_ignore_ascii_case(timeframe),
+                                    ) {
+                                        calculator.seed_ema_close_history(
+                                            worker_indicator_ema_warmup_closes.iter().copied(),
+                                        );
+                                    }
                                     calculator
                                         .seed_session_vwap(
                                             worker_page_start,
@@ -1411,6 +1480,13 @@ impl HistoricalDerivedCache {
                             let calculator =
                                 calculators.entry(bar.timeframe.clone()).or_insert_with(|| {
                                     let mut calculator = BarIndicatorCalculator::new();
+                                    if worker_requested_timeframe.as_deref().is_some_and(
+                                        |timeframe| bar.timeframe.eq_ignore_ascii_case(timeframe),
+                                    ) {
+                                        calculator.seed_ema_close_history(
+                                            worker_indicator_ema_warmup_closes.iter().copied(),
+                                        );
+                                    }
                                     calculator
                                         .seed_session_vwap(
                                             worker_page_start,
@@ -2817,15 +2893,14 @@ fn revision_window(
     profile: &CacheProfile,
     structure_rebuild_days: usize,
 ) -> Result<EventWindow, String> {
-    // Derived indicators (VWAP, MACD, microstructure, and the chart projection)
-    // are scoped to the requested causal window.  Their structural calculator
-    // is independently seeded from the latest validated daily checkpoint in
-    // `build_entry`, so extending every derived request by the cold-rebuild
-    // horizon only replays the same prior sessions again.  Keep the bounded
-    // lookback exclusively for the structure-only fallback path, whose job is
-    // to reconstruct the event-native book when no compatible seed exists.
+    // Structural books use their checkpoint horizon. Bar and derived profiles
+    // calculate EMA/MACD from a bounded persisted-bar warm-up, so their source
+    // revision must cover that same history; otherwise a repaired prior bar
+    // could leave a stale prepared chart or strategy frame cache authoritative.
     let start = if matches!(profile, CacheProfile::Structure(_)) {
         structure_rebuild_start(window.start, structure_rebuild_days)?
+    } else if matches!(profile, CacheProfile::Bars(_) | CacheProfile::Derived(_)) {
+        indicator_warmup_start(window.start)?
     } else {
         window.start
     };
@@ -2834,6 +2909,13 @@ fn revision_window(
         end: window.end,
         tickers: window.tickers.clone(),
     })
+}
+
+fn indicator_warmup_start(timestamp: DateTime<Utc>) -> Result<DateTime<Utc>, String> {
+    let lookback = timestamp
+        .checked_sub_signed(Duration::days(INDICATOR_EMA_WARMUP_DAYS))
+        .ok_or_else(|| "historical indicator warm-up underflow".to_string())?;
+    session_anchor(lookback)
 }
 
 fn structure_rebuild_start(
@@ -3030,7 +3112,7 @@ mod tests {
     }
 
     #[test]
-    fn only_structure_fallback_revision_covers_the_causal_warm_start() {
+    fn indicator_and_structure_revisions_cover_their_causal_warm_starts() {
         let page = EventWindow {
             start: Utc.with_ymd_and_hms(2026, 7, 14, 18, 30, 0).unwrap(),
             end: Utc.with_ymd_and_hms(2026, 7, 14, 20, 30, 0).unwrap(),
@@ -3043,7 +3125,7 @@ mod tests {
             revision_window(&page, &CacheProfile::Derived("5m".to_string()), 7)
                 .unwrap()
                 .start,
-            page.start
+            Utc.with_ymd_and_hms(2026, 7, 7, 8, 0, 0).unwrap()
         );
         assert_eq!(
             revision_window(&page, &CacheProfile::Structure("5m".to_string()), 7)
@@ -3061,7 +3143,7 @@ mod tests {
             revision_window(&page, &CacheProfile::Bars("1s".to_string()), 7)
                 .unwrap()
                 .start,
-            page.start
+            Utc.with_ymd_and_hms(2026, 7, 7, 8, 0, 0).unwrap()
         );
     }
 
@@ -3404,7 +3486,7 @@ mod tests {
     }
 
     #[test]
-    fn derived_revision_window_does_not_replay_structural_lookback() {
+    fn derived_revision_window_covers_ema_warmup_without_structural_horizon() {
         let start = Utc.with_ymd_and_hms(2026, 8, 21, 8, 0, 0).unwrap();
         let end = Utc.with_ymd_and_hms(2026, 8, 21, 13, 30, 0).unwrap();
         let window = EventWindow {
@@ -3418,7 +3500,10 @@ mod tests {
         let structure =
             revision_window(&window, &CacheProfile::Structure("1s".to_string()), 180).unwrap();
 
-        assert_eq!(derived.start, start);
+        assert_eq!(
+            derived.start,
+            Utc.with_ymd_and_hms(2026, 8, 14, 8, 0, 0).unwrap()
+        );
         assert_eq!(derived.end, end);
         assert_eq!(
             structure.start,

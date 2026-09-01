@@ -176,6 +176,44 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertIn("indicator.macd.line (5s) is -0.1; requires greater than 0", failures)
         self.assertIn("indicator.macd.signal (5s) is -0.2; requires greater than 0", failures)
 
+    def test_entry_engine_invariant_requires_exact_positive_open_one_second_macd(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["entry_rules"]["confirmation"] = {
+            "operator": "all",
+            "groups": [
+                {
+                    "group_id": "always-ready",
+                    "name": "Always ready",
+                    "operator": "all",
+                    "enabled": True,
+                    "conditions": [
+                        {
+                            "condition_id": "positive-price",
+                            "left_source_id": "market.last_price",
+                            "left_timeframe": "1s",
+                            "comparator": "greater_than",
+                            "value": 0,
+                        }
+                    ],
+                }
+            ],
+        }
+        parameters["structural_entry"]["enabled"] = False
+        result = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=parameters),
+            confirmed_observation(
+                macd_line=0.10,
+                macd_signal=0.20,
+                macd_histogram=-0.10,
+            ),
+        )
+
+        signal = result.evaluation.signals[0]
+        self.assertEqual(signal.action, "wait")
+        self.assertEqual(signal.reason, "entry_macd_not_positive_open")
+        self.assertEqual(signal.metadata["macd"]["macd_line"], 0.10)
+        self.assertEqual(signal.metadata["macd"]["macd_signal"], 0.20)
+
     def test_entry_uses_unified_support_and_only_qualified_causal_targets(self) -> None:
         result = LongMomentumStrategyEngine().evaluate(
             assignment(),
@@ -2585,6 +2623,56 @@ class LongMomentumStrategyTests(unittest.TestCase):
             crossed.evaluation.signals[0].reason,
             "macd_signal_crossed_above_line",
         )
+
+    def test_below_entry_macd_exit_requires_signal_strictly_above_line(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["phase_policy"] = {"exit": {"mode": "automatic", "rule_sets": []}}
+        parameters["profit_pocket"]["enabled"] = False
+        parameters["protection"]["trailing"]["enabled"] = False
+        parameters["momentum_management"]["downside_loss_guard"]["enabled"] = True
+        managed = assignment(
+            parameters=parameters,
+            status=AssignmentStatus.MANAGING,
+            state={
+                "active_stop": 90.0,
+                "initial_stop": 90.0,
+                "entry_at": (NOW - timedelta(seconds=10)).isoformat(),
+                "entry_reference_price": 101.0,
+                "high_water_price": 101.0,
+            },
+        )
+
+        still_open = LongMomentumStrategyEngine().evaluate(
+            managed,
+            confirmed_observation(
+                price=100.0,
+                average_price=101.0,
+                position_quantity=100,
+                vwap=99.0,
+                source_timeframe="1s",
+                macd_line=-0.10,
+                macd_signal=-0.20,
+                macd_histogram=0.10,
+            ),
+        )
+        self.assertEqual(still_open.evaluation.signals[0].action, "hold")
+
+        crossed = LongMomentumStrategyEngine().evaluate(
+            managed,
+            confirmed_observation(
+                observed_at=NOW + timedelta(seconds=1),
+                price=100.0,
+                average_price=101.0,
+                position_quantity=100,
+                vwap=99.0,
+                source_timeframe="1s",
+                macd_line=-0.20,
+                macd_signal=-0.10,
+                macd_histogram=-0.10,
+            ),
+        )
+        self.assertEqual(crossed.evaluation.signals[0].action, "exit")
+        self.assertEqual(crossed.evaluation.signals[0].reason, "downside_macd_closed")
 
     def test_protective_exit_cannot_be_disabled_by_campaign_permissions(self) -> None:
         managed = assignment(

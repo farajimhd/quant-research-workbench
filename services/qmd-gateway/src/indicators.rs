@@ -818,6 +818,27 @@ impl BarIndicatorCalculator {
         self.state.apply_bar(bar, false)
     }
 
+    /// Seed EMA-derived price indicators from completed closes that precede a
+    /// bounded historical page. Session VWAP remains independently anchored
+    /// and is never borrowed from the warm-up horizon.
+    pub fn seed_ema_close_history<I>(&mut self, closes: I)
+    where
+        I: IntoIterator<Item = f64>,
+    {
+        for close in closes {
+            if !close.is_finite() || close <= 0.0 {
+                continue;
+            }
+            self.state.ema_9.update(close);
+            let ema_12 = self.state.ema_12.update(close);
+            self.state.ema_20.update(close);
+            let ema_26 = self.state.ema_26.update(close);
+            self.state.ema_50.update(close);
+            self.state.macd_signal_9.update(ema_12 - ema_26);
+            self.state.last_close = close;
+        }
+    }
+
     pub fn apply_session_vwap_only(&mut self, bar: &BarRow) -> f64 {
         self.state
             .session_vwap
@@ -3760,6 +3781,21 @@ mod tests {
         assert_eq!(durable["updated_at_utc"], "2026-08-23 17:30:12.345");
         assert_eq!(durable["source_revision"], "run-1");
         assert_eq!(durable["complete"], 1);
+    }
+
+    #[test]
+    fn historical_ema_seed_carries_macd_without_borrowing_session_vwap() {
+        let bar = base_bar();
+        let mut page_local = BarIndicatorCalculator::new();
+        let page_local_row = page_local.apply_bar_for_historical_cache(&bar);
+
+        let mut warmed = BarIndicatorCalculator::new();
+        warmed.seed_ema_close_history((0..60).map(|index| 90.0 + index as f64 * 0.1));
+        let warmed_row = warmed.apply_bar_for_historical_cache(&bar);
+
+        assert_ne!(warmed_row.macd_line, page_local_row.macd_line);
+        assert_ne!(warmed_row.macd_signal, page_local_row.macd_signal);
+        assert_eq!(warmed_row.vwap, page_local_row.vwap);
     }
 
     #[test]

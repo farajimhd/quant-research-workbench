@@ -92,6 +92,7 @@ NEW_YORK = ZoneInfo("America/New_York")
 DEFAULT_REPLAY_ROOT = Path(r"D:\TradingML\runtimes\trading\replay")
 DEFAULT_BACKTEST_ROOT = Path(r"D:\TradingML\runtimes\trading\backtest")
 DEFAULT_BACKTEST_DEBUG_ROOT = Path(r"D:\TradingML\runtimes\trading\backtest_debug")
+INDICATOR_EMA_WARMUP_DAYS = 7
 REPLAY_STATUSES = {
     "created",
     "warming",
@@ -4373,7 +4374,10 @@ class ReplayRunController:
         if durable_cache:
             cache_source_revision = await asyncio.to_thread(
                 qmd_historical_source_revision,
-                start=self.definition.session_start.isoformat(),
+                start=(
+                    self.definition.session_start
+                    - timedelta(days=INDICATOR_EMA_WARMUP_DAYS)
+                ).isoformat(),
                 end=evaluation_end.isoformat(),
                 tickers=tuple(sorted({ticker for ticker, _ in requests})),
             )
@@ -4381,6 +4385,7 @@ class ReplayRunController:
                 "prepared_strategy_frame_source",
                 {
                     "authority": "qmd_history_source_revision",
+                    "indicator_warmup_days": INDICATOR_EMA_WARMUP_DAYS,
                     "revision_token": str(cache_source_revision["token"]),
                     "source_plan_hash": str(
                         cache_source_revision["source_plan_hash"]
