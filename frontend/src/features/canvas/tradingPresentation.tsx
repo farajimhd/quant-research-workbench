@@ -23,11 +23,12 @@ import {
   WalletCards,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 
 import { api } from "../../api/client";
 import type { CanvasLinkContext, CanvasLinkGroupId } from "../../app/canvasWorkspace";
 import { MarketTime } from "../../app/components/MarketTime";
+import { Modal } from "../../app/components/Modal";
 import { PresentedValue, SecurityIdentityCell, tableCellClass } from "../../app/components/TablePresentation";
 import { useTickerPresentations } from "../../app/components/TickerIdentity";
 import type { WorkspaceContainerId } from "../../app/tradingWorkspace";
@@ -109,12 +110,13 @@ type TradingDataTableProps = {
   filterColumn?: string;
   filterLabel?: string;
   onSymbolSelect?: (symbol: string) => void;
+  onRowOpen?: (row: PreviewRow) => void;
   renderExpanded?: (row: PreviewRow) => ReactNode;
   rows: PreviewRow[];
   searchPlaceholder: string;
 };
 
-function TradingDataTable({ columns, defaultSort, filterColumn, filterLabel = "All", onSymbolSelect, renderExpanded, rows, searchPlaceholder }: TradingDataTableProps) {
+function TradingDataTable({ columns, defaultSort, filterColumn, filterLabel = "All", onRowOpen, onSymbolSelect, renderExpanded, rows, searchPlaceholder }: TradingDataTableProps) {
   const visibleColumns = useMemo(() => columns.filter((column) => column !== "logo" && column !== "company_name"), [columns]);
   const [queryText, setQueryText] = useState("");
   const [filterValue, setFilterValue] = useState("all");
@@ -146,13 +148,20 @@ function TradingDataTable({ columns, defaultSort, filterColumn, filterLabel = "A
     {!visibleRows.length ? <EmptyState label={rows.length ? "No rows match the active search and filter" : "No point-in-time rows"} /> : <div className="canvas-preview-table-wrap"><table className="canvas-preview-table trading-data-table"><thead><tr>{renderExpanded ? <th aria-label="Expand row" className="trading-expand-column" /> : null}{visibleColumns.map((column) => <th aria-sort={sortColumn === column ? (sortDirection === "asc" ? "ascending" : "descending") : "none"} key={column}><button onClick={() => changeSort(column)} type="button"><span>{labelFor(column)}</span>{sortColumn === column ? sortDirection === "asc" ? <ArrowUp size={11} /> : <ArrowDown size={11} /> : <ArrowUpDown size={11} />}</button></th>)}</tr></thead><tbody>{visibleRows.map((row, index) => {
       const key = previewRowKey(row, visibleColumns, index);
       const expanded = expandedKey === key;
-      return <FragmentRow columns={visibleColumns} expanded={expanded} key={key} onExpand={renderExpanded ? () => setExpandedKey(expanded ? "" : key) : undefined} onSymbolSelect={onSymbolSelect} presentations={presentations} renderExpanded={renderExpanded} row={row} />;
+      return <FragmentRow columns={visibleColumns} expanded={expanded} key={key} onExpand={renderExpanded ? () => setExpandedKey(expanded ? "" : key) : undefined} onRowOpen={onRowOpen} onSymbolSelect={onSymbolSelect} presentations={presentations} renderExpanded={renderExpanded} row={row} />;
     })}</tbody></table></div>}
   </div>;
 }
 
-function FragmentRow({ columns, expanded, onExpand, onSymbolSelect, presentations, renderExpanded, row }: { columns: string[]; expanded: boolean; onExpand?: () => void; onSymbolSelect?: (symbol: string) => void; presentations: ReturnType<typeof useTickerPresentations>; renderExpanded?: (row: PreviewRow) => ReactNode; row: PreviewRow }) {
-  return <>{<tr className={expanded ? "is-expanded" : undefined}>{renderExpanded ? <td className="trading-expand-column"><button aria-label={expanded ? "Collapse row" : "Expand row"} aria-expanded={expanded} onClick={onExpand} type="button">{expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button></td> : null}{columns.map((column) => <td className={`${tableCellClass(column)} preview-cell-${column.replace(/[^a-z0-9_-]/gi, "-")}`} data-tone={cellTone(row[column], column)} key={column}><PreviewCell column={column} onSymbolSelect={onSymbolSelect} presentations={presentations} row={row} /></td>)}</tr>}{expanded && renderExpanded ? <tr className="trading-expanded-row"><td colSpan={columns.length + 1}>{renderExpanded(row)}</td></tr> : null}</>;
+function FragmentRow({ columns, expanded, onExpand, onRowOpen, onSymbolSelect, presentations, renderExpanded, row }: { columns: string[]; expanded: boolean; onExpand?: () => void; onRowOpen?: (row: PreviewRow) => void; onSymbolSelect?: (symbol: string) => void; presentations: ReturnType<typeof useTickerPresentations>; renderExpanded?: (row: PreviewRow) => ReactNode; row: PreviewRow }) {
+  const openRow = (event: ReactMouseEvent<HTMLTableRowElement> | ReactKeyboardEvent<HTMLTableRowElement>) => {
+    if (!onRowOpen) return;
+    if (event.target instanceof Element && event.target.closest("button, a, input, select, textarea")) return;
+    if ("key" in event && event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    onRowOpen(row);
+  };
+  return <>{<tr aria-label={onRowOpen ? "Open position lifecycle" : undefined} className={`${expanded ? "is-expanded" : ""}${onRowOpen ? " is-openable" : ""}`.trim() || undefined} onClick={onRowOpen ? openRow : undefined} onKeyDown={onRowOpen ? openRow : undefined} tabIndex={onRowOpen ? 0 : undefined}>{renderExpanded ? <td className="trading-expand-column"><button aria-label={expanded ? "Collapse row" : "Expand row"} aria-expanded={expanded} onClick={onExpand} type="button">{expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button></td> : null}{columns.map((column) => <td className={`${tableCellClass(column)} preview-cell-${column.replace(/[^a-z0-9_-]/gi, "-")}`} data-tone={cellTone(row[column], column)} key={column}><PreviewCell column={column} onSymbolSelect={onSymbolSelect} presentations={presentations} row={row} /></td>)}</tr>}{expanded && renderExpanded ? <tr className="trading-expanded-row"><td colSpan={columns.length + 1}>{renderExpanded(row)}</td></tr> : null}</>;
 }
 
 function searchableValue(value: unknown) {
@@ -375,6 +384,7 @@ function PortfolioManagementPreview({ data, management }: { data: CanonicalTradi
 
 function PositionsPreview({ data, onSymbolSelect, settings }: { data: CanonicalTradingPreview; onSymbolSelect?: (symbol: string) => void; settings: ContainerSettings["positions"] }) {
   const [view, setView] = useState<"open" | "closed" | "timeline">("open");
+  const [selectedPosition, setSelectedPosition] = useState<PreviewRow | null>(null);
   const lifecycleProjectionAvailable = Array.isArray(data.position_lifecycles);
   const lifecycleRows = (data.position_lifecycles ?? []).map((lifecycle) => {
     const symbol = nestedValue(lifecycle, "instrument", "symbol");
@@ -417,30 +427,93 @@ function PositionsPreview({ data, onSymbolSelect, settings }: { data: CanonicalT
     {!lifecycleProjectionAvailable ? <div className="trading-disclosure" data-tone="warning" role="alert">Position lifecycle data is unavailable from the running backend. Restart the backend on the current application revision; Position Manager will not reinterpret FIFO execution fragments as positions.</div> : null}
     <div className="trading-summary-strip"><TradingMetric label="Open positions" value={String(openRows.length)} /><TradingMetric label="Winning" value={`${winners}/${openRows.length}`} tone={winners ? "positive" : "neutral"} /><TradingMetric label="Open P&L" value={signedMoney(netPnl)} tone={numberTone(netPnl)} /><TradingMetric label="Gross exposure" value={money(grossValue)} /></div>
     <TradingTabs active={view} onChange={(value) => setView(value as typeof view)} tabs={[{ id: "open", label: "Open", count: openRows.length }, { id: "closed", label: "Closed", count: closedRows.length }, { id: "timeline", label: "Timeline", count: timelineRows.length }]} />
-    {view === "open" ? <TradingDataTable columns={openColumns} defaultSort="market_value" filterColumn="side" filterLabel="All directions" onSymbolSelect={onSymbolSelect} renderExpanded={(row) => <PositionDetail row={row} />} rows={openRows} searchPlaceholder="Search symbol, account, side…" /> : null}
-    {view === "closed" ? <><div className="trading-disclosure">One row is one flat-to-flat position lifecycle. Partial exits and scale changes remain inside that position.</div><TradingDataTable columns={settings.showPnl ? ["closed_at", "requested_at", "opened_at", "symbol", "side", "quantity", "entry_price", "exit_price", "gross_pnl", "fees", "net_pnl", "orders", "fills", "account"] : ["closed_at", "requested_at", "opened_at", "symbol", "side", "quantity", "entry_price", "exit_price", "orders", "fills", "account"]} defaultSort="closed_at" filterColumn="side" filterLabel="All directions" onSymbolSelect={onSymbolSelect} renderExpanded={(row) => <PositionDetail row={row} />} rows={closedRows} searchPlaceholder="Search closed positions…" /></> : null}
+    {view === "open" ? <TradingDataTable columns={openColumns} defaultSort="market_value" filterColumn="side" filterLabel="All directions" onRowOpen={setSelectedPosition} onSymbolSelect={onSymbolSelect} rows={openRows} searchPlaceholder="Search symbol, account, side…" /> : null}
+    {view === "closed" ? <><div className="trading-disclosure">One row is one flat-to-flat position lifecycle. Select a row to inspect every decision, submission, partial fill, and exit.</div><TradingDataTable columns={settings.showPnl ? ["closed_at", "requested_at", "opened_at", "symbol", "side", "quantity", "entry_price", "exit_price", "gross_pnl", "fees", "net_pnl", "orders", "fills", "account"] : ["closed_at", "requested_at", "opened_at", "symbol", "side", "quantity", "entry_price", "exit_price", "orders", "fills", "account"]} defaultSort="closed_at" filterColumn="side" filterLabel="All directions" onRowOpen={setSelectedPosition} onSymbolSelect={onSymbolSelect} rows={closedRows} searchPlaceholder="Search closed positions…" /></> : null}
     {view === "timeline" ? <TradingDataTable columns={["time", "event", "account", "order_id", "execution_id", "provider"]} defaultSort="time" filterColumn="event" filterLabel="All events" rows={timelineRows} searchPlaceholder="Search position history…" /> : null}
+    {selectedPosition ? <PositionLifecycleModal onClose={() => setSelectedPosition(null)} row={selectedPosition} /> : null}
   </section>;
 }
 
-function PositionDetail({ row }: { row: PreviewRow }) {
+function PositionLifecycleModal({ onClose, row }: { onClose: () => void; row: PreviewRow }) {
   const orders = (row._orders as PreviewRow[] | undefined) ?? [];
   const executions = (row._executions as PreviewRow[] | undefined) ?? [];
   const position = (row._position as PreviewRow | undefined) ?? {};
   const lifecycle = (row._lifecycle as PreviewRow | undefined) ?? {};
-  const decisions = ((row._decisions as PreviewRow[] | undefined) ?? []).map((decision) => ({
+  const decisions = ((row._decisions as PreviewRow[] | undefined) ?? []).map(positionDecisionRow);
+  const orderRows = orders.map((order) => {
+    const orderExecutions = executions.filter((execution) => String(execution.broker_order_id || "") === String(order.broker_order_id || ""));
+    return positionOrderRow(order, orderExecutions);
+  });
+  const instrument = (lifecycle.instrument as PreviewRow | undefined) ?? (position.instrument as PreviewRow | undefined) ?? {};
+  const requestedAt = Date.parse(String(lifecycle.requested_at || ""));
+  const openedAt = Date.parse(String(lifecycle.opened_at || ""));
+  const closedAt = Date.parse(String(lifecycle.closed_at || ""));
+  const symbol = String(row.symbol || instrument.symbol || "Position");
+  return <Modal className="position-lifecycle-modal" onClose={onClose} title={`${symbol} position lifecycle`}><div className="position-lifecycle-content">
+    <div className="position-lifecycle-hero"><span><small>Side · size</small><strong>{String(lifecycle.side || row.side || "—")} {formatQuantity(Number(lifecycle.quantity || row.quantity || 0))}</strong></span><span><small>Average entry → exit</small><strong>{formatCell(lifecycle.entry_price, "entry_price")} → {formatCell(lifecycle.exit_price, "exit_price")}</strong></span><span data-tone={numberTone(Number(lifecycle.net_pnl || 0))}><small>Net P&amp;L</small><strong>{signedMoney(Number(lifecycle.net_pnl || 0))}</strong></span><span><small>Lifetime</small><strong>{Number.isFinite(openedAt) && Number.isFinite(closedAt) ? compactDuration((closedAt - openedAt) / 1_000) : "Open"}</strong></span></div>
+    <section className="position-lifecycle-section"><header><div><strong>Lifecycle timing</strong><span>Strategy intent and OMS evidence use the same causal clock.</span></div><span>{String(lifecycle.lifecycle_id || "")}</span></header><div className="position-lifecycle-timing"><span><small>Requested</small><strong>{positionTimestamp(lifecycle.requested_at)}</strong></span><span><small>First fill / open</small><strong>{positionTimestamp(lifecycle.opened_at)}</strong><em>{Number.isFinite(requestedAt) && Number.isFinite(openedAt) ? `${Math.max(0, openedAt - requestedAt).toFixed(0)} ms after request` : ""}</em></span><span><small>Flat</small><strong>{lifecycle.closed_at ? positionTimestamp(lifecycle.closed_at) : "Still open"}</strong></span><span><small>Orders · fills</small><strong>{orders.length} · {executions.length}</strong></span><span><small>Contract</small><strong>{String(instrument.conid || "—")}</strong></span></div></section>
+    <section className="position-lifecycle-section"><header><div><strong>Why the strategy acted</strong><span>Actual price, MACD, VWAP, structure, and stop values at each decision.</span></div><span>{decisions.length} decisions</span></header>{decisions.length ? <PreviewTable columns={["time", "action", "reason", "price", "macd", "vwap", "level", "stop_target"]} rows={decisions} /> : <p>No durable strategy decision is linked to this lifecycle.</p>}</section>
+    <section className="position-lifecycle-section"><header><div><strong>Order and fill chronology</strong><span>Submission, first partial fill, final fill, quantity, and realized average.</span></div><span>{orders.length} orders</span></header>{orderRows.length ? <PreviewTable columns={["role", "side", "status", "submitted", "first_fill", "last_fill", "progress", "average_fill", "limit", "order_id"]} rows={orderRows} /> : <p>No canonical order is linked to this lifecycle.</p>}</section>
+  </div></Modal>;
+}
+
+function positionDecisionRow(decision: PreviewRow): PreviewRow {
+  const gateSnapshot = (decision.gate_snapshot as PreviewRow | undefined) ?? {};
+  const values = (gateSnapshot.decision_values as PreviewRow | undefined) ?? {};
+  const rules = (gateSnapshot.entry_rules as PreviewRow | undefined) ?? {};
+  const confirmation = (rules.confirmation as PreviewRow | undefined) ?? {};
+  const evidence = (confirmation.condition_evidence as PreviewRow | undefined) ?? {};
+  const macdRows = (evidence["strategy-squeeze-macd-open-1s"] as PreviewRow[] | undefined) ?? [];
+  const macdCross = macdRows.find((row) => String(row.condition_id) === "squeeze-macd-line-above-signal");
+  const vwapRows = (evidence["strategy-squeeze-above-vwap-1s"] as PreviewRow[] | undefined) ?? [];
+  const vwap = vwapRows[0];
+  const unifiedTrigger = (gateSnapshot.unified_structural_trigger as PreviewRow | undefined) ?? {};
+  const targetSelection = (gateSnapshot.profit_target_selection as PreviewRow | undefined) ?? {};
+  const selectedTargets = (targetSelection.selected_target_prices as unknown[] | undefined) ?? [];
+  const profitTargets = (values.profit_targets as unknown[] | undefined) ?? [];
+  const price = values.reference_price ?? decision.reference_price ?? vwap?.left_value ?? "";
+  const level = decision.trigger_threshold_price ?? unifiedTrigger.threshold_price ?? "";
+  const target = profitTargets[0] ?? selectedTargets[0];
+  const macd = (gateSnapshot.macd as PreviewRow | undefined) ?? {};
+  const macdLine = values.macd_line ?? macd.macd_line ?? macdCross?.left_value;
+  const macdSignal = values.macd_signal ?? macd.macd_signal ?? macdCross?.right_value;
+  return {
     time: decision.event_time,
     action: decision.action,
     reason: decision.reason,
-    gates: decision.gates,
-    latency_ms: decision.recording_latency_ms,
-  }));
-  const orderRows = orders.map((order) => {
-    const orderExecutions = executions.filter((execution) => String(execution.broker_order_id || "") === String(order.broker_order_id || ""));
-    return { ...orderTableRow(order, orderExecutions), _order: order, _executions: orderExecutions };
-  });
-  const instrument = (lifecycle.instrument as PreviewRow | undefined) ?? (position.instrument as PreviewRow | undefined) ?? {};
-  return <div className="trading-row-detail"><div className="trading-detail-facts"><span><small>Position lifecycle</small><strong>{String(lifecycle.lifecycle_id || "—")}</strong></span><span><small>Contract</small><strong>{String(instrument.conid || "—")}</strong></span><span><small>Requested / first fill</small><strong>{formatJournalDate(String(lifecycle.requested_at || "")) || "—"} ET · {formatJournalDate(String(lifecycle.opened_at || "")) || "—"} ET</strong></span><span><small>Closed</small><strong>{lifecycle.closed_at ? `${formatJournalDate(String(lifecycle.closed_at))} ET` : "Open"}</strong></span><span><small>Execution parts</small><strong>{executions.length}</strong></span></div><section className="trading-fill-evidence"><header><strong>Decision timeline</strong><span>{decisions.length} causal event{decisions.length === 1 ? "" : "s"}</span></header>{decisions.length ? <PreviewTable columns={["time", "action", "reason", "gates", "latency_ms"]} rows={decisions} /> : <p>No durable strategy decision is linked to this position interval.</p>}</section><section className="trading-fill-evidence"><header><strong>Orders in this position</strong><span>{orders.length} order{orders.length === 1 ? "" : "s"}</span></header>{orders.length ? <TradingDataTable columns={["status", "side", "progress", "remaining", "type", "limit", "stop", "order_id", "updated_at"]} defaultSort="updated_at" filterColumn="status" filterLabel="All statuses" renderExpanded={(order) => <OrderDetail row={order} />} rows={orderRows} searchPlaceholder="Search this position's orders…" /> : <p>No canonical order is linked to this position lifecycle.</p>}</section></div>;
+    price,
+    macd: macdLine !== undefined && macdSignal !== undefined ? `L ${Number(macdLine).toFixed(5)} · S ${Number(macdSignal).toFixed(5)}` : "—",
+    vwap: vwap?.right_value ?? "—",
+    level: level || "—",
+    stop_target: values.initial_stop ? `Stop ${formatCell(values.initial_stop, "price")}` : target ? `Target ${formatCell(target, "price")}` : values.level_price ? `Target ${formatCell(values.level_price, "price")}` : "—",
+  };
+}
+
+function positionOrderRow(order: PreviewRow, executions: PreviewRow[]): PreviewRow {
+  const raw = (order.raw as PreviewRow | undefined) ?? {};
+  const metadata = (raw.canonical_metadata as PreviewRow | undefined) ?? {};
+  const orderedExecutions = [...executions].sort((left, right) => Date.parse(String(left.source_event_time || "")) - Date.parse(String(right.source_event_time || "")));
+  const clientOrderId = String(order.client_order_id || "").toLowerCase();
+  const inferredRole = clientOrderId.includes("target") ? "Profit target" : clientOrderId.includes("stop") ? "Protective stop" : clientOrderId.includes("exit") ? "Managed exit" : String(order.side).toUpperCase() === "BUY" ? "Entry" : "Protection";
+  const role = String(metadata.execution_role || metadata.fill_role || inferredRole);
+  return {
+    role: role.replaceAll("_", " "),
+    side: order.side,
+    status: order.lifecycle_state ?? order.status,
+    submitted: positionTimestamp(raw.submitted_at ?? order.source_event_time),
+    first_fill: positionTimestamp(orderedExecutions[0]?.source_event_time),
+    last_fill: positionTimestamp(orderedExecutions.at(-1)?.source_event_time),
+    progress: `${formatQuantity(Number(order.filled_quantity || 0))}/${formatQuantity(Number(order.total_quantity || 0))}`,
+    average_fill: order.average_fill_price || "—",
+    limit: order.limit_price || "—",
+    order_id: order.broker_order_id,
+  };
+}
+
+function positionTimestamp(value: unknown) {
+  const parsed = new Date(String(value || ""));
+  if (!Number.isFinite(parsed.getTime())) return "—";
+  return `${new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", fractionalSecondDigits: 3, hour12: false, timeZone: "America/New_York" }).format(parsed)} ET`;
 }
 
 function OrdersPreview({ data, onSymbolSelect, settings }: { data: CanonicalTradingPreview; onSymbolSelect?: (symbol: string) => void; settings: ContainerSettings["orders"] }) {

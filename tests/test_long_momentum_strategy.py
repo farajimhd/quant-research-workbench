@@ -69,6 +69,7 @@ def confirmed_observation(**overrides) -> StrategyObservation:
         "ticker": "AAPL",
         "observed_at": NOW,
         "price": 101.0,
+        "bar_open": 100.8,
         "bid": 100.99,
         "ask": 101.01,
         "previous_close": 100.0,
@@ -86,8 +87,11 @@ def confirmed_observation(**overrides) -> StrategyObservation:
         "qmd_bias": "bullish",
         "volatility": 0.4,
         "upper_luld_price": 110.0,
+        "evaluation_events": ("indicator_update", "bar_close"),
     }
     payload.update(overrides)
+    if "price" in overrides and "bar_open" not in overrides:
+        payload["bar_open"] = float(overrides["price"]) - 0.01
     if "vwap" in overrides and "execution_vwap" not in overrides:
         payload["execution_vwap"] = overrides["vwap"]
     return StrategyObservation(**payload)
@@ -217,6 +221,61 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(signal.reason, "entry_macd_not_positive_open")
         self.assertEqual(signal.metadata["macd"]["macd_line"], 0.10)
         self.assertEqual(signal.metadata["macd"]["macd_signal"], 0.20)
+
+    def test_entry_waits_for_completed_one_second_macd_frame(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["structural_entry"]["enabled"] = False
+
+        result = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=parameters),
+            confirmed_observation(
+                price=100.75,
+                bar_open=100.80,
+                evaluation_events=("market_data_update",),
+            ),
+        )
+
+        signal = result.evaluation.signals[0]
+        self.assertEqual(signal.action, "wait")
+        self.assertEqual(signal.reason, "entry_waiting_for_closed_one_second_macd")
+        self.assertEqual(signal.metadata["entry_frame"]["required_timeframe"], "1s")
+
+    def test_entry_rejects_bearish_completed_one_second_candle(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["structural_entry"]["enabled"] = False
+
+        result = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=parameters),
+            confirmed_observation(price=100.75, bar_open=100.80),
+        )
+
+        signal = result.evaluation.signals[0]
+        self.assertEqual(signal.action, "wait")
+        self.assertEqual(signal.reason, "entry_closed_candle_bearish")
+        self.assertEqual(signal.metadata["completed_candle"]["open"], 100.80)
+        self.assertEqual(signal.metadata["completed_candle"]["close"], 100.75)
+
+    def test_entry_rejects_completed_macd_gap_below_noise_threshold(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["structural_entry"]["enabled"] = False
+
+        result = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=parameters),
+            confirmed_observation(
+                price=100.0,
+                bar_open=99.99,
+                previous_high=99.0,
+                swing_high=99.0,
+                macd_line=0.200004,
+                macd_signal=0.200000,
+                macd_histogram=0.000004,
+            ),
+        )
+
+        signal = result.evaluation.signals[0]
+        self.assertEqual(signal.action, "wait")
+        self.assertEqual(signal.reason, "entry_macd_open_gap_below_threshold")
+        self.assertLess(signal.metadata["macd"]["open_gap_bps"], 0.5)
 
     def test_entry_uses_unified_support_and_only_qualified_causal_targets(self) -> None:
         result = LongMomentumStrategyEngine().evaluate(
@@ -692,7 +751,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(entered.evaluation.signals[0].action, "enter_long")
         self.assertEqual(entered.state["breakout_level"], 100.7)
 
-    def test_unified_entry_uses_intrasecond_market_event_with_latest_macd(self) -> None:
+    def test_unified_entry_waits_for_closed_frame_after_intrasecond_break(self) -> None:
         parameters = default_long_momentum_parameters()
         parameters["structural_entry"]["enabled"] = True
         levels = ({
@@ -736,11 +795,23 @@ class LongMomentumStrategyTests(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(entered.evaluation.signals[0].action, "enter_long")
+        self.assertEqual(entered.evaluation.signals[0].action, "wait")
         self.assertEqual(
-            entered.evaluation.signals[0].metadata["causation_id"],
-            "event:qmd-market-event:AAPL:trade:91",
+            entered.evaluation.signals[0].reason,
+            "entry_waiting_for_closed_one_second_macd",
         )
+
+        completed = engine.evaluate(
+            assignment(parameters=parameters, state=dict(entered.state)),
+            confirmed_observation(
+                observed_at=NOW + timedelta(seconds=1),
+                price=100.51,
+                bar_open=100.45,
+                source_timeframe="",
+                structural_resistance_levels=levels,
+            ),
+        )
+        self.assertEqual(completed.evaluation.signals[0].action, "enter_long")
 
     def test_unified_entry_does_not_chase_a_higher_level_after_arming(self) -> None:
         parameters = default_long_momentum_parameters()
@@ -2700,7 +2771,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
 
         result = LongMomentumStrategyEngine().evaluate(
             assignment(parameters=parameters),
-            confirmed_observation(),
+            confirmed_observation(bar_open=101.2),
         )
 
         self.assertEqual(result.evaluation.signals[0].action, "enter_short")
@@ -3099,7 +3170,8 @@ class LongMomentumStrategyTests(unittest.TestCase):
                 average_price=101.0,
                 position_quantity=100,
                 vwap=99.0,
-                source_timeframe="1s",
+                source_timeframe="",
+                evaluation_events=("market_data_update",),
                 macd_line=-0.20,
                 macd_signal=-0.10,
                 macd_histogram=-0.10,

@@ -261,6 +261,7 @@ class StrategyObservation:
     ticker: str
     observed_at: datetime
     price: float
+    bar_open: float | None = None
     bid: float = 0.0
     ask: float = 0.0
     position_quantity: float = 0.0
@@ -433,6 +434,13 @@ def default_long_momentum_parameters() -> dict[str, Any]:
             "histogram_lookback_ms": 5_000,
             "minimum_histogram_increase": 0.0,
             "minimum_histogram_increase_bps": 0.0,
+        },
+        "entry_candle_confirmation": {
+            "enabled": True,
+            "timeframe": "1s",
+            "require_closed_bar": True,
+            "reject_bearish_close": True,
+            "minimum_macd_open_gap_bps": 0.5,
         },
         "sizing": {
             "request_mode": "fixed_quantity",
@@ -1969,6 +1977,43 @@ class LongMomentumStrategyEngine:
                 },
             )
 
+        candle_policy = dict(parameters.get("entry_candle_confirmation") or {})
+        entry_timeframe = str(candle_policy.get("timeframe") or "1s").lower()
+        closed_entry_frame = (
+            "bar_close" in observation.evaluation_events
+            and observation.source_timeframe.lower() in {"", entry_timeframe}
+        )
+        if (
+            bool(candle_policy.get("enabled", True))
+            and bool(candle_policy.get("require_closed_bar", True))
+            and not closed_entry_frame
+            and not observation.force_entry
+        ):
+            return self._result(
+                assignment,
+                observation,
+                "wait",
+                "entry_waiting_for_closed_one_second_macd",
+                confirmation_score,
+                _confirmation_confidence(observation),
+                state,
+                AssignmentStatus.REENTRY_COOLDOWN
+                if reentries
+                else AssignmentStatus.WATCHING,
+                metadata={
+                    "triggers": triggered,
+                    "vetoes": vetoes,
+                    "confirmation": confirmation,
+                    "entry_rules": rule_result,
+                    "unified_structural_trigger": unified_trigger,
+                    "entry_frame": {
+                        "required_timeframe": entry_timeframe,
+                        "source_timeframe": observation.source_timeframe,
+                        "evaluation_events": list(observation.evaluation_events),
+                    },
+                },
+            )
+
         # This strategy's momentum regime is a semantic invariant, not merely
         # one editable rule-set row. Configuration materialization, re-entry
         # rule pruning, or a future catalog migration must never authorize an
@@ -1998,6 +2043,92 @@ class LongMomentumStrategyEngine:
                     "macd": entry_macd_evidence,
                 },
             )
+
+        minimum_macd_gap_bps = max(
+            0.0, float(candle_policy.get("minimum_macd_open_gap_bps") or 0.0)
+        )
+        macd_gap_bps = (
+            max(0.0, float(observation.macd_line or 0) - float(observation.macd_signal or 0))
+            / observation.price
+            * 10_000.0
+        )
+        if (
+            minimum_macd_gap_bps > 0
+            and macd_gap_bps < minimum_macd_gap_bps
+            and not observation.force_entry
+        ):
+            return self._result(
+                assignment,
+                observation,
+                "wait",
+                "entry_macd_open_gap_below_threshold",
+                confirmation_score,
+                _confirmation_confidence(observation),
+                state,
+                AssignmentStatus.REENTRY_COOLDOWN
+                if reentries
+                else AssignmentStatus.WATCHING,
+                metadata={
+                    "triggers": triggered,
+                    "vetoes": vetoes,
+                    "confirmation": confirmation,
+                    "entry_rules": rule_result,
+                    "unified_structural_trigger": unified_trigger,
+                    "macd": {
+                        **entry_macd_evidence,
+                        "open_gap_bps": macd_gap_bps,
+                        "minimum_open_gap_bps": minimum_macd_gap_bps,
+                    },
+                },
+            )
+
+        # Entry uses the completed one-second bar. A bearish close is not
+        # continuation evidence even when the completed MACD regime remains
+        # positive/open. Exit management remains event-native and is evaluated
+        # from the forming one-second MACD before this flat-position path.
+        side = _strategy_side(parameters)
+        if (
+            bool(candle_policy.get("enabled", True))
+            and bool(candle_policy.get("reject_bearish_close", True))
+            and not observation.force_entry
+        ):
+            bar_open = observation.bar_open
+            acceptable_close = (
+                bar_open is not None
+                and bar_open > 0
+                and (
+                    observation.price >= bar_open
+                    if side == "long"
+                    else observation.price <= bar_open
+                )
+            )
+            if not acceptable_close:
+                return self._result(
+                    assignment,
+                    observation,
+                    "wait",
+                    "entry_closed_candle_bearish",
+                    confirmation_score,
+                    _confirmation_confidence(observation),
+                    state,
+                    AssignmentStatus.REENTRY_COOLDOWN
+                    if reentries
+                    else AssignmentStatus.WATCHING,
+                    metadata={
+                        "triggers": triggered,
+                        "vetoes": vetoes,
+                        "confirmation": confirmation,
+                        "entry_rules": rule_result,
+                        "unified_structural_trigger": unified_trigger,
+                        "completed_candle": {
+                            "timeframe": entry_timeframe,
+                            "side": side,
+                            "open": bar_open,
+                            "close": observation.price,
+                            "required": "close >= open" if side == "long" else "close <= open",
+                        },
+                    },
+                )
 
         momentum_detail: dict[str, Any] = {}
         momentum_policy = dict(parameters.get("entry_momentum_confirmation") or {})
@@ -2041,7 +2172,6 @@ class LongMomentumStrategyEngine:
                 metadata={"triggers": triggered, "vetoes": vetoes, "confirmation": confirmation, "entry_rules": rule_result},
             )
 
-        side = _strategy_side(parameters)
         stop = _initial_stop(observation, parameters, reference, side=side)
         capital_request = _phase_capital_request(
             parameters,
@@ -4268,6 +4398,31 @@ def _decision_reason_detail(
             f"line={_display_value(detail.get('macd_line'))}, "
             f"signal={_display_value(detail.get('macd_signal'))}; requires "
             "line > signal, line > 0, and signal > 0."
+        )
+    if reason == "entry_waiting_for_closed_one_second_macd":
+        detail = dict(metadata.get("entry_frame") or {})
+        return (
+            "Wait: entry requires the completed one-second MACD frame — "
+            f"source timeframe={detail.get('source_timeframe') or 'event-native'}, "
+            f"events={', '.join(detail.get('evaluation_events') or []) or 'none'}."
+        )
+    if reason == "entry_macd_open_gap_below_threshold":
+        detail = dict(metadata.get("macd") or {})
+        return (
+            "Wait: completed one-second MACD is positive/open but its separation is below "
+            "the noise threshold — "
+            f"line={_display_value(detail.get('macd_line'))}, "
+            f"signal={_display_value(detail.get('macd_signal'))}, "
+            f"gap={_display_value(detail.get('open_gap_bps'))} bps; requires at least "
+            f"{_display_value(detail.get('minimum_open_gap_bps'))} bps."
+        )
+    if reason == "entry_closed_candle_bearish":
+        detail = dict(metadata.get("completed_candle") or {})
+        return (
+            "Wait: the completed one-second candle is bearish for the requested entry — "
+            f"open={_display_value(detail.get('open'))}, "
+            f"close={_display_value(detail.get('close'))}; requires "
+            f"{detail.get('required') or 'a non-bearish close'}."
         )
     if reason == "waiting_for_swing_high_reference":
         return "Wait: no causally confirmed one-second swing high is available yet."

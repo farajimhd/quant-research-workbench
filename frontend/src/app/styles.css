@@ -9743,6 +9743,9 @@ button {
 .trading-data-table th > button:hover { color: var(--foreground); }
 .trading-data-table th > button svg { flex: 0 0 auto; opacity: 0.62; }
 .trading-data-table tr.is-expanded { background: color-mix(in oklab, var(--primary) 5%, var(--surface)); }
+.trading-data-table tr.is-openable { cursor: pointer; }
+.trading-data-table tr.is-openable:hover,
+.trading-data-table tr.is-openable:focus-visible { background: color-mix(in oklab, var(--primary) 6%, var(--surface)); outline: 0; }
 
 .trading-expand-column {
   max-width: 30px !important;
@@ -9980,6 +9983,74 @@ button {
   font-size: 10px;
   line-height: 1.45;
   padding: 8px 10px;
+}
+
+.position-lifecycle-modal-backdrop {
+  background: rgba(16, 24, 40, .28);
+  bottom: auto;
+  display: grid;
+  height: var(--app-zoomed-viewport-height, 100vh);
+  left: 0;
+  place-items: center;
+  position: fixed;
+  right: auto;
+  top: 0;
+  width: var(--app-zoomed-viewport-width, 100vw);
+  zoom: var(--app-zoom);
+  z-index: 10120;
+}
+
+.modal-panel.position-lifecycle-modal {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 18px 60px rgba(16, 24, 40, .2);
+  display: flex;
+  flex-direction: column;
+  max-height: min(860px, calc(var(--app-zoomed-viewport-height, 100vh) - 36px));
+  max-width: min(1180px, calc(var(--app-zoomed-viewport-width, 100vw) - 36px));
+  overflow: hidden;
+  padding: 0;
+  width: min(1180px, calc(var(--app-zoomed-viewport-width, 100vw) - 36px));
+}
+
+.position-lifecycle-modal > .modal-header {
+  align-items: center;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: space-between;
+  margin: 0;
+  padding: 12px 14px;
+}
+
+.position-lifecycle-modal > .modal-header h2 { font-size: 16px; margin: 0; }
+
+.position-lifecycle-content { display: grid; flex: 1 1 auto; gap: 12px; min-height: 0; overflow: auto; padding: 14px; }
+.position-lifecycle-hero { background: var(--border); border: 1px solid var(--border); display: grid; gap: 1px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.position-lifecycle-hero > span { background: var(--surface); display: grid; gap: 3px; min-width: 0; padding: 10px 12px; }
+.position-lifecycle-hero small,
+.position-lifecycle-timing small { color: var(--muted-foreground); font-size: 9px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.position-lifecycle-hero strong { font-family: var(--font-mono); font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.position-lifecycle-hero [data-tone="positive"] strong { color: var(--success); }
+.position-lifecycle-hero [data-tone="negative"] strong { color: var(--danger); }
+.position-lifecycle-section { border: 1px solid var(--border); min-width: 0; }
+.position-lifecycle-section > header { align-items: center; background: var(--surface-alt); border-bottom: 1px solid var(--border); display: flex; gap: 12px; justify-content: space-between; padding: 9px 11px; }
+.position-lifecycle-section > header > div { display: grid; gap: 2px; }
+.position-lifecycle-section > header strong { font-size: 11px; }
+.position-lifecycle-section > header span { color: var(--muted-foreground); font-size: 9px; }
+.position-lifecycle-section > p { color: var(--muted-foreground); font-size: 10px; margin: 0; padding: 14px; }
+.position-lifecycle-timing { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.position-lifecycle-timing > span { display: grid; gap: 3px; min-width: 0; padding: 9px 11px; }
+.position-lifecycle-timing > span + span { border-left: 1px solid var(--border); }
+.position-lifecycle-timing strong { font-family: var(--font-mono); font-size: 10px; overflow-wrap: anywhere; }
+.position-lifecycle-timing em { color: var(--muted-foreground); font-size: 8px; font-style: normal; }
+
+@media (max-width: 760px) {
+  .position-lifecycle-hero { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .position-lifecycle-timing { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .position-lifecycle-timing > span + span { border-left: 0; border-top: 1px solid var(--border); }
 }
 
 .legend-unified-filters {

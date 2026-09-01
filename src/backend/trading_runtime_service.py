@@ -543,6 +543,21 @@ def strategy_activity_payload(
             )
             if metadata.get(key) is not None
         }
+        decision_values = {
+            key: value
+            for key, value in {
+                "reference_price": metadata.get("reference_price") or payload.get("reference_price"),
+                "macd_line": metadata.get("macd_line"),
+                "macd_signal": metadata.get("macd_signal"),
+                "initial_stop": metadata.get("initial_stop"),
+                "level_price": metadata.get("level_price"),
+                "profit_targets": metadata.get("profit_targets"),
+                "forming_candle": metadata.get("forming_candle"),
+            }.items()
+            if value is not None
+        }
+        if decision_values:
+            gate_snapshot["decision_values"] = decision_values
         action = _strategy_activity_action(record.category, payload)
         recording_latency_ms = max(
             0.0,

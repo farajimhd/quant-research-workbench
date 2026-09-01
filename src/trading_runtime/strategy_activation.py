@@ -126,6 +126,12 @@ def strategy_observation_from_signal_occurrence(
         ticker=ticker,
         observed_at=observed_at,
         price=price,
+        bar_open=_positive_numeric(
+            _scalar_value(
+                source_values,
+                ("market.bar_open@1s", "bar.open@1s", "market.bar_open", "bar.open", "open"),
+            )
+        ),
         bid=bid,
         ask=ask,
         position_quantity=float(position_quantity),
@@ -190,6 +196,9 @@ def strategy_observation_from_market_row(
         ticker=ticker,
         observed_at=timestamp,
         price=price,
+        bar_open=_positive_numeric(
+            row.get("bar_open") or row.get("open") or row.get("market.bar_open@1s")
+        ),
         bid=bid,
         ask=ask,
         position_quantity=float(position_quantity),

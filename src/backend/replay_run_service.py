@@ -131,6 +131,8 @@ class _ProvisionalMacdState:
     signal: float | None = None
     committed_at: datetime | None = None
     sample_count: int = 0
+    forming_second: datetime | None = None
+    forming_open: float | None = None
 
     @staticmethod
     def _ema(previous: float | None, value: float, period: int) -> float:
@@ -150,6 +152,18 @@ class _ProvisionalMacdState:
         self.signal = self._ema(self.signal, line, 9)
         self.committed_at = observed_at
         self.sample_count += 1
+        if self.forming_second is not None and self.forming_second < observed_at.replace(microsecond=0):
+            self.forming_second = None
+            self.forming_open = None
+
+    def observe_forming_candle(self, price: float, observed_at: datetime) -> float | None:
+        if price <= 0:
+            return self.forming_open
+        second = observed_at.replace(microsecond=0)
+        if self.forming_second != second:
+            self.forming_second = second
+            self.forming_open = price
+        return self.forming_open
 
     def preview(self, price: float) -> tuple[float, float, float] | None:
         if (
@@ -174,6 +188,10 @@ class _ProvisionalMacdState:
                 self.committed_at.isoformat() if self.committed_at else None
             ),
             "sample_count": self.sample_count,
+            "forming_second": (
+                self.forming_second.isoformat() if self.forming_second else None
+            ),
+            "forming_open": self.forming_open,
         }
 
     @classmethod
@@ -184,6 +202,8 @@ class _ProvisionalMacdState:
             signal=_optional_number(payload.get("signal")),
             committed_at=_optional_checkpoint_time(payload.get("committed_at")),
             sample_count=max(0, int(payload.get("sample_count") or 0)),
+            forming_second=_optional_checkpoint_time(payload.get("forming_second")),
+            forming_open=_optional_positive(payload.get("forming_open")),
         )
 
 
@@ -2866,6 +2886,7 @@ class ReplayRunController:
             ticker=frame.ticker,
             observed_at=frame.as_of,
             price=float(indicator.get("close") or bar.get("close") or 0),
+            bar_open=_optional_positive(bar.get("open")),
             bid=float(quote.bid_price if quote else 0),
             ask=float(quote.ask_price if quote else 0),
             previous_close=_optional_positive(
@@ -3168,6 +3189,11 @@ class ReplayRunController:
                 source_values[key] = dict(market_price)
         changed_source_ids = ["market.last_price"] if isinstance(event, TradeEvent) else []
         provisional_macd = self._provisional_macd_states.get(event.ticker)
+        forming_open = (
+            provisional_macd.observe_forming_candle(price, event.ts)
+            if provisional_macd
+            else None
+        )
         preview = provisional_macd.preview(price) if provisional_macd else None
         macd_line = base.macd_line
         macd_signal = base.macd_signal
@@ -3184,6 +3210,12 @@ class ReplayRunController:
                     "value": value,
                 }
                 changed_source_ids.append(source_id)
+        if forming_open is not None:
+            source_values["market.bar_open@1s"] = {
+                "observed_at": event.ts.isoformat(),
+                "value": forming_open,
+            }
+            changed_source_ids.append("market.bar_open@1s")
         if quote is not None and quote.midpoint > 0 and quote.ask_price >= quote.bid_price > 0:
             spread_bps = (
                 (quote.ask_price - quote.bid_price) / quote.midpoint * 10_000.0
@@ -3197,6 +3229,7 @@ class ReplayRunController:
             base,
             observed_at=event.ts,
             price=price,
+            bar_open=forming_open,
             bid=float(quote.bid_price if quote else base.bid),
             ask=float(quote.ask_price if quote else base.ask),
             macd_line=macd_line,

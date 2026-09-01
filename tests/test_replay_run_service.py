@@ -539,7 +539,7 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                     "timeframe": "1s",
                     "as_of": "2026-07-28T09:45:01-04:00",
                     "sequence": 3,
-                    "bar": {"close": 101.0},
+                    "bar": {"open": 100.9, "close": 101.0},
                     "indicator": entry,
                 },
                 {
@@ -547,7 +547,7 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                     "timeframe": "1s",
                     "as_of": "2026-07-28T09:45:04-04:00",
                     "sequence": 4,
-                    "bar": {"close": 100.0},
+                    "bar": {"open": 100.5, "close": 100.0},
                     "indicator": strategic_exit,
                 },
             ),
@@ -2987,6 +2987,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         observation = runtime.process_account_strategy_observation.await_args.args[0]
         self.assertEqual(observation.observed_at, event.ts)
         self.assertEqual(observation.price, 3.47)
+        self.assertEqual(observation.bar_open, 3.47)
         self.assertEqual(observation.source_timeframe, "")
         self.assertEqual(observation.evaluation_events, ("market_data_update",))
         self.assertNotIn("bar_close", observation.evaluation_events)
@@ -3007,6 +3008,22 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(observation.macd_signal or 0, expected_signal)
         self.assertIn("indicator.macd.line@1s", observation.changed_source_ids)
         self.assertIn("indicator.macd.signal@1s", observation.changed_source_ids)
+        self.assertEqual(
+            observation.source_values["market.bar_open@1s"]["value"], 3.47
+        )
+
+        next_event = _debug_market_events(({
+            "kind": "trade",
+            "ticker": "SUGP",
+            "ts": "2026-08-21T04:02:57.650-04:00",
+            "sequence": 92,
+            "price": 3.45,
+            "size": 100,
+        },))[0]
+        await controller._process_strategy_market_event(next_event)
+        next_observation = runtime.process_account_strategy_observation.await_args.args[0]
+        self.assertEqual(next_observation.bar_open, 3.47)
+        self.assertEqual(next_observation.price, 3.45)
 
     async def test_quote_updates_execution_state_without_strategy_evaluation(self) -> None:
         now = datetime(2026, 8, 21, 4, 2, 57, tzinfo=NEW_YORK)
