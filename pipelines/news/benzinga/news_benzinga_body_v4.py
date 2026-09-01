@@ -46,7 +46,7 @@ _RELATED_MARKER = re.compile(
 _RELATED_PREFIX = re.compile(
     r"^(?:(?:read|see|watch|listen)\s+(?:also|next|more|related)\b\s*(?::|>|-|,|;|\.|\"|”|\s)\s*.+|"
     r"read\s+full\s+article\b.*|continue\s+reading\b.*|"
-    r"(?:to|for)\s+(?:read|see|watch|learn|find\s+out)\s+more\b.*(?:click\s+here|visit\b|https?://|www\.))$",
+    r"(?:to|for)\s+(?:read|see|watch|learn|find\s+out)\s+more\b.*)$",
     re.IGNORECASE,
 )
 _BARE_RELATED_CTA = re.compile(

@@ -69,6 +69,8 @@ class BodyOnlyNewsRendererV4Test(unittest.TestCase):
             "Read more...",
             "Read morehttps://example.com/other",
             "To read more about this story, click here",
+            "To read more about this story, click here.",
+            "To read more interviews with other women, you can find them on the forum page.",
             "Continue reading at Benzinga Pro",
         )
         for value in variants:

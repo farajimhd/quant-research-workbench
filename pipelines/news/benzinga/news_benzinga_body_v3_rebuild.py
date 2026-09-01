@@ -57,7 +57,10 @@ class BodyBuildCounts:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build, certify, promote, or roll back a versioned Benzinga body-only authority.")
-    parser.add_argument("action", choices=("rebuild", "certify", "promote", "rollback"), nargs="?", default="rebuild")
+    parser.add_argument(
+        "action", choices=("rebuild", "repair-purity", "certify", "promote", "rollback"),
+        nargs="?", default="rebuild",
+    )
     parser.add_argument("--execute", action="store_true", help="Allow ClickHouse writes; rebuild otherwise validates only.")
     parser.add_argument("--database", default=os.environ.get("NEWS_BENZINGA_CLICKHOUSE_DATABASE", "q_live"))
     parser.add_argument("--source-table", default="benzinga_news_event_v2")
@@ -118,9 +121,11 @@ def main(argv: list[str] | None = None) -> int:
         else NewsBodyV3TargetConfig(database=args.database, execute=args.execute)
     )
     try:
-        if args.action in {"certify", "promote", "rollback"}:
+        if args.action in {"repair-purity", "certify", "promote", "rollback"}:
             if not args.execute:
                 raise SystemExit(f"{args.action} requires --execute")
+            if args.action == "repair-purity":
+                return repair_purity_rows(client, target, args, run_id, run_root)
             if args.action == "certify":
                 return certify_existing(client, target, args.source_table, run_id, run_root)
             return run_control_action(client, target, args.action, run_id, run_root)
@@ -275,6 +280,143 @@ def rebuild(
             raise RuntimeError(f"{BODY_RENDERER_VERSION} was not certified: {audit['errors']}; report={report_path}")
     print(f"COMPLETED | status={audit['status']} report={report_path}", flush=True)
     return 0
+
+
+def repair_purity_rows(
+    client: RetryingClickHouseHttpClient,
+    target: NewsBodyV3TargetConfig,
+    args: argparse.Namespace,
+    run_id: str,
+    run_root: Path,
+) -> int:
+    """Re-render only current rows rejected by the independent SQL purity gate."""
+    if BODY_RENDERER_VERSION != news_benzinga_body_v4.BODY_RENDERER_VERSION:
+        raise RuntimeError("targeted purity repair is supported only for Body V4")
+    create_body_v3_tables(client, target)
+    marker = body_marker_sql("r.canonical_body_text")
+    wrapper = body_binary_wrapper_sql("r.canonical_body_text")
+    projection = ", ".join(f"e.{quote_ident(name)}" for name in V2_EVENT_COLUMNS)
+    source_rows = parse_json_each_rows(client.execute(f"""
+SELECT {projection}
+FROM {quote_ident(args.database)}.{quote_ident(args.source_table)} AS e FINAL
+INNER JOIN {quote_ident(target.database)}.{quote_ident(target.rendered_table)} AS r FINAL
+  ON r.canonical_news_id=e.canonical_news_id
+WHERE r.renderer_version={sql_string(BODY_RENDERER_VERSION)} AND ({wrapper} OR {marker})
+ORDER BY e.published_at_utc,e.provider_article_id
+FORMAT JSONEachRow
+"""))
+    if not source_rows:
+        report = {"run_id": run_id, "status": "nothing_to_repair", "input_rows": 0, "purity_errors": 0}
+        report_path = run_root / "purity_repair.json"
+        report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+        print(f"BODY PURITY REPAIR | rows=0 report={report_path}", flush=True)
+        return 0
+
+    previous = load_flagged_previous_hashes(client, target, args.previous_rendered_table)
+    source_parts = load_flagged_previous_sources(
+        client, target, args.source_table, args.previous_source_table,
+    )
+    path_maps = parse_path_maps(args.path_prefix_map) or [DEFAULT_PATH_MAP]
+    built_rows: list[dict[str, Any]] = []
+    failures: list[dict[str, str]] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
+        futures = [
+            executor.submit(
+                render_body_one,
+                row,
+                previous,
+                source_parts.get(str(row.get("canonical_news_id") or ""), []),
+                path_maps,
+            )
+            for row in source_rows
+        ]
+        for row, future in zip(source_rows, futures):
+            try:
+                built = future.result()
+                reasons = body_purity_reasons(str(built["rendered"]["canonical_body_text"]))
+                if reasons:
+                    raise RuntimeError("surviving purity reasons: " + ",".join(reasons))
+                built_rows.append(built)
+            except Exception as exc:  # noqa: BLE001
+                failures.append({
+                    "canonical_news_id": str(row.get("canonical_news_id") or ""),
+                    "error_type": type(exc).__name__,
+                    "error": str(exc)[:400],
+                })
+    if failures or len(built_rows) != len(source_rows):
+        for failure in failures:
+            append_jsonl(run_root / "purity_repair_errors.jsonl", failure)
+        raise RuntimeError(
+            f"targeted purity repair built {len(built_rows):,}/{len(source_rows):,}; "
+            f"see {run_root / 'purity_repair_errors.jsonl'}"
+        )
+    client.close()
+    insert_body_rows(client, target, built_rows, execute=True, max_rows=args.insert_batch_size)
+    remaining = int(client.execute(f"""
+SELECT countIf({body_binary_wrapper_sql('canonical_body_text')} OR {body_marker_sql('canonical_body_text')})
+FROM {quote_ident(target.database)}.{quote_ident(target.rendered_table)} FINAL
+WHERE renderer_version={sql_string(BODY_RENDERER_VERSION)} FORMAT TSV
+""").strip() or 0)
+    report = {
+        "run_id": run_id,
+        "status": "repaired" if remaining == 0 else "repair_incomplete",
+        "input_rows": len(source_rows),
+        "written_rows": len(built_rows),
+        "remaining_purity_rows": remaining,
+        "operator_labels_observed": operator_label_snapshot(client, target.database),
+        "operator_label_note": "Read-only observation only; purity repair never writes label or note tables.",
+    }
+    report_path = run_root / "purity_repair.json"
+    report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    if remaining:
+        raise RuntimeError(f"targeted purity repair left {remaining:,} rows; report={report_path}")
+    print(f"BODY PURITY REPAIR | rows={len(built_rows):,} remaining=0 report={report_path}", flush=True)
+    return 0
+
+
+def load_flagged_previous_hashes(
+    client: RetryingClickHouseHttpClient,
+    target: NewsBodyV3TargetConfig,
+    previous_table: str,
+) -> dict[str, tuple[str, str]]:
+    marker = body_marker_sql("r.canonical_body_text")
+    wrapper = body_binary_wrapper_sql("r.canonical_body_text")
+    return {
+        str(row["canonical_news_id"]): (str(row["previous_text_hash"]), str(row["renderer_version"]))
+        for row in parse_json_each_rows(client.execute(f"""
+SELECT p.canonical_news_id,p.body_hash AS previous_text_hash,p.renderer_version
+FROM {quote_ident(target.database)}.{quote_ident(previous_table)} AS p FINAL
+INNER JOIN {quote_ident(target.database)}.{quote_ident(target.rendered_table)} AS r FINAL
+  ON r.canonical_news_id=p.canonical_news_id
+WHERE r.renderer_version={sql_string(BODY_RENDERER_VERSION)} AND ({wrapper} OR {marker})
+FORMAT JSONEachRow
+"""))
+    }
+
+
+def load_flagged_previous_sources(
+    client: RetryingClickHouseHttpClient,
+    target: NewsBodyV3TargetConfig,
+    event_table: str,
+    source_table: str,
+) -> dict[str, list[dict[str, Any]]]:
+    marker = body_marker_sql("r.canonical_body_text")
+    wrapper = body_binary_wrapper_sql("r.canonical_body_text")
+    rows = parse_json_each_rows(client.execute(f"""
+SELECT s.*
+FROM {quote_ident(target.database)}.{quote_ident(source_table)} AS s FINAL
+INNER JOIN {quote_ident(target.database)}.{quote_ident(event_table)} AS e FINAL
+  ON s.canonical_news_id=e.canonical_news_id AND s.source_revision_key=e.source_revision_key
+INNER JOIN {quote_ident(target.database)}.{quote_ident(target.rendered_table)} AS r FINAL
+  ON r.canonical_news_id=e.canonical_news_id
+WHERE r.renderer_version={sql_string(BODY_RENDERER_VERSION)} AND ({wrapper} OR {marker})
+ORDER BY s.canonical_news_id,s.source_kind,s.source_ordinal
+FORMAT JSONEachRow
+"""))
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(str(row.get("canonical_news_id") or ""), []).append(row)
+    return grouped
 
 
 def render_body_one(
