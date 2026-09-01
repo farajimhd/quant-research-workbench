@@ -7,7 +7,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from .core import ALLOWED_GROUP_FIELDS, DEFAULT_GROUP_BY, ClickHouseReviewBackend
+from .core import (
+    ALLOWED_GROUP_FIELDS,
+    DEFAULT_GROUP_BY,
+    ClickHouseReviewBackend,
+    ResultSetOperationError,
+)
 
 
 STATIC_ROOT = Path(__file__).with_name("static")
@@ -162,6 +167,8 @@ def create_app(backend: ClickHouseReviewBackend) -> FastAPI:
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except ResultSetOperationError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     @app.put("/api/notes")
     def put_note(update: NoteUpdate) -> dict[str, Any]:

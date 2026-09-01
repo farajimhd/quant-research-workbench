@@ -96,6 +96,13 @@ RESULT_MEMBER_COLUMNS = [
     "campaign_id", "batch_id", "source_id", "result_position", "original_gold_label",
     "synthesis_label", "source_revision_key", "captured_at_utc",
 ]
+RESULT_SOURCE_FIELDS = (
+    "source_id", "gold_label", "synthesis_label", "source_revision_key",
+)
+
+
+class ResultSetOperationError(RuntimeError):
+    """A captured result set could not be safely and completely labeled."""
 
 PATH_PART_MEANINGS = {
     "single_subject": "News Synthesis resolved the article as primarily about one subject.",
@@ -191,6 +198,9 @@ class ClickHouseReviewBackend:
 
     def rows(self, sql: str) -> list[dict[str, Any]]:
         return list(self.client.iter_json_each_row(sql))
+
+    def iter_rows(self, sql: str) -> Iterable[dict[str, Any]]:
+        return self.client.iter_json_each_row(sql)
 
     def ensure_tables(self) -> None:
         self.execute(f"""CREATE TABLE IF NOT EXISTS {self.db}.{quote_ident(SOURCE_TABLE)} (
@@ -907,82 +917,147 @@ WHERE {self._where(filters, selection)} ORDER BY s.source_id FORMAT JSONEachRow
             "selection": dict(selection),
         }
         spec_json = canonical_json(spec)
-        sources = self.rows(f"""
-SELECT s.source_id,s.gold_label,s.synthesis_label,s.source_revision_key
+        source_sql = f"""
+SELECT s.source_id AS source_id,s.gold_label AS gold_label,
+       s.synthesis_label AS synthesis_label,s.source_revision_key AS source_revision_key
 FROM {self.db}.{quote_ident(SOURCE_TABLE)} s FINAL
 LEFT JOIN {self._current_labels_sql()} l ON l.campaign_id=s.campaign_id AND l.source_id=s.source_id
 {self._body_join_sql(filters, selection)}
 WHERE {self._where(filters, selection)} ORDER BY s.published_at_utc DESC,s.source_id FORMAT JSONEachRow
-""")
-        if not sources:
-            raise ValueError("current result set contains no articles")
+"""
         batch_id = str(uuid.uuid4())
         created_at = utc_now_clickhouse()
         digest = hashlib.sha256()
-        for position, source in enumerate(sources):
-            digest.update(canonical_json({
-                "position": position, "source_id": source["source_id"],
-                "gold_label": source["gold_label"], "synthesis_label": source["synthesis_label"],
-                "source_revision_key": source["source_revision_key"],
-            }).encode("utf-8"))
-            digest.update(b"\n")
-        result_hash = digest.hexdigest()
+        matched_rows = 0
+        result_hash = "0" * 64
+        labels_applied = False
 
-        def write_batch(status: str, *, completed_at: str, error: str = "") -> None:
+        def write_batch(
+            status: str, *, completed_at: str, error: str = "",
+            captured_rows: int, captured_hash: str,
+        ) -> None:
             row = {
                 "campaign_id": self.campaign_id, "batch_id": batch_id,
                 "result_spec_json": spec_json, "operator_label": operator_label,
-                "lesson": lesson, "status": status, "matched_rows": len(sources),
-                "result_sha256": result_hash, "reviewer": reviewer, "revision": revision(),
+                "lesson": lesson, "status": status, "matched_rows": captured_rows,
+                "result_sha256": captured_hash, "reviewer": reviewer, "revision": revision(),
                 "created_at_utc": created_at, "completed_at_utc": completed_at, "error": error,
             }
             insert_json_each_row(self.client, self.database, RESULT_BATCH_TABLE, RESULT_BATCH_COLUMNS, [row])
 
-        write_batch("captured", completed_at="1970-01-01 00:00:00.000000")
+        write_batch(
+            "capturing", completed_at="1970-01-01 00:00:00.000000",
+            captured_rows=0, captured_hash="0" * 64,
+        )
         try:
-            members = [
-                {
+            member_buffer: list[dict[str, Any]] = []
+            for position, source in enumerate(self.iter_rows(source_sql)):
+                missing = [field for field in RESULT_SOURCE_FIELDS if field not in source]
+                if missing:
+                    raise RuntimeError(
+                        "result-set capture returned an invalid row at position "
+                        f"{position}: missing {','.join(missing)}"
+                    )
+                source_id = str(source["source_id"] or "")
+                if not source_id:
+                    raise RuntimeError(
+                        f"result-set capture returned an empty source_id at position {position}"
+                    )
+                canonical_source = {
+                    "position": position,
+                    "source_id": source_id,
+                    "gold_label": str(source["gold_label"] or ""),
+                    "synthesis_label": str(source["synthesis_label"] or ""),
+                    "source_revision_key": str(source["source_revision_key"] or ""),
+                }
+                digest.update(canonical_json(canonical_source).encode("utf-8"))
+                digest.update(b"\n")
+                member_buffer.append({
                     "campaign_id": self.campaign_id, "batch_id": batch_id,
-                    "source_id": source["source_id"], "result_position": position,
-                    "original_gold_label": source["gold_label"],
-                    "synthesis_label": source["synthesis_label"],
-                    "source_revision_key": source["source_revision_key"],
+                    "source_id": source_id, "result_position": position,
+                    "original_gold_label": canonical_source["gold_label"],
+                    "synthesis_label": canonical_source["synthesis_label"],
+                    "source_revision_key": canonical_source["source_revision_key"],
                     "captured_at_utc": created_at,
-                }
-                for position, source in enumerate(sources)
-            ]
-            for batch in json_each_row_batches(
-                members, table=RESULT_MEMBER_TABLE, max_rows=1000,
-                target_bytes=4 * 1024 * 1024, max_row_bytes=8 * 1024 * 1024,
+                })
+                matched_rows = position + 1
+                if len(member_buffer) >= 1000:
+                    insert_json_each_row(
+                        self.client, self.database, RESULT_MEMBER_TABLE,
+                        RESULT_MEMBER_COLUMNS, member_buffer,
+                    )
+                    member_buffer = []
+            if member_buffer:
+                insert_json_each_row(
+                    self.client, self.database, RESULT_MEMBER_TABLE,
+                    RESULT_MEMBER_COLUMNS, member_buffer,
+                )
+            if not matched_rows:
+                raise ValueError("current result set contains no articles")
+            result_hash = digest.hexdigest()
+            verification = self.rows(f"""
+SELECT count() AS member_rows,uniqExact(source_id) AS unique_ids,
+       min(result_position) AS min_position,max(result_position) AS max_position
+FROM {self.db}.{quote_ident(RESULT_MEMBER_TABLE)}
+WHERE campaign_id={sql_string(self.campaign_id)} AND batch_id=toUUID({sql_string(batch_id)})
+FORMAT JSONEachRow
+""")[0]
+            expected_max = matched_rows - 1
+            if (
+                int(verification["member_rows"]) != matched_rows
+                or int(verification["unique_ids"]) != matched_rows
+                or int(verification["min_position"]) != 0
+                or int(verification["max_position"]) != expected_max
             ):
-                insert_json_each_row(self.client, self.database, RESULT_MEMBER_TABLE, RESULT_MEMBER_COLUMNS, batch.rows)
-            del members
+                raise RuntimeError(
+                    "result-set membership verification failed: "
+                    f"captured={matched_rows} stored={verification['member_rows']} "
+                    f"unique={verification['unique_ids']} positions="
+                    f"{verification['min_position']}..{verification['max_position']}"
+                )
+            write_batch(
+                "captured", completed_at="1970-01-01 00:00:00.000000",
+                captured_rows=matched_rows, captured_hash=result_hash,
+            )
             now, base_revision = utc_now_clickhouse(), revision()
-            decisions = [
-                {
-                    "campaign_id": self.campaign_id, "decision_id": str(uuid.uuid4()),
-                    "source_id": source["source_id"], "original_gold_label": source["gold_label"],
-                    "operator_label": operator_label, "decision_source": "result_set_bulk",
-                    "group_id": batch_id, "group_spec_json": spec_json, "note": "",
-                    "reviewer": reviewer, "revision": base_revision + position, "updated_at_utc": now,
-                }
-                for position, source in enumerate(sources)
-            ]
-            for batch in json_each_row_batches(
-                decisions, table=LABEL_HISTORY_TABLE, max_rows=500,
-                target_bytes=4 * 1024 * 1024, max_row_bytes=8 * 1024 * 1024,
-            ):
-                insert_json_each_row(self.client, self.database, LABEL_HISTORY_TABLE, LABEL_COLUMNS, batch.rows)
+            self.execute(f"""
+INSERT INTO {self.db}.{quote_ident(LABEL_HISTORY_TABLE)} ({','.join(quote_ident(column) for column in LABEL_COLUMNS)})
+SELECT campaign_id,generateUUIDv4(),source_id,original_gold_label,
+       {sql_string(operator_label)},'result_set_bulk',{sql_string(batch_id)},
+       {sql_string(spec_json)},'',{sql_string(reviewer)},
+       toUInt64({base_revision})+toUInt64(result_position),
+       toDateTime64({sql_string(now)},6,'UTC')
+FROM {self.db}.{quote_ident(RESULT_MEMBER_TABLE)}
+WHERE campaign_id={sql_string(self.campaign_id)} AND batch_id=toUUID({sql_string(batch_id)})
+ORDER BY result_position
+""")
+            labels_applied = True
             completed_at = utc_now_clickhouse()
-            write_batch("applied", completed_at=completed_at)
+            write_batch(
+                "applied", completed_at=completed_at,
+                captured_rows=matched_rows, captured_hash=result_hash,
+            )
             return {
-                "batch_id": batch_id, "status": "applied", "matched_rows": len(sources),
+                "batch_id": batch_id, "status": "applied", "matched_rows": matched_rows,
                 "operator_label": operator_label, "lesson": lesson, "result_sha256": result_hash,
                 "result_spec": spec, "summary": self.summary(),
             }
         except Exception as exc:
-            write_batch("failed", completed_at=utc_now_clickhouse(), error=f"{type(exc).__name__}: {exc}"[:2000])
-            raise
+            try:
+                write_batch(
+                    "failed", completed_at=utc_now_clickhouse(),
+                    error=f"{type(exc).__name__}: {exc}"[:2000],
+                    captured_rows=matched_rows, captured_hash=result_hash,
+                )
+            except Exception as audit_exc:
+                raise ResultSetOperationError(
+                    "Bulk labeling failed and its audit status could not be recorded; "
+                    f"labels_applied={str(labels_applied).lower()}"
+                ) from audit_exc
+            if isinstance(exc, ValueError):
+                raise
+            phase = "after labels were inserted" if labels_applied else "before any labels were inserted"
+            raise ResultSetOperationError(f"Bulk labeling aborted {phase}: {exc}") from exc
 
     def group_state(self, spec: Mapping[str, Any]) -> dict[str, Any]:
         identifier = group_id(spec)

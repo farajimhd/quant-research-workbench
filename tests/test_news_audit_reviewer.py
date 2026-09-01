@@ -46,10 +46,10 @@ class ExistingGroupBackend(ClickHouseReviewBackend):
 
 
 class ResultSetBackend(ClickHouseReviewBackend):
-    def rows(self, sql: str) -> list[dict]:
+    def iter_rows(self, sql: str):
         assert "CEO\\'s outlook" in sql
         assert "single_subject > report > issuer" in sql
-        return [
+        return iter([
             {
                 "source_id": "source-2", "gold_label": "ineligible",
                 "synthesis_label": "eligible", "source_revision_key": "revision-2",
@@ -58,7 +58,11 @@ class ResultSetBackend(ClickHouseReviewBackend):
                 "source_id": "source-1", "gold_label": "eligible",
                 "synthesis_label": "eligible", "source_revision_key": "revision-1",
             },
-        ]
+        ])
+
+    def rows(self, sql: str) -> list[dict]:
+        assert "uniqExact(source_id)" in sql
+        return [{"member_rows": 2, "unique_ids": 2, "min_position": 0, "max_position": 1}]
 
     def summary(self) -> dict:
         return {"articles": 2, "reviewed_articles": 2}
@@ -247,6 +251,26 @@ def test_result_set_label_freezes_query_membership_and_lesson() -> None:
     assert "news_synthesis_v61_result_label_batch_v1" in executed
     assert "news_synthesis_v61_result_label_member_v1" in executed
     assert "news_synthesis_v61_operator_label_history_v3" in executed
+    assert "SELECT campaign_id,generateUUIDv4(),source_id,original_gold_label" in executed
     assert "Issuer-looking outlook headlines are not forecasts" in executed
     assert '"source_id":"source-1"' in executed
     assert '"source_id":"source-2"' in executed
+
+
+def test_result_set_capture_fails_closed_on_malformed_stream_row() -> None:
+    class MalformedBackend(ResultSetBackend):
+        def iter_rows(self, sql: str):
+            return iter([{
+                "gold_label": "eligible", "synthesis_label": "eligible",
+                "source_revision_key": "revision-1",
+            }])
+
+    client = FakeClient()
+    backend = MalformedBackend(client)
+    with pytest.raises(RuntimeError, match="missing source_id"):
+        backend.apply_result_set(
+            filters={}, selection={}, operator_label="eligible", lesson="", reviewer="owner",
+        )
+    executed = "\n".join(client.executed)
+    assert '"status":"failed"' in executed
+    assert "INSERT INTO `q_live`.`news_synthesis_v61_operator_label_history_v3`" not in executed
