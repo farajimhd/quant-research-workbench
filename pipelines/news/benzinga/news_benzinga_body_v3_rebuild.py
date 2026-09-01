@@ -575,7 +575,10 @@ SELECT
  (SELECT count() FROM {rendered} FINAL) AS rendered_rows,
  (SELECT countIf(renderer_version={sql_string(BODY_RENDERER_VERSION)}) FROM {db}.{quote_ident(target.event_table)} FINAL) AS current_event_rows,
  (SELECT countIf(renderer_version={sql_string(BODY_RENDERER_VERSION)}) FROM {rendered} FINAL) AS current_rendered_rows,
- (SELECT countIf(body_renderer_version={sql_string(BODY_RENDERER_VERSION)}) FROM {lineage} FINAL) AS current_lineage_rows,
+ (SELECT count() FROM {lineage} AS l FINAL INNER JOIN {rendered} AS r FINAL
+   ON l.canonical_news_id=r.canonical_news_id AND l.source_revision_key=r.source_revision_key
+   WHERE l.body_renderer_version={sql_string(BODY_RENDERER_VERSION)}
+     AND r.renderer_version={sql_string(BODY_RENDERER_VERSION)}) AS current_lineage_rows,
  (SELECT sum(length(arrayDistinct(tickers))) FROM {db}.{quote_ident(target.event_table)} FINAL WHERE renderer_version={sql_string(BODY_RENDERER_VERSION)}) AS expected_ticker_rows,
  (SELECT count() FROM {db}.{quote_ident(target.ticker_table)} AS t FINAL INNER JOIN {rendered} AS r FINAL
    ON t.canonical_news_id=r.canonical_news_id AND t.source_revision_key=r.source_revision_key
@@ -914,7 +917,11 @@ def body_day_is_complete(
 SELECT
  (SELECT count() FROM {quote_ident(target.database)}.{quote_ident(target.event_table)} FINAL WHERE published_date=toDate('{day}') AND renderer_version={sql_string(BODY_RENDERER_VERSION)}),
  (SELECT count() FROM {quote_ident(target.database)}.{quote_ident(target.rendered_table)} FINAL WHERE published_date=toDate('{day}') AND renderer_version={sql_string(BODY_RENDERER_VERSION)}),
- (SELECT count() FROM {quote_ident(target.database)}.{quote_ident(target.lineage_table)} FINAL WHERE published_date=toDate('{day}') AND body_renderer_version={sql_string(BODY_RENDERER_VERSION)}),
+ (SELECT count() FROM {quote_ident(target.database)}.{quote_ident(target.lineage_table)} AS l FINAL
+   INNER JOIN {quote_ident(target.database)}.{quote_ident(target.rendered_table)} AS r FINAL
+     ON l.canonical_news_id=r.canonical_news_id AND l.source_revision_key=r.source_revision_key
+   WHERE l.published_date=toDate('{day}') AND l.body_renderer_version={sql_string(BODY_RENDERER_VERSION)}
+     AND r.renderer_version={sql_string(BODY_RENDERER_VERSION)}),
  (SELECT count() FROM
    (SELECT r.canonical_news_id, r.source_revision_key, r.source_count, r.included_block_count+r.excluded_block_count expected_blocks,
            countIf(notEmpty(s.canonical_news_id)) actual_sources,
@@ -966,7 +973,12 @@ INNER JOIN
  (SELECT published_date,count() rows FROM {quote_ident(target.database)}.{quote_ident(target.rendered_table)} FINAL WHERE renderer_version={sql_string(BODY_RENDERER_VERSION)} GROUP BY published_date) r
  USING published_date
 INNER JOIN
- (SELECT published_date,count() rows FROM {quote_ident(target.database)}.{quote_ident(target.lineage_table)} FINAL WHERE body_renderer_version={sql_string(BODY_RENDERER_VERSION)} GROUP BY published_date) l
+ (SELECT l.published_date,count() rows
+  FROM {quote_ident(target.database)}.{quote_ident(target.lineage_table)} AS l FINAL
+  INNER JOIN {quote_ident(target.database)}.{quote_ident(target.rendered_table)} AS r FINAL
+    ON l.canonical_news_id=r.canonical_news_id AND l.source_revision_key=r.source_revision_key
+  WHERE l.body_renderer_version={sql_string(BODY_RENDERER_VERSION)}
+    AND r.renderer_version={sql_string(BODY_RENDERER_VERSION)} GROUP BY l.published_date) l
  USING published_date
 FORMAT JSONEachRow
 """).split("\n")
