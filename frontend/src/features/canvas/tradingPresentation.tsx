@@ -403,29 +403,28 @@ function PositionsPreview({ data, onSymbolSelect, settings }: { data: CanonicalT
     });
     const relatedExecutions = data.executions.filter((execution) => String(execution.account_id || "") === account && lifecycleExecutionIds.has(String(execution.execution_id || "")));
     const closedAt = lifecycleClosedAt;
-    const relatedDecisions = (data.strategy_activity ?? []).filter((activity) => {
+    const relatedActivity = (data.strategy_activity ?? []).filter((activity) => {
       const eventAt = Date.parse(String(activity.event_time || ""));
       const activityAccount = String(activity.account_id || "");
       const activityStrategy = String(activity.strategy_id || "");
-      return String(activity.event_type || "") === "decision"
-        && String(activity.ticker || "").toUpperCase() === String(symbol).toUpperCase()
+      return String(activity.ticker || "").toUpperCase() === String(symbol).toUpperCase()
         && (!activityAccount || activityAccount === account)
         && (!activityStrategy || activityStrategy === String(lifecycle.strategy_id || ""))
         && Number.isFinite(eventAt)
         && (!Number.isFinite(requestedAt) || eventAt >= requestedAt - 1_000)
         && (!Number.isFinite(closedAt) || eventAt <= closedAt + 1_000);
     });
-    return { lifecycle, symbol, account, relatedOrders, relatedExecutions, relatedDecisions };
+    return { lifecycle, symbol, account, relatedOrders, relatedExecutions, relatedActivity };
   });
-  const openRows = lifecycleRows.filter(({ lifecycle }) => String(lifecycle.status) === "open").map(({ lifecycle, symbol, account, relatedOrders, relatedExecutions, relatedDecisions }) => {
+  const openRows = lifecycleRows.filter(({ lifecycle }) => String(lifecycle.status) === "open").map(({ lifecycle, symbol, account, relatedOrders, relatedExecutions, relatedActivity }) => {
     const position = data.positions.find((row) => String(row.account_id || "") === account && nestedValue(row, "instrument", "instrument_id") === nestedValue(lifecycle, "instrument", "instrument_id"));
     const quantity = Number(lifecycle.current_quantity || 0);
     const averagePrice = Number(lifecycle.entry_price || 0);
     const mark = Number(position?.market_price || 0);
     const returnPct = averagePrice > 0 ? ((mark - averagePrice) / averagePrice) * 100 * (quantity < 0 ? -1 : 1) : 0;
-    return { account, symbol, side: lifecycle.side, quantity, average_price: lifecycle.entry_price, mark: position?.market_price, return_pct: returnPct, market_value: position?.market_value, unrealized_pnl: position?.unrealized_pnl, realized_pnl: lifecycle.gross_pnl, orders: relatedOrders.length, fills: relatedExecutions.length, requested_at: lifecycle.requested_at, opened_at: lifecycle.opened_at, _position: position ?? {}, _lifecycle: lifecycle, _orders: relatedOrders, _executions: relatedExecutions, _decisions: relatedDecisions };
+    return { account, symbol, side: lifecycle.side, quantity, average_price: lifecycle.entry_price, mark: position?.market_price, return_pct: returnPct, market_value: position?.market_value, unrealized_pnl: position?.unrealized_pnl, realized_pnl: lifecycle.gross_pnl, orders: relatedOrders.length, fills: relatedExecutions.length, requested_at: lifecycle.requested_at, opened_at: lifecycle.opened_at, _position: position ?? {}, _lifecycle: lifecycle, _orders: relatedOrders, _executions: relatedExecutions, _activity: relatedActivity };
   });
-  const closedRows = lifecycleRows.filter(({ lifecycle }) => String(lifecycle.status) === "closed").map(({ lifecycle, symbol, account, relatedOrders, relatedExecutions, relatedDecisions }) => ({ closed_at: lifecycle.closed_at, requested_at: lifecycle.requested_at, opened_at: lifecycle.opened_at, symbol, side: lifecycle.side, quantity: lifecycle.quantity, entry_price: lifecycle.entry_price, exit_price: lifecycle.exit_price, gross_pnl: lifecycle.gross_pnl, fees: lifecycle.fees, net_pnl: lifecycle.net_pnl, orders: relatedOrders.length, fills: relatedExecutions.length, account, _lifecycle: lifecycle, _orders: relatedOrders, _executions: relatedExecutions, _decisions: relatedDecisions }));
+  const closedRows = lifecycleRows.filter(({ lifecycle }) => String(lifecycle.status) === "closed").map(({ lifecycle, symbol, account, relatedOrders, relatedExecutions, relatedActivity }) => ({ closed_at: lifecycle.closed_at, requested_at: lifecycle.requested_at, opened_at: lifecycle.opened_at, symbol, side: lifecycle.side, quantity: lifecycle.quantity, entry_price: lifecycle.entry_price, exit_price: lifecycle.exit_price, gross_pnl: lifecycle.gross_pnl, fees: lifecycle.fees, net_pnl: lifecycle.net_pnl, orders: relatedOrders.length, fills: relatedExecutions.length, account, _lifecycle: lifecycle, _orders: relatedOrders, _executions: relatedExecutions, _activity: relatedActivity }));
   const timelineRows = data.activity.filter((row) => ["position_observed", "position_snapshot_completed", "execution_reported", "commission_reported"].includes(String(row.event_type || ""))).map((row) => ({ time: row.source_event_time, event: row.event_type, account: row.account_id, order_id: row.broker_order_id, execution_id: row.execution_id, provider: row.provider }));
   const netPnl = openRows.reduce((total, row) => total + Number(row.unrealized_pnl || 0), 0);
   const grossValue = openRows.reduce((total, row) => total + Math.abs(Number(row.market_value || 0)), 0);
@@ -443,15 +442,17 @@ function PositionsPreview({ data, onSymbolSelect, settings }: { data: CanonicalT
 }
 
 function PositionLifecycleModal({ onClose, row }: { onClose: () => void; row: PreviewRow }) {
+  const [eventFilter, setEventFilter] = useState<PositionTimelineFilter>("all");
   const orders = (row._orders as PreviewRow[] | undefined) ?? [];
   const executions = (row._executions as PreviewRow[] | undefined) ?? [];
   const position = (row._position as PreviewRow | undefined) ?? {};
   const lifecycle = (row._lifecycle as PreviewRow | undefined) ?? {};
-  const decisionItems = ((row._decisions as PreviewRow[] | undefined) ?? []).map(positionDecisionTimelineItem);
+  const activityItems = ((row._activity as PreviewRow[] | undefined) ?? []).map((activity) => String(activity.event_type || "") === "decision" ? positionDecisionTimelineItem(activity) : positionActivityTimelineItem(activity));
   const orderItems = orders.map((order) => {
     const orderExecutions = executions.filter((execution) => String(execution.broker_order_id || "") === String(order.broker_order_id || ""));
     return positionOrderTimelineItem(order, orderExecutions);
   });
+  const executionItems = executions.map(positionExecutionTimelineItem);
   const instrument = (lifecycle.instrument as PreviewRow | undefined) ?? (position.instrument as PreviewRow | undefined) ?? {};
   const requestedAt = Date.parse(String(lifecycle.requested_at || ""));
   const openedAt = Date.parse(String(lifecycle.opened_at || ""));
@@ -463,6 +464,7 @@ function PositionLifecycleModal({ onClose, row }: { onClose: () => void; row: Pr
       occurredAt: String(lifecycle.requested_at || lifecycle.opened_at || ""),
       priority: -1,
       tone: "entry",
+      group: "position",
       eyebrow: "Position lifecycle",
       title: "Position requested",
       description: `Requested ${String(lifecycle.side || row.side || "").toLowerCase()} exposure for ${formatQuantity(Number(lifecycle.quantity || row.quantity || 0))} shares.`,
@@ -478,6 +480,7 @@ function PositionLifecycleModal({ onClose, row }: { onClose: () => void; row: Pr
       occurredAt: String(lifecycle.closed_at),
       priority: 2,
       tone: "exit" as const,
+      group: "position" as const,
       eyebrow: "Position lifecycle",
       title: "Position flat",
       description: `All open quantity reached zero. Final average exit was ${formatCell(lifecycle.exit_price, "exit_price")}.`,
@@ -489,24 +492,38 @@ function PositionLifecycleModal({ onClose, row }: { onClose: () => void; row: Pr
       executions: [],
     }] : []),
   ];
-  const timeline = [...lifecycleItems, ...decisionItems, ...orderItems].sort((left, right) => {
+  const timeline = [...lifecycleItems, ...activityItems, ...orderItems, ...executionItems].sort((left, right) => {
     const timeDifference = timelineTimestamp(left.occurredAt) - timelineTimestamp(right.occurredAt);
     return timeDifference || left.priority - right.priority || left.id.localeCompare(right.id);
   });
+  const filterOptions: Array<{ id: PositionTimelineFilter; label: string }> = [
+    { id: "all", label: "All" },
+    { id: "decision", label: "Decisions" },
+    { id: "strategy", label: "Strategy state" },
+    { id: "order", label: "Order events" },
+    { id: "fill", label: "Fills" },
+    { id: "position", label: "Position" },
+  ];
+  const visibleTimeline = eventFilter === "all" ? timeline : timeline.filter((item) => item.group === eventFilter);
+  const groupCount = (group: PositionTimelineGroup) => timeline.filter((item) => item.group === group).length;
   return <Modal className="position-lifecycle-modal" onClose={onClose} title={`${symbol} position lifecycle`}><div className="position-lifecycle-content">
     <div className="position-lifecycle-hero"><span><small>Side · size</small><strong>{String(lifecycle.side || row.side || "—")} {formatQuantity(Number(lifecycle.quantity || row.quantity || 0))}</strong></span><span><small>Average entry → exit</small><strong>{formatCell(lifecycle.entry_price, "entry_price")} → {formatCell(lifecycle.exit_price, "exit_price")}</strong></span><span data-tone={numberTone(Number(lifecycle.net_pnl || 0))}><small>Net P&amp;L</small><strong>{signedMoney(Number(lifecycle.net_pnl || 0))}</strong></span><span><small>Lifetime</small><strong>{Number.isFinite(openedAt) && Number.isFinite(closedAt) ? compactDuration((closedAt - openedAt) / 1_000) : "Open"}</strong></span></div>
     <section className="position-lifecycle-section"><header><div><strong>Lifecycle timing</strong><span>Strategy intent and OMS evidence use the same causal clock.</span></div><span>{String(lifecycle.lifecycle_id || "")}</span></header><div className="position-lifecycle-timing"><span><small>Requested</small><strong>{positionTimestamp(lifecycle.requested_at)}</strong></span><span><small>First fill / open</small><strong>{positionTimestamp(lifecycle.opened_at)}</strong><em>{Number.isFinite(requestedAt) && Number.isFinite(openedAt) ? `${Math.max(0, openedAt - requestedAt).toFixed(0)} ms after request` : ""}</em></span><span><small>Flat</small><strong>{lifecycle.closed_at ? positionTimestamp(lifecycle.closed_at) : "Still open"}</strong></span><span><small>Orders · fills</small><strong>{orders.length} · {executions.length}</strong></span><span><small>Contract</small><strong>{String(instrument.conid || "—")}</strong></span></div></section>
-    <section className="position-lifecycle-section position-lifecycle-timeline-section"><header><div><strong>Causal timeline</strong><span>Earliest to latest · full strategy reasons, market values, orders, and execution parts.</span></div><span>{decisionItems.length} decisions · {orderItems.length} orders</span></header>{timeline.length ? <ol className="position-lifecycle-timeline">{timeline.map((item) => <PositionTimelineCard item={item} key={item.id} />)}</ol> : <p>No durable strategy or order evidence is linked to this lifecycle.</p>}</section>
+    <section className="position-lifecycle-section position-lifecycle-filter-dock"><header><div><strong>Causal timeline</strong><span>Earliest to latest · every lifecycle-scoped strategy event, order, and execution part.</span></div><span>{timeline.length} events</span></header><div aria-label="Filter position lifecycle events" className="position-lifecycle-filters" role="toolbar">{filterOptions.map((option) => { const count = option.id === "all" ? timeline.length : groupCount(option.id); return <button aria-pressed={eventFilter === option.id} key={option.id} onClick={() => setEventFilter(option.id)} type="button"><span>{option.label}</span><strong>{count}</strong></button>; })}</div><div className="position-lifecycle-filter-status" role="status">Showing {visibleTimeline.length} of {timeline.length} events · chronological ET</div></section>
+    <section className="position-lifecycle-section position-lifecycle-timeline-section">{visibleTimeline.length ? <ol className="position-lifecycle-timeline">{visibleTimeline.map((item) => <PositionTimelineCard item={item} key={item.id} />)}</ol> : <p>No events match this filter.</p>}</section>
   </div></Modal>;
 }
 
 type PositionTimelineTone = "entry" | "exit" | "target" | "hold" | "neutral";
+type PositionTimelineGroup = "position" | "decision" | "strategy" | "order" | "fill";
+type PositionTimelineFilter = "all" | PositionTimelineGroup;
 type PositionTimelineFact = { label: string; value: string; tone?: string };
 type PositionTimelineItem = {
   id: string;
   occurredAt: string;
   priority: number;
   tone: PositionTimelineTone;
+  group: PositionTimelineGroup;
   eyebrow: string;
   title: string;
   description: string;
@@ -557,6 +574,7 @@ function positionDecisionTimelineItem(decision: PreviewRow): PositionTimelineIte
     occurredAt: String(decision.event_time || ""),
     priority: 0,
     tone: positionDecisionTone(action),
+    group: "decision",
     eyebrow: "Strategy decision",
     title: labelFor(action),
     description: String(decision.reason || "No reason was recorded."),
@@ -581,6 +599,7 @@ function positionOrderTimelineItem(order: PreviewRow, executions: PreviewRow[]):
     occurredAt: submittedAt,
     priority: 1,
     tone: positionOrderTone(role, side),
+    group: "order",
     eyebrow: "OMS order",
     title: `${labelFor(role.replaceAll("_", " "))} · ${side || "Unknown side"}`,
     description: `${labelFor(String(order.order_type || "order"))} order ${String(order.lifecycle_state ?? order.status ?? "unknown").replaceAll("_", " ")}.`,
@@ -593,7 +612,60 @@ function positionOrderTimelineItem(order: PreviewRow, executions: PreviewRow[]):
       { label: "Final fill", value: orderedExecutions.length ? positionTimestamp(orderedExecutions.at(-1)?.source_event_time) : "No fills" },
       { label: "Order ID", value: String(order.broker_order_id || "Unavailable") },
     ],
-    executions: orderedExecutions,
+    executions: [],
+  };
+}
+
+function positionActivityTimelineItem(activity: PreviewRow): PositionTimelineItem {
+  const eventType = String(activity.event_type || "strategy");
+  const action = String(activity.action || activity.state || eventType);
+  const group: PositionTimelineGroup = eventType === "order" ? "order" : "strategy";
+  const facts: PositionTimelineFact[] = [
+    activity.state ? { label: "State", value: String(activity.state).replaceAll("_", " ") } : null,
+    activity.reference_price !== null && activity.reference_price !== undefined ? { label: "Reference price", value: formatCell(activity.reference_price, "price") } : null,
+    activity.gates ? { label: "Gates", value: String(activity.gates) } : null,
+    activity.recording_latency_ms !== null && activity.recording_latency_ms !== undefined ? { label: "Recorded after", value: positionRecordingLatency(activity.recording_latency_ms) } : null,
+    activity.entity_id ? { label: "Entity", value: String(activity.entity_id) } : null,
+  ].filter((fact): fact is PositionTimelineFact => fact !== null);
+  return {
+    id: `activity-${String(activity.record_id || activity.entity_id || `${activity.event_time}-${action}`)}`,
+    occurredAt: String(activity.event_time || ""),
+    priority: .5,
+    tone: positionDecisionTone(action),
+    group,
+    eyebrow: eventType === "order" ? "Order management" : labelFor(eventType.replaceAll("_", " ")),
+    title: labelFor(action.replaceAll("_", " ")),
+    description: String(activity.reason || activity.reason_code || "Durable strategy state changed."),
+    facts,
+    executions: [],
+  };
+}
+
+function positionRecordingLatency(value: unknown) {
+  const milliseconds = Number(value);
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return "Unavailable";
+  return milliseconds < 1_000 ? `${milliseconds.toFixed(1)} ms` : compactDuration(milliseconds / 1_000);
+}
+
+function positionExecutionTimelineItem(execution: PreviewRow): PositionTimelineItem {
+  const side = String(execution.side || "").toUpperCase();
+  const quantity = Number(execution.quantity || 0);
+  return {
+    id: `execution-${String(execution.execution_id || `${execution.source_event_time}-${execution.broker_order_id}`)}`,
+    occurredAt: String(execution.source_event_time || ""),
+    priority: 1.5,
+    tone: side === "SELL" ? "exit" : side === "BUY" ? "entry" : "neutral",
+    group: "fill",
+    eyebrow: "Execution part",
+    title: `${side || "Fill"} ${formatQuantity(quantity)} @ ${formatCell(execution.price, "price")}`,
+    description: `Immutable fill for broker order ${String(execution.broker_order_id || "unavailable")}.`,
+    facts: [
+      { label: "Venue", value: String(execution.exchange || "Unknown venue") },
+      { label: "Commission", value: execution.commission !== null && execution.commission !== undefined ? money(Number(execution.commission || 0)) : "Pending" },
+      { label: "Order ID", value: String(execution.broker_order_id || "Unavailable") },
+      { label: "Execution ID", value: String(execution.execution_id || "Unavailable") },
+    ],
+    executions: [],
   };
 }
 

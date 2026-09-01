@@ -10007,6 +10007,7 @@ button {
   box-shadow: 0 18px 60px rgba(16, 24, 40, .2);
   display: flex;
   flex-direction: column;
+  height: min(860px, calc(var(--app-zoomed-viewport-height, 100vh) - 36px));
   max-height: min(860px, calc(var(--app-zoomed-viewport-height, 100vh) - 36px));
   max-width: min(1180px, calc(var(--app-zoomed-viewport-width, 100vw) - 36px));
   overflow: hidden;
@@ -10027,7 +10028,7 @@ button {
 
 .position-lifecycle-modal > .modal-header h2 { font-size: 16px; margin: 0; }
 
-.position-lifecycle-content { display: grid; flex: 1 1 auto; gap: 12px; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 14px; }
+.position-lifecycle-content { display: grid; flex: 1 1 0; gap: 12px; min-height: 0; overscroll-behavior: contain; overflow-x: hidden; overflow-y: scroll; padding: 14px; scrollbar-gutter: stable; }
 .position-lifecycle-hero { background: var(--border); border: 1px solid var(--border); display: grid; gap: 1px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .position-lifecycle-hero > span { background: var(--surface); display: grid; gap: 3px; min-width: 0; padding: 10px 12px; }
 .position-lifecycle-hero small,
@@ -10046,7 +10047,14 @@ button {
 .position-lifecycle-timing > span + span { border-left: 1px solid var(--border); }
 .position-lifecycle-timing strong { font-family: var(--font-mono); font-size: 10px; overflow-wrap: anywhere; }
 .position-lifecycle-timing em { color: var(--muted-foreground); font-size: 8px; font-style: normal; }
-.position-lifecycle-timeline-section { overflow: hidden; }
+.position-lifecycle-filter-dock { align-self: start; background: var(--surface); position: sticky; top: 0; z-index: 4; }
+.position-lifecycle-timeline-section { min-height: 0; overflow: visible; }
+.position-lifecycle-filters { align-items: center; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: 6px; padding: 9px 11px; }
+.position-lifecycle-filters button { align-items: center; background: var(--surface); border: 1px solid var(--border); color: var(--muted-foreground); cursor: pointer; display: inline-flex; font-size: 9px; gap: 7px; min-height: 27px; padding: 4px 8px; }
+.position-lifecycle-filters button:hover { border-color: var(--primary); color: var(--foreground); }
+.position-lifecycle-filters button[aria-pressed="true"] { background: color-mix(in oklab, var(--primary) 10%, var(--surface)); border-color: var(--primary); color: var(--foreground); }
+.position-lifecycle-filters button strong { background: var(--surface-alt); border-radius: 999px; color: inherit; font-family: var(--font-mono); font-size: 8px; min-width: 18px; padding: 2px 5px; text-align: center; }
+.position-lifecycle-filter-status { background: var(--surface-alt); border-bottom: 1px solid var(--border); color: var(--muted-foreground); font-size: 9px; padding: 6px 11px; }
 .position-lifecycle-timeline { list-style: none; margin: 0; padding: 14px 16px 18px 38px; }
 .position-timeline-item { display: grid; gap: 12px; grid-template-columns: 14px minmax(0, 1fr); padding-bottom: 12px; position: relative; }
 .position-timeline-item::before { background: var(--border); bottom: -2px; content: ""; left: 6px; position: absolute; top: 13px; width: 2px; }
