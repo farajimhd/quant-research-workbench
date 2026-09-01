@@ -116,7 +116,7 @@ RESTART_CHECKPOINT_SCHEMA_VERSION = 3
 # 4 adds exact prepared-bar trade counts and dollar volume. The shared bar
 # artifact can carry zero spread when built from trade-only persisted bars, so
 # current execution quality continues to prefer the causal raw quote stream.
-PREPARED_FRAME_CACHE_SCHEMA_VERSION = 5
+PREPARED_FRAME_CACHE_SCHEMA_VERSION = 6
 _PREPARED_FRAME_CACHE_LOCKS: WeakValueDictionary[str, asyncio.Lock] = (
     WeakValueDictionary()
 )
@@ -684,6 +684,8 @@ _STRATEGY_INDICATOR_FIELDS = frozenset(
         "sym",
         "timeframe",
         "vwap",
+        "execution_vwap",
+        "price_vs_execution_vwap_pct",
         "vwap_transition_score",
     }
 )
@@ -2824,6 +2826,7 @@ class ReplayRunController:
             structure_event=structure_event,
             structure_direction="bullish" if direction > 0 else "bearish" if direction < 0 else "",
             vwap=current_vwap,
+            execution_vwap=_optional_positive(indicator.get("execution_vwap")),
             vwap_slope_bps_per_second=slope,
             macd_line=_optional_number(indicator.get("macd_line")),
             macd_signal=_optional_number(indicator.get("macd_signal")),

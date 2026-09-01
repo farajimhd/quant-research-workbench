@@ -55,6 +55,7 @@ _FIXED_WINDOWS = {
 }
 _EXECUTION_INTERVAL_DEFAULTS = {
     "indicator.vwap.value": ["1s"],
+    "indicator.vwap.execution_value": ["1s"],
 }
 
 

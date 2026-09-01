@@ -992,6 +992,12 @@ FIELD_OPERATOR_DOCUMENTATION: dict[str, dict[str, object]] = {
         "inputs": (),
         "timeframes": ("event", "1s", "10s", "30s", "1m"),
     },
+    "market.execution_vwap": {
+        "source": "Volume-eligible QMD trades inside the prevailing valid NBBO no more than one second old.",
+        "calculation": "From 04:00 New York, cumulatively divide inside-NBBO eligible trade notional by inside-NBBO eligible share volume. Trades without a fresh prevailing quote remain excluded.",
+        "inputs": (),
+        "timeframes": ("event", "1s", "10s", "30s", "1m"),
+    },
     "market.spread_bps": {
         "source": "QMD's current valid national best bid and offer.",
         "calculation": "Ask minus bid, divided by the NBBO midpoint, multiplied by 10,000. Locked or invalid quotes remain unavailable.",
@@ -1790,6 +1796,7 @@ def _fields() -> tuple[FieldDefinition, ...]:
         ("market.session_dollar_volume", "number", "currency"),
         ("market.relative_volume", "number", "multiple"),
         ("market.vwap", "number", "currency"),
+        ("market.execution_vwap", "number", "currency"),
         ("market.spread_bps", "number", "basis_points"),
         ("market.halt_category", "string", "category"),
         ("market.halt_direction", "string", "category"),
@@ -2187,6 +2194,7 @@ DISCOVERY_FIELD_PRESENTATIONS = (
     DiscoveryFieldPresentation("market.session_dollar_volume", "market.session_dollar_volume", "session_dollar_volume", "Session dollar volume", "Cumulative eligible trade notional since the 04:00 New York session boundary.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("session",)),
     DiscoveryFieldPresentation("market.relative_volume", "market.relative_volume", "relative_volume", "Relative volume", "Cumulative volume versus the aligned 20-session baseline.", "indicator", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("session",)),
     DiscoveryFieldPresentation("indicator.vwap.value", "market.vwap", "vwap", "Session VWAP", "Causal session volume-weighted average eligible trade price.", "indicator", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals", "above_by_bps"), ("session",)),
+    DiscoveryFieldPresentation("indicator.vwap.execution_value", "market.execution_vwap", "execution_vwap", "Execution VWAP", "Causal session VWAP of volume-eligible trades inside the prevailing NBBO no more than one second old.", "indicator", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals", "above_by_bps"), ("session",)),
     DiscoveryFieldPresentation("identity.exchange", "listing.exchange", "exchange", "Exchange", "Point-in-time listing venue for the eligible security.", "reference", False, False, True, (), ("event",)),
     DiscoveryFieldPresentation("country.effective", "country.effective", "country", "Country", "Best point-in-time country assertion selected by the Reference Gateway.", "reference", False, False, True, (), ("1d",)),
     DiscoveryFieldPresentation("classification.sector", "classification.sector", "sector", "Sector", "Published issuer sector or the best available SIC description.", "reference", False, False, True, (), ("1d",)),

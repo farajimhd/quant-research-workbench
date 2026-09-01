@@ -29,6 +29,7 @@ from src.trading_runtime.strategy_engine import (
     evaluate_entry_decision_rules,
     long_momentum_strategy_definition,
     strategy_input_catalog,
+    strategy_observation_source_values,
     strategy_rule_timeframes,
 )
 from src.trading_runtime.strategy_orders import IbkrStrategyOrderPlanner, RuntimeIbkrStrategyOrderPlanner
@@ -1787,6 +1788,18 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(catalog["signal.news_labeled"]["runtime_field"], "news_labeled")
         self.assertEqual(catalog["signal.news_labeled"]["value_type"], "boolean")
         self.assertEqual(catalog["signal.sec_labeled"]["runtime_field"], "sec_labeled")
+        self.assertEqual(
+            catalog["indicator.vwap.execution_value"]["runtime_field"],
+            "execution_vwap",
+        )
+        projected = strategy_observation_source_values(
+            confirmed_observation(execution_vwap=100.25),
+            "1s",
+        )
+        self.assertEqual(
+            projected["indicator.vwap.execution_value@1s"]["value"],
+            100.25,
+        )
         self.assertFalse(confirmed_observation().news_labeled)
         self.assertFalse(confirmed_observation().sec_labeled)
 

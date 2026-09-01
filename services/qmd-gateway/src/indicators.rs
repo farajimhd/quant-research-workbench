@@ -25,8 +25,8 @@ use tokio::time::{interval, sleep, Duration, MissedTickBehavior};
 
 const STRUCTURE_CHECKPOINT_BATCH_LIMIT: usize = 256;
 
-pub const INDICATOR_SCHEMA_VERSION: u16 = 24;
-pub const INDICATOR_CALCULATION_REVISION: &str = "qmd-indicators-v25";
+pub const INDICATOR_SCHEMA_VERSION: u16 = 25;
+pub const INDICATOR_CALCULATION_REVISION: &str = "qmd-indicators-v26";
 const MICROSTRUCTURE_AGGREGATE_TIMEFRAMES: [&str; 7] = ["1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 const INDICATOR_STATE_RECLAIM_INTERVAL_SECONDS: u64 = 30;
 const RETAINED_100MS_HISTORY_ROWS: usize = 128;
@@ -265,6 +265,7 @@ pub struct IndicatorRow {
     pub close: f64,
     pub volume: f64,
     pub vwap: f64,
+    pub execution_vwap: f64,
     #[serde(flatten)]
     pub bar_fields: IndicatorBarFields,
     pub ema_9: f64,
@@ -284,6 +285,7 @@ pub struct IndicatorRow {
     pub return_1_bar: f64,
     pub price_vs_ema20_pct: f64,
     pub price_vs_vwap_pct: f64,
+    pub price_vs_execution_vwap_pct: f64,
     pub trend_score: f64,
     pub microstructure_unified_signal: f64,
     pub microstructure_unified_confidence: f64,
@@ -839,10 +841,17 @@ impl BarIndicatorCalculator {
         }
     }
 
-    pub fn apply_session_vwap_only(&mut self, bar: &BarRow) -> f64 {
-        self.state
+    pub fn apply_session_vwaps_only(&mut self, bar: &BarRow) -> (f64, f64) {
+        let canonical = self
+            .state
             .session_vwap
-            .update(bar.bar_start, bar.volume, bar.vwap)
+            .update(bar.bar_start, bar.volume, bar.vwap);
+        let execution = self.state.execution_session_vwap.update(
+            bar.bar_start,
+            bar.nbbo_consistent_volume,
+            bar.nbbo_vwap,
+        );
+        (canonical, execution)
     }
 
     /// Seed only the additive, session-anchored VWAP state before processing a
@@ -852,10 +861,17 @@ impl BarIndicatorCalculator {
         bar_start: DateTime<Utc>,
         cumulative_volume: f64,
         cumulative_trade_notional: f64,
+        cumulative_execution_volume: f64,
+        cumulative_execution_trade_notional: f64,
     ) -> Result<(), String> {
         self.state
             .session_vwap
-            .seed(bar_start, cumulative_volume, cumulative_trade_notional)
+            .seed(bar_start, cumulative_volume, cumulative_trade_notional)?;
+        self.state.execution_session_vwap.seed(
+            bar_start,
+            cumulative_execution_volume,
+            cumulative_execution_trade_notional,
+        )
     }
 
     pub fn set_market_structure_references(&mut self, references: MarketStructureReferenceLevels) {
@@ -1060,6 +1076,7 @@ struct BarIndicatorState {
     macd_signal_9: EmaState,
     rsi_14: RsiState,
     session_vwap: SessionVwapState,
+    execution_session_vwap: SessionVwapState,
     volume_sma_20: RollingStats,
     market_structure_references: MarketStructureReferenceLevels,
 }
@@ -1513,8 +1530,9 @@ impl IndicatorStore {
             transient.apply_bar(&bar)
         };
         if is_base && !valid_price {
-            row.vwap = state.apply_session_vwap_only(&bar);
+            (row.vwap, row.execution_vwap) = state.apply_session_vwaps_only(&bar);
             row.price_vs_vwap_pct = pct_change(row.close, row.vwap);
+            row.price_vs_execution_vwap_pct = pct_change(row.close, row.execution_vwap);
         }
         if is_base {
             if let Some(window) = self.microstructure.get(&ticker) {
@@ -1605,6 +1623,7 @@ pub struct MicrostructureSampleAggregate {
     composite_weighted_score_sum: f64,
     composite_sample_count: u64,
     last_session_vwap: Option<f64>,
+    last_execution_session_vwap: Option<f64>,
 }
 
 impl MicrostructureSampleAggregate {
@@ -1617,6 +1636,9 @@ impl MicrostructureSampleAggregate {
         self.composite_sample_count += 1;
         if row.vwap.is_finite() && row.vwap > 0.0 {
             self.last_session_vwap = Some(row.vwap);
+        }
+        if row.execution_vwap.is_finite() && row.execution_vwap > 0.0 {
+            self.last_execution_session_vwap = Some(row.execution_vwap);
         }
     }
 
@@ -1638,6 +1660,10 @@ impl MicrostructureSampleAggregate {
         if let Some(session_vwap) = self.last_session_vwap {
             target.vwap = session_vwap;
             target.price_vs_vwap_pct = pct_change(target.close, session_vwap);
+        }
+        if let Some(execution_vwap) = self.last_execution_session_vwap {
+            target.execution_vwap = execution_vwap;
+            target.price_vs_execution_vwap_pct = pct_change(target.close, execution_vwap);
         }
         self.apply_composite_summary(target);
     }
@@ -1906,6 +1932,7 @@ impl BarIndicatorState {
             macd_signal_9: EmaState::new(9),
             rsi_14: RsiState::new(14),
             session_vwap: SessionVwapState::new(),
+            execution_session_vwap: SessionVwapState::new(),
             volume_sma_20: RollingStats::new(20),
             market_structure_references: MarketStructureReferenceLevels::default(),
         }
@@ -1941,6 +1968,11 @@ impl BarIndicatorState {
         let session_vwap = self
             .session_vwap
             .update(bar.bar_start, bar.volume, bar.vwap);
+        let execution_session_vwap = self.execution_session_vwap.update(
+            bar.bar_start,
+            bar.nbbo_consistent_volume,
+            bar.nbbo_vwap,
+        );
         let structure = &bar.qmd_structure;
         let state_for = |timeframe: &str| {
             structure
@@ -1969,6 +2001,7 @@ impl BarIndicatorState {
             close: bar.close,
             volume: bar.volume,
             vwap: session_vwap,
+            execution_vwap: execution_session_vwap,
             bar_fields: IndicatorBarFields::from(bar),
             ema_9,
             ema_20,
@@ -1991,6 +2024,7 @@ impl BarIndicatorState {
             },
             price_vs_ema20_pct: pct_change(bar.close, ema_20),
             price_vs_vwap_pct: pct_change(bar.close, session_vwap),
+            price_vs_execution_vwap_pct: pct_change(bar.close, execution_session_vwap),
             trend_score: trend_score(bar.close, ema_9, ema_20, ema_50, rsi_14, macd_histogram),
             microstructure_unified_signal: 0.0,
             microstructure_unified_confidence: 0.0,

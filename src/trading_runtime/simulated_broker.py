@@ -799,10 +799,37 @@ class SimulatedBrokerAdapter:
             marketable = True
         if order_type in {"LMT", "STOP_LIMIT", "TRAILLMT"}:
             limit = float(request.price or 0)
-            if (side == "BUY" and market_price > limit) or (side == "SELL" and market_price < limit):
-                return None
-            marketable = True
-            market_price = min(market_price, limit) if side == "BUY" else max(market_price, limit)
+            if isinstance(event, TradeEvent):
+                # A resting limit participates when the tape trades at or
+                # through its price even if the prevailing opposite quote has
+                # not crossed the limit. Using the cached ask/bid for a trade
+                # event silently discards valid passive fills, which
+                # materially under-fills profit targets in Replay/Backtest.
+                trade_price = float(event.price or 0)
+                crossed = (
+                    trade_price <= limit
+                    if side == "BUY"
+                    else trade_price >= limit
+                )
+                if not crossed:
+                    return None
+                marketable = False
+                # A tape print proves executable quantity, not price priority
+                # or improvement for our resting order. Fill conservatively
+                # at the submitted limit and apply passive participation to
+                # the print size below.
+                market_price = limit
+            else:
+                if (side == "BUY" and market_price > limit) or (
+                    side == "SELL" and market_price < limit
+                ):
+                    return None
+                marketable = True
+                market_price = (
+                    min(market_price, limit)
+                    if side == "BUY"
+                    else max(market_price, limit)
+                )
         elif order_type == "MIDPRICE":
             quote = self._quotes.get(request.conid)
             if quote is None or quote.midpoint <= 0:

@@ -18,6 +18,7 @@ import { TRADING_WORKSPACE_LAYOUT_VERSION, type WorkspaceContainerId } from "./t
 const CHARTS_QUOTES_FOCUS_INSTANCE_ID = "charts_quotes-focus";
 const HISTORICAL_STRATEGY_REVIEW_INDICATORS = [
   "indicator.vwap",
+  "indicator.execution_vwap",
   "indicator.macd",
   "indicator.qmd_unified_structure",
   "strategy.presentation",

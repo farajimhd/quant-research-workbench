@@ -34,7 +34,7 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 22
+STRATEGY_REVISION = 23
 
 RULE_COMPARATORS = {
     "above_by_bps",
@@ -58,6 +58,7 @@ STRATEGY_INPUT_SUMMARIES = {
     "indicator.structure.bullish_choch": "A QMD structure event that becomes true when price action confirms a bullish change of character on the selected timeframe.",
     "indicator.structure.bearish_choch": "A QMD structure event that becomes true when price action confirms a bearish change of character on the selected timeframe.",
     "indicator.vwap.value": "The selected timeframe's volume-weighted average price, used to judge whether trading occurs above, below, or through accepted value.",
+    "indicator.vwap.execution_value": "The causal session VWAP of volume-eligible trades inside the prevailing NBBO no more than one second old, used for executable momentum decisions.",
     "indicator.vwap.slope": "The rate and direction of VWAP movement in basis points per second, used to distinguish rising, flat, and falling value.",
     "indicator.flow_structure.score": "QMD's signed composite of directional order flow and market structure, used to rank bullish versus bearish alignment.",
     "indicator.flow_structure.confidence": "QMD's confidence in the current flow-structure composite, used to require stronger evidence before acting on its score.",
@@ -89,6 +90,7 @@ def strategy_input_catalog() -> list[dict[str, Any]]:
         _input("indicator.structure.bullish_choch", "Bullish change of character", "QMD indicator", "qmd", "bullish_choch", "boolean", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"]),
         _input("indicator.structure.bearish_choch", "Bearish change of character", "QMD indicator", "qmd", "bearish_choch", "boolean", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"]),
         _input("indicator.vwap.value", "VWAP", "QMD indicator", "qmd", "vwap", "price", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"], parameter="value"),
+        _input("indicator.vwap.execution_value", "Execution VWAP", "QMD indicator", "qmd", "execution_vwap", "price", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"], parameter="execution_value"),
         _input("indicator.vwap.slope", "VWAP slope", "QMD indicator", "qmd", "vwap_slope_bps_per_second", "bps_per_second", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"], parameter="slope_bps_per_second"),
         _input("indicator.flow_structure.score", "Flow-structure score", "QMD indicator", "qmd", "qmd_score", "score", ["100ms"], parameter="score"),
         _input("indicator.flow_structure.confidence", "Flow-structure confidence", "QMD indicator", "qmd", "qmd_confidence", "score", ["100ms"], parameter="confidence"),
@@ -296,6 +298,7 @@ class StrategyObservation:
     structure_event: str = ""
     structure_direction: str = ""
     vwap: float | None = None
+    execution_vwap: float | None = None
     vwap_slope_bps_per_second: float = 0.0
     macd_line: float | None = None
     macd_signal: float | None = None
@@ -783,11 +786,14 @@ def _active_rule_source_dependencies(
         downside = dict(management.get("downside_loss_guard") or {})
         if bool(downside.get("enabled", False)):
             timeframe = str(downside.get("timeframe") or "1s")
+            vwap_source_id = str(
+                downside.get("vwap_source_id") or "indicator.vwap.value"
+            )
             dependencies.update({
                 ("indicator.structure.bearish_choch", timeframe),
                 ("indicator.macd.line", timeframe),
                 ("indicator.macd.signal", timeframe),
-                ("indicator.vwap.value", timeframe),
+                (vwap_source_id, timeframe),
             })
     if _phase_is_automatic(parameters, "manage"):
         dependencies.update({
@@ -4575,7 +4581,10 @@ def _matching_momentum_management_route(
                     "macd_signal": signal,
                 },
             }
-        vwap = _source_value(observation, "indicator.vwap.value", downside_timeframe)
+        vwap_source_id = str(
+            downside.get("vwap_source_id") or "indicator.vwap.value"
+        )
+        vwap = _source_value(observation, vwap_source_id, downside_timeframe)
         if (
             bool(downside.get("below_vwap", True))
             and vwap is not None
@@ -4590,6 +4599,7 @@ def _matching_momentum_management_route(
                     "gain_pct": gain_pct,
                     "vwap_timeframe": downside_timeframe,
                     "vwap": float(vwap),
+                    "vwap_source_id": vwap_source_id,
                     "last_price": observation.price,
                 },
             }

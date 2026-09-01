@@ -218,6 +218,10 @@ pub struct HistoricalEventSource {
 pub struct SessionVwapSeed {
     pub cumulative_trade_notional: f64,
     pub cumulative_volume: f64,
+    #[serde(default)]
+    pub cumulative_execution_trade_notional: f64,
+    #[serde(default)]
+    pub cumulative_execution_volume: f64,
 }
 
 #[derive(Clone, Debug)]

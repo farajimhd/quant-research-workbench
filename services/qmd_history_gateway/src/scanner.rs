@@ -2220,6 +2220,7 @@ fn indicator_source_value(
         ("quote.ask_price", "min") => "ask_low",
         ("quote.ask_price", "max") => "ask_high",
         ("indicator.vwap.value", _) => "vwap",
+        ("indicator.vwap.execution_value", _) => "execution_vwap",
         ("market.last_price", _) => "close",
         ("market.spread_bps", _) => "spread_bps",
         ("quote.bid_price", "" | "last") => "bid_close",

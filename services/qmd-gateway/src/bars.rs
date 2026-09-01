@@ -15,7 +15,8 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, Duration};
 
-pub const BAR_SCHEMA_VERSION: u16 = 3;
+pub const BAR_SCHEMA_VERSION: u16 = 4;
+const EXECUTION_VWAP_MAX_QUOTE_AGE_MS: i64 = 1_000;
 const ESTIMATED_LULD_WINDOW_SECONDS: i64 = 300;
 const ESTIMATED_LULD_NEAR_BAND_PCT: f64 = 1.0;
 const FORM_T_EXTENDED_HOURS_CONDITION: u16 = 12;
@@ -190,6 +191,14 @@ pub struct BarRow {
     pub trade_count: u64,
     /// Volume-weighted average trade price, `dollar_volume / volume`.
     pub vwap: f64,
+    /// Shares from volume-eligible trades inside the prevailing, non-stale NBBO.
+    pub nbbo_consistent_volume: f64,
+    /// Notional from volume-eligible trades inside the prevailing, non-stale NBBO.
+    pub nbbo_consistent_dollar_volume: f64,
+    /// Count of volume-eligible trades inside the prevailing, non-stale NBBO.
+    pub nbbo_consistent_trade_count: u64,
+    /// Bar-local VWAP of trades inside the prevailing, non-stale NBBO.
+    pub nbbo_vwap: f64,
     /// Average shares per trade, `volume / trade_count`.
     pub avg_trade_size: f64,
     /// Median of a bounded sample of trade sizes; approximate for very active bars.
@@ -485,6 +494,7 @@ struct BarStore {
     structure_event_frame_label: String,
     history_limit: usize,
     trade_rules: TradeAggregationRules,
+    latest_nbbo: HashMap<String, PrevailingNbbo>,
     luld: HashMap<String, EstimatedLuldState>,
     structure: HashMap<String, GenericStructureEngine>,
     structure_active: BTreeSet<String>,
@@ -492,6 +502,23 @@ struct BarStore {
     structure_staging: HashMap<String, StructureStaging>,
     open: HashMap<BarKey, MutableBar>,
     closed: HashMap<BarKey, VecDeque<BarRow>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PrevailingNbbo {
+    ts: DateTime<Utc>,
+    bid: f64,
+    ask: f64,
+}
+
+impl PrevailingNbbo {
+    fn accepts(&self, trade: &TradeEvent) -> bool {
+        let age_ms = trade.ts.signed_duration_since(self.ts).num_milliseconds();
+        let epsilon = self.ask.max(self.bid).max(trade.price) * 1e-9;
+        (0..=EXECUTION_VWAP_MAX_QUOTE_AGE_MS).contains(&age_ms)
+            && trade.price + epsilon >= self.bid
+            && trade.price <= self.ask + epsilon
+    }
 }
 
 #[derive(Default)]
@@ -534,6 +561,9 @@ struct MutableBar {
     volume: f64,
     dollar_volume: f64,
     trade_count: u64,
+    nbbo_consistent_volume: f64,
+    nbbo_consistent_dollar_volume: f64,
+    nbbo_consistent_trade_count: u64,
     trade_size_sample: Vec<f64>,
     trade_sample_cursor: usize,
     max_trade_size: f64,
@@ -1012,6 +1042,7 @@ impl BarShardStore {
                 structure_event_frame_label,
                 history_limit,
                 trade_rules,
+                latest_nbbo: HashMap::new(),
                 luld: HashMap::new(),
                 structure: HashMap::new(),
                 structure_active: BTreeSet::new(),
@@ -1107,6 +1138,7 @@ impl BarStore {
             MarketEvent::Trade(trade) => self.trade_rules.resolve(&trade.conditions, trade.ts),
             MarketEvent::Quote(_) => TradeUpdateRule::excluded(),
         };
+        let prevailing_nbbo = self.latest_nbbo.get(&sym).copied();
         if let MarketEvent::Trade(trade) = event {
             if trade_rule.update_last {
                 self.luld
@@ -1205,7 +1237,7 @@ impl BarStore {
                 )
             });
             match event {
-                MarketEvent::Trade(trade) => bar.apply_trade(trade, trade_rule),
+                MarketEvent::Trade(trade) => bar.apply_trade(trade, trade_rule, prevailing_nbbo),
                 MarketEvent::Quote(quote) => bar.apply_quote(quote),
             }
             if let Some(luld) = self.luld.get_mut(&sym) {
@@ -1215,6 +1247,25 @@ impl BarStore {
             if bar.timeframe == self.structure_event_frame_label {
                 bar.qmd_structure_events
                     .extend(structure_events.iter().cloned());
+            }
+        }
+        if let MarketEvent::Quote(quote) = event {
+            if quote.bid_price > 0.0
+                && quote.ask_price >= quote.bid_price
+                && self
+                    .latest_nbbo
+                    .get(&sym)
+                    .map(|current| quote.ts >= current.ts)
+                    .unwrap_or(true)
+            {
+                self.latest_nbbo.insert(
+                    sym,
+                    PrevailingNbbo {
+                        ts: quote.ts,
+                        bid: quote.bid_price,
+                        ask: quote.ask_price,
+                    },
+                );
             }
         }
         finalized
@@ -1403,6 +1454,10 @@ impl BarStore {
             0.0
         };
         let vwap = safe_div(bar.dollar_volume, bar.volume);
+        let nbbo_vwap = safe_div(
+            bar.nbbo_consistent_dollar_volume,
+            bar.nbbo_consistent_volume,
+        );
         let vwap_distance_pct = pct_change(bar.close, vwap);
         let mid_vwap_distance_pct = pct_change(bar.mid_close, vwap);
         let depth_imbalance_proxy = safe_div(
@@ -1438,6 +1493,10 @@ impl BarStore {
             dollar_volume: bar.dollar_volume,
             trade_count: bar.trade_count,
             vwap,
+            nbbo_consistent_volume: bar.nbbo_consistent_volume,
+            nbbo_consistent_dollar_volume: bar.nbbo_consistent_dollar_volume,
+            nbbo_consistent_trade_count: bar.nbbo_consistent_trade_count,
+            nbbo_vwap,
             avg_trade_size,
             median_trade_size,
             max_trade_size: bar.max_trade_size,
@@ -1687,6 +1746,9 @@ impl MutableBar {
             volume: 0.0,
             dollar_volume: 0.0,
             trade_count: 0,
+            nbbo_consistent_volume: 0.0,
+            nbbo_consistent_dollar_volume: 0.0,
+            nbbo_consistent_trade_count: 0,
             trade_size_sample: Vec::with_capacity(512),
             trade_sample_cursor: 0,
             max_trade_size: 0.0,
@@ -1740,7 +1802,12 @@ impl MutableBar {
         }
     }
 
-    fn apply_trade(&mut self, trade: &TradeEvent, rule: TradeUpdateRule) {
+    fn apply_trade(
+        &mut self,
+        trade: &TradeEvent,
+        rule: TradeUpdateRule,
+        prevailing_nbbo: Option<PrevailingNbbo>,
+    ) {
         self.observe_event_time(trade.ts);
         if trade.price <= 0.0 || trade.size <= 0.0 {
             return;
@@ -1767,6 +1834,14 @@ impl MutableBar {
         self.volume += trade.size;
         self.dollar_volume += trade.price * trade.size;
         self.trade_count += 1;
+        if prevailing_nbbo
+            .map(|quote| quote.accepts(trade))
+            .unwrap_or(false)
+        {
+            self.nbbo_consistent_volume += trade.size;
+            self.nbbo_consistent_dollar_volume += trade.price * trade.size;
+            self.nbbo_consistent_trade_count += 1;
+        }
         self.max_trade_size = self.max_trade_size.max(trade.size);
         if trade.size >= 10_000.0 || trade.price * trade.size >= 100_000.0 {
             self.large_trade_count += 1;
@@ -2248,6 +2323,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execution_vwap_accepts_only_inside_fresh_prevailing_nbbo() {
+        let rules = TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap();
+        let bars = SharedBarStore::new_without_structure(vec!["1s".into()], 8, 1, rules);
+        let start = Utc.with_ymd_and_hms(2026, 8, 21, 8, 0, 0).unwrap();
+
+        bars.apply_event(&MarketEvent::Quote(quote(start, 3.30, 3.32, 1)))
+            .await;
+        assert!(bars
+            .shard(0)
+            .inner
+            .lock()
+            .await
+            .latest_nbbo
+            .contains_key("AAPL"));
+        let first_trade = trade(
+            start + chrono::Duration::milliseconds(100),
+            3.31,
+            100.0,
+            vec![0],
+        );
+        assert!(bars.shard(0).inner.lock().await.latest_nbbo["AAPL"].accepts(&first_trade));
+        bars.apply_event(&MarketEvent::Trade(first_trade)).await;
+        bars.apply_event(&MarketEvent::Trade(trade(
+            start + chrono::Duration::milliseconds(200),
+            3.40,
+            200.0,
+            vec![0],
+        )))
+        .await;
+        bars.apply_event(&MarketEvent::Trade(trade(
+            start + chrono::Duration::milliseconds(1_200),
+            3.31,
+            300.0,
+            vec![0],
+        )))
+        .await;
+        bars.finalize_due(start + chrono::Duration::seconds(2))
+            .await;
+        let snapshot = bars.snapshot("AAPL", "1s", 8).await;
+        let bar = snapshot
+            .history
+            .iter()
+            .find(|row| row.bar_start == start)
+            .unwrap();
+
+        assert_eq!(bar.volume, 300.0);
+        assert_eq!(bar.nbbo_consistent_volume, 100.0);
+        assert_eq!(bar.nbbo_consistent_trade_count, 1);
+        assert!((bar.nbbo_vwap - 3.31).abs() < 1e-12);
+    }
+
+    #[tokio::test]
     async fn finalized_bars_publish_actual_percent_and_ratio_changes() {
         let rules = TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap();
         let bars = SharedBarStore::new_without_structure(vec!["1s".into()], 4, 1, rules);
@@ -2547,6 +2674,7 @@ mod tests {
         bar.apply_trade(
             &trade(start, 315.10, 100.0, vec![0]),
             rules.resolve(&[0], start),
+            None,
         );
         bar.apply_trade(
             &trade(
@@ -2556,10 +2684,12 @@ mod tests {
                 vec![12, 37],
             ),
             rules.resolve(&[12, 37], start + chrono::Duration::seconds(1)),
+            None,
         );
         bar.apply_trade(
             &trade(start + chrono::Duration::seconds(2), 315.16, 50.0, vec![0]),
             rules.resolve(&[0], start + chrono::Duration::seconds(2)),
+            None,
         );
 
         assert_eq!(bar.open, 315.10);

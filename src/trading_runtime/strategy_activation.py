@@ -214,6 +214,7 @@ def strategy_observation_from_market_row(
         ),
         structural_up_probability=float(row.get("qmd_structure_up_probability") or 0.5),
         vwap=_positive_numeric(row.get("vwap")),
+        execution_vwap=_positive_numeric(row.get("execution_vwap")),
         macd_line=_optional_numeric(row.get("macd_line")),
         macd_signal=_optional_numeric(row.get("macd_signal")),
         macd_histogram=_optional_numeric(row.get("macd_histogram")),

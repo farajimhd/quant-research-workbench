@@ -40,10 +40,10 @@ use std::sync::Mutex as StdMutex;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, OnceCell, Semaphore};
 
 pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v35";
-pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v46";
+pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v47";
 pub const HISTORICAL_CORPORATE_ACTION_REVISION: &str = "retrospective-split-adjusted-v2";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
-const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 9;
+const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 10;
 const PREPARED_STRUCTURE_SEED_CACHE_SCHEMA_VERSION: u16 = 2;
 // Prepared structure books have their own algorithm authority. Bar-indicator
 // changes (for example MACD or VWAP warm-up fixes) must not invalidate and
@@ -213,6 +213,8 @@ fn bar_indicator_projection(
         page_start,
         session_vwap_seed.cumulative_volume,
         session_vwap_seed.cumulative_trade_notional,
+        session_vwap_seed.cumulative_execution_volume,
+        session_vwap_seed.cumulative_execution_trade_notional,
     )?;
     selected
         .iter()
@@ -744,6 +746,15 @@ impl HistoricalDerivedCache {
             {
                 prefix.session_vwap_seed.cumulative_volume += bar.volume;
                 prefix.session_vwap_seed.cumulative_trade_notional += bar.dollar_volume;
+            }
+            if bar.nbbo_consistent_volume.is_finite()
+                && bar.nbbo_consistent_volume > 0.0
+                && bar.nbbo_consistent_dollar_volume.is_finite()
+                && bar.nbbo_consistent_dollar_volume > 0.0
+            {
+                prefix.session_vwap_seed.cumulative_execution_volume += bar.nbbo_consistent_volume;
+                prefix.session_vwap_seed.cumulative_execution_trade_notional +=
+                    bar.nbbo_consistent_dollar_volume;
             }
         };
         while let Some(batch) = receiver.recv().await {
@@ -1531,6 +1542,9 @@ impl HistoricalDerivedCache {
                                             worker_page_start,
                                             worker_session_vwap_seed.cumulative_volume,
                                             worker_session_vwap_seed.cumulative_trade_notional,
+                                            worker_session_vwap_seed.cumulative_execution_volume,
+                                            worker_session_vwap_seed
+                                                .cumulative_execution_trade_notional,
                                         )
                                         .expect("validated historical session VWAP seed");
                                     calculator.set_market_structure_references(
@@ -1547,15 +1561,22 @@ impl HistoricalDerivedCache {
                                 carried.bar_end = bar.bar_end;
                                 carried.volume = 0.0;
                                 carried.qmd_structure_events.clear();
-                                carried.vwap = calculator.apply_session_vwap_only(&bar);
+                                (carried.vwap, carried.execution_vwap) =
+                                    calculator.apply_session_vwaps_only(&bar);
                                 carried.price_vs_vwap_pct = if carried.vwap > 0.0 {
                                     (carried.close / carried.vwap - 1.0) * 100.0
                                 } else {
                                     0.0
                                 };
+                                carried.price_vs_execution_vwap_pct =
+                                    if carried.execution_vwap > 0.0 {
+                                        (carried.close / carried.execution_vwap - 1.0) * 100.0
+                                    } else {
+                                        0.0
+                                    };
                                 carried
                             } else {
-                                calculator.apply_session_vwap_only(&bar);
+                                calculator.apply_session_vwaps_only(&bar);
                                 continue;
                             };
                             calculator.apply_microstructure_interval(&mut indicator, &interval);
@@ -1599,6 +1620,9 @@ impl HistoricalDerivedCache {
                                             worker_page_start,
                                             worker_session_vwap_seed.cumulative_volume,
                                             worker_session_vwap_seed.cumulative_trade_notional,
+                                            worker_session_vwap_seed.cumulative_execution_volume,
+                                            worker_session_vwap_seed
+                                                .cumulative_execution_trade_notional,
                                         )
                                         .expect("validated historical session VWAP seed");
                                     calculator.set_market_structure_references(
@@ -3232,14 +3256,13 @@ mod tests {
         prepared_structure_seed_cache_path, read_prepared_bar_cache,
         read_prepared_structure_seed_cache, revision_window, session_anchor, split_event_window,
         stable_hash_hex, structure_events_overlapping, structure_seed_cache_key,
-        structure_seed_cache_key_for_revision,
-        write_prepared_bar_cache, write_prepared_structure_seed_cache, CacheEntry, CacheProfile,
-        ChartBarRow, EntryState, PreparedBarCacheArtifact, PreparedStructureSeedCacheArtifact,
-        SourceRevision, StructureProjectionBuilder, HISTORICAL_CALCULATION_REVISION,
+        structure_seed_cache_key_for_revision, write_prepared_bar_cache,
+        write_prepared_structure_seed_cache, CacheEntry, CacheProfile, ChartBarRow, EntryState,
+        PreparedBarCacheArtifact, PreparedStructureSeedCacheArtifact, SourceRevision,
+        StructureProjectionBuilder, HISTORICAL_CALCULATION_REVISION,
         HISTORICAL_CORPORATE_ACTION_REVISION, HISTORICAL_ENGINE_VERSION,
-        LEGACY_STRUCTURE_CALCULATION_REVISION,
-        MAX_ENCOUNTERED_STRUCTURE_LEVELS, PREPARED_BAR_CACHE_SCHEMA_VERSION,
-        PREPARED_STRUCTURE_SEED_CACHE_SCHEMA_VERSION,
+        LEGACY_STRUCTURE_CALCULATION_REVISION, MAX_ENCOUNTERED_STRUCTURE_LEVELS,
+        PREPARED_BAR_CACHE_SCHEMA_VERSION, PREPARED_STRUCTURE_SEED_CACHE_SCHEMA_VERSION,
     };
     use crate::source::EventWindow;
     use chrono::{DateTime, Duration, NaiveDate, TimeZone, Utc};

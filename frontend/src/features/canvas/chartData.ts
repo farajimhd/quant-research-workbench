@@ -58,11 +58,13 @@ const BAR_DERIVED_INDICATOR_COLUMNS = new Set([
   "macd_signal",
   "price_vs_ema20_pct",
   "price_vs_vwap_pct",
+  "price_vs_execution_vwap_pct",
   "return_1_bar",
   "rsi_14",
   "trend_score",
   "volume_sma_20",
   "vwap",
+  "execution_vwap",
 ]);
 
 // QMD attaches the causal structure snapshot to each completed BarRow before

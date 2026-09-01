@@ -2886,8 +2886,8 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
         ),
         _watchlist_rule(
             "strategy-squeeze-above-vwap-1s",
-            "Price above causal one-second VWAP",
-            "Requires the latest eligible trade price to be strictly above the causally available session VWAP on the one-second decision frame.",
+            "Price above causal one-second execution VWAP",
+            "Requires the latest eligible trade price to be strictly above the causal session VWAP of volume-eligible trades inside a prevailing NBBO no more than one second old.",
             [{
                 **_watchlist_condition(
                     "squeeze-price-above-vwap",
@@ -2896,7 +2896,7 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
                     0.0,
                     interval="1s",
                 ),
-                "right_source_id": "indicator.vwap.value",
+                "right_source_id": "indicator.vwap.execution_value",
                 "right_interval": normalize_interval_spec("1s"),
             }],
         ),
@@ -3996,6 +3996,7 @@ def _default_draft() -> dict[str, Any]:
             "bearish_choch": True,
             "macd_closed": True,
             "below_vwap": True,
+            "vwap_source_id": "indicator.vwap.execution_value",
         },
         "failure_to_extend": {
             "enabled": False,

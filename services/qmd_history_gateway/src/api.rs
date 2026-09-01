@@ -1061,6 +1061,7 @@ async fn chart_bar_snapshot(
                         "close": bar.close,
                         "volume": bar.size_sum,
                         "vwap": Value::Null,
+                        "execution_vwap": Value::Null,
                         "estimated_luld_active": false,
                         "estimated_luld_reference_price": 0.0,
                         "estimated_luld_lower_price": 0.0,
@@ -2150,6 +2151,11 @@ fn project_derived_update(
     include!("sym", &row.sym);
     include!("timeframe", &row.timeframe);
     include!("vwap", row.vwap);
+    include!("execution_vwap", row.execution_vwap);
+    include!(
+        "price_vs_execution_vwap_pct",
+        row.price_vs_execution_vwap_pct
+    );
     Ok(json!({
         "as_of": frame.as_of,
         "bar": {
