@@ -822,11 +822,14 @@ def write_authority(
     client: RetryingClickHouseHttpClient, target: NewsBodyV3TargetConfig, run_id: str, status: str,
     counts: BodyBuildCounts, report_path: str, started_at: str, relational_errors: int = 0,
     is_active: bool = False, previous_active: str = "", renderer_version: str | None = None,
+    source_table: str | None = None, rendered_table: str | None = None,
 ) -> None:
     effective_renderer_version = renderer_version or BODY_RENDERER_VERSION
     row = {
         "renderer_version": effective_renderer_version, "run_id": run_id, "status": status,
-        "is_active": int(is_active), "source_table": target.source_table, "rendered_table": target.rendered_table,
+        "is_active": int(is_active),
+        "source_table": source_table or target.source_table,
+        "rendered_table": rendered_table or target.rendered_table,
         "source_rows": counts.source_rows, "rendered_rows": counts.rendered_rows,
         "missing_body_rows": counts.missing_body_rows, "partial_body_rows": counts.partial_body_rows,
         "purity_error_rows": counts.purity_error_rows, "relational_error_rows": relational_errors,
@@ -867,6 +870,8 @@ def write_authority_from_existing(
         is_active=is_active,
         previous_active=str(existing.get("previous_active_renderer_version") or ""),
         renderer_version=str(existing.get("renderer_version") or ""),
+        source_table=str(existing.get("source_table") or target.source_table),
+        rendered_table=str(existing.get("rendered_table") or target.rendered_table),
     )
 
 

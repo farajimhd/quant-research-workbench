@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
 from pipelines.news.benzinga.news_benzinga_body_v3 import (
     BODY_TEXT_CONTRACT,
@@ -11,7 +12,11 @@ from pipelines.news.benzinga.news_benzinga_body_v3 import (
 )
 from pipelines.news.benzinga.news_pipeline.config import BenzingaPipelineConfig
 from pipelines.news.benzinga.news_pipeline.pipeline import body_v4_shadow_state
-from pipelines.news.benzinga.news_benzinga_body_v3_rebuild import parse_json_each_rows
+from pipelines.news.benzinga.core.clickhouse_writer_body_v3 import NewsBodyV3TargetConfig
+from pipelines.news.benzinga.news_benzinga_body_v3_rebuild import (
+    parse_json_each_rows,
+    write_authority_from_existing,
+)
 
 
 class BodyOnlyNewsRendererTest(unittest.TestCase):
@@ -231,6 +236,28 @@ class BodyOnlyNewsRendererTest(unittest.TestCase):
             body_v4_shadow_end_utc=(datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
         )
         self.assertEqual(body_v4_shadow_state(expired), (False, "body_v4_shadow_expired"))
+
+    def test_superseding_authority_preserves_the_existing_table_family(self) -> None:
+        existing = {
+            "renderer_version": "benzinga_body_renderer_v3",
+            "source_table": "benzinga_news_source_v3",
+            "rendered_table": "benzinga_news_rendered_v3",
+            "source_rows": 10,
+            "rendered_rows": 10,
+        }
+        with patch(
+            "pipelines.news.benzinga.news_benzinga_body_v3_rebuild.write_authority"
+        ) as write:
+            write_authority_from_existing(
+                None,  # type: ignore[arg-type]
+                NewsBodyV3TargetConfig(),
+                existing,
+                "promotion-run",
+                "superseded",
+                is_active=False,
+            )
+        self.assertEqual(write.call_args.kwargs["source_table"], "benzinga_news_source_v3")
+        self.assertEqual(write.call_args.kwargs["rendered_table"], "benzinga_news_rendered_v3")
 
 
 if __name__ == "__main__":
