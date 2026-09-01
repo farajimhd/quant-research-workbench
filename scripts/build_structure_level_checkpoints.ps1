@@ -16,7 +16,7 @@ param(
     [int]$TimeoutSeconds = 1800,
     [ValidateRange(1, 32)]
     [int]$Workers = 4,
-    [ValidateRange(0, 31)]
+    [ValidateRange(0, 365)]
     [int]$BootstrapDays = 14,
     [ValidateRange(0, 10)]
     [int]$MaxRetries = 3,
