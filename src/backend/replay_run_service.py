@@ -116,7 +116,7 @@ RESTART_CHECKPOINT_SCHEMA_VERSION = 3
 # 4 adds exact prepared-bar trade counts and dollar volume. The shared bar
 # artifact can carry zero spread when built from trade-only persisted bars, so
 # current execution quality continues to prefer the causal raw quote stream.
-PREPARED_FRAME_CACHE_SCHEMA_VERSION = 4
+PREPARED_FRAME_CACHE_SCHEMA_VERSION = 5
 _PREPARED_FRAME_CACHE_LOCKS: WeakValueDictionary[str, asyncio.Lock] = (
     WeakValueDictionary()
 )
@@ -4390,6 +4390,12 @@ class ReplayRunController:
                     "source_plan_hash": str(
                         cache_source_revision["source_plan_hash"]
                     ),
+                    "calculation_revision": str(
+                        cache_source_revision.get("calculation_revision") or ""
+                    ),
+                    "corporate_action_revision": str(
+                        cache_source_revision.get("corporate_action_revision") or ""
+                    ),
                     "complete_for_history": bool(
                         cache_source_revision.get("complete_for_history")
                     ),
@@ -5560,6 +5566,12 @@ def _prepared_frame_cache_path(
             "token": str(dict(source_revision or {}).get("token") or ""),
             "source_plan_hash": str(
                 dict(source_revision or {}).get("source_plan_hash") or ""
+            ),
+            "calculation_revision": str(
+                dict(source_revision or {}).get("calculation_revision") or ""
+            ),
+            "corporate_action_revision": str(
+                dict(source_revision or {}).get("corporate_action_revision") or ""
             ),
         },
     }

@@ -36,6 +36,7 @@ from src.backend.replay_run_service import (
     _historical_signal_events,
     _historical_derived_frames,
     _occurrence_source_values,
+    _prepared_frame_cache_path,
     _qmd_payload_authority,
     _retryable_historical_stream_error,
     _simulation_config,
@@ -127,6 +128,45 @@ def approved_configuration(*, assignments: list[dict] | None = None) -> dict:
 
 
 class ReplayRunDefinitionTests(unittest.TestCase):
+    def test_prepared_frame_cache_identity_pins_derived_and_split_revisions(self) -> None:
+        runtime_root = Path("D:/TradingML/runtimes/test-replay-cache")
+        common = {
+            "runtime_root": runtime_root,
+            "start": datetime(2026, 8, 21, 4, 0, tzinfo=NEW_YORK),
+            "end": datetime(2026, 8, 21, 4, 12, tzinfo=NEW_YORK),
+            "requests": [("SUGP", "1s")],
+            "indicator_columns": ("macd", "macd_signal", "vwap"),
+        }
+        base_revision = {
+            "token": "raw-events-v1",
+            "source_plan_hash": "sha256:source-plan",
+            "calculation_revision": "qmd-history-derived-v45",
+            "corporate_action_revision": "qmd-history-split-v2",
+        }
+
+        original = _prepared_frame_cache_path(
+            **common,
+            source_revision=base_revision,
+        )
+        calculation_changed = _prepared_frame_cache_path(
+            **common,
+            source_revision={
+                **base_revision,
+                "calculation_revision": "qmd-history-derived-v46",
+            },
+        )
+        split_changed = _prepared_frame_cache_path(
+            **common,
+            source_revision={
+                **base_revision,
+                "corporate_action_revision": "qmd-history-split-v3",
+            },
+        )
+
+        self.assertNotEqual(original, calculation_changed)
+        self.assertNotEqual(original, split_changed)
+        self.assertNotEqual(calculation_changed, split_changed)
+
     def test_backtest_simulation_profiles_pin_baseline_and_stress_costs(self) -> None:
         baseline = ReplayRunDefinition(
             session_date=date(2026, 7, 28),

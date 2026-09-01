@@ -1324,7 +1324,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
                 "failure_to_extend"
             ]["enabled"]
         )
-        self.assertTrue(lifecycle["reentry"]["target_replenishment"]["enabled"])
+        self.assertFalse(lifecycle["reentry"]["target_replenishment"]["enabled"])
         self.assertEqual(lifecycle["reentry"]["cooldown_ms"], 0)
         self.assertFalse(
             default_profile["parameters"]["protection"]["trailing"]["enabled"]

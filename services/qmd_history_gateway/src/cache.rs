@@ -14,7 +14,7 @@ use qmd_core::compact_event::LiveCompactEvent;
 use qmd_core::event::MarketEvent;
 use qmd_core::generic_structure::{
     GenericStructureCheckpoint, GenericStructureEngine, GenericStructureEvent,
-    StructureLevelCandidate,
+    StructureLevelCandidate, GENERIC_STRUCTURE_ALGORITHM_VERSION,
 };
 use qmd_core::indicators::{
     BarIndicatorCalculator, IndicatorRow, MarketStructureReferenceLevels,
@@ -40,11 +40,17 @@ use std::sync::Mutex as StdMutex;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, OnceCell, Semaphore};
 
 pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v35";
-pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v43";
+pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v46";
 pub const HISTORICAL_CORPORATE_ACTION_REVISION: &str = "retrospective-split-adjusted-v2";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
-const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 6;
+const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 9;
 const PREPARED_STRUCTURE_SEED_CACHE_SCHEMA_VERSION: u16 = 2;
+// Prepared structure books have their own algorithm authority. Bar-indicator
+// changes (for example MACD or VWAP warm-up fixes) must not invalidate and
+// cold-rebuild the complete 180-day level book. v43 is the last legacy shared
+// calculation revision whose structure payload already used algorithm v15;
+// it is accepted once and migrated to the stable structure-specific identity.
+const LEGACY_STRUCTURE_CALCULATION_REVISION: &str = "qmd-derived-v43";
 const INDICATOR_EMA_WARMUP_DAYS: i64 = 7;
 const INDICATOR_EMA_WARMUP_BARS: usize = 200;
 
@@ -183,12 +189,31 @@ struct PreparedStructureSeedCacheArtifact {
     checkpoint: GenericStructureCheckpoint,
 }
 
+#[derive(Clone, Debug, Default)]
+struct IndicatorPageWarmup {
+    ema_closes: Vec<f64>,
+    session_vwap_seed: SessionVwapSeed,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ExactIndicatorPrefix {
+    closes: Vec<f64>,
+    session_vwap_seed: SessionVwapSeed,
+}
+
 fn bar_indicator_projection(
     selected: &[&BarUpdate],
     warmup_closes: &[f64],
+    page_start: DateTime<Utc>,
+    session_vwap_seed: SessionVwapSeed,
 ) -> Result<Vec<Value>, String> {
     let mut calculator = BarIndicatorCalculator::new();
     calculator.seed_ema_close_history(warmup_closes.iter().copied());
+    calculator.seed_session_vwap(
+        page_start,
+        session_vwap_seed.cumulative_volume,
+        session_vwap_seed.cumulative_trade_notional,
+    )?;
     selected
         .iter()
         .map(|update| {
@@ -613,26 +638,34 @@ impl HistoricalDerivedCache {
         }
     }
 
-    async fn indicator_ema_warmup_closes(
+    async fn indicator_page_warmup(
         &self,
         window: &EventWindow,
         ticker: &str,
         timeframe: &str,
-    ) -> Result<Vec<f64>, String> {
-        let warmup_start = indicator_warmup_start(window.start)?;
+        live_continuation_sequence: Option<u64>,
+    ) -> Result<IndicatorPageWarmup, String> {
+        // Every bounded page must inherit the same EMA/MACD authority as a
+        // calculation that began at the 04:00 ET session anchor. Seeding from
+        // only the last N bars before each page silently changes the EMA and
+        // MACD state as the page start advances. Start with the fixed
+        // pre-session warm-up, then causally advance it through persisted bars
+        // from the session anchor to this page.
+        let session_start = session_anchor(window.start)?;
+        let warmup_start = indicator_warmup_start(session_start)?;
         let warmup_window = EventWindow {
             start: warmup_start,
-            end: window.start,
+            end: session_start,
             tickers: vec![ticker.to_ascii_uppercase()],
         };
-        Ok(self
+        let mut ema_closes: Vec<f64> = self
             .source
             .persisted_intraday_chart_bars(
                 &warmup_window,
                 ticker,
                 timeframe,
                 INDICATOR_EMA_WARMUP_BARS,
-                window.start,
+                session_start,
                 None,
             )
             .await?
@@ -645,7 +678,86 @@ impl HistoricalDerivedCache {
                     })
                     .collect()
             })
-            .unwrap_or_default())
+            .unwrap_or_default();
+        if window.start > session_start {
+            // Same-session EMA state must be advanced with the identical raw
+            // trade authority and bar aggregation used by the requested page.
+            // Durable QMD Live bars are a useful pre-session seed, but mixing
+            // their independently repaired close series into an in-session
+            // historical page can change MACD relative to a calculation that
+            // started at 04:00. Rebuild only this bounded in-session prefix.
+            let exact_prefix = self
+                .exact_indicator_prefix(
+                    EventWindow {
+                        start: session_start,
+                        end: window.start,
+                        tickers: vec![ticker.to_ascii_uppercase()],
+                    },
+                    timeframe,
+                    live_continuation_sequence,
+                )
+                .await?;
+            ema_closes.extend(exact_prefix.closes);
+            return Ok(IndicatorPageWarmup {
+                ema_closes,
+                session_vwap_seed: exact_prefix.session_vwap_seed,
+            });
+        }
+        Ok(IndicatorPageWarmup {
+            ema_closes,
+            session_vwap_seed: SessionVwapSeed::default(),
+        })
+    }
+
+    async fn exact_indicator_prefix(
+        &self,
+        window: EventWindow,
+        timeframe: &str,
+        live_continuation_sequence: Option<u64>,
+    ) -> Result<ExactIndicatorPrefix, String> {
+        let bars = SharedBarStore::new_without_structure(
+            vec![timeframe.to_string()],
+            self.config.cache_max_bars_per_entry,
+            1,
+            self.source.trade_aggregation_rules(),
+        );
+        let shard = bars.shard(0);
+        let mut receiver = self.source.stream_ordered_filtered(
+            window.clone(),
+            self.config.batch_size.max(100_000),
+            live_continuation_sequence,
+            Some(1),
+        )?;
+        let mut prefix = ExactIndicatorPrefix::default();
+        let mut collect_bar = |bar: BarRow| {
+            if !bar.timeframe.eq_ignore_ascii_case(timeframe)
+                || bar.bar_end > window.end
+                || !valid_price_bar(&bar)
+            {
+                return;
+            }
+            prefix.closes.push(bar.close);
+            if bar.volume.is_finite()
+                && bar.volume > 0.0
+                && bar.dollar_volume.is_finite()
+                && bar.dollar_volume > 0.0
+            {
+                prefix.session_vwap_seed.cumulative_volume += bar.volume;
+                prefix.session_vwap_seed.cumulative_trade_notional += bar.dollar_volume;
+            }
+        };
+        while let Some(batch) = receiver.recv().await {
+            for compact in batch? {
+                let event = self.source.market_event(&compact);
+                for bar in shard.apply_event(&event).await {
+                    collect_bar(bar);
+                }
+            }
+        }
+        for bar in shard.finalize_due(window.end).await {
+            collect_bar(bar);
+        }
+        Ok(prefix)
     }
 
     async fn acquire(
@@ -890,11 +1002,16 @@ impl HistoricalDerivedCache {
             source_revision: lease.source_revision,
         };
 
-        let bars_only_warmup_closes = if bars_only {
-            self.indicator_ema_warmup_closes(&window, &ticker, &timeframe)
-                .await?
+        let bars_only_indicator_warmup = if bars_only {
+            self.indicator_page_warmup(
+                &window,
+                &ticker,
+                &timeframe,
+                cache.source_revision.live_continuation_sequence,
+            )
+            .await?
         } else {
-            Vec::new()
+            IndicatorPageWarmup::default()
         };
         if qmd_core::bars::is_supported_timeframe(&timeframe) {
             let state = lease.entry.state.lock().await;
@@ -911,8 +1028,12 @@ impl HistoricalDerivedCache {
                     .filter(|update| update.bar.timeframe.eq_ignore_ascii_case(&timeframe))
                     .collect::<Vec<_>>();
                 let structure_projection = unified_structure_projection(&all_updates)?;
-                let bar_indicator_projection =
-                    bar_indicator_projection(&all_updates, &bars_only_warmup_closes)?;
+                let bar_indicator_projection = bar_indicator_projection(
+                    &all_updates,
+                    &bars_only_indicator_warmup.ema_closes,
+                    window.start,
+                    bars_only_indicator_warmup.session_vwap_seed,
+                )?;
                 drop(state);
                 let artifact = PreparedBarCacheArtifact {
                     schema_version: PREPARED_BAR_CACHE_SCHEMA_VERSION,
@@ -1321,30 +1442,16 @@ impl HistoricalDerivedCache {
                 self.source.trade_aggregation_rules(),
             )
         };
-        let session_vwap_seed = if matches!(&profile, CacheProfile::Derived(_)) {
-            let seed_start = session_anchor(window.start)?;
-            self.source
-                .session_vwap_seed(
-                    EventWindow {
-                        start: seed_start,
-                        end: window.start,
-                        tickers: window.tickers.clone(),
-                    },
-                    source_revision.live_continuation_sequence,
-                )
-                .await?
-        } else {
-            SessionVwapSeed::default()
-        };
-        let indicator_ema_warmup_closes = if matches!(&profile, CacheProfile::Derived(_)) {
-            self.indicator_ema_warmup_closes(
+        let indicator_page_warmup = if matches!(&profile, CacheProfile::Derived(_)) {
+            self.indicator_page_warmup(
                 &window,
                 &ticker,
                 requested_timeframe.as_deref().unwrap_or("1s"),
+                source_revision.live_continuation_sequence,
             )
             .await?
         } else {
-            Vec::new()
+            IndicatorPageWarmup::default()
         };
         let mut structure_engine = structure_only.then(|| GenericStructureEngine::new(&ticker));
         if matches!(
@@ -1388,10 +1495,10 @@ impl HistoricalDerivedCache {
             let worker_entry = entry.clone();
             let worker_rules = trade_rules.clone();
             let worker_structure_references = structure_references;
-            let worker_session_vwap_seed = session_vwap_seed;
+            let worker_session_vwap_seed = indicator_page_warmup.session_vwap_seed;
             let worker_page_start = window.start;
             let worker_requested_timeframe = requested_timeframe.clone();
-            let worker_indicator_ema_warmup_closes = indicator_ema_warmup_closes;
+            let worker_indicator_ema_warmup_closes = indicator_page_warmup.ema_closes;
             let handle = tokio::spawn(async move {
                 let mut calculators = HashMap::<String, BarIndicatorCalculator>::new();
                 let mut microstructure = MicrostructureIntervalWindow::default();
@@ -1747,6 +1854,14 @@ impl HistoricalDerivedCache {
             &seed_revision.token,
             &split_adjustments,
         )?;
+        let legacy_key = structure_seed_cache_key_for_revision(
+            ticker,
+            rebuild_start,
+            before,
+            &seed_revision.token,
+            &split_adjustments,
+            LEGACY_STRUCTURE_CALCULATION_REVISION,
+        )?;
         let cell = {
             let mut seeds = self.structure_seeds.lock().await;
             if let Some(existing) = seeds.get(&key) {
@@ -1770,6 +1885,7 @@ impl HistoricalDerivedCache {
         let source = self.source.clone();
         let ticker = ticker.to_string();
         let seed_key = key.clone();
+        let legacy_seed_key = legacy_key;
         cell.get_or_init(|| async move {
             let prepared_root = config.prepared_bar_cache_root.join("structure-seeds");
             let prepared_path = prepared_structure_seed_cache_path(&prepared_root, &seed_key);
@@ -1787,6 +1903,62 @@ impl HistoricalDerivedCache {
                 }
                 Err(error) => {
                     eprintln!("QMD History prepared structure seed reader panicked: {error}");
+                }
+            }
+            if legacy_seed_key != seed_key {
+                let legacy_path =
+                    prepared_structure_seed_cache_path(&prepared_root, &legacy_seed_key);
+                let expected_legacy_key = legacy_seed_key.clone();
+                let expected_ticker = ticker.clone();
+                match tokio::task::spawn_blocking(move || {
+                    read_prepared_structure_seed_cache(
+                        &legacy_path,
+                        &expected_legacy_key,
+                        &expected_ticker,
+                    )
+                })
+                .await
+                {
+                    Ok(Ok(Some(legacy))) => {
+                        let checkpoint = legacy.checkpoint;
+                        let artifact = PreparedStructureSeedCacheArtifact {
+                            schema_version: PREPARED_STRUCTURE_SEED_CACHE_SCHEMA_VERSION,
+                            key: seed_key.clone(),
+                            ticker: ticker.to_ascii_uppercase(),
+                            checkpoint: checkpoint.clone(),
+                        };
+                        let migration_root = prepared_root.clone();
+                        let max_entries = config.cache_max_entries;
+                        match tokio::task::spawn_blocking(move || {
+                            let bytes = serde_json::to_vec(&artifact).map_err(|error| {
+                                format!("failed to serialize migrated structure seed: {error}")
+                            })?;
+                            write_prepared_structure_seed_cache(
+                                &migration_root,
+                                &artifact.key,
+                                &bytes,
+                                max_entries,
+                            )
+                        })
+                        .await
+                        {
+                            Ok(Ok(_)) => {}
+                            Ok(Err(error)) => eprintln!(
+                                "QMD History could not persist migrated structure seed: {error}"
+                            ),
+                            Err(error) => eprintln!(
+                                "QMD History structure seed migration writer panicked: {error}"
+                            ),
+                        }
+                        return Ok(Some(checkpoint));
+                    }
+                    Ok(Ok(None)) => {}
+                    Ok(Err(error)) => {
+                        eprintln!("QMD History ignored invalid legacy structure seed: {error}");
+                    }
+                    Err(error) => {
+                        eprintln!("QMD History legacy structure seed reader panicked: {error}");
+                    }
                 }
             }
             let mut stale_daily_checkpoint = false;
@@ -1999,6 +2171,24 @@ fn structure_seed_cache_key(
     source_revision_token: &str,
     split_adjustments: &[qmd_core::generic_structure::StructureSplitAdjustment],
 ) -> Result<String, String> {
+    structure_seed_cache_key_for_revision(
+        ticker,
+        rebuild_start,
+        before,
+        source_revision_token,
+        split_adjustments,
+        &format!("qmd-structure-v{GENERIC_STRUCTURE_ALGORITHM_VERSION}"),
+    )
+}
+
+fn structure_seed_cache_key_for_revision(
+    ticker: &str,
+    rebuild_start: DateTime<Utc>,
+    before: DateTime<Utc>,
+    source_revision_token: &str,
+    split_adjustments: &[qmd_core::generic_structure::StructureSplitAdjustment],
+    structure_revision: &str,
+) -> Result<String, String> {
     let split_bytes = serde_json::to_vec(split_adjustments)
         .map_err(|error| format!("failed to hash structure split authority: {error}"))?;
     let split_revision = format!("{:x}", Sha256::digest(split_bytes));
@@ -2008,7 +2198,7 @@ fn structure_seed_cache_key(
         rebuild_start.timestamp_micros(),
         before.timestamp_micros(),
         source_revision_token,
-        HISTORICAL_CALCULATION_REVISION,
+        structure_revision,
         HISTORICAL_CORPORATE_ACTION_REVISION,
         split_revision,
     ))
@@ -2712,9 +2902,10 @@ fn read_prepared_structure_seed_cache(
             .checkpoint
             .sym
             .eq_ignore_ascii_case(expected_ticker)
+        || artifact.checkpoint.algorithm_version != GENERIC_STRUCTURE_ALGORITHM_VERSION
     {
         return Err(format!(
-            "{} contains a checkpoint outside {expected_ticker}",
+            "{} contains an incompatible checkpoint outside {expected_ticker}",
             path.display(),
         ));
     }
@@ -3041,10 +3232,12 @@ mod tests {
         prepared_structure_seed_cache_path, read_prepared_bar_cache,
         read_prepared_structure_seed_cache, revision_window, session_anchor, split_event_window,
         stable_hash_hex, structure_events_overlapping, structure_seed_cache_key,
+        structure_seed_cache_key_for_revision,
         write_prepared_bar_cache, write_prepared_structure_seed_cache, CacheEntry, CacheProfile,
         ChartBarRow, EntryState, PreparedBarCacheArtifact, PreparedStructureSeedCacheArtifact,
         SourceRevision, StructureProjectionBuilder, HISTORICAL_CALCULATION_REVISION,
         HISTORICAL_CORPORATE_ACTION_REVISION, HISTORICAL_ENGINE_VERSION,
+        LEGACY_STRUCTURE_CALCULATION_REVISION,
         MAX_ENCOUNTERED_STRUCTURE_LEVELS, PREPARED_BAR_CACHE_SCHEMA_VERSION,
         PREPARED_STRUCTURE_SEED_CACHE_SCHEMA_VERSION,
     };
@@ -3079,7 +3272,7 @@ mod tests {
             std::slice::from_ref(&adjustment),
         )
         .unwrap();
-        let mut corrected = adjustment;
+        let mut corrected = adjustment.clone();
         corrected.source_inserted_at += Duration::hours(1);
         let corrected = structure_seed_cache_key(
             "SUGP",
@@ -3091,9 +3284,21 @@ mod tests {
         .unwrap();
         let no_split =
             structure_seed_cache_key("SUGP", rebuild_start, before, "event-revision", &[]).unwrap();
+        let legacy = structure_seed_cache_key_for_revision(
+            "SUGP",
+            rebuild_start,
+            before,
+            "event-revision",
+            std::slice::from_ref(&adjustment),
+            LEGACY_STRUCTURE_CALCULATION_REVISION,
+        )
+        .unwrap();
 
         assert_ne!(original, corrected);
         assert_ne!(original, no_split);
+        assert_ne!(original, legacy);
+        assert!(original.contains("qmd-structure-v15"));
+        assert!(legacy.contains(LEGACY_STRUCTURE_CALCULATION_REVISION));
     }
 
     #[test]

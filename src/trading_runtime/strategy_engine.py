@@ -1362,8 +1362,11 @@ def _unified_entry_trigger(
         else float("inf")
     )
     acceptance_hold_ms = max(0.0, float(policy.get("acceptance_hold_ms") or 0))
+    acceptance_expires = bool(policy.get("acceptance_expires", True))
     accepted_threshold = accepted_boundary * (1 + buffer_bps / 10_000)
-    if accepted_boundary > 0 and acceptance_age_ms <= acceptance_hold_ms:
+    if accepted_boundary > 0 and (
+        not acceptance_expires or acceptance_age_ms <= acceptance_hold_ms
+    ):
         # Acceptance belongs to the local structural crossing. Higher levels
         # are subsequent resistance/target evidence; they do not invalidate a
         # breakout while MACD or liquidity confirmation is catching up.
@@ -1395,6 +1398,7 @@ def _unified_entry_trigger(
             "accepted_at": accepted.get("accepted_at"),
             "acceptance_age_ms": acceptance_age_ms,
             "acceptance_hold_ms": acceptance_hold_ms,
+            "acceptance_expires": acceptance_expires,
             "breakout_extension_bps": breakout_extension_bps,
             "maximum_breakout_extension_bps": maximum_breakout_extension_bps,
         }
@@ -2038,12 +2042,14 @@ class LongMomentumStrategyEngine:
             else 0.0
         )
         target = _luld_target(observation, parameters, side=side)
+        profit_target_selection: dict[str, Any] = {}
         profit_targets = _structural_profit_targets(
             observation,
             parameters,
             stop=stop,
             side=side,
             luld_target=target,
+            selection_evidence=profit_target_selection,
         )
         if profit_targets:
             target = profit_targets[0]
@@ -2130,6 +2136,7 @@ class LongMomentumStrategyEngine:
                 "entry_rules": rule_result,
                 "initial_stop": stop,
                 "profit_targets": profit_targets,
+                "profit_target_selection": profit_target_selection,
                 "unified_structural_trigger": unified_trigger,
                 "execution_quality": execution_detail,
                 "entry_momentum_confirmation": momentum_detail,
@@ -2624,12 +2631,14 @@ class LongMomentumStrategyEngine:
         if not existing:
             return None
         current_target = existing[0]
+        profit_target_selection: dict[str, Any] = {}
         candidate_targets = _structural_profit_targets(
             observation,
             parameters,
             stop=stop,
             side=side,
             luld_target=_luld_target(observation, parameters, side=side),
+            selection_evidence=profit_target_selection,
         )
         if not candidate_targets:
             return None
@@ -2657,6 +2666,7 @@ class LongMomentumStrategyEngine:
             metadata={
                 "previous_profit_target": current_target,
                 "profit_target": candidate,
+                "profit_target_selection": profit_target_selection,
                 "macd": macd_evidence,
                 "ratchet_clock": "completed_1s_bar",
             },
@@ -5132,6 +5142,7 @@ def _structural_profit_targets(
     stop: float,
     side: str,
     luld_target: float | None,
+    selection_evidence: dict[str, Any] | None = None,
 ) -> list[float]:
     """Build causal targets from level-book resistance/support evidence."""
     policy = dict(parameters["protection"].get("profit_ladder") or {})
@@ -5154,7 +5165,7 @@ def _structural_profit_targets(
         if side == "long"
         else None
     )
-    ranked_candidates: list[tuple[float, float]] = []
+    ranked_candidates: list[tuple[float, float, dict[str, Any]]] = []
     for row in level_rows:
         strength = _level_metric(dict(row), "salience", "strength")
         confidence = _level_metric(dict(row), "confidence")
@@ -5194,7 +5205,7 @@ def _structural_profit_targets(
             if favorable_side and (
                 maximum_price is None or candidate_value <= maximum_price
             ):
-                ranked_candidates.append((score, candidate_value))
+                ranked_candidates.append((score, candidate_value, dict(row)))
     # The scalar nearest-level fields do not carry the Unified Level Book's
     # hold/break lifecycle evidence.  They may remain a compatibility fallback
     # only when the configured strategy does not require that evidence; using
@@ -5234,7 +5245,7 @@ def _structural_profit_targets(
             and nearest_score >= float(policy.get("minimum_composite_score") or 0.0)
             and (maximum_price is None or float(nearest_price) <= maximum_price)
         ):
-            ranked_candidates.append((nearest_score, float(nearest_price)))
+            ranked_candidates.append((nearest_score, float(nearest_price), nearest_row))
     spacing = entry * float(policy.get("minimum_spacing_bps") or 0.0) / 10_000.0
     unique: list[float] = []
     maximum = max(0, int(policy.get("maximum_targets") or 0))
@@ -5254,7 +5265,7 @@ def _structural_profit_targets(
     selection_mode = str(policy.get("selection_mode") or "ranked")
     if selection_mode == "second_next_level":
         ordered_prices = sorted(
-            {candidate for _, candidate in ranked_candidates},
+            {candidate for _, candidate, _ in ranked_candidates},
             reverse=side == "short",
         )
         target_ordinal = max(1, int(policy.get("target_level_ordinal") or 2))
@@ -5265,20 +5276,49 @@ def _structural_profit_targets(
         )
     elif selection_mode == "highest_price_below_cap":
         ordered_prices = sorted(
-            {candidate for _, candidate in ranked_candidates},
+            {candidate for _, candidate, _ in ranked_candidates},
             reverse=side == "long",
         )
         selected = ordered_prices[:maximum]
     else:
         selected = [
             candidate
-            for _, candidate in sorted(
+            for _, candidate, _ in sorted(
                 ranked_candidates,
                 key=lambda item: (-item[0], item[1] if side == "long" else -item[1]),
             )[:maximum]
         ]
     append_candidates(selected)
     unique.sort(reverse=side == "short")
+    if selection_evidence is not None:
+        target_ordinal = max(1, int(policy.get("target_level_ordinal") or 2))
+        ordered_ladder = sorted(
+            ranked_candidates,
+            key=lambda item: item[1],
+            reverse=side == "short",
+        )
+        # Strategy Activity needs enough evidence to prove the ordinal choice,
+        # not a copy of the complete level book on every target replacement.
+        # Keep the selected neighborhood bounded so high-frequency runs remain
+        # responsive even when a ticker owns thousands of historical levels.
+        audit_ladder = ordered_ladder[: max(3, target_ordinal + 1)]
+        selection_evidence.update({
+            "selection_mode": selection_mode,
+            "target_level_ordinal": target_ordinal,
+            "reference_price": entry,
+            "qualified_level_count": len(ordered_ladder),
+            "qualified_levels_truncated": len(audit_ladder) < len(ordered_ladder),
+            "qualified_levels": [
+                {
+                    **_compact_structural_level_reference(row),
+                    "target_price": round(price, 4),
+                    "composite_score": score,
+                    "ordinal_above_reference": index + 1,
+                }
+                for index, (score, price, row) in enumerate(audit_ladder)
+            ],
+            "selected_target_prices": list(unique),
+        })
     return unique
 
 

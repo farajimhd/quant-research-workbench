@@ -4044,6 +4044,11 @@ def _default_draft() -> dict[str, Any]:
         "minimum_level_age_ms": 0,
         "acceptance_buffer_bps": 0.0,
         "acceptance_hold_ms": 15_000,
+        # A causally cleared level remains the campaign's entry frontier until
+        # an entry consumes it.  Wall-clock expiry made a valid break disappear
+        # while VWAP/MACD or the executable spread was still converging, forcing
+        # the strategy to chase the next higher level.
+        "acceptance_expires": False,
         # VWAP extension remains the shared anti-chase authority. The
         # structural trigger must not reject a valid already-cleared level
         # with a second, tighter and contradictory distance ceiling.
@@ -4074,7 +4079,11 @@ def _default_draft() -> dict[str, Any]:
         "maximum_vwap_extension_bps": 500.0,
         # This is an instantaneous (non-latched) execution check for volatile
         # small-cap premarket names.
-        "maximum_spread_bps": 60.0,
+        # Absolute volume and sustained tape activity are already latched.  A
+        # three-cent spread on a roughly $3 small-cap is still executable for a
+        # marketable entry; retaining the old 60-bps cap delayed otherwise valid
+        # campaigns until after the breakout candle.
+        "maximum_spread_bps": 100.0,
     }
     system_profiles[0]["parameters"]["entry_momentum_confirmation"] = {
         # The causal one-second MACD contract is complete: line above signal,
@@ -4088,13 +4097,12 @@ def _default_draft() -> dict[str, Any]:
         "minimum_histogram_increase_bps": 0.25,
     }
     squeeze_lifecycle["reentry"]["target_replenishment"] = {
-        # A profit-target fill reduces an otherwise valid momentum campaign;
-        # replenish those shares on the first causal pullback that preserves
-        # the exact positive/open 1-second MACD, VWAP, structure, and current
-        # execution-quality gates.  This entitlement is created by the fill,
-        # so it does not require another Early Squeeze event or resistance
-        # breakout.
-        "enabled": True,
+        # The single structural target is a whole-campaign exit, not a partial
+        # profit pocket. Re-entry is therefore owned by the ordinary flat
+        # campaign pullback/reclaim path. Arming replenishment from an
+        # incremental child fill can race a still-working parent entry and
+        # create overlapping buy and protective-sell groups.
+        "enabled": False,
         "minimum_pullback_atr_multiple": 0.50,
         "minimum_pullback_bps": 25.0,
         "support_buffer_bps": 10.0,

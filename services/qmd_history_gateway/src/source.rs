@@ -18,6 +18,7 @@ use qmd_core::indicators::{
 use qmd_core::market_products::parse_resolution_us;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -576,7 +577,7 @@ impl HistoricalEventSource {
                 .fetch_live_segment(segment, &window.tickers, live_continuation_sequence)
                 .await?
                 .into_iter()
-                .filter(|event| event.event_meta & 1 == 0)
+                .filter(|event| event.event_meta & 1 == 1)
             {
                 accumulate_session_vwap_seed(
                     &mut seed,
@@ -1574,10 +1575,91 @@ impl HistoricalEventSource {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
+        let mut persisted_source = table.clone();
+        let mut fallback_has_more = false;
         if bars.is_empty() {
-            return Ok(None);
+            let url = format!(
+                "{}/snapshot/intraday-bar-history/{}",
+                self.config.live_gateway_url.trim_end_matches('/'),
+                urlencoding::encode(&ticker)
+            );
+            let response = self
+                .client
+                .get(url)
+                .query(&[
+                    ("timeframe", timeframe.to_string()),
+                    ("start_date", start_date.to_string()),
+                    ("end_date", end_date.to_string()),
+                    (
+                        "before_event_timestamp_us",
+                        as_of.timestamp_micros().max(0).to_string(),
+                    ),
+                    ("limit", limit.clamp(1, 50_000).to_string()),
+                ])
+                .send()
+                .await
+                .map_err(|error| format!("QMD Live persisted-bar request failed: {error}"))?;
+            let status = response.status();
+            if !status.is_success() {
+                let detail = response.text().await.unwrap_or_default();
+                return Err(format!(
+                    "QMD Live persisted-bar request returned HTTP {status}: {detail}"
+                ));
+            }
+            let payload = response
+                .json::<Value>()
+                .await
+                .map_err(|error| format!("invalid QMD Live persisted-bar response: {error}"))?;
+            persisted_source = payload
+                .get("source")
+                .and_then(Value::as_str)
+                .unwrap_or("qmd_live_intraday_bars")
+                .to_string();
+            fallback_has_more = payload
+                .get("has_more")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            bars = payload
+                .get("bars")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|row| {
+                    let bar_start = row
+                        .get("bar_start")
+                        .and_then(Value::as_str)
+                        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())?
+                        .with_timezone(&Utc);
+                    let bar_end = row
+                        .get("bar_end")
+                        .and_then(Value::as_str)
+                        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())?
+                        .with_timezone(&Utc);
+                    if bar_start < window.start
+                        || bar_start >= window.end
+                        || bar_end > as_of
+                        || before.is_some_and(|bound| bar_start >= bound)
+                    {
+                        return None;
+                    }
+                    Some(HistoricalIntradayChartRow {
+                        bar_end,
+                        bar_start,
+                        close: row.get("close")?.as_f64()?,
+                        event_count: row.get("trade_count")?.as_u64()?,
+                        high: row.get("high")?.as_f64()?,
+                        low: row.get("low")?.as_f64()?,
+                        open: row.get("open")?.as_f64()?,
+                        session_date: row.get("session_date")?.as_str()?.to_string(),
+                        size_sum: row.get("volume")?.as_f64()?,
+                    })
+                })
+                .collect();
+            if bars.is_empty() {
+                return Ok(None);
+            }
         }
-        let has_more = bars.len() > limit;
+        let has_more = fallback_has_more || bars.len() > limit;
         bars.truncate(limit);
         bars.reverse();
         let adjustments = self
@@ -1593,7 +1675,7 @@ impl HistoricalEventSource {
             bars,
             has_more,
             next_before,
-            source: table,
+            source: persisted_source,
         }))
     }
 
@@ -2472,7 +2554,7 @@ fn session_vwap_seed_select(
           AND source.event_date <= toDate('{end_date}')
           AND source.sip_timestamp_us >= {start_us}
           AND source.sip_timestamp_us < {end_us}{ticker_filter}
-        WHERE bitAnd(source.event_meta, 1) = 0
+        WHERE bitAnd(source.event_meta, 1) = 1
           AND source.price_primary_int > 0
           AND source.size_primary > 0
           AND {eligible}"#,
@@ -3027,7 +3109,7 @@ mod tests {
         assert!(sql.contains("FROM q_live.events AS source FINAL"));
         assert!(sql
             .contains("source.sip_timestamp_us < 1787689800000000 AND source.ticker IN ('AAPL')"));
-        assert!(sql.contains("bitAnd(source.event_meta, 1) = 0"));
+        assert!(sql.contains("bitAnd(source.event_meta, 1) = 1"));
         assert!(sql.contains("source.condition_token_1 IN (0,3,7)"));
         assert!(sql.contains("source.condition_token_5 IN (0,3,7)"));
         assert!(sql.contains("if(bitAnd(source.event_meta, 2) != 0, 10000., 100.)"));

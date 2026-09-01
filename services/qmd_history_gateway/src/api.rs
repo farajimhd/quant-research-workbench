@@ -184,12 +184,22 @@ struct DerivedStreamQuery {
 #[derive(Debug, Serialize)]
 struct HealthPayload {
     cache: CacheMetrics,
+    calculation_revision: &'static str,
+    corporate_action_revision: &'static str,
     config: HistoricalGatewayConfig,
     host_role: &'static str,
     running: bool,
     service: &'static str,
     source: &'static str,
     status: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct HistoricalSourceRevisionPayload {
+    #[serde(flatten)]
+    source_revision: SourceRevision,
+    calculation_revision: &'static str,
+    corporate_action_revision: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -603,6 +613,8 @@ async fn health(State(state): State<Arc<AppState>>) -> Result<Json<HealthPayload
     state.source.health().await.map_err(service_error)?;
     Ok(Json(HealthPayload {
         cache: state.cache.metrics().await,
+        calculation_revision: HISTORICAL_CALCULATION_REVISION,
+        corporate_action_revision: HISTORICAL_CORPORATE_ACTION_REVISION,
         config: state.config.clone(),
         host_role: "historical",
         running: true,
@@ -800,7 +812,7 @@ async fn source_plan(
 async fn source_revision_snapshot(
     Query(query): Query<SourcePlanQuery>,
     State(state): State<Arc<AppState>>,
-) -> Result<Json<SourceRevision>, ApiError> {
+) -> Result<Json<HistoricalSourceRevisionPayload>, ApiError> {
     let tickers = query
         .tickers
         .as_deref()
@@ -810,12 +822,16 @@ async fn source_revision_snapshot(
         .map(str::to_string)
         .collect();
     let window = window(&query.start, &query.end, tickers)?;
-    state
+    let source_revision = state
         .source
         .source_revision(&window)
         .await
-        .map(Json)
-        .map_err(service_error)
+        .map_err(service_error)?;
+    Ok(Json(HistoricalSourceRevisionPayload {
+        source_revision,
+        calculation_revision: HISTORICAL_CALCULATION_REVISION,
+        corporate_action_revision: HISTORICAL_CORPORATE_ACTION_REVISION,
+    }))
 }
 
 async fn compact_event_snapshot(

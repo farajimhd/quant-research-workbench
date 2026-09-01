@@ -1087,6 +1087,59 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertNotIn("accepted_entry_resistance", expired.state)
         self.assertEqual(expired.state["pending_entry_resistance"]["boundary"], 3.66)
 
+    def test_unified_entry_can_keep_a_cleared_level_until_campaign_consumes_it(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["structural_entry"].update({
+            "enabled": True,
+            "acceptance_hold_ms": 15_000,
+            "acceptance_expires": False,
+        })
+        cleared_level = {
+            "unified_level_id": "cleared",
+            "side": -1,
+            "price": 3.35,
+            "lower": 3.34,
+            "upper": 3.36,
+            "salience": 0.9,
+            "confidence": 0.9,
+            "reaction_probability": 0.9,
+        }
+        result = LongMomentumStrategyEngine().evaluate(
+            assignment(
+                parameters=parameters,
+                state={
+                    "last_price": 3.44,
+                    "accepted_entry_resistance": {
+                        "boundary": 3.36,
+                        "level": cleared_level,
+                        "accepted_at": (NOW - timedelta(seconds=30)).isoformat(),
+                    },
+                },
+            ),
+            confirmed_observation(
+                price=3.47,
+                bid=3.46,
+                ask=3.47,
+                vwap=3.45,
+                structural_resistance_levels=(
+                    cleared_level,
+                    {
+                        **cleared_level,
+                        "unified_level_id": "next-overhead",
+                        "price": 3.50,
+                        "lower": 3.49,
+                        "upper": 3.51,
+                    },
+                ),
+            ),
+        )
+
+        self.assertEqual(result.evaluation.signals[0].action, "enter_long")
+        trigger = result.evaluation.signals[0].metadata["unified_structural_trigger"]
+        self.assertEqual(trigger["reference_price"], 3.36)
+        self.assertFalse(trigger["acceptance_expires"])
+        self.assertGreater(trigger["acceptance_age_ms"], 15_000)
+
     def test_unified_entry_keeps_accepted_local_break_when_higher_level_appears(self) -> None:
         parameters = default_long_momentum_parameters()
         parameters["structural_entry"].update({
@@ -1549,6 +1602,16 @@ class LongMomentumStrategyTests(unittest.TestCase):
             ),
         )
         self.assertEqual(result.evaluation.signals[0].metadata["profit_targets"], [103.0])
+        selection = result.evaluation.signals[0].metadata["profit_target_selection"]
+        self.assertEqual(selection["selected_target_prices"], [103.0])
+        self.assertEqual(
+            [level["target_price"] for level in selection["qualified_levels"]],
+            [102.0, 103.0, 104.0],
+        )
+        self.assertEqual(
+            [level["ordinal_above_reference"] for level in selection["qualified_levels"]],
+            [1, 2, 3],
+        )
 
     def test_second_next_target_rejects_levels_over_maximum_break_count(self) -> None:
         parameters = default_long_momentum_parameters()
@@ -1636,6 +1699,13 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(advanced.evaluation.signals[0].action, "replace_profit_target")
         self.assertEqual(advanced.evaluation.intents[0].profit_target_price, 104.0)
         self.assertEqual(advanced.evaluation.intents[0].quantity, 100)
+        selection = advanced.evaluation.signals[0].metadata["profit_target_selection"]
+        self.assertEqual(selection["reference_price"], 102.1)
+        self.assertEqual(selection["selected_target_prices"], [104.0])
+        self.assertEqual(
+            [level["target_price"] for level in selection["qualified_levels"]],
+            [103.0, 104.0, 105.0],
+        )
 
     def test_highest_capped_target_does_not_ratchet_through_intermediate_levels(self) -> None:
         parameters = default_long_momentum_parameters()
