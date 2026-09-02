@@ -1413,6 +1413,10 @@ def _unified_entry_trigger(
                 "boundary": accepted_boundary,
                 "level": _compact_structural_level_reference(accepted_level),
                 "accepted_at": observation.observed_at.isoformat(),
+                "acceptance_reason": "successor_resistance_crossed",
+                "acceptance_previous_price": previous_price,
+                "acceptance_observed_price": observation.price,
+                "acceptance_threshold_price": accepted_threshold,
             }
             accepted = state["accepted_entry_resistance"]
         breakout_extension_bps = (
@@ -1434,6 +1438,16 @@ def _unified_entry_trigger(
                     "threshold_price": accepted_threshold,
                     "previous_price": previous_price,
                     "accepted_at": accepted.get("accepted_at"),
+                    "acceptance_reason": accepted.get("acceptance_reason"),
+                    "acceptance_previous_price": accepted.get(
+                        "acceptance_previous_price"
+                    ),
+                    "acceptance_observed_price": accepted.get(
+                        "acceptance_observed_price"
+                    ),
+                    "acceptance_threshold_price": accepted.get(
+                        "acceptance_threshold_price"
+                    ),
                     "acceptance_age_ms": acceptance_age_ms,
                     "acceptance_hold_ms": acceptance_hold_ms,
                     "acceptance_expires": acceptance_expires,
@@ -1599,6 +1613,14 @@ def _unified_entry_trigger(
             "boundary": boundary,
             "level": _compact_structural_level_reference(level),
             "accepted_at": observation.observed_at.isoformat(),
+            "acceptance_reason": (
+                "initial_campaign_already_cleared"
+                if already_cleared_on_admission
+                else "resistance_crossed_after_arming"
+            ),
+            "acceptance_previous_price": previous_price,
+            "acceptance_observed_price": observation.price,
+            "acceptance_threshold_price": threshold,
         }
         state.pop("pending_entry_resistance", None)
     else:
@@ -2459,6 +2481,21 @@ class LongMomentumStrategyEngine:
                 "unified_structural_trigger": unified_trigger,
                 "execution_quality": execution_detail,
                 "entry_momentum_confirmation": momentum_detail,
+                "completed_candle": {
+                    "timeframe": entry_timeframe,
+                    "side": side,
+                    "open": observation.bar_open,
+                    "close": observation.price,
+                    "required": (
+                        "close >= open" if side == "long" else "close <= open"
+                    ),
+                    "passed": True,
+                },
+                "macd": {
+                    **entry_macd_evidence,
+                    "open_gap_bps": macd_gap_bps,
+                    "minimum_open_gap_bps": minimum_macd_gap_bps,
+                },
             },
         )
 

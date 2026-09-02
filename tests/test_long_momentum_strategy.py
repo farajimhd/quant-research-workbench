@@ -1248,6 +1248,14 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(
             latched.state["accepted_entry_resistance"]["boundary"], 3.56
         )
+        self.assertEqual(
+            latched.state["accepted_entry_resistance"]["acceptance_previous_price"],
+            3.53,
+        )
+        self.assertEqual(
+            latched.state["accepted_entry_resistance"]["acceptance_observed_price"],
+            3.57,
+        )
 
         advanced = engine.evaluate(
             assignment(parameters=parameters, state=dict(latched.state)),
@@ -1269,6 +1277,17 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(advanced.evaluation.signals[0].action, "enter_long")
         trigger = advanced.evaluation.signals[0].metadata["unified_structural_trigger"]
         self.assertEqual(trigger["reference_price"], 3.56)
+        self.assertEqual(trigger["acceptance_previous_price"], 3.53)
+        self.assertEqual(trigger["acceptance_observed_price"], 3.57)
+        completed_candle = advanced.evaluation.signals[0].metadata[
+            "completed_candle"
+        ]
+        self.assertEqual(completed_candle["timeframe"], "1s")
+        self.assertEqual(completed_candle["side"], "long")
+        self.assertAlmostEqual(completed_candle["open"], 3.63)
+        self.assertEqual(completed_candle["close"], 3.64)
+        self.assertEqual(completed_candle["required"], "close >= open")
+        self.assertTrue(completed_candle["passed"])
 
     def test_unified_entry_accepts_highest_qualified_level_already_cleared_on_admission(self) -> None:
         parameters = default_long_momentum_parameters()
