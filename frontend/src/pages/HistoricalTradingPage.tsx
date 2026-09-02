@@ -1,4 +1,4 @@
-import { ArrowLeft, CheckCircle2, CircleStop, Gauge, Pause, Play, RefreshCcw, Square, TriangleAlert } from "lucide-react";
+import { ArrowLeft, CheckCircle2, CircleStop, Gauge, Pause, Play, RefreshCcw, Square, TriangleAlert, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { api } from "../api/client";
@@ -75,6 +75,9 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [sessionCount, setSessionCount] = useState(20);
   const [initialCash, setInitialCash] = useState(100_000);
   const [simulationProfile, setSimulationProfile] = useState<"baseline" | "stress">("baseline");
+  const [sessionWindow, setSessionWindow] = useState<"extended" | "premarket">("extended");
+  const [tickerScope, setTickerScope] = useState<"configured" | "single">("configured");
+  const [ticker, setTicker] = useState("");
   const [preflight, setPreflight] = useState<HistoricalPreflight | null>(null);
   const [checking, setChecking] = useState(true);
   const [error, setError] = useState("");
@@ -88,6 +91,9 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [runPlanId, setRunPlanId] = useState("");
   const [candidateId, setCandidateId] = useState("");
   const [candidates, setCandidates] = useState<TestCandidateSummary[]>([]);
+  const endTime = sessionWindow === "premarket" ? "09:30:00" : "20:00:00";
+  const normalizedTicker = ticker.trim().toUpperCase();
+  const tickerReady = tickerScope === "configured" || /^[A-Z][A-Z0-9.\-]{0,15}$/.test(normalizedTicker);
 
   useEffect(() => {
     let cancelled = false;
@@ -114,6 +120,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
           run_plan_id: runPlanId,
           session_count: sessionCount,
           simulation_profile: simulationProfile,
+          end_time: endTime,
         }),
         method: "POST",
         timeoutMs: 60_000,
@@ -138,7 +145,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [anchorDate, candidateId, mode, refreshKey, runPlanId, sessionCount]);
+  }, [anchorDate, candidateId, endTime, mode, refreshKey, runPlanId, sessionCount, simulationProfile]);
 
   usePollingTask({
     enabled: Boolean(run && !["completed", "stopped", "failed"].includes(run.status)),
@@ -177,6 +184,9 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
           initial_cash: initialCash,
           run_plan_id: runPlanId,
           session_count: sessionCount,
+          simulation_profile: simulationProfile,
+          end_time: endTime,
+          tickers: tickerScope === "single" ? [normalizedTicker] : [],
         }),
         method: "POST",
         timeoutMs: 60_000,
@@ -235,14 +245,15 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
 
   if (run) {
     const terminal = ["completed", "stopped", "failed"].includes(run.status);
+    const runScope = run.tickers?.length ? run.tickers.join(", ") : "Configured strategy universe";
     return <CanvasWorkspaceSurface
       canvasId="main"
       manager={false}
-      modeControls={<div className="historical-canvas-run-state">
-        <button aria-label="Return to Backtest setup" className="button secondary compact" onClick={() => setRun(null)} type="button"><ArrowLeft size={14} /> Setup</button>
-        <strong>Backtest {run.status.replaceAll("_", " ")}</strong>
-        <span>{Math.round(run.progress * 100)}% · {new Intl.NumberFormat("en-US", { notation: "compact" }).format(run.processed_events || 0)} events</span>
-        {!terminal ? <><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void commandRun(run.status === "paused" ? "play" : "pause")} type="button">{run.status === "paused" ? <Play size={14} /> : <Pause size={14} />}{run.status === "paused" ? "Resume" : "Pause"}</button><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void stopRun()} type="button"><Square size={14} /> Stop</button></> : null}
+      modeControls={<div className="historical-canvas-run-state historical-backtest-progress">
+        <div className="historical-backtest-progress-actions"><button aria-label="Return to Backtest setup" className="button secondary compact" onClick={() => setRun(null)} type="button"><ArrowLeft size={14} /> Setup</button>{!terminal ? <><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void commandRun(run.status === "paused" ? "play" : "pause")} type="button">{run.status === "paused" ? <Play size={14} /> : <Pause size={14} />}{run.status === "paused" ? "Resume" : "Pause"}</button><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void stopRun()} type="button"><Square size={14} /> Stop</button></> : null}</div>
+        <div className="historical-backtest-progress-heading"><strong>Backtest {run.status.replaceAll("_", " ")}</strong><b>{Math.round(run.progress * 100)}%</b></div>
+        <div aria-label={`Backtest ${Math.round(run.progress * 100)} percent complete`} aria-valuemax={100} aria-valuemin={0} aria-valuenow={Math.round(run.progress * 100)} className="historical-backtest-progress-track" role="progressbar"><span style={{ width: `${Math.max(0, Math.min(100, run.progress * 100))}%` }} /></div>
+        <div className="historical-backtest-progress-facts"><span>{new Intl.NumberFormat("en-US").format(run.processed_events || 0)} exact events</span><span>Through {formatReplayTime(run.current_time)} ET</span><span>{runScope}</span><span><Zap aria-hidden="true" size={11} /> Accelerated causal engine</span></div>
       </div>}
       replayRun={run}
       runtimeWorkspaceId="main"
@@ -252,7 +263,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   return (
     <TradingModeLaunch
       actionLabel="Run Backtest"
-      actionSummary={preflight?.strategy_run_ready ? <>Revision <strong>{preflight.configuration_revision}</strong> will run through <strong>{preflight.window.session_count} sessions</strong> in an isolated simulated Portfolio and OMS.</> : "Resolve each required readiness item before starting."}
+      actionSummary={preflight?.strategy_run_ready && tickerReady ? <>Revision <strong>{preflight.configuration_revision}</strong> will run <strong>{tickerScope === "single" ? normalizedTicker : "the configured strategy universe"}</strong> through <strong>{preflight.window.session_count} session{preflight.window.session_count === 1 ? "" : "s"}</strong> using the accelerated causal engine.</> : tickerScope === "single" && !tickerReady ? "Enter one valid ticker before starting." : "Resolve each required readiness item before starting."}
       busy={creating}
       checking={checking}
       checks={preflight?.checks ?? []}
@@ -262,7 +273,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       icon={Gauge}
       onAction={createRun}
       onRefresh={() => setRefreshKey((value) => value + 1)}
-      ready={Boolean(preflight?.strategy_run_ready)}
+      ready={Boolean(preflight?.strategy_run_ready && tickerReady)}
       secondary={results ? <HistoricalResults comparison={comparison} comparisonError={comparisonError} results={results} /> : null}
       title="Evaluate a strategy"
     >
@@ -270,8 +281,12 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
               <label className="configuration-field"><span>Strategy Run Plan</span><select aria-label="Strategy Run Plan" onChange={(event) => setRunPlanId(event.target.value)} value={runPlanId}>{(preflight?.available_run_plans ?? []).map((plan) => <option key={plan.run_plan_id} value={plan.run_plan_id}>{plan.name} · {plan.strategy_id} r{plan.strategy_revision}</option>)}</select><small>The exact Strategy Studio profile and installed executor revision used for this Backtest.</small></label>
               <label className="configuration-field"><span>Anchor date · exclusive</span><input onChange={(event) => setAnchorDate(event.target.value)} type="date" value={anchorDate} /><small>The selected date is never included in the result window.</small></label>
               <label className="configuration-field"><span>Prior exchange sessions</span><input max={260} min={1} onChange={(event) => setSessionCount(Math.max(1, Number(event.target.value) || 1))} type="number" value={sessionCount} /><small>Resolved backward from the exclusive anchor.</small></label>
-              <label className="configuration-field"><span>Initial cash</span><input max={1_000_000_000} min={1_000} onChange={(event) => setInitialCash(Math.max(1_000, Number(event.target.value) || 1_000))} step={1_000} type="number" value={initialCash} /><small>Applied to each isolated simulated account for the full run.</small></label>
+              <label className="configuration-field"><span>Session window</span><select aria-label="Session window" onChange={(event) => setSessionWindow(event.target.value as "extended" | "premarket")} value={sessionWindow}><option value="extended">Whole extended session · 04:00–20:00 ET</option><option value="premarket">Premarket · 04:00–09:30 ET</option></select><small>The accelerated engine preserves the exact event order through the selected close.</small></label>
+              <label className="configuration-field"><span>Backtest universe</span><select aria-label="Backtest universe" onChange={(event) => setTickerScope(event.target.value as "configured" | "single")} value={tickerScope}><option value="configured">All tickers eligible under the Run Plan</option><option value="single">One ticker only</option></select><small>One-ticker scope restricts data loading without changing Strategy, Portfolio, or OMS behavior.</small></label>
+              {tickerScope === "single" ? <label className="configuration-field"><span>Ticker</span><input aria-invalid={!tickerReady} autoCapitalize="characters" onChange={(event) => setTicker(event.target.value.toUpperCase())} placeholder="SUGP" spellCheck={false} value={ticker} /><small>{tickerReady ? `Only ${normalizedTicker} will be loaded and evaluated.` : "Use a valid exchange ticker, for example SUGP."}</small></label> : null}
+              <label className="configuration-field"><span>Initial cash</span><input max={1_000_000_000} min={1_000} onChange={(event) => setInitialCash(Math.max(1_000, Number(event.target.value) || 1_000))} step={1_000} type="number" value={initialCash} /><small>Applied to the isolated simulated account for the full run.</small></label>
               <label className="configuration-field"><span>Execution realism</span><select onChange={(event) => setSimulationProfile(event.target.value as "baseline" | "stress")} value={simulationProfile}><option value="baseline">Baseline · 25% participation · 5 bps slippage</option><option value="stress">Stress · 10% participation · 10 bps slippage</option></select><small>Both use $0.005 per share with a $1 minimum commission. Approval requires positive stress results.</small></label>
+              <div className="historical-accelerated-engine-note"><Zap aria-hidden="true" size={17} /><div><strong>Accelerated causal backtest engine</strong><span>Batched QMD structural snapshots and one-batch-ahead prefetch reduce runtime while preserving point-in-time structure, fill ordering, fees, protection, Portfolio, and OMS state.</span></div></div>
     </TradingModeLaunch>
   );
 }
@@ -335,6 +350,18 @@ function formatResultValue(value: unknown) {
   const number = Number(value);
   if (!Number.isFinite(number)) return "—";
   return new Intl.NumberFormat("en-US", { currency: "USD", maximumFractionDigits: 2, style: "currency" }).format(number);
+}
+
+function formatReplayTime(value: string) {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return "—";
+  return new Intl.DateTimeFormat("en-US", {
+    hour: "2-digit",
+    hour12: false,
+    minute: "2-digit",
+    second: "2-digit",
+    timeZone: "America/New_York",
+  }).format(timestamp);
 }
 
 function previousWeekdayIsoDate() {
