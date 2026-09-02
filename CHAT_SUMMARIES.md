@@ -7,6 +7,19 @@ each year.
 
 ## 2026
 
+### [2026-09-02 time unavailable - Repair strategy freshness, structural trailing protection, and incorrect CHOCH exits](docs/codex/chat-summaries/2026/CHAT-20260902-UNKNOWN-strategy-freshness-structural-trailing-repair.md)
+
+- Chat/task ID: unavailable
+- Related task: `TASK-0014`
+- Summary written: 2026-09-02, exact time unavailable (PDT)
+
+Audited candidate-58 SUGP decisions and repaired missing operand-age enforcement,
+disabled trailing protection, and the bearish-CHOCH exit that fired while MACD
+remained open. Strategy revision 29 now fails stale cached operands closed, uses
+the second support strictly above the 85% hold gate with a configurable 15% cap,
+and submits fixed STP plus immediate native TRAIL protection. Candidate 59 is
+ready for bounded SUGP replay; strategy approval remains open.
+
 ### [2026-08-25 12:25 PDT - Harden QMD Live, BarGPT, managed services, and chart delivery](docs/codex/chat-summaries/2026/CHAT-20260825-1225-service-qmd-bargpt-runtime-hardening.md)
 
 - Chat/task ID: `01a03a62-807a-7c23-96c7-a16aba5b4d93`
