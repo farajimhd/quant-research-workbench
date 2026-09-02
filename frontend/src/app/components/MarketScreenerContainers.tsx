@@ -755,13 +755,18 @@ export function WatchUniverseContainer({ asOf, live = false, onSettingsChange, o
   </section>;
 }
 
-export function StrategyActivityContainer({ asOf, focusSequence, onSettingsChange, onTickerSelect, runId, settings }: { asOf: string; focusSequence?: number; onSettingsChange: (patch: Partial<StrategyActivitySettings>) => void; onTickerSelect: (ticker: string) => void; runId?: string; settings: StrategyActivitySettings }) {
+export function StrategyActivityContainer({ asOf, focusSequence, historicalRows, onSettingsChange, onTickerSelect, runId, settings }: { asOf: string; focusSequence?: number; historicalRows?: ScreenerRow[]; onSettingsChange: (patch: Partial<StrategyActivitySettings>) => void; onTickerSelect: (ticker: string) => void; runId?: string; settings: StrategyActivitySettings }) {
   const [payload, setPayload] = useState<StrategyActivityResponse | null>(null);
   const [error, setError] = useState("");
   const activityLimit = Math.max(2_000, Math.min(settings.limit, 50_000));
   const asOfRef = useRef(asOf);
   asOfRef.current = asOf;
   useEffect(() => {
+    // Replay and Backtest Canvas already load a bounded, lifecycle-relevant
+    // activity projection with the canonical trading snapshot. Re-reading the
+    // complete run journal here used to transfer tens of megabytes a second
+    // time and could crash the browser renderer before the Canvas appeared.
+    if (historicalRows !== undefined) return;
     const controller = new AbortController();
     let timer = 0;
     let historicalRetryAvailable = Boolean(runId);
@@ -798,16 +803,17 @@ export function StrategyActivityContainer({ asOf, focusSequence, onSettingsChang
     };
     refresh();
     return () => { controller.abort(); window.clearTimeout(timer); };
-  }, [activityLimit, focusSequence, runId, settings.eventType, settings.strategyId, settings.ticker]);
-  const rows = useMemo(() => (payload?.rows ?? []).filter((row) =>
+  }, [activityLimit, focusSequence, historicalRows, runId, settings.eventType, settings.strategyId, settings.ticker]);
+  const rows = useMemo(() => (historicalRows ?? payload?.rows ?? []).filter((row) =>
     (!settings.strategyId || String(row.strategy_id) === settings.strategyId)
     && (!settings.runId || String(row.run_id) === settings.runId)
     && (!settings.ticker || String(row.ticker) === settings.ticker)
     && (!settings.eventType || String(row.event_type) === settings.eventType)
-  ), [payload, settings]);
-  const strategies = useMemo(() => uniqueValues(payload?.rows ?? [], "strategy_id"), [payload]);
-  const runs = useMemo(() => uniqueValues(payload?.rows ?? [], "run_id"), [payload]);
-  const tickers = useMemo(() => uniqueValues(payload?.rows ?? [], "ticker"), [payload]);
+  ), [historicalRows, payload, settings]);
+  const sourceRows = historicalRows ?? payload?.rows ?? [];
+  const strategies = useMemo(() => uniqueValues(sourceRows, "strategy_id"), [sourceRows]);
+  const runs = useMemo(() => uniqueValues(sourceRows, "run_id"), [sourceRows]);
+  const tickers = useMemo(() => uniqueValues(sourceRows, "ticker"), [sourceRows]);
   return <section className="market-list-surface strategy-activity-surface" aria-label="Strategy activity">
     <header className="market-list-heading"><div><span className="market-list-eyebrow"><FileCheck2 size={12} /> Durable runtime history</span><h3>Strategy Activity</h3><p>{rows.length} causal signals, decisions, and state changes at or before <MarketTime value={asOf} />. Select a ticker to inspect the same moment on the chart.</p></div><span className="market-list-owner strategy">Trading Journal</span></header>
     <div className="strategy-activity-filters">

@@ -760,6 +760,8 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
     setRegistry((current) => strategyReplayRegistry(current, replayRun));
   }, [
     replayRun?.run_id,
+    replayRun?.tickers?.join("|"),
+    replayRun?.navigation_action?.ticker,
     replayRun?.strategy_debug_sources?.signal_stream_ids?.join("|"),
     replayRun?.strategy_debug_sources?.watchlist_ids?.join("|"),
     transient,
@@ -1500,7 +1502,7 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
             ? <div className="canvas-inline-error">{liveMode ? "Live" : "Historical"} watchlist unavailable: {scannerError}</div>
             : <WatchUniverseContainer asOf={new Date(chartCutoffMs).toISOString()} live={liveMode} onSettingsChange={(change) => updateSettings((state) => ({ ...state, watchlist: { ...state.watchlist, ...(typeof change === "function" ? change(state.watchlist) : change) } }))} onTickerSelect={onTickerWorkspaceOpen} runtime={replayWatchlistRuntime ?? scannerSnapshot?.watchlist_runtime ?? null} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.watchlist} />
       : definition.id === "strategy_activity"
-        ? <StrategyActivityContainer asOf={new Date(chartCutoffMs).toISOString()} focusSequence={strategyActivityFocusSequence} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, strategy_activity: { ...state.strategy_activity, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} runId={signalStreamRunId} settings={settings.strategy_activity} />
+        ? <StrategyActivityContainer asOf={new Date(chartCutoffMs).toISOString()} focusSequence={strategyActivityFocusSequence} historicalRows={signalStreamRunId ? preview?.trading.strategy_activity ?? [] : undefined} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, strategy_activity: { ...state.strategy_activity, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} runId={signalStreamRunId} settings={settings.strategy_activity} />
       : loading && !preview
         ? <LoadingState fill label={`Loading ${definition.title.toLowerCase()}`} />
         : renderPreview(definition.id, preview, settings, linkGroup, onLinkContextChange, onTickerWorkspaceOpen)}</div>
@@ -1810,17 +1812,13 @@ function runtimeCanvasState(profile: CanvasRegistry, storageKey: string, canvasI
   const kind = workspaceContainerKind(requestedInstanceId, state);
   return { groups: {}, instances: { [requestedInstanceId]: kind }, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts: createFocusLayouts([requestedInstanceId]), openIds: [requestedInstanceId] };
 }
-const STRATEGY_REPLAY_CONTAINER_IDS: WorkspaceContainerId[] = ["strategy_activity", "signal_stream", "watchlist", "orders", "fills", "positions", "closed_trades", "portfolio"];
+const STRATEGY_REPLAY_CONTAINER_IDS: WorkspaceContainerId[] = ["charts_quotes", "strategy_activity", "performance_journal", "positions"];
 function strategyReplayLayouts(openIds: string[]): Record<string, WorkspaceWindowLayout> {
   const required: Record<string, WorkspaceWindowLayout> = {
-    strategy_activity: { fullscreen: false, h: 440, minimized: false, w: 900, x: 0, y: 0, z: 8 },
-    signal_stream: { fullscreen: false, h: 440, minimized: false, w: 840, x: 912, y: 0, z: 7 },
-    watchlist: { fullscreen: false, h: 420, minimized: false, w: 1752, x: 0, y: 452, z: 6 },
-    orders: { fullscreen: false, h: 430, minimized: false, w: 870, x: 0, y: 884, z: 5 },
-    fills: { fullscreen: false, h: 430, minimized: false, w: 870, x: 882, y: 884, z: 4 },
-    positions: { fullscreen: false, h: 430, minimized: false, w: 870, x: 0, y: 1326, z: 3 },
-    closed_trades: { fullscreen: false, h: 430, minimized: false, w: 870, x: 882, y: 1326, z: 3 },
-    portfolio: { fullscreen: false, h: 370, minimized: false, w: 1752, x: 0, y: 1768, z: 2 },
+    charts_quotes: { fullscreen: false, h: 760, minimized: false, w: 1752, x: 0, y: 0, z: 10 },
+    strategy_activity: { fullscreen: false, h: 440, minimized: false, w: 900, x: 0, y: 772, z: 9 },
+    performance_journal: { fullscreen: false, h: 440, minimized: false, w: 840, x: 912, y: 772, z: 8 },
+    positions: { fullscreen: false, h: 430, minimized: false, w: 1752, x: 0, y: 1224, z: 7 },
   };
   const extras = openIds.filter((id) => !(id in required));
   const fallback = createFocusLayouts(extras);
@@ -1838,12 +1836,16 @@ function strategyReplayCanvasState(state: CanvasWorkspaceState | null): CanvasWo
   }
   const allowed = new Set<WorkspaceContainerId>(STRATEGY_REPLAY_CONTAINER_IDS);
   const openIds = state.openIds.filter((id) => allowed.has(workspaceContainerKind(id, state)));
+  for (const requiredKind of STRATEGY_REPLAY_CONTAINER_IDS) {
+    if (!openIds.some((id) => workspaceContainerKind(id, state) === requiredKind)) openIds.push(requiredKind);
+  }
   const open = new Set(openIds);
+  const requiredLayouts = strategyReplayLayouts(openIds);
   return {
     groups: normalizeWorkspaceGroups(state.groups, openIds),
-    instances: Object.fromEntries(Object.entries(state.instances).filter(([id]) => open.has(id))) as Record<string, WorkspaceContainerId>,
+    instances: { ...Object.fromEntries(Object.entries(state.instances).filter(([id]) => open.has(id))), ...Object.fromEntries(STRATEGY_REPLAY_CONTAINER_IDS.filter((id) => open.has(id)).map((id) => [id, id])) } as Record<string, WorkspaceContainerId>,
     layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
-    layouts: Object.fromEntries(Object.entries(state.layouts).filter(([id]) => open.has(id))),
+    layouts: { ...requiredLayouts, ...Object.fromEntries(Object.entries(state.layouts).filter(([id]) => open.has(id))) },
     openIds,
   };
 }
@@ -1853,10 +1855,35 @@ function strategyReplayRegistry(registry: CanvasRegistry, run: CanvasReplayRun):
   const signalSettings = instanceSettings(registry, "signal_stream");
   const watchlistSettings = instanceSettings(registry, "watchlist");
   const activitySettings = instanceSettings(registry, "strategy_activity");
+  const chartSettings = instanceSettings(registry, "chart");
+  const chartsQuotesSettings = instanceSettings(registry, "charts_quotes");
+  const ticker = String(run.tickers?.[0] || run.navigation_action?.ticker || "").trim().toUpperCase();
+  const chartLinkGroup = registry.linkAssignments.charts_quotes;
+  const reviewIndicators = ["indicator.vwap", "indicator.macd", "strategy.presentation"];
   return {
     ...registry,
+    linkContexts: ticker && chartLinkGroup && chartLinkGroup !== "none"
+      ? {
+          ...registry.linkContexts,
+          [chartLinkGroup]: { ...registry.linkContexts[chartLinkGroup], symbol: ticker },
+        }
+      : registry.linkContexts,
     instanceSettings: {
       ...registry.instanceSettings,
+      chart: {
+        ...chartSettings,
+        chart: { ...chartSettings.chart, ...(ticker ? { symbol: ticker } : {}), timeframe: "1s", visibleIndicators: reviewIndicators },
+      },
+      charts_quotes: {
+        ...chartsQuotesSettings,
+        chart: { ...chartsQuotesSettings.chart, ...(ticker ? { symbol: ticker } : {}), timeframe: "1s", visibleIndicators: reviewIndicators },
+        charts_quotes: {
+          ...chartsQuotesSettings.charts_quotes,
+          main: { ...chartsQuotesSettings.charts_quotes.main, ...(ticker ? { symbol: ticker } : {}), timeframe: "1s", visibleIndicators: reviewIndicators },
+          daily: { ...chartsQuotesSettings.charts_quotes.daily, ...(ticker ? { symbol: ticker } : {}) },
+          month: { ...chartsQuotesSettings.charts_quotes.month, ...(ticker ? { symbol: ticker } : {}) },
+        },
+      },
       signal_stream: {
         ...signalSettings,
         signal_stream: {
@@ -1877,7 +1904,6 @@ function strategyReplayRegistry(registry: CanvasRegistry, run: CanvasReplayRun):
         ...activitySettings,
         strategy_activity: {
           ...activitySettings.strategy_activity,
-          limit: 50_000,
           runId: run.run_id,
         },
       },

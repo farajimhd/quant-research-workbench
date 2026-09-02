@@ -272,6 +272,25 @@ def _compact_historical_broker_projection(payload: dict[str, Any]) -> None:
         if compact_metadata:
             order["raw"]["canonical_metadata"] = compact_metadata
     for execution in payload.get("executions") or []:
+        instrument = dict(execution.get("instrument") or {})
+        keep = {
+            key: execution.get(key)
+            for key in (
+                "execution_id", "account_id", "side", "quantity", "price",
+                "source_event_time", "broker_order_id", "client_order_id",
+                "exchange", "commission", "commission_currency",
+                "commission_status", "net_amount", "strategy_id",
+                "strategy_revision", "run_id",
+            )
+            if execution.get(key) not in (None, "")
+        }
+        execution.clear()
+        execution.update(keep)
+        execution["instrument"] = {
+            key: instrument.get(key)
+            for key in ("instrument_id", "conid", "symbol", "currency", "exchange")
+            if instrument.get(key) not in (None, "")
+        }
         execution["raw"] = {}
     for activity in payload.get("activity") or []:
         activity["payload"] = {}

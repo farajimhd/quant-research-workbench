@@ -943,6 +943,7 @@ class TradingJournal:
         ticker: str = "",
         as_of: datetime | None = None,
         limit: int = 2000,
+        consequential_only: bool = False,
     ) -> list[JournalRecord]:
         """Return newest-first durable strategy events across ticker campaigns.
 
@@ -969,6 +970,19 @@ class TradingJournal:
         if as_of is not None:
             clauses.append("event_time <= ?")
             values.append(as_of.astimezone(timezone.utc).isoformat())
+        if consequential_only:
+            clauses.append(
+                "(category = 'market_discovery_signal' OR "
+                "(category IN ('strategy', 'strategy_decision') AND "
+                "entity_type <> 'strategy_assignment_state' AND "
+                "lower(coalesce(json_extract(payload_json, '$.action'), '')) "
+                "NOT IN ('', 'wait')) OR "
+                "(entity_type = 'strategy_assignment_state' AND "
+                "lower(coalesce(json_extract(payload_json, '$.action'), "
+                "json_extract(payload_json, '$.status'), "
+                "json_extract(payload_json, '$.state'), '')) "
+                "<> 'assignment_state_saved'))"
+            )
         values.append(max(1, min(int(limit), 50_000)))
         rows = self._fetchall(
             f"SELECT * FROM journal WHERE {' AND '.join(clauses)} "

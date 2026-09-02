@@ -710,6 +710,9 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(controller.status, "completed", controller.error)
                 payload = await controller.canvas_payload("AAPL")
                 trading = payload["trading"]
+                terminal_cache = controller._canvas_state_cache
+                await controller.canvas_payload("MSFT")
+                self.assertIs(controller._canvas_state_cache, terminal_cache)
 
                 self.assertEqual(controller.processed_events, 4)
                 self.assertGreaterEqual(len(trading["executions"]), 2)

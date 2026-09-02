@@ -442,6 +442,18 @@ class CanonicalProjectionTests(unittest.TestCase):
         )
 
         self.assertEqual(payload["executions"][0]["raw"], {})
+        self.assertNotIn("received_at", payload["executions"][0])
+        self.assertNotIn("arrival_midpoint", payload["executions"][0])
+        self.assertEqual(
+            payload["executions"][0]["instrument"],
+            {
+                "instrument_id": "ibkr:265598",
+                "conid": 265598,
+                "symbol": "AAPL",
+                "currency": "USD",
+                "exchange": "SMART",
+            },
+        )
         self.assertEqual(
             payload["orders"][0]["raw"],
             {

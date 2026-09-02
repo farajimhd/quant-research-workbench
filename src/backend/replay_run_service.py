@@ -1802,7 +1802,10 @@ class ReplayRunController:
         if self._runtime is None or self._journal is None:
             raise ValueError("Replay trading state is not ready")
         now = time.monotonic()
-        if self._canvas_state_cache and now - self._canvas_state_cache[0] <= 0.2:
+        if self._canvas_state_cache and (
+            self.status in TERMINAL_REPLAY_STATUSES
+            or now - self._canvas_state_cache[0] <= 0.2
+        ):
             trading = self._canvas_state_cache[1]
         else:
             trading = trading_state_payload(
@@ -1815,6 +1818,7 @@ class ReplayRunController:
                 as_of=self.current_time or self.definition.requested_start,
                 limit=50_000,
                 include_decision_evidence=False,
+                consequential_only=True,
             )["rows"]
             trading["strategy_activity"] = [
                 row
@@ -1942,6 +1946,7 @@ class ReplayRunController:
         event_type: str = "",
         limit: int = 500,
         include_decision_evidence: bool = True,
+        consequential_only: bool = False,
     ) -> dict[str, Any]:
         if self._journal is None:
             raise ValueError("Replay Strategy Activity is not ready")
@@ -1956,6 +1961,7 @@ class ReplayRunController:
             event_type=event_type,
             limit=limit,
             include_decision_evidence=include_decision_evidence,
+            consequential_only=consequential_only,
         )
 
     def subscribe(self) -> asyncio.Queue[dict[str, Any]]:

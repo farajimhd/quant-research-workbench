@@ -117,6 +117,7 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
 def test_strategy_activity_loads_a_reviewable_history_window() -> None:
     container_source = (REPO_ROOT / "frontend" / "src" / "app" / "components" / "MarketScreenerContainers.tsx").read_text(encoding="utf-8")
     configuration_source = (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "configuration.ts").read_text(encoding="utf-8")
+    canvas_source = CANVAS_PAGE.read_text(encoding="utf-8")
 
     assert "Math.max(2_000, Math.min(settings.limit, 50_000))" in container_source
     assert "timeoutMs: runId ? 30000 : 10000" in container_source
@@ -125,6 +126,28 @@ def test_strategy_activity_loads_a_reviewable_history_window() -> None:
     assert "let historicalRetryAvailable = Boolean(runId);" in container_source
     assert "historicalRetryAvailable = false;" in container_source
     assert 'strategy_activity: { eventType: "", limit: 2_000' in configuration_source
+    assert "if (historicalRows !== undefined) return;" in container_source
+    assert "historicalRows={signalStreamRunId ? preview?.trading.strategy_activity ?? [] : undefined}" in canvas_source
+    assert "limit: 50_000" not in canvas_source.split("function strategyReplayRegistry", 1)[1].split("function normalizeInheritedLayouts", 1)[0]
+
+
+def test_completed_strategy_review_opens_chart_performance_and_audit_surfaces() -> None:
+    source = CANVAS_PAGE.read_text(encoding="utf-8")
+    replay_layout = source.split("const STRATEGY_REPLAY_CONTAINER_IDS", 1)[1].split("function normalizeInheritedLayouts", 1)[0]
+
+    assert '"charts_quotes"' in replay_layout
+    assert '"performance_journal"' in replay_layout
+    assert 'timeframe: "1s"' in replay_layout
+    assert '"indicator.macd"' in replay_layout
+    assert '"strategy.presentation"' in replay_layout
+    assert "run.tickers?.[0]" in replay_layout
+    assert "registry.linkAssignments.charts_quotes" in replay_layout
+    assert "[chartLinkGroup]: { ...registry.linkContexts[chartLinkGroup], symbol: ticker }" in replay_layout
+    assert 'chart: { ...chartsQuotesSettings.chart, ...(ticker ? { symbol: ticker } : {}), timeframe: "1s"' in replay_layout
+    assert "openIds.push(requiredKind)" in replay_layout
+    strategy_container_ids = replay_layout.split("= [", 1)[1].split("];", 1)[0]
+    for expensive_detail in ('"closed_trades"', '"orders"', '"fills"', '"portfolio"', '"signal_stream"', '"watchlist"'):
+        assert expensive_detail not in strategy_container_ids
 
 
 def test_backtest_workspaces_use_the_bounded_compact_viewport() -> None:

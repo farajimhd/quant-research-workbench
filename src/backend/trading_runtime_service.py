@@ -505,6 +505,7 @@ def strategy_activity_payload(
     event_type: str = "",
     limit: int = 500,
     include_decision_evidence: bool = True,
+    consequential_only: bool = False,
 ) -> dict[str, Any]:
     """Project the durable strategy journal into an operator-facing event list."""
     requested_limit = max(1, min(int(limit), 50_000))
@@ -514,6 +515,7 @@ def strategy_activity_payload(
         ticker=ticker.strip().upper(),
         as_of=as_of,
         limit=50_000 if event_type else requested_limit,
+        consequential_only=consequential_only,
     )
     rows: list[dict[str, Any]] = []
     seen_decision_entities: set[str] = set()

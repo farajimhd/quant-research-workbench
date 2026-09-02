@@ -64,6 +64,7 @@ export type CanvasReplayRun = {
     signal_stream_ids: string[];
     watchlist_ids: string[];
   };
+  tickers?: string[];
   watchlist_runtime?: {
     as_of?: string;
     status?: string;

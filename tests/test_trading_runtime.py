@@ -1111,6 +1111,17 @@ class JournalTests(unittest.TestCase):
             self.assertIn("+5.25% from squeeze anchor", occurrence["reason"])
             self.assertEqual(occurrence["reference_price"], 10.525)
             self.assertEqual(journal.strategy_activity_records(run_id="missing"), [])
+            consequential = strategy_activity_payload(
+                journal=journal,
+                run_id="run-a",
+                ticker="AAPL",
+                as_of=TS + timedelta(seconds=4),
+                consequential_only=True,
+            )
+            self.assertEqual(
+                [(row["event_type"], row["action"]) for row in consequential["rows"]],
+                [("decision", "enter_long"), ("signal", "Exact 5% Squeeze")],
+            )
             journal.close()
 
     def test_strategy_activity_compacts_unselected_structural_book_evidence(self) -> None:
