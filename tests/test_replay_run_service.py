@@ -2973,7 +2973,66 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
             event, evaluate_strategy=False
         )
 
-    async def test_market_event_evaluates_latest_indicators_without_claiming_bar_close(self) -> None:
+    async def test_flat_completed_frame_entry_skips_intrabar_evaluation(self) -> None:
+        now = datetime(2026, 8, 21, 4, 2, 57, tzinfo=NEW_YORK)
+        parameters = default_long_momentum_parameters()
+        parameters["structural_entry"]["selection_mode"] = (
+            "prior_completed_frame_top_n_below_session_high"
+        )
+        controller = ReplayRunController(
+            ReplayRunDefinition(
+                session_date=date(2026, 8, 21),
+                start_time=time(4, 0),
+                end_time=time(4, 12),
+                tickers=("SUGP",),
+                configuration_revision=approved_configuration(),
+                mode=RunMode.BACKTEST,
+            ),
+            runtime_root=Path(tempfile.gettempdir()),
+        )
+        assigned = StrategyAssignment(
+            assignment_id="sugp-flat-event-clock",
+            strategy_id=STRATEGY_ID,
+            strategy_revision=STRATEGY_REVISION,
+            account_id="DU123456",
+            ticker="SUGP",
+            conid=1,
+            status=AssignmentStatus.WATCHING,
+            permissions=StrategyPermissions(observe=True, enter=True),
+            parameters=parameters,
+            state={"liquidity_admitted_at": now.isoformat()},
+            created_at=now,
+            updated_at=now,
+        )
+        strategy = MagicMock()
+        strategy.assignments.return_value = (assigned,)
+        runtime = MagicMock()
+        runtime.process_account_strategy_observation = AsyncMock()
+        controller._strategy = strategy
+        controller._runtime = runtime
+        controller._strategy_engaged_tickers.add("SUGP")
+        controller._latest_strategy_observations["SUGP"] = StrategyObservation(
+            ticker="SUGP",
+            observed_at=now,
+            price=3.44,
+            source_timeframe="1s",
+            source_values={"large_structural_book": [{"level": index} for index in range(256)]},
+        )
+        event = _debug_market_events(({
+            "kind": "trade",
+            "ticker": "SUGP",
+            "ts": "2026-08-21T04:02:57.250-04:00",
+            "sequence": 90,
+            "price": 3.47,
+            "size": 100,
+        },))[0]
+
+        processed = await controller._process_strategy_market_event(event)
+
+        self.assertFalse(processed)
+        runtime.process_account_strategy_observation.assert_not_awaited()
+
+    async def test_managed_position_market_event_evaluates_latest_indicators_without_claiming_bar_close(self) -> None:
         now = datetime(2026, 8, 21, 4, 2, 57, tzinfo=NEW_YORK)
         controller = ReplayRunController(
             ReplayRunDefinition(
@@ -2993,7 +3052,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
             account_id="DU123456",
             ticker="SUGP",
             conid=1,
-            status=AssignmentStatus.WATCHING,
+            status=AssignmentStatus.MANAGING,
             permissions=StrategyPermissions(observe=True, enter=True),
             parameters=default_long_momentum_parameters(),
             state={"liquidity_admitted_at": now.isoformat()},

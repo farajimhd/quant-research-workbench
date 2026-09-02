@@ -3210,6 +3210,30 @@ class ReplayRunController:
         base = self._latest_strategy_observations.get(event.ticker)
         if base is None or event.ticker not in self._strategy_engaged_tickers:
             return False
+        ticker_assignments = tuple(
+            assignment
+            for assignment in self._strategy.assignments()
+            if assignment.ticker == event.ticker
+        )
+        if ticker_assignments and all(
+            assignment.status
+            in {AssignmentStatus.WATCHING, AssignmentStatus.REENTRY_COOLDOWN}
+            and str(
+                dict(assignment.parameters.get("structural_entry") or {}).get(
+                    "selection_mode"
+                )
+                or ""
+            ).lower()
+            == "prior_completed_frame_top_n_below_session_high"
+            for assignment in ticker_assignments
+        ):
+            # This entry contract intentionally admits only a crossing between
+            # consecutive completed one-second frames. Raw trades remain the
+            # forming-MACD authority while a position or entry is active, but
+            # reevaluating them while unequivocally flat cannot create a legal
+            # entry. Avoid deep-copying the structural level book on every
+            # high-density print while waiting for the next completed frame.
+            return False
         quote = self._quotes.get(event.ticker)
         price = float(event.price) if isinstance(event, TradeEvent) else float(base.price)
         if price <= 0:
@@ -3283,11 +3307,6 @@ class ReplayRunController:
             source_values=source_values,
         )
         self._latest_strategy_observations[event.ticker] = observation
-        ticker_assignments = tuple(
-            assignment
-            for assignment in self._strategy.assignments()
-            if assignment.ticker == event.ticker
-        )
         await self._evaluate_strategy_observation(observation, ticker_assignments)
         return True
 
