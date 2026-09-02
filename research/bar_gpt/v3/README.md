@@ -47,6 +47,35 @@ decision is stored in `artifacts/global_checkpoint_selection.json`.
 The complete validation panel remains the global authority. Per-chunk panels
 remain local stopping signals and must not be compared across chunks.
 
+### Completed-run checkpoint comparison
+
+`compare_full_training_checkpoints.py` re-evaluates four distinct checkpoints
+on every origin in the completed run's frozen validation panel: the first
+immutable global checkpoint, the global trade-close MAE leader, the global
+trade-range MAE leader, and the last immutable outer-epoch checkpoint. It
+verifies checkpoint and manifest hashes, runs the existing v3 evaluator
+sequentially, resumes from hash-bound cached results, and writes both the macro
+scorecard and the complete metric payload under the external run directory.
+
+Preview and verify the selection without using the GPU:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -m research.bar_gpt.v3.compare_full_training_checkpoints
+```
+
+Run all four complete-panel evaluations on the workstation:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -m research.bar_gpt.v3.compare_full_training_checkpoints --execute
+```
+
+The default output is
+`<run-root>/checkpoint_comparison_full_validation_v1/comparison.json` and
+`comparison.csv`. W&B logging is disabled by default and can be explicitly
+enabled with `--wandb-mode online`.
+
 ## Production launcher
 
 ```powershell
