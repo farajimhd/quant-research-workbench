@@ -755,6 +755,18 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(reviewable_wait["action"], "wait")
                 self.assertEqual(reviewable_wait["decision_evidence"], "")
                 self.assertFalse(reviewable_wait["gate_snapshot"]["execution_quality"]["checks"]["current_spread"])
+                self.assertFalse(
+                    any(
+                        row.get("entity_id") == "reviewable-wait"
+                        for row in trading["strategy_chart_activity"]
+                    )
+                )
+                self.assertTrue(
+                    any(
+                        row.get("action") == "enter_long"
+                        for row in trading["strategy_chart_activity"]
+                    )
+                )
                 self.assertTrue(
                     any(
                         row.get("action") == "enter_long"
@@ -857,6 +869,95 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 if controller._journal is not None:
                     controller._journal.close()
+
+    async def test_completed_review_does_not_require_retired_strategy_executor(self) -> None:
+        assignment = {
+            "assignment_id": "archived-aapl",
+            "account_key": "primary",
+            "ticker": "AAPL",
+            "conid": 265598,
+            "status": "watching",
+            "permissions": {
+                "observe": True,
+                "enter": True,
+                "add": True,
+                "reduce": True,
+                "exit": True,
+                "reenter": True,
+            },
+            "parameters": default_long_momentum_parameters(),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = ReplayRunController(
+                ReplayRunDefinition(
+                    session_date=date(2026, 7, 28),
+                    start_time=time(9, 45),
+                    mode=RunMode.BACKTEST,
+                    tickers=("AAPL",),
+                    configuration_revision=approved_configuration(
+                        assignments=[assignment]
+                    ),
+                ),
+                runtime_root=root,
+            )
+            source._journal = TradingJournal(root / "source.sqlite3")
+            await source._initialize_runtime(
+                record_configuration=False,
+                record_lifecycle=False,
+            )
+            state = source._restart_checkpoint_state()
+            state["controller"]["source_cursor"] = {"market": "completed"}
+            source._journal.close()
+
+            archived_configuration = approved_configuration(assignments=[assignment])
+            archived_configuration["payload"]["strategy"]["revision"] = 25
+            for row in state["assignments"]:
+                row["strategy_revision"] = 25
+            review = ReplayRunController(
+                ReplayRunDefinition(
+                    session_date=date(2026, 7, 28),
+                    start_time=time(9, 45),
+                    mode=RunMode.BACKTEST,
+                    tickers=("AAPL",),
+                    configuration_revision=archived_configuration,
+                ),
+                run_id=source.run_id,
+                runtime_root=root,
+                resume_state=state,
+            )
+            review._journal = TradingJournal(root / "review.sqlite3")
+            try:
+                with patch(
+                    "src.backend.replay_run_service.strategy_executor",
+                    side_effect=AssertionError("review loaded executor"),
+                ):
+                    await review._initialize_runtime(
+                        record_configuration=False,
+                        record_lifecycle=False,
+                        review_only=True,
+                    )
+                self.assertEqual(review._strategy.revision, 25)
+                self.assertEqual(
+                    review._strategy.assignments()[0].strategy_revision,
+                    25,
+                )
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "Completed review cannot execute",
+                ):
+                    await review._strategy.on_event(
+                        _debug_market_events(({
+                            "kind": "quote",
+                            "ticker": "AAPL",
+                            "ts": "2026-07-28T09:45:00-04:00",
+                            "bid_price": 101.99,
+                            "ask_price": 102.01,
+                        },))[0],
+                        "SIM-01-primary",
+                    )
+            finally:
+                review._journal.close()
 
     async def test_service_restores_complete_debug_checkpoint(self) -> None:
         class StopAfterFirstEvent(ReplayRunController):

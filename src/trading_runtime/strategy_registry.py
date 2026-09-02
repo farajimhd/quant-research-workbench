@@ -138,6 +138,7 @@ def _ensure_builtin_executors() -> None:
             return
         from src.trading_runtime.strategy_engine import (
             AssignedLongMomentumStrategy,
+            HISTORICAL_STRATEGY_REVISIONS,
             LongMomentumStrategyEngine,
             STRATEGY_ID,
             STRATEGY_REVISION,
@@ -148,20 +149,28 @@ def _ensure_builtin_executors() -> None:
             strategy_rule_timeframes,
         )
 
-        register_strategy_executor(
-            StrategyExecutorRegistration(
-                strategy_id=STRATEGY_ID,
-                revision=STRATEGY_REVISION,
-                implementation=(
-                    "src.trading_runtime.strategy_engine.LongMomentumStrategyEngine"
-                ),
-                definition_factory=long_momentum_strategy_definition,
-                parameter_resolver=resolve_long_momentum_parameters,
-                strategy_factory=AssignedLongMomentumStrategy,
-                input_catalog_factory=strategy_input_catalog,
-                timeframe_resolver=strategy_rule_timeframes,
-                observation_projector=strategy_observation_source_values,
-                assignment_evaluator=LongMomentumStrategyEngine().evaluate,
+        for revision in (*HISTORICAL_STRATEGY_REVISIONS, STRATEGY_REVISION):
+            register_strategy_executor(
+                StrategyExecutorRegistration(
+                    strategy_id=STRATEGY_ID,
+                    revision=revision,
+                    implementation=(
+                        "src.trading_runtime.strategy_engine.LongMomentumStrategyEngine"
+                    ),
+                    definition_factory=lambda revision=revision: long_momentum_strategy_definition(
+                        revision=revision
+                    ),
+                    parameter_resolver=resolve_long_momentum_parameters,
+                    strategy_factory=lambda assignments, revision=revision: AssignedLongMomentumStrategy(
+                        assignments,
+                        revision=revision,
+                    ),
+                    input_catalog_factory=strategy_input_catalog,
+                    timeframe_resolver=strategy_rule_timeframes,
+                    observation_projector=strategy_observation_source_values,
+                    assignment_evaluator=LongMomentumStrategyEngine(
+                        revision=revision
+                    ).evaluate,
+                )
             )
-        )
         _BUILTINS_REGISTERED = True

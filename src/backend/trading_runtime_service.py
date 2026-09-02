@@ -515,8 +515,9 @@ def strategy_activity_payload(
         strategy_id=strategy_id.strip(),
         run_id=run_id.strip(),
         ticker=ticker.strip().upper(),
+        event_type=event_type.strip(),
         as_of=as_of,
-        limit=50_000 if event_type else requested_limit,
+        limit=requested_limit,
         consequential_only=consequential_only,
     )
     rows: list[dict[str, Any]] = []
@@ -553,11 +554,16 @@ def strategy_activity_payload(
             key: value
             for key, value in {
                 "reference_price": metadata.get("reference_price") or payload.get("reference_price"),
+                "quantity": metadata.get("quantity") or payload.get("quantity"),
                 "macd_line": metadata.get("macd_line"),
                 "macd_signal": metadata.get("macd_signal"),
+                "invalidation_price": payload.get("invalidation_price"),
                 "initial_stop": metadata.get("initial_stop"),
+                "active_stop": metadata.get("active_stop"),
                 "level_price": metadata.get("level_price"),
                 "profit_targets": metadata.get("profit_targets"),
+                "profit_target": metadata.get("profit_target"),
+                "previous_profit_target": metadata.get("previous_profit_target"),
                 "forming_candle": metadata.get("forming_candle"),
                 "completed_candle": metadata.get("completed_candle"),
                 "entry_frame": metadata.get("entry_frame"),
@@ -725,6 +731,32 @@ def _compact_strategy_gate_snapshot(
                 )
                 if level.get(key) is not None
             }
+        prior_levels = trigger.get("prior_snapshot_levels")
+        if isinstance(prior_levels, (list, tuple)):
+            compact_trigger["prior_snapshot_levels"] = [
+                {
+                    key: row[key]
+                    for key in (
+                        "unified_level_id",
+                        "side",
+                        "price",
+                        "lower",
+                        "upper",
+                        "entry_boundary",
+                        "threshold_price",
+                        "hold_probability",
+                        "confidence",
+                        "salience",
+                    )
+                    if row.get(key) is not None
+                }
+                for row in prior_levels[:3]
+                if isinstance(row, dict)
+            ]
+        if trigger.get("prior_snapshot_selected_at") is not None:
+            compact_trigger["prior_snapshot_selected_at"] = trigger[
+                "prior_snapshot_selected_at"
+            ]
         result["unified_structural_trigger"] = compact_trigger
     return result
 

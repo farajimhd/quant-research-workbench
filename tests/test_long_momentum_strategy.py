@@ -439,6 +439,20 @@ class LongMomentumStrategyTests(unittest.TestCase):
 
         self.assertEqual(result.evaluation.signals[0].action, "enter_long")
 
+    def test_revision_26_executor_preserves_positive_signal_requirement(self) -> None:
+        historical = replace(assignment(), strategy_revision=26)
+
+        result = LongMomentumStrategyEngine(revision=26).evaluate(
+            historical,
+            confirmed_observation(
+                macd_line=0.10,
+                macd_signal=-0.20,
+                macd_histogram=0.30,
+            ),
+        )
+
+        self.assertEqual(result.evaluation.signals[0].action, "wait")
+
     def test_entry_engine_invariant_requires_exact_positive_open_one_second_macd(self) -> None:
         parameters = default_long_momentum_parameters()
         parameters["entry_rules"]["confirmation"] = {

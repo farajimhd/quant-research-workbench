@@ -123,6 +123,35 @@ _PREPARED_FRAME_CACHE_LOCKS: WeakValueDictionary[str, asyncio.Lock] = (
 )
 
 
+class _CompletedReviewStrategy:
+    """Immutable assignment projection for a completed historical review.
+
+    Completed review reconstructs broker/portfolio state from the journal and
+    checkpoint. It must not load or execute the strategy implementation that
+    originally produced that state: older immutable runs remain reviewable
+    after their executor is retired, while resumable runs still fail closed on
+    an unavailable executor.
+    """
+
+    automatic = True
+
+    def __init__(
+        self,
+        strategy_id: str,
+        revision: int,
+        assignments: Sequence[StrategyAssignment],
+    ) -> None:
+        self.strategy_id = strategy_id
+        self.revision = revision
+        self._assignments = tuple(assignments)
+
+    def assignments(self) -> tuple[StrategyAssignment, ...]:
+        return self._assignments
+
+    async def on_event(self, event: MarketEvent, account_id: str) -> Any:
+        raise RuntimeError("Completed review cannot execute a Strategy")
+
+
 @dataclass(slots=True)
 class _ProvisionalMacdState:
     """Causal completed-bar MACD state with a non-committing intrabar preview."""
@@ -1829,6 +1858,22 @@ class ReplayRunController:
             trading["strategy_activity"] = activity_rows
             self._canvas_state_cache = (now, trading)
         ticker = _ticker(symbol)
+        chart_activity_rows = self.strategy_activity_snapshot(
+            as_of=self.current_time or self.definition.requested_start,
+            ticker=ticker,
+            event_type="decision",
+            limit=50_000,
+            include_decision_evidence=False,
+            consequential_only=True,
+        )["rows"]
+        # Chart overlays need every consequential lifecycle decision, while
+        # the operator table deliberately remains a rolling 2,000-row window.
+        # Keep this symbol-scoped projection separate so a long session cannot
+        # force the browser to ingest every routine wait observation.
+        trading = {
+            **trading,
+            "strategy_chart_activity": chart_activity_rows,
+        }
         strategy_records = list(trading.get("strategy_activity") or [])
         assignments = (
             [assignment.payload() for assignment in self._strategy.assignments()]
@@ -2386,7 +2431,14 @@ class ReplayRunController:
                 )
                 for row in source_assignments
             ]
-        if strategy_enabled:
+        if strategy_enabled and review_only:
+            self._strategy_registration = None
+            self._strategy = _CompletedReviewStrategy(
+                str(strategy_configuration["strategy_id"]),
+                int(strategy_configuration["revision"]),
+                assignments,
+            )
+        elif strategy_enabled:
             self._strategy_registration = strategy_executor(
                 str(strategy_configuration["strategy_id"]),
                 int(strategy_configuration["revision"]),
@@ -2536,14 +2588,14 @@ class ReplayRunController:
             review_only=review_only,
         )
         if self._resume_state is not None:
-            self._restore_restart_checkpoint()
+            self._restore_restart_checkpoint(review_only=review_only)
         if not review_only:
             self._runtime.persist_strategy_assignments(
                 self.current_time or self.definition.requested_start,
                 record_events=False,
             )
 
-    def _restore_restart_checkpoint(self) -> None:
+    def _restore_restart_checkpoint(self, *, review_only: bool = False) -> None:
         if self._runtime is None or self._resume_state is None:
             raise RuntimeError("Restart runtime is not initialized")
         state = self._resume_state
@@ -2581,6 +2633,10 @@ class ReplayRunController:
                 else None
             ),
         }
+        if review_only:
+            # The producing executor remains durable provenance, but it is not
+            # a serving dependency for an immutable completed-run review.
+            expected_identity["strategy_executor"] = identity.get("strategy_executor")
         if identity != expected_identity:
             raise ValueError("Historical restart checkpoint identity changed")
         controller = state.get("controller")

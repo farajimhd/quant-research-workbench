@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timezone
 
+from src.trading_runtime.strategy_engine import (
+    AssignmentStatus,
+    STRATEGY_ID,
+    StrategyAssignment,
+    StrategyPermissions,
+)
 from src.trading_runtime.strategy_registry import (
     StrategyExecutorRegistration,
     installed_strategy_definitions,
@@ -49,6 +56,39 @@ class StrategyExecutorRegistryTests(unittest.TestCase):
     def test_unregistered_revision_fails_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "No installed Strategy executor"):
             strategy_executor("test-dynamic-strategy", 3)
+
+    def test_builtin_historical_revision_26_remains_executable(self) -> None:
+        registration = strategy_executor(STRATEGY_ID, 26)
+        assignment = StrategyAssignment(
+            assignment_id="historical-26",
+            strategy_id=STRATEGY_ID,
+            strategy_revision=26,
+            account_id="SIM",
+            ticker="SUGP",
+            conid=1,
+            status=AssignmentStatus.WATCHING,
+            permissions=StrategyPermissions(enter=True),
+            parameters=registration.parameter_resolver({}),
+            state={},
+            source="test",
+            created_at=datetime(2026, 8, 21, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 8, 21, tzinfo=timezone.utc),
+        )
+
+        executor = registration.strategy_factory([assignment])
+
+        self.assertEqual(executor.revision, 26)
+        definition = registration.definition()
+        self.assertEqual(definition["revision"], 26)
+        macd_group = next(
+            row
+            for row in definition["config"]["parameters"]["entry_rules"]["confirmation"]["groups"]
+            if row["group_id"] == "macd-confirmation"
+        )
+        self.assertIn(
+            "macd-signal-positive",
+            [row["condition_id"] for row in macd_group["conditions"]],
+        )
 
 
 if __name__ == "__main__":

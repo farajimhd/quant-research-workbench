@@ -77,7 +77,7 @@ const rendererDataCache = new WeakMap<object, RendererDataCache>();
 type Region = { start: number; end: number; color: string; label: string };
 type TradeLabelPart = { text: string; tone?: "label" | "price" | "pnlLoss" | "pnlWin" | "reason" | "separator" | "size" };
 type TradeFillAnnotation = {
-  kind?: "add" | "profit_target" | "protective_stop" | "trailing_stop" | "position_exit";
+  kind?: "add" | "profit_target" | "protective_stop" | "trailing_stop" | "position_exit" | "stop_change" | "target_change";
   label?: string;
   labelParts?: TradeLabelPart[];
   price: number;
@@ -100,10 +100,13 @@ type TradeAnnotation = {
   exitPrice: number;
   exitTime: number;
   fills?: TradeFillAnnotation[];
+  guideStartTime?: number;
   id: string;
+  levelPrices?: number[];
   pnl?: number;
   selected?: boolean;
   stopPrice?: number;
+  targetPrices?: number[];
   triggerPrice?: number;
 };
 type ChartPreset = "micro" | "tactical" | "context" | "axis-history" | "swing-rails";
@@ -6051,6 +6054,12 @@ function drawTradeAnnotationPrimitiveGeometry(
     if (entryX === null || exitX === null || entryY === null || exitY === null) return;
     const span = clippedTradeSpan(entryX, exitX, width);
     if (!span) return;
+    const guideStartX = annotation.guideStartTime === undefined
+      ? entryX
+      : xForAnnotationTime(chart, annotation.guideStartTime, candles);
+    const guideSpan = guideStartX === null
+      ? span
+      : clippedTradeSpan(guideStartX, exitX, width) ?? span;
     const entryColor = validHexColor(annotation.entryColor, "#16a34a");
     const exitColor = validHexColor(annotation.exitColor, "#dc2626");
     const lineWidth = annotation.selected ? 3 : 2;
@@ -6088,8 +6097,17 @@ function drawTradeAnnotationPrimitiveGeometry(
     });
     if (typeof annotation.stopPrice === "number" && Number.isFinite(annotation.stopPrice)) {
       const y = priceSeries.priceToCoordinate(annotation.stopPrice);
-      if (y !== null) drawCanvasTradeGuide(context, span.left, span.right, y, "#dc2626", "Stop", chartBackground, width, height);
+      if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, "#dc2626", "SL", chartBackground, width, height);
     }
+    const neutralGuideColor = validHexColor(readChartPalette().text, "#111827");
+    annotation.levelPrices?.slice(0, 3).forEach((price, index) => {
+      const y = priceSeries.priceToCoordinate(price);
+      if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, neutralGuideColor, `L${index + 1}`, chartBackground, width, height);
+    });
+    annotation.targetPrices?.forEach((price, index) => {
+      const y = priceSeries.priceToCoordinate(price);
+      if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, neutralGuideColor, annotation.targetPrices?.length === 1 ? "TP" : `TP${index + 1}`, chartBackground, width, height);
+    });
     if (typeof annotation.triggerPrice === "number" && Number.isFinite(annotation.triggerPrice)) {
       const y = priceSeries.priceToCoordinate(annotation.triggerPrice);
       if (y !== null) drawCanvasTradeGuide(context, span.left, span.right, y, "#2563eb", "Trigger", chartBackground, width, height);
@@ -6167,7 +6185,9 @@ function drawCanvasPositionAdjustment(
   width: number,
   height: number,
 ) {
-  const color = fill.side === "BUY" ? "#16a34a" : "#dc2626";
+  const color = fill.kind === "target_change"
+    ? validHexColor(readChartPalette().text, "#111827")
+    : fill.side === "BUY" ? "#16a34a" : "#dc2626";
   context.beginPath();
   context.strokeStyle = rgbaFromHex(color, 0.86);
   context.lineWidth = 1.5;
@@ -6189,9 +6209,11 @@ function drawCanvasPositionAdjustment(
       protective_stop: "Stop",
       trailing_stop: "Trail",
       position_exit: "Exit",
+      stop_change: "SL",
+      target_change: "TP",
     }[fill.kind ?? "position_exit"]),
     x - 45,
-    y - 8,
+    y + 5,
     color,
     background,
     "right",

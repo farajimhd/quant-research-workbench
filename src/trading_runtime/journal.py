@@ -942,6 +942,7 @@ class TradingJournal:
         strategy_id: str = "",
         run_id: str = "",
         ticker: str = "",
+        event_type: str = "",
         as_of: datetime | None = None,
         limit: int = 2000,
         consequential_only: bool = False,
@@ -971,6 +972,23 @@ class TradingJournal:
         if ticker:
             clauses.append("upper(json_extract(payload_json, '$.ticker')) = ?")
             values.append(ticker.upper())
+        if event_type:
+            event_categories = {
+                "signal": ("market_discovery_signal",),
+                "watchlist": ("watchlist_membership",),
+                "decision": ("strategy", "strategy_decision"),
+                "campaign_state": ("strategy", "strategy_decision"),
+                "order": ("order_management",),
+            }.get(event_type)
+            if event_categories is None:
+                raise ValueError(f"Unknown Strategy Activity event type: {event_type}")
+            placeholders = ",".join("?" for _ in event_categories)
+            clauses.append(f"category IN ({placeholders})")
+            values.extend(event_categories)
+            if event_type == "decision":
+                clauses.append("entity_type <> 'strategy_assignment_state'")
+            elif event_type == "campaign_state":
+                clauses.append("entity_type = 'strategy_assignment_state'")
         if as_of is not None:
             clauses.append("event_time <= ?")
             values.append(as_of.astimezone(timezone.utc).isoformat())

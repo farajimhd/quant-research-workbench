@@ -102,12 +102,21 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
 
     assert "trade_annotations: showTradeAnnotations ? positionLifecycleAnnotations(trading, linkContext.symbol) : []" in chart_source
     assert "trading?.position_lifecycles" in chart_source
+    assert "trading?.strategy_chart_activity ?? trading?.strategy_activity" in chart_source
+    assert "guideStartTime: planStartTime" in chart_source
+    assert "prior_snapshot_levels" in chart_source
+    assert "combined_entry_boundary" in chart_source
+    assert "levelPrices" in chart_source
+    assert "targetPrices" in chart_source
+    assert 'label: `SL@${compactPrice(nextStop)}`' in chart_source
+    assert 'label: `TP@${compactPrice(nextTarget)}`' in chart_source
+    assert 'return `${name}${formatQuantity(quantity)}@${compactPrice(price)}`' in chart_source
     assert "execution_annotations: []" in chart_source
     assert "positionExecutionActions" in chart_source
     assert '"Long" : "Short"' not in chart_source
     assert '"Short" : "Long"' in chart_source
     assert "actions.slice(1, -1)" in chart_source
-    assert 'profit_target: "Target filled"' in chart_source
+    assert 'profit_target: "TP"' in chart_source
     assert 'if (reason.includes("macd")) return "MACD exit"' in chart_source
     assert 'if (reason.includes("stop")) return "Stop exit"' in chart_source
     assert 'if (reason.includes("target") || fallbackKind === "profit_target") return "Target filled"' in chart_source
@@ -123,6 +132,11 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert "candleSeries.attachPrimitive(tradeAnnotationPrimitive)" in renderer_source
     assert "tradeAnnotationPrimitiveRef.current?.setState" in renderer_source
     assert "drawTradeAnnotationPrimitiveGeometry" in renderer_source
+    assert 'const neutralGuideColor = validHexColor(readChartPalette().text, "#111827")' in renderer_source
+    assert 'context.setLineDash([4, 3])' in renderer_source
+    assert 'drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, "#dc2626", "SL"' in renderer_source
+    assert 'annotation.levelPrices?.slice(0, 3)' in renderer_source
+    assert 'annotation.targetPrices?.forEach' in renderer_source
     assert "const ratio = clampNumber((time - leftCandle.time) / duration" in renderer_source
     assert "return leftX + (rightX - leftX) * ratio" in renderer_source
     assert "The triangle tip is the exact event-time / execution-price coordinate" in renderer_source

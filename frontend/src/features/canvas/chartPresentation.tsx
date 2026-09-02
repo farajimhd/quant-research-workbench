@@ -330,11 +330,18 @@ function formatSplitPart(value: number) {
   return Number.isInteger(value) ? String(value) : value.toLocaleString(undefined, { maximumFractionDigits: 4 });
 }
 
-function positionLifecycleAnnotations(trading: CanonicalTradingPreview | undefined, symbol: string): NonNullable<ChartPayload["trade_annotations"]> {
+export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | undefined, symbol: string): NonNullable<ChartPayload["trade_annotations"]> {
   const executionsById = new Map((trading?.executions ?? []).map((row) => [String(row.execution_id || ""), row]));
   const normalizedSymbol = symbol.toUpperCase();
-  return (trading?.position_lifecycles ?? []).flatMap((row) => {
-    if (String(nestedValue(row, "instrument", "symbol") || "").toUpperCase() !== normalizedSymbol) return [];
+  const activity = (trading?.strategy_chart_activity ?? trading?.strategy_activity ?? [])
+    .filter((row) => String(row.ticker || "").toUpperCase() === normalizedSymbol)
+    .map((row) => ({ row, time: Date.parse(String(row.event_time || "")) / 1000 }))
+    .filter(({ time }) => Number.isFinite(time))
+    .sort((left, right) => left.time - right.time);
+  const lifecycles = (trading?.position_lifecycles ?? [])
+    .filter((row) => String(nestedValue(row, "instrument", "symbol") || "").toUpperCase() === normalizedSymbol)
+    .sort((left, right) => Date.parse(String(left.opened_at || "")) - Date.parse(String(right.opened_at || "")));
+  return lifecycles.flatMap((row, lifecycleIndex) => {
     if (String(row.status || "").toLowerCase() !== "closed") return [];
     const side = String(row.side || "LONG").toUpperCase();
     const executionIds = Array.isArray(row.execution_ids) ? row.execution_ids.map(String) : [];
@@ -349,10 +356,43 @@ function positionLifecycleAnnotations(trading: CanonicalTradingPreview | undefin
     const entryTime = entryAction?.time ?? Date.parse(String(row.opened_at || "")) / 1000;
     const exitTime = exitAction?.time ?? Date.parse(String(row.closed_at || "")) / 1000;
     if (![entryPrice, exitPrice, entryTime, exitTime].every(Number.isFinite) || entryPrice <= 0 || exitPrice <= 0) return [];
+    const previousCloseTime = lifecycleIndex > 0
+      ? Date.parse(String(lifecycles[lifecycleIndex - 1].closed_at || "")) / 1000
+      : Number.NEGATIVE_INFINITY;
+    const entryDecision = [...activity].reverse().find(({ row: event, time }) =>
+      String(event.action || "") === "enter_long"
+      && time > previousCloseTime
+      && time <= entryTime,
+    );
+    const gateSnapshot = (entryDecision?.row.gate_snapshot as PreviewRow | undefined) ?? {};
+    const decisionValues = (gateSnapshot.decision_values as PreviewRow | undefined) ?? {};
+    const structuralTrigger = (gateSnapshot.unified_structural_trigger as PreviewRow | undefined) ?? {};
+    const priorLevels = Array.isArray(structuralTrigger.prior_snapshot_levels)
+      ? structuralTrigger.prior_snapshot_levels as PreviewRow[]
+      : structuralTrigger.level ? [structuralTrigger.level as PreviewRow] : [];
+    const levelPrices = uniquePositivePrices(priorLevels.map((level) =>
+      level.entry_boundary
+      ?? level.combined_entry_boundary
+      ?? level.unified_break_boundary
+      ?? level.threshold_price
+      ?? level.price
+      ?? level.upper,
+    )).slice(0, 3);
+    const targetSelection = (gateSnapshot.profit_target_selection as PreviewRow | undefined) ?? {};
+    const selectedTargets = Array.isArray(targetSelection.selected_target_prices)
+      ? targetSelection.selected_target_prices
+      : [];
+    const targetPrices = uniquePositivePrices(
+      Array.isArray(decisionValues.profit_targets)
+        ? decisionValues.profit_targets
+        : selectedTargets,
+    );
+    const stopPrice = positiveNumber(decisionValues.initial_stop ?? decisionValues.invalidation_price);
+    const planStartTime = entryDecision?.time ?? entryTime;
     const quantity = Math.abs(Number(row.quantity || 0));
     const pnl = Number(row.net_pnl || row.gross_pnl || 0);
     const openingSide = side === "SHORT" ? "SELL" : "BUY";
-    const fills = actions.slice(1, -1).map((action) => {
+    const fills: NonNullable<NonNullable<ChartPayload["trade_annotations"]>[number]["fills"]> = actions.slice(1, -1).map((action) => {
       const kind = action.side === openingSide
         ? "add" as const
         : normalizedExecutionRole(action.executionRole, action.price, entryPrice, side);
@@ -366,6 +406,24 @@ function positionLifecycleAnnotations(trading: CanonicalTradingPreview | undefin
         time: action.time,
       };
     });
+    let activeStop = stopPrice;
+    let activeTarget = targetPrices[0];
+    activity.forEach(({ row: event, time }) => {
+      if (time <= planStartTime || time >= exitTime) return;
+      const eventGates = (event.gate_snapshot as PreviewRow | undefined) ?? {};
+      const values = (eventGates.decision_values as PreviewRow | undefined) ?? {};
+      const nextStop = positiveNumber(values.active_stop ?? values.invalidation_price);
+      if (nextStop !== undefined && nextStop !== activeStop) {
+        activeStop = nextStop;
+        fills.push({ kind: "stop_change", label: `SL@${compactPrice(nextStop)}`, price: nextStop, side: "SELL", time });
+      }
+      const nextTarget = positiveNumber(values.profit_target);
+      if (String(event.action || "") === "replace_profit_target" && nextTarget !== undefined && nextTarget !== activeTarget) {
+        activeTarget = nextTarget;
+        fills.push({ kind: "target_change", label: `TP@${compactPrice(nextTarget)}`, price: nextTarget, side: "SELL", time });
+      }
+    });
+    fills.sort((left, right) => left.time - right.time);
     const entryQuantity = entryAction?.quantity ?? quantity;
     const exitQuantity = exitAction?.quantity || quantity;
     const exitKind = exitAction
@@ -383,10 +441,27 @@ function positionLifecycleAnnotations(trading: CanonicalTradingPreview | undefin
       exitPrice,
       exitTime,
       fills,
+      guideStartTime: planStartTime,
       id: String(row.lifecycle_id || `${normalizedSymbol}:${entryTime}:${exitTime}`),
+      levelPrices,
       pnl,
+      stopPrice,
+      targetPrices,
     }];
   });
+}
+
+function positiveNumber(value: unknown): number | undefined {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : undefined;
+}
+
+function uniquePositivePrices(values: unknown[]): number[] {
+  return [...new Set(values.map(positiveNumber).filter((value): value is number => value !== undefined))];
+}
+
+function compactPrice(value: number): string {
+  return value.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
 }
 
 function positionExitLabel(exitReason: string, fallbackKind: string): string {
@@ -460,13 +535,13 @@ function positionActionLabel(
   price: number,
 ): string {
   const name = {
-    add: "Add",
-    profit_target: "Target filled",
-    protective_stop: "Stop filled",
-    trailing_stop: "Trail filled",
-    position_exit: "Exit filled",
+    add: "A",
+    profit_target: "TP",
+    protective_stop: "SL",
+    trailing_stop: "TSL",
+    position_exit: "X",
   }[kind];
-  return `${name} ${formatQuantity(quantity)} @ ${price.toFixed(2)}`;
+  return `${name}${formatQuantity(quantity)}@${compactPrice(price)}`;
 }
 
 function signedMoneyShort(value: number): string {

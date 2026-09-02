@@ -35,6 +35,7 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 STRATEGY_ID = "long-momentum-campaign"
 STRATEGY_REVISION = 27
+HISTORICAL_STRATEGY_REVISIONS = (26,)
 
 RULE_COMPARATORS = {
     "above_by_bps",
@@ -337,12 +338,32 @@ class StrategyEngineResult:
     evaluation_payload: dict[str, Any]
 
 
-def long_momentum_strategy_definition() -> dict[str, Any]:
+def long_momentum_strategy_definition(
+    *, revision: int = STRATEGY_REVISION
+) -> dict[str, Any]:
     """Canonical built-in definition and optimization space for the first post-refactor strategy."""
+    if revision not in {*HISTORICAL_STRATEGY_REVISIONS, STRATEGY_REVISION}:
+        raise ValueError(f"Unsupported Long Momentum Strategy revision: {revision}")
     parameters = default_long_momentum_parameters()
+    if revision == 26:
+        macd_conditions = next(
+            row
+            for row in parameters["entry_rules"]["confirmation"]["groups"]
+            if row.get("group_id") == "macd-confirmation"
+        )["conditions"]
+        macd_conditions.insert(
+            2,
+            _condition(
+                "macd-signal-positive",
+                "indicator.macd.signal",
+                "5s",
+                "greater_than",
+                value=0,
+            ),
+        )
     return {
         "strategy_id": STRATEGY_ID,
-        "revision": STRATEGY_REVISION,
+        "revision": revision,
         "name": "Long Momentum Campaign",
         "implementation": "src.trading_runtime.strategy_engine.LongMomentumStrategyEngine",
         "automatic": True,
@@ -926,6 +947,8 @@ def _numeric_source_value(
 def _exact_positive_open_macd(
     observation: StrategyObservation,
     timeframe: str = "1s",
+    *,
+    require_positive_signal: bool = False,
 ) -> tuple[bool, dict[str, float | None]]:
     line = _numeric_source_value(observation, "indicator.macd.line", timeframe)
     signal = _numeric_source_value(observation, "indicator.macd.signal", timeframe)
@@ -935,6 +958,7 @@ def _exact_positive_open_macd(
         and signal is not None
         and line > signal
         and line > 0
+        and (not require_positive_signal or signal > 0)
     ), evidence
 
 
@@ -1846,7 +1870,16 @@ def _entry_rule_result_with_unified_trigger(
 class LongMomentumStrategyEngine:
     """Deterministic long-only policy engine over causal point-in-time observations."""
 
+    def __init__(self, *, revision: int = STRATEGY_REVISION) -> None:
+        if revision not in {*HISTORICAL_STRATEGY_REVISIONS, STRATEGY_REVISION}:
+            raise ValueError(f"Unsupported Long Momentum Strategy revision: {revision}")
+        self.revision = revision
+
     def evaluate(self, assignment: StrategyAssignment, observation: StrategyObservation) -> StrategyEngineResult:
+        if assignment.strategy_revision != self.revision:
+            raise ValueError(
+                "Strategy assignment revision does not match Long Momentum executor revision"
+            )
         if assignment.ticker.upper() != observation.ticker.upper():
             raise ValueError("Observation ticker does not match strategy assignment")
         state = dict(assignment.state)
@@ -2260,7 +2293,9 @@ class LongMomentumStrategyEngine:
         # positive and open: line > signal and line > 0. The signal line may
         # still be below zero during an early momentum turn.
         entry_macd_open, entry_macd_evidence = _exact_positive_open_macd(
-            observation, "1s"
+            observation,
+            "1s",
+            require_positive_signal=self.revision == 26,
         )
         if not entry_macd_open and not observation.force_entry:
             return self._result(
@@ -3165,7 +3200,11 @@ class LongMomentumStrategyEngine:
             or "bar_close" not in observation.evaluation_events
         ):
             return None
-        macd_open, macd_evidence = _exact_positive_open_macd(observation, "1s")
+        macd_open, macd_evidence = _exact_positive_open_macd(
+            observation,
+            "1s",
+            require_positive_signal=self.revision == 26,
+        )
         if not macd_open:
             return None
         existing = [
@@ -3269,7 +3308,11 @@ class LongMomentumStrategyEngine:
             peak * float(policy.get("minimum_pullback_bps") or 0) / 10_000.0,
         )
         pullback = peak - observation.price
-        macd_open, macd_evidence = _exact_positive_open_macd(observation, "1s")
+        macd_open, macd_evidence = _exact_positive_open_macd(
+            observation,
+            "1s",
+            require_positive_signal=self.revision == 26,
+        )
         vwap = _numeric_source_value(
             observation, "indicator.vwap.execution_value", "1s"
         )
@@ -3977,10 +4020,21 @@ class AssignedLongMomentumStrategy:
     """Runtime strategy adapter; enriched observations are its only decision input."""
 
     strategy_id = STRATEGY_ID
-    revision = STRATEGY_REVISION
     automatic = True
 
-    def __init__(self, assignments: list[StrategyAssignment]) -> None:
+    def __init__(
+        self,
+        assignments: list[StrategyAssignment],
+        *,
+        revision: int = STRATEGY_REVISION,
+    ) -> None:
+        if revision not in {*HISTORICAL_STRATEGY_REVISIONS, STRATEGY_REVISION}:
+            raise ValueError(f"Unsupported Long Momentum Strategy revision: {revision}")
+        if any(assignment.strategy_revision != revision for assignment in assignments):
+            raise ValueError(
+                "Strategy assignments do not match Long Momentum executor revision"
+            )
+        self.revision = revision
         self._campaigns = StrategyCampaignOrchestrator(assignments)
         self._assignments = {
             (assignment.account_id, assignment.ticker.upper()): assignment
@@ -3990,7 +4044,7 @@ class AssignedLongMomentumStrategy:
             raise ValueError(
                 "A Strategy Campaign may have only one active account leg per ticker and account"
             )
-        self._engine = LongMomentumStrategyEngine()
+        self._engine = LongMomentumStrategyEngine(revision=revision)
 
     def bind_campaign_registry(
         self, registry: StrategyCampaignOrchestrator

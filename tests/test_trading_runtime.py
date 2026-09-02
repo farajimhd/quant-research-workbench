@@ -1174,6 +1174,16 @@ class JournalTests(unittest.TestCase):
                                 "break_count": 4,
                                 "component_levels": [{"unified_level_id": index} for index in range(100)],
                             },
+                            "prior_snapshot_selected_at": TS.isoformat(),
+                            "prior_snapshot_levels": [
+                                {
+                                    "unified_level_id": f"prior-{index}",
+                                    "price": 10.0 + index,
+                                    "entry_boundary": 10.1 + index,
+                                    "component_levels": [{"unified_level_id": value} for value in range(100)],
+                                }
+                                for index in range(8)
+                            ],
                         },
                     },
                 },
@@ -1188,6 +1198,21 @@ class JournalTests(unittest.TestCase):
             self.assertEqual(
                 gates["unified_structural_trigger"]["level"]["unified_level_id"],
                 "selected",
+            )
+            self.assertEqual(
+                [
+                    row["unified_level_id"]
+                    for row in gates["unified_structural_trigger"]["prior_snapshot_levels"]
+                ],
+                ["prior-0", "prior-1", "prior-2"],
+            )
+            self.assertNotIn(
+                "component_levels",
+                gates["unified_structural_trigger"]["prior_snapshot_levels"][0],
+            )
+            self.assertEqual(
+                gates["unified_structural_trigger"]["prior_snapshot_selected_at"],
+                TS.isoformat(),
             )
             journal.close()
 
