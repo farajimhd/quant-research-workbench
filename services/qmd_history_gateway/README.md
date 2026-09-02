@@ -344,3 +344,26 @@ continue to read the event tables themselves.
 cargo test --offline --manifest-path services\qmd-gateway\Cargo.toml
 cargo test --offline --manifest-path services\qmd_history_gateway\Cargo.toml
 ```
+
+## Standalone structural checkpoint campaign
+
+The `structure_checkpoint_campaign` binary runs the Campaign v2 computation
+directly on a workstation. It uses the continuity index for workload planning,
+the canonical completed-session authority for scheduling, the shared v15
+decoder/engine for calculation, and the shared ClickHouse writer for immutable
+daily checkpoints. QMD HTTP services are not required on that host.
+
+```powershell
+cargo run --release --manifest-path services\qmd_history_gateway\Cargo.toml `
+  --bin structure_checkpoint_campaign -- `
+  --ticker-file D:\TradingML\runtimes\qmd_gateway\universes\all-tickers.json `
+  --start-date 2026-08-21 `
+  --end-date 2026-08-21 `
+  --runtime-dir D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v2\aug21 `
+  --workers 4 `
+  --lookback-days 180
+```
+
+Rerunning the identical command is the supported resume operation. Each ticker
+starts from its last source- and split-compatible ClickHouse checkpoint. The
+runtime status is written atomically to `campaign-status.json`.

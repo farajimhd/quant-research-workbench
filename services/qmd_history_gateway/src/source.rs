@@ -657,6 +657,38 @@ impl HistoricalEventSource {
         Ok(dates)
     }
 
+    pub async fn completed_session_dates_between(
+        &self,
+        start_date: NaiveDate,
+        end_date: NaiveDate,
+        as_of: DateTime<Utc>,
+    ) -> Result<Vec<NaiveDate>, String> {
+        if start_date > end_date {
+            return Err("completed session range starts after it ends".to_string());
+        }
+        let sql = completed_session_dates_between_sql(
+            &self.config.clickhouse_database,
+            start_date,
+            end_date,
+            as_of,
+        );
+        #[derive(Deserialize)]
+        struct SessionDateRow {
+            session_date: String,
+        }
+        self.query(&sql)
+            .await?
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let row = serde_json::from_str::<SessionDateRow>(line)
+                    .map_err(|error| format!("invalid completed session row: {error}"))?;
+                NaiveDate::parse_from_str(&row.session_date, "%Y-%m-%d")
+                    .map_err(|error| format!("invalid completed session date: {error}"))
+            })
+            .collect()
+    }
+
     pub async fn structure_trade_count_estimates(
         &self,
         request: StructureTradeCountEstimateRequest,
@@ -3396,6 +3428,34 @@ fn persisted_structure_events_sql(
     )
 }
 
+fn completed_session_dates_between_sql(
+    database: &str,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+    as_of: DateTime<Utc>,
+) -> String {
+    let table = format!("`{database}`.`events_ordinal_continuity`");
+    format!(
+        r#"SELECT toString(source_date) AS session_date
+            FROM (
+                SELECT
+                    source.ticker AS ticker,
+                    source.source_date AS source_date,
+                    argMax(source.event_count, tuple(source.build_step, source.updated_at)) AS event_count
+                FROM {table} AS source
+                PREWHERE source.source_date >= toDate('{start_date}')
+                  AND source.source_date <= toDate('{end_date}')
+                WHERE source.updated_at <= parseDateTime64BestEffort('{as_of}')
+                GROUP BY source.ticker, source.source_date
+            )
+            GROUP BY source_date
+            HAVING sum(event_count) > 0
+            ORDER BY source_date
+            FORMAT JSONEachRow"#,
+        as_of = as_of.to_rfc3339(),
+    )
+}
+
 fn structure_split_adjustments_sql(
     ticker: &str,
     after: DateTime<Utc>,
@@ -3460,8 +3520,8 @@ fn structure_split_revision_sql(
 mod tests {
     use super::{
         adaptive_structure_chunk_minutes, append_scheduled_gap_segments, archive_session_end_utc,
-        build_source_plan, coverage_precedes, event_select, latest_coverage_summary_sql,
-        latest_coverage_target_date_sql, macro_bar_is_closed,
+        build_source_plan, completed_session_dates_between_sql, coverage_precedes, event_select,
+        latest_coverage_summary_sql, latest_coverage_target_date_sql, macro_bar_is_closed,
         materialize_confirmed_recent_coverage, merge_coverage_intervals, merge_daily_chart_bars,
         normalize_ticker, parse_historical_tsv_row, persisted_structure_events_sql,
         recent_coverage_sql, recent_daily_trade_bars_sql, row_to_event, split_adjustment_factors,
@@ -3490,6 +3550,22 @@ mod tests {
         );
         assert!(sql.contains("AND source.ticker IN ('AAPL')\n        WHERE 1"));
         assert!(!sql.contains("WHERE 1 AND source.ticker IN ('AAPL')"));
+    }
+
+    #[test]
+    fn completed_session_query_uses_qualified_continuity_columns() {
+        let sql = completed_session_dates_between_sql(
+            "market_sip_compact",
+            NaiveDate::from_ymd_opt(2026, 8, 20).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 8, 21).unwrap(),
+            Utc.with_ymd_and_hms(2026, 8, 22, 0, 0, 0).unwrap(),
+        );
+
+        assert!(sql.contains("`market_sip_compact`.`events_ordinal_continuity` AS source"));
+        assert!(sql.contains("source.source_date >= toDate('2026-08-20')"));
+        assert!(sql.contains("source.source_date <= toDate('2026-08-21')"));
+        assert!(sql.contains("source.updated_at <= parseDateTime64BestEffort"));
+        assert!(sql.contains("GROUP BY source.ticker, source.source_date"));
     }
 
     #[test]

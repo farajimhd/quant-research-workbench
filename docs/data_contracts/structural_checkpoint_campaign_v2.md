@@ -37,6 +37,12 @@ bounded by the builder, QMD Live, QMD History, and ClickHouse query limits.
 Increasing worker count does not authorize unbounded ClickHouse threads or
 memory.
 
+The workstation entry point is the standalone Rust binary
+`structure_checkpoint_campaign` in the QMD History crate. It connects directly
+to the configured historical and writable ClickHouse authorities; QMD Live and
+QMD History HTTP services do not need to run on the workstation. The binary
+reuses their shared library modules rather than copying the algorithm.
+
 The archive is monthly partitioned and ordered by `(ticker, ordinal)`. Ticker
 workers therefore preserve primary-key pruning. Hash predicates or repeated
 full-market timestamp scans are prohibited unless a future physical projection
