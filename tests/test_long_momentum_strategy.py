@@ -412,7 +412,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
             "market.spread_bps": {"value": spread_bps, "observed_at": NOW.isoformat()},
         }
 
-    def test_entry_requires_macd_line_and_signal_above_zero(self) -> None:
+    def test_entry_requires_macd_line_above_zero(self) -> None:
         result = LongMomentumStrategyEngine().evaluate(
             assignment(),
             confirmed_observation(
@@ -426,7 +426,18 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(result.evaluation.signals[0].reason, "entry_confirmation_incomplete")
         failures = result.evaluation.signals[0].metadata["reason_detail"]
         self.assertIn("indicator.macd.line (5s) is -0.1; requires greater than 0", failures)
-        self.assertIn("indicator.macd.signal (5s) is -0.2; requires greater than 0", failures)
+
+    def test_entry_allows_negative_signal_when_positive_macd_line_is_open(self) -> None:
+        result = LongMomentumStrategyEngine().evaluate(
+            assignment(),
+            confirmed_observation(
+                macd_line=0.10,
+                macd_signal=-0.20,
+                macd_histogram=0.30,
+            ),
+        )
+
+        self.assertEqual(result.evaluation.signals[0].action, "enter_long")
 
     def test_entry_engine_invariant_requires_exact_positive_open_one_second_macd(self) -> None:
         parameters = default_long_momentum_parameters()

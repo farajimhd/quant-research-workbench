@@ -1359,7 +1359,6 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             {
                 "squeeze-macd-line-above-signal",
                 "squeeze-macd-line-positive",
-                "squeeze-macd-signal-positive",
             },
         )
         squeeze_liquidity_rule = next(

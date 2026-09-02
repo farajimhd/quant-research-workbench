@@ -703,6 +703,20 @@ impl GenericStructureEngine {
             return Vec::new();
         }
         self.reset_session_if_needed(ts);
+        // A delayed report remains part of the canonical audit sequence, so
+        // its cursor must advance. Its execution belongs to an already closed
+        // one-second bucket, however, and must never revise the current
+        // structural book, session extrema, pivots, volume profile, or gates.
+        if event.is_delayed_trade_report() {
+            self.last_ts = Some(ts);
+            self.replayed_through = Some(
+                self.replayed_through
+                    .map(|current| current.max(ts))
+                    .unwrap_or(ts),
+            );
+            self.last_arrival_sequence = arrival_sequence;
+            return Vec::new();
+        }
         let mut emitted = Vec::new();
         match event {
             MarketEvent::Quote(quote)
@@ -4534,6 +4548,31 @@ mod tests {
 
         assert_eq!(serde_json::to_string(&engine.checkpoint()).unwrap(), before);
         assert_eq!(engine.checkpoint().last_arrival_sequence, 17);
+    }
+
+    #[test]
+    fn delayed_trade_advances_audit_cursor_without_revising_structure() {
+        let mut engine = GenericStructureEngine::new("TEST");
+        let fresh_at = new_york_ms(2026, 8, 21, 4, 2, 52);
+        let fresh = trade(fresh_at, 3.46, 100.0, 17);
+        engine.apply_event(&fresh, TradeUpdateRule::regular());
+
+        let mut delayed = trade(fresh_at + 1_000, 3.70, 70.0, 18);
+        let MarketEvent::Trade(delayed_trade) = &mut delayed else {
+            unreachable!("trade helper must return a trade")
+        };
+        delayed_trade.participant_ts = Some(Utc.with_ymd_and_hms(2026, 8, 21, 5, 47, 51).unwrap());
+        assert!(delayed.is_delayed_trade_report());
+
+        engine.apply_event(&delayed, TradeUpdateRule::regular());
+
+        let snapshot = engine.snapshot(delayed.ts());
+        let checkpoint = engine.checkpoint();
+        assert!((snapshot.session_high - 3.46).abs() < 1e-9);
+        assert!((snapshot.reference_price - 3.46).abs() < 1e-9);
+        assert!((checkpoint.last_trade_price - 3.46).abs() < 1e-9);
+        assert_eq!(checkpoint.last_arrival_sequence, 18);
+        assert_eq!(checkpoint.updated_at, Some(delayed.ts()));
     }
 
     #[test]

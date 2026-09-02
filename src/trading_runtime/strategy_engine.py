@@ -34,7 +34,7 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 26
+STRATEGY_REVISION = 27
 
 RULE_COMPARATORS = {
     "above_by_bps",
@@ -142,7 +142,6 @@ def default_entry_decision_rules(parameters: dict[str, Any] | None = None) -> di
                 _rule_group("macd-confirmation", "MACD confirms momentum", "all", [
                     _condition("macd-line-over-signal", "indicator.macd.line", "5s", "greater_or_equal", right_source_id="indicator.macd.signal", right_timeframe="5s"),
                     _condition("macd-line-positive", "indicator.macd.line", "5s", "greater_than", value=0),
-                    _condition("macd-signal-positive", "indicator.macd.signal", "5s", "greater_than", value=0),
                     _condition("macd-positive-histogram", "indicator.macd.histogram", "5s", "greater_than", value=0),
                 ]),
             ],
@@ -936,7 +935,6 @@ def _exact_positive_open_macd(
         and signal is not None
         and line > signal
         and line > 0
-        and signal > 0
     ), evidence
 
 
@@ -2259,7 +2257,8 @@ class LongMomentumStrategyEngine:
         # one editable rule-set row. Configuration materialization, re-entry
         # rule pruning, or a future catalog migration must never authorize an
         # order unless the latest causal one-second MACD is exactly open and
-        # positive: line > signal, line > 0, signal > 0.
+        # positive and open: line > signal and line > 0. The signal line may
+        # still be below zero during an early momentum turn.
         entry_macd_open, entry_macd_evidence = _exact_positive_open_macd(
             observation, "1s"
         )
@@ -4659,7 +4658,7 @@ def _decision_reason_detail(
             "Wait: exact causal one-second MACD entry regime is closed — "
             f"line={_display_value(detail.get('macd_line'))}, "
             f"signal={_display_value(detail.get('macd_signal'))}; requires "
-            "line > signal, line > 0, and signal > 0."
+            "line > signal and line > 0."
         )
     if reason == "entry_waiting_for_closed_one_second_macd":
         detail = dict(metadata.get("entry_frame") or {})
@@ -4766,9 +4765,9 @@ def _decision_reason_detail(
             f"gain={float(metadata.get('gain_pct') or 0):+.3f}%."
         )
     labels = {
-        "entry_confirmed": "Enter: latched liquidity, executable spread/activity, VWAP, exact positive/open one-second MACD (line > signal, line > 0, signal > 0), and Unified resistance acceptance all passed.",
-        "reentry_confirmed": "Re-enter: executable spread/activity, VWAP, exact positive/open one-second MACD (line > signal, line > 0, signal > 0), and a fresh Unified resistance recovery all passed.",
-        "target_profit_replenishment": "Profit-target replenishment: a target filled, price made a causal pullback, Unified support held, and VWAP plus exact positive/open one-second MACD remained valid.",
+        "entry_confirmed": "Enter: latched liquidity, executable spread/activity, VWAP, positive/open one-second MACD (line > signal and line > 0), and Unified resistance acceptance all passed.",
+        "reentry_confirmed": "Re-enter: executable spread/activity, VWAP, positive/open one-second MACD (line > signal and line > 0), and a fresh Unified resistance recovery all passed.",
+        "target_profit_replenishment": "Profit-target replenishment: a target filled, price made a causal pullback, Unified support held, and VWAP plus positive/open one-second MACD remained valid.",
         "structural_profit_target_advanced": "Target update: a completed one-second candle held above another qualifying level while MACD remained positive and open; the live profit target advanced to the configured ordinal qualifying level.",
         "failure_to_extend_partial": "Profit reduction: price stopped extending while QMD flow deteriorated; sell half and keep the protected remainder.",
         "qmd_flow_geometry_exhaustion": "Exit: QMD flow structure weakened with confident flow-price divergence.",

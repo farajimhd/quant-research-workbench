@@ -2930,7 +2930,7 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
         _watchlist_rule(
             "strategy-squeeze-macd-open-1s",
             "Positive one-second MACD open",
-            "Requires exactly: causal one-second MACD line above its signal line, MACD line above zero, and signal line above zero.",
+            "Requires exactly: causal one-second MACD line above its signal line and MACD line above zero. The signal line may remain below zero.",
             [
                 {
                     **_watchlist_condition(
@@ -2946,13 +2946,6 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
                 _watchlist_condition(
                     "squeeze-macd-line-positive",
                     "indicator.macd.line",
-                    "greater_than",
-                    0.0,
-                    interval="1s",
-                ),
-                _watchlist_condition(
-                    "squeeze-macd-signal-positive",
-                    "indicator.macd.signal",
                     "greater_than",
                     0.0,
                     interval="1s",
