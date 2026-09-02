@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from research.bar_gpt.v3.full_chunk_training import load_full_held_out_refs
+
 
 DEFAULT_RUN_NAME = (
     "bar-gpt-v3-full-medium-chunks30m-epoch2-chunkepochs20-"
@@ -58,7 +60,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--output-root",
         default="",
-        help="default: <run-root>/checkpoint_comparison_full_validation_v1",
+        help="default: <run-root>/checkpoint_comparison_all_2026_v1",
     )
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--loader-workers", type=int, default=8)
@@ -261,7 +263,7 @@ def _resolve_authorities(
     shard_root = Path(str(args.shard_root or recorded_args.get("offline_shard_root", "")))
     output_root = Path(
         args.output_root
-        or run_root / "checkpoint_comparison_full_validation_v1"
+        or run_root / "checkpoint_comparison_all_2026_v1"
     )
     if not manifest.is_file():
         raise RuntimeError(f"validation manifest is missing: {manifest}")
@@ -270,11 +272,12 @@ def _resolve_authorities(
     return manifest, shard_root, output_root, run_manifest
 
 
-def _verify_manifest(
+def _verify_manifest_and_population(
     manifest_path: Path,
     *,
     expected_hash: str,
-) -> tuple[str, int, int]:
+    ticker_order: tuple[str, ...],
+) -> tuple[str, str, int, int]:
     manifest = _read_json(manifest_path)
     recorded_hash = str(manifest.get("manifest_hash", ""))
     unsigned = dict(manifest)
@@ -286,21 +289,13 @@ def _verify_manifest(
         raise RuntimeError(
             "validation manifest differs from the authority used during global validation"
         )
-    panels = manifest.get("panels")
-    summaries = manifest.get("summaries")
-    if not isinstance(panels, dict) or not isinstance(summaries, dict):
-        raise RuntimeError("validation manifest has no panels or summaries")
-    rows = panels.get("validation")
-    summary = summaries.get("validation")
-    if not isinstance(rows, list) or not rows or not isinstance(summary, dict):
-        raise RuntimeError("validation authority is empty")
-    origins = sum(int(row["origins"]) for row in rows)
-    blocks = len(rows)
-    if origins != int(summary.get("origins", -1)) or blocks != int(
-        summary.get("blocks", -1)
-    ):
-        raise RuntimeError("validation panel membership and summary disagree")
-    return actual_hash, origins, blocks
+    refs, population_hash = load_full_held_out_refs(
+        manifest_path=manifest_path,
+        manifest=manifest,
+        ticker_order=ticker_order,
+    )
+    origins = sum(int(ref.origins) for ref in refs)
+    return actual_hash, population_hash, origins, len(refs)
 
 
 def evaluation_command(
@@ -333,6 +328,7 @@ def evaluation_command(
         run_name,
         "--panel",
         "validation",
+        "--entire-held-out-population",
         "--namespace",
         METRIC_NAMESPACE,
         "--architecture",
@@ -355,6 +351,7 @@ def _summary_matches(
     selection: CheckpointSelection,
     *,
     manifest_hash: str,
+    population_hash: str,
 ) -> bool:
     return bool(
         Path(str(summary.get("checkpoint", ""))).resolve()
@@ -368,6 +365,8 @@ def _summary_matches(
         and summary.get("panel") == "validation"
         and summary.get("namespace") == METRIC_NAMESPACE
         and summary.get("manifest_hash") == manifest_hash
+        and summary.get("evaluation_population") == "entire_held_out_index"
+        and summary.get("evaluation_population_hash") == population_hash
     )
 
 
@@ -386,6 +385,7 @@ def _write_comparison(
     checkpoint_hashes: Mapping[str, str],
     manifest: Path,
     manifest_hash: str,
+    population_hash: str,
     validation_origins: int,
     validation_blocks: int,
 ) -> None:
@@ -446,6 +446,8 @@ def _write_comparison(
         },
         "validation_manifest": str(manifest),
         "validation_manifest_hash": manifest_hash,
+        "validation_population": "entire_held_out_index",
+        "validation_population_hash": population_hash,
         "validation_origins": validation_origins,
         "validation_blocks": validation_blocks,
         "ranking": "trade-close MAE ascending, then close MCC descending",
@@ -504,16 +506,31 @@ def main(argv: Iterable[str] | None = None) -> int:
         model_card=model_card,
     )
     expected_manifest_hash = str(records[0]["experiment_manifest_hash"])
-    manifest_hash, validation_origins, validation_blocks = _verify_manifest(
+    recorded_args = run_manifest["args"]
+    ticker_order = tuple(
+        value.strip()
+        for value in str(recorded_args.get("tickers", "")).split(",")
+        if value.strip()
+    )
+    if not ticker_order:
+        raise RuntimeError("run manifest has no storage ticker order")
+    (
+        manifest_hash,
+        population_hash,
+        validation_origins,
+        validation_blocks,
+    ) = _verify_manifest_and_population(
         manifest,
         expected_hash=expected_manifest_hash,
+        ticker_order=ticker_order,
     )
     print(f"Completed run: {run_root}", flush=True)
     print(f"Source commit recorded by training: {run_manifest.get('git_commit', '')}", flush=True)
     print(f"Validation manifest: {manifest}", flush=True)
     print(
-        f"Complete validation panel: {validation_origins:,} origins in "
-        f"{validation_blocks:,} immutable blocks; hash={manifest_hash[:12]}",
+        f"Entire 2026 held-out shard population: {validation_origins:,} origins in "
+        f"{validation_blocks:,} immutable blocks; "
+        f"manifest={manifest_hash[:12]} population={population_hash[:12]}",
         flush=True,
     )
     for index, selection in enumerate(selections, start=1):
@@ -566,6 +583,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 summary,
                 selection,
                 manifest_hash=manifest_hash,
+                population_hash=population_hash,
             ):
                 print(f"[{index}/4] verified cached result for {selection.role}", flush=True)
                 summaries.append(summary)
@@ -605,6 +623,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             summary,
             selection,
             manifest_hash=manifest_hash,
+            population_hash=population_hash,
         ):
             raise RuntimeError(
                 f"evaluation summary does not certify {selection.role}: {summary_path}"
@@ -617,6 +636,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         checkpoint_hashes=checkpoint_hashes,
         manifest=manifest,
         manifest_hash=manifest_hash,
+        population_hash=population_hash,
         validation_origins=validation_origins,
         validation_blocks=validation_blocks,
     )

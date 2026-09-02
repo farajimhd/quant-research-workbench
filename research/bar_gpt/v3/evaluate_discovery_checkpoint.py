@@ -11,6 +11,10 @@ import torch
 
 from research.bar_gpt.v3 import LEARNING_CONTRACT, assert_checkpoint_version
 from research.bar_gpt.v3.config import BarGPTConfig, DataConfig, ExperimentConfig, TrainConfig, to_dict
+from research.bar_gpt.v3.full_chunk_training import (
+    load_full_chunk_manifest,
+    load_full_held_out_refs,
+)
 from research.bar_gpt.v3.model import BarGPTV3
 from research.bar_gpt.v3.model_discovery import (
     DISCOVERY_WANDB_PROJECT,
@@ -40,6 +44,11 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--run-name", required=True)
     parser.add_argument("--panel", choices=("validation", "locked_test"), default="locked_test")
+    parser.add_argument(
+        "--entire-held-out-population",
+        action="store_true",
+        help="evaluate every certified block in the full-training 2026 held-out index",
+    )
     parser.add_argument("--namespace", default="", help="metric namespace; defaults to the panel name")
     parser.add_argument("--architecture", default="")
     parser.add_argument("--target-training-origins", type=int, default=0)
@@ -79,12 +88,33 @@ def main(argv: Iterable[str] | None = None) -> int:
     train_config = TrainConfig(**train_values)
     config = ExperimentConfig(model=model_config, data=data_config, train=train_config)
     storage_data_config = discovery_storage_config(data_config)
-    manifest = load_discovery_manifest(
-        Path(args.experiment_manifest),
-        shard_root=shard_root,
-        config=data_config,
+    manifest_path = Path(args.experiment_manifest)
+    manifest = (
+        load_full_chunk_manifest(
+            manifest_path,
+            shard_root=shard_root,
+            config=data_config,
+        )
+        if args.entire_held_out_population
+        else load_discovery_manifest(
+            manifest_path,
+            shard_root=shard_root,
+            config=data_config,
+        )
     )
-    selected_refs = panel_refs(manifest, str(args.panel))
+    if args.entire_held_out_population and str(args.panel) != "validation":
+        raise ValueError("the entire held-out population is exposed only as validation")
+    if args.entire_held_out_population:
+        selected_refs, population_hash = load_full_held_out_refs(
+            manifest_path=manifest_path,
+            manifest=manifest,
+            ticker_order=data_config.tickers,
+        )
+        evaluation_population = "entire_held_out_index"
+    else:
+        selected_refs = panel_refs(manifest, str(args.panel))
+        population_hash = manifest["manifest_hash"]
+        evaluation_population = f"manifest_panel/{args.panel}"
     units = resolve_offline_units_for_refs(
         shard_root,
         storage_data_config,
@@ -118,6 +148,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         config={
             **to_dict(config),
             "evaluation_panel": str(args.panel),
+            "evaluation_population": evaluation_population,
+            "evaluation_population_hash": population_hash,
+            "evaluation_blocks": len(selected_refs),
+            "evaluation_origins": sum(int(ref.origins) for ref in selected_refs),
             "metric_namespace": namespace,
             "manifest_hash": manifest["manifest_hash"],
             "learning_contract": LEARNING_CONTRACT,
@@ -151,6 +185,10 @@ def main(argv: Iterable[str] | None = None) -> int:
             "training_complete": source_complete,
             "model_parameters": parameter_count,
             "panel": str(args.panel),
+            "evaluation_population": evaluation_population,
+            "evaluation_population_hash": population_hash,
+            "evaluation_blocks": len(selected_refs),
+            "evaluation_origins": sum(int(ref.origins) for ref in selected_refs),
             "namespace": namespace,
             "manifest_hash": manifest["manifest_hash"],
             "learning_contract": LEARNING_CONTRACT,

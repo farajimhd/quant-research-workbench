@@ -50,7 +50,7 @@ remain local stopping signals and must not be compared across chunks.
 ### Completed-run checkpoint comparison
 
 `compare_full_training_checkpoints.py` re-evaluates four distinct checkpoints
-on every origin in the completed run's frozen validation panel: the first
+on every eligible 2026 origin in the full-training held-out shard index: the first
 immutable global checkpoint, the global trade-close MAE leader, the global
 trade-range MAE leader, and the last immutable outer-epoch checkpoint. It
 verifies checkpoint and manifest hashes, runs the existing v3 evaluator
@@ -72,7 +72,7 @@ python -m research.bar_gpt.v3.compare_full_training_checkpoints --execute
 ```
 
 The default output is
-`<run-root>/checkpoint_comparison_full_validation_v1/comparison.json` and
+`<run-root>/checkpoint_comparison_all_2026_v1/comparison.json` and
 `comparison.csv`. W&B logging is disabled by default and can be explicitly
 enabled with `--wandb-mode online`.
 

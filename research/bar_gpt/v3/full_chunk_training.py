@@ -535,6 +535,101 @@ def load_full_chunk_manifest(
     return value
 
 
+def load_full_held_out_refs(
+    *,
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    ticker_order: Sequence[str],
+) -> tuple[tuple[OfflineBlockRef, ...], str]:
+    """Load every certified held-out block used to construct the sampled panels."""
+    cache_path = manifest_path.parent / "full_catalog_index_v1" / "held_out.jsonl"
+    if not cache_path.is_file():
+        raise RuntimeError(
+            f"full held-out block index is missing: {cache_path}; rebuild the manifest"
+        )
+    index_sha256 = hashlib.sha256()
+    unit_rows: list[tuple[str, tuple[OfflineBlockRef, ...]]] = []
+    with cache_path.open("rb") as binary_stream:
+        for block in iter(lambda: binary_stream.read(8 * 1024 * 1024), b""):
+            index_sha256.update(block)
+    with cache_path.open("r", encoding="utf-8") as handle:
+        try:
+            header = json.loads(handle.readline())
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"invalid full held-out block-index header: {cache_path}") from exc
+        if not isinstance(header, dict):
+            raise RuntimeError(f"invalid full held-out block-index header: {cache_path}")
+        if (
+            int(header.get("contract_version", -1)) != DISCOVERY_CONTRACT_VERSION
+            or str(header.get("label", "")) != "full-held-out"
+        ):
+            raise RuntimeError("full held-out block index has an incompatible contract")
+        for line_number, line in enumerate(handle, start=2):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+                unit_key = str(row["unit_key"])
+                refs = tuple(OfflineBlockRef(**item) for item in row["refs"])
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    f"invalid full held-out block-index row {line_number}: {cache_path}"
+                ) from exc
+            if not refs or any(ref.unit_key != unit_key for ref in refs):
+                raise RuntimeError(
+                    f"full held-out block-index row {line_number} has inconsistent membership"
+                )
+            unit_rows.append((unit_key, refs))
+    if not unit_rows:
+        raise RuntimeError("full held-out block index is empty")
+    unit_keys = tuple(key for key, _refs in unit_rows)
+    if len(unit_keys) != len(set(unit_keys)):
+        raise RuntimeError("full held-out block index contains duplicate units")
+    if len(unit_keys) != int(header.get("units", -1)):
+        raise RuntimeError("full held-out block index unit count changed")
+    ticker_rank = {str(ticker): index for index, ticker in enumerate(ticker_order)}
+    try:
+        expected_unit_keys = tuple(
+            sorted(
+                unit_keys,
+                key=lambda key: (
+                    key.split(":", 1)[1],
+                    ticker_rank[key.split(":", 1)[0]],
+                ),
+            )
+        )
+    except KeyError as exc:
+        raise RuntimeError(
+            f"full held-out block index has no storage ticker rank: {exc.args[0]}"
+        ) from exc
+    unit_keys_hash = hashlib.sha256(
+        "\n".join(expected_unit_keys).encode("utf-8")
+    ).hexdigest()
+    if unit_keys_hash != str(header.get("unit_keys_hash", "")):
+        raise RuntimeError("full held-out block index unit order does not match its header")
+    refs_by_unit = {key: values for key, values in unit_rows}
+    refs = tuple(ref for key in expected_unit_keys for ref in refs_by_unit[key])
+    identities = {_ref_identity(ref) for ref in refs}
+    if len(identities) != len(refs):
+        raise RuntimeError("full held-out block index contains duplicate block references")
+    held_out_start, held_out_end = manifest["ranges"]["held_out"]
+    if any(not held_out_start <= ref.local_date < held_out_end for ref in refs):
+        raise RuntimeError("full held-out block index contains an out-of-range date")
+    expected_tickers = set(manifest["cohorts"]["held_out_available_tickers"])
+    if {ref.ticker for ref in refs} != expected_tickers:
+        raise RuntimeError("full held-out block index ticker coverage changed")
+    for panel_name in ("monitor", "monitor_pool", "validation", "locked_test"):
+        panel_identities = {
+            _ref_identity(OfflineBlockRef(**row))
+            for row in manifest["panels"][panel_name]
+        }
+        if not panel_identities <= identities:
+            raise RuntimeError(
+                f"full held-out block index no longer contains panel {panel_name!r}"
+            )
+    return refs, index_sha256.hexdigest()
+
+
 def load_full_training_refs(
     *,
     manifest_path: Path,

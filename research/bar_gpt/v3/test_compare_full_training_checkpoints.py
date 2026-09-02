@@ -7,7 +7,7 @@ from pathlib import Path
 
 from research.bar_gpt.v3.compare_full_training_checkpoints import (
     CheckpointSelection,
-    _verify_manifest,
+    _verify_manifest_and_population,
     evaluation_command,
     select_checkpoints,
 )
@@ -57,17 +57,18 @@ class FullTrainingCheckpointComparisonTests(unittest.TestCase):
         self.assertEqual([item.samples_seen for item in selected], [500, 1_000, 1_500, 2_500])
         self.assertEqual(selected[-1].checkpoint.name, "checkpoint_epoch_0002.pt")
 
-    def test_manifest_verification_requires_exact_membership_summary_and_hash(self) -> None:
+    def test_manifest_verification_loads_entire_held_out_index(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "manifest.json"
+            root = Path(directory)
+            path = root / "manifest.json"
             manifest = {
+                "contract_version": 9,
+                "ranges": {"held_out": ["2026-01-01", "2026-08-01"]},
+                "cohorts": {"held_out_available_tickers": ["A", "B"]},
                 "panels": {
-                    "validation": [
-                        {"origins": 11, "ticker": "A", "local_date": "2026-01-02"},
-                        {"origins": 13, "ticker": "B", "local_date": "2026-01-02"},
-                    ]
+                    name: []
+                    for name in ("monitor", "monitor_pool", "validation", "locked_test")
                 },
-                "summaries": {"validation": {"origins": 24, "blocks": 2}},
             }
             from research.bar_gpt.v3.compare_full_training_checkpoints import (
                 _canonical_json_hash,
@@ -76,8 +77,51 @@ class FullTrainingCheckpointComparisonTests(unittest.TestCase):
             manifest_hash = _canonical_json_hash(manifest)
             manifest["manifest_hash"] = manifest_hash
             path.write_text(json.dumps(manifest), encoding="utf-8")
-            result = _verify_manifest(path, expected_hash=manifest_hash)
-        self.assertEqual(result, (manifest_hash, 24, 2))
+            index_root = root / "full_catalog_index_v1"
+            index_root.mkdir()
+            unit_keys = ("A:2026-01", "B:2026-01")
+            import hashlib
+
+            rows = [
+                {
+                    "contract_version": 9,
+                    "label": "full-held-out",
+                    "units": 2,
+                    "unit_keys_hash": hashlib.sha256(
+                        "\n".join(unit_keys).encode("utf-8")
+                    ).hexdigest(),
+                },
+                {
+                    "unit_key": "A:2026-01",
+                    "refs": [{
+                        "unit_key": "A:2026-01", "session_index": 0,
+                        "block_index": 0, "ticker": "A", "local_date": "2026-01-02",
+                        "unit_index": 0, "block_offset": 0, "origins": 11, "activity_regime": 0,
+                        "session_phase": "regular_midday", "has_condition_target": False,
+                    }],
+                },
+                {
+                    "unit_key": "B:2026-01",
+                    "refs": [{
+                        "unit_key": "B:2026-01", "session_index": 0,
+                        "block_index": 0, "ticker": "B", "local_date": "2026-01-02",
+                        "unit_index": 1, "block_offset": 0, "origins": 13, "activity_regime": 0,
+                        "session_phase": "regular_midday", "has_condition_target": False,
+                    }],
+                },
+            ]
+            index_path = index_root / "held_out.jsonl"
+            index_path.write_text(
+                "\n".join(json.dumps(row) for row in rows) + "\n",
+                encoding="utf-8",
+            )
+            result = _verify_manifest_and_population(
+                path,
+                expected_hash=manifest_hash,
+                ticker_order=("A", "B"),
+            )
+        self.assertEqual(result[0], manifest_hash)
+        self.assertEqual(result[2:], (24, 2))
 
     def test_evaluation_command_uses_complete_validation_panel(self) -> None:
         selection = CheckpointSelection(
@@ -100,6 +144,7 @@ class FullTrainingCheckpointComparisonTests(unittest.TestCase):
             wandb_mode="disabled",
         )
         self.assertEqual(command[command.index("--panel") + 1], "validation")
+        self.assertIn("--entire-held-out-population", command)
         self.assertNotIn("--target-training-origins", command)
         self.assertNotIn("--max-batches", command)
 
