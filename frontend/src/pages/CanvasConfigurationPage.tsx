@@ -1,4 +1,4 @@
-import { Activity, BadgeDollarSign, BriefcaseBusiness, Check, CircleDollarSign, Clock3, Globe2, Landmark, Link2, MapPin, PanelRightOpen, Pause, Play, RefreshCcw, Search, Save, Settings2, ShieldCheck, TriangleAlert, Unlink, WalletCards } from "lucide-react";
+import { Activity, Check, Clock3, Globe2, Link2, MapPin, PanelRightOpen, Pause, Play, RefreshCcw, Search, Save, Settings2, ShieldCheck, TriangleAlert, Unlink } from "lucide-react";
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from "react";
 
 import { api, apiCached, query, type ApiError } from "../api/client";
@@ -75,8 +75,6 @@ import {
   ContainerSettings,
   LinkedContainerState,
   LivePerformanceState,
-  PerformanceSnapshot,
-  PerformanceSnapshotResponse,
 } from "../features/canvas/contracts";
 import {
   ALL_CONTAINER_IDS,
@@ -84,13 +82,13 @@ import {
   MANAGER_DEFAULT_CONTAINER_IDS,
   READ_ONLY_BLOCKED_CONTAINERS,
 } from "../features/canvas/configuration";
-import { marketSessionDate, useCanvasHistoricalChart, useStockSplitEvents } from "../features/canvas/chartData";
-import { finiteNumber } from "../features/canvas/numbers";
+import { marketSessionDate, useCanvasHistoricalChart } from "../features/canvas/chartData";
 import { nestedValue } from "../features/canvas/presentationFormat";
 import { cloneDefaultSettings, instanceSettings, normalizeSettings } from "../features/canvas/settings";
 import { ensureHistoricalChartsQuotesIndicators, openTickerChartsQuotes } from "../app/tickerNavigation";
 import { useCanvasLiveScannerSnapshot, useCanvasScannerSnapshot } from "../features/canvas/scannerData";
 import { dateInTimeZone } from "../features/canvas/time";
+import { readLiveAccountKeys, TradingPerformanceStrip, useTradingPerformance } from "../features/trading-performance/TradingPerformance";
 
 type CanvasChartPreviewProps = Parameters<typeof import("../features/canvas/chartPresentation").ChartPreview>[0];
 const CHARTS_QUOTES_CONTEXT_APPEARANCE_DEFAULTS = {
@@ -123,8 +121,6 @@ function StrategyOrderEntry(props: StrategyOrderEntryProps) {
   </Suspense>;
 }
 
-const LIVE_ACCOUNT_KEYS_STORAGE_KEY = "quant-research-workbench.real-live-trading.account-keys";
-const LIVE_PERFORMANCE_STORAGE_KEY = "quant-research-workbench.canvas.live-performance-v1";
 const CHARTS_QUOTES_GROUP_TEMPLATE_ID = "charts-quotes";
 const CANVAS_GROUP_TEMPLATES: WorkspaceGroupTemplate[] = [{
   description: "A fixed synchronized market workspace; only its ticker context changes.",
@@ -132,16 +128,6 @@ const CANVAS_GROUP_TEMPLATES: WorkspaceGroupTemplate[] = [{
   memberSummary: "Intraday, daily, and monthly charts · quote and trade context",
   title: "Charts & Quotes",
 }];
-
-function readLiveAccountKeys(): string[] {
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(LIVE_ACCOUNT_KEYS_STORAGE_KEY) || "null");
-    if (Array.isArray(parsed)) return parsed.map((item) => String(item)).filter(Boolean);
-  } catch {
-    // A malformed preference must not prevent the Canvas from loading.
-  }
-  return ["paper"];
-}
 
 function currentLivePreviewContext(now = new Date()): CanvasPreviewContext {
   const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
@@ -151,184 +137,6 @@ function currentLivePreviewContext(now = new Date()): CanvasPreviewContext {
     timeZone: "America/New_York",
   }).formatToParts(now).filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
   return { previewTime: `${parts.hour === "24" ? "00" : parts.hour}:${parts.minute}`, sessionDate: marketSessionDate(now.toISOString()) };
-}
-
-function liveAccountSignature(accountKeys: string[]) {
-  return [...accountKeys].map((item) => String(item)).filter(Boolean).sort().join(",");
-}
-
-function readCachedLivePerformance(accountKeys: string[]): PerformanceSnapshot | null {
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(LIVE_PERFORMANCE_STORAGE_KEY) || "null") as { account_signature?: string; data?: PerformanceSnapshot } | null;
-    if (parsed?.account_signature === liveAccountSignature(accountKeys) && parsed.data?.as_of) return parsed.data;
-  } catch {
-    // Cached presentation state is optional; canonical broker state remains authoritative.
-  }
-  return null;
-}
-
-function writeCachedLivePerformance(accountKeys: string[], data: PerformanceSnapshot) {
-  try {
-    window.localStorage.setItem(LIVE_PERFORMANCE_STORAGE_KEY, JSON.stringify({ account_signature: liveAccountSignature(accountKeys), data }));
-  } catch {
-    // Storage restrictions must not interrupt live refreshes.
-  }
-}
-
-function normalizePerformanceSnapshot(payload: CanonicalTradingPreview): PerformanceSnapshot | null {
-  if (payload.performance_snapshot) return { ...payload.performance_snapshot, source: "performance_snapshot" };
-  const metrics = payload.portfolio?.metrics;
-  if (!metrics || !payload.as_of) return null;
-  const sessionDate = marketSessionDate(payload.as_of);
-  const realizedToday = (payload.performance_journal?.episodes || []).reduce((total, row) => {
-    const closedAt = String(row.closed_at || "");
-    return marketSessionDate(closedAt) === sessionDate ? total + finiteNumber(row.net_pnl) : total;
-  }, 0);
-  const unrealized = finiteNumber(metrics.unrealized_pnl);
-  const hasAvailableFunds = payload.account_values.some((row) => String(row.key || "").toLowerCase() === "availablefunds" && String(row.segment || "base").toLowerCase() === "base")
-    || payload.ledger.some((row) => {
-      if (!row.is_base || !row.values || typeof row.values !== "object") return false;
-      return Object.keys(row.values as Record<string, unknown>).some((key) => key.toLowerCase() === "availablefunds");
-    });
-  return {
-    as_of: payload.as_of,
-    session_date: sessionDate,
-    net_pnl_today: realizedToday + unrealized,
-    open_position_count: payload.positions.filter((row) => finiteNumber(row.quantity) !== 0).length,
-    unrealized_pnl: unrealized,
-    realized_pnl_today: realizedToday,
-    available_cash: hasAvailableFunds ? finiteNumber(metrics.available_funds) : finiteNumber(metrics.total_cash),
-    available_cash_basis: hasAvailableFunds ? "available_funds" : "total_cash",
-    source: "canonical_state_v2",
-  };
-}
-
-function useLivePerformanceState(enabled = true, requestedAccountKeys?: string[]): LivePerformanceState {
-  const requestedSignature = requestedAccountKeys?.join(",") ?? "";
-  const [accountKeys, setAccountKeys] = useState(() => requestedAccountKeys?.length ? requestedAccountKeys : readLiveAccountKeys());
-  const [state, setState] = useState<LivePerformanceState>(() => {
-    const cached = readCachedLivePerformance(accountKeys);
-    return { data: cached, status: cached ? "stale" : "loading" };
-  });
-
-  useEffect(() => {
-    if (!enabled) return;
-    if (requestedAccountKeys?.length) {
-      setAccountKeys(requestedAccountKeys);
-      return;
-    }
-    const syncAccounts = (event: StorageEvent) => {
-      if (event.key === LIVE_ACCOUNT_KEYS_STORAGE_KEY) setAccountKeys(readLiveAccountKeys());
-    };
-    window.addEventListener("storage", syncAccounts);
-    return () => window.removeEventListener("storage", syncAccounts);
-  }, [enabled, requestedSignature]);
-
-  useEffect(() => {
-    if (!enabled) {
-      setState({ data: null, status: "loading" });
-      return;
-    }
-    let cancelled = false;
-    let controller: AbortController | null = null;
-    let timer: number | null = null;
-    const cached = readCachedLivePerformance(accountKeys);
-    setState({ data: cached, status: cached ? "stale" : "loading" });
-    const schedule = () => {
-      if (!cancelled) timer = window.setTimeout(load, 15_000);
-    };
-    const load = async () => {
-      if (cancelled || controller) return;
-      if (document.visibilityState === "hidden") {
-        schedule();
-        return;
-      }
-      const request = new AbortController();
-      controller = request;
-      const parameters = { account_keys: accountKeys.join(","), account_type: accountKeys[0] || "paper", mode: "paper" };
-      try {
-        let performance: PerformanceSnapshot;
-        let stale = false;
-        try {
-          const compact = await api<PerformanceSnapshotResponse>(`/api/trading/performance-snapshot${query(parameters)}`, { signal: request.signal, timeoutMs: 45_000 });
-          performance = { ...compact.performance_snapshot, source: "performance_snapshot" };
-          stale = compact.stale;
-        } catch (reason) {
-          if ((reason as { status?: number })?.status !== 404) throw reason;
-          const payload = await api<CanonicalTradingPreview>(`/api/trading/state${query(parameters)}`, { signal: request.signal, timeoutMs: 45_000 });
-          const normalized = normalizePerformanceSnapshot(payload);
-          if (!normalized) throw new Error("Canonical performance evidence is unavailable");
-          performance = normalized;
-          stale = payload.stale;
-        }
-        if (!cancelled) {
-          writeCachedLivePerformance(accountKeys, performance);
-          setState({ data: performance, status: stale ? "stale" : "ready" });
-        }
-      } catch {
-        if (!cancelled && !request.signal.aborted) setState((current) => ({ data: current.data, status: "error" }));
-      } finally {
-        if (controller === request) controller = null;
-        schedule();
-      }
-    };
-    load();
-    const refreshVisible = () => {
-      if (document.visibilityState !== "visible" || controller) return;
-      if (timer !== null) window.clearTimeout(timer);
-      timer = null;
-      void load();
-    };
-    document.addEventListener("visibilitychange", refreshVisible);
-    return () => {
-      cancelled = true;
-      controller?.abort();
-      if (timer !== null) window.clearTimeout(timer);
-      document.removeEventListener("visibilitychange", refreshVisible);
-    };
-  }, [accountKeys.join(","), enabled]);
-
-  return state;
-}
-
-function CanvasPerformanceStrip({ state }: { state: LivePerformanceState }) {
-  const snapshot = state.data;
-  const rows = [
-    { icon: BadgeDollarSign, label: "Net P&L", tone: performanceTone(snapshot?.net_pnl_today), value: performanceMoney(snapshot?.net_pnl_today, true), detail: "Today's realized net P&L plus current unrealized P&L." },
-    { icon: BriefcaseBusiness, label: "Open", tone: Number(snapshot?.open_position_count || 0) > 0 ? "info" : "neutral", value: snapshot ? String(snapshot.open_position_count) : "—", detail: "Current non-zero positions across the selected broker accounts." },
-    { icon: CircleDollarSign, label: "Unrealized", tone: performanceTone(snapshot?.unrealized_pnl), value: performanceMoney(snapshot?.unrealized_pnl, true), detail: "Mark-to-market P&L on currently open positions." },
-    { icon: WalletCards, label: "Realized today", tone: performanceTone(snapshot?.realized_pnl_today), value: performanceMoney(snapshot?.realized_pnl_today, true), detail: "Net P&L from flat-to-flat trade episodes closed today in New York market time." },
-    { icon: Landmark, label: "Available cash", tone: "neutral", value: performanceMoney(snapshot?.available_cash, false), detail: !snapshot ? "Waiting for the canonical trading snapshot." : snapshot.available_cash_basis === "available_funds" ? "Broker available funds across the selected accounts." : "Total cash fallback; broker available funds were not published." },
-  ];
-  const freshness = snapshot?.as_of ? new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit", timeZone: "America/New_York" }).format(new Date(snapshot.as_of)) : "";
-  const sourceDetail = snapshot?.source === "canonical_state_v2" ? " · normalized from canonical state v2" : "";
-  return <section aria-label="Live trading performance" className="canvas-performance-strip" data-status={state.status} title={freshness ? `Canonical trading snapshot as of ${freshness} ET${sourceDetail}` : "Canonical trading snapshot is loading"}>
-    <div className="canvas-performance-title"><Activity aria-hidden="true" size={13} /><span>Performance</span><i aria-hidden="true" /></div>
-    {rows.map(({ detail, icon: Icon, label, tone, value }) => <div className="canvas-performance-metric" data-tone={tone} key={label} title={detail}>
-      <span><Icon aria-hidden="true" size={11} />{label}</span>
-      <strong>{value}</strong>
-    </div>)}
-  </section>;
-}
-
-function performanceTone(value: unknown) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric) || numeric === 0) return "neutral";
-  return numeric > 0 ? "positive" : "negative";
-}
-
-function performanceMoney(value: unknown, signed: boolean) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return "—";
-  const compact = Math.abs(numeric) >= 100_000;
-  const formatted = new Intl.NumberFormat("en-US", {
-    currency: "USD",
-    maximumFractionDigits: compact ? 1 : 0,
-    notation: compact ? "compact" : "standard",
-    signDisplay: signed ? "exceptZero" : "auto",
-    style: "currency",
-  }).format(numeric);
-  return formatted.replace("-$", "−$");
 }
 
 export function CanvasConfigurationPage() {
@@ -643,7 +451,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   const previewClocks = useMemo(() => previewClockReadings(previewContext, liveMode ? new Date(liveClockInstant) : undefined), [liveClockInstant, liveMode, previewContext]);
   const clockIcons = [Clock3, MapPin, Globe2];
   const marketStatus = useMemo(() => historicalMarketStatus(previewContext.sessionDate, previewContext.previewTime), [previewContext]);
-  const livePerformance = useLivePerformanceState(!readOnly && !replayRun, liveMode ? resolvedAccountKeys : undefined);
+  const livePerformance = useTradingPerformance({ enabled: !readOnly && !replayRun, requestedAccountKeys: liveMode ? resolvedAccountKeys : undefined, mode: liveMode ? runtimeMode : "paper" });
   const performanceState: LivePerformanceState = replayRun
     ? {
         data: preview?.trading.performance_snapshot ?? null,
@@ -1264,7 +1072,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
         </div>
         <MarketStatusBadge value={marketStatus} />
         {contextError && !replayRun ? <span className="canvas-context-warning" title={contextError}>Saved clock</span> : null}
-        <div className="canvas-mode-context-slot">{modeControls}{readOnly ? null : <CanvasPerformanceStrip state={performanceState} />}</div>
+        <div className="canvas-mode-context-slot">{modeControls}{readOnly ? null : <TradingPerformanceStrip state={performanceState} />}</div>
         {managementEnabled ? <div className="canvas-toolbar-actions">{manager ? <button className="button secondary compact canvas-set-default" disabled={!workspaceState || !editableProfileReady} onClick={() => void saveDefaultLayout()} title="Save this composition as the shared draft default. Publish it from Trading Configuration before Live or Paper can use it." type="button"><Save size={13} /> {defaultSaved ? "Shared default saved" : "Save shared default"}</button> : null}<button aria-expanded={managementOpen} aria-label="Canvas management" className="button secondary compact canvas-management-toggle" onClick={() => setManagementOpen((open) => !open)} type="button"><PanelRightOpen size={13} /> Manage</button></div> : null}
       </header>
 
@@ -1570,7 +1378,6 @@ function ChartsQuotesContainerPreview({ canvasId, cutoffMs, instanceId, linkCont
   const main = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.main.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.main.visibleIndicators, liveMode, true, historicalMode, fullSession);
   const month = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.month.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.month.visibleIndicators, liveMode, true, historicalMode, false);
   const daily = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.daily.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.daily.visibleIndicators, liveMode, true, historicalMode, false);
-  const splitEvents = useStockSplitEvents(linkContext.symbol, cutoffMs);
   const presentations = useTickerPresentations([linkContext.symbol]);
   const logoUrl = presentations[linkContext.symbol]?.logo_url;
   const changeAsOf = new Date(cutoffMs).toISOString();
@@ -1590,7 +1397,7 @@ function ChartsQuotesContainerPreview({ canvasId, cutoffMs, instanceId, linkCont
   } : null;
   const chartProps = { changeAsOf, linkContext, logoUrl, onLinkContextChange, strategyDecisions, strategyPresentation, symbolEditable: false, toolbarVariant: "compact" as const, trading };
   return <ChartsQuotesMarketLayout
-    dailyChart={<ChartPreview {...chartProps} appearanceDefaults={CHARTS_QUOTES_CONTEXT_APPEARANCE_DEFAULTS} baseHeight={255} canvasId={canvasId} chartSettings={settings.charts_quotes.daily} fillHeight instanceId={`${instanceId}.daily`} liveChart={daily} onChartSettingsChange={(next) => updateSlot("daily", { ...next, timeframe: "1d" })} showTradeAnnotations={false} stockSplitEvents={splitEvents.events} timeframes={["1d"]} />}
+    dailyChart={<ChartPreview {...chartProps} appearanceDefaults={CHARTS_QUOTES_CONTEXT_APPEARANCE_DEFAULTS} baseHeight={255} canvasId={canvasId} chartSettings={settings.charts_quotes.daily} fillHeight instanceId={`${instanceId}.daily`} liveChart={daily} onChartSettingsChange={(next) => updateSlot("daily", { ...next, timeframe: "1d" })} showTradeAnnotations={false} timeframes={["1d"]} />}
     end={liveMode ? undefined : changeAsOf}
     layout={settings.charts_quotes.layout}
     mainChart={<ChartPreview {...chartProps} baseHeight={460} canvasId={canvasId} chartSettings={settings.charts_quotes.main} fillHeight fullSessionReview={fullSession} instanceId={`${instanceId}.main`} liveChart={main} onChartSettingsChange={(next) => updateSlot("main", next)} timeframes={HISTORICAL_TIMEFRAMES} />}
@@ -1708,7 +1515,7 @@ function containerFields(id: WorkspaceContainerId, settings: ContainerSettings, 
   const settingsId = id as keyof ContainerSettings;
   const current = settings[settingsId] as Record<string, unknown>;
   function patch(value: Record<string, unknown>) { updateSettings((state) => ({ ...state, [id]: { ...(state[settingsId] as Record<string, unknown>), ...value } })); }
-  if (id === "chart") return <><TextField label="Symbol" onChange={(value) => { patch({ symbol: value.toUpperCase() }); onLinkContextChange({ symbol: value.toUpperCase() }); }} value={linkContext.symbol} /><SelectField label="Bar interval" onChange={(value) => patch({ timeframe: value as CanvasChartTimeframe })} optionLabel={formatChartTimeframe} options={HISTORICAL_TIMEFRAMES} value={settings.chart.timeframe} /><CheckField checked={Boolean(current.showVolume)} label="Show volume" onChange={(value) => patch({ showVolume: value })} /></>;
+  if (id === "chart") return <><TextField label="Symbol" onChange={(value) => { patch({ symbol: value.toUpperCase() }); onLinkContextChange({ symbol: value.toUpperCase() }); }} value={linkContext.symbol} /><SelectField label="Bar interval" onChange={(value) => patch({ showSplitEvents: value === "1d", timeframe: value as CanvasChartTimeframe })} optionLabel={formatChartTimeframe} options={HISTORICAL_TIMEFRAMES} value={settings.chart.timeframe} /><CheckField checked={Boolean(current.showVolume)} label="Show volume" onChange={(value) => patch({ showVolume: value })} /><CheckField checked={Boolean(current.showSplitEvents)} label="Show stock split events" onChange={(value) => patch({ showSplitEvents: value })} /></>;
   if (id === "portfolio") return <><CheckField checked={Boolean(current.showExposure)} label="Show exposure" onChange={(value) => patch({ showExposure: value })} /><CheckField checked={Boolean(current.showPnl)} label="Show P&L" onChange={(value) => patch({ showPnl: value })} /></>;
   if (id === "strategy") return <CheckField checked={Boolean(current.showSignals)} label="Show recent signals" onChange={(value) => patch({ showSignals: value })} />;
   if (id === "charts_quotes") return <div className="canvas-settings-note">The main chart starts at 10 seconds with MACD. Its timeframe, indicators, pane layout, and appearance persist from controls inside the chart. The lower charts remain fixed to monthly and daily horizons. Drag the dividers between rows and columns to persist the workspace proportions.</div>;

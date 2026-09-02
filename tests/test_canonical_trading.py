@@ -490,6 +490,34 @@ class CanonicalProjectionTests(unittest.TestCase):
         self.assertEqual(report["strategies"][0]["strategy_id"], "breakout")
         self.assertEqual(report["strategies"][0]["strategy_revision"], 2)
 
+    def test_performance_report_exposes_unannualized_episode_sharpe(self) -> None:
+        executions = [
+            Execution("o1", "DU1", instrument(), "BUY", Decimal("10"), Decimal("100"), NOW),
+            Execution("c1", "DU1", instrument(), "SELL", Decimal("10"), Decimal("110"), NOW + timedelta(minutes=1)),
+            Execution("o2", "DU1", instrument(), "BUY", Decimal("10"), Decimal("100"), NOW + timedelta(minutes=2)),
+            Execution("c2", "DU1", instrument(), "SELL", Decimal("10"), Decimal("95"), NOW + timedelta(minutes=3)),
+        ]
+
+        report = build_performance_report(derive_trade_episodes(executions), executions, [])
+
+        self.assertAlmostEqual(float(report["summary"]["sharpe_ratio"]), 0.2357022604, places=9)
+        self.assertEqual(report["summary"]["sharpe_observation_count"], 2)
+        self.assertEqual(report["summary"]["sharpe_basis"], "closed_episode_net_return_unannualized")
+
+    def test_performance_report_keeps_unidentifiable_sharpe_unavailable(self) -> None:
+        one_episode = [
+            Execution("open", "DU1", instrument(), "BUY", Decimal("10"), Decimal("100"), NOW),
+            Execution("close", "DU1", instrument(), "SELL", Decimal("10"), Decimal("102"), NOW + timedelta(minutes=1)),
+        ]
+        constant_returns = [
+            *one_episode,
+            Execution("open-2", "DU1", instrument("MSFT", 272093), "BUY", Decimal("5"), Decimal("200"), NOW + timedelta(minutes=2)),
+            Execution("close-2", "DU1", instrument("MSFT", 272093), "SELL", Decimal("5"), Decimal("204"), NOW + timedelta(minutes=3)),
+        ]
+
+        self.assertIsNone(build_performance_report(derive_trade_episodes(one_episode), one_episode, [])["summary"]["sharpe_ratio"])
+        self.assertIsNone(build_performance_report(derive_trade_episodes(constant_returns), constant_returns, [])["summary"]["sharpe_ratio"])
+
     def test_performance_report_builds_exchange_time_pnl_candles(self) -> None:
         executions = [
             Execution("o1", "DU1", instrument(), "BUY", Decimal("10"), Decimal("100"), NOW - timedelta(minutes=25)),
@@ -534,6 +562,48 @@ class CanonicalProjectionTests(unittest.TestCase):
         self.assertEqual(snapshot["net_pnl_today"], "25")
         self.assertEqual(snapshot["available_cash"], "25000")
         self.assertEqual(snapshot["available_cash_basis"], "total_cash")
+
+    def test_performance_snapshot_publishes_reusable_headline_and_supporting_metrics(self) -> None:
+        projector = TradingStateProjector(TradingMode.PAPER, BrokerProvider.IBKR_CPAPI)
+        projector.set_accounts([BrokerAccount(
+            provider=BrokerProvider.IBKR_CPAPI,
+            account_id="DU1",
+            base_currency="USD",
+            can_view=True,
+            can_trade=True,
+            valid_at=NOW,
+        )])
+        projector.apply_position_snapshot(
+            "DU1",
+            "positions-1",
+            True,
+            [PositionState(
+                snapshot_id="positions-1",
+                account_id="DU1",
+                instrument=instrument(),
+                quantity=Decimal("10"),
+                market_price=Decimal("105"),
+                market_value=Decimal("1050"),
+                average_cost=Decimal("1000"),
+                average_price=Decimal("100"),
+                realized_pnl=Decimal("0"),
+                unrealized_pnl=Decimal("50"),
+                source_event_time=NOW,
+            )],
+        )
+
+        snapshot = performance_snapshot(
+            projector.snapshot(),
+            {"available_funds": "10000", "total_cash": "10000", "unrealized_pnl": "50"},
+            [],
+        )
+        metrics = {row["id"]: row for row in snapshot["metrics"]}
+
+        self.assertEqual(snapshot["schema_version"], 2)
+        self.assertEqual([row["id"] for row in snapshot["metrics"][:5]], ["net_pnl_today", "unrealized_pnl", "sharpe_ratio", "win_rate", "maximum_drawdown"])
+        self.assertEqual(metrics["unrealized_return"]["value"], "0.05")
+        self.assertFalse(metrics["sharpe_ratio"]["available"])
+        self.assertIsNone(metrics["sharpe_ratio"]["value"])
 
     def test_portfolio_metrics_keep_realized_pnl_after_account_is_flat(self) -> None:
         metrics = portfolio_metrics(

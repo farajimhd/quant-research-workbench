@@ -2108,27 +2108,7 @@ impl HistoricalEventSource {
         if through < after {
             return Err("split adjustment range ends before it starts".to_string());
         }
-        let start_date = after.with_timezone(&New_York).date_naive();
-        let end_date = through.with_timezone(&New_York).date_naive();
-        let sql = format!(
-            r#"SELECT
-                toString(source.execution_date) AS execution_date,
-                argMax(source.split_from, source.inserted_at) AS split_from,
-                argMax(source.split_to, source.inserted_at) AS split_to,
-                formatDateTime(max(source.inserted_at), '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS source_inserted_at
-            FROM q_live.market_stock_split_v1 AS source FINAL
-            WHERE upper(source.provider_ticker) = {ticker}
-              AND toDate(source.execution_date) >= toDate({start_date})
-              AND toDate(source.execution_date) <= toDate({end_date})
-              AND source.split_from > 0
-              AND source.split_to > 0
-            GROUP BY source.execution_date
-            ORDER BY source.execution_date
-            FORMAT JSONEachRow"#,
-            ticker = sql_literal(&ticker),
-            start_date = sql_literal(&start_date.to_string()),
-            end_date = sql_literal(&end_date.to_string()),
-        );
+        let sql = structure_split_adjustments_sql(&ticker, after, through);
         let text = self.query(&sql).await?;
         let mut adjustments = Vec::new();
         for line in text.lines().filter(|line| !line.trim().is_empty()) {
@@ -3249,6 +3229,36 @@ fn persisted_structure_events_sql(
     )
 }
 
+fn structure_split_adjustments_sql(
+    ticker: &str,
+    after: DateTime<Utc>,
+    through: DateTime<Utc>,
+) -> String {
+    let start_date = after.with_timezone(&New_York).date_naive();
+    let end_date = through.with_timezone(&New_York).date_naive();
+    format!(
+        r#"SELECT
+            toString(source.execution_date) AS execution_date,
+            argMax(source.split_from, source.inserted_at) AS split_from,
+            argMax(source.split_to, source.inserted_at) AS split_to,
+            formatDateTime(max(source.inserted_at), '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS source_inserted_at
+        FROM q_live.market_stock_split_v1 AS source FINAL
+        WHERE upper(source.provider_ticker) = {ticker}
+          AND toDate(source.execution_date) >= toDate({start_date})
+          AND toDate(source.execution_date) <= toDate({end_date})
+          AND source.inserted_at <= parseDateTime64BestEffort({through})
+          AND source.split_from > 0
+          AND source.split_to > 0
+        GROUP BY source.execution_date
+        ORDER BY source.execution_date
+        FORMAT JSONEachRow"#,
+        ticker = sql_literal(ticker),
+        start_date = sql_literal(&start_date.to_string()),
+        end_date = sql_literal(&end_date.to_string()),
+        through = sql_literal(&through.to_rfc3339()),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -3258,8 +3268,9 @@ mod tests {
         materialize_confirmed_recent_coverage, merge_coverage_intervals, merge_daily_chart_bars,
         normalize_ticker, parse_historical_tsv_row, persisted_structure_events_sql,
         recent_coverage_sql, recent_daily_trade_bars_sql, row_to_event, split_adjustment_factors,
-        ticker_filter, CoverageInterval, EventWindow, HistoricalMacroChartRow, HistoricalRow,
-        LatestEventCoverage, MarketSourceTier, RecentCoverageRow,
+        structure_split_adjustments_sql, ticker_filter, CoverageInterval, EventWindow,
+        HistoricalMacroChartRow, HistoricalRow, LatestEventCoverage, MarketSourceTier,
+        RecentCoverageRow,
     };
     use crate::config::HistoricalGatewayConfig;
     use chrono::{NaiveDate, TimeZone, Utc};
@@ -3773,5 +3784,19 @@ mod tests {
             split_adjustment_factors(effective_at, &adjustments),
             (1.0, 1.0)
         );
+    }
+
+    #[test]
+    fn split_adjustment_query_is_bounded_by_source_availability() {
+        let after = Utc.with_ymd_and_hms(2026, 8, 1, 8, 0, 0).unwrap();
+        let through = Utc.with_ymd_and_hms(2026, 8, 6, 14, 15, 0).unwrap();
+        let sql = structure_split_adjustments_sql("SUGP", after, through);
+
+        assert!(sql.contains("upper(source.provider_ticker) = 'SUGP'"));
+        assert!(sql.contains(
+            "source.inserted_at <= parseDateTime64BestEffort('2026-08-06T14:15:00+00:00')"
+        ));
+        assert!(sql.contains("argMax(source.split_from, source.inserted_at)"));
+        assert!(sql.contains("argMax(source.split_to, source.inserted_at)"));
     }
 }

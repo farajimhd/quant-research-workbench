@@ -10824,6 +10824,18 @@ button {
   }
 }
 
+@container canvas-mode-slot (max-width: 240px) {
+  .canvas-performance-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .canvas-performance-title,
+  .canvas-performance-metric:nth-child(2),
+  .canvas-performance-metric:nth-child(n + 5) {
+    display: none;
+  }
+}
+
 .canvas-toolbar-actions .canvas-set-default { margin-left: 0; }
 
 @media (max-width: 980px) {

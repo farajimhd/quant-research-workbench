@@ -528,6 +528,11 @@ def _summary(rows: list[TradeEpisode]) -> dict[str, Any]:
     loss_rate = Decimal(len(losses)) / len(rows) if rows else ZERO
     expectancy = win_rate * average_win - loss_rate * average_loss
     durations = [Decimal(str((row.closed_at - row.opened_at).total_seconds())) for row in rows]
+    episode_returns = [
+        row.net_pnl / (row.entry_price * row.quantity)
+        for row in rows
+        if row.entry_price > 0 and row.quantity > 0
+    ]
     return {
         "episode_count": len(rows),
         "win_count": len(wins),
@@ -547,7 +552,28 @@ def _summary(rows: list[TradeEpisode]) -> dict[str, Any]:
         "largest_loss": min((row.net_pnl for row in losses), default=ZERO),
         "average_duration_seconds": sum(durations, ZERO) / len(durations) if durations else ZERO,
         "maximum_drawdown": _maximum_drawdown(rows),
+        "sharpe_ratio": _sample_sharpe(episode_returns),
+        "sharpe_observation_count": len(episode_returns),
+        "sharpe_basis": "closed_episode_net_return_unannualized",
     }
+
+
+def _sample_sharpe(returns: list[Decimal]) -> Decimal | None:
+    """Return the unannualized closed-episode Sharpe when it is identifiable.
+
+    Episodes are irregularly timed, so annualizing them would imply a sampling
+    frequency the canonical journal does not have.  A sample deviation also
+    makes a one-episode or constant-return result explicitly unavailable rather
+    than reporting false precision.
+    """
+
+    if len(returns) < 2:
+        return None
+    mean = sum(returns, ZERO) / len(returns)
+    variance = sum(((value - mean) ** 2 for value in returns), ZERO) / (len(returns) - 1)
+    if variance <= 0:
+        return None
+    return mean / variance.sqrt()
 
 
 def _equity_curve(rows: list[TradeEpisode]) -> list[dict[str, Any]]:

@@ -240,8 +240,9 @@ def trading_state_payload(
         if snapshot.executions
         else episodes_from_round_trips(snapshot.closed_trades)
     )
-    payload["performance_snapshot"] = performance_snapshot(snapshot, metrics, episodes)
-    payload["performance_journal"] = build_performance_report(episodes, snapshot.executions, snapshot.orders)
+    report = build_performance_report(episodes, snapshot.executions, snapshot.orders)
+    payload["performance_snapshot"] = performance_snapshot(snapshot, metrics, episodes, report=report)
+    payload["performance_journal"] = report
     return payload
 
 
@@ -296,7 +297,13 @@ def _compact_historical_broker_projection(payload: dict[str, Any]) -> None:
         activity["payload"] = {}
 
 
-def performance_snapshot(snapshot: TradingStateSnapshot, metrics: dict[str, Any], episodes: list[Any]) -> dict[str, Any]:
+def performance_snapshot(
+    snapshot: TradingStateSnapshot,
+    metrics: dict[str, Any],
+    episodes: list[Any],
+    *,
+    report: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Build the compact, point-in-time performance contract used across UIs.
 
     Daily realized P&L is derived from completed flat-to-flat episodes whose
@@ -315,8 +322,26 @@ def performance_snapshot(snapshot: TradingStateSnapshot, metrics: dict[str, Any]
     has_available_funds = _has_metric(snapshot, "availablefunds")
     available_cash = metrics.get("available_funds") if has_available_funds else metrics.get("total_cash")
     open_positions = sum(1 for row in snapshot.positions if row.quantity != 0)
+    open_cost = sum((abs(row.average_price * row.quantity) for row in snapshot.positions if row.quantity != 0), Decimal("0"))
+    unrealized_return = unrealized / open_cost if open_cost else None
+    summary = dict((report or build_performance_report(episodes, snapshot.executions, snapshot.orders)).get("summary") or {})
+    headline_metrics = [
+        _performance_metric("net_pnl_today", "Net P&L today", realized_today + unrealized, "money", "signed", "Today's realized net P&L plus current unrealized P&L."),
+        _performance_metric("unrealized_pnl", "Unrealized", unrealized, "money", "signed", "Mark-to-market P&L on currently open positions."),
+        _performance_metric("sharpe_ratio", "Sharpe", summary.get("sharpe_ratio"), "ratio", "signed", "Mean closed-episode net return divided by its sample deviation; not annualized."),
+        _performance_metric("win_rate", "Win rate", summary.get("win_rate"), "percent", "favorable_high", "Winning closed episodes divided by all closed flat-to-flat episodes."),
+        _performance_metric("maximum_drawdown", "Max drawdown", summary.get("maximum_drawdown"), "money", "adverse_high", "Largest peak-to-trough decline in cumulative closed-episode net P&L."),
+    ]
+    supporting_metrics = [
+        _performance_metric("unrealized_return", "Open return", unrealized_return, "percent", "signed", "Current unrealized P&L divided by aggregate absolute open cost."),
+        _performance_metric("profit_factor", "Profit factor", summary.get("profit_factor"), "ratio", "favorable_high", "Gross winning dollars divided by gross losing dollars."),
+        _performance_metric("realized_pnl_today", "Realized today", realized_today, "money", "signed", "Net P&L from flat-to-flat episodes closed on the New York market date."),
+        _performance_metric("open_position_count", "Open positions", open_positions, "count", "neutral", "Current non-zero positions across the selected accounts."),
+        _performance_metric("available_cash", "Available cash", Decimal(str(available_cash or 0)), "money", "neutral", "Broker available funds, with total cash used only when available funds are absent."),
+    ]
     return json_safe(
         {
+            "schema_version": 2,
             "as_of": snapshot.as_of,
             "session_date": session_date.isoformat(),
             "net_pnl_today": realized_today + unrealized,
@@ -325,8 +350,28 @@ def performance_snapshot(snapshot: TradingStateSnapshot, metrics: dict[str, Any]
             "realized_pnl_today": realized_today,
             "available_cash": Decimal(str(available_cash or 0)),
             "available_cash_basis": "available_funds" if has_available_funds else "total_cash",
+            "metrics": [*headline_metrics, *supporting_metrics],
         }
     )
+
+
+def _performance_metric(
+    metric_id: str,
+    label: str,
+    value: Any,
+    value_format: str,
+    interpretation: str,
+    description: str,
+) -> dict[str, Any]:
+    return {
+        "id": metric_id,
+        "label": label,
+        "value": value,
+        "format": value_format,
+        "interpretation": interpretation,
+        "description": description,
+        "available": value is not None,
+    }
 
 
 def _has_metric(snapshot: TradingStateSnapshot, key: str) -> bool:

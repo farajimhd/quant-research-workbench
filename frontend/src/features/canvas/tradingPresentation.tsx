@@ -816,6 +816,8 @@ function TradingJournalPreview({ data, settings }: { data: CanonicalTradingPrevi
     <TradingFreshness data={data} />
     <div className="performance-kpi-grid">
       <JournalMetric detail="Closed episode profit after recorded commissions and fees." label="Net P&L" tone={numberTone(summary.net_pnl)} value={signedMoney(summary.net_pnl)} />
+      <JournalMetric detail="Mark-to-market P&L on currently open positions; excluded from the closed-episode curve below." label="Unrealized" tone={numberTone(data.performance_snapshot?.unrealized_pnl ?? data.portfolio.metrics.unrealized_pnl)} value={signedMoney(data.performance_snapshot?.unrealized_pnl ?? data.portfolio.metrics.unrealized_pnl)} />
+      <JournalMetric detail="Mean closed-episode net return divided by its sample deviation; not annualized and unavailable with fewer than two varying returns." label="Sharpe" tone={numberTone(summary.sharpe_ratio)} value={ratioNumber(summary.sharpe_ratio)} />
       <JournalMetric detail="Average expected dollars per closed trade episode." label="Expectancy" tone={numberTone(summary.expectancy)} value={signedMoney(summary.expectancy)} />
       <JournalMetric detail="Gross winning dollars divided by gross losing dollars." label="Profit factor" tone={metricThresholdTone(summary.profit_factor, 1)} value={ratioNumber(summary.profit_factor)} />
       <JournalMetric detail="Winning episodes divided by all closed episodes." label="Win rate" tone={metricThresholdTone(summary.win_rate, 0.5)} value={ratioPct(summary.win_rate)} />

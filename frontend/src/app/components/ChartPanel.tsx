@@ -547,6 +547,7 @@ type ChartPanelProps = {
   onVisibleSupervisionGroupsChange?: (value: string[]) => void;
   onLiveEntryClose?: () => void;
   onLoadEarlier?: () => void;
+  onShowSplitEventsChange?: (value: boolean) => void;
   payload: ChartPayload | null;
   periodEnd?: string;
   periodMax?: string;
@@ -557,6 +558,7 @@ type ChartPanelProps = {
   daySeparatorsVisible?: boolean;
   enableFullscreen?: boolean;
   showReferenceLine?: boolean;
+  showSplitEvents?: boolean;
   showIndicatorControls?: boolean;
   showSupervisionControls?: boolean;
   strategyPresentationEnabled?: boolean;
@@ -652,6 +654,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   onVisibleSupervisionGroupsChange,
   onLiveEntryClose,
   onLoadEarlier,
+  onShowSplitEventsChange,
   periodEnd,
   periodMax,
   periodMin,
@@ -662,6 +665,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   daySeparatorsVisible,
   enableFullscreen = true,
   showReferenceLine = true,
+  showSplitEvents = false,
   showIndicatorControls = true,
   showSupervisionControls = false,
   strategyPresentationEnabled = false,
@@ -1791,7 +1795,12 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           anchor={chartSettingsAnchor}
           onChange={updateChartSettings}
           onClose={() => setChartSettingsOpen(false)}
-          onReset={resetChartSettings}
+          onReset={() => {
+            resetChartSettings();
+            onShowSplitEventsChange?.(timeframe === "1d");
+          }}
+          onShowSplitEventsChange={onShowSplitEventsChange}
+          showSplitEvents={showSplitEvents}
           settings={chartSettings}
         />
       ) : null}
@@ -3230,12 +3239,16 @@ function ChartSettingsPopover({
   onChange,
   onClose,
   onReset,
+  onShowSplitEventsChange,
+  showSplitEvents,
   settings
 }: {
   anchor: HTMLElement | null;
   onChange: <K extends keyof ChartAppearanceSettings>(key: K, value: ChartAppearanceSettings[K]) => void;
   onClose: () => void;
   onReset: () => void;
+  onShowSplitEventsChange?: (value: boolean) => void;
+  showSplitEvents: boolean;
   settings: ChartAppearanceSettings;
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -3414,6 +3427,16 @@ function ChartSettingsPopover({
           </>
         ) : null}
       </ChartSettingsSection>
+
+      {onShowSplitEventsChange ? <ChartSettingsSection title="Corporate Actions">
+        <p className="chart-settings-help">
+          Split markers use the chart's point-in-time corporate-action authority and are placed on the execution date.
+        </p>
+        <label className="chart-setting-toggle">
+          <input checked={showSplitEvents} type="checkbox" onChange={(event) => onShowSplitEventsChange(event.target.checked)} />
+          Show stock split events
+        </label>
+      </ChartSettingsSection> : null}
 
       <ChartSettingsSection title="Layout">
         <p className="chart-settings-help">

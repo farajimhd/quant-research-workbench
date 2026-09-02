@@ -41,11 +41,16 @@ export type LiveChartsContainerProps = {
   session: TradingSession;
   showDayChart: boolean;
   showFiveMinuteChart: boolean;
+  splitEventError: string;
+  splitVisibility: { day: boolean; fiveMinute: boolean; main: boolean };
   onCompactVisibleColumnsChange: (columns: string[]) => void;
   onDraftChange: (draft: TradeDraft) => void;
   onLiveEntryClose: () => void;
   onMainTimeframeChange: (timeframe: string) => void;
   onMainVisibleColumnsChange: (columns: string[]) => void;
+  onShowDaySplitEventsChange: (visible: boolean) => void;
+  onShowFiveMinuteSplitEventsChange: (visible: boolean) => void;
+  onShowMainSplitEventsChange: (visible: boolean) => void;
   onStage: (side?: "BUY" | "SELL", status?: string, context?: Partial<StageOrderContext>) => void;
   onToggleDayChart: () => void;
   onToggleFiveMinuteChart: () => void;
@@ -71,6 +76,9 @@ export function LiveChartsContainer({
   onLiveEntryClose,
   onMainTimeframeChange,
   onMainVisibleColumnsChange,
+  onShowDaySplitEventsChange,
+  onShowFiveMinuteSplitEventsChange,
+  onShowMainSplitEventsChange,
   onStage,
   onToggleDayChart,
   onToggleFiveMinuteChart,
@@ -82,6 +90,8 @@ export function LiveChartsContainer({
   session,
   showDayChart,
   showFiveMinuteChart,
+  splitEventError,
+  splitVisibility,
 }: LiveChartsContainerProps) {
   const mainOptions = mainPayload?.options;
   const compactOptions = fiveMinutePayload?.options ?? dayPayload?.options;
@@ -100,6 +110,7 @@ export function LiveChartsContainer({
           </div>
           <ChartPanel
             catalogColumns={catalog?.columns ?? []}
+            dataStatus={splitVisibility.main && splitEventError ? "Split events unavailable" : undefined}
             displayItemOptions={mainOptions?.display_items ?? catalog?.displayItems ?? []}
             emptyMessage="Select a scanner row to load charts."
             errorMessage={chartError}
@@ -110,12 +121,14 @@ export function LiveChartsContainer({
             loading={chartLoading}
             liveEntryLine={liveEntryLine}
             onPeriodChange={() => undefined}
+            onShowSplitEventsChange={onShowMainSplitEventsChange}
             onTickerChange={() => undefined}
             onTimeframeChange={onMainTimeframeChange}
             onVisibleColumnsChange={onMainVisibleColumnsChange}
             payload={mainPayload}
             periodEnd={session.sessionDate}
             periodStart={session.sessionDate}
+            showSplitEvents={splitVisibility.main}
             ticker={selectedTicker}
             tickerInputWidth={130}
             timeframe={mainTimeframe}
@@ -136,6 +149,7 @@ export function LiveChartsContainer({
                 </div>
                 <ChartPanel
                   catalogColumns={catalog?.columns ?? []}
+                  dataStatus={splitVisibility.day && splitEventError ? "Split events unavailable" : undefined}
                   displayItemOptions={[]}
                   emptyMessage="No daily chart data."
                   errorMessage={chartError}
@@ -145,10 +159,12 @@ export function LiveChartsContainer({
                   loading={dayChartLoading}
                   daySeparatorsVisible={false}
                   onTickerChange={() => undefined}
+                  onShowSplitEventsChange={onShowDaySplitEventsChange}
                   onTimeframeChange={() => undefined}
                   onVisibleColumnsChange={() => undefined}
                   payload={dayPayload}
                   showIndicatorControls={false}
+                  showSplitEvents={splitVisibility.day}
                   ticker={selectedTicker}
                   timeframe="1d"
                   timeframes={["1d"]}
@@ -166,6 +182,7 @@ export function LiveChartsContainer({
                 </div>
                 <ChartPanel
                   catalogColumns={catalog?.columns ?? []}
+                  dataStatus={splitVisibility.fiveMinute && splitEventError ? "Split events unavailable" : undefined}
                   displayItemOptions={compactOptions?.display_items ?? catalog?.displayItems ?? []}
                   emptyMessage="No 5m chart data."
                   errorMessage={chartError}
@@ -175,9 +192,11 @@ export function LiveChartsContainer({
                   loading={fiveMinuteChartLoading}
                   initialFitMode="last_market_day"
                   onTickerChange={() => undefined}
+                  onShowSplitEventsChange={onShowFiveMinuteSplitEventsChange}
                   onTimeframeChange={() => undefined}
                   onVisibleColumnsChange={onCompactVisibleColumnsChange}
                   payload={fiveMinutePayload}
+                  showSplitEvents={splitVisibility.fiveMinute}
                   ticker={selectedTicker}
                   timeframe="5m"
                   timeframes={["5m"]}

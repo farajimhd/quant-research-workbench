@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import type { ChartPayload } from "../../app/components/ChartPanel";
+import { stockSplitTimelineEventsForCandles, useStockSplitEvents } from "../../app/components/chartSplitEvents";
 import type { CatalogPayload, Scope } from "./contracts";
 import {
   buildLiveEntryLine,
@@ -97,9 +98,11 @@ export function LiveChartWindow({
   const [dayChartLoading, setDayChartLoading] = useState(false);
   const [fiveMinuteChartLoading, setFiveMinuteChartLoading] = useState(false);
   const [chartErrors, setChartErrors] = useState({ day: "", fiveMinute: "", main: "" });
+  const [splitVisibility, setSplitVisibility] = useState(() => readSplitVisibility(chart.id, mainTimeframe));
   const chartError = [chartErrors.main, showDayChart ? chartErrors.day : "", showFiveMinuteChart ? chartErrors.fiveMinute : ""].filter(Boolean).join(" ");
   const liveRow = latestLiveChartRow(chart, marketRows, scannerRows);
   const selectedTime = clockTimestampSeconds(session.sessionDate, session.barTime) ?? rowTimestampSeconds(chart.row, session.sessionDate, session.barTime);
+  const splitEvents = useStockSplitEvents(chart.ticker, selectedTime === null ? Number.NaN : selectedTime * 1000, splitVisibility.main || splitVisibility.day || splitVisibility.fiveMinute);
   const selectedOpen =
     chartOpenAtTime(mainPayload, selectedTime) ||
     numberValue(liveRow, "current_open") ||
@@ -140,6 +143,31 @@ export function LiveChartWindow({
     () => castOpenChartPayload(fiveMinutePayload, selectedTime, selectedOpen),
     [fiveMinutePayload, selectedOpen, selectedTime],
   );
+  const mainPayloadWithSplits = useMemo(
+    () => withSplitEvents(mainOpenOnlyPayload, chart.ticker, splitEvents.events, splitVisibility.main),
+    [chart.ticker, mainOpenOnlyPayload, splitEvents.events, splitVisibility.main],
+  );
+  const dayPayloadWithSplits = useMemo(
+    () => withSplitEvents(dayOpenOnlyPayload, chart.ticker, splitEvents.events, splitVisibility.day),
+    [chart.ticker, dayOpenOnlyPayload, splitEvents.events, splitVisibility.day],
+  );
+  const fiveMinutePayloadWithSplits = useMemo(
+    () => withSplitEvents(fiveMinuteOpenOnlyPayload, chart.ticker, splitEvents.events, splitVisibility.fiveMinute),
+    [chart.ticker, fiveMinuteOpenOnlyPayload, splitEvents.events, splitVisibility.fiveMinute],
+  );
+
+  function updateSplitVisibility(slot: keyof SplitVisibility, visible: boolean) {
+    setSplitVisibility((current) => {
+      const next = { ...current, [slot]: visible };
+      writeSplitVisibility(chart.id, next);
+      return next;
+    });
+  }
+
+  function changeMainTimeframe(timeframe: string) {
+    if (timeframe !== mainTimeframe) updateSplitVisibility("main", timeframe === "1d");
+    onMainTimeframeChange(timeframe);
+  }
 
   useEffect(() => {
     let active = true;
@@ -188,12 +216,12 @@ export function LiveChartWindow({
       chartLoading={chartLoading}
       compactVisibleColumns={compactVisibleColumns}
       dayChartLoading={dayChartLoading}
-      dayPayload={dayOpenOnlyPayload}
+      dayPayload={dayPayloadWithSplits}
       draft={draft}
       fiveMinuteChartLoading={fiveMinuteChartLoading}
-      fiveMinutePayload={fiveMinuteOpenOnlyPayload}
+      fiveMinutePayload={fiveMinutePayloadWithSplits}
       liveEntryLine={liveEntryLine}
-      mainPayload={mainOpenOnlyPayload}
+      mainPayload={mainPayloadWithSplits}
       mainTimeframe={mainTimeframe}
       mainVisibleColumns={mainVisibleColumns}
       orders={orders}
@@ -204,14 +232,55 @@ export function LiveChartWindow({
       session={session}
       showDayChart={showDayChart}
       showFiveMinuteChart={showFiveMinuteChart}
+      splitEventError={splitEvents.error}
+      splitVisibility={splitVisibility}
       onCompactVisibleColumnsChange={onCompactVisibleColumnsChange}
       onDraftChange={onDraftChange}
       onLiveEntryClose={closeLivePosition}
-      onMainTimeframeChange={onMainTimeframeChange}
+      onMainTimeframeChange={changeMainTimeframe}
       onMainVisibleColumnsChange={onMainVisibleColumnsChange}
+      onShowDaySplitEventsChange={(visible) => updateSplitVisibility("day", visible)}
+      onShowFiveMinuteSplitEventsChange={(visible) => updateSplitVisibility("fiveMinute", visible)}
+      onShowMainSplitEventsChange={(visible) => updateSplitVisibility("main", visible)}
       onStage={onStage}
       onToggleDayChart={onToggleDayChart}
       onToggleFiveMinuteChart={onToggleFiveMinuteChart}
     />
   );
+}
+
+type SplitVisibility = { day: boolean; fiveMinute: boolean; main: boolean };
+
+function splitVisibilityStorageKey(chartId: string) {
+  return `quant-research-workbench.live-chart.${chartId}.split-events.v1`;
+}
+
+function readSplitVisibility(chartId: string, mainTimeframe: string): SplitVisibility {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(splitVisibilityStorageKey(chartId)) || "null") as Partial<SplitVisibility> | null;
+    return {
+      day: typeof stored?.day === "boolean" ? stored.day : true,
+      fiveMinute: typeof stored?.fiveMinute === "boolean" ? stored.fiveMinute : false,
+      main: typeof stored?.main === "boolean" ? stored.main : mainTimeframe === "1d",
+    };
+  } catch {
+    return { day: true, fiveMinute: false, main: mainTimeframe === "1d" };
+  }
+}
+
+function writeSplitVisibility(chartId: string, visibility: SplitVisibility) {
+  try {
+    window.localStorage.setItem(splitVisibilityStorageKey(chartId), JSON.stringify(visibility));
+  } catch {
+    // Keep the in-memory choice usable when storage is unavailable.
+  }
+}
+
+function withSplitEvents(payload: ChartPayload | null, symbol: string, events: Parameters<typeof stockSplitTimelineEventsForCandles>[1], visible: boolean) {
+  if (!payload) return payload;
+  const existing = (payload.timeline_events ?? []).filter((event) => !event.id.startsWith("stock-split:"));
+  return {
+    ...payload,
+    timeline_events: visible ? [...existing, ...stockSplitTimelineEventsForCandles(symbol, events, payload.candles)] : existing,
+  };
 }

@@ -4826,7 +4826,7 @@ def trading_portfolio_management_command(
 def trading_performance_snapshot(account_type: str = "paper", account_keys: str = "", refresh: bool = False, mode: str = "paper", run_id: str = "", output_root: str = str(BACKTEST_ARTIFACT_ROOT)) -> dict[str, Any]:
     state = _canonical_trading_state(account_type, account_keys, refresh, mode=mode, run_id=run_id, output_root=output_root)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "mode": state["mode"],
         "provider": state["provider"],
         "as_of": state["as_of"],

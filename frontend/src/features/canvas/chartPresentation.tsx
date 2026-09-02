@@ -5,6 +5,7 @@ import type { UTCTimestamp } from "lightweight-charts";
 import { api } from "../../api/client";
 import { CANVAS_SETTINGS_STORAGE_KEY, type CanvasChartTimeframe, type CanvasLinkContext } from "../../app/canvasWorkspace";
 import { ChartPanel, type ChartAppearanceDefaults, type ChartPayload, type LiveEntryLine } from "../../app/components/ChartPanel";
+import { stockSplitTimelineEvents, useStockSplitEvents } from "../../app/components/chartSplitEvents";
 import {
   DEFAULT_STRATEGY_CHART_PRESENTATION,
   strategyInvalidationZones,
@@ -42,7 +43,6 @@ import {
 import {
   extendedSessionRegions,
   qmdMarketSignalChartMarkers,
-  type StockSplitEvent,
 } from "./chartData";
 import { boundedUnit, finiteNumber } from "./numbers";
 import { formatQuantity, money, nestedValue } from "./presentationFormat";
@@ -75,7 +75,6 @@ export function ChartPreview({
   strategyDecisions = EMPTY_STRATEGY_DECISIONS,
   strategyPresentation = DEFAULT_STRATEGY_CHART_PRESENTATION,
   showTradeAnnotations = true,
-  stockSplitEvents = [],
   trading,
 }: {
   appearanceDefaults?: ChartAppearanceDefaults;
@@ -97,7 +96,6 @@ export function ChartPreview({
   strategyDecisions?: StrategyDecisionEvent[];
   strategyPresentation?: StrategyChartPresentation;
   showTradeAnnotations?: boolean;
-  stockSplitEvents?: StockSplitEvent[];
   trading?: CanonicalTradingPreview;
 }) {
   const [barGptForecasts, setBarGptForecasts] = useState<BarGptForecast[]>([]);
@@ -107,6 +105,7 @@ export function ChartPreview({
   const indicators = liveChart.indicators;
   const visibleIndicators = chartSettings.visibleIndicators;
   const timeframe = chartSettings.timeframe;
+  const splitEvents = useStockSplitEvents(linkContext.symbol, Date.parse(changeAsOf), chartSettings.showSplitEvents);
   const latestChartBar = liveChart.bars[liveChart.bars.length - 1];
   const barGptClockUs = latestChartBar ? Math.floor(Date.parse(latestChartBar.bar_end || latestChartBar.bar_start) * 1000) : undefined;
   const showForecastCandles = chartSettings.visibleIndicators.includes("model.bargpt.forecast.candles");
@@ -196,19 +195,10 @@ export function ChartPreview({
       strategyPresentation,
     );
     const realizedCandles = liveChart.bars.map((bar) => ({ close: bar.close, high: bar.high, low: bar.low, open: bar.open, time: Date.parse(bar.bar_start) / 1000 }));
-    const timelineEvents = stockSplitEvents.flatMap((event) => {
-      const bar = liveChart.bars.find((candidate) => candidate.session_date === event.execution_date);
-      const direction = event.direction === "reverse" ? "reverse" : event.direction === "forward" ? "forward" : "stock";
-      const ratio = `${formatSplitPart(event.split_to)}-for-${formatSplitPart(event.split_from)}`;
-      return [{
-        ariaLabel: `${linkContext.symbol} ${ratio} ${direction} split executed ${event.execution_date}`,
-        id: event.id,
-        kind: "split" as const,
-        label: "S",
-        time: bar ? Date.parse(bar.bar_start) / 1000 : Date.parse(`${event.execution_date}T12:00:00Z`) / 1000,
-        title: `${ratio} ${direction} split · executed ${event.execution_date}`,
-      }];
-    });
+    const timelineEvents = stockSplitTimelineEvents(linkContext.symbol, splitEvents.events, liveChart.bars.map((bar) => ({
+      sessionDate: bar.session_date || bar.bar_start.slice(0, 10),
+      time: Date.parse(bar.bar_start) / 1000,
+    })));
     const lastRealizedTime = realizedCandles[realizedCandles.length - 1]?.time ?? 0;
     const forecastCandles = showForecastCandles ? barGptForecasts
       .filter((row) => row.geometry_valid)
@@ -245,9 +235,14 @@ export function ChartPreview({
       trade_annotations: showTradeAnnotations ? positionLifecycleAnnotations(trading, linkContext.symbol) : [],
       volume: chartSettings.showVolume ? liveChart.bars.map((bar) => ({ color: bar.close >= bar.open ? "var(--success)" : "var(--danger)", time: Date.parse(bar.bar_start) / 1000, value: bar.volume })) : [],
     };
-  }, [barGptForecasts, barGptQuantile, barGptVersion, chartSettings.showVolume, forecastLineComponents.join("|"), indicators, linkContext.symbol, liveChart.bars, liveChart.marketSignalEvents, liveChart.structureEvents, liveChart.structureLevelHistory, showForecastCandles, showTradeAnnotations, stockSplitEvents, strategyDecisions, strategyPresentation, timeframe, trading, visibleIndicators]);
+  }, [barGptForecasts, barGptQuantile, barGptVersion, chartSettings.showVolume, forecastLineComponents.join("|"), indicators, linkContext.symbol, liveChart.bars, liveChart.marketSignalEvents, liveChart.structureEvents, liveChart.structureLevelHistory, showForecastCandles, showTradeAnnotations, splitEvents.events, strategyDecisions, strategyPresentation, timeframe, trading, visibleIndicators]);
   function updateChart(symbol: string, nextTimeframe: CanvasChartTimeframe) {
-    onChartSettingsChange({ ...chartSettings, symbol, timeframe: nextTimeframe });
+    onChartSettingsChange({
+      ...chartSettings,
+      showSplitEvents: nextTimeframe === timeframe ? chartSettings.showSplitEvents : nextTimeframe === "1d",
+      symbol,
+      timeframe: nextTimeframe,
+    });
     onLinkContextChange({ symbol });
   }
   const latestBar = liveChart.bars[liveChart.bars.length - 1];
@@ -322,12 +317,8 @@ export function ChartPreview({
       <label><span>Trigger</span><select aria-label="BarGPT trigger mode" onChange={(event) => onChartSettingsChange({ ...chartSettings, barGptTriggerMode: event.target.value as CanvasChartSettings["barGptTriggerMode"] })} value={barGptTriggerMode}><option value="auto">Auto</option><option value="manual">Manual</option></select></label>
       {barGptTriggerMode === "manual" ? <button disabled={!barGptReady || barGptInferring} onClick={() => void runManualInference()} type="button">{barGptInferring ? "Running…" : "Infer now"}</button> : null}
     </div> : null}
-    <ChartPanel appearanceDefaults={appearanceDefaults} baseHeight={baseHeight} canLoadEarlier={liveChart.canLoadEarlier} dataStatus={timeframe === "1d" && liveChart.splitAdjusted ? "Split-adjusted" : undefined} deferInitialFitUntilLoaded={fullSessionReview} displayItemOptions={CHART_INDICATORS} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} fillHeight={fillHeight} indicatorOptions={[]} initialFitMode="default" liveEntryLine={positionLine} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => onChartSettingsChange({ ...chartSettings, visibleIndicators: nextVisibleIndicators })} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} strategyPresentationEnabled={showTradeAnnotations} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={timeframes} toolbarVariant={toolbarVariant} visibleColumns={visibleIndicators} />
+    <ChartPanel appearanceDefaults={appearanceDefaults} baseHeight={baseHeight} canLoadEarlier={liveChart.canLoadEarlier} dataStatus={splitEvents.error ? "Split events unavailable" : timeframe === "1d" && liveChart.splitAdjusted ? "Split-adjusted" : undefined} deferInitialFitUntilLoaded={fullSessionReview} displayItemOptions={CHART_INDICATORS} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} fillHeight={fillHeight} indicatorOptions={[]} initialFitMode="default" liveEntryLine={positionLine} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onShowSplitEventsChange={(showSplitEvents) => onChartSettingsChange({ ...chartSettings, showSplitEvents })} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => onChartSettingsChange({ ...chartSettings, visibleIndicators: nextVisibleIndicators })} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} showSplitEvents={chartSettings.showSplitEvents} strategyPresentationEnabled={showTradeAnnotations} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={timeframes} toolbarVariant={toolbarVariant} visibleColumns={visibleIndicators} />
   </div>;
-}
-
-function formatSplitPart(value: number) {
-  return Number.isInteger(value) ? String(value) : value.toLocaleString(undefined, { maximumFractionDigits: 4 });
 }
 
 export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | undefined, symbol: string): NonNullable<ChartPayload["trade_annotations"]> {

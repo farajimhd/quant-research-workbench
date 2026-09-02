@@ -65,7 +65,13 @@ export function normalizeSettings(stored: Partial<ContainerSettings>): Container
     : normalizedStoredWatchlistIds;
   return {
     version: DEFAULT_SETTINGS.version,
-    chart: { ...DEFAULT_SETTINGS.chart, ...(stored.chart ?? {}), timeframe, visibleIndicators: [...visibleIndicators] },
+    chart: {
+      ...DEFAULT_SETTINGS.chart,
+      ...(stored.chart ?? {}),
+      showSplitEvents: typeof stored.chart?.showSplitEvents === "boolean" ? stored.chart.showSplitEvents : timeframe === "1d",
+      timeframe,
+      visibleIndicators: [...visibleIndicators],
+    },
     charts_quotes: {
       main: normalizeChartSlot(stored.charts_quotes?.main, DEFAULT_SETTINGS.charts_quotes.main),
       month: { ...normalizeChartSlot(stored.charts_quotes?.month, DEFAULT_SETTINGS.charts_quotes.month), timeframe: "1mo" },
@@ -122,7 +128,13 @@ function normalizeChartSlot(stored: Partial<CanvasChartSettings> | undefined, de
   const visibleIndicators = (Array.isArray(stored?.visibleIndicators) ? stored.visibleIndicators.filter((value): value is string => typeof value === "string") : defaults.visibleIndicators)
     .map((id) => id === "indicator.execution_vwap" ? "indicator.vwap" : id)
     .filter((id) => id !== "strategy.presentation");
-  return { ...defaults, ...(stored ?? {}), timeframe, visibleIndicators: Array.from(new Set(visibleIndicators)) };
+  return {
+    ...defaults,
+    ...(stored ?? {}),
+    showSplitEvents: typeof stored?.showSplitEvents === "boolean" ? stored.showSplitEvents : timeframe === "1d",
+    timeframe,
+    visibleIndicators: Array.from(new Set(visibleIndicators)),
+  };
 }
 
 function normalizeChartsQuotesLayout(stored: Partial<ChartsQuotesLayoutSettings> | undefined): ChartsQuotesLayoutSettings {

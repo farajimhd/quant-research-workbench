@@ -225,6 +225,7 @@ export type CanonicalTradingPreview = {
   };
 };
 export type PerformanceSnapshot = {
+  schema_version?: number;
   as_of: string;
   session_date: string;
   net_pnl_today: string | number;
@@ -233,7 +234,17 @@ export type PerformanceSnapshot = {
   realized_pnl_today: string | number;
   available_cash: string | number;
   available_cash_basis: "available_funds" | "total_cash" | string;
+  metrics?: PerformanceMetric[];
   source?: "performance_snapshot" | "canonical_state_v2";
+};
+export type PerformanceMetric = {
+  id: string;
+  label: string;
+  value: string | number | null;
+  format: "money" | "percent" | "ratio" | "count" | string;
+  interpretation: "signed" | "favorable_high" | "adverse_high" | "neutral" | string;
+  description: string;
+  available: boolean;
 };
 export type LivePerformanceState = { data: PerformanceSnapshot | null; status: "loading" | "ready" | "stale" | "error" };
 export type PerformanceSnapshotResponse = {
@@ -440,6 +451,7 @@ export type CanvasLiveChartState = {
 export type BarGptChartVersion = "v2" | "v3";
 export type BarGptChartQuantile = "q10" | "q50" | "q90";
 export type CanvasChartSettings = {
+  showSplitEvents: boolean;
   showVolume: boolean;
   symbol: string;
   timeframe: CanvasChartTimeframe;

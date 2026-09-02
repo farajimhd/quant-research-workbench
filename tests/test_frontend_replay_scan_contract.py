@@ -68,19 +68,32 @@ def test_charts_quotes_scopes_trade_annotations_to_the_main_chart() -> None:
     assert canvas_source.count("showTradeAnnotations={false}") == 2
 
 
-def test_charts_quotes_scopes_causal_split_events_to_the_daily_chart_axis() -> None:
+def test_charts_share_causal_split_events_with_timeframe_defaults_and_controls() -> None:
     canvas_source = CANVAS_PAGE.read_text(encoding="utf-8")
     chart_source = CHART_PRESENTATION.read_text(encoding="utf-8")
-    chart_data_source = (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "chartData.ts").read_text(encoding="utf-8")
+    configuration_source = (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "configuration.ts").read_text(encoding="utf-8")
+    settings_source = (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "settings.ts").read_text(encoding="utf-8")
+    split_source = (REPO_ROOT / "frontend" / "src" / "app" / "components" / "chartSplitEvents.ts").read_text(encoding="utf-8")
     renderer_source = (REPO_ROOT / "frontend" / "src" / "app" / "components" / "ChartPanel.tsx").read_text(encoding="utf-8")
+    live_window_source = (REPO_ROOT / "frontend" / "src" / "features" / "live-trading" / "LiveChartWindow.tsx").read_text(encoding="utf-8")
+    live_charts_source = (REPO_ROOT / "frontend" / "src" / "features" / "live-trading" / "LiveChartsContainer.tsx").read_text(encoding="utf-8")
 
-    assert canvas_source.count("stockSplitEvents={splitEvents.events}") == 1
-    assert "useStockSplitEvents(linkContext.symbol, cutoffMs)" in canvas_source
-    assert "candidate.session_date === event.execution_date" in chart_source
-    assert "Date.parse(`${event.execution_date}T12:00:00Z`)" in chart_source
-    assert 'kind: "split" as const' in chart_source
-    assert 'dataStatus={timeframe === "1d" && liveChart.splitAdjusted ? "Split-adjusted" : undefined}' in chart_source
-    assert "/ticker-facts/${encodeURIComponent(ticker)}/splits" in chart_data_source
+    assert "stockSplitEvents=" not in canvas_source
+    assert "useStockSplitEvents(linkContext.symbol, Date.parse(changeAsOf), chartSettings.showSplitEvents)" in chart_source
+    assert 'showSplitEvents: nextTimeframe === timeframe ? chartSettings.showSplitEvents : nextTimeframe === "1d"' in chart_source
+    assert "onShowSplitEventsChange" in chart_source
+    assert "showSplitEvents: true" in configuration_source
+    assert configuration_source.count("showSplitEvents: false") >= 3
+    assert 'typeof stored?.showSplitEvents === "boolean" ? stored.showSplitEvents : timeframe === "1d"' in settings_source
+    assert "Show stock split events" in renderer_source
+    assert "Date.parse(`${event.execution_date}T12:00:00Z`)" in split_source
+    assert 'kind: "split"' in split_source
+    assert 'splitEvents.error ? "Split events unavailable"' in chart_source
+    assert "/ticker-facts/${encodeURIComponent(ticker)}/splits" in split_source
+    assert "readSplitVisibility(chart.id, mainTimeframe)" in live_window_source
+    assert "selectedTime === null ? Number.NaN : selectedTime * 1000" in live_window_source
+    assert "timeline_events: visible ? [...existing" in live_window_source
+    assert live_charts_source.count("onShowSplitEventsChange=") == 3
     assert "payload.timeline_events" in renderer_source
     assert ".map((event) => ({ time: event.time }))" in renderer_source
     assert "timeToCoordinate(event.time as Time)" in renderer_source
