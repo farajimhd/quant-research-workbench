@@ -70,7 +70,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 42
+CONFIGURATION_SCHEMA_VERSION = 43
 MARKET_DISCOVERY_MATERIALIZATION_RUN_ID = "market-discovery:materialized-configuration"
 _CONFIGURATION_BASE_CACHE_LOCK = threading.RLock()
 _CONFIGURATION_BASE_CACHE: tuple[str, float, dict[str, Any] | None] = ("", 0.0, None)
@@ -4102,7 +4102,6 @@ def _default_draft() -> dict[str, Any]:
         "downside_loss_guard": {
             "enabled": True,
             "timeframe": "1s",
-            "bearish_choch": True,
             "macd_closed": True,
             "below_vwap": True,
             "vwap_source_id": "indicator.vwap.execution_value",
@@ -4248,14 +4247,18 @@ def _default_draft() -> dict[str, Any]:
         "tick_size": 0.01,
         "include_current_spread": True,
     })
-    system_profiles[0]["parameters"].setdefault("protection", {}).setdefault(
-        "stop", {}
-    )["prefer_closer_hybrid"] = False
-    system_profiles[0]["parameters"]["protection"]["stop"][
-        "maximum_risk_pct"
-    ] = 6.0
+    system_profiles[0]["parameters"].setdefault("protection", {})["stop"] = {
+        "method": "ordinal_qualified_support",
+        "structure_buffer_bps": 0.0,
+        "volatility_multiple": 1.25,
+        "maximum_risk_pct": 15.0,
+        "minimum_hold_probability": 0.85,
+        "support_level_ordinal": 2,
+        "prefer_closer_hybrid": True,
+    }
     system_profiles[0]["parameters"]["protection"]["trailing"].update({
-        "enabled": False,
+        "enabled": True,
+        "activation_gain_pct": 0.0,
     })
     system_profiles[0]["parameters"]["profit_pocket"]["enabled"] = False
     system_profiles[0]["action_policy_ids"] = []
@@ -6745,7 +6748,16 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 profile["name"] = deepcopy(default_profile["name"])
                 profile["description"] = deepcopy(default_profile["description"])
                 profile["protected"] = True
-                profile["action_policy_ids"] = ["profit-pocket"]
+                profile["definition_revision"] = STRATEGY_REVISION
+                profile["action_policy_ids"] = deepcopy(
+                    default_profile["action_policy_ids"]
+                )
+                profile.setdefault("parameters", {})["protection"] = deepcopy(
+                    default_profile["parameters"]["protection"]
+                )
+                profile["parameters"]["momentum_management"] = deepcopy(
+                    default_profile["parameters"]["momentum_management"]
+                )
                 lifecycle = dict(profile.get("lifecycle") or {})
                 default_lifecycle = dict(default_profile["lifecycle"])
                 lifecycle.setdefault("trading_behavior", {}).update(
@@ -6884,6 +6896,18 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
         )
         for key in ("execution_policies", "protection_profiles"):
             result["oms"].setdefault(key, deepcopy(defaults["oms"][key]))
+        if source_schema_version < 43:
+            default_protection_profiles = {
+                str(row.get("profile_id") or ""): deepcopy(row)
+                for row in defaults["oms"]["protection_profiles"]
+            }
+            result["oms"]["protection_profiles"] = [
+                default_protection_profiles.get(
+                    str(row.get("profile_id") or ""),
+                    row,
+                )
+                for row in result["oms"]["protection_profiles"]
+            ]
         for oms_profile in result["oms"]["profiles"]:
             settings = dict(oms_profile.get("settings") or {})
             settings.pop("time_in_force", None)
@@ -7630,7 +7654,7 @@ def _default_protection_profiles() -> list[dict[str, Any]]:
         "name": "Structural single target",
         "description": (
             "One full-position OCA group uses the strategy's single causal structural "
-            "target and adaptive protective stop without an intermediate trailing exit."
+            "target, level-derived fixed stop, and always-active broker trailing stop."
         ),
         "origin": "system",
         "editable": True,
@@ -7649,7 +7673,11 @@ def _default_protection_profiles() -> list[dict[str, Any]]:
                 "price": None,
                 "stop_limit_offset_bps": None,
             },
-            "trailing": {"rule_type": "none"},
+            "trailing": {
+                "rule_type": "broker_amount",
+                "amount": None,
+                "activation_gain_percent": 0.0,
+            },
         }],
     })
     return profiles

@@ -34,8 +34,26 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 28
-HISTORICAL_STRATEGY_REVISIONS = (26, 27)
+STRATEGY_REVISION = 29
+HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28)
+
+SOURCE_MAXIMUM_AGE_MS = {
+    "100ms": 500,
+    "1s": 2_000,
+    "5s": 6_000,
+    "10s": 11_000,
+    "30s": 31_000,
+    "1m": 61_000,
+    "5m": 301_000,
+}
+SOURCE_MAXIMUM_AGE_OVERRIDES_MS = {
+    "indicator.flow_structure.score": 300,
+    "indicator.flow_structure.confidence": 300,
+    "signal.company_news.score": 60_000,
+    "signal.sec_filing.score": 60_000,
+    "signal.news_labeled": 60_000,
+    "signal.sec_labeled": 60_000,
+}
 
 RULE_COMPARATORS = {
     "above_by_bps",
@@ -374,7 +392,12 @@ def long_momentum_strategy_definition(
             "parameters": parameters,
             "input_catalog": strategy_input_catalog(),
             "parameter_space": {
-                "protection.stop.method": ["structure", "volatility", "hybrid"],
+                "protection.stop.method": [
+                    "structure",
+                    "volatility",
+                    "hybrid",
+                    "ordinal_qualified_support",
+                ],
                 "protection.stop.volatility_multiple": [0.75, 1.0, 1.25, 1.5, 2.0],
                 "profit_pocket.trigger": ["acceleration_slowdown", "favorable_move_pct", "volatility_multiple"],
                 "profit_pocket.quantity_fraction": [1.0],
@@ -475,15 +498,17 @@ def default_long_momentum_parameters() -> dict[str, Any]:
         },
         "protection": {
             "stop": {
-                "method": "hybrid",
-                "structure_buffer_bps": 8.0,
+                "method": "ordinal_qualified_support",
+                "structure_buffer_bps": 0.0,
                 "volatility_multiple": 1.25,
-                "maximum_risk_pct": 6.0,
-                "prefer_closer_hybrid": False,
+                "maximum_risk_pct": 15.0,
+                "minimum_hold_probability": 0.85,
+                "support_level_ordinal": 2,
+                "prefer_closer_hybrid": True,
             },
             "trailing": {
                 "enabled": True,
-                "activation_gain_pct": 8.0,
+                "activation_gain_pct": 0.0,
                 "distance_volatility_multiple": 2.0,
                 "minimum_distance_bps": 50.0,
             },
@@ -541,7 +566,6 @@ def default_long_momentum_parameters() -> dict[str, Any]:
             "downside_loss_guard": {
                 "enabled": False,
                 "timeframe": "1s",
-                "bearish_choch": True,
                 "macd_closed": True,
                 "below_vwap": True,
                 "vwap_source_id": "indicator.vwap.execution_value",
@@ -664,8 +688,21 @@ def resolve_long_momentum_parameters(overrides: dict[str, Any] | None = None) ->
                 datetime.strptime(value, "%H:%M:%S")
             except ValueError as exc:
                 raise ValueError(f"Strategy {key} must use HH:MM:SS New York time") from exc
-    if parameters["protection"]["stop"]["method"] not in {"structure", "volatility", "hybrid"}:
+    if parameters["protection"]["stop"]["method"] not in {
+        "structure",
+        "volatility",
+        "hybrid",
+        "ordinal_qualified_support",
+    }:
         raise ValueError("Unsupported protective stop method")
+    stop = parameters["protection"]["stop"]
+    if not 0 < float(stop.get("maximum_risk_pct") or 0) < 100:
+        raise ValueError("Protective stop maximum risk must be between zero and 100 percent")
+    if str(stop.get("method") or "") == "ordinal_qualified_support":
+        if not 0 <= float(stop.get("minimum_hold_probability") or 0) < 1:
+            raise ValueError("Protective support hold threshold must be in [0, 1)")
+        if int(stop.get("support_level_ordinal") or 0) < 1:
+            raise ValueError("Protective support level ordinal must be positive")
     sizing = parameters["sizing"]
     if sizing["request_mode"] not in {
         "fixed_quantity",
@@ -813,7 +850,6 @@ def _active_rule_source_dependencies(
                 or "indicator.vwap.execution_value"
             )
             dependencies.update({
-                ("indicator.structure.bearish_choch", timeframe),
                 ("indicator.macd.line", timeframe),
                 ("indicator.macd.signal", timeframe),
                 (vwap_source_id, timeframe),
@@ -2485,7 +2521,19 @@ class LongMomentumStrategyEngine:
                 metadata={"triggers": triggered, "vetoes": vetoes, "confirmation": confirmation, "entry_rules": rule_result},
             )
 
-        stop = _initial_stop(observation, parameters, reference, side=side)
+        protective_stop_selection: dict[str, Any] = {}
+        stop = _initial_stop(
+            observation,
+            parameters,
+            reference,
+            side=side,
+            selection_evidence=protective_stop_selection,
+        )
+        trailing_amount = _trailing_amount(
+            observation,
+            parameters,
+            stop=stop,
+        )
         capital_request = _phase_capital_request(
             parameters,
             phase_name,
@@ -2666,6 +2714,7 @@ class LongMomentumStrategyEngine:
                 "entry_at": observation.observed_at.isoformat(),
                 "initial_stop": stop,
                 "active_stop": stop,
+                "trailing_amount": trailing_amount,
                 "high_water_price": observation.price,
                 "low_water_price": observation.price,
                 "adds": 0,
@@ -2704,7 +2753,7 @@ class LongMomentumStrategyEngine:
             quantity=quantity,
             invalidation_price=stop,
             profit_target_price=target,
-            trailing_amount=_trailing_amount(observation, parameters),
+            trailing_amount=trailing_amount,
             capital_request=capital_request,
             order_intent=order_intent,
             metadata={
@@ -2721,6 +2770,8 @@ class LongMomentumStrategyEngine:
                 ),
                 "entry_rules": rule_result,
                 "initial_stop": stop,
+                "protective_stop_selection": protective_stop_selection,
+                "trailing_amount": trailing_amount,
                 "profit_targets": profit_targets,
                 "profit_target_selection": profit_target_selection,
                 "entry_target_room_selection": entry_target_room_selection,
@@ -4598,7 +4649,11 @@ def evaluate_entry_decision_rules(
             condition_evidence[group_id] = condition_rows
         matched = [group_id for group_id, passed in group_results.items() if passed]
         expression = dict(stage.get("expression") or {})
-        operator = str(stage.get("operator") or "any")
+        operator = str(
+            expression.get("operator")
+            or stage.get("operator")
+            or "any"
+        )
         score = len(matched) / len(group_results) if group_results else 0.0
         passed = (
             _rule_expression_passed(expression, group_results)
@@ -4670,21 +4725,38 @@ def _condition_evidence(
     right_timeframe = _condition_interval_expression(
         condition.get("right_interval") or condition.get("right_timeframe")
     )
-    left_value = _condition_operand_value(condition, "left", observation)
-    right_value = (
-        _condition_operand_value(condition, "right", observation)
+    left_operand = _condition_operand(condition, "left", observation)
+    right_operand = (
+        _condition_operand(condition, "right", observation)
         if right_source
-        else condition.get("value")
+        else {
+            "value": condition.get("value"),
+            "observed_at": None,
+            "age_ms": None,
+            "maximum_age_ms": None,
+            "fresh": True,
+            "freshness": "constant",
+        }
     )
     return {
         "condition_id": str(condition.get("condition_id") or ""),
         "left_source_id": left_source,
         "left_timeframe": left_timeframe,
-        "left_value": left_value,
+        "left_value": left_operand["value"],
+        "left_observed_at": left_operand["observed_at"],
+        "left_age_ms": left_operand["age_ms"],
+        "left_maximum_age_ms": left_operand["maximum_age_ms"],
+        "left_fresh": left_operand["fresh"],
+        "left_freshness": left_operand["freshness"],
         "comparator": str(condition.get("comparator") or ""),
         "right_source_id": right_source,
         "right_timeframe": right_timeframe,
-        "right_value": right_value,
+        "right_value": right_operand["value"],
+        "right_observed_at": right_operand["observed_at"],
+        "right_age_ms": right_operand["age_ms"],
+        "right_maximum_age_ms": right_operand["maximum_age_ms"],
+        "right_fresh": right_operand["fresh"],
+        "right_freshness": right_operand["freshness"],
         "buffer_bps": (
             float(condition.get("value") or 0)
             if str(condition.get("comparator") or "") == "above_by_bps"
@@ -4866,7 +4938,6 @@ def _decision_reason_detail(
         "loss_of_confirmed_higher_low": "Exit: price lost the latest causally confirmed one-second higher low.",
         "macd_closed_backstop": "Exit: one-second MACD remained closed for the configured backstop duration.",
         "macd_signal_crossed_above_line": "Exit: the causal one-second MACD signal crossed strictly above the MACD line.",
-        "downside_bearish_choch": "Loss exit: while below entry, a bearish one-second change of character occurred.",
         "downside_macd_closed": "Loss exit: while below entry, the one-second MACD closed; no confirmation delay applies.",
         "downside_vwap_lost": "Loss exit: while below entry, price moved under the causal one-second VWAP.",
         "protective_stop": "Exit: price breached the active causal protective stop.",
@@ -4908,8 +4979,9 @@ def strategy_observation_source_values(
 
 
 def _condition_matches(condition: dict[str, Any], observation: StrategyObservation) -> bool:
-    left = _condition_operand_value(condition, "left", observation)
-    if left is None:
+    left_operand = _condition_operand(condition, "left", observation)
+    left = left_operand["value"]
+    if left is None or not bool(left_operand["fresh"]):
         return False
     comparator = str(condition.get("comparator") or "")
     if comparator == "is_true":
@@ -4917,12 +4989,13 @@ def _condition_matches(condition: dict[str, Any], observation: StrategyObservati
     right_source_id = str(
         condition.get("right_field_ref") or condition.get("right_source_id") or ""
     )
-    right = (
-        _condition_operand_value(condition, "right", observation)
+    right_operand = (
+        _condition_operand(condition, "right", observation)
         if right_source_id
-        else condition.get("value")
+        else {"value": condition.get("value"), "fresh": True}
     )
-    if right is None:
+    right = right_operand["value"]
+    if right is None or not bool(right_operand["fresh"]):
         return False
     if comparator == "equals":
         return left == right
@@ -4949,6 +5022,13 @@ def _condition_matches(condition: dict[str, Any], observation: StrategyObservati
 def _condition_operand_value(
     condition: dict[str, Any], side: str, observation: StrategyObservation
 ) -> Any:
+    operand = _condition_operand(condition, side, observation)
+    return operand["value"] if bool(operand["fresh"]) else None
+
+
+def _condition_operand(
+    condition: dict[str, Any], side: str, observation: StrategyObservation
+) -> dict[str, Any]:
     field_ref = str(condition.get(f"{side}_field_ref") or "")
     source_id = str(condition.get(f"{side}_source_id") or "")
     interval = _condition_interval_expression(
@@ -4956,7 +5036,8 @@ def _condition_operand_value(
         or condition.get(f"{side}_timeframe")
     )
     aggregation = str(condition.get(f"{side}_aggregation") or "")
-    candidates = []
+    effective_timeframe = interval or observation.source_timeframe
+    candidates: list[str] = []
     for identity in (field_ref, source_id):
         if not identity:
             continue
@@ -4964,15 +5045,106 @@ def _condition_operand_value(
             candidates.append(f"{identity}@{interval}#{aggregation}")
         if interval:
             candidates.append(f"{identity}@{interval}")
+        elif effective_timeframe:
+            candidates.append(f"{identity}@{effective_timeframe}")
         candidates.append(identity)
     for candidate in candidates:
         cached = observation.source_values.get(candidate)
         if isinstance(cached, dict):
             if cached.get("value") is not None:
-                return cached.get("value")
+                return _operand_with_freshness(
+                    cached.get("value"),
+                    cached.get("observed_at"),
+                    source_id=source_id or field_ref,
+                    timeframe=effective_timeframe,
+                    observation=observation,
+                    maximum_age_ms=condition.get(f"{side}_maximum_age_ms"),
+                )
         elif cached is not None:
-            return cached
-    return _source_value(observation, source_id or field_ref, interval)
+            return _operand_with_freshness(
+                cached,
+                None,
+                source_id=source_id or field_ref,
+                timeframe=effective_timeframe,
+                observation=observation,
+                maximum_age_ms=condition.get(f"{side}_maximum_age_ms"),
+            )
+    value = _observation_source_value(
+        observation,
+        source_id or field_ref,
+        effective_timeframe,
+    )
+    return _operand_with_freshness(
+        value,
+        observation.observed_at.isoformat() if value is not None else None,
+        source_id=source_id or field_ref,
+        timeframe=effective_timeframe,
+        observation=observation,
+        maximum_age_ms=condition.get(f"{side}_maximum_age_ms"),
+    )
+
+
+def _operand_with_freshness(
+    value: Any,
+    observed_at: Any,
+    *,
+    source_id: str,
+    timeframe: str,
+    observation: StrategyObservation,
+    maximum_age_ms: Any = None,
+) -> dict[str, Any]:
+    maximum_age = _source_maximum_age_ms(
+        source_id,
+        timeframe,
+        override=maximum_age_ms,
+    )
+    result = {
+        "value": value,
+        "observed_at": str(observed_at or "") or None,
+        "age_ms": None,
+        "maximum_age_ms": maximum_age,
+        "fresh": value is not None,
+        "freshness": "current" if value is not None else "unavailable",
+    }
+    if value is None or maximum_age is None:
+        return result
+    if not observed_at:
+        result.update({"fresh": False, "freshness": "missing_observed_at"})
+        return result
+    try:
+        source_time = datetime.fromisoformat(str(observed_at).replace("Z", "+00:00"))
+        age_ms = (observation.observed_at - source_time).total_seconds() * 1_000.0
+    except (TypeError, ValueError):
+        result.update({"fresh": False, "freshness": "invalid_observed_at"})
+        return result
+    result["age_ms"] = age_ms
+    if age_ms < 0:
+        result.update({"fresh": False, "freshness": "future"})
+    elif age_ms > maximum_age:
+        result.update({"fresh": False, "freshness": "stale"})
+    return result
+
+
+def _source_maximum_age_ms(
+    source_id: str,
+    timeframe: str,
+    *,
+    override: Any = None,
+) -> int | None:
+    if override is not None:
+        return max(0, int(override))
+    if source_id in SOURCE_MAXIMUM_AGE_OVERRIDES_MS:
+        return SOURCE_MAXIMUM_AGE_OVERRIDES_MS[source_id]
+    source = next(
+        (row for row in strategy_input_catalog() if row["source_id"] == source_id),
+        None,
+    )
+    if source is None:
+        return SOURCE_MAXIMUM_AGE_MS.get(timeframe)
+    supported = set(source["timeframes"])
+    if supported == {"session"}:
+        return None
+    return SOURCE_MAXIMUM_AGE_MS.get(timeframe)
 
 
 def _condition_interval_expression(value: Any) -> str:
@@ -5002,13 +5174,36 @@ def _source_value(
     source_id: str,
     timeframe: str,
 ) -> Any:
-    cached = observation.source_values.get(f"{source_id}@{timeframe}")
+    effective_timeframe = timeframe or observation.source_timeframe
+    cached = observation.source_values.get(f"{source_id}@{effective_timeframe}")
     if cached is None:
         cached = observation.source_values.get(source_id)
     if isinstance(cached, dict):
-        return cached.get("value")
+        operand = _operand_with_freshness(
+            cached.get("value"),
+            cached.get("observed_at"),
+            source_id=source_id,
+            timeframe=effective_timeframe,
+            observation=observation,
+        )
+        return operand["value"] if bool(operand["fresh"]) else None
     if cached is not None:
-        return cached
+        operand = _operand_with_freshness(
+            cached,
+            None,
+            source_id=source_id,
+            timeframe=effective_timeframe,
+            observation=observation,
+        )
+        return operand["value"] if bool(operand["fresh"]) else None
+    return _observation_source_value(observation, source_id, timeframe)
+
+
+def _observation_source_value(
+    observation: StrategyObservation,
+    source_id: str,
+    timeframe: str,
+) -> Any:
     source = next(
         (row for row in strategy_input_catalog() if row["source_id"] == source_id),
         None,
@@ -5215,39 +5410,6 @@ def _matching_momentum_management_route(
     downside = dict(settings.get("downside_loss_guard") or {})
     downside_timeframe = str(downside.get("timeframe") or "1s")
     if bool(downside.get("enabled", False)) and gain_pct < 0:
-        unified_support = observation.structural_support_lower
-        previous_price = state.get("previous_observed_price")
-        unified_support_broken = bool(
-            unified_support is not None
-            and observation.price < float(unified_support)
-            and (
-                previous_price is None
-                or float(previous_price) >= float(unified_support)
-            )
-        )
-        generic_bearish_choch = bool(
-            observation.structure_event == "choch"
-            and observation.structure_direction == "bearish"
-            and observation.source_timeframe in {"", downside_timeframe}
-        )
-        if bool(downside.get("bearish_choch", True)) and (
-            unified_support_broken or generic_bearish_choch
-        ):
-            return {
-                "route_id": "downside-bearish-choch",
-                "name": "Below-entry bearish structural CHOCH",
-                "mechanism": "downside_bearish_choch",
-                "position_fraction": 1.0,
-                "evidence": {
-                    "gain_pct": gain_pct,
-                    "structure_timeframe": (
-                        "unified_level_book"
-                        if unified_support_broken
-                        else downside_timeframe
-                    ),
-                    "structural_support_lower": unified_support,
-                },
-            }
         line = _source_value(observation, "indicator.macd.line", downside_timeframe)
         signal = _source_value(observation, "indicator.macd.signal", downside_timeframe)
         if bool(downside.get("macd_closed", True)) and (
@@ -5644,6 +5806,17 @@ def _input(
         "runtime_field": runtime_field,
         "value_type": value_type,
         "timeframes": timeframes,
+        "maximum_age_ms_by_timeframe": {
+            timeframe: SOURCE_MAXIMUM_AGE_OVERRIDES_MS.get(
+                source_id,
+                SOURCE_MAXIMUM_AGE_MS.get(timeframe),
+            )
+            for timeframe in timeframes
+            if SOURCE_MAXIMUM_AGE_OVERRIDES_MS.get(
+                source_id,
+                SOURCE_MAXIMUM_AGE_MS.get(timeframe),
+            ) is not None
+        },
         "parameter": parameter,
         "summary": STRATEGY_INPUT_SUMMARIES.get(
             source_id,
@@ -5702,8 +5875,91 @@ def _initial_stop(
     reference: float | None,
     *,
     side: str,
+    selection_evidence: dict[str, Any] | None = None,
 ) -> float:
     stop = parameters["protection"]["stop"]
+    method = str(stop.get("method") or "hybrid")
+    direction = -1 if side == "long" else 1
+    maximum_risk_pct = float(stop.get("maximum_risk_pct") or 15.0)
+    maximum_risk = observation.price * (
+        1 + direction * maximum_risk_pct / 100
+    )
+    if method == "ordinal_qualified_support":
+        minimum_hold = float(stop.get("minimum_hold_probability") or 0.85)
+        ordinal = max(1, int(stop.get("support_level_ordinal") or 2))
+        rows = _consolidated_structure_levels(
+            [dict(row) for row in observation.structural_support_levels],
+            side=side,
+        )
+        qualified: list[tuple[float, dict[str, Any]]] = []
+        for row in rows:
+            candidate = _level_metric(row, "price", "lower", "upper")
+            if candidate <= 0:
+                continue
+            on_protective_side = (
+                candidate < observation.price
+                if side == "long"
+                else candidate > observation.price
+            )
+            # The requested threshold is strict: a level at exactly 85% does
+            # not satisfy a contract expressed as hold_probability > 85%.
+            if on_protective_side and _level_metric(row, "hold_probability") > minimum_hold:
+                qualified.append((candidate, row))
+        qualified.sort(key=lambda item: item[0], reverse=side == "long")
+        selected_row = qualified[ordinal - 1][1] if len(qualified) >= ordinal else None
+        selected_level = qualified[ordinal - 1][0] if selected_row is not None else None
+        buffer_bps = float(stop.get("structure_buffer_bps") or 0.0)
+        structural_stop = (
+            selected_level * (1 + direction * buffer_bps / 10_000.0)
+            if selected_level is not None
+            else None
+        )
+        if side == "long":
+            selected = max(
+                maximum_risk,
+                structural_stop if structural_stop is not None else maximum_risk,
+            )
+            selected = min(selected, observation.price * 0.9999)
+        else:
+            selected = min(
+                maximum_risk,
+                structural_stop if structural_stop is not None else maximum_risk,
+            )
+            selected = max(selected, observation.price * 1.0001)
+        selected = round(selected, 4)
+        if selection_evidence is not None:
+            audit_rows = qualified[: max(3, ordinal + 1)]
+            selection_evidence.update({
+                "selection_mode": method,
+                "reference_price": observation.price,
+                "maximum_risk_pct": maximum_risk_pct,
+                "maximum_risk_stop": round(maximum_risk, 4),
+                "minimum_hold_probability_exclusive": minimum_hold,
+                "support_level_ordinal": ordinal,
+                "qualified_level_count": len(qualified),
+                "qualified_levels_truncated": len(audit_rows) < len(qualified),
+                "qualified_levels": [
+                    {
+                        **_compact_structural_level_reference(row),
+                        "protective_price": round(price, 4),
+                        "ordinal_below_reference": index + 1,
+                    }
+                    for index, (price, row) in enumerate(audit_rows)
+                ],
+                "selected_support_level": (
+                    _compact_structural_level_reference(selected_row)
+                    if selected_row is not None
+                    else None
+                ),
+                "selected_stop": selected,
+                "fallback_reason": (
+                    None
+                    if selected_row is not None
+                    else "fewer_than_required_qualified_support_levels"
+                ),
+            })
+        return selected
+
     causal_structure_candidates = [
         value
         for value in (
@@ -5723,13 +5979,11 @@ def _initial_stop(
         if causal_structure_candidates
         else reference or observation.price
     )
-    direction = -1 if side == "long" else 1
     structure_stop = structure_base * (
         1 + direction * float(stop["structure_buffer_bps"]) / 10_000
     )
     volatility = observation.volatility if observation.volatility > 0 else observation.price * 0.002
     volatility_stop = observation.price + direction * volatility * float(stop["volatility_multiple"])
-    method = stop["method"]
     selected = (
         structure_stop
         if method == "structure"
@@ -5747,18 +6001,32 @@ def _initial_stop(
             else max(structure_stop, volatility_stop)
         )
     )
-    maximum_risk = observation.price * (
-        1 + direction * float(stop["maximum_risk_pct"]) / 100
-    )
     if side == "long":
         return round(max(maximum_risk, min(selected, observation.price * 0.9999)), 4)
     return round(min(maximum_risk, max(selected, observation.price * 1.0001)), 4)
 
 
-def _trailing_amount(observation: StrategyObservation, parameters: dict[str, Any]) -> float | None:
+def _trailing_amount(
+    observation: StrategyObservation,
+    parameters: dict[str, Any],
+    *,
+    stop: float | None = None,
+) -> float | None:
     trailing = parameters["protection"]["trailing"]
     if not trailing["enabled"]:
         return None
+    if str(parameters["protection"]["stop"].get("method") or "") == "ordinal_qualified_support":
+        protective_stop = (
+            stop
+            if stop is not None
+            else _initial_stop(
+                observation,
+                parameters,
+                observation.price,
+                side=_strategy_side(parameters),
+            )
+        )
+        return round(abs(observation.price - protective_stop), 4)
     volatility_distance = observation.volatility * float(trailing["distance_volatility_multiple"])
     minimum_distance = observation.price * float(trailing["minimum_distance_bps"]) / 10_000
     return round(max(volatility_distance, minimum_distance), 4)
@@ -5781,7 +6049,11 @@ def _ratcheted_stop(
     trailing = parameters["protection"]["trailing"]
     if not trailing["enabled"] or gain_pct < float(trailing["activation_gain_pct"]):
         return current
-    distance = _trailing_amount(observation, parameters) or 0
+    distance = float(
+        state.get("trailing_amount")
+        or _trailing_amount(observation, parameters, stop=current)
+        or 0
+    )
     if side == "long":
         return round(max(current, float(state["high_water_price"]) - distance), 4)
     return round(min(current, float(state["low_water_price"]) + distance), 4)

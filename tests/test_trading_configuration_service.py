@@ -49,6 +49,58 @@ from src.trading_runtime.strategy_engine import long_momentum_strategy_definitio
 
 
 class TradingConfigurationServiceTests(unittest.TestCase):
+    def test_schema_v42_migrates_protected_stop_trail_and_removes_bearish_choch(self) -> None:
+        with patch(
+            "src.backend.trading_configuration_service.get_strategy_definition",
+            return_value=long_momentum_strategy_definition(),
+        ), patch(
+            "src.backend.trading_configuration_service.list_strategy_assignments",
+            return_value=[],
+        ):
+            legacy = _default_draft()
+        legacy["schema_version"] = 42
+        profile = legacy["strategy"]["profiles"][0]
+        profile["definition_revision"] = 28
+        profile["parameters"]["protection"]["stop"].update({
+            "method": "hybrid",
+            "maximum_risk_pct": 6.0,
+        })
+        profile["parameters"]["protection"]["trailing"]["enabled"] = False
+        profile["parameters"]["momentum_management"]["downside_loss_guard"][
+            "bearish_choch"
+        ] = True
+        protection = next(
+            row
+            for row in legacy["oms"]["protection_profiles"]
+            if row["profile_id"] == "structural-single-target"
+        )
+        protection["slices"][0]["trailing"] = {"rule_type": "none"}
+
+        migrated = _migrate_draft(legacy)
+
+        migrated_profile = migrated["strategy"]["profiles"][0]
+        migrated_stop = migrated_profile["parameters"]["protection"]["stop"]
+        self.assertEqual(migrated_profile["definition_revision"], 29)
+        self.assertEqual(migrated_stop["method"], "ordinal_qualified_support")
+        self.assertEqual(migrated_stop["maximum_risk_pct"], 15.0)
+        self.assertEqual(migrated_stop["support_level_ordinal"], 2)
+        self.assertTrue(
+            migrated_profile["parameters"]["protection"]["trailing"]["enabled"]
+        )
+        self.assertNotIn(
+            "bearish_choch",
+            migrated_profile["parameters"]["momentum_management"]["downside_loss_guard"],
+        )
+        migrated_protection = next(
+            row
+            for row in migrated["oms"]["protection_profiles"]
+            if row["profile_id"] == "structural-single-target"
+        )
+        self.assertEqual(
+            migrated_protection["slices"][0]["trailing"]["rule_type"],
+            "broker_amount",
+        )
+
     def test_new_release_refreshes_only_builtin_system_strategy_profiles(self) -> None:
         draft = _default_draft()
         system_profile = draft["strategy"]["profiles"][0]
@@ -1398,8 +1450,12 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertFalse(lifecycle["reentry"]["target_replenishment"]["enabled"])
         self.assertEqual(lifecycle["reentry"]["cooldown_ms"], 0)
-        self.assertFalse(
+        self.assertTrue(
             default_profile["parameters"]["protection"]["trailing"]["enabled"]
+        )
+        self.assertEqual(
+            default_profile["parameters"]["protection"]["trailing"]["activation_gain_pct"],
+            0.0,
         )
         self.assertEqual(default_run_plan["campaign_lifecycle"]["maximum_reentries"], 0)
         self.assertEqual(default_run_plan["campaign_lifecycle"]["reentry_cooldown_ms"], 0)
@@ -1413,10 +1469,21 @@ class TradingConfigurationServiceTests(unittest.TestCase):
                 "close_condition": "signal_above_line",
             },
         )
-        self.assertFalse(
-            default_profile["parameters"]["protection"]["stop"][
-                "prefer_closer_hybrid"
-            ]
+        self.assertEqual(
+            default_profile["parameters"]["protection"]["stop"],
+            {
+                "method": "ordinal_qualified_support",
+                "structure_buffer_bps": 0.0,
+                "volatility_multiple": 1.25,
+                "maximum_risk_pct": 15.0,
+                "minimum_hold_probability": 0.85,
+                "support_level_ordinal": 2,
+                "prefer_closer_hybrid": True,
+            },
+        )
+        self.assertNotIn(
+            "bearish_choch",
+            default_profile["parameters"]["momentum_management"]["downside_loss_guard"],
         )
         self.assertEqual(
             lifecycle["initial_entry"]["order_intent"]["protection_profile"],
@@ -1432,7 +1499,10 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             [row["strategy_profit_target_index"] for row in structural_profile["slices"]],
             [0],
         )
-        self.assertEqual(structural_profile["slices"][0]["trailing"]["rule_type"], "none")
+        self.assertEqual(
+            structural_profile["slices"][0]["trailing"]["rule_type"],
+            "broker_amount",
+        )
         self.assertEqual(
             default_profile["parameters"]["protection"]["profit_ladder"]["maximum_targets"],
             1,
