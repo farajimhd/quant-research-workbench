@@ -399,3 +399,14 @@ def test_chart_does_not_autoscale_on_transient_coordinate_read_failure() -> None
     invalid_transform = renderer_source.index("if (invalidTransform)", transient_failure)
     assert "return { recovered: false, retry: true };" in renderer_source[transient_failure:invalid_transform]
     assert "applyOptions({ autoScale: true })" not in renderer_source[transient_failure:invalid_transform]
+
+
+def test_chart_crosshair_normalizes_pointer_coordinates_under_application_zoom() -> None:
+    renderer_source = (REPO_ROOT / "frontend" / "src" / "app" / "components" / "ChartPanel.tsx").read_text(encoding="utf-8")
+
+    assert "attachZoomNormalizedCrosshairInput(priceRef.current)" in renderer_source
+    assert "bounds.width / eventTarget.offsetWidth" in renderer_source
+    assert "bounds.height / eventTarget.offsetHeight" in renderer_source
+    assert "bounds.left + (event.clientX - bounds.left) / scaleX" in renderer_source
+    assert "bounds.top + (event.clientY - bounds.top) / scaleY" in renderer_source
+    assert 'new MouseEvent("mousemove"' in renderer_source

@@ -646,6 +646,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const paneResizeObserverRef = useRef<ResizeObserver | null>(null);
   const initialFitTimerRef = useRef<number | null>(null);
   const overlayInteractionCleanupRef = useRef<(() => void) | null>(null);
+  const crosshairInputCleanupRef = useRef<(() => void) | null>(null);
   const overlayRedrawFrameRef = useRef<number | null>(null);
   const overlayRedrawTimerRef = useRef<number | null>(null);
   const scaleStabilizationFrameRef = useRef<number | null>(null);
@@ -1032,6 +1033,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       scheduleOverlayRedraw();
     });
     overlayInteractionCleanupRef.current = attachOverlayRedrawListeners(priceRef.current, scheduleOverlayRedraw, scheduleOverlayRedrawBurst);
+    crosshairInputCleanupRef.current = attachZoomNormalizedCrosshairInput(priceRef.current);
     window.requestAnimationFrame(() => resizeCharts());
     return () => cleanupChartRuntime();
   }, []);
@@ -1429,6 +1431,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     }
     overlayInteractionCleanupRef.current?.();
     overlayInteractionCleanupRef.current = null;
+    crosshairInputCleanupRef.current?.();
+    crosshairInputCleanupRef.current = null;
     resizeObserverRef.current?.disconnect();
     resizeObserverRef.current = null;
     paneResizeObserverRef.current?.disconnect();
@@ -1795,6 +1799,46 @@ function attachOverlayRedrawListeners(target: HTMLElement | null, redraw: () => 
     target.removeEventListener("dblclick", redrawBurst);
     stopPointerRedraw(false);
   };
+}
+
+function attachZoomNormalizedCrosshairInput(target: HTMLElement | null) {
+  if (!target) return () => undefined;
+  const normalizedEvents = new WeakSet<MouseEvent>();
+  const normalizeCrosshairMove = (event: MouseEvent) => {
+    if (normalizedEvents.has(event) || event.buttons !== 0) return;
+    const eventTarget = event.target;
+    if (!(eventTarget instanceof HTMLElement)) return;
+    const bounds = eventTarget.getBoundingClientRect();
+    const scaleX = eventTarget.offsetWidth > 0 ? bounds.width / eventTarget.offsetWidth : 1;
+    const scaleY = eventTarget.offsetHeight > 0 ? bounds.height / eventTarget.offsetHeight : 1;
+    if (!Number.isFinite(scaleX) || !Number.isFinite(scaleY) || scaleX <= 0 || scaleY <= 0) return;
+    if (Math.abs(scaleX - 1) < 0.001 && Math.abs(scaleY - 1) < 0.001) return;
+
+    // Lightweight Charts subtracts the post-zoom DOM origin from pointer
+    // coordinates, then consumes that distance in its pre-zoom chart space.
+    // Re-dispatch one normalized move so the library's native crosshair,
+    // labels, panes, and series hit-testing all share the real cursor point.
+    event.stopImmediatePropagation();
+    const normalized = new MouseEvent("mousemove", {
+      altKey: event.altKey,
+      bubbles: true,
+      button: event.button,
+      buttons: event.buttons,
+      cancelable: event.cancelable,
+      clientX: bounds.left + (event.clientX - bounds.left) / scaleX,
+      clientY: bounds.top + (event.clientY - bounds.top) / scaleY,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      screenX: event.screenX,
+      screenY: event.screenY,
+      shiftKey: event.shiftKey,
+      view: window,
+    });
+    normalizedEvents.add(normalized);
+    eventTarget.dispatchEvent(normalized);
+  };
+  target.addEventListener("mousemove", normalizeCrosshairMove, { capture: true });
+  return () => target.removeEventListener("mousemove", normalizeCrosshairMove, { capture: true });
 }
 
 function ChartPeriodSelect({
