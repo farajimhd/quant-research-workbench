@@ -156,7 +156,7 @@ export function TableActiveFilterBar({ columns, conditions, onChange }: { column
   const active = validTableFilters(conditions);
   if (!active.length) return null;
   const columnByKey = new Map(columns.map((column) => [column.key, column]));
-  return <div aria-label="Active column filters" className="market-table-active-filters"><span>Filters</span><div>{active.map((condition) => <span className="market-table-filter-chip" key={condition.id}><strong>{columnByKey.get(condition.column)?.label ?? condition.column}</strong><em>{filterSummary(condition)}</em><button aria-label={`Remove ${columnByKey.get(condition.column)?.label ?? condition.column} filter`} onClick={() => onChange(conditions.filter((item) => item.id !== condition.id))} type="button"><X size={11} /></button></span>)}</div><button onClick={() => onChange([])} type="button">Clear all</button></div>;
+  return <div aria-label="Active column filters" className="market-table-active-filters"><span>Filters</span><div>{active.map((condition) => { const column = columnByKey.get(condition.column); return <span className="market-table-filter-chip" key={condition.id}><strong>{column?.label ?? condition.column}</strong><em>{filterSummary(condition)}{column?.timeZone === "America/New_York" ? " ET" : ""}</em><button aria-label={`Remove ${column?.label ?? condition.column} filter`} onClick={() => onChange(conditions.filter((item) => item.id !== condition.id))} type="button"><X size={11} /></button></span>; })}</div><button onClick={() => onChange([])} type="button">Clear all</button></div>;
 }
 
 export function filterRowsByConditions<T extends Record<string, unknown>>(rows: T[], conditions: TableFilterCondition[], columns: TableFilterColumn[], matchMode: TableFilterMatchMode): T[] {
@@ -170,6 +170,40 @@ export function filterRowsByConditions<T extends Record<string, unknown>>(rows: 
     });
     return matchMode === "any" ? matches.some(Boolean) : matches.every(Boolean);
   });
+}
+
+export function tableTimeFiltersRequireOlderRows<T extends Record<string, unknown>>(
+  rows: T[],
+  conditions: TableFilterCondition[],
+  columns: TableFilterColumn[],
+) {
+  const columnByKey = new Map(columns.map((column) => [column.key, column]));
+  const temporalConditions = validTableFilters(conditions).filter(
+    (condition) => columnByKey.get(condition.column)?.kind === "datetime",
+  );
+  if (!temporalConditions.length) return false;
+  let requiredFloor = Number.POSITIVE_INFINITY;
+  for (const condition of temporalConditions) {
+    const column = columnByKey.get(condition.column);
+    if (!column) continue;
+    if (!["between", "eq", "gt", "gte"].includes(condition.operator)) {
+      // Upper-bound-only, inequality, and null filters can match arbitrarily
+      // old rows, so their authoritative scope is not covered until EOF.
+      return true;
+    }
+    const primary = parseFilterDate(condition.value, column.timeZone);
+    const secondary = parseFilterDate(condition.valueSecondary, column.timeZone);
+    const floor = condition.operator === "between" ? Math.min(primary, secondary) : primary;
+    if (Number.isFinite(floor)) requiredFloor = Math.min(requiredFloor, floor);
+  }
+  if (!Number.isFinite(requiredFloor)) return false;
+  const oldestLoaded = rows.reduce((oldest, row) => {
+    const timestamps = temporalConditions
+      .map((condition) => Date.parse(String(row[condition.column] ?? "")))
+      .filter(Number.isFinite);
+    return timestamps.length ? Math.min(oldest, ...timestamps) : oldest;
+  }, Number.POSITIVE_INFINITY);
+  return !Number.isFinite(oldestLoaded) || oldestLoaded > requiredFloor;
 }
 
 export function validTableFilters(conditions: TableFilterCondition[]): TableFilterCondition[] {

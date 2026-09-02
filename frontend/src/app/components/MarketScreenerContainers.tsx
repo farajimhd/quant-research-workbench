@@ -9,7 +9,7 @@ import { InventoryFilterSelect } from "./InventoryFilterSelect";
 import { MarketTime } from "./MarketTime";
 import { TickerNewsPopover, type TickerNewsPopoverAnchor } from "./NewsContainers";
 import { NewsIntelligenceIcon, type NewsIconRecency, type NewsReactionDirection } from "./NewsIntelligenceIcon";
-import { filterRowsByConditions, TableActiveFilterBar, TableColumnFilterControl, type TableFilterColumn, type TableFilterCondition, type TableFilterMatchMode } from "./TableColumnFilters";
+import { filterRowsByConditions, tableTimeFiltersRequireOlderRows, TableActiveFilterBar, TableColumnFilterControl, type TableFilterColumn, type TableFilterCondition, type TableFilterMatchMode } from "./TableColumnFilters";
 import { useTickerPresentations } from "./TickerIdentity";
 import { CategoryBadge, PresentedValue, SecurityIdentityCell, presentationForColumn, tableCellClass, type PresentationValueType } from "./TablePresentation";
 import { useWallClock } from "./useWallClock";
@@ -768,6 +768,7 @@ export function StrategyActivityContainer({ asOf, focusSequence, historicalPage,
   const [olderPage, setOlderPage] = useState<StrategyActivityPage | null>(null);
   const [olderLoading, setOlderLoading] = useState(false);
   const [olderError, setOlderError] = useState("");
+  const olderRequestInFlightRef = useRef(false);
   const contentRef = useRef<HTMLDivElement>(null);
   const activityLimit = Math.max(2_000, Math.min(settings.limit, 50_000));
   const asOfRef = useRef(asOf);
@@ -850,7 +851,7 @@ export function StrategyActivityContainer({ asOf, focusSequence, historicalPage,
   }, [rows]);
   const resolvedHistoricalPage = olderPage ?? historicalPage ?? { complete: true, next_offset: null };
   const loadOlder = async (): Promise<boolean> => {
-    if (!runId || historicalRows === undefined || olderLoading || resolvedHistoricalPage.complete) return false;
+    if (!runId || historicalRows === undefined || olderRequestInFlightRef.current || resolvedHistoricalPage.complete) return false;
     const query = new URLSearchParams({
       as_of: asOfRef.current,
       include_decision_evidence: "false",
@@ -858,6 +859,7 @@ export function StrategyActivityContainer({ asOf, focusSequence, historicalPage,
       offset: String(Number(resolvedHistoricalPage.next_offset ?? 0)),
       run_id: runId,
     });
+    olderRequestInFlightRef.current = true;
     setOlderLoading(true);
     setOlderError("");
     try {
@@ -869,6 +871,7 @@ export function StrategyActivityContainer({ asOf, focusSequence, historicalPage,
       setOlderError(reason instanceof Error ? reason.message : String(reason));
       return false;
     } finally {
+      olderRequestInFlightRef.current = false;
       setOlderLoading(false);
     }
   };
@@ -1216,6 +1219,7 @@ function MarketListTable({
   const [query, setQuery] = useState(() => cachedViewState?.query ?? "");
   const [sort, setSort] = useState<{ column: string; direction: "asc" | "desc" }>(() => cachedViewState?.sort ?? { column: chronological ? "event_time" : "change_pct", direction: "desc" });
   const wallClockMs = useWallClock();
+  const lastAutomaticHistoryRequestRef = useRef("");
   const headerMenuRef = useRef<HTMLDivElement | null>(null);
   const tableShellRef = useRef<HTMLDivElement | null>(null);
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
@@ -1225,6 +1229,11 @@ function MarketListTable({
   const companyInIdentity = mergeCompanyWithIdentity;
   const tableColumns = useMemo(() => selectedColumns.filter((column) => column !== "logo" && !(companyInIdentity && column === "company_name")), [companyInIdentity, selectedColumns]);
   const filterColumns = useMemo<TableFilterColumn[]>(() => tableColumns.map((column) => tableFilterColumn(catalogField(column, customColumns, catalog))), [catalog, customColumns, tableColumns]);
+  const timeFilterNeedsOlderRows = useMemo(
+    () => moreAvailable && tableTimeFiltersRequireOlderRows(rows, columnFilters, filterColumns),
+    [columnFilters, filterColumns, moreAvailable, rows],
+  );
+  const automaticHistoryRequestKey = `${rows.length}:${String(rows.at(-1)?.event_time ?? "")}:${columnFilters.map((condition) => `${condition.column}:${condition.operator}:${condition.value}:${condition.valueSecondary}`).join("|")}`;
   const filterColumnKey = filterColumns.map((column) => column.key).join("\u0000");
   useEffect(() => {
     MARKET_LIST_VIEW_STATE.set(resolvedViewStateKey, { columnFilters, filterMatchMode, filterPanelOpen, query, sort });
@@ -1251,6 +1260,12 @@ function MarketListTable({
   const visibleRows = useMemo(() => matchedRows.slice(page * pageSize, (page + 1) * pageSize), [matchedRows, page, pageSize]);
   useEffect(() => { setPage(0); }, [columnFilters, deferredQuery, filterMatchMode, resolvedViewStateKey, sort]);
   useEffect(() => { setPage((current) => Math.min(current, pageCount - 1)); }, [pageCount]);
+  useEffect(() => {
+    if (!timeFilterNeedsOlderRows || moreLoading || !onRequestMore) return;
+    if (lastAutomaticHistoryRequestRef.current === automaticHistoryRequestKey) return;
+    lastAutomaticHistoryRequestRef.current = automaticHistoryRequestKey;
+    void onRequestMore();
+  }, [automaticHistoryRequestKey, moreLoading, onRequestMore, timeFilterNeedsOlderRows]);
   const tickers = visibleRows
     .filter((row) => liveRecency || !String(row.logo_url ?? "").trim() || (companyInIdentity && !String(row.company_name ?? "").trim()))
     .map((row) => String(row.ticker ?? row.symbol ?? ""))
@@ -1347,7 +1362,7 @@ function MarketListTable({
       <label className="market-list-search"><Search size={14} /><input aria-label={`Search ${title}`} onChange={(event) => setQuery(event.target.value)} placeholder="Search symbols and values" value={query} /></label>
       <TableColumnFilterControl columns={filterColumns} conditions={columnFilters} matchMode={filterMatchMode} onChange={setColumnFilters} onMatchModeChange={setFilterMatchMode} onOpenChange={setFilterPanelOpen} open={filterPanelOpen} rows={rows} title={title} />
       <div className="market-list-pagination" aria-label={`${title} pages`}>
-        <span>{matchedRows.length === rows.length ? `${matchedRows.length}${moreAvailable ? "+" : ""} rows loaded` : `${matchedRows.length} matches in ${rows.length}${moreAvailable ? "+" : ""} loaded`} · page {page + 1} of {pageCount}{moreAvailable ? "+" : ""}</span>
+        <span>{timeFilterNeedsOlderRows && moreLoading ? "Loading older rows for ET filter… · " : ""}{matchedRows.length === rows.length ? `${matchedRows.length}${moreAvailable ? "+" : ""} rows loaded` : `${matchedRows.length} matches in ${rows.length}${moreAvailable ? "+" : ""} loaded`} · page {page + 1} of {pageCount}{moreAvailable ? "+" : ""}</span>
         <button aria-label="Previous page" disabled={page === 0} onClick={() => setPage((current) => Math.max(0, current - 1))} type="button"><ChevronLeft size={13} /></button>
         <button aria-label={page + 1 >= pageCount && moreAvailable ? "Load and open next page" : "Next page"} disabled={moreLoading || (page + 1 >= pageCount && !moreAvailable)} onClick={() => void nextPage()} type="button">{moreLoading && page + 1 >= pageCount ? <span className="loading-spinner" aria-hidden="true" /> : <ChevronRight size={13} />}</button>
       </div>

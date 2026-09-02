@@ -207,7 +207,13 @@ def test_market_time_filters_interpret_wall_clock_inputs_in_exchange_time() -> N
     assert "parseFilterDate(condition.value, timeZone)" in source
     assert "dateInTimeZone(date, time, timeZone).getTime()" in source
     assert 'column.timeZone === "America/New_York" ? " (ET)"' in source
+    assert 'column?.timeZone === "America/New_York" ? " ET"' in source
     assert 'timeZone: temporal ? "America/New_York" : undefined' in container_source
+    assert "tableTimeFiltersRequireOlderRows" in source
+    assert "oldestLoaded > requiredFloor" in source
+    assert "timeFilterNeedsOlderRows" in container_source
+    assert "void onRequestMore();" in container_source
+    assert "Loading older rows for ET filter" in container_source
 
 
 def test_completed_strategy_review_opens_chart_performance_and_audit_surfaces() -> None:
