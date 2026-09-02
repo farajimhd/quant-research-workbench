@@ -53,22 +53,14 @@ export function openTickerChartsQuotes(
   const url = options.replayRunId
     ? replayFocusCanvasUrl(options.replayRunId, token, options.historicalRunMode)
     : canvasFocusHandoffUrl(token, options.runtimeMode);
-  if (options.replayRunId) {
-    // Historical review is an immutable drilldown. Navigating the current tab
-    // is deterministic in embedded hosts that acknowledge window.open without
-    // exposing the resulting window, and browser Back returns to the review.
-    window.location.assign(url);
-    return "opened";
-  }
-  const focusedWindow = window.open(url, "_blank");
+  // Ticker drilldowns must never replace the operator's current workspace,
+  // including immutable Replay and Backtest review pages. The focus handoff
+  // is written before opening so the new tab can restore the exact runtime
+  // scope, symbol, chart settings, and historical run identity.
+  const focusedWindow = window.open(url, "_blank", "noopener,noreferrer");
   if (!focusedWindow) {
-    // Popup policy must not make the chart action a dead end. The handoff is
-    // already complete and immutable, so reuse it in the current tab when a
-    // browser or embedded host blocks a new window.
-    window.location.assign(url);
-    return "opened";
+    return "popup-blocked";
   }
-  focusedWindow.opener = null;
   return "opened";
 }
 
