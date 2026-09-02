@@ -37,6 +37,7 @@ export function normalizeSettings(stored: Partial<ContainerSettings>): Container
   const canonicalIndicators = storedIndicators.map((id) => (
     id === "indicator.execution_vwap" ? "indicator.vwap" : id
   )).filter((id) => ![
+    "strategy.presentation",
     "indicator.qmd_liquidity_levels",
     "indicator.market_structure_levels",
     "indicator.qmd_level_confluence",
@@ -47,7 +48,7 @@ export function normalizeSettings(stored: Partial<ContainerSettings>): Container
   const migratedIndicators = stored.version === DEFAULT_SETTINGS.version || canonicalIndicators.includes("indicator.macd") ? canonicalIndicators : [...canonicalIndicators, "indicator.macd"];
   const visibleIndicators = stored.version === DEFAULT_SETTINGS.version
     ? migratedIndicators
-    : Array.from(new Set([...migratedIndicators, "indicator.flow_structure_composite", "strategy.presentation"]));
+    : Array.from(new Set([...migratedIndicators, "indicator.flow_structure_composite"]));
   const timeframe = HISTORICAL_TIMEFRAMES.includes(stored.chart?.timeframe as CanvasChartTimeframe) ? stored.chart!.timeframe! : DEFAULT_SETTINGS.chart.timeframe;
   const storedPerformance = stored.performance_journal as (Partial<ContainerSettings["performance_journal"]> & { showFees?: boolean }) | undefined;
   const storedWatchlist = stored.watchlist as Partial<WatchUniverseSettings> | undefined;
@@ -119,9 +120,9 @@ export function normalizeSettings(stored: Partial<ContainerSettings>): Container
 function normalizeChartSlot(stored: Partial<CanvasChartSettings> | undefined, defaults: CanvasChartSettings): CanvasChartSettings {
   const timeframe = HISTORICAL_TIMEFRAMES.includes(stored?.timeframe as CanvasChartTimeframe) ? stored!.timeframe! : defaults.timeframe;
   const visibleIndicators = (Array.isArray(stored?.visibleIndicators) ? stored.visibleIndicators.filter((value): value is string => typeof value === "string") : defaults.visibleIndicators)
-    .map((id) => id === "indicator.execution_vwap" ? "indicator.vwap" : id);
-  const required = defaults.visibleIndicators.includes("strategy.presentation") ? ["strategy.presentation"] : [];
-  return { ...defaults, ...(stored ?? {}), timeframe, visibleIndicators: Array.from(new Set([...visibleIndicators, ...required])) };
+    .map((id) => id === "indicator.execution_vwap" ? "indicator.vwap" : id)
+    .filter((id) => id !== "strategy.presentation");
+  return { ...defaults, ...(stored ?? {}), timeframe, visibleIndicators: Array.from(new Set(visibleIndicators)) };
 }
 
 function normalizeChartsQuotesLayout(stored: Partial<ChartsQuotesLayoutSettings> | undefined): ChartsQuotesLayoutSettings {

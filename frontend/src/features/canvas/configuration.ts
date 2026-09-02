@@ -19,10 +19,10 @@ export const READ_ONLY_BLOCKED_CONTAINERS = new Set<WorkspaceContainerId>([
 ]);
 export const DEFAULT_WATCHLIST_TAB_IDS = ["top-large-cap-gainers", "top-mid-cap-gainers", "top-small-cap-gainers", "top-penny-gainers"];
 export const DEFAULT_SETTINGS: ContainerSettings = {
-  version: 28,
-  chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.flow_structure_composite", "strategy.presentation"], barGptVersion: "v2", barGptQuantile: "q50", barGptHorizon: "all", barGptTriggerMode: "auto" },
+  version: 29,
+  chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.flow_structure_composite"], barGptVersion: "v2", barGptQuantile: "q50", barGptHorizon: "all", barGptTriggerMode: "auto" },
   charts_quotes: {
-    main: { showVolume: true, symbol: "AAPL", timeframe: "10s", visibleIndicators: ["indicator.vwap", "indicator.macd", "strategy.presentation"], barGptVersion: "v2", barGptQuantile: "q50", barGptHorizon: "all", barGptTriggerMode: "auto" },
+    main: { showVolume: true, symbol: "AAPL", timeframe: "10s", visibleIndicators: ["indicator.vwap", "indicator.macd"], barGptVersion: "v2", barGptQuantile: "q50", barGptHorizon: "all", barGptTriggerMode: "auto" },
     month: { showVolume: true, symbol: "AAPL", timeframe: "1mo", visibleIndicators: [], barGptVersion: "v2", barGptQuantile: "q50", barGptHorizon: "all", barGptTriggerMode: "auto" },
     daily: { showVolume: true, symbol: "AAPL", timeframe: "1d", visibleIndicators: [], barGptVersion: "v2", barGptQuantile: "q50", barGptHorizon: "all", barGptTriggerMode: "auto" },
     layout: { lowerRowPercent: 33, monthColumnPercent: 40, reservedColumnPercent: 20, tapeColumnPercent: 20 },
@@ -53,7 +53,6 @@ export const HISTORICAL_TIMEFRAMES: CanvasChartTimeframe[] = ["100ms", "1s", "5s
 export const ENRICHED_QMD_TIMEFRAMES = new Set<CanvasChartTimeframe>(["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"]);
 export const MACRO_TIMEFRAMES = new Set<CanvasChartTimeframe>(["1d", "1w", "1mo", "1y"]);
 export const INDICATOR_GUIDES: Record<string, ChartCatalogKnowledge> = {
-  "strategy.presentation": indicatorGuide("Read saved strategy decisions and their active invalidation levels on the price chart.", "The strategy runtime persists each causal evaluation with its exact effective time, action, score, confidence, reference price, and invalidation. Canvas renders only records at or before the shared clock.", "Enter and add markers show confirmed long exposure decisions.", "Reduce, take-profit, and exit markers show exposure leaving the strategy campaign.", "The presentation follows the strategy event timestamp and is independent of the chart timeframe.", ["No historical marker is reconstructed from price alone.", "An armed strategy displays future decisions only after the runtime saves them."]),
   "indicator.vwap": indicatorGuide("Compare actionable price with the sole causal VWAP authority. It is the blue price overlay, starts at 04:00 ET, and includes only eligible prints inside a prevailing NBBO no more than one second old.", "From the 04:00 ET anchor, accumulate price × size and size only for volume-eligible trades at or between the latest valid bid and ask while the quote remains fresh.", "Price holding above a rising VWAP suggests executable tape is accepting higher prices; a reclaim that persists is stronger than a brief cross.", "Price below VWAP shows deterioration in actionable tape and can participate in the below-entry protection ladder.", "The additive inside-NBBO volume and notional are preserved in every bar, so the result is invariant across intraday chart timeframes at the same causal cutoff.", ["VWAP is a benchmark, not automatic support or resistance.", "Trades without a valid recent NBBO are excluded instead of guessed.", "It is a trading-decision benchmark, not a guarantee that a market order fills at the displayed value."]),
   "indicator.ema_9": movingAverageGuide("EMA 9", 9, "fast"),
   "indicator.ema_20": movingAverageGuide("EMA 20", 20, "short-term"),
@@ -76,7 +75,6 @@ export const CHART_INDICATORS: ChartDisplayItem[] = [
   displayIndicator("model.bargpt.forecast.high", "BarGPT · Forecast High", "model_forecast", [], "price"),
   displayIndicator("model.bargpt.forecast.low", "BarGPT · Forecast Low", "model_forecast", [], "price"),
   displayIndicator("model.bargpt.forecast.close", "BarGPT · Forecast Close", "model_forecast", [], "price"),
-  displayIndicator("strategy.presentation", "Long Campaign · Strategy Decisions", "price_action", [], "price", INDICATOR_GUIDES["strategy.presentation"]),
   displayIndicator("indicator.vwap", "VWAP", "volume_liquidity", ["execution_vwap"]),
   displayIndicator("indicator.ema_9", "EMA 9", "momentum", ["ema_9"]),
   displayIndicator("indicator.ema_20", "EMA 20", "momentum", ["ema_20"]),

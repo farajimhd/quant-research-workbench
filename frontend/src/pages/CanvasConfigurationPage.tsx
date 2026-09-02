@@ -1852,7 +1852,7 @@ function strategyReplayRegistry(registry: CanvasRegistry, run: CanvasReplayRun):
   const chartsQuotesSettings = instanceSettings(registry, "charts_quotes");
   const ticker = String(run.tickers?.[0] || run.navigation_action?.ticker || "").trim().toUpperCase();
   const chartLinkGroup = registry.linkAssignments.charts_quotes;
-  const reviewIndicators = ["indicator.vwap", "indicator.macd", "strategy.presentation"];
+  const reviewIndicators = ["indicator.vwap", "indicator.macd"];
   return {
     ...registry,
     linkContexts: ticker && chartLinkGroup && chartLinkGroup !== "none"

@@ -1248,7 +1248,7 @@ function ensureLiveObservationCanvas() {
       ...registry.instanceSettings,
       "live-monitor-news": registry.instanceSettings["live-monitor-news"] ?? {
         news: { content: "all", endDate: "", kind: "all", limit: 100, lookbackHours: 6, rangeMode: "preset", startDate: "", ticker: "" },
-        version: 28,
+        version: 29,
       },
     },
     workspaceStates: { ...(registry.workspaceStates ?? {}), [LIVE_OBSERVATION_CANVAS_ID]: state },

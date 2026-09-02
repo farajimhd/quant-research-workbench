@@ -132,11 +132,19 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert "candleSeries.attachPrimitive(tradeAnnotationPrimitive)" in renderer_source
     assert "tradeAnnotationPrimitiveRef.current?.setState" in renderer_source
     assert "drawTradeAnnotationPrimitiveGeometry" in renderer_source
-    assert 'const neutralGuideColor = validHexColor(readChartPalette().text, "#111827")' in renderer_source
-    assert 'context.setLineDash([4, 3])' in renderer_source
-    assert 'drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, "#dc2626", "SL"' in renderer_source
+    assert 'const defaultStrategyPresentationSettings: StrategyPresentationSettings' in renderer_source
+    assert 'entry: strategyPresentationStyle("#2563EB"' in renderer_source
+    assert 'exit: strategyPresentationStyle("#C2410C"' in renderer_source
+    assert 'stop: strategyPresentationStyle("#DC2626"' in renderer_source
+    assert 'settingsStorageKey}.strategy-presentation' in renderer_source
+    assert '>Strategy Presentation</span>' in renderer_source
+    assert 'drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, strategyPresentationColor(settings.stop.color, dangerColor), "SL"' in renderer_source
     assert 'annotation.levelPrices?.slice(0, 3)' in renderer_source
     assert 'annotation.targetPrices?.forEach' in renderer_source
+    assert 'Number(annotation.pnl) > 0 ? successColor : Number(annotation.pnl) < 0 ? dangerColor : exitColor' in renderer_source
+    assert 'fill.kind === "add"' in renderer_source
+    assert 'fill.kind === "profit_target" || fill.kind === "target_change"' in renderer_source
+    assert 'fill.kind === "protective_stop" || fill.kind === "trailing_stop" || fill.kind === "stop_change"' in renderer_source
     assert "const ratio = clampNumber((time - leftCandle.time) / duration" in renderer_source
     assert "return leftX + (rightX - leftX) * ratio" in renderer_source
     assert "The triangle tip is the exact event-time / execution-price coordinate" in renderer_source
@@ -182,7 +190,8 @@ def test_completed_strategy_review_opens_chart_performance_and_audit_surfaces() 
     assert "y: margin + index * (height + gap)" in replay_layout
     assert 'timeframe: "1s"' in replay_layout
     assert '"indicator.macd"' in replay_layout
-    assert '"strategy.presentation"' in replay_layout
+    assert '"strategy.presentation"' not in replay_layout
+    assert 'strategyPresentationEnabled={showTradeAnnotations}' in (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "chartPresentation.tsx").read_text(encoding="utf-8")
     assert "run.tickers?.[0]" in replay_layout
     assert "registry.linkAssignments.charts_quotes" in replay_layout
     assert "[chartLinkGroup]: { ...registry.linkContexts[chartLinkGroup], symbol: ticker }" in replay_layout

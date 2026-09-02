@@ -20,7 +20,6 @@ const HISTORICAL_STRATEGY_REVIEW_INDICATORS = [
   "indicator.execution_vwap",
   "indicator.macd",
   "indicator.qmd_unified_structure",
-  "strategy.presentation",
 ] as const;
 
 export type TickerChartsQuotesOpenOptions = {
