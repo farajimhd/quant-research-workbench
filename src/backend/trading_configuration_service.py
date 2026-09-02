@@ -6749,9 +6749,7 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 profile["description"] = deepcopy(default_profile["description"])
                 profile["protected"] = True
                 profile["definition_revision"] = STRATEGY_REVISION
-                profile["action_policy_ids"] = deepcopy(
-                    default_profile["action_policy_ids"]
-                )
+                profile["action_policy_ids"] = ["profit-pocket"]
                 profile.setdefault("parameters", {})["protection"] = deepcopy(
                     default_profile["parameters"]["protection"]
                 )
