@@ -41,7 +41,7 @@ export const DEFAULT_SETTINGS: ContainerSettings = {
   scanner: { columns: [], customColumns: [], limit: 250, preset: "Core Scan" },
   signal_stream: { columns: [], customColumns: [], limit: 250, signalStreamHiddenIds: [], signalStreamId: "", signalStreamIds: [] },
   watchlist: { columns: [], customColumns: [], limit: 50, watchlistId: DEFAULT_WATCHLIST_TAB_IDS[0], watchlistIds: DEFAULT_WATCHLIST_TAB_IDS },
-  strategy_activity: { eventType: "", limit: 50_000, runId: "", strategyId: "", ticker: "" },
+  strategy_activity: { eventType: "", limit: 2_000, runId: "", strategyId: "", ticker: "" },
   sec: { content: "all", endDate: "", label: "", limit: 100, lookbackHours: 168, rangeMode: "preset", startDate: "", ticker: "" },
   ticker_sec: { lookbackHours: 720 },
   sec_detail: {},

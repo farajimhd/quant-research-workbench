@@ -117,12 +117,14 @@ type TradingDataTableProps = {
 };
 
 function TradingDataTable({ columns, defaultSort, filterColumn, filterLabel = "All", onRowOpen, onSymbolSelect, renderExpanded, rows, searchPlaceholder }: TradingDataTableProps) {
+  const pageSize = 100;
   const visibleColumns = useMemo(() => columns.filter((column) => column !== "logo" && column !== "company_name"), [columns]);
   const [queryText, setQueryText] = useState("");
   const [filterValue, setFilterValue] = useState("all");
   const [sortColumn, setSortColumn] = useState(defaultSort || columns[0] || "");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
   const [expandedKey, setExpandedKey] = useState("");
+  const [page, setPage] = useState(0);
   const tickerColumns = columns.filter(isPreviewTickerColumn);
   const presentations = useTickerPresentations(rows.flatMap((row) => tickerColumns.map((column) => String(row[column] || ""))));
   const filterOptions = useMemo(() => filterColumn ? Array.from(new Set(rows.map((row) => String(row[filterColumn] ?? "").trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right)) : [], [filterColumn, rows]);
@@ -135,18 +137,24 @@ function TradingDataTable({ columns, defaultSort, filterColumn, filterLabel = "A
     });
     return [...filtered].sort((left, right) => compareTradingValues(left[sortColumn], right[sortColumn]) * (sortDirection === "asc" ? 1 : -1));
   }, [filterColumn, filterValue, queryText, rows, sortColumn, sortDirection, visibleColumns]);
+  const pageCount = Math.max(1, Math.ceil(visibleRows.length / pageSize));
+  const activePage = Math.min(page, pageCount - 1);
+  const pageRows = visibleRows.slice(activePage * pageSize, (activePage + 1) * pageSize);
   function changeSort(column: string) {
+    setPage(0);
+    setExpandedKey("");
     if (sortColumn === column) setSortDirection((current) => current === "asc" ? "desc" : "asc");
     else { setSortColumn(column); setSortDirection("desc"); }
   }
   return <div className="trading-table-shell">
     <div className="trading-table-toolbar">
-      <label className="trading-table-search"><Search aria-hidden="true" size={14} /><input aria-label={searchPlaceholder} onChange={(event) => setQueryText(event.target.value)} placeholder={searchPlaceholder} value={queryText} /></label>
-      {filterColumn ? <label className="trading-table-filter"><Filter aria-hidden="true" size={13} /><select aria-label={`Filter by ${filterLabel}`} onChange={(event) => setFilterValue(event.target.value)} value={filterValue}><option value="all">{filterLabel}</option>{filterOptions.map((option) => <option key={option} value={option}>{option}</option>)}</select></label> : null}
+      <label className="trading-table-search"><Search aria-hidden="true" size={14} /><input aria-label={searchPlaceholder} onChange={(event) => { setQueryText(event.target.value); setPage(0); setExpandedKey(""); }} placeholder={searchPlaceholder} value={queryText} /></label>
+      {filterColumn ? <label className="trading-table-filter"><Filter aria-hidden="true" size={13} /><select aria-label={`Filter by ${filterLabel}`} onChange={(event) => { setFilterValue(event.target.value); setPage(0); setExpandedKey(""); }} value={filterValue}><option value="all">{filterLabel}</option>{filterOptions.map((option) => <option key={option} value={option}>{option}</option>)}</select></label> : null}
       <span className="trading-table-count">{visibleRows.length} of {rows.length}</span>
+      {pageCount > 1 ? <div aria-label="Table pages" className="trading-table-pages"><button aria-label="Previous table page" disabled={activePage === 0} onClick={() => { setPage((current) => Math.max(0, current - 1)); setExpandedKey(""); }} type="button">Previous</button><span>{activePage + 1} / {pageCount}</span><button aria-label="Next table page" disabled={activePage >= pageCount - 1} onClick={() => { setPage((current) => Math.min(pageCount - 1, current + 1)); setExpandedKey(""); }} type="button">Next</button></div> : null}
     </div>
-    {!visibleRows.length ? <EmptyState label={rows.length ? "No rows match the active search and filter" : "No point-in-time rows"} /> : <div className="canvas-preview-table-wrap"><table className="canvas-preview-table trading-data-table"><thead><tr>{renderExpanded ? <th aria-label="Expand row" className="trading-expand-column" /> : null}{visibleColumns.map((column) => <th aria-sort={sortColumn === column ? (sortDirection === "asc" ? "ascending" : "descending") : "none"} key={column}><button onClick={() => changeSort(column)} type="button"><span>{labelFor(column)}</span>{sortColumn === column ? sortDirection === "asc" ? <ArrowUp size={11} /> : <ArrowDown size={11} /> : <ArrowUpDown size={11} />}</button></th>)}</tr></thead><tbody>{visibleRows.map((row, index) => {
-      const key = previewRowKey(row, visibleColumns, index);
+    {!visibleRows.length ? <EmptyState label={rows.length ? "No rows match the active search and filter" : "No point-in-time rows"} /> : <div className="canvas-preview-table-wrap"><table className="canvas-preview-table trading-data-table"><thead><tr>{renderExpanded ? <th aria-label="Expand row" className="trading-expand-column" /> : null}{visibleColumns.map((column) => <th aria-sort={sortColumn === column ? (sortDirection === "asc" ? "ascending" : "descending") : "none"} key={column}><button onClick={() => changeSort(column)} type="button"><span>{labelFor(column)}</span>{sortColumn === column ? sortDirection === "asc" ? <ArrowUp size={11} /> : <ArrowDown size={11} /> : <ArrowUpDown size={11} />}</button></th>)}</tr></thead><tbody>{pageRows.map((row, index) => {
+      const key = previewRowKey(row, visibleColumns, activePage * pageSize + index);
       const expanded = expandedKey === key;
       return <FragmentRow columns={visibleColumns} expanded={expanded} key={key} onExpand={renderExpanded ? () => setExpandedKey(expanded ? "" : key) : undefined} onRowOpen={onRowOpen} onSymbolSelect={onSymbolSelect} presentations={presentations} renderExpanded={renderExpanded} row={row} />;
     })}</tbody></table></div>}

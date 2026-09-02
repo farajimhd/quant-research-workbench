@@ -54,7 +54,12 @@ type MarketContainerProps = { end?: string; onSymbolChange?: (symbol: string) =>
 const EMPTY_REFERENCES: MarketReferences = { conditions: {}, exchanges: {} };
 const MARKET_EVENT_HISTORY_LIMIT = 1024;
 const MARKET_EVENT_RENDER_LIMIT = 200;
-const MARKET_EVENT_SOURCE_LIMIT = 5000;
+// The container retains at most MARKET_EVENT_HISTORY_LIMIT decoded quotes and
+// trades. Requesting 5,000 source rows made a cold historical chart compete
+// with the full-session bar projection for data the UI immediately discarded.
+// Keep the source request aligned with the actual point-in-time presentation
+// budget so the first load is deterministic without changing the visible tape.
+const MARKET_EVENT_SOURCE_LIMIT = MARKET_EVENT_HISTORY_LIMIT;
 const MARKET_EVENTS_UNAVAILABLE = "Live market events are unavailable. Start or reconnect QMD Gateway.";
 const HISTORICAL_EVENTS_UNAVAILABLE = "Historical market events are unavailable. Start or reconnect QMD History.";
 const QUOTE_EVENT_GUIDE = [

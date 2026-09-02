@@ -4188,12 +4188,17 @@ def _default_draft() -> dict[str, Any]:
         "minimum_initial_vwap_extension_bps": 0.0,
         "minimum_reentry_vwap_extension_bps": 0.0,
         "maximum_vwap_extension_bps": 500.0,
-        # This is an instantaneous (non-latched) execution check for volatile
-        # small-cap premarket names.
+        # Campaign admission retains the protected rule-set authority.  The
+        # order-time limit is intentionally distinct and non-latched for
+        # volatile small-cap premarket names.
+        "maximum_admission_spread_bps": 60.0,
         # Absolute volume and sustained tape activity are already latched.  A
         # three-cent spread on a roughly $3 small-cap is still executable for a
         # marketable entry; retaining the old 60-bps cap delayed otherwise valid
         # campaigns until after the breakout candle.
+        "maximum_current_spread_bps": 100.0,
+        # Preserve compatibility with immutable configurations whose one field
+        # represented the order-time threshold.
         "maximum_spread_bps": 100.0,
     }
     system_profiles[0]["parameters"]["entry_momentum_confirmation"] = {

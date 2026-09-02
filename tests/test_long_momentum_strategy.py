@@ -98,6 +98,13 @@ def confirmed_observation(**overrides) -> StrategyObservation:
 
 
 class LongMomentumStrategyTests(unittest.TestCase):
+    def test_default_spread_contract_separates_admission_from_execution(self) -> None:
+        liquidity = default_long_momentum_parameters()["liquidity_admission"]
+
+        self.assertEqual(liquidity["maximum_admission_spread_bps"], 60.0)
+        self.assertEqual(liquidity["maximum_current_spread_bps"], 100.0)
+        self.assertEqual(liquidity["maximum_spread_bps"], 100.0)
+
     def test_very_urgent_entry_reserves_its_full_reprice_envelope(self) -> None:
         policy = _execution_policy_from_phase(
             {
@@ -411,7 +418,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
             ["current_trade_rate_10s"],
         )
 
-    def test_small_cap_premarket_execution_accepts_55_bps_but_rejects_above_60(self) -> None:
+    def test_small_cap_premarket_execution_accepts_70_bps_but_rejects_above_100(self) -> None:
         parameters = default_long_momentum_parameters()
         parameters["liquidity_admission"]["enabled"] = True
         base_state = {
@@ -423,13 +430,13 @@ class LongMomentumStrategyTests(unittest.TestCase):
             assignment(parameters=parameters, state=base_state),
             confirmed_observation(
                 price=10.0,
-                bid=9.945,
+                bid=9.93,
                 ask=10.0,
                 previous_close=9.0,
                 previous_high=9.5,
                 swing_high=9.5,
                 vwap=9.8,
-                source_values=self._liquidity_values(spread_bps=55.0),
+                source_values=self._liquidity_values(spread_bps=70.0),
             ),
         )
         self.assertEqual(executable.evaluation.signals[0].action, "enter_long")
@@ -438,13 +445,13 @@ class LongMomentumStrategyTests(unittest.TestCase):
             assignment(parameters=parameters, state=base_state),
             confirmed_observation(
                 price=10.0,
-                bid=9.939,
+                bid=9.899,
                 ask=10.0,
                 previous_close=9.0,
                 previous_high=9.5,
                 swing_high=9.5,
                 vwap=9.8,
-                source_values=self._liquidity_values(spread_bps=61.0),
+                source_values=self._liquidity_values(spread_bps=101.0),
             ),
         )
         self.assertEqual(
@@ -455,6 +462,56 @@ class LongMomentumStrategyTests(unittest.TestCase):
             too_wide.evaluation.signals[0].metadata["execution_quality"]["failed"],
             ["current_spread"],
         )
+
+    def test_admission_and_current_spread_limits_are_independent(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["liquidity_admission"].update({
+            "enabled": True,
+            "maximum_admission_spread_bps": 60.0,
+            "maximum_current_spread_bps": 100.0,
+            "maximum_spread_bps": 100.0,
+        })
+        engine = LongMomentumStrategyEngine()
+
+        admission_blocked = engine.evaluate(
+            assignment(parameters=parameters),
+            confirmed_observation(
+                price=10.0,
+                bid=9.93,
+                ask=10.0,
+                previous_close=9.0,
+                previous_high=9.5,
+                swing_high=9.5,
+                vwap=9.8,
+                source_values=self._liquidity_values(spread_bps=70.0),
+            ),
+        )
+        self.assertEqual(
+            admission_blocked.evaluation.signals[0].reason,
+            "liquidity_admission_incomplete",
+        )
+        self.assertEqual(
+            admission_blocked.evaluation.signals[0].metadata["liquidity_admission"]["failed"],
+            ["spread"],
+        )
+
+        admitted_state = {
+            "liquidity_admitted_at": (NOW - timedelta(seconds=1)).isoformat(),
+        }
+        execution_allowed = engine.evaluate(
+            assignment(parameters=parameters, state=admitted_state),
+            confirmed_observation(
+                price=10.0,
+                bid=9.93,
+                ask=10.0,
+                previous_close=9.0,
+                previous_high=9.5,
+                swing_high=9.5,
+                vwap=9.8,
+                source_values=self._liquidity_values(spread_bps=70.0),
+            ),
+        )
+        self.assertEqual(execution_allowed.evaluation.signals[0].action, "enter_long")
 
     def test_initial_entry_requires_more_vwap_separation_than_reentry(self) -> None:
         parameters = default_long_momentum_parameters()

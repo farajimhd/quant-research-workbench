@@ -165,7 +165,11 @@ def canonical_live_snapshot(
     return projector.snapshot()
 
 
-def trading_state_payload(snapshot: TradingStateSnapshot) -> dict[str, Any]:
+def trading_state_payload(
+    snapshot: TradingStateSnapshot,
+    *,
+    include_strategy_activity: bool = True,
+) -> dict[str, Any]:
     if (
         snapshot.mode in {TradingMode.BACKTEST, TradingMode.BACKTEST_DEBUG}
         and snapshot.executions
@@ -176,6 +180,8 @@ def trading_state_payload(snapshot: TradingStateSnapshot) -> dict[str, Any]:
             closed_trades=tuple(derive_round_trip_trades(list(snapshot.executions))),
         )
     payload = snapshot.to_dict()
+    if snapshot.mode in {TradingMode.BACKTEST, TradingMode.BACKTEST_DEBUG}:
+        _compact_historical_broker_projection(payload)
     metrics = portfolio_metrics(payload.get("account_values", []), payload.get("ledger", []), payload.get("positions", []))
     payload["portfolio"] = {
         "metrics": metrics,
@@ -218,7 +224,7 @@ def trading_state_payload(snapshot: TradingStateSnapshot) -> dict[str, Any]:
         }
     )
     payload["strategy_activity"] = []
-    if len(run_ids) == 1:
+    if include_strategy_activity and len(run_ids) == 1:
         # A historical canonical state is scoped to one immutable run. Include
         # the durable strategy decisions so Position Manager can present the
         # complete request -> order -> fill -> management -> exit lifecycle.
@@ -237,6 +243,38 @@ def trading_state_payload(snapshot: TradingStateSnapshot) -> dict[str, Any]:
     payload["performance_snapshot"] = performance_snapshot(snapshot, metrics, episodes)
     payload["performance_journal"] = build_performance_report(episodes, snapshot.executions, snapshot.orders)
     return payload
+
+
+def _compact_historical_broker_projection(payload: dict[str, Any]) -> None:
+    """Keep immutable broker evidence durable while bounding browser payloads.
+
+    Simulated partial fills repeat the complete strategy-intent metadata in
+    every broker-native raw record. That raw evidence remains authoritative in
+    the historical journal and restart checkpoint, but retransmitting it for
+    thousands of fill parts made a single completed-run Canvas approach one
+    gigabyte. The UI consumes typed canonical fields plus only the order timing
+    and role hints retained below.
+    """
+
+    for order in payload.get("orders") or []:
+        raw = dict(order.get("raw") or {})
+        metadata = dict(raw.get("canonical_metadata") or {})
+        order["raw"] = {
+            key: raw[key]
+            for key in ("submitted_at", "cancelled_at", "replaced_at")
+            if raw.get(key) is not None
+        }
+        compact_metadata = {
+            key: metadata[key]
+            for key in ("execution_role", "fill_role", "action", "reason", "reason_code")
+            if metadata.get(key) is not None
+        }
+        if compact_metadata:
+            order["raw"]["canonical_metadata"] = compact_metadata
+    for execution in payload.get("executions") or []:
+        execution["raw"] = {}
+    for activity in payload.get("activity") or []:
+        activity["payload"] = {}
 
 
 def performance_snapshot(snapshot: TradingStateSnapshot, metrics: dict[str, Any], episodes: list[Any]) -> dict[str, Any]:

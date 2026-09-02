@@ -75,6 +75,36 @@ class ProtectionRepairMetadataTests(unittest.TestCase):
             raw["canonical_metadata"]["reason"], "protective_stop_filled"
         )
 
+    def test_runtime_planner_carries_strategy_decision_clock_to_broker_order(self) -> None:
+        strategy_intent = intent()
+        planner = RuntimeIbkrStrategyOrderPlanner(
+            {
+                "TEST": InstrumentContract(
+                    instrument_id="conid:123",
+                    conid=123,
+                    symbol="TEST",
+                    security_type="STK",
+                    exchange="SMART",
+                    currency="USD",
+                )
+            },
+            strategy_id="strategy-1",
+            strategy_revision=1,
+            run_id="run-1",
+        )
+
+        plan = planner.plan(
+            intent=strategy_intent,
+            account_id="DU1",
+            event=None,
+        )
+
+        self.assertTrue(plan.orders)
+        self.assertEqual(
+            plan.orders[0].raw["canonical_metadata"]["decision_event_time"],
+            strategy_intent.event_time.isoformat(),
+        )
+
 
 NOW = datetime.now(timezone.utc)
 

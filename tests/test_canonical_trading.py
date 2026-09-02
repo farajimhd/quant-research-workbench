@@ -388,6 +388,69 @@ class CanonicalProjectionTests(unittest.TestCase):
             "flat_to_flat_position_lifecycle",
         )
 
+    def test_backtest_payload_keeps_durable_raw_evidence_out_of_browser_projection(self) -> None:
+        projector = TradingStateProjector(TradingMode.BACKTEST, BrokerProvider.SIMULATED)
+        projector.set_accounts([
+            BrokerAccount(
+                provider=BrokerProvider.SIMULATED,
+                account_id="DU1",
+                base_currency="USD",
+                can_view=True,
+                can_trade=True,
+                valid_at=NOW,
+            )
+        ])
+        projector.set_orders([
+            OrderState(
+                account_id="DU1",
+                instrument=instrument(),
+                lifecycle_state=OrderLifecycleState.FILLED,
+                broker_status_raw="Filled",
+                broker_order_id="entry",
+                client_order_id="entry-client",
+                side="BUY",
+                total_quantity=Decimal("10"),
+                filled_quantity=Decimal("10"),
+                source_event_time=NOW,
+                raw={
+                    "submitted_at": NOW.isoformat(),
+                    "large_broker_payload": {"levels": list(range(100))},
+                    "canonical_metadata": {
+                        "execution_role": "entry",
+                        "profit_target_selection": {"qualified_levels": list(range(100))},
+                    },
+                },
+            )
+        ])
+        projector.set_executions([
+            Execution(
+                "open-1",
+                "DU1",
+                instrument(),
+                "BUY",
+                Decimal("10"),
+                Decimal("100"),
+                NOW,
+                broker_order_id="entry",
+                raw={"canonical_metadata": {"qualified_levels": list(range(100))}},
+            )
+        ])
+
+        payload = trading_state_payload(
+            projector.snapshot(),
+            include_strategy_activity=False,
+        )
+
+        self.assertEqual(payload["executions"][0]["raw"], {})
+        self.assertEqual(
+            payload["orders"][0]["raw"],
+            {
+                "submitted_at": NOW.isoformat(),
+                "canonical_metadata": {"execution_role": "entry"},
+            },
+        )
+        self.assertEqual(payload["strategy_activity"], [])
+
     def test_trade_episode_reversal_closes_then_opens_a_new_episode(self) -> None:
         executions = [
             Execution("long", "DU1", instrument(), "BUY", Decimal("10"), Decimal("100"), NOW),

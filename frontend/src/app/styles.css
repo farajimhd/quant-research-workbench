@@ -9985,6 +9985,34 @@ button {
   padding: 8px 10px;
 }
 
+.trading-table-pages {
+  align-items: center;
+  display: flex;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.trading-table-pages button {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--foreground);
+  cursor: pointer;
+  font: inherit;
+  min-height: 24px;
+  padding: 2px 7px;
+}
+
+.trading-table-pages button:disabled {
+  color: var(--muted-foreground);
+  cursor: default;
+  opacity: 0.55;
+}
+
+.trading-table-pages span {
+  color: var(--muted-foreground);
+  font-size: 9px;
+}
+
 .position-lifecycle-modal-backdrop {
   background: rgba(16, 24, 40, .28);
   bottom: auto;
@@ -10646,6 +10674,10 @@ button {
 
 .canvas-config-page .trading-workspace-shell[data-command-bar-visible="false"] {
   grid-template-rows: minmax(0, 1fr);
+}
+
+.canvas-config-page .trading-workspace-shell[data-command-bar-visible="false"]:has(> .workspace-registry-warning) {
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .canvas-focus-page .trading-workspace-shell[data-library-open="true"] {

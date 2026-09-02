@@ -188,6 +188,41 @@ class SimulatedBrokerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(live[0].lastExecutionTime, TS)
 
+    async def test_order_submission_time_cannot_precede_completed_frame_decision(self) -> None:
+        broker = SimulatedBrokerAdapter(
+            ["DU-TIME"],
+            SimulationConfig(
+                initial_cash=20_000,
+                commission_per_share=0.0,
+                minimum_commission=0.0,
+            ),
+            mode=RunMode.BACKTEST,
+        )
+        await broker.initialize()
+        broker.observe_market_event(
+            replace(quote(bid=99, ask=100), ts=TS - timedelta(milliseconds=8))
+        )
+        decision_time = TS
+        await broker.place_orders("DU-TIME", [OrderRequest(
+            acctId="DU-TIME",
+            conid=265598,
+            cOID="completed-frame-decision",
+            ticker="AAPL",
+            orderType="LMT",
+            side="BUY",
+            quantity=10,
+            price=100,
+            raw={
+                "canonical_metadata": {
+                    "decision_event_time": decision_time.isoformat(),
+                },
+            },
+        )])
+
+        live = await broker.live_orders()
+
+        self.assertEqual(live[0].lastExecutionTime, decision_time)
+
     async def test_resting_sell_limit_fills_from_trade_through_with_passive_participation(self) -> None:
         broker = SimulatedBrokerAdapter(
             ["DU-TARGET"],
@@ -1076,6 +1111,96 @@ class JournalTests(unittest.TestCase):
             self.assertIn("+5.25% from squeeze anchor", occurrence["reason"])
             self.assertEqual(occurrence["reference_price"], 10.525)
             self.assertEqual(journal.strategy_activity_records(run_id="missing"), [])
+            journal.close()
+
+    def test_strategy_activity_compacts_unselected_structural_book_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            journal.append(
+                run_id="run-a",
+                category="strategy_decision",
+                entity_type="signal",
+                entity_id="signal-compact",
+                event_time=TS,
+                payload={
+                    "strategy_id": "momentum",
+                    "ticker": "AAPL",
+                    "action": "enter_long",
+                    "metadata": {
+                        "profit_target_selection": {
+                            "qualified_level_count": 100,
+                            "qualified_levels": [{"unified_level_id": index} for index in range(100)],
+                            "selected_target_prices": [12.5],
+                            "target_level_ordinal": 3,
+                        },
+                        "unified_structural_trigger": {
+                            "passed": True,
+                            "reason": "unified_resistance_accepted",
+                            "threshold_price": 11.0,
+                            "level": {
+                                "unified_level_id": "selected",
+                                "hold_probability": 0.9,
+                                "break_count": 4,
+                                "component_levels": [{"unified_level_id": index} for index in range(100)],
+                            },
+                        },
+                    },
+                },
+            )
+
+            activity = strategy_activity_payload(journal=journal, run_id="run-a")
+            gates = activity["rows"][0]["gate_snapshot"]
+
+            self.assertNotIn("qualified_levels", gates["profit_target_selection"])
+            self.assertEqual(gates["profit_target_selection"]["selected_target_prices"], [12.5])
+            self.assertNotIn("component_levels", gates["unified_structural_trigger"]["level"])
+            self.assertEqual(
+                gates["unified_structural_trigger"]["level"]["unified_level_id"],
+                "selected",
+            )
+            journal.close()
+
+    def test_strategy_activity_summarizes_routine_wait_evidence_without_string_duplication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            journal.append(
+                run_id="run-a",
+                category="strategy_decision",
+                entity_type="signal",
+                entity_id="signal-wait",
+                event_time=TS,
+                payload={
+                    "strategy_id": "momentum",
+                    "ticker": "AAPL",
+                    "action": "wait",
+                    "metadata": {
+                        "entry_rules": {
+                            "trigger": {
+                                "condition_evidence": [{"large": list(range(100))}],
+                                "groups": {"structure": True},
+                                "matched_groups": ["structure"],
+                                "operator": "all",
+                                "passed": True,
+                                "score": 1.0,
+                            }
+                        }
+                    },
+                },
+            )
+
+            activity = strategy_activity_payload(
+                journal=journal,
+                run_id="run-a",
+                include_decision_evidence=False,
+            )
+            row = activity["rows"][0]
+
+            self.assertNotIn(
+                "condition_evidence",
+                row["gate_snapshot"]["entry_rules"]["trigger"],
+            )
+            self.assertTrue(row["gate_snapshot"]["entry_rules"]["trigger"]["passed"])
+            self.assertEqual(row["decision_evidence"], "")
             journal.close()
 
     def test_journal_sequence_checkpoint_strategy_and_outbox_are_durable(self) -> None:

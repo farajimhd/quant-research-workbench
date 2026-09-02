@@ -764,6 +764,7 @@ export function StrategyActivityContainer({ asOf, focusSequence, onSettingsChang
   useEffect(() => {
     const controller = new AbortController();
     let timer = 0;
+    let historicalRetryAvailable = Boolean(runId);
     const refresh = () => {
       const query = new URLSearchParams({
         as_of: asOfRef.current,
@@ -773,10 +774,27 @@ export function StrategyActivityContainer({ asOf, focusSequence, onSettingsChang
       if (settings.strategyId) query.set("strategy_id", settings.strategyId);
       if (settings.ticker) query.set("ticker", settings.ticker);
       if (settings.eventType) query.set("event_type", settings.eventType);
-      api<StrategyActivityResponse>(`/api/trading/strategy-activity?${query}`, { signal: controller.signal, timeoutMs: 10000 })
+      api<StrategyActivityResponse>(`/api/trading/strategy-activity?${query}`, { signal: controller.signal, timeoutMs: runId ? 30000 : 10000 })
         .then((response) => { setPayload(response); setError(""); })
-        .catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); })
-        .finally(() => { if (!controller.signal.aborted) timer = window.setTimeout(refresh, runId ? 1_000 : 5_000); });
+        .catch((reason) => {
+          if (controller.signal.aborted) return;
+          // Completed-run result hydration can temporarily occupy the local
+          // backend with a much larger projection. Retry one historical read
+          // after that bounded contention clears, without turning immutable
+          // activity into a polling workload.
+          if (historicalRetryAvailable) {
+            historicalRetryAvailable = false;
+            timer = window.setTimeout(refresh, 5_000);
+            return;
+          }
+          setError(reason instanceof Error ? reason.message : String(reason));
+        })
+        // A historical controller is immutable at its supplied focus sequence.
+        // Re-fetching its multi-megabyte journal projection every second could
+        // monopolize the renderer while completed-run results were mounting.
+        // Replay clock changes already invalidate this effect through
+        // ``focusSequence``; only the unscoped live journal needs polling.
+        .finally(() => { if (!controller.signal.aborted && !runId) timer = window.setTimeout(refresh, 5_000); });
     };
     refresh();
     return () => { controller.abort(); window.clearTimeout(timer); };

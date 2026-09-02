@@ -426,7 +426,11 @@ def default_long_momentum_parameters() -> dict[str, Any]:
             "minimum_session_share_volume": 100_000.0,
             "minimum_trade_rate_10s": 1.0,
             "minimum_trade_rate_60s": 0.5,
-            "maximum_spread_bps": 60.0,
+            "maximum_admission_spread_bps": 60.0,
+            "maximum_current_spread_bps": 100.0,
+            # Compatibility authority for immutable configurations created before
+            # admission and order-time spread limits were represented separately.
+            "maximum_spread_bps": 100.0,
         },
         "entry_momentum_confirmation": {
             "enabled": False,
@@ -1054,6 +1058,11 @@ def _liquidity_admission_result(
         "trade_rate_60s": _numeric_source_value(observation, "market.trade_rate_60s"),
         "spread_bps": _spread_bps(observation),
     }
+    maximum_admission_spread_bps = float(
+        policy.get("maximum_admission_spread_bps")
+        if policy.get("maximum_admission_spread_bps") is not None
+        else policy.get("maximum_spread_bps") or float("inf")
+    )
     checks = {
         "price_floor": facts["price"] >= float(policy.get("minimum_price") or 0),
         "price_ceiling": facts["price"] <= float(policy.get("maximum_price") or float("inf")),
@@ -1071,7 +1080,7 @@ def _liquidity_admission_result(
         >= float(policy.get("minimum_trade_rate_60s") or 0),
         "spread": facts["spread_bps"] is not None
         and float(facts["spread_bps"])
-        <= float(policy.get("maximum_spread_bps") or float("inf")),
+        <= maximum_admission_spread_bps,
     }
     return all(checks.values()), {
         "facts": facts,
@@ -1118,6 +1127,11 @@ def _current_execution_quality_result(
     maximum_vwap_extension_bps = float(
         policy.get("maximum_vwap_extension_bps") or float("inf")
     )
+    maximum_current_spread_bps = float(
+        policy.get("maximum_current_spread_bps")
+        if policy.get("maximum_current_spread_bps") is not None
+        else policy.get("maximum_spread_bps") or float("inf")
+    )
     checks = {
         "current_trade_rate_10s": trade_rate_10s is not None
         and trade_rate_10s >= minimum_trade_rate_10s,
@@ -1127,7 +1141,7 @@ def _current_execution_quality_result(
             and trade_rate_60s >= minimum_trade_rate_60s
         ),
         "current_spread": spread is not None
-        and spread <= float(policy.get("maximum_spread_bps") or float("inf")),
+        and spread <= maximum_current_spread_bps,
         "vwap_extension_floor": minimum_vwap_extension_bps <= 0
         or (
             vwap_extension_bps is not None

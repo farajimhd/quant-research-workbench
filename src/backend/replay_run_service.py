@@ -1808,39 +1808,32 @@ class ReplayRunController:
             trading = trading_state_payload(
                 await self._runtime.canonical_snapshot(
                     as_of=self.current_time or self.definition.requested_start,
-                )
+                ),
+                include_strategy_activity=False,
             )
-            trading["strategy_activity"] = self.strategy_activity_snapshot(
+            activity_rows = self.strategy_activity_snapshot(
                 as_of=self.current_time or self.definition.requested_start,
                 limit=50_000,
+                include_decision_evidence=False,
             )["rows"]
+            trading["strategy_activity"] = [
+                row
+                for row in activity_rows
+                if (
+                    row.get("event_type") in {"signal", "decision"}
+                    and (
+                        row.get("event_type") != "decision"
+                        or row.get("action") not in {"", "wait"}
+                    )
+                )
+                or (
+                    row.get("event_type") == "campaign_state"
+                    and row.get("action") != "assignment_state_saved"
+                )
+            ]
             self._canvas_state_cache = (now, trading)
         ticker = _ticker(symbol)
-        records = [
-            *self._journal.strategy_records(
-                ticker=ticker,
-                as_of=self.current_time or self.definition.requested_start,
-                limit=50_000,
-            ),
-            *self._journal.order_management_records(
-                ticker=ticker,
-                as_of=self.current_time or self.definition.requested_start,
-                limit=50_000,
-            ),
-        ]
-        records.sort(key=lambda record: record.sequence)
-        strategy_records = [
-            {
-                **record.payload,
-                "event_time": record.event_time.isoformat(),
-                "recorded_at": record.recorded_at.isoformat(),
-                "category": record.category,
-                "entity_type": record.entity_type,
-                "entity_id": record.entity_id,
-            }
-            for record in records
-            if record.category in {"strategy", "strategy_decision", "order_management"}
-        ]
+        strategy_records = list(trading.get("strategy_activity") or [])
         assignments = (
             [assignment.payload() for assignment in self._strategy.assignments()]
             if self._strategy is not None
@@ -1876,19 +1869,21 @@ class ReplayRunController:
             # refresh for every open chart.
             "assignments": ticker_assignments,
             "signals": [
-                row
+                _compact_strategy_chart_activity_row(row)
                 for row in strategy_records
-                if row["entity_type"] == "signal"
+                if row.get("event_type") == "signal"
                 and str(row.get("ticker") or "").upper() == ticker
             ],
             "decisions": [
-                row
+                _compact_strategy_chart_activity_row(row)
                 for row in strategy_records
-                if row["category"] == "strategy_decision"
+                if row.get("event_type") == "decision"
                 and str(row.get("ticker") or "").upper() == ticker
             ],
             "order_management": [
-                row for row in strategy_records if row["category"] == "order_management"
+                _compact_strategy_chart_activity_row(row)
+                for row in strategy_records
+                if row.get("event_type") == "order"
             ],
             "taxonomy": definition.get("taxonomy"),
             "historical_source": f"{self.definition.mode.value}_run_journal_only",
@@ -1898,10 +1893,15 @@ class ReplayRunController:
             "coverage": {},
             "chart": {"bars": [], "indicators": [], "symbol": ticker, "timeframe": "1m"},
             "errors": {},
-            "fills": trading.get("executions", []),
-            "journal": strategy_records,
+            # Canonical executions and orders already live under ``trading``.
+            # Repeating them at the Canvas root doubled multi-part-fill runs in
+            # the browser without serving any current Canvas consumer.
+            "fills": [],
+            "journal": [
+                _compact_strategy_chart_activity_row(row) for row in strategy_records
+            ],
             "news": [],
-            "orders": trading.get("orders", []),
+            "orders": [],
             "portfolio": trading.get("portfolio", {}),
             "preview_kind": f"{self.definition.mode.value}_run",
             "scanner": [],
@@ -1941,6 +1941,7 @@ class ReplayRunController:
         ticker: str = "",
         event_type: str = "",
         limit: int = 500,
+        include_decision_evidence: bool = True,
     ) -> dict[str, Any]:
         if self._journal is None:
             raise ValueError("Replay Strategy Activity is not ready")
@@ -1954,6 +1955,7 @@ class ReplayRunController:
             ticker=ticker,
             event_type=event_type,
             limit=limit,
+            include_decision_evidence=include_decision_evidence,
         )
 
     def subscribe(self) -> asyncio.Queue[dict[str, Any]]:
@@ -8296,6 +8298,41 @@ def _check(
         "summary": summary,
         "evidence": evidence,
         "required": required,
+    }
+
+
+def _compact_strategy_chart_activity_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Retain chart/action identity without retransmitting gate evidence."""
+
+    return {
+        key: row[key]
+        for key in (
+            "record_id",
+            "event_id",
+            "signal_id",
+            "event_time",
+            "effective_at",
+            "run_id",
+            "sequence",
+            "strategy_id",
+            "strategy_revision",
+            "ticker",
+            "event_type",
+            "action",
+            "state",
+            "reason",
+            "reason_code",
+            "score",
+            "confidence",
+            "direction",
+            "invalidation_price",
+            "reference_price",
+            "trigger_reference_price",
+            "trigger_threshold_price",
+            "entity_id",
+            "source",
+        )
+        if row.get(key) is not None
     }
 
 

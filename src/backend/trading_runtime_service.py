@@ -504,6 +504,7 @@ def strategy_activity_payload(
     ticker: str = "",
     event_type: str = "",
     limit: int = 500,
+    include_decision_evidence: bool = True,
 ) -> dict[str, Any]:
     """Project the durable strategy journal into an operator-facing event list."""
     requested_limit = max(1, min(int(limit), 50_000))
@@ -531,7 +532,8 @@ def strategy_activity_payload(
             if decision_identity:
                 seen_decision_entities.add(decision_identity)
         metadata = dict(payload.get("metadata") or {})
-        gate_snapshot = {
+        action = _strategy_activity_action(record.category, payload)
+        gate_snapshot = _compact_strategy_gate_snapshot({
             key: metadata.get(key)
             for key in (
                 "entry_rules",
@@ -542,7 +544,7 @@ def strategy_activity_payload(
                 "profit_target_selection",
             )
             if metadata.get(key) is not None
-        }
+        }, include_condition_evidence=action not in {"", "wait"})
         decision_values = {
             key: value
             for key, value in {
@@ -560,7 +562,6 @@ def strategy_activity_payload(
         }
         if decision_values:
             gate_snapshot["decision_values"] = decision_values
-        action = _strategy_activity_action(record.category, payload)
         recording_latency_ms = max(
             0.0,
             (record.recorded_at - record.event_time).total_seconds() * 1_000.0,
@@ -607,9 +608,11 @@ def strategy_activity_payload(
                 ),
                 "recording_latency_ms": round(recording_latency_ms, 3),
                 "gates": _strategy_gate_summary(gate_snapshot),
-                "decision_evidence": json.dumps(
-                    gate_snapshot, sort_keys=True, separators=(",", ":")
-                ) if gate_snapshot else "",
+                "decision_evidence": (
+                    json.dumps(gate_snapshot, sort_keys=True, separators=(",", ":"))
+                    if include_decision_evidence and gate_snapshot
+                    else ""
+                ),
                 "gate_snapshot": gate_snapshot,
             }
         )
@@ -631,6 +634,95 @@ def strategy_activity_payload(
             "event_types": list(STRATEGY_ACTIVITY_EVENT_TYPES),
         },
     }
+
+
+def _compact_strategy_gate_snapshot(
+    gates: dict[str, Any], *, include_condition_evidence: bool = True
+) -> dict[str, Any]:
+    """Project decision evidence used by operators without duplicating books.
+
+    The journal keeps the complete point-in-time structural book and target
+    candidate list. Strategy Activity needs the actual gate result, selected
+    target, entry indicators, and selected structural frontier—not hundreds of
+    unselected levels repeated on every one-second decision.
+    """
+
+    result = dict(gates)
+    entry_rules = result.get("entry_rules")
+    if isinstance(entry_rules, dict) and not include_condition_evidence:
+        result["entry_rules"] = {
+            phase: {
+                key: phase_payload[key]
+                for key in (
+                    "group_scores",
+                    "groups",
+                    "matched_groups",
+                    "operator",
+                    "passed",
+                    "score",
+                )
+                if phase_payload.get(key) is not None
+            }
+            for phase, phase_payload in entry_rules.items()
+            if isinstance(phase_payload, dict)
+        }
+    target = result.get("profit_target_selection")
+    if isinstance(target, dict):
+        result["profit_target_selection"] = {
+            key: target[key]
+            for key in (
+                "qualified_level_count",
+                "qualified_levels_truncated",
+                "reference_price",
+                "selected_price",
+                "selected_target_prices",
+                "selection_mode",
+                "target_level_ordinal",
+                "target_price",
+            )
+            if target.get(key) is not None
+        }
+    trigger = result.get("unified_structural_trigger")
+    if isinstance(trigger, dict):
+        compact_trigger = {
+            key: trigger[key]
+            for key in (
+                "acceptance_age_ms",
+                "acceptance_expires",
+                "acceptance_hold_ms",
+                "accepted_at",
+                "breakout_extension_bps",
+                "maximum_breakout_extension_bps",
+                "passed",
+                "previous_price",
+                "reason",
+                "reference_price",
+                "threshold_price",
+            )
+            if trigger.get(key) is not None
+        }
+        level = trigger.get("level")
+        if isinstance(level, dict):
+            compact_trigger["level"] = {
+                key: level[key]
+                for key in (
+                    "unified_level_id",
+                    "side",
+                    "price",
+                    "lower",
+                    "upper",
+                    "combined_entry_boundary",
+                    "unified_break_boundary",
+                    "hold_probability",
+                    "break_count",
+                    "confidence",
+                    "salience",
+                    "reaction_probability",
+                )
+                if level.get(key) is not None
+            }
+        result["unified_structural_trigger"] = compact_trigger
+    return result
 
 
 def _strategy_gate_summary(gate_snapshot: dict[str, Any]) -> str:

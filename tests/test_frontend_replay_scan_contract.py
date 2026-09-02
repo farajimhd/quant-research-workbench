@@ -8,6 +8,7 @@ SCREENER_CONTAINERS = REPO_ROOT / "frontend" / "src" / "app" / "components" / "M
 TRADING_PRESENTATION = REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "tradingPresentation.tsx"
 CHART_PRESENTATION = REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "chartPresentation.tsx"
 TRADING_WORKSPACE = REPO_ROOT / "frontend" / "src" / "app" / "components" / "TradingWorkspace.tsx"
+MARKET_MICROSTRUCTURE = REPO_ROOT / "frontend" / "src" / "app" / "components" / "MarketMicrostructureContainers.tsx"
 
 
 def test_next_action_reports_backend_progress_while_canvas_stays_static() -> None:
@@ -22,7 +23,7 @@ def test_next_action_reports_backend_progress_while_canvas_stays_static() -> Non
 
 def test_trading_audits_do_not_truncate_canonical_rows_before_table_filtering() -> None:
     source = TRADING_PRESENTATION.read_text(encoding="utf-8")
-    positions_source = source.split("function PositionsPreview", 1)[1].split("function PositionDetail", 1)[0]
+    positions_source = source.split("function PositionsPreview", 1)[1].split("function PositionLifecycleModal", 1)[0]
     orders_source = source.split("function OrdersPreview", 1)[1].split("function OrderDetail", 1)[0]
     executions_source = source.split("function ExecutionsPreview", 1)[1].split("function ClosedTradesPreview", 1)[0]
     round_trips_source = source.split("function ClosedTradesPreview", 1)[1].split("function TradingTabs", 1)[0]
@@ -30,6 +31,22 @@ def test_trading_audits_do_not_truncate_canonical_rows_before_table_filtering() 
     assert "data.position_lifecycles" in source
     for audit_source in (positions_source, orders_source, executions_source, round_trips_source):
         assert ".slice(0, settings.limit)" not in audit_source
+
+
+def test_large_execution_audits_page_the_rendered_dom_without_truncating_evidence() -> None:
+    source = TRADING_PRESENTATION.read_text(encoding="utf-8")
+
+    assert "const pageSize = 100" in source
+    assert "const pageRows = visibleRows.slice(activePage * pageSize, (activePage + 1) * pageSize)" in source
+    assert "pageRows.map((row, index)" in source
+    assert "{activePage + 1} / {pageCount}" in source
+
+
+def test_historical_tape_request_matches_the_retained_point_in_time_window() -> None:
+    source = MARKET_MICROSTRUCTURE.read_text(encoding="utf-8")
+
+    assert "const MARKET_EVENT_SOURCE_LIMIT = MARKET_EVENT_HISTORY_LIMIT" in source
+    assert ".slice(-MARKET_EVENT_SOURCE_LIMIT)" in source
 
 
 def test_completed_position_manager_reports_an_outdated_backend_contract() -> None:
@@ -102,7 +119,22 @@ def test_strategy_activity_loads_a_reviewable_history_window() -> None:
     configuration_source = (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "configuration.ts").read_text(encoding="utf-8")
 
     assert "Math.max(2_000, Math.min(settings.limit, 50_000))" in container_source
+    assert "timeoutMs: runId ? 30000 : 10000" in container_source
+    assert "!controller.signal.aborted && !runId" in container_source
+    assert "runId ? 1_000 : 5_000" not in container_source
+    assert "let historicalRetryAvailable = Boolean(runId);" in container_source
+    assert "historicalRetryAvailable = false;" in container_source
     assert 'strategy_activity: { eventType: "", limit: 2_000' in configuration_source
+
+
+def test_backtest_workspaces_use_the_bounded_compact_viewport() -> None:
+    routes_source = (REPO_ROOT / "frontend" / "src" / "app" / "routes.ts").read_text(encoding="utf-8")
+    styles_source = (REPO_ROOT / "frontend" / "src" / "app" / "styles.css").read_text(encoding="utf-8")
+
+    assert 'page === "backtest-trading"' in routes_source
+    assert 'page === "backtest-debug"' in routes_source
+    assert '.trading-workspace-shell[data-command-bar-visible="false"]:has(> .workspace-registry-warning)' in styles_source
+    assert "grid-template-rows: auto minmax(0, 1fr);" in styles_source
 
 
 def test_structural_history_can_span_all_loaded_chart_bars() -> None:
@@ -141,7 +173,8 @@ def test_structural_history_can_span_all_loaded_chart_bars() -> None:
     assert "fn unified_structure_projection" in history_cache_source
     assert 'object.insert("sources".to_string(), json!([]))' in history_cache_source
     assert "CacheProfile::Structure" in history_cache_source
-    assert "(bars_only || structure_only).then_some(1)" in history_cache_source
+    assert "matches!(profile, CacheProfile::Structure(_)).then_some(1)" in history_cache_source
+    assert "execution VWAP is defined from" in history_cache_source
     assert "rebuild_trade_structure_checkpoint" in history_cache_source
     assert "rebuild_structure_checkpoint_inner(config, source, request, Some(1))" in structure_checkpoint_source
     assert "source.stream_structure_ordered_filtered(" in structure_checkpoint_source

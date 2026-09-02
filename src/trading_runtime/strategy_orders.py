@@ -298,6 +298,12 @@ class RuntimeIbkrStrategyOrderPlanner:
                     "canonical_metadata": {
                         **dict(intent.metadata),
                         "action": intent.action,
+                        # The simulator may still hold a raw quote/trade whose
+                        # timestamp precedes a completed derived frame.  Carry
+                        # the decision clock explicitly so broker submission
+                        # can never be projected before the intent that created
+                        # the order.
+                        "decision_event_time": intent.event_time.isoformat(),
                         "execution_role": execution_role,
                         "reason": _execution_reason(execution_role, intent.reason),
                         "signal_price": intent.reference_price,

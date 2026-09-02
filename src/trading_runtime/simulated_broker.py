@@ -433,7 +433,7 @@ class SimulatedBrokerAdapter:
                     resolved,
                     order_id,
                     status,
-                    self._event_time(resolved.conid, resolved.ticker),
+                    self._order_submission_time(resolved),
                     oca_group=standalone_oca_group,
                 )
                 self._orders[order_id] = state
@@ -1279,6 +1279,26 @@ class SimulatedBrokerAdapter:
                 ticker.upper()
             ) or self._quotes_by_ticker.get(ticker.upper())
         return event.ts if event is not None else datetime.now(timezone.utc)
+
+    def _order_submission_time(self, request: OrderRequest) -> datetime:
+        """Bound simulated submission by both market and decision clocks."""
+
+        market_time = self._event_time(request.conid, request.ticker).astimezone(
+            timezone.utc
+        )
+        metadata = dict(request.raw.get("canonical_metadata") or {})
+        decision_raw = metadata.get("decision_event_time")
+        if not decision_raw:
+            return market_time
+        try:
+            decision_time = datetime.fromisoformat(
+                str(decision_raw).replace("Z", "+00:00")
+            )
+        except ValueError:
+            return market_time
+        if decision_time.tzinfo is None:
+            return market_time
+        return max(market_time, decision_time.astimezone(timezone.utc))
 
     def _latest_event_time(self) -> datetime:
         times = [

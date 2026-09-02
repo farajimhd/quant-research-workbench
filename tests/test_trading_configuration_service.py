@@ -1743,6 +1743,14 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             500.0,
         )
         self.assertEqual(
+            profile["parameters"]["liquidity_admission"]["maximum_admission_spread_bps"],
+            60.0,
+        )
+        self.assertEqual(
+            profile["parameters"]["liquidity_admission"]["maximum_current_spread_bps"],
+            100.0,
+        )
+        self.assertEqual(
             profile["parameters"]["entry_momentum_confirmation"],
             {
                 "enabled": False,

@@ -713,6 +713,8 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
 
                 self.assertEqual(controller.processed_events, 4)
                 self.assertGreaterEqual(len(trading["executions"]), 2)
+                self.assertEqual(payload["fills"], [])
+                self.assertEqual(payload["orders"], [])
                 self.assertFalse(
                     [
                         row

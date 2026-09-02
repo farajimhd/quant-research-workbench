@@ -3,7 +3,6 @@ import {
   canvasFocusHandoffUrl,
   readCanvasRegistry,
   readCanvasWorkspaceState,
-  removeCanvasFocusHandoff,
   replayFocusCanvasUrl,
   snapshotSharedCanvasProfile,
   writeCanvasFocusHandoff,
@@ -54,10 +53,20 @@ export function openTickerChartsQuotes(
   const url = options.replayRunId
     ? replayFocusCanvasUrl(options.replayRunId, token, options.historicalRunMode)
     : canvasFocusHandoffUrl(token, options.runtimeMode);
+  if (options.replayRunId) {
+    // Historical review is an immutable drilldown. Navigating the current tab
+    // is deterministic in embedded hosts that acknowledge window.open without
+    // exposing the resulting window, and browser Back returns to the review.
+    window.location.assign(url);
+    return "opened";
+  }
   const focusedWindow = window.open(url, "_blank");
   if (!focusedWindow) {
-    if (!options.replayRunId) removeCanvasFocusHandoff(token);
-    return "popup-blocked";
+    // Popup policy must not make the chart action a dead end. The handoff is
+    // already complete and immutable, so reuse it in the current tab when a
+    // browser or embedded host blocks a new window.
+    window.location.assign(url);
+    return "opened";
   }
   focusedWindow.opener = null;
   return "opened";
