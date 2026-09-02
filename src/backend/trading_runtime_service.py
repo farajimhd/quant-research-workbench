@@ -977,6 +977,7 @@ def historical_preflight(
     mode: str,
     anchor_date: date,
     session_count: int,
+    tickers: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     window = historical_window_preview(
         mode=mode,
@@ -1014,13 +1015,53 @@ def historical_preflight(
     data_error = ""
     if gateway.get("ready"):
         try:
-            payload = _historical_gateway_get(
-                "/coverage",
-                {"start": window["start"], "end": window["end"]},
-                timeout=30,
-            )
-            if isinstance(payload, dict):
-                coverage = payload
+            if tickers:
+                payload = _historical_gateway_get(
+                    "/snapshot/events",
+                    {
+                        "start": window["start"],
+                        "end": window["end"],
+                        "tickers": ",".join(
+                            sorted({_historical_ticker(value) for value in tickers})
+                        ),
+                        "limit": 1,
+                    },
+                    timeout=15,
+                )
+                events = (
+                    list(payload.get("events") or [])
+                    if isinstance(payload, dict)
+                    else []
+                )
+                revision = (
+                    dict(payload.get("source_revision") or {})
+                    if isinstance(payload, dict)
+                    else {}
+                )
+                coverage = {
+                    "event_count": len(events),
+                    "ticker_count": (
+                        len({_historical_ticker(value) for value in tickers})
+                        if events
+                        else 0
+                    ),
+                    "coverage_table": "QMD History point-in-time ticker probe",
+                    "source_tables": list(revision.get("source_tiers") or []),
+                    "source_revision": revision,
+                }
+                if events and not bool(revision.get("complete_for_history")):
+                    data_error = (
+                        "QMD History did not confirm complete point-in-time "
+                        "authority for the ticker window."
+                    )
+            else:
+                payload = _historical_gateway_get(
+                    "/coverage",
+                    {"start": window["start"], "end": window["end"]},
+                    timeout=30,
+                )
+                if isinstance(payload, dict):
+                    coverage = payload
             if int(coverage.get("event_count") or 0) <= 0:
                 data_error = "No canonical market events were found in the resolved session window."
         except Exception as exc:

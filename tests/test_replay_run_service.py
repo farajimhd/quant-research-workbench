@@ -52,7 +52,10 @@ from src.backend.replay_run_service import (
     replay_preflight,
     replay_history_fetch_concurrency,
 )
-from src.market_engine.historical_source import QmdHistoricalEventSource
+from src.market_engine.historical_source import (
+    QmdHistoricalEventSource,
+    event_from_qmd_payload as parse_qmd_event,
+)
 from src.trading_runtime.domain import InstrumentContract
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.portfolio import PortfolioPolicy
@@ -2047,11 +2050,15 @@ class BacktestPreflightTests(unittest.TestCase):
             payload = backtest_preflight(
                 anchor_date=date(2026, 7, 8),
                 session_count=2,
+                start_time=time(9, 30),
+                end_time=time(10, 15),
                 configuration_revision=approved,
             )
 
         self.assertTrue(payload["strategy_run_ready"])
         self.assertEqual(payload["configuration_revision_id"], "configuration-test")
+        self.assertEqual(payload["experiment_start_time"], "09:30:00")
+        self.assertEqual(payload["experiment_end_time"], "10:15:00")
         checks = {row["id"]: row for row in payload["checks"]}
         self.assertEqual(checks["simulated_accounts"]["status"], "ready")
         self.assertEqual(checks["runtime_storage"]["status"], "ready")
@@ -2114,6 +2121,15 @@ class BacktestPreflightTests(unittest.TestCase):
         ]
         self.assertIn("source-native Signal Stream", check["summary"])
         self.assertIn("bounded ticker", check["evidence"])
+
+    def test_preflight_rejects_an_invalid_intraday_period(self) -> None:
+        with self.assertRaisesRegex(ValueError, "start before end"):
+            backtest_preflight(
+                anchor_date=date(2026, 8, 24),
+                session_count=1,
+                start_time=time(10, 0),
+                end_time=time(9, 30),
+            )
 
     @patch(
         "src.backend.historical_watchlist_feature_service.historical_watchlist_external_feature_bundle"
@@ -3784,6 +3800,72 @@ class ReplayHistoricalSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(source.source_revision, pinned)
         self.assertEqual(read_page.call_args_list[0].args, (None, None))
         self.assertEqual(read_page.call_args_list[1].args, (cursor, pinned))
+
+    async def test_large_page_domain_projection_does_not_block_event_loop(self) -> None:
+        source = QmdHistoricalEventSource(
+            "http://127.0.0.1:8801",
+            start=datetime(2026, 7, 28, 9, 45, tzinfo=NEW_YORK),
+            end=datetime(2026, 7, 28, 9, 46, tzinfo=NEW_YORK),
+            tickers=["AAPL"],
+            batch_size=100_000,
+        )
+        event = {
+            "ask_exchange": 11,
+            "ask_price": 100.1,
+            "ask_size": 100,
+            "bid_exchange": 12,
+            "bid_price": 100.0,
+            "bid_size": 100,
+            "conditions": [],
+            "indicators": [],
+            "ingest_ts": "2026-07-28T13:45:00+00:00",
+            "kind": "quote",
+            "raw": {},
+            "sequence": 1,
+            "tape": 3,
+            "ticker": "AAPL",
+            "ts": "2026-07-28T13:45:00+00:00",
+        }
+        revision = {
+            "complete_for_history": True,
+            "request_complete": True,
+            "source_plan_hash": "fnv1a64:responsive-plan",
+            "source_tiers": ["archive"],
+            "token": "responsive-revision",
+        }
+        conversion_started = threading.Event()
+        release_conversion = threading.Event()
+
+        def slow_conversion(payload: dict[str, Any]):
+            conversion_started.set()
+            release_conversion.wait(0.5)
+            return parse_qmd_event(payload)
+
+        with (
+            patch.object(
+                source,
+                "_read_page",
+                return_value={
+                    "complete": True,
+                    "events": [event],
+                    "next_cursor": None,
+                    "source_revision": revision,
+                },
+            ),
+            patch(
+                "src.market_engine.historical_source.event_from_qmd_payload",
+                side_effect=slow_conversion,
+            ),
+        ):
+            started_at = asyncio.get_running_loop().time()
+            batch_task = asyncio.create_task(anext(source.stream()))
+            self.assertTrue(await asyncio.to_thread(conversion_started.wait, 1.0))
+            event_loop_delay = asyncio.get_running_loop().time() - started_at
+            release_conversion.set()
+            batch = await batch_task
+
+        self.assertLess(event_loop_delay, 0.25)
+        self.assertEqual(batch.events[0].sequence, 1)
 
     async def test_paged_pull_resumes_from_exact_source_cursor(self) -> None:
         start_cursor = {

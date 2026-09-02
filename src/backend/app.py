@@ -942,7 +942,9 @@ class HistoricalPreflightRequest(BaseModel):
     session_count: int = Field(default=20, ge=1, le=260)
     configuration_revision_id: str = Field(default="", max_length=128)
     run_plan_id: str = Field(default="", max_length=128)
+    start_time: str = "04:00:00"
     end_time: str = "20:00:00"
+    tickers: list[str] = Field(default_factory=list, max_length=100)
 
 
 class HistoricalBarChunkRequest(BaseModel):
@@ -977,6 +979,7 @@ class BacktestRunCreateRequest(BaseModel):
     configuration_revision_id: str = Field(default="", max_length=128)
     run_plan_id: str = Field(default="", max_length=128)
     simulation_profile: str = Field(default="baseline", pattern="^(baseline|stress)$")
+    start_time: str = "04:00:00"
     end_time: str = "20:00:00"
     tickers: list[str] = Field(default_factory=list, max_length=100)
 
@@ -5062,8 +5065,13 @@ def trading_configuration_revision_list() -> dict[str, Any]:
 
 
 @app.get("/api/trading/configuration/candidates")
-def trading_configuration_candidate_list() -> dict[str, Any]:
-    rows = [public_configuration_revision(row) for row in configuration_candidates()]
+async def trading_configuration_candidate_list(latest_only: bool = False) -> dict[str, Any]:
+    if latest_only:
+        latest = await asyncio.to_thread(configuration_candidate)
+        candidates = [latest] if latest is not None else []
+    else:
+        candidates = await asyncio.to_thread(configuration_candidates)
+    rows = [public_configuration_revision(row) for row in candidates]
     return {"schema_version": 1, "rows": rows, "row_count": len(rows)}
 
 
@@ -5183,7 +5191,13 @@ def trading_historical_window(payload: HistoricalWindowPreviewRequest) -> dict[s
 
 
 @app.post("/api/trading/historical-preflight")
-def trading_historical_preflight(payload: HistoricalPreflightRequest) -> dict[str, Any]:
+async def trading_historical_preflight(payload: HistoricalPreflightRequest) -> dict[str, Any]:
+    return await asyncio.to_thread(_trading_historical_preflight_payload, payload)
+
+
+def _trading_historical_preflight_payload(
+    payload: HistoricalPreflightRequest,
+) -> dict[str, Any]:
     if payload.mode not in {"replay", "backtest"}:
         raise HTTPException(status_code=400, detail="mode must be replay or backtest")
     if approved_configuration() is None and configuration_candidate() is None:
@@ -5193,7 +5207,9 @@ def trading_historical_preflight(payload: HistoricalPreflightRequest) -> dict[st
             return backtest_preflight(
                 anchor_date=payload.anchor_date,
                 session_count=payload.session_count,
+                start_time=_replay_clock_time(payload.start_time),
                 end_time=_replay_clock_time(payload.end_time),
+                tickers=tuple(payload.tickers),
                 configuration_revision=(
                     backtest_configuration_snapshot(
                         payload.run_plan_id,
@@ -5327,12 +5343,15 @@ async def trading_backtest_run_create(payload: BacktestRunCreateRequest) -> dict
         )
         if payload.configuration_revision_id != configuration_revision["revision_id"]:
             raise ValueError("The selected configuration changed; review Backtest preflight again")
-        preflight = backtest_preflight(
+        preflight = await asyncio.to_thread(
+            backtest_preflight,
             anchor_date=payload.anchor_date,
             session_count=payload.session_count,
             initial_cash=payload.initial_cash,
+            start_time=_replay_clock_time(payload.start_time),
             end_time=_replay_clock_time(payload.end_time),
             configuration_revision=configuration_revision,
+            tickers=tuple(payload.tickers),
         )
         if not preflight["strategy_run_ready"]:
             raise ValueError("Backtest dependencies changed after preflight; check them again")
@@ -5340,7 +5359,7 @@ async def trading_backtest_run_create(payload: BacktestRunCreateRequest) -> dict
         definition = ReplayRunDefinition(
             session_date=sessions[0],
             final_session_date=sessions[-1],
-            start_time=_replay_clock_time("04:00:00"),
+            start_time=_replay_clock_time(payload.start_time),
             end_time=_replay_clock_time(payload.end_time),
             initial_cash=payload.initial_cash,
             configuration_revision=configuration_revision,

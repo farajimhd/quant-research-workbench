@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import date
+from datetime import date, time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import HTTPException
@@ -99,6 +99,8 @@ class BacktestCanvasContractTests(unittest.IsolatedAsyncioTestCase):
             anchor_date=date(2026, 7, 28),
             session_count=1,
             configuration_revision_id="approved-backtest",
+            start_time="09:30:00",
+            end_time="10:15:00",
         )
         with (
             patch(
@@ -125,6 +127,8 @@ class BacktestCanvasContractTests(unittest.IsolatedAsyncioTestCase):
         definition = create.await_args.args[0]
         self.assertEqual(definition.mode, RunMode.BACKTEST)
         self.assertIs(definition.configuration_revision, approved)
+        self.assertEqual(definition.start_time, time(9, 30))
+        self.assertEqual(definition.end_time, time(10, 15))
         self.assertEqual(payload["mode"], "backtest")
 
     async def test_debug_canvas_uses_debug_service_and_preserves_runtime_mode(self) -> None:

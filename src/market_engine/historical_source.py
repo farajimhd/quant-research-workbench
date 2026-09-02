@@ -123,10 +123,15 @@ class QmdHistoricalEventSource:
                     )
                 else:
                     self.source_revision = dict(revision)
-                events = [
-                    event_from_qmd_payload(dict(item))
-                    for item in payload.get("events") or []
-                ]
+                # Large accelerated pages are decoded off the event loop in
+                # ``_read_page``. Their Python domain projection must stay off
+                # it as well; converting 100k raw rows inline made run status,
+                # pause, stop, and UI progress requests unresponsive even
+                # though the source fetch itself was prefetched.
+                events = await asyncio.to_thread(
+                    _events_from_qmd_payload,
+                    payload.get("events") or [],
+                )
                 complete = bool(payload.get("complete"))
                 if not complete:
                     if not events:
@@ -279,6 +284,10 @@ def event_from_qmd_payload(payload: dict[str, Any]) -> MarketEvent:
             **common,
         )
     raise ValueError(f"Unsupported QMD market event kind: {kind or '<missing>'}")
+
+
+def _events_from_qmd_payload(rows: list[dict[str, Any]]) -> list[MarketEvent]:
+    return [event_from_qmd_payload(dict(item)) for item in rows]
 
 
 def _batch(events: list[MarketEvent]) -> EventBatch:

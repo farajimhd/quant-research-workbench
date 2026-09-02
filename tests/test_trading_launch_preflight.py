@@ -8,12 +8,29 @@ from src.backend.app import (
     HistoricalPreflightRequest,
     ReplayPreflightRequest,
     trading_backtest_debug_preflight,
+    trading_configuration_candidate_list,
     trading_historical_preflight,
     trading_replay_preflight,
 )
 
 
-class TradingLaunchPreflightTests(unittest.TestCase):
+class TradingLaunchPreflightTests(unittest.IsolatedAsyncioTestCase):
+    @patch("src.backend.app.configuration_candidates")
+    @patch("src.backend.app.configuration_candidate")
+    async def test_focused_backtest_can_resolve_only_latest_candidate(
+        self,
+        candidate,
+        candidates,
+    ) -> None:
+        candidate.return_value = {"candidate_id": "candidate-latest", "payload": {}}
+
+        payload = await trading_configuration_candidate_list(latest_only=True)
+
+        self.assertEqual(payload["row_count"], 1)
+        self.assertEqual(payload["rows"][0]["candidate_id"], "candidate-latest")
+        candidate.assert_called_once_with()
+        candidates.assert_not_called()
+
     @patch("src.backend.app.configuration_candidate", return_value=None)
     @patch("src.backend.app.approved_configuration", return_value=None)
     def test_replay_missing_release_is_a_blocked_readiness_payload(self, _approved, _candidate) -> None:
@@ -30,8 +47,8 @@ class TradingLaunchPreflightTests(unittest.TestCase):
 
     @patch("src.backend.app.configuration_candidate", return_value=None)
     @patch("src.backend.app.approved_configuration", return_value=None)
-    def test_backtest_missing_release_preserves_launch_contract(self, _approved, _candidate) -> None:
-        payload = trading_historical_preflight(
+    async def test_backtest_missing_release_preserves_launch_contract(self, _approved, _candidate) -> None:
+        payload = await trading_historical_preflight(
             HistoricalPreflightRequest(
                 mode="backtest",
                 anchor_date=date(2026, 8, 18),

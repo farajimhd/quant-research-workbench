@@ -400,6 +400,46 @@ class HistoricalTradingServiceTests(unittest.TestCase):
         self.assertFalse(checks["strategy_authority"]["required"])
         self.assertFalse(checks["run_controller"]["required"])
 
+    @patch("src.backend.trading_runtime_service.list_strategy_definitions", return_value=[{"automatic": True, "enabled": True}])
+    @patch(
+        "src.backend.trading_runtime_service.historical_gateway_snapshot",
+        return_value={"ready": True, "health": {"source": "canonical-history"}},
+    )
+    @patch("src.backend.trading_runtime_service._historical_gateway_get")
+    def test_single_ticker_preflight_uses_bounded_point_in_time_probe(
+        self,
+        gateway_get,
+        _gateway_snapshot,
+        _strategies,
+    ) -> None:
+        gateway_get.return_value = {
+            "events": [{"ticker": "SUGP"}],
+            "source_revision": {
+                "complete_for_history": True,
+                "source_tiers": ["archive"],
+            },
+        }
+
+        payload = historical_preflight(
+            mode="backtest",
+            anchor_date=date(2026, 8, 24),
+            session_count=1,
+            tickers=("sugp",),
+        )
+
+        self.assertTrue(payload["market_ready"])
+        self.assertEqual(payload["coverage"]["ticker_count"], 1)
+        gateway_get.assert_called_once_with(
+            "/snapshot/events",
+            {
+                "start": "2026-08-21T04:00:00-04:00",
+                "end": "2026-08-21T20:00:00-04:00",
+                "tickers": "SUGP",
+                "limit": 1,
+            },
+            timeout=15,
+        )
+
     @patch("src.backend.trading_runtime_service.list_strategy_definitions", return_value=[])
     @patch(
         "src.backend.trading_runtime_service.historical_gateway_snapshot",

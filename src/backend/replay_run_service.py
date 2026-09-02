@@ -7415,16 +7415,21 @@ def backtest_preflight(
     anchor_date: date,
     session_count: int,
     initial_cash: float = 100_000.0,
+    start_time: clock_time = clock_time(4, 0),
     end_time: clock_time = clock_time(20, 0),
+    tickers: tuple[str, ...] = (),
     configuration_revision: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if not clock_time(4, 0) < end_time <= clock_time(20, 0):
-        raise ValueError("Backtest end time must be after 04:00 and no later than 20:00 New York")
+    if not clock_time(4, 0) <= start_time < end_time <= clock_time(20, 0):
+        raise ValueError(
+            "Backtest period must stay within 04:00-20:00 New York with start before end"
+        )
     approved = configuration_revision or backtest_configuration_snapshot()
     base = historical_preflight(
         mode=RunMode.BACKTEST.value,
         anchor_date=anchor_date,
         session_count=session_count,
+        tickers=tickers,
     )
     configuration = dict(approved.get("payload") or {})
     run_plan = dict(configuration.get("run_plan") or {})
@@ -7610,6 +7615,7 @@ def backtest_preflight(
         "available_run_plans": deepcopy(approved.get("available_run_plans") or []),
         "historical_watchlist_plans": watchlist_plans,
         "initial_cash": initial_cash,
+        "experiment_start_time": start_time.isoformat(timespec="seconds"),
         "experiment_end_time": end_time.isoformat(timespec="seconds"),
     }
 

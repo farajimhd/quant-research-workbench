@@ -63,20 +63,15 @@ type BacktestComparison = {
   warnings: Array<{ code: string; detail: string; run_id: string }>;
 };
 
-type TestCandidateSummary = {
-  candidate_id: string;
-  candidate_revision: number;
-  content_hash: string;
-  label: string;
-};
+type BacktestPeriodPreset = "premarket" | "regular" | "extended" | "custom";
 
 export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
-  const [anchorDate, setAnchorDate] = useState(previousWeekdayIsoDate);
-  const [sessionCount, setSessionCount] = useState(20);
-  const [initialCash, setInitialCash] = useState(100_000);
+  const [sessionDate, setSessionDate] = useState(previousWeekdayIsoDate);
+  const [initialCash, setInitialCash] = useState(10_000);
   const [simulationProfile, setSimulationProfile] = useState<"baseline" | "stress">("baseline");
-  const [sessionWindow, setSessionWindow] = useState<"extended" | "premarket">("extended");
-  const [tickerScope, setTickerScope] = useState<"configured" | "single">("configured");
+  const [periodPreset, setPeriodPreset] = useState<BacktestPeriodPreset>("premarket");
+  const [startTime, setStartTime] = useState("04:00:00");
+  const [endTime, setEndTime] = useState("09:30:00");
   const [ticker, setTicker] = useState("");
   const [preflight, setPreflight] = useState<HistoricalPreflight | null>(null);
   const [checking, setChecking] = useState(true);
@@ -90,17 +85,17 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [controlBusy, setControlBusy] = useState("");
   const [runPlanId, setRunPlanId] = useState("");
   const [candidateId, setCandidateId] = useState("");
-  const [candidates, setCandidates] = useState<TestCandidateSummary[]>([]);
-  const endTime = sessionWindow === "premarket" ? "09:30:00" : "20:00:00";
   const normalizedTicker = ticker.trim().toUpperCase();
-  const tickerReady = tickerScope === "configured" || /^[A-Z][A-Z0-9.\-]{0,15}$/.test(normalizedTicker);
+  const tickerReady = /^[A-Z][A-Z0-9.\-]{0,15}$/.test(normalizedTicker);
+  const periodReady = startTime >= "04:00:00" && endTime <= "20:00:00" && startTime < endTime;
+  const anchorDate = nextIsoDate(sessionDate);
+  const resolvedSessionMatches = preflight?.window.sessions.length === 1 && preflight.window.sessions[0] === sessionDate;
 
   useEffect(() => {
     let cancelled = false;
-    api<{ rows: TestCandidateSummary[] }>("/api/trading/configuration/candidates")
+    api<{ rows: Array<{ candidate_id: string }> }>("/api/trading/configuration/candidates?latest_only=true")
       .then((payload) => {
         if (cancelled) return;
-        setCandidates(payload.rows);
         setCandidateId((current) => current || payload.rows[0]?.candidate_id || "");
       })
       .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); });
@@ -108,6 +103,11 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   }, []);
 
   useEffect(() => {
+    if (!candidateId || !tickerReady) {
+      setChecking(false);
+      setPreflight(null);
+      return;
+    }
     let cancelled = false;
     const timer = window.setTimeout(() => {
       setChecking(true);
@@ -118,9 +118,10 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
           configuration_revision_id: candidateId,
           mode,
           run_plan_id: runPlanId,
-          session_count: sessionCount,
-          simulation_profile: simulationProfile,
+          session_count: 1,
+          start_time: startTime,
           end_time: endTime,
+          tickers: normalizedTicker ? [normalizedTicker] : [],
         }),
         method: "POST",
         timeoutMs: 60_000,
@@ -145,7 +146,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [anchorDate, candidateId, endTime, mode, refreshKey, runPlanId, sessionCount, simulationProfile]);
+  }, [anchorDate, candidateId, endTime, mode, normalizedTicker, refreshKey, runPlanId, startTime, tickerReady]);
 
   usePollingTask({
     enabled: Boolean(run && !["completed", "stopped", "failed"].includes(run.status)),
@@ -183,10 +184,11 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
           configuration_revision_id: preflight.configuration_revision_id,
           initial_cash: initialCash,
           run_plan_id: runPlanId,
-          session_count: sessionCount,
+          session_count: 1,
           simulation_profile: simulationProfile,
+          start_time: startTime,
           end_time: endTime,
-          tickers: tickerScope === "single" ? [normalizedTicker] : [],
+          tickers: [normalizedTicker],
         }),
         method: "POST",
         timeoutMs: 60_000,
@@ -263,7 +265,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   return (
     <TradingModeLaunch
       actionLabel="Run Backtest"
-      actionSummary={preflight?.strategy_run_ready && tickerReady ? <>Revision <strong>{preflight.configuration_revision}</strong> will run <strong>{tickerScope === "single" ? normalizedTicker : "the configured strategy universe"}</strong> through <strong>{preflight.window.session_count} session{preflight.window.session_count === 1 ? "" : "s"}</strong> using the accelerated causal engine.</> : tickerScope === "single" && !tickerReady ? "Enter one valid ticker before starting." : "Resolve each required readiness item before starting."}
+      actionSummary={preflight?.strategy_run_ready && tickerReady && periodReady && resolvedSessionMatches ? <><strong>{normalizedTicker}</strong> will run on <strong>{sessionDate}</strong> from <strong>{startTime.slice(0, 5)}–{endTime.slice(0, 5)} ET</strong> using strategy revision <strong>{preflight.configuration_revision}</strong>.</> : !tickerReady ? "Enter one valid ticker before starting." : !periodReady ? "Choose a valid period inside 04:00–20:00 ET." : preflight && !resolvedSessionMatches ? "The selected date is not an exchange session. Choose a trading day." : "Resolve each required readiness item before starting."}
       busy={creating}
       checking={checking}
       checks={preflight?.checks ?? []}
@@ -273,20 +275,18 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       icon={Gauge}
       onAction={createRun}
       onRefresh={() => setRefreshKey((value) => value + 1)}
-      ready={Boolean(preflight?.strategy_run_ready && tickerReady)}
+      ready={Boolean(preflight?.strategy_run_ready && tickerReady && periodReady && resolvedSessionMatches)}
       secondary={results ? <HistoricalResults comparison={comparison} comparisonError={comparisonError} results={results} /> : null}
       title="Evaluate a strategy"
     >
-              <label className="configuration-field"><span>Test Candidate</span><select aria-label="Test Candidate" onChange={(event) => setCandidateId(event.target.value)} value={candidateId}><option value="">Latest available candidate</option>{candidates.map((candidate) => <option key={candidate.candidate_id} value={candidate.candidate_id}>t{candidate.candidate_revision} · {candidate.label} · {candidate.content_hash.slice(0, 8)}</option>)}</select><small>An immutable configuration hash; creating it grants no Paper or Live authority.</small></label>
-              <label className="configuration-field"><span>Strategy Run Plan</span><select aria-label="Strategy Run Plan" onChange={(event) => setRunPlanId(event.target.value)} value={runPlanId}>{(preflight?.available_run_plans ?? []).map((plan) => <option key={plan.run_plan_id} value={plan.run_plan_id}>{plan.name} · {plan.strategy_id} r{plan.strategy_revision}</option>)}</select><small>The exact Strategy Studio profile and installed executor revision used for this Backtest.</small></label>
-              <label className="configuration-field"><span>Anchor date · exclusive</span><input onChange={(event) => setAnchorDate(event.target.value)} type="date" value={anchorDate} /><small>The selected date is never included in the result window.</small></label>
-              <label className="configuration-field"><span>Prior exchange sessions</span><input max={260} min={1} onChange={(event) => setSessionCount(Math.max(1, Number(event.target.value) || 1))} type="number" value={sessionCount} /><small>Resolved backward from the exclusive anchor.</small></label>
-              <label className="configuration-field"><span>Session window</span><select aria-label="Session window" onChange={(event) => setSessionWindow(event.target.value as "extended" | "premarket")} value={sessionWindow}><option value="extended">Whole extended session · 04:00–20:00 ET</option><option value="premarket">Premarket · 04:00–09:30 ET</option></select><small>The accelerated engine preserves the exact event order through the selected close.</small></label>
-              <label className="configuration-field"><span>Backtest universe</span><select aria-label="Backtest universe" onChange={(event) => setTickerScope(event.target.value as "configured" | "single")} value={tickerScope}><option value="configured">All tickers eligible under the Run Plan</option><option value="single">One ticker only</option></select><small>One-ticker scope restricts data loading without changing Strategy, Portfolio, or OMS behavior.</small></label>
-              {tickerScope === "single" ? <label className="configuration-field"><span>Ticker</span><input aria-invalid={!tickerReady} autoCapitalize="characters" onChange={(event) => setTicker(event.target.value.toUpperCase())} placeholder="SUGP" spellCheck={false} value={ticker} /><small>{tickerReady ? `Only ${normalizedTicker} will be loaded and evaluated.` : "Use a valid exchange ticker, for example SUGP."}</small></label> : null}
+              <label className="configuration-field"><span>Ticker</span><input aria-invalid={!tickerReady && Boolean(ticker)} autoCapitalize="characters" onChange={(event) => setTicker(event.target.value.toUpperCase())} placeholder="Enter ticker" spellCheck={false} value={ticker} /><small>Only this ticker is loaded, evaluated, and rendered on the results chart.</small></label>
+              <label className="configuration-field"><span>Trading date</span><input onChange={(event) => setSessionDate(event.target.value)} type="date" value={sessionDate} /><small>Must be an exchange trading session; weekends and holidays fail closed.</small></label>
+              <label className="configuration-field"><span>Time period</span><select aria-label="Time period" onChange={(event) => applyPeriodPreset(event.target.value as BacktestPeriodPreset, setPeriodPreset, setStartTime, setEndTime)} value={periodPreset}><option value="premarket">Premarket · 04:00–09:30 ET</option><option value="regular">Regular session · 09:30–16:00 ET</option><option value="extended">Whole extended session · 04:00–20:00 ET</option><option value="custom">Custom period</option></select><small>Presets bound the decision window while retaining causal warm-up evidence.</small></label>
+              <label className="configuration-field"><span>Start time · ET</span><input aria-label="Start time" max="19:59:59" min="04:00:00" onChange={(event) => { setPeriodPreset("custom"); setStartTime(normalizeClockInput(event.target.value)); }} step="1" type="time" value={startTime} /><small>No new strategy actions are admitted before this time.</small></label>
+              <label className="configuration-field"><span>End time · ET</span><input aria-label="End time" max="20:00:00" min="04:00:01" onChange={(event) => { setPeriodPreset("custom"); setEndTime(normalizeClockInput(event.target.value)); }} step="1" type="time" value={endTime} /><small>The run stops at this exact New York boundary.</small></label>
               <label className="configuration-field"><span>Initial cash</span><input max={1_000_000_000} min={1_000} onChange={(event) => setInitialCash(Math.max(1_000, Number(event.target.value) || 1_000))} step={1_000} type="number" value={initialCash} /><small>Applied to the isolated simulated account for the full run.</small></label>
               <label className="configuration-field"><span>Execution realism</span><select onChange={(event) => setSimulationProfile(event.target.value as "baseline" | "stress")} value={simulationProfile}><option value="baseline">Baseline · 25% participation · 5 bps slippage</option><option value="stress">Stress · 10% participation · 10 bps slippage</option></select><small>Both use $0.005 per share with a $1 minimum commission. Approval requires positive stress results.</small></label>
-              <div className="historical-accelerated-engine-note"><Zap aria-hidden="true" size={17} /><div><strong>Accelerated causal backtest engine</strong><span>Batched QMD structural snapshots and one-batch-ahead prefetch reduce runtime while preserving point-in-time structure, fill ordering, fees, protection, Portfolio, and OMS state.</span></div></div>
+              <div className="historical-accelerated-engine-note"><Zap aria-hidden="true" size={17} /><div><strong>Accelerated causal engine · strategy selected automatically</strong><span>{preflight ? `Immutable strategy revision ${preflight.configuration_revision} · ${preflight.run_plan_id || "compatible run plan"} · ${preflight.configuration_content_hash.slice(0, 12)}.` : "Resolving the latest immutable strategy and its compatible run plan."} Results open directly in a one-second Charts &amp; Quotes view with MACD, strategy positions, lifecycle activity, and performance.</span></div></div>
     </TradingModeLaunch>
   );
 }
@@ -370,4 +370,32 @@ function previousWeekdayIsoDate() {
   while (value.getDay() === 0 || value.getDay() === 6) value.setDate(value.getDate() - 1);
   const local = new Date(value.getTime() - value.getTimezoneOffset() * 60_000);
   return local.toISOString().slice(0, 10);
+}
+
+function nextIsoDate(value: string) {
+  const parsed = new Date(`${value}T12:00:00Z`);
+  if (!Number.isFinite(parsed.getTime())) return value;
+  parsed.setUTCDate(parsed.getUTCDate() + 1);
+  return parsed.toISOString().slice(0, 10);
+}
+
+function normalizeClockInput(value: string) {
+  return /^\d{2}:\d{2}:\d{2}$/.test(value) ? value : `${value}:00`;
+}
+
+function applyPeriodPreset(
+  preset: BacktestPeriodPreset,
+  setPreset: (value: BacktestPeriodPreset) => void,
+  setStart: (value: string) => void,
+  setEnd: (value: string) => void,
+) {
+  setPreset(preset);
+  if (preset === "custom") return;
+  const period = {
+    premarket: ["04:00:00", "09:30:00"],
+    regular: ["09:30:00", "16:00:00"],
+    extended: ["04:00:00", "20:00:00"],
+  }[preset];
+  setStart(period[0]);
+  setEnd(period[1]);
 }
