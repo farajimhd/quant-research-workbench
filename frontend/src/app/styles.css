@@ -4983,6 +4983,21 @@ button {
   gap: 2px;
 }
 
+.chart-data-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in oklab, #7c3aed 28%, var(--border));
+  border-radius: 999px;
+  background: linear-gradient(135deg, color-mix(in oklab, #8b5cf6 12%, var(--surface)), color-mix(in oklab, #22d3ee 10%, var(--surface)));
+  color: color-mix(in oklab, #6d28d9 78%, var(--text-primary));
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
 .chart-timeframe-row .timeframe-button {
   min-height: 26px;
   border: 0;

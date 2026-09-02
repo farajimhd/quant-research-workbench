@@ -340,6 +340,13 @@ export type QmdBarHistory = {
   next_before: string;
   previous_session_before: string;
   stage?: "bars" | "full";
+  split_adjustments?: Array<{
+    effective_at: string;
+    execution_date: string;
+    source_inserted_at: string;
+    split_from: number;
+    split_to: number;
+  }>;
   split_adjusted?: boolean;
   ticker: string;
   timeframe: string;
@@ -425,6 +432,7 @@ export type CanvasLiveChartState = {
   loadingEarlier: boolean;
   pointInTime: boolean;
   ready: boolean;
+  splitAdjusted?: boolean;
 };
 
 export type BarGptChartVersion = "v2" | "v3";

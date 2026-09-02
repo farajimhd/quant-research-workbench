@@ -454,6 +454,11 @@ def daily_chart_history_fixture(session_date: str, symbol: str = "AAPL") -> dict
     close = 94.0
     for index in range(120):
         bar_start = end - timedelta(days=119 - index)
+        # Leave the deterministic split session without a candle. This proves
+        # that the corporate-action date remains on the axis during a genuine
+        # daily-history coverage gap.
+        if bar_start.date() == (end - timedelta(days=5)).date():
+            continue
         open_price = close
         close = open_price + (0.7 if index % 6 not in {0, 1} else -0.45)
         history.append({
@@ -475,6 +480,7 @@ def daily_chart_history_fixture(session_date: str, symbol: str = "AAPL") -> dict
         "structure_events": [],
         "structure_level_history": [],
         "has_more": False,
+        "split_adjusted": True,
     }
 
 
@@ -1012,13 +1018,16 @@ def validate_canvas_interactions(
             daily = charts_quotes.locator(".charts-quotes-daily-chart")
             try:
                 daily.get_by_text("Loading chart data...", exact=True).wait_for(state="hidden", timeout=120_000)
-                marker = daily.locator('.chart-timeline-event[data-kind="split"]')
-                marker.wait_for(state="visible", timeout=30_000)
-                if marker.count() != 1:
+                marker = daily.locator('.chart-timeline-event[data-kind="split"]:visible')
+                marker.first.wait_for(state="visible", timeout=30_000)
+                if interaction_screenshot and marker.count() != 1:
                     issues.append("daily chart does not render exactly one deterministic split marker")
-                marker_box = marker.bounding_box()
+                if daily.get_by_text("Split-adjusted", exact=True).count() != 1:
+                    issues.append("daily chart does not expose its split-adjusted price basis")
+                marker_box = marker.first.bounding_box()
                 daily_box = daily.bounding_box()
-                if not marker_box or not daily_box or not (daily_box["x"] <= marker_box["x"] <= daily_box["x"] + daily_box["width"]):
+                marker_center_x = marker_box["x"] + marker_box["width"] / 2 if marker_box else None
+                if not marker_box or not daily_box or marker_center_x is None or not (daily_box["x"] <= marker_center_x <= daily_box["x"] + daily_box["width"]):
                     issues.append("split marker is not anchored inside the daily chart")
                 if interaction_screenshot:
                     daily.screenshot(path=str(interaction_screenshot))

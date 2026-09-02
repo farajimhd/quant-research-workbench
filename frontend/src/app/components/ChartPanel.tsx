@@ -507,6 +507,7 @@ type ChartPanelProps = {
   initialFitMode?: "default" | "last_market_day" | "live_first_10" | "recent";
   labelOptions?: ChartLabelOption[];
   canLoadEarlier?: boolean;
+  dataStatus?: string;
   deferInitialFitUntilLoaded?: boolean;
   loadingEarlier?: boolean;
   loading?: boolean;
@@ -591,6 +592,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   initialFitMode = "default",
   labelOptions = [],
   canLoadEarlier = false,
+  dataStatus,
   deferInitialFitUntilLoaded = false,
   loadingEarlier = false,
   loading = false,
@@ -1072,7 +1074,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const preserveViewport = !shouldAutoFit || autoFitDeferred;
     const currentRange = preserveViewport ? priceChartRef.current.timeScale().getVisibleLogicalRange() : null;
     const currentTimeRange = preserveViewport && earlierBarsPrepended ? priceChartRef.current.timeScale().getVisibleRange() : null;
-    const timeline = chartTimelineData(payload.candles, timeframe, chartSettingsRef.current.hideEmptyIntervals);
+    const timeline = chartTimelineData(payload.candles, timeframe, chartSettingsRef.current.hideEmptyIntervals, payload.timeline_events);
     candleBoundsRef.current = candleValueBounds(payload.candles);
     syncRendererData(candleRef.current, timeline as unknown as RendererDatum[], `candles:${timeframe}`);
     syncRendererData(volumeRef.current, volumeDataForSettings(payload, chartSettingsRef.current) as unknown as RendererDatum[], volumeStyleKey(chartSettingsRef.current));
@@ -1611,6 +1613,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
             </button>
           ))}
         </div>
+        {dataStatus ? <span className="chart-data-status" title="Historical prices and share quantities use the recorded stock-split basis.">{dataStatus}</span> : null}
         {showIndicatorControls || showSupervisionControls ? (
           <>
             <span className="toolbar-divider" />
@@ -3608,9 +3611,16 @@ function candleDataForTimeframe(candles: Candle[], timeframe: string): CandleSer
   return data;
 }
 
-function chartTimelineData(candles: Candle[], timeframe: string, hideEmptyIntervals = true): CandleSeriesDatum[] {
-  if (hideEmptyIntervals) return [...candles].sort((left, right) => left.time - right.time);
-  return candleDataForTimeframe(candles, timeframe);
+function chartTimelineData(candles: Candle[], timeframe: string, hideEmptyIntervals = true, events: ChartTimelineEvent[] = []): CandleSeriesDatum[] {
+  const data = hideEmptyIntervals
+    ? [...candles].sort((left, right) => left.time - right.time)
+    : candleDataForTimeframe(candles, timeframe);
+  if (!events.length) return data;
+  const occupiedTimes = new Set(data.map((item) => Number(item.time)));
+  const anchors = events
+    .filter((event) => Number.isFinite(event.time) && !occupiedTimes.has(event.time))
+    .map((event) => ({ time: event.time }));
+  return [...data, ...anchors].sort((left, right) => Number(left.time) - Number(right.time));
 }
 
 function candleValueBounds(candles: Candle[]): NumericBounds {

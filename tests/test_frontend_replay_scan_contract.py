@@ -76,8 +76,12 @@ def test_charts_quotes_scopes_causal_split_events_to_the_daily_chart_axis() -> N
     assert canvas_source.count("stockSplitEvents={splitEvents.events}") == 1
     assert "useStockSplitEvents(linkContext.symbol, cutoffMs)" in canvas_source
     assert "candidate.session_date === event.execution_date" in chart_source
+    assert "Date.parse(`${event.execution_date}T12:00:00Z`)" in chart_source
     assert 'kind: "split" as const' in chart_source
+    assert 'dataStatus={timeframe === "1d" && liveChart.splitAdjusted ? "Split-adjusted" : undefined}' in chart_source
     assert "/ticker-facts/${encodeURIComponent(ticker)}/splits" in chart_data_source
+    assert "payload.timeline_events" in renderer_source
+    assert ".map((event) => ({ time: event.time }))" in renderer_source
     assert "timeToCoordinate(event.time as Time)" in renderer_source
     assert "chart.timeScale().height() + 6" in renderer_source
 

@@ -1758,6 +1758,7 @@ def historical_macro_bar_history(
         "source": payload.get("source", "qmd_history_gateway") if isinstance(payload, dict) else "qmd_history_gateway",
         "coverage_status": payload.get("coverage_status", "unavailable") if isinstance(payload, dict) else "unavailable",
         "latest_session_date": payload.get("latest_session_date") if isinstance(payload, dict) else None,
+        "split_adjustments": payload.get("split_adjustments", []) if isinstance(payload, dict) else [],
         "split_adjusted": bool(payload.get("split_adjusted")) if isinstance(payload, dict) else False,
     }
 
