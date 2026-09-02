@@ -7863,6 +7863,16 @@ def _validate_protection_profile_config(payload: dict[str, Any]):
         if rule_type in {"fixed_price", "catastrophic"} and not stop.get("price"):
             stop["price"] = 90.0
         raw_slice["stop"] = stop
+        trailing = dict(raw_slice.get("trailing") or {})
+        if (
+            str(trailing.get("rule_type") or "") == "broker_amount"
+            and not trailing.get("amount")
+        ):
+            # A null catalog amount is a deliberate strategy-owned binding.
+            # Runtime materialization replaces it with the positive amount on
+            # the StrategyIntent; use a sentinel only for schema validation.
+            trailing["amount"] = 1.0
+        raw_slice["trailing"] = trailing
     try:
         return protection_profile_from_payload(resolved)
     except (KeyError, TypeError, ValueError) as exc:

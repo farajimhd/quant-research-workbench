@@ -100,6 +100,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             migrated_protection["slices"][0]["trailing"]["rule_type"],
             "broker_amount",
         )
+        _validate_draft(migrated, require_runtime_ready=False)
 
     def test_new_release_refreshes_only_builtin_system_strategy_profiles(self) -> None:
         draft = _default_draft()
