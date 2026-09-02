@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 import { Modal } from "../../app/components/Modal";
-import { displayName } from "../../app/format";
+import { displayName, formatBasisPointsWithDollar } from "../../app/format";
 import type { ServiceStatusPayload } from "./contracts";
 import { DebugObjectBlock } from "./DebugObjectBlock";
 import { runtimeLogRows } from "./diagnostics";
@@ -267,7 +267,12 @@ function serviceActivityDetail(service: ServiceStatusPayload, row: Record<string
 
 function compactPair(row: Record<string, unknown>, key: string, label: string) {
   const value = row[key];
-  return value === undefined || value === null || value === "" ? "" : `${label}=${formatValue(key, value)}`;
+  if (value === undefined || value === null || value === "") return "";
+  if (key.endsWith("_bps")) {
+    const referencePrice = row.midpoint ?? row.close ?? row.last_price ?? row.vwap;
+    return `${label}=${formatBasisPointsWithDollar(value, referencePrice)}`;
+  }
+  return `${label}=${formatValue(key, value)}`;
 }
 
 function metricSummary(record: Record<string, unknown>, label: string, keys: string[], tone?: ServiceActivitySummaryItem["tone"]): ServiceActivitySummaryItem {

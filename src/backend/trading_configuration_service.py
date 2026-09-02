@@ -70,7 +70,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 41
+CONFIGURATION_SCHEMA_VERSION = 42
 MARKET_DISCOVERY_MATERIALIZATION_RUN_ID = "market-discovery:materialized-configuration"
 _CONFIGURATION_BASE_CACHE_LOCK = threading.RLock()
 _CONFIGURATION_BASE_CACHE: tuple[str, float, dict[str, Any] | None] = ("", 0.0, None)
@@ -506,7 +506,12 @@ def _build_configuration_release(
 ) -> tuple[dict[str, Any], dict[str, Any], str]:
     if not isinstance(configuration, dict):
         raise TypeError("A release requires the complete session configuration")
-    base_configuration = configuration_base()
+    # Compare immutable published profiles only after both sides have passed
+    # through the same canonical migration. Persisted releases may predate
+    # additive lifecycle fields such as empty groups/operator declarations;
+    # comparing raw history with a migrated candidate falsely reports those
+    # semantic no-ops as an in-place strategy mutation.
+    base_configuration = _migrate_draft(deepcopy(configuration_base()))
     draft_candidate = _without_timestamp(_migrate_draft(deepcopy(configuration)))
     _assert_published_profiles_unchanged(base_configuration, draft_candidate)
     _refresh_builtin_system_strategy_profiles(draft_candidate)
@@ -4154,9 +4159,9 @@ def _default_draft() -> dict[str, Any]:
         # Entry acceptance is an exact transition from the prior completed
         # one-second frame. It is never retained until later gates catch up.
         "acceptance_expires": True,
-        # VWAP extension remains the shared anti-chase authority. The
-        # structural trigger must not reject a valid already-cleared level
-        # with a second, tighter and contradictory distance ceiling.
+        # Bound only a single completed-frame leap over the selected
+        # structural boundary. This is distinct from (and must not recreate)
+        # a maximum distance-from-VWAP entry gate.
         "maximum_breakout_extension_bps": 500.0,
         "require_swing_high_frontier": False,
         "require_active_resistance_frontier": False,
@@ -4181,7 +4186,6 @@ def _default_draft() -> dict[str, Any]:
         "minimum_vwap_extension_bps": 0.0,
         "minimum_initial_vwap_extension_bps": 0.0,
         "minimum_reentry_vwap_extension_bps": 0.0,
-        "maximum_vwap_extension_bps": 500.0,
         # Campaign admission retains the protected rule-set authority.  The
         # order-time limit is intentionally distinct and non-latched for
         # volatile small-cap premarket names.
@@ -4196,8 +4200,9 @@ def _default_draft() -> dict[str, Any]:
         "maximum_spread_bps": 100.0,
     }
     system_profiles[0]["parameters"]["entry_momentum_confirmation"] = {
-        # The causal one-second MACD contract is complete: line above signal,
-        # with both values positive. Do not add a second histogram-slope gate;
+        # The causal one-second MACD contract is complete: line above signal
+        # and the MACD line above zero. The signal line may remain negative.
+        # Do not add a second histogram-slope gate;
         # that would reject valid entries even though the agreed MACD regime
         # is open.
         "enabled": False,
@@ -6669,6 +6674,18 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 global_rule_set_ids.add(rule_set_id)
             profile.pop("rule_set_ids", None)
             profile["parameters"] = _parameters_without_lifecycle(parameters)
+            if (
+                source_schema_version < 42
+                and str(profile.get("profile_id") or "")
+                == "long-momentum-balanced"
+            ):
+                # The protected squeeze strategy requires price above the
+                # executable VWAP, but it has no separate maximum distance
+                # ceiling. Older drafts inherited an unrequested 500-bps
+                # anti-chase gate; remove it only from this system profile.
+                profile["parameters"].setdefault("liquidity_admission", {}).pop(
+                    "maximum_vwap_extension_bps", None
+                )
             profile["protected"] = (
                 str(profile.get("profile_id"))
                 == result["strategy"]["default_profile_id"]

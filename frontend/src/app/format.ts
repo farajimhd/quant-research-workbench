@@ -60,6 +60,31 @@ export function formatMoney(value: unknown): string {
   return numeric.toLocaleString(undefined, { style: "currency", currency: "USD" });
 }
 
+export function formatBasisPointsWithDollar(
+  basisPoints: unknown,
+  referencePrice: unknown,
+  exactDollarAmount?: unknown,
+): string {
+  const bps = Number(basisPoints);
+  if (!Number.isFinite(bps)) return "-";
+  const reference = Number(referencePrice);
+  const exact = Number(exactDollarAmount);
+  const dollars = Number.isFinite(exact)
+    ? exact
+    : Number.isFinite(reference) && reference > 0
+      ? bps * reference / 10_000
+      : undefined;
+  const bpsText = `${bps.toLocaleString("en-US", { maximumFractionDigits: Math.abs(bps) < 10 ? 2 : 1 })} bps`;
+  if (dollars === undefined) return bpsText;
+  const dollarText = dollars.toLocaleString("en-US", {
+    currency: "USD",
+    maximumFractionDigits: Math.abs(dollars) < 1 ? 4 : 2,
+    minimumFractionDigits: Math.abs(dollars) < 1 ? 4 : 2,
+    style: "currency",
+  });
+  return `${bpsText} · ${dollarText}`;
+}
+
 export function formatSemanticNumber(value: unknown, unit = "", maximumFractionDigits = 4): string {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return "-";

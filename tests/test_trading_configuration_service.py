@@ -55,6 +55,9 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         system_profile["definition_revision"] = 1
         system_profile["name"] = "Stale built-in projection"
         system_profile["protected"] = False
+        system_profile["parameters"]["liquidity_admission"][
+            "maximum_vwap_extension_bps"
+        ] = 500.0
         user_profile = deepcopy(system_profile)
         user_profile.update(
             profile_id="user-published-revision-one",
@@ -82,6 +85,10 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             long_momentum_strategy_definition()["revision"],
         )
         self.assertNotEqual(refreshed_system["name"], "Stale built-in projection")
+        self.assertNotIn(
+            "maximum_vwap_extension_bps",
+            refreshed_system["parameters"]["liquidity_admission"],
+        )
         self.assertEqual(preserved_user["definition_revision"], 1)
         self.assertEqual(preserved_user["name"], "User historical profile")
 
@@ -1608,6 +1615,37 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(pinned["release_state"], "test_candidate")
         self.assertEqual(pinned["mode"], "backtest")
 
+    def test_candidate_release_canonicalizes_persisted_profile_before_immutability_check(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            persisted = self._draft()
+            profile = persisted["strategy"]["profiles"][0]
+            for stage in ("confirmation", "opportunity"):
+                profile["lifecycle"]["initial_entry"][stage].pop("groups", None)
+                profile["lifecycle"]["initial_entry"][stage].pop("operator", None)
+            with self._service_patches(journal), patch(
+                "src.backend.trading_configuration_service.configuration_base",
+                return_value=deepcopy(persisted),
+            ):
+                candidate = create_test_candidate(
+                    label="Canonical migration",
+                    canvas_revision="canvas-1",
+                    canvas_profile={"workspaceStates": {"main": {"openIds": ["chart"]}}},
+                    configuration=persisted,
+                    run_plan_id="balanced-replay",
+                )
+            journal.close()
+
+        released_profile = next(
+            row
+            for row in candidate["payload"]["strategy"]["profiles"]
+            if row["profile_id"] == profile["profile_id"]
+        )
+        self.assertEqual(
+            released_profile["definition_revision"],
+            long_momentum_strategy_definition()["revision"],
+        )
+
     def test_squeeze_defaults_separate_backtest_and_real_capital(self) -> None:
         draft = self._draft()
         policies = {row["policy_id"]: row for row in draft["portfolio"]["policies"]}
@@ -1746,9 +1784,9 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             profile["parameters"]["liquidity_admission"]["minimum_reentry_vwap_extension_bps"],
             0.0,
         )
-        self.assertEqual(
-            profile["parameters"]["liquidity_admission"]["maximum_vwap_extension_bps"],
-            500.0,
+        self.assertNotIn(
+            "maximum_vwap_extension_bps",
+            profile["parameters"]["liquidity_admission"],
         )
         self.assertEqual(
             profile["parameters"]["liquidity_admission"]["maximum_admission_spread_bps"],

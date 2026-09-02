@@ -34,8 +34,8 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 27
-HISTORICAL_STRATEGY_REVISIONS = (26,)
+STRATEGY_REVISION = 28
+HISTORICAL_STRATEGY_REVISIONS = (26, 27)
 
 RULE_COMPARATORS = {
     "above_by_bps",
@@ -1147,8 +1147,14 @@ def _current_execution_quality_result(
         if policy.get(phase_vwap_key) is not None
         else policy.get("minimum_vwap_extension_bps") or 0
     )
-    maximum_vwap_extension_bps = float(
-        policy.get("maximum_vwap_extension_bps") or float("inf")
+    configured_maximum_vwap_extension_bps = policy.get(
+        "maximum_vwap_extension_bps"
+    )
+    maximum_vwap_extension_bps = (
+        float(configured_maximum_vwap_extension_bps)
+        if configured_maximum_vwap_extension_bps is not None
+        and float(configured_maximum_vwap_extension_bps) > 0
+        else None
     )
     maximum_current_spread_bps = float(
         policy.get("maximum_current_spread_bps")
@@ -1170,27 +1176,58 @@ def _current_execution_quality_result(
             vwap_extension_bps is not None
             and vwap_extension_bps >= minimum_vwap_extension_bps
         ),
-        "vwap_extension_ceiling": maximum_vwap_extension_bps == float("inf")
+        "vwap_extension_ceiling": maximum_vwap_extension_bps is None
         or (
             vwap_extension_bps is not None
             and vwap_extension_bps <= maximum_vwap_extension_bps
         ),
     }
+    spread_dollars = (
+        observation.ask - observation.bid
+        if observation.ask >= observation.bid > 0
+        else (
+            spread * observation.price / 10_000.0
+            if spread is not None
+            else None
+        )
+    )
+    vwap_extension_dollars = (
+        observation.price - execution_vwap
+        if execution_vwap is not None and execution_vwap > 0
+        else None
+    )
+    thresholds = {
+        "phase": "reentry" if reentry else "initial_entry",
+        "minimum_trade_rate_10s": minimum_trade_rate_10s,
+        "minimum_trade_rate_60s": minimum_trade_rate_60s,
+        "maximum_current_spread_bps": maximum_current_spread_bps,
+        "maximum_current_spread_dollars": (
+            maximum_current_spread_bps * observation.price / 10_000.0
+        ),
+        "minimum_vwap_extension_bps": minimum_vwap_extension_bps,
+        "minimum_vwap_extension_dollars": (
+            minimum_vwap_extension_bps * execution_vwap / 10_000.0
+            if execution_vwap is not None and execution_vwap > 0
+            else None
+        ),
+    }
+    if maximum_vwap_extension_bps is not None:
+        thresholds["maximum_vwap_extension_bps"] = maximum_vwap_extension_bps
+        thresholds["maximum_vwap_extension_dollars"] = (
+            maximum_vwap_extension_bps * execution_vwap / 10_000.0
+            if execution_vwap is not None and execution_vwap > 0
+            else None
+        )
     return all(checks.values()), {
         "facts": {
             "trade_rate_10s": trade_rate_10s,
             "trade_rate_60s": trade_rate_60s,
             "spread_bps": spread,
+            "spread_dollars": spread_dollars,
             "vwap_extension_bps": vwap_extension_bps,
+            "vwap_extension_dollars": vwap_extension_dollars,
         },
-        "thresholds": {
-            "phase": "reentry" if reentry else "initial_entry",
-            "minimum_trade_rate_10s": minimum_trade_rate_10s,
-            "minimum_trade_rate_60s": minimum_trade_rate_60s,
-            "maximum_current_spread_bps": maximum_current_spread_bps,
-            "minimum_vwap_extension_bps": minimum_vwap_extension_bps,
-            "maximum_vwap_extension_bps": maximum_vwap_extension_bps,
-        },
+        "thresholds": thresholds,
         "checks": checks,
         "failed": [name for name, passed in checks.items() if not passed],
     }

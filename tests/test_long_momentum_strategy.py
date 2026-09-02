@@ -833,6 +833,56 @@ class LongMomentumStrategyTests(unittest.TestCase):
             "current_execution_quality_incomplete",
         )
 
+    def test_current_execution_has_no_unconfigured_maximum_vwap_extension(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["liquidity_admission"]["enabled"] = True
+        state = {
+            "liquidity_admitted_at": (NOW - timedelta(seconds=1)).isoformat(),
+        }
+        observation = confirmed_observation(
+            price=11.0,
+            bid=10.99,
+            ask=11.0,
+            previous_close=9.0,
+            previous_high=9.5,
+            swing_high=9.5,
+            vwap=10.0,
+            source_values=self._liquidity_values(),
+        )
+
+        allowed = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=parameters, state=state),
+            observation,
+        )
+        self.assertEqual(allowed.evaluation.signals[0].action, "enter_long")
+        self.assertNotIn(
+            "maximum_vwap_extension_bps",
+            allowed.evaluation.signals[0].metadata["execution_quality"]["thresholds"],
+        )
+        execution_quality = allowed.evaluation.signals[0].metadata["execution_quality"]
+        self.assertAlmostEqual(execution_quality["facts"]["spread_dollars"], 0.01)
+        self.assertAlmostEqual(
+            execution_quality["facts"]["vwap_extension_dollars"], 1.0
+        )
+        self.assertAlmostEqual(
+            execution_quality["thresholds"]["maximum_current_spread_dollars"],
+            0.11,
+        )
+
+        parameters["liquidity_admission"]["maximum_vwap_extension_bps"] = 500.0
+        historical_ceiling = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=parameters, state=state),
+            observation,
+        )
+        self.assertEqual(
+            historical_ceiling.evaluation.signals[0].reason,
+            "current_execution_quality_incomplete",
+        )
+        self.assertEqual(
+            historical_ceiling.evaluation.signals[0].metadata["execution_quality"]["failed"],
+            ["vwap_extension_ceiling"],
+        )
+
     def test_entry_requires_macd_histogram_to_strengthen_over_causal_lookback(self) -> None:
         parameters = default_long_momentum_parameters()
         parameters["entry_momentum_confirmation"].update({

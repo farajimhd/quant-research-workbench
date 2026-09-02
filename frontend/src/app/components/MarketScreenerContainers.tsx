@@ -3,6 +3,7 @@ import { forwardRef, useDeferredValue, useEffect, useMemo, useRef, useState, typ
 
 import { api, apiCached, invalidateApiCache } from "../../api/client";
 import { CONFIGURATION_SESSION_CHANGED_EVENT, readConfigurationSession } from "../configurationSession";
+import { formatBasisPointsWithDollar } from "../format";
 import { STRATEGY_ACTIVITY_EVENT_OPTIONS } from "../strategyActivity";
 import { timeRecency } from "../timeRecency";
 import { InventoryFilterSelect } from "./InventoryFilterSelect";
@@ -941,7 +942,7 @@ function strategyActivityRowKey(row: ScreenerRow) {
 
 function StrategyActivityInspector({ error, loading, onClose, row }: { error: string; loading: boolean; onClose: () => void; row: ScreenerRow | null }) {
   const snapshot = strategyActivityEvidenceSnapshot(row);
-  const sections = strategyEvidenceSections(snapshot);
+  const sections = strategyEvidenceSections(snapshot, optionalNumber(row?.reference_price));
   const action = readableEvidenceLabel(String(row?.action || row?.event_type || "Strategy event"));
   const outcomeLabel = String(row?.event_type || "") === "decision" ? "Final decision" : "Recorded outcome";
   const decisionTone = String(row?.action || "").toLowerCase() === "wait" ? "waiting" : "action";
@@ -989,21 +990,21 @@ function EvidenceResult({ result }: { result: NonNullable<StrategyEvidenceFact["
   return <b className="strategy-activity-result" data-result={result}>{result === "fail" ? <X aria-hidden="true" size={12} /> : <Check aria-hidden="true" size={12} />}{label}</b>;
 }
 
-function strategyEvidenceSections(snapshot: ScreenerRow) {
+function strategyEvidenceSections(snapshot: ScreenerRow, referencePrice?: number) {
   return Object.entries(snapshot).flatMap(([key, value]) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
-      return [{ facts: strategyEvidenceFacts(value, [key]), label: readableEvidenceLabel(key), path: key }];
+      return [{ facts: strategyEvidenceFacts(value, [key], [], referencePrice), label: readableEvidenceLabel(key), path: key }];
     }
     if (key === "entry_rules") {
       return Object.entries(value as ScreenerRow).map(([stage, stageValue]) => ({
-        facts: strategyEvidenceFacts(stageValue, [key, stage]),
+        facts: strategyEvidenceFacts(stageValue, [key, stage], [], referencePrice),
         label: `${readableEvidenceLabel(stage)} gate`,
         path: `${key}.${stage}`,
         result: strategyEvidenceResult(stageValue, stage === "veto"),
       }));
     }
     return [{
-      facts: strategyEvidenceFacts(value, [key]),
+      facts: strategyEvidenceFacts(value, [key], [], referencePrice),
       label: readableEvidenceLabel(key),
       path: key,
       result: strategyEvidenceResult(value),
@@ -1020,12 +1021,12 @@ function strategyEvidenceResult(value: unknown, inverse = false): StrategyEviden
   return passed ? "pass" : "fail";
 }
 
-function strategyEvidenceFacts(value: unknown, path: string[] = [], result: StrategyEvidenceFact[] = []) {
+function strategyEvidenceFacts(value: unknown, path: string[] = [], result: StrategyEvidenceFact[] = [], referencePrice?: number) {
   if (value === null || value === undefined || value === "") return result;
   if (Array.isArray(value)) {
     if (value.every((item) => item === null || ["string", "number", "boolean"].includes(typeof item))) {
       result.push({ label: readableEvidenceLabel(path.at(-1) ?? "Values"), path: path.join("."), value: value.map(String).join(", ") || "None" });
-    } else value.forEach((item, index) => strategyEvidenceFacts(item, [...path, String(index + 1)], result));
+    } else value.forEach((item, index) => strategyEvidenceFacts(item, [...path, String(index + 1)], result, referencePrice));
     return result;
   }
   if (typeof value === "object") {
@@ -1033,7 +1034,7 @@ function strategyEvidenceFacts(value: unknown, path: string[] = [], result: Stra
     if (typeof condition.passed === "boolean" && ("comparator" in condition || "left_value" in condition || "right_value" in condition)) {
       const leftLabel = readableEvidenceLabel(String(condition.left_source_id || condition.condition_id || `Condition ${path.at(-1) ?? ""}`));
       const timeframe = String(condition.left_timeframe || "");
-      const comparator = readableEvidenceComparator(String(condition.comparator || "requires"), condition.buffer_bps);
+      const comparator = readableEvidenceComparator(String(condition.comparator || "requires"), condition.buffer_bps, condition.right_value);
       const actual = formatStrategyEvidenceValue(condition.left_value);
       const expected = formatStrategyEvidenceValue(condition.right_value);
       const inverse = path.includes("veto");
@@ -1045,7 +1046,26 @@ function strategyEvidenceFacts(value: unknown, path: string[] = [], result: Stra
       });
       return result;
     }
-    Object.entries(value as ScreenerRow).forEach(([key, item]) => strategyEvidenceFacts(item, [...path, key], result));
+    const record = value as ScreenerRow;
+    const pairedDollarKeys = new Set(
+      Object.keys(record)
+        .filter((key) => key.endsWith("_bps") && `${key.slice(0, -4)}_dollars` in record)
+        .map((key) => `${key.slice(0, -4)}_dollars`),
+    );
+    Object.entries(record).forEach(([key, item]) => {
+      if (pairedDollarKeys.has(key)) return;
+      if (key.endsWith("_bps") && Number.isFinite(Number(item))) {
+        const dollarKey = `${key.slice(0, -4)}_dollars`;
+        const exactDollars = record[dollarKey];
+        result.push({
+          label: readableEvidenceLabel(path.slice(2).concat(key).join(" · ") || key),
+          path: [...path, key].join("."),
+          value: formatBasisPointsWithDollar(item, referencePrice, exactDollars),
+        });
+        return;
+      }
+      strategyEvidenceFacts(item, [...path, key], result, referencePrice);
+    });
     return result;
   }
   const key = path.at(-1) ?? "value";
@@ -1061,7 +1081,7 @@ function strategyEvidenceFacts(value: unknown, path: string[] = [], result: Stra
   return result;
 }
 
-function readableEvidenceComparator(comparator: string, bufferBps: unknown) {
+function readableEvidenceComparator(comparator: string, bufferBps: unknown, referencePrice?: unknown) {
   const labels: Record<string, string> = {
     above: ">",
     above_by_bps: "> by",
@@ -1074,7 +1094,9 @@ function readableEvidenceComparator(comparator: string, bufferBps: unknown) {
     not_equal: "≠",
   };
   const label = labels[comparator] ?? readableEvidenceLabel(comparator);
-  return comparator === "above_by_bps" && bufferBps !== null && bufferBps !== undefined ? `${label} ${formatStrategyEvidenceValue(bufferBps)} bps vs` : label;
+  return comparator === "above_by_bps" && bufferBps !== null && bufferBps !== undefined
+    ? `${label} ${formatBasisPointsWithDollar(bufferBps, referencePrice)} vs`
+    : label;
 }
 
 function formatStrategyEvidenceValue(value: unknown) {
@@ -1496,6 +1518,17 @@ function renderMarketCell(row: ScreenerRow, column: string, presentations: Retur
   if (definition.presentationValueType === "datetime" || definition.format === "date") return <MarketTime includeDate value={String(value)} />;
   const numeric = numberValue(value);
   const semanticTone = toneClass(value, column, customColumns, catalog);
+  if (presentationValueType === "basis_points") {
+    const referencePrice = optionalNumber(
+      row.last_price ?? row.last ?? row.snapshot_last_price ?? row.close ?? row.vwap
+    );
+    return marketNumber(
+      formatBasisPointsWithDollar(numeric, referencePrice),
+      numeric,
+      definition,
+      semanticTone,
+    );
+  }
   if (definition.format === "percent") return marketNumber(formatPercent(numeric, true), numeric, definition, semanticTone);
   if (definition.format === "percentPlain") return marketNumber(formatPercent(numeric), numeric, definition, semanticTone);
   if (definition.format === "money") return marketNumber(formatMoney(numeric), numeric, definition, semanticTone);

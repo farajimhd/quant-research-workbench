@@ -90,6 +90,12 @@ class StrategyExecutorRegistryTests(unittest.TestCase):
             [row["condition_id"] for row in macd_group["conditions"]],
         )
 
+    def test_builtin_historical_revision_27_remains_executable(self) -> None:
+        registration = strategy_executor(STRATEGY_ID, 27)
+
+        self.assertEqual(registration.revision, 27)
+        self.assertEqual(registration.definition()["revision"], 27)
+
 
 if __name__ == "__main__":
     unittest.main()
