@@ -5590,6 +5590,58 @@ button {
   overflow: hidden;
 }
 
+.chart-timeline-event-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 7;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.chart-timeline-event {
+  align-items: center;
+  background: linear-gradient(145deg, var(--canvas-link-violet, #7c3aed), var(--canvas-link-orange, #f97316));
+  border: 2px solid color-mix(in oklab, var(--surface) 88%, white);
+  border-radius: 999px;
+  box-shadow: 0 2px 8px color-mix(in oklab, var(--canvas-link-violet, #7c3aed) 34%, transparent), 0 0 0 1px color-mix(in oklab, var(--foreground) 18%, transparent);
+  color: white;
+  display: inline-flex;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 850;
+  height: 22px;
+  justify-content: center;
+  line-height: 1;
+  pointer-events: auto;
+  position: absolute;
+  transform: translateX(-50%);
+  transition: filter 120ms ease, transform 120ms ease;
+  visibility: hidden;
+  width: 22px;
+}
+
+.chart-timeline-event::after {
+  background: color-mix(in oklab, var(--canvas-link-violet, #7c3aed) 70%, var(--foreground));
+  bottom: -7px;
+  content: "";
+  height: 6px;
+  left: 50%;
+  position: absolute;
+  transform: translateX(-50%);
+  width: 2px;
+}
+
+.chart-timeline-event:hover {
+  filter: saturate(1.16) brightness(1.08);
+  transform: translateX(-50%) scale(1.1);
+}
+
+.chart-timeline-event:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  transform: translateX(-50%) scale(1.1);
+}
+
 .chart-reference-line {
   position: absolute;
   top: 0;

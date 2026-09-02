@@ -161,6 +161,48 @@ LOGGER = logging.getLogger(__name__)
 HISTORY_LIMIT = 10_000
 MAIN_HISTORY_DAYS = 520
 XBRL_HISTORY_START = datetime(2019, 1, 1, tzinfo=UTC)
+
+
+def ticker_split_events_payload(symbol: str, *, as_of: str | None = None, database: str = "q_live") -> dict[str, Any]:
+    """Return causally available stock splits for chart event annotations."""
+    ticker = normalize_ticker(symbol)
+    cutoff = parse_as_of(as_of)
+    if not DATABASE_PATTERN.fullmatch(database):
+        raise ValueError("Ticker facts database is not a valid identifier.")
+    client = ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password())
+    try:
+        anchor_rows = clickhouse_rows(client, identity_anchor_sql(ticker, cutoff, database))
+        if not anchor_rows:
+            return {"as_of": cutoff.isoformat(), "events": [], "row_count": 0, "status": "not_found", "symbol": ticker}
+        split_rows = clickhouse_rows(client, splits_sql(str(anchor_rows[0].get("symbol_id") or ""), cutoff, database))
+    except Exception as error:
+        raise RuntimeError("Canonical stock-reference storage is unavailable.") from error
+
+    events: list[dict[str, Any]] = []
+    for row in split_rows:
+        try:
+            execution_date = date.fromisoformat(str(row.get("execution_date") or ""))
+            split_from = float(row.get("split_from"))
+            split_to = float(row.get("split_to"))
+        except (TypeError, ValueError):
+            continue
+        if execution_date > cutoff.date() or not math.isfinite(split_from) or not math.isfinite(split_to) or split_from <= 0 or split_to <= 0:
+            continue
+        direction = "forward" if split_to > split_from else "reverse" if split_to < split_from else "neutral"
+        events.append({
+            "available_at": row.get("inserted_at"),
+            "direction": direction,
+            "execution_date": execution_date.isoformat(),
+            "id": f"stock-split:{execution_date.isoformat()}:{split_from:g}:{split_to:g}",
+            "ratio": split_to / split_from,
+            "source": f"{database}.market_stock_split_v1",
+            "split_from": split_from,
+            "split_to": split_to,
+        })
+    events.sort(key=lambda event: (event["execution_date"], event["id"]))
+    return {"as_of": cutoff.isoformat(), "events": events, "row_count": len(events), "status": "ready", "symbol": ticker}
+
+
 def ticker_facts_payload(symbol: str, *, as_of: str | None = None, database: str = "q_live") -> dict[str, Any]:
     """Return the point-in-time snapshot plus prior-publication comparisons."""
     ticker = normalize_ticker(symbol)

@@ -457,6 +457,15 @@ export type ChartAppearanceDefaults = Partial<Pick<ChartAppearanceSettings,
   "daySeparatorsVisible" | "legendGutterVisible" | "rightLegendGutterVisible"
 >>;
 
+export type ChartTimelineEvent = {
+  ariaLabel: string;
+  id: string;
+  kind: "split";
+  label: string;
+  time: number;
+  title: string;
+};
+
 export type ChartPayload = {
   candles: Candle[];
   volume: Array<{ time: number; value: number; color: string }>;
@@ -464,6 +473,7 @@ export type ChartPayload = {
   oscillator_series: ChartSeries[];
   markers: ChartMarker[];
   regions: Region[];
+  timeline_events?: ChartTimelineEvent[];
   execution_annotations?: TradeFillAnnotation[];
   trade_annotations?: TradeAnnotation[];
   price_zones?: PriceZone[];
@@ -624,6 +634,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const shellRef = useRef<HTMLDivElement | null>(null);
   const priceLayerRef = useRef<HTMLDivElement | null>(null);
   const referenceLayerRef = useRef<HTMLDivElement | null>(null);
+  const timelineEventLayerRef = useRef<HTMLDivElement | null>(null);
   const priceChartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const candleMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
@@ -1391,6 +1402,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       );
     });
     drawReferenceLine(chart, referenceLayerRef.current, currentPayload.candles, showReferenceLineRef.current ? referenceRef.current : null);
+    drawTimelineEvents(chart, timelineEventLayerRef.current, currentPayload.timeline_events ?? []);
   }
 
   function scheduleOverlayRedraw() {
@@ -1698,6 +1710,22 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           <div className="chart-native-surface chart-price" style={{ height: nativeChartHeight }}>
             <div className="chart-pane-canvas" ref={priceRef} />
             <div className="chart-reference-stack-layer" ref={referenceLayerRef} />
+            <div className="chart-timeline-event-layer" ref={timelineEventLayerRef}>
+              {(payload?.timeline_events ?? []).map((event) => (
+                <span
+                  aria-label={event.ariaLabel}
+                  className="chart-timeline-event"
+                  data-chart-timeline-event-id={event.id}
+                  data-kind={event.kind}
+                  key={event.id}
+                  role="img"
+                  tabIndex={0}
+                  title={event.title}
+                >
+                  {event.label}
+                </span>
+              ))}
+            </div>
             <div className="chart-native-pane-overlay" data-chart-pane="price" ref={pricePaneOverlayRef}>
               <div className="session-layer" ref={priceLayerRef} />
               <ChartLegend
@@ -6257,6 +6285,25 @@ function drawReferenceLine(chart: IChartApi, layer: HTMLDivElement | null, candl
     node.appendChild(label);
   }
   layer.appendChild(node);
+}
+
+function drawTimelineEvents(chart: IChartApi, layer: HTMLDivElement | null, events: ChartTimelineEvent[]) {
+  if (!layer) return;
+  const eventsById = new Map(events.map((event) => [event.id, event]));
+  const stackByTime = new Map<number, number>();
+  Array.from(layer.querySelectorAll<HTMLElement>("[data-chart-timeline-event-id]")).forEach((node) => {
+    const event = eventsById.get(node.dataset.chartTimelineEventId || "");
+    const coordinate = event ? chart.timeScale().timeToCoordinate(event.time as Time) : null;
+    if (!event || !isVisibleCoordinate(coordinate, layer.clientWidth)) {
+      node.style.visibility = "hidden";
+      return;
+    }
+    const stack = stackByTime.get(event.time) ?? 0;
+    stackByTime.set(event.time, stack + 1);
+    node.style.left = `${Number(coordinate)}px`;
+    node.style.bottom = `${chart.timeScale().height() + 6 + stack * 26}px`;
+    node.style.visibility = "visible";
+  });
 }
 
 function resolveReferenceTime(reference: ChartReference, candles: Candle[]) {

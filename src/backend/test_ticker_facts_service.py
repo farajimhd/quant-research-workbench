@@ -28,6 +28,7 @@ from src.backend.ticker_facts_service import (
     short_volume_sql,
     synthesize_stock_facts,
     ticker_facts_payload,
+    ticker_split_events_payload,
     valuation_card_from_facts,
 )
 
@@ -59,6 +60,26 @@ class TickerFactsServiceTest(unittest.TestCase):
         with patch("src.backend.ticker_facts_service.ClickHouseHttpClient.execute", side_effect=OSError("offline")):
             with self.assertRaisesRegex(RuntimeError, "reference storage"):
                 ticker_facts_payload("AAPL", as_of="2026-07-14T09:45:00-04:00")
+
+    def test_split_events_are_causal_validated_and_ordered(self) -> None:
+        anchor = [{"symbol_id": "symbol:aapl"}]
+        rows = [
+            {"execution_date": "2026-07-14", "split_from": 1, "split_to": 10, "inserted_at": "2026-07-13T12:00:00Z"},
+            {"execution_date": "2025-01-02", "split_from": 10, "split_to": 1, "inserted_at": "2025-01-01T12:00:00Z"},
+            {"execution_date": "2026-01-01", "split_from": 0, "split_to": 5, "inserted_at": "2025-12-31T12:00:00Z"},
+        ]
+        with patch("src.backend.ticker_facts_service.clickhouse_rows", side_effect=[anchor, rows]) as execute:
+            payload = ticker_split_events_payload("AAPL", as_of="2026-07-14T09:45:00-04:00")
+
+        self.assertEqual([event["execution_date"] for event in payload["events"]], ["2025-01-02", "2026-07-14"])
+        self.assertEqual(payload["events"][0]["direction"], "reverse")
+        self.assertEqual(payload["events"][1]["direction"], "forward")
+        self.assertEqual(payload["events"][1]["ratio"], 10)
+        self.assertEqual(payload["row_count"], 2)
+        split_query = execute.call_args_list[1].args[1]
+        self.assertIn("`execution_date` <= toDate", split_query)
+        self.assertIn("inserted_at <= parseDateTime64BestEffort", split_query)
+        self.assertIn("LIMIT 1 BY `execution_date`", split_query)
 
     def test_fundamental_selection_uses_tag_priority_without_inventing_values(self) -> None:
         rows = [

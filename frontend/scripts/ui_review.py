@@ -448,6 +448,36 @@ def chart_history_fixture(session_date: str, symbol: str = "AAPL") -> dict[str, 
     }
 
 
+def daily_chart_history_fixture(session_date: str, symbol: str = "AAPL") -> dict[str, Any]:
+    end = datetime.fromisoformat(f"{session_date}T20:00:00+00:00")
+    history: list[dict[str, Any]] = []
+    close = 94.0
+    for index in range(120):
+        bar_start = end - timedelta(days=119 - index)
+        open_price = close
+        close = open_price + (0.7 if index % 6 not in {0, 1} else -0.45)
+        history.append({
+            "bar_start": bar_start.isoformat(),
+            "bar_end": (bar_start + timedelta(hours=6)).isoformat(),
+            "open": round(open_price, 4),
+            "high": round(max(open_price, close) + 0.35, 4),
+            "low": round(min(open_price, close) - 0.3, 4),
+            "close": round(close, 4),
+            "volume": 1_000_000 + index * 12_500,
+            "is_closed": True,
+            "session_date": bar_start.date().isoformat(),
+        })
+    return {
+        "history": history,
+        "indicators": [],
+        "indicators_available": False,
+        "market_signal_events": [],
+        "structure_events": [],
+        "structure_level_history": [],
+        "has_more": False,
+    }
+
+
 def ensure_playwright() -> None:
     try:
         import playwright.sync_api  # noqa: F401
@@ -969,6 +999,32 @@ def validate_canvas_interactions(
     if scenario["page"] == "canvas-focus":
         if page.locator(".sidebar").count():
             issues.append("focus canvas renders the application sidebar")
+        charts_quotes = page.locator('.workspace-window[data-window-kind="charts_quotes"]')
+        if charts_quotes.count():
+            if charts_quotes.count() != 1:
+                issues.append("focus canvas does not render exactly one Charts & Quotes container")
+                return issues
+            bounds = charts_quotes.bounding_box()
+            minimum_height = scenario["viewport"]["height"] - 92
+            if not bounds or bounds["height"] < minimum_height:
+                actual = round(bounds["height"]) if bounds else 0
+                issues.append(f"focus container does not fill the working page ({actual} < {minimum_height})")
+            daily = charts_quotes.locator(".charts-quotes-daily-chart")
+            try:
+                daily.get_by_text("Loading chart data...", exact=True).wait_for(state="hidden", timeout=120_000)
+                marker = daily.locator('.chart-timeline-event[data-kind="split"]')
+                marker.wait_for(state="visible", timeout=30_000)
+                if marker.count() != 1:
+                    issues.append("daily chart does not render exactly one deterministic split marker")
+                marker_box = marker.bounding_box()
+                daily_box = daily.bounding_box()
+                if not marker_box or not daily_box or not (daily_box["x"] <= marker_box["x"] <= daily_box["x"] + daily_box["width"]):
+                    issues.append("split marker is not anchored inside the daily chart")
+                if interaction_screenshot:
+                    daily.screenshot(path=str(interaction_screenshot))
+            except Exception as exc:
+                issues.append(f"daily split-marker interaction failed: {exc}")
+            return issues
         chart = page.locator('.workspace-window[data-window-kind="chart"]')
         if chart.count() != 1:
             issues.append("focus canvas does not render exactly one Chart container")
@@ -2095,8 +2151,9 @@ def capture(args: argparse.Namespace) -> int:
                     )
                 if scenario["page"] == "canvas-focus":
                     focus_id = args.canvas_id or "review-focus"
+                    focus_container = "charts_quotes" if args.canvas_charts_quotes else "chart"
                     focus_layout = {
-                        "chart": {
+                        focus_container: {
                             "fullscreen": True,
                             "h": max(320, round(scenario["viewport"]["height"] / scenario["scale"]) - 62),
                             "minimized": False,
@@ -2106,11 +2163,11 @@ def capture(args: argparse.Namespace) -> int:
                             "z": 1,
                         },
                     }
-                    focus_state = {"layoutVersion": 3, "layouts": focus_layout, "openIds": ["chart"]}
+                    focus_state = {"layoutVersion": 3, "layouts": focus_layout, "openIds": [focus_container]}
                     focus_registry = {
                         "version": 1,
                         "canvases": [{"id": "main", "label": "Main"}, {"id": focus_id, "label": "Chart focus"}],
-                        "linkAssignments": {"chart": "A"},
+                        "linkAssignments": {focus_container: "A"},
                         "linkContexts": {
                             "A": {"symbol": args.canvas_symbol, "timeframe": args.canvas_chart_timeframe},
                             "B": {"symbol": "MSFT", "timeframe": "1m"},
@@ -2128,6 +2185,11 @@ def capture(args: argparse.Namespace) -> int:
                                 for value in (args.canvas_visible_indicators or "indicator.vwap,indicator.macd,indicator.qmd_decision,indicator.qmd_generic_structure,indicator.qmd_level_footprint").split(",")
                                 if value.strip()
                             ],
+                        },
+                        "charts_quotes": {
+                            "main": {"showVolume": True, "symbol": args.canvas_symbol, "timeframe": "10s", "visibleIndicators": []},
+                            "month": {"showVolume": True, "symbol": args.canvas_symbol, "timeframe": "1mo", "visibleIndicators": []},
+                            "daily": {"showVolume": True, "symbol": args.canvas_symbol, "timeframe": "1d", "visibleIndicators": []},
                         },
                     }
                     context.add_init_script(
@@ -2219,8 +2281,33 @@ def capture(args: argparse.Namespace) -> int:
                         "**/api/trading/canvas-chart/history**",
                         lambda route: route.fulfill(
                             content_type="application/json",
-                            body=json.dumps(chart_history_fixture(fixture_date)),
+                            body=json.dumps(
+                                daily_chart_history_fixture(fixture_date)
+                                if "timeframe=1d" in route.request.url
+                                else chart_history_fixture(fixture_date)
+                            ),
                         ),
+                    )
+                if args.stub_split_events:
+                    split_date = (datetime.fromisoformat(args.canvas_session_date or "2026-08-20") - timedelta(days=5)).date().isoformat()
+                    page.route(
+                        "**/api/trading/ticker-facts/*/splits**",
+                        fulfill_json(json.dumps({
+                            "as_of": f"{args.canvas_session_date or '2026-08-20'}T20:00:00+00:00",
+                            "events": [{
+                                "available_at": f"{split_date}T12:00:00Z",
+                                "direction": "forward",
+                                "execution_date": split_date,
+                                "id": f"stock-split:{split_date}:1:5",
+                                "ratio": 5,
+                                "source": "q_live.market_stock_split_v1",
+                                "split_from": 1,
+                                "split_to": 5,
+                            }],
+                            "row_count": 1,
+                            "status": "ready",
+                            "symbol": args.canvas_symbol,
+                        })),
                     )
                 console_errors: list[str] = []
                 page_errors: list[str] = []
@@ -2359,6 +2446,13 @@ def capture(args: argparse.Namespace) -> int:
                         and scenario["scale"] == 1.0
                         and scenario["viewport_name"] == "normal"
                     ) else screenshot_path.with_name(
+                        f"{screenshot_path.stem}__split-marker.png"
+                    ) if (
+                        args.stub_split_events
+                        and scenario["page"] == "canvas-focus"
+                        and scenario["theme"] == "light"
+                        and scenario["scale"] == 1.0
+                    ) else screenshot_path.with_name(
                         f"{screenshot_path.stem}__qmd-review.png"
                     ) if (
                         scenario["page"] == "canvas-focus"
@@ -2441,6 +2535,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--chart-stress-pattern", choices=("mixed", "pathological", "left-paging"), default="mixed", help="alternate gestures, accumulate them in one direction, or force left-edge history paging")
     result.add_argument("--chart-stress-only", action="store_true", help="stop the Canvas interaction review after chart stress")
     result.add_argument("--stub-chart-history", action="store_true", help="use deterministic chart history for frontend-only renderer and interaction QA")
+    result.add_argument("--canvas-charts-quotes", action="store_true", help="seed the Charts & Quotes container in Canvas focus review")
+    result.add_argument("--stub-split-events", action="store_true", help="use a deterministic stock-split event for daily chart QA")
     result.add_argument("--stub-service-status", action="store_true", help="use deterministic service contracts for frontend-only Services detail QA")
     result.add_argument("--watchlist-close-only", action="store_true", help="stop after the Watch Universe close and persistence regression")
     result.add_argument("--seed-core-containers", action="store_true", help="seed portfolio and scanner containers for child-canvas review")

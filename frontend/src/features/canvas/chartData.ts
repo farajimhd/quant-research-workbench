@@ -39,6 +39,45 @@ const CHART_SNAPSHOT_CACHE_TTL_MS = 2 * 60_000;
 const CHART_SNAPSHOT_CACHE_LIMIT = 48;
 const UNIFIED_STRUCTURE_TIMEFRAME: CanvasChartTimeframe = "1s";
 
+export type StockSplitEvent = {
+  available_at?: string | null;
+  direction: "forward" | "neutral" | "reverse";
+  execution_date: string;
+  id: string;
+  ratio: number;
+  source: string;
+  split_from: number;
+  split_to: number;
+};
+
+type StockSplitEventsPayload = { events: StockSplitEvent[] };
+
+export function useStockSplitEvents(symbol: string, cutoffMs: number, enabled = true) {
+  const requestCutoffMs = Math.floor(cutoffMs / 60_000) * 60_000;
+  const [state, setState] = useState<{ error: string; events: StockSplitEvent[]; loading: boolean }>({ error: "", events: [], loading: false });
+  useEffect(() => {
+    if (!enabled) {
+      setState({ error: "", events: [], loading: false });
+      return;
+    }
+    const ticker = symbol.trim().toUpperCase();
+    if (!ticker) return;
+    const controller = new AbortController();
+    setState((current) => ({ ...current, error: "", loading: true }));
+    api<StockSplitEventsPayload>(`/api/trading/ticker-facts/${encodeURIComponent(ticker)}/splits${query({ as_of: new Date(requestCutoffMs).toISOString() })}`, {
+      signal: controller.signal,
+      timeoutMs: 10_000,
+    })
+      .then((payload) => setState({ error: "", events: Array.isArray(payload.events) ? payload.events : [], loading: false }))
+      .catch((reason) => {
+        if (controller.signal.aborted) return;
+        setState({ error: reason instanceof Error ? reason.message : String(reason), events: [], loading: false });
+      });
+    return () => controller.abort();
+  }, [enabled, requestCutoffMs, symbol]);
+  return state;
+}
+
 // These indicators are deterministic functions of the canonical closed bars
 // and are prepared with the bar artifact. Event-flow and microstructure fields
 // remain on the full derived path; they must never be approximated from OHLCV.

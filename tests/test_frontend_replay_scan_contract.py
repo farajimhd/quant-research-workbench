@@ -67,6 +67,21 @@ def test_charts_quotes_scopes_trade_annotations_to_the_main_chart() -> None:
     assert canvas_source.count("showTradeAnnotations={false}") == 2
 
 
+def test_charts_quotes_scopes_causal_split_events_to_the_daily_chart_axis() -> None:
+    canvas_source = CANVAS_PAGE.read_text(encoding="utf-8")
+    chart_source = CHART_PRESENTATION.read_text(encoding="utf-8")
+    chart_data_source = (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "chartData.ts").read_text(encoding="utf-8")
+    renderer_source = (REPO_ROOT / "frontend" / "src" / "app" / "components" / "ChartPanel.tsx").read_text(encoding="utf-8")
+
+    assert canvas_source.count("stockSplitEvents={splitEvents.events}") == 1
+    assert "useStockSplitEvents(linkContext.symbol, cutoffMs)" in canvas_source
+    assert "candidate.session_date === event.execution_date" in chart_source
+    assert 'kind: "split" as const' in chart_source
+    assert "/ticker-facts/${encodeURIComponent(ticker)}/splits" in chart_data_source
+    assert "timeToCoordinate(event.time as Time)" in renderer_source
+    assert "chart.timeScale().height() + 6" in renderer_source
+
+
 def test_strategy_activity_pins_the_navigation_stop_record() -> None:
     canvas_source = CANVAS_PAGE.read_text(encoding="utf-8")
     container_source = SCREENER_CONTAINERS.read_text(encoding="utf-8")

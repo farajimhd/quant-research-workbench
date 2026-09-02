@@ -84,7 +84,7 @@ import {
   MANAGER_DEFAULT_CONTAINER_IDS,
   READ_ONLY_BLOCKED_CONTAINERS,
 } from "../features/canvas/configuration";
-import { marketSessionDate, useCanvasHistoricalChart } from "../features/canvas/chartData";
+import { marketSessionDate, useCanvasHistoricalChart, useStockSplitEvents } from "../features/canvas/chartData";
 import { finiteNumber } from "../features/canvas/numbers";
 import { nestedValue } from "../features/canvas/presentationFormat";
 import { cloneDefaultSettings, instanceSettings, normalizeSettings } from "../features/canvas/settings";
@@ -1570,6 +1570,7 @@ function ChartsQuotesContainerPreview({ canvasId, cutoffMs, instanceId, linkCont
   const main = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.main.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.main.visibleIndicators, liveMode, true, historicalMode, fullSession);
   const month = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.month.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.month.visibleIndicators, liveMode, true, historicalMode, false);
   const daily = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.daily.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.daily.visibleIndicators, liveMode, true, historicalMode, false);
+  const splitEvents = useStockSplitEvents(linkContext.symbol, cutoffMs);
   const presentations = useTickerPresentations([linkContext.symbol]);
   const logoUrl = presentations[linkContext.symbol]?.logo_url;
   const changeAsOf = new Date(cutoffMs).toISOString();
@@ -1589,7 +1590,7 @@ function ChartsQuotesContainerPreview({ canvasId, cutoffMs, instanceId, linkCont
   } : null;
   const chartProps = { changeAsOf, linkContext, logoUrl, onLinkContextChange, strategyDecisions, strategyPresentation, symbolEditable: false, toolbarVariant: "compact" as const, trading };
   return <ChartsQuotesMarketLayout
-    dailyChart={<ChartPreview {...chartProps} appearanceDefaults={CHARTS_QUOTES_CONTEXT_APPEARANCE_DEFAULTS} baseHeight={255} canvasId={canvasId} chartSettings={settings.charts_quotes.daily} fillHeight instanceId={`${instanceId}.daily`} liveChart={daily} onChartSettingsChange={(next) => updateSlot("daily", { ...next, timeframe: "1d" })} showTradeAnnotations={false} timeframes={["1d"]} />}
+    dailyChart={<ChartPreview {...chartProps} appearanceDefaults={CHARTS_QUOTES_CONTEXT_APPEARANCE_DEFAULTS} baseHeight={255} canvasId={canvasId} chartSettings={settings.charts_quotes.daily} fillHeight instanceId={`${instanceId}.daily`} liveChart={daily} onChartSettingsChange={(next) => updateSlot("daily", { ...next, timeframe: "1d" })} showTradeAnnotations={false} stockSplitEvents={splitEvents.events} timeframes={["1d"]} />}
     end={liveMode ? undefined : changeAsOf}
     layout={settings.charts_quotes.layout}
     mainChart={<ChartPreview {...chartProps} baseHeight={460} canvasId={canvasId} chartSettings={settings.charts_quotes.main} fillHeight fullSessionReview={fullSession} instanceId={`${instanceId}.main`} liveChart={main} onChartSettingsChange={(next) => updateSlot("main", next)} timeframes={HISTORICAL_TIMEFRAMES} />}
