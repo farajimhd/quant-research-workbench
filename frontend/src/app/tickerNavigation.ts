@@ -31,7 +31,7 @@ export type TickerChartsQuotesOpenOptions = {
   workspaceState?: CanvasWorkspaceState | null;
 };
 
-export type TickerChartsQuotesOpenResult = "invalid-ticker" | "opened" | "popup-blocked";
+export type TickerChartsQuotesOpenResult = "invalid-ticker" | "opened";
 
 export function openTickerChartsQuotes(
   tickerValue: string,
@@ -57,10 +57,9 @@ export function openTickerChartsQuotes(
   // including immutable Replay and Backtest review pages. The focus handoff
   // is written before opening so the new tab can restore the exact runtime
   // scope, symbol, chart settings, and historical run identity.
-  const focusedWindow = window.open(url, "_blank", "noopener,noreferrer");
-  if (!focusedWindow) {
-    return "popup-blocked";
-  }
+  // Browsers intentionally return null for a successful noopener window, so
+  // the return value cannot distinguish that secure success from blocking.
+  window.open(url, "_blank", "noopener,noreferrer");
   return "opened";
 }
 

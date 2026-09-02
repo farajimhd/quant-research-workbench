@@ -32,7 +32,7 @@ def test_ticker_identity_is_the_explicit_charts_quotes_control() -> None:
     assert "Open ${symbol} Charts & Quotes in a new tab" in identity_source
     assert 'window.open(url, "_blank", "noopener,noreferrer")' in navigation_source
     assert "window.location.assign(url)" not in navigation_source
-    assert 'return "popup-blocked"' in navigation_source
+    assert 'return "popup-blocked"' not in navigation_source
     assert "writeCanvasFocusHandoff" in navigation_source
     assert "writeReplayCanvasFocusHandoff" in navigation_source
     assert 'replayRun={run} runtimeWorkspaceId={focusToken} transient' in canvas_source

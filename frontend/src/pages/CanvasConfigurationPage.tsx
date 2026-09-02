@@ -1011,16 +1011,13 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
 
   function openReusableGroup(templateId: string, tickerValue = activeSymbol) {
     if (templateId !== CHARTS_QUOTES_GROUP_TEMPLATE_ID) return;
-    const result = openTickerChartsQuotes(tickerValue, {
+    openTickerChartsQuotes(tickerValue, {
       registry,
       replayRunId: replayRun?.run_id,
       historicalRunMode: replayRun?.mode,
       runtimeMode: focusRuntimeMode,
       workspaceState,
     });
-    if (result === "popup-blocked") {
-      setError("The Charts & Quotes group could not open because the browser blocked the focus window.");
-    }
   }
 
   function openChartsQuotesForTicker(tickerValue: string) {
