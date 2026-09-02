@@ -1347,6 +1347,13 @@ def _unified_entry_trigger(
             usable.append((boundary_value, row))
     if not usable:
         return {"passed": False, "reason": "waiting_for_unified_resistance", "level": None}
+    crossed_now = [
+        item
+        for item in usable
+        if previous_price is not None
+        and float(previous_price) <= item[0]
+        and observation.price > item[0]
+    ]
     accepted = state.get("accepted_entry_resistance")
     accepted_level = (
         dict(accepted.get("level") or {})
@@ -1377,6 +1384,23 @@ def _unified_entry_trigger(
         # Acceptance belongs to the local structural crossing. Higher levels
         # are subsequent resistance/target evidence; they do not invalidate a
         # breakout while MACD or liquidity confirmation is catching up.
+        # While other confirmation gates are still catching up, a newly
+        # crossed higher qualified level becomes the current causal frontier.
+        # Keeping the first accepted band forever made a healthy campaign wait
+        # for a pullback to obsolete lower structure after price had already
+        # accepted several successor levels.
+        successor = [item for item in crossed_now if item[0] > accepted_boundary]
+        if successor:
+            accepted_boundary, accepted_level = max(successor, key=lambda item: item[0])
+            accepted_threshold = accepted_boundary * (1 + buffer_bps / 10_000)
+            accepted_at = observation.observed_at
+            acceptance_age_ms = 0.0
+            state["accepted_entry_resistance"] = {
+                "boundary": accepted_boundary,
+                "level": _compact_structural_level_reference(accepted_level),
+                "accepted_at": observation.observed_at.isoformat(),
+            }
+            accepted = state["accepted_entry_resistance"]
         breakout_extension_bps = (
             (observation.price / accepted_threshold - 1.0) * 10_000.0
             if accepted_threshold > 0
@@ -1387,28 +1411,39 @@ def _unified_entry_trigger(
         )
         if observation.price > accepted_threshold:
             passed = breakout_extension_bps <= maximum_breakout_extension_bps
-            return {
-                "passed": passed,
-                "reason": (
-                    "unified_resistance_acceptance_held"
-                    if passed
-                    else "waiting_for_unified_resistance_retest"
-                ),
-                "level": accepted_level,
-                "reference_price": accepted_boundary,
-                "threshold_price": accepted_threshold,
-                "previous_price": previous_price,
-                "accepted_at": accepted.get("accepted_at"),
-                "acceptance_age_ms": acceptance_age_ms,
-                "acceptance_hold_ms": acceptance_hold_ms,
-                "acceptance_expires": acceptance_expires,
+            if passed:
+                return {
+                    "passed": True,
+                    "reason": "unified_resistance_acceptance_held",
+                    "level": accepted_level,
+                    "reference_price": accepted_boundary,
+                    "threshold_price": accepted_threshold,
+                    "previous_price": previous_price,
+                    "accepted_at": accepted.get("accepted_at"),
+                    "acceptance_age_ms": acceptance_age_ms,
+                    "acceptance_hold_ms": acceptance_hold_ms,
+                    "acceptance_expires": acceptance_expires,
+                    "breakout_extension_bps": breakout_extension_bps,
+                    "maximum_breakout_extension_bps": maximum_breakout_extension_bps,
+                }
+            # The extension ceiling is an explicit declaration that this
+            # accepted frontier is no longer locally actionable. Retire it and
+            # immediately re-arm from the current qualified book instead of
+            # requiring a retest of obsolete lower resistance.
+            state["retired_entry_resistance"] = {
+                "boundary": accepted_boundary,
+                "level": _compact_structural_level_reference(accepted_level),
+                "retired_at": observation.observed_at.isoformat(),
+                "reason": "maximum_breakout_extension_exceeded",
                 "breakout_extension_bps": breakout_extension_bps,
-                "maximum_breakout_extension_bps": maximum_breakout_extension_bps,
             }
+            state.pop("accepted_entry_resistance", None)
+            accepted_boundary = 0.0
         # A breakout acceptance is not a permanent reservation of that price
         # band. Returning below it invalidates the entry latch, after which a
         # newly crossed qualified level may become the causal frontier.
-        state.pop("accepted_entry_resistance", None)
+        else:
+            state.pop("accepted_entry_resistance", None)
     else:
         state.pop("accepted_entry_resistance", None)
 
@@ -1417,13 +1452,6 @@ def _unified_entry_trigger(
     # later higher band must not make the strategy chase price.  This is the
     # event-driven equivalent of selecting the current swing high and entering
     # on its next pass.
-    crossed_now = [
-        item
-        for item in usable
-        if previous_price is not None
-        and float(previous_price) <= item[0]
-        and observation.price > item[0]
-    ]
     overhead = [item for item in usable if item[0] >= observation.price]
     candidate_boundary, candidate_level = (
         # A real-time cross is the causal entry event. It must take precedence

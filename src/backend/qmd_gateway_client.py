@@ -10,7 +10,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Collection, Iterable, Literal
+from typing import Any, Callable, Collection, Iterable, Literal, Sequence
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -623,6 +623,44 @@ def qmd_advance_historical_structure_snapshot(
         raise RuntimeError("QMD History returned another Generic Structure session")
     if not isinstance(payload.get("snapshot"), dict):
         raise RuntimeError("QMD History returned no advanced Generic Structure snapshot")
+    return payload
+
+
+def qmd_advance_historical_structure_timeline(
+    *, session_id: str, as_ofs: Sequence[str], event_limit: int | None = None
+) -> dict[str, Any]:
+    """Advance one resident historical structure engine across ordered boundaries."""
+
+    normalized_as_ofs = [str(value).strip() for value in as_ofs if str(value).strip()]
+    if not normalized_as_ofs:
+        raise ValueError("Historical Generic Structure timeline requires as_of boundaries")
+    payload = qmd_history_post_json(
+        "/materialize/generic-structure-snapshot-session-batch",
+        {
+            "schema_version": 1,
+            "session_id": str(session_id).strip(),
+            "as_ofs": normalized_as_ofs,
+            "expected_source_plan_hash": None,
+            "event_limit": event_limit,
+        },
+        timeout=float(os.environ.get("QMD_HISTORY_STRUCTURE_SNAPSHOT_TIMEOUT_SECONDS", "180")),
+    )
+    if not isinstance(payload, dict) or not bool(payload.get("complete")):
+        raise RuntimeError("QMD History returned an incomplete Generic Structure timeline")
+    if str(payload.get("session_id") or "") != str(session_id).strip():
+        raise RuntimeError("QMD History returned another Generic Structure session")
+    boundaries = payload.get("boundaries")
+    if not isinstance(boundaries, list) or len(boundaries) != len(normalized_as_ofs):
+        raise RuntimeError("QMD History returned an incomplete Generic Structure boundary set")
+    for expected, boundary in zip(normalized_as_ofs, boundaries, strict=True):
+        if not isinstance(boundary, dict) or not isinstance(boundary.get("snapshot"), dict):
+            raise RuntimeError("QMD History returned an invalid Generic Structure boundary")
+        if _validate_window_timestamp(
+            "historical structure boundary as_of", str(boundary.get("as_of") or "")
+        ).astimezone(timezone.utc) != _validate_window_timestamp(
+            "historical structure requested as_of", expected
+        ).astimezone(timezone.utc):
+            raise RuntimeError("QMD History returned an out-of-order Generic Structure boundary")
     return payload
 
 

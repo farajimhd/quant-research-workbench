@@ -10,6 +10,7 @@ from copy import deepcopy
 from dataclasses import asdict, replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
@@ -2229,6 +2230,65 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first_context["structure_swing_high"], 3.55)
         self.assertEqual(first_context["structure_swing_low"], 3.41)
 
+    @patch("src.backend.replay_run_service.qmd_advance_historical_structure_timeline")
+    @patch("src.backend.replay_run_service.qmd_historical_structure_snapshot")
+    async def test_historical_structure_prefetch_batches_arbitrary_frame_boundaries(
+        self, initial_snapshot, advance_timeline
+    ) -> None:
+        first = datetime(2026, 8, 21, 8, 10, 25, tzinfo=UTC)
+        second = first + timedelta(seconds=5)
+        initial_snapshot.return_value = {
+            "complete": True,
+            "session_id": "gslb-uat-1",
+            "snapshot": {
+                "unified_levels": [],
+                "timeframe_states": [{"timeframe": "5s", "swing_high": 3.60}],
+            },
+            "source_plan": {"plan_hash": "seed-plan"},
+            "seed_authority_start": "2026-08-20T08:00:00Z",
+            "seed_source_plan_hash": "seed-plan",
+            "seed_source_revision_token": "seed-token",
+            "event_count": 10,
+            "advanced_event_count": 10,
+        }
+        advance_timeline.return_value = {
+            "complete": True,
+            "session_id": "gslb-uat-1",
+            "source_plan": {"plan_hash": "batch-plan"},
+            "boundaries": [{
+                "as_of": second.isoformat(),
+                "event_count": 4,
+                "advanced_event_count": 3,
+                "snapshot": {
+                    "unified_levels": [],
+                    "timeframe_states": [{"timeframe": "5s", "swing_high": 3.70}],
+                },
+            }],
+        }
+        controller = ReplayRunController.__new__(ReplayRunController)
+        controller.run_id = "prefetch-test"
+        controller.definition = SimpleNamespace(session_start=first)
+        controller.current_time = first
+        controller._historical_structure_context = {}
+        controller._historical_structure_sessions = {}
+        controller._historical_structure_boundary_cache = {}
+        controller._data_authority = {}
+        controller._journal = None
+
+        await controller._fetch_historical_structure_ticker("SUGP", (first, second))
+
+        self.assertEqual(len(controller._historical_structure_boundary_cache), 2)
+        advance_timeline.assert_called_once_with(
+            session_id="gslb-uat-1",
+            as_ofs=[second.isoformat()],
+        )
+        projected = controller._project_historical_structure_snapshot(
+            controller._historical_structure_boundary_cache[("SUGP", second)]["snapshot"],
+            "5s",
+        )
+        self.assertEqual(projected["structure_swing_high"], 3.70)
+        self.assertEqual(len(controller._data_authority), 1)
+
     def test_structure_enrichment_runs_continuously_after_liquidity_admission(self) -> None:
         now = datetime(2026, 8, 21, 8, 10, 37, tzinfo=UTC)
         rules = {
@@ -3536,6 +3596,27 @@ class ReplayHistoricalSourceTests(unittest.IsolatedAsyncioTestCase):
                 "market_events",
                 {"revision_token": "revision-2", "source_plan_hash": "plan-1"},
             )
+
+    def test_controller_publishes_data_authority_copy_on_write(self) -> None:
+        definition = ReplayRunDefinition(
+            session_date=date(2026, 7, 28),
+            start_time=time(9, 45),
+            configuration_revision=approved_configuration(),
+        )
+        controller = ReplayRunController(
+            definition,
+            runtime_root=Path(tempfile.gettempdir()),
+        )
+        observed = controller._data_authority
+
+        controller._record_data_authority(
+            "market_events",
+            {"revision_token": "revision-1", "source_plan_hash": "plan-1"},
+        )
+
+        self.assertEqual(observed, {})
+        self.assertIsNot(observed, controller._data_authority)
+        self.assertIn("market_events", controller._data_authority)
 
     def test_qmd_payload_authority_fails_closed_without_revision(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "omitted source revision"):

@@ -1297,6 +1297,114 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertNotIn("accepted_entry_resistance", expired.state)
         self.assertEqual(expired.state["pending_entry_resistance"]["boundary"], 3.66)
 
+    def test_unified_entry_advances_an_obsolete_acceptance_to_a_new_causal_cross(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["structural_entry"].update({
+            "enabled": True,
+            "acceptance_expires": False,
+            "maximum_breakout_extension_bps": 500.0,
+        })
+        old_level = {
+            "unified_level_id": "obsolete-lower-resistance",
+            "side": -1,
+            "price": 3.69,
+            "lower": 3.68,
+            "upper": 3.70,
+            "hold_probability": 0.90,
+            "salience": 0.90,
+            "confidence": 0.90,
+            "reaction_probability": 0.90,
+        }
+        current_level = {
+            **old_level,
+            "unified_level_id": "current-frontier",
+            "price": 4.11,
+            "lower": 4.10,
+            "upper": 4.12,
+        }
+
+        entered = LongMomentumStrategyEngine().evaluate(
+            assignment(
+                parameters=parameters,
+                state={
+                    "last_price": 4.10,
+                    "accepted_entry_resistance": {
+                        "boundary": 3.70,
+                        "level": old_level,
+                        "accepted_at": (NOW - timedelta(hours=2)).isoformat(),
+                    },
+                },
+            ),
+            confirmed_observation(
+                price=4.14,
+                bid=4.13,
+                ask=4.14,
+                vwap=4.0546,
+                structural_resistance_levels=(old_level, current_level),
+            ),
+        )
+
+        self.assertEqual(entered.evaluation.signals[0].action, "enter_long")
+        trigger = entered.evaluation.signals[0].metadata["unified_structural_trigger"]
+        self.assertEqual(trigger["reference_price"], 4.12)
+        self.assertEqual(
+            entered.state["last_entry_resistance"]["unified_level_id"],
+            "current-frontier",
+        )
+
+    def test_unified_entry_retires_an_overextended_acceptance_and_rearms_overhead(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["structural_entry"].update({
+            "enabled": True,
+            "acceptance_expires": False,
+            "maximum_breakout_extension_bps": 500.0,
+        })
+        old_level = {
+            "unified_level_id": "obsolete-lower-resistance",
+            "side": -1,
+            "price": 3.69,
+            "lower": 3.68,
+            "upper": 3.70,
+            "hold_probability": 0.90,
+            "salience": 0.90,
+            "confidence": 0.90,
+            "reaction_probability": 0.90,
+        }
+        overhead = {
+            **old_level,
+            "unified_level_id": "next-overhead",
+            "price": 4.21,
+            "lower": 4.20,
+            "upper": 4.22,
+        }
+
+        waiting = LongMomentumStrategyEngine().evaluate(
+            assignment(
+                parameters=parameters,
+                state={
+                    "last_price": 4.13,
+                    "accepted_entry_resistance": {
+                        "boundary": 3.70,
+                        "level": old_level,
+                        "accepted_at": (NOW - timedelta(hours=2)).isoformat(),
+                    },
+                },
+            ),
+            confirmed_observation(
+                price=4.14,
+                vwap=4.0546,
+                structural_resistance_levels=(old_level, overhead),
+            ),
+        )
+
+        self.assertEqual(waiting.evaluation.signals[0].action, "wait")
+        self.assertNotIn("accepted_entry_resistance", waiting.state)
+        self.assertEqual(waiting.state["pending_entry_resistance"]["boundary"], 4.22)
+        self.assertEqual(
+            waiting.state["retired_entry_resistance"]["reason"],
+            "maximum_breakout_extension_exceeded",
+        )
+
     def test_unified_entry_can_keep_a_cleared_level_until_campaign_consumes_it(self) -> None:
         parameters = default_long_momentum_parameters()
         parameters["structural_entry"].update({

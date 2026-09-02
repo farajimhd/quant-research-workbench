@@ -314,7 +314,7 @@ class TradingRuntime:
         if executions and self.order_manager is not None:
             await self.order_manager.reconcile()
         if executions and self._canonical_session is not None:
-            await self._canonical_session.reconcile()
+            await self._canonical_session.reconcile_executions(executions)
             self.portfolio.synchronize_canonical(
                 self._canonical_session.projector.snapshot(),
                 persist=not self._review_only,

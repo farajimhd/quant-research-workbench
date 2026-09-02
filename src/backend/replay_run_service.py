@@ -35,6 +35,7 @@ from src.backend.signal_stream_runtime_service import SIGNAL_STREAM_RUNTIME
 from src.backend.qmd_gateway_client import (
     QmdProductRequest,
     qmd_advance_historical_structure_snapshot,
+    qmd_advance_historical_structure_timeline,
     qmd_historical_structure_snapshot,
     qmd_historical_source_revision,
     qmd_history_websocket_url,
@@ -947,6 +948,15 @@ class ReplayRunController:
         self._historical_structure_context: dict[
             str, tuple[datetime, dict[str, Any], str, dict[str, Any]]
         ] = {}
+        self._historical_structure_sessions: dict[
+            str, tuple[datetime, str, dict[str, Any]]
+        ] = {}
+        self._historical_structure_frame_iterator: Iterator[ReplayDerivedFrame] | None = None
+        self._historical_structure_boundary_cache: dict[
+            tuple[str, datetime], dict[str, Any]
+        ] = {}
+        self._historical_structure_prefetch_task: asyncio.Task[None] | None = None
+        self._historical_structure_prefetch_exhausted = False
         self._data_authority: dict[str, dict[str, Any]] = {}
         self._resume_state = deepcopy(resume_state) if resume_state is not None else None
         self._source_cursor: dict[str, Any] = {}
@@ -1960,7 +1970,14 @@ class ReplayRunController:
                 self.status = "warming"
             self.updated_at = datetime.now(UTC)
             await self._publish(force=True)
-            self._journal = TradingJournal(self.run_dir / "journal.sqlite3")
+            # Historical runs are reproducible from pinned source revisions.
+            # WAL NORMAL preserves ordered transactional records while avoiding
+            # a disk fsync for every simulated partial fill. Live trading keeps
+            # TradingJournal's FULL default.
+            self._journal = TradingJournal(
+                self.run_dir / "journal.sqlite3",
+                synchronous="NORMAL",
+            )
             self._preparation_stage = "signal_occurrences"
             await self._publish(force=True)
             self._historical_external_signal_events = (
@@ -2039,6 +2056,9 @@ class ReplayRunController:
             await self._publish(force=True)
             frame_source = await self._load_strategy_frames()
             frame_iterator = iter(frame_source)
+            if self.definition.debug_fixture is None:
+                self._historical_structure_frame_iterator = iter(frame_source)
+                self._schedule_historical_structure_prefetch()
             next_frame = next(frame_iterator, None)
             external_index = 0
             if self._resume_state is not None and self._frame_cursor:
@@ -2400,7 +2420,10 @@ class ReplayRunController:
             limit_offset_bps=float(configuration["oms"]["limit_offset_bps"]),
         )
         if self._journal is None:
-            self._journal = TradingJournal(self.run_dir / "journal.sqlite3")
+            self._journal = TradingJournal(
+                self.run_dir / "journal.sqlite3",
+                synchronous="NORMAL",
+            )
         if record_configuration:
             self._journal.append(
                 run_id=self.run_id,
@@ -3361,39 +3384,164 @@ class ReplayRunController:
                 return True
         return False
 
-    async def _historical_entry_structure_context(
-        self, frame: ReplayDerivedFrame
-    ) -> dict[str, Any]:
-        cached = self._historical_structure_context.get(frame.ticker)
-        if cached is not None and frame.as_of - cached[0] < timedelta(seconds=1):
-            return cached[1]
+    def _schedule_historical_structure_prefetch(self) -> None:
+        """Keep one bounded causal Structure batch ahead of Replay consumption."""
+
+        if (
+            self._historical_structure_prefetch_task is not None
+            or self._historical_structure_prefetch_exhausted
+            or self._historical_structure_frame_iterator is None
+        ):
+            return
+        maximum_frames = max(
+            32,
+            min(int(os.environ.get("REPLAY_STRUCTURE_PREFETCH_FRAMES", "256")), 1024),
+        )
+        groups: dict[str, list[datetime]] = {}
+        consumed = 0
+        while consumed < maximum_frames:
+            frame = next(self._historical_structure_frame_iterator, None)
+            if frame is None:
+                self._historical_structure_prefetch_exhausted = True
+                break
+            consumed += 1
+            boundaries = groups.setdefault(frame.ticker, [])
+            if not boundaries or boundaries[-1] != frame.as_of:
+                boundaries.append(frame.as_of)
+        if not groups:
+            return
+        self._historical_structure_prefetch_task = asyncio.create_task(
+            self._fetch_historical_structure_prefetch(groups),
+            name=f"structure-prefetch:{self.run_id}",
+        )
+
+    async def _fetch_historical_structure_prefetch(
+        self, groups: Mapping[str, Sequence[datetime]]
+    ) -> None:
+        await asyncio.gather(*(
+            self._fetch_historical_structure_ticker(ticker, boundaries)
+            for ticker, boundaries in sorted(groups.items())
+        ))
+
+    async def _fetch_historical_structure_ticker(
+        self, ticker: str, boundaries: Sequence[datetime]
+    ) -> None:
+        cached = self._historical_structure_sessions.get(ticker)
+        ordered = sorted(dict.fromkeys(boundaries))
+        if cached is not None:
+            ordered = [as_of for as_of in ordered if as_of > cached[0]]
+        if not ordered:
+            return
+        payloads: list[dict[str, Any]] = []
         if cached is None:
-            payload = await asyncio.to_thread(
+            seed = await asyncio.to_thread(
                 qmd_historical_structure_snapshot,
-                ticker=frame.ticker,
-                as_of=frame.as_of.astimezone(UTC).isoformat(),
+                ticker=ticker,
+                as_of=ordered[0].astimezone(UTC).isoformat(),
             )
             provenance = {
-                "seed_authority_start": payload.get("seed_authority_start"),
-                "seed_source_plan_hash": payload.get("seed_source_plan_hash"),
-                "seed_source_revision_token": payload.get("seed_source_revision_token"),
+                "seed_authority_start": seed.get("seed_authority_start"),
+                "seed_source_plan_hash": seed.get("seed_source_plan_hash"),
+                "seed_source_revision_token": seed.get("seed_source_revision_token"),
             }
+            session_id = str(seed.get("session_id") or "")
+            payloads.append({
+                **seed,
+                "as_of": ordered[0].astimezone(UTC).isoformat(),
+            })
+            remaining = ordered[1:]
         else:
-            payload = await asyncio.to_thread(
-                qmd_advance_historical_structure_snapshot,
-                session_id=cached[2],
-                as_of=frame.as_of.astimezone(UTC).isoformat(),
+            provenance = cached[2]
+            session_id = cached[1]
+            remaining = ordered
+        batch_payload: dict[str, Any] | None = None
+        if remaining:
+            batch_payload = await asyncio.to_thread(
+                qmd_advance_historical_structure_timeline,
+                session_id=session_id,
+                as_ofs=[as_of.astimezone(UTC).isoformat() for as_of in remaining],
             )
-            provenance = cached[3]
-        snapshot = dict(payload.get("snapshot") or {})
+            for boundary in batch_payload.get("boundaries") or ():
+                payloads.append({
+                    **dict(boundary),
+                    "session_id": session_id,
+                    "source_plan": dict(batch_payload.get("source_plan") or {}),
+                })
+        payload_by_time = {
+            _aware_datetime(payload.get("as_of")): payload for payload in payloads
+        }
+        for as_of in ordered:
+            payload = payload_by_time.get(as_of)
+            if payload is None:
+                raise RuntimeError(
+                    f"Historical Generic Structure omitted {ticker} at {as_of.isoformat()}"
+                )
+            self._historical_structure_boundary_cache[(ticker, as_of)] = payload
+        final_payload = payload_by_time[ordered[-1]]
+        self._historical_structure_sessions[ticker] = (
+            ordered[-1],
+            session_id,
+            provenance,
+        )
+        source_plan = dict(
+            (batch_payload or final_payload).get("source_plan") or {}
+        )
+        self._record_data_authority(
+            "structure_timeline:"
+            f"{ticker}:{ordered[0].astimezone(UTC).isoformat()}:"
+            f"{ordered[-1].astimezone(UTC).isoformat()}",
+            {
+                "authority": "qmd_history_causal_structure_timeline",
+                "first_as_of": ordered[0].astimezone(UTC).isoformat(),
+                "last_as_of": ordered[-1].astimezone(UTC).isoformat(),
+                "boundary_count": len(ordered),
+                "seed_authority_start": provenance.get("seed_authority_start"),
+                "seed_source_plan_hash": provenance.get("seed_source_plan_hash"),
+                "seed_source_revision_token": provenance.get(
+                    "seed_source_revision_token"
+                ),
+                "source_plan_hash": source_plan.get("plan_hash"),
+                "event_count": int(final_payload.get("event_count") or 0),
+                "advanced_event_count": int(
+                    final_payload.get("advanced_event_count") or 0
+                ),
+            },
+        )
+
+    async def _prefetched_historical_structure_payload(
+        self, frame: ReplayDerivedFrame
+    ) -> dict[str, Any] | None:
+        if getattr(self, "_historical_structure_frame_iterator", None) is None:
+            return None
+        key = (frame.ticker, frame.as_of)
+        while key not in self._historical_structure_boundary_cache:
+            task = self._historical_structure_prefetch_task
+            if task is None:
+                self._schedule_historical_structure_prefetch()
+                task = self._historical_structure_prefetch_task
+            if task is None:
+                return None
+            await task
+            self._historical_structure_prefetch_task = None
+            self._schedule_historical_structure_prefetch()
+        payload = self._historical_structure_boundary_cache[key]
+        for stale_key in tuple(self._historical_structure_boundary_cache):
+            if stale_key[0] == frame.ticker and stale_key[1] < frame.as_of:
+                self._historical_structure_boundary_cache.pop(stale_key, None)
+        return payload
+
+    @staticmethod
+    def _project_historical_structure_snapshot(
+        snapshot: Mapping[str, Any], timeframe: str
+    ) -> dict[str, Any]:
         support = dict(snapshot.get("support") or {})
         resistance = dict(snapshot.get("resistance") or {})
-        one_second_structure = next(
+        timeframe_structure = next(
             (
                 dict(row)
                 for row in snapshot.get("timeframe_states") or ()
                 if isinstance(row, Mapping)
-                and str(row.get("timeframe") or "").lower() == "1s"
+                and str(row.get("timeframe") or "").lower() == timeframe.lower()
             ),
             {},
         )
@@ -3401,13 +3549,12 @@ class ReplayRunController:
             dict(row) for row in snapshot.get("unified_levels") or ()
             if isinstance(row, Mapping)
         ]
-        context = {
-            # Full-session prepared frames can omit sparse generic swing
-            # columns. The causal historical Structure snapshot carries the
-            # same 1s frontier explicitly, so historical entry must project it
-            # instead of silently degrading to the nearest Unified band.
-            "structure_swing_high": one_second_structure.get("swing_high"),
-            "structure_swing_low": one_second_structure.get("swing_low"),
+        return {
+            # Prepared frames can omit sparse Generic Structure swing columns.
+            # Project the exact strategy observation timeframe without making
+            # the transport batch interval a semantic calculation clock.
+            "structure_swing_high": timeframe_structure.get("swing_high"),
+            "structure_swing_low": timeframe_structure.get("swing_low"),
             "qmd_structure_support_price": support.get("price"),
             "qmd_structure_support_lower": support.get("lower"),
             "qmd_structure_support_upper": support.get("upper"),
@@ -3426,34 +3573,81 @@ class ReplayRunController:
             ],
             "qmd_structure_up_probability": snapshot.get("up_probability"),
         }
+
+    async def _historical_entry_structure_context(
+        self, frame: ReplayDerivedFrame
+    ) -> dict[str, Any]:
+        payload = await self._prefetched_historical_structure_payload(frame)
+        cached = self._historical_structure_context.get(frame.ticker)
+        if payload is None:
+            if cached is not None and frame.as_of - cached[0] < timedelta(seconds=1):
+                return cached[1]
+            if cached is None:
+                payload = await asyncio.to_thread(
+                    qmd_historical_structure_snapshot,
+                    ticker=frame.ticker,
+                    as_of=frame.as_of.astimezone(UTC).isoformat(),
+                )
+                provenance = {
+                    "seed_authority_start": payload.get("seed_authority_start"),
+                    "seed_source_plan_hash": payload.get("seed_source_plan_hash"),
+                    "seed_source_revision_token": payload.get("seed_source_revision_token"),
+                }
+            else:
+                payload = await asyncio.to_thread(
+                    qmd_advance_historical_structure_snapshot,
+                    session_id=cached[2],
+                    as_of=frame.as_of.astimezone(UTC).isoformat(),
+                )
+                provenance = cached[3]
+        else:
+            session = getattr(self, "_historical_structure_sessions", {}).get(
+                frame.ticker
+            )
+            provenance = session[2] if session is not None else {}
+        snapshot = dict(payload.get("snapshot") or {})
+        context = self._project_historical_structure_snapshot(
+            snapshot, frame.timeframe
+        )
         self._historical_structure_context[frame.ticker] = (
             frame.as_of,
             context,
-            str(payload.get("session_id") or ""),
+            str(
+                payload.get("session_id")
+                or (
+                    getattr(self, "_historical_structure_sessions", {}).get(
+                        frame.ticker
+                    )
+                    or (None, "")
+                )[1]
+            ),
             provenance,
         )
-        source_plan = dict(payload.get("source_plan") or {})
-        self._record_data_authority(
-            f"structure:{frame.ticker}:{frame.as_of.astimezone(UTC).isoformat()}",
-            {
-                "authority": "qmd_history_causal_structure_checkpoint",
-                "as_of": frame.as_of.astimezone(UTC).isoformat(),
-                "seed_authority_start": provenance.get("seed_authority_start"),
-                "seed_source_plan_hash": provenance.get("seed_source_plan_hash"),
-                "seed_source_revision_token": provenance.get(
-                    "seed_source_revision_token"
-                ),
-                "source_plan_hash": source_plan.get("plan_hash"),
-                "event_count": int(payload.get("event_count") or 0),
-                "advanced_event_count": int(
-                    payload.get("advanced_event_count") or 0
-                ),
-                "split_adjustments": list(
-                    dict(payload.get("checkpoint") or {}).get("applied_split_adjustments")
-                    or []
-                ),
-            },
-        )
+        if getattr(self, "_historical_structure_frame_iterator", None) is None:
+            source_plan = dict(payload.get("source_plan") or {})
+            self._record_data_authority(
+                f"structure:{frame.ticker}:{frame.as_of.astimezone(UTC).isoformat()}",
+                {
+                    "authority": "qmd_history_causal_structure_checkpoint",
+                    "as_of": frame.as_of.astimezone(UTC).isoformat(),
+                    "seed_authority_start": provenance.get("seed_authority_start"),
+                    "seed_source_plan_hash": provenance.get("seed_source_plan_hash"),
+                    "seed_source_revision_token": provenance.get(
+                        "seed_source_revision_token"
+                    ),
+                    "source_plan_hash": source_plan.get("plan_hash"),
+                    "event_count": int(payload.get("event_count") or 0),
+                    "advanced_event_count": int(
+                        payload.get("advanced_event_count") or 0
+                    ),
+                    "split_adjustments": list(
+                        dict(payload.get("checkpoint") or {}).get(
+                            "applied_split_adjustments"
+                        )
+                        or []
+                    ),
+                },
+            )
         return context
 
     def _project_historical_market_quality(
@@ -3818,6 +4012,11 @@ class ReplayRunController:
             self._schedule_manifest_write()
 
     async def _finish(self, status: str) -> None:
+        structure_prefetch = self._historical_structure_prefetch_task
+        if structure_prefetch is not None and not structure_prefetch.done():
+            structure_prefetch.cancel()
+            await asyncio.gather(structure_prefetch, return_exceptions=True)
+        self._historical_structure_prefetch_task = None
         self._flush_passive_market_events()
         if self._runtime is not None and not self._runtime_finished:
             await self._runtime.finish(status=status)
@@ -5263,14 +5462,19 @@ class ReplayRunController:
 
     def _record_data_authority(self, key: str, evidence: dict[str, Any]) -> None:
         normalized = deepcopy(evidence)
-        previous = self._data_authority.get(key)
+        authority = self._data_authority
+        previous = authority.get(key)
         if previous is not None and previous != normalized:
             raise RuntimeError(
                 f"Historical data authority changed for {key}; restart from a new run"
             )
         if previous is not None:
             return
-        self._data_authority[key] = normalized
+        # Publish a new mapping instead of mutating the mapping observed by
+        # status/manifest readers.  Historical preparation runs concurrently
+        # with API polling, so a stable mapping reference is required for
+        # deterministic snapshots.
+        self._data_authority = {**authority, key: normalized}
         if self._journal is not None:
             self._journal.append(
                 run_id=self.run_id,

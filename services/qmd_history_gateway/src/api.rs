@@ -15,13 +15,14 @@ use crate::source::{
     StructureTradeCountEstimateRequest, StructureTradeCountEstimateResponse,
 };
 use crate::structure_checkpoint::{
-    advance_historical_structure_snapshot, advance_structure_checkpoint,
-    materialize_structure_snapshot, materialize_structure_snapshot_from_seed,
-    rebuild_structure_checkpoint, HistoricalStructureSessionRegistry,
-    StructureCheckpointAdvanceRequest, StructureCheckpointAdvanceResponse,
-    StructureCheckpointRebuildRequest, StructureCheckpointRebuildResponse,
-    StructureSnapshotRequest, StructureSnapshotSessionAdvanceRequest,
-    StructureSnapshotSessionAdvanceResponse,
+    advance_historical_structure_snapshot, advance_historical_structure_timeline,
+    advance_structure_checkpoint, materialize_structure_snapshot,
+    materialize_structure_snapshot_from_seed, rebuild_structure_checkpoint,
+    HistoricalStructureSessionRegistry, StructureCheckpointAdvanceRequest,
+    StructureCheckpointAdvanceResponse, StructureCheckpointRebuildRequest,
+    StructureCheckpointRebuildResponse, StructureSnapshotRequest,
+    StructureSnapshotSessionAdvanceRequest, StructureSnapshotSessionAdvanceResponse,
+    StructureSnapshotSessionBatchRequest, StructureSnapshotSessionBatchResponse,
 };
 use crate::watchlist_timeline::{
     validate_plan, HistoricalWatchlistPlan, HistoricalWatchlistPlanValidation,
@@ -265,6 +266,10 @@ pub fn app(state: AppState) -> Router {
             post(materialize_generic_structure_snapshot_session_advance),
         )
         .route(
+            "/materialize/generic-structure-snapshot-session-batch",
+            post(materialize_generic_structure_snapshot_session_batch),
+        )
+        .route(
             "/materialize/generic-structure-rebuild",
             post(materialize_generic_structure_rebuild),
         )
@@ -475,6 +480,62 @@ async fn materialize_generic_structure_snapshot_session_advance(
         source_revision_after: advanced.source_revision_after,
         complete: advanced.complete,
     }))
+}
+
+async fn materialize_generic_structure_snapshot_session_batch(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<StructureSnapshotSessionBatchRequest>,
+) -> Result<Json<StructureSnapshotSessionBatchResponse>, ApiError> {
+    if request.schema_version != 1 {
+        return Err(service_error(format!(
+            "invalid Generic Structure historical batch schema_version {}; expected 1",
+            request.schema_version
+        )));
+    }
+    let _permit = state
+        .structure_checkpoint_advancement_permits
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({
+                    "error": "Generic Structure historical advancement capacity is busy",
+                    "error_code": "structure_checkpoint_capacity_busy",
+                    "retryable": true,
+                    "retry_action": "retry_historical_structure_batch",
+                    "source": "qmd_history_gateway",
+                })),
+            )
+        })?;
+    let session_id = request.session_id.trim().to_string();
+    let checkpoint = state
+        .structure_snapshot_sessions
+        .checkout(&session_id)
+        .await
+        .map_err(structure_checkpoint_advancement_error)?;
+    let advanced = match advance_historical_structure_timeline(
+        &state.config,
+        &state.source,
+        checkpoint.clone(),
+        &request,
+    )
+    .await
+    {
+        Ok(advanced) => advanced,
+        Err(error) => {
+            state
+                .structure_snapshot_sessions
+                .replace(session_id, checkpoint)
+                .await;
+            return Err(structure_checkpoint_advancement_error(error));
+        }
+    };
+    state
+        .structure_snapshot_sessions
+        .replace(session_id, advanced.0)
+        .await;
+    Ok(Json(advanced.1))
 }
 
 async fn materialize_generic_structure_snapshot(

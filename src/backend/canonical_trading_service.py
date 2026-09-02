@@ -184,12 +184,32 @@ def trading_state_payload(snapshot: TradingStateSnapshot) -> dict[str, Any]:
         "working_order_count": sum(1 for row in payload.get("orders", []) if not row.get("terminal")),
         "pending_commission_count": sum(1 for row in payload.get("executions", []) if row.get("commission_status") != "final"),
     }
-    payload["closed_trades_note"] = "Derived FIFO round trips for strategy analytics; not IBKR tax lots or IBKR trade confirmations."
-    payload["position_lifecycles"] = derive_position_lifecycles(
+    position_lifecycles = derive_position_lifecycles(
         snapshot.executions,
         snapshot.orders,
         snapshot.positions,
     )
+    payload["position_lifecycles"] = position_lifecycles
+    if snapshot.mode in {TradingMode.BACKTEST, TradingMode.BACKTEST_DEBUG}:
+        # A completed historical trade is one flat-to-flat position lifecycle.
+        # Partial fills remain available in executions; exposing FIFO matches
+        # here makes one economic position appear as hundreds of trades.
+        payload["closed_trades"] = [
+            {
+                **row,
+                "trade_id": str(
+                    row.get("episode_id") or row.get("lifecycle_id") or ""
+                ),
+            }
+            for row in position_lifecycles
+            if row.get("status") == "closed"
+        ]
+        payload["closed_trades_note"] = (
+            "Completed flat-to-flat position lifecycles; individual partial fills "
+            "remain available in execution detail."
+        )
+    else:
+        payload["closed_trades_note"] = "Derived FIFO round trips for strategy analytics; not IBKR tax lots or IBKR trade confirmations."
     run_ids = sorted(
         {
             str(row.run_id).strip()

@@ -201,6 +201,37 @@ pub struct StructureSnapshotSessionAdvanceRequest {
     pub event_limit: Option<usize>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct StructureSnapshotSessionBatchRequest {
+    pub schema_version: u16,
+    pub session_id: String,
+    pub as_ofs: Vec<DateTime<Utc>>,
+    pub expected_source_plan_hash: Option<String>,
+    pub event_limit: Option<usize>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct StructureSnapshotBoundary {
+    pub as_of: DateTime<Utc>,
+    pub event_count: u64,
+    pub advanced_event_count: u64,
+    pub snapshot: GenericStructureSnapshot,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct StructureSnapshotSessionBatchResponse {
+    pub schema_version: u16,
+    pub session_id: String,
+    pub replay_start: DateTime<Utc>,
+    pub event_count: u64,
+    pub advanced_event_count: u64,
+    pub boundaries: Vec<StructureSnapshotBoundary>,
+    pub source_plan: MarketSourcePlan,
+    pub source_revision_before: SourceRevision,
+    pub source_revision_after: SourceRevision,
+    pub complete: bool,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct StructureSnapshotSessionAdvanceResponse {
     pub schema_version: u16,
@@ -536,6 +567,191 @@ async fn advance_structure_checkpoint_inner(
         source_revision_after,
         complete: true,
     })
+}
+
+/// Advance one historical structure engine across many arbitrary causal
+/// observation boundaries in one ordered source pass.  The boundaries are a
+/// transport optimization only: every canonical event is still applied in
+/// exact event order and each snapshot includes only events at or before its
+/// own `as_of` timestamp.
+pub async fn advance_historical_structure_timeline(
+    config: &HistoricalGatewayConfig,
+    source: &HistoricalEventSource,
+    mut checkpoint: GenericStructureCheckpoint,
+    request: &StructureSnapshotSessionBatchRequest,
+) -> Result<
+    (
+        GenericStructureCheckpoint,
+        StructureSnapshotSessionBatchResponse,
+    ),
+    String,
+> {
+    if request.as_ofs.is_empty() {
+        return Err("Generic Structure historical batch requires at least one as_of".to_string());
+    }
+    if request.as_ofs.len() > 4096 {
+        return Err("Generic Structure historical batch exceeds 4096 as_of boundaries".to_string());
+    }
+    if request.as_ofs.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(
+            "Generic Structure historical batch as_of boundaries must be strictly increasing"
+                .to_string(),
+        );
+    }
+    let final_as_of = *request
+        .as_ofs
+        .last()
+        .ok_or_else(|| "Generic Structure historical batch has no final boundary".to_string())?;
+    let validation_request = StructureCheckpointAdvanceRequest {
+        schema_version: request.schema_version,
+        checkpoint: checkpoint.clone(),
+        as_of: final_as_of,
+        expected_source_plan_hash: request.expected_source_plan_hash.clone(),
+        event_limit: request.event_limit,
+    };
+    let replay_start = validate_request(config, &validation_request, false)?;
+    let first_as_of = request.as_ofs[0];
+    if first_as_of < replay_start {
+        return Err(
+            "Generic Structure historical batch first as_of precedes the checkpoint cursor"
+                .to_string(),
+        );
+    }
+    let ticker = checkpoint.sym.trim().to_ascii_uppercase();
+    let replay_end = final_as_of
+        .checked_add_signed(Duration::microseconds(1))
+        .ok_or_else(|| "invalid Generic Structure batch as_of overflow".to_string())?;
+    let window = EventWindow {
+        start: replay_start,
+        end: replay_end,
+        tickers: vec![ticker.clone()],
+    };
+    let source_plan = source.source_plan(&window).await?;
+    validate_rebuild_source_plan(&source_plan)?;
+    if request
+        .expected_source_plan_hash
+        .as_deref()
+        .is_some_and(|expected| expected != source_plan.plan_hash)
+    {
+        return Err("Generic Structure checkpoint source plan changed before replay".to_string());
+    }
+    let source_revision_before = source.source_revision(&window).await?;
+    let event_limit = request
+        .event_limit
+        .unwrap_or(config.structure_checkpoint_max_events)
+        .clamp(1, config.structure_checkpoint_max_events);
+    // Archive compaction uses a transport ordinal unrelated to the live
+    // arrival sequence. Historical continuation is ordered by canonical event
+    // identity inside the pinned source window, exactly like the single-step
+    // historical advancement path.
+    checkpoint.last_arrival_sequence = 0;
+    let mut engine = GenericStructureEngine::new(&ticker);
+    engine.seed_checkpoint(&checkpoint);
+    let split_adjustments = source
+        .structure_split_adjustments(&ticker, replay_start, final_as_of)
+        .await?;
+    let mut next_split = 0_usize;
+    let rules = source.trade_aggregation_rules();
+    let mut batches = source.stream_structure_ordered_filtered(
+        window.clone(),
+        config.batch_size,
+        None,
+        None,
+        source_revision_before.event_count,
+    )?;
+    let mut boundary_index = 0_usize;
+    let mut event_count = 0_u64;
+    let mut advanced_event_count = 0_u64;
+    let mut boundaries = Vec::with_capacity(request.as_ofs.len());
+    while let Some(batch) = batches.recv().await {
+        for compact in batch? {
+            let event = source.market_event(&compact);
+            if event.ts() <= replay_start {
+                continue;
+            }
+            while boundary_index < request.as_ofs.len()
+                && request.as_ofs[boundary_index] < event.ts()
+            {
+                let as_of = request.as_ofs[boundary_index];
+                while next_split < split_adjustments.len()
+                    && split_adjustments[next_split].effective_at <= as_of
+                {
+                    engine.apply_split_adjustment(&split_adjustments[next_split])?;
+                    next_split += 1;
+                }
+                boundaries.push(StructureSnapshotBoundary {
+                    as_of,
+                    event_count,
+                    advanced_event_count,
+                    snapshot: engine.snapshot(as_of),
+                });
+                boundary_index += 1;
+            }
+            event_count = event_count.saturating_add(1);
+            if event_count > event_limit as u64 {
+                return Err(format!(
+                    "Generic Structure checkpoint replay exceeded event limit {event_limit}"
+                ));
+            }
+            while next_split < split_adjustments.len()
+                && split_adjustments[next_split].effective_at <= event.ts()
+            {
+                engine.apply_split_adjustment(&split_adjustments[next_split])?;
+                next_split += 1;
+            }
+            let before = engine.checkpoint_cursor();
+            let conditions = match &event {
+                MarketEvent::Trade(event) => event.conditions.as_slice(),
+                MarketEvent::Quote(event) => event.conditions.as_slice(),
+            };
+            engine.apply_event_without_snapshot(&event, rules.resolve(conditions, event.ts()));
+            if engine.checkpoint_cursor() != before {
+                advanced_event_count = advanced_event_count.saturating_add(1);
+            }
+        }
+    }
+    while boundary_index < request.as_ofs.len() {
+        let as_of = request.as_ofs[boundary_index];
+        while next_split < split_adjustments.len()
+            && split_adjustments[next_split].effective_at <= as_of
+        {
+            engine.apply_split_adjustment(&split_adjustments[next_split])?;
+            next_split += 1;
+        }
+        boundaries.push(StructureSnapshotBoundary {
+            as_of,
+            event_count,
+            advanced_event_count,
+            snapshot: engine.snapshot(as_of),
+        });
+        boundary_index += 1;
+    }
+    let source_revision_after = source.source_revision(&window).await?;
+    if source_revision_after.source_plan_hash != source_plan.plan_hash {
+        return Err("Generic Structure checkpoint source plan changed during replay".to_string());
+    }
+    if source_revision_after.token != source_revision_before.token {
+        return Err(
+            "Generic Structure checkpoint source revision changed during replay".to_string(),
+        );
+    }
+    let mut successor = engine.checkpoint();
+    successor.replayed_through = Some(final_as_of);
+    Ok((
+        successor,
+        StructureSnapshotSessionBatchResponse {
+            schema_version: STRUCTURE_CHECKPOINT_ADVANCEMENT_SCHEMA_VERSION,
+            session_id: request.session_id.clone(),
+            replay_start,
+            event_count,
+            advanced_event_count,
+            boundaries,
+            source_plan,
+            source_revision_before,
+            source_revision_after,
+            complete: true,
+        },
+    ))
 }
 
 /// Resolve the latest certified end-of-day book before `as_of`, advance it

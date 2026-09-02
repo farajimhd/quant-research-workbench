@@ -176,6 +176,71 @@ class CanonicalBrokerSession:
             self.sink.persist_canonical_snapshot(self.projector.snapshot())
         return json_safe(event.payload)
 
+    async def reconcile_executions(self, executions: list[Any]) -> dict[str, Any]:
+        """Project simulated fills without rescanning the complete fill history.
+
+        A historical broker emits the exact fills produced by the current
+        market event. Re-fetching every prior execution after each partial
+        fill is quadratic and does not add authority. Apply those new fills
+        directly, while still refreshing the affected account, order, ledger,
+        and complete position snapshots after every market event.
+        """
+
+        if not executions:
+            return {"status": "matched", "execution_count": 0}
+        if self.provider != BrokerProvider.SIMULATED or self.mode not in {
+            TradingMode.REPLAY,
+            TradingMode.BACKTEST,
+            TradingMode.BACKTEST_DEBUG,
+        }:
+            return await self.reconcile()
+
+        affected_accounts = sorted(
+            {str(execution.account) for execution in executions if execution.account}
+        )
+        for account_id in affected_accounts:
+            self.projector.replace_account_values(
+                account_id,
+                await self.adapter.canonical_account_values(account_id),
+            )
+            self.projector.replace_ledger(
+                account_id,
+                await self.adapter.canonical_ledger(account_id),
+            )
+            manifest, positions = await self.adapter.canonical_position_snapshot(
+                account_id
+            )
+            self.projector.apply_position_snapshot(
+                account_id,
+                manifest.snapshot_id,
+                manifest.complete,
+                positions,
+            )
+            self.projector.set_orders(
+                await self.adapter.canonical_orders(account_id)
+            )
+
+        canonical_executions = [
+            normalize_execution(execution.to_cpapi(), str(execution.account))
+            for execution in executions
+        ]
+        self.projector.set_executions(canonical_executions)
+        event = self._event(
+            BrokerEventType.RECONCILIATION_COMPLETED,
+            "",
+            {
+                "status": "incremental",
+                "execution_count": len(canonical_executions),
+                "account_ids": affected_accounts,
+            },
+            max(row.source_event_time for row in canonical_executions),
+        )
+        self.projector.record_activity(event)
+        if self.sink:
+            self.sink.persist_canonical_events([event])
+            self.sink.persist_canonical_snapshot(self.projector.snapshot())
+        return json_safe(event.payload)
+
     def _event(self, event_type: BrokerEventType, account_id: str, payload: dict[str, Any], source_event_time: Any, **identity: Any) -> BrokerEventEnvelope:
         return BrokerEventEnvelope.create(
             event_type=event_type,

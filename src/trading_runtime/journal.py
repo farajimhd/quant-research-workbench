@@ -34,9 +34,18 @@ class TradingJournal:
     repeating or losing them after a process crash.
     """
 
-    def __init__(self, path: Path, *, read_only: bool = False) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        read_only: bool = False,
+        synchronous: str = "FULL",
+    ) -> None:
         self.path = path
         self.read_only = read_only
+        self.synchronous = str(synchronous or "FULL").strip().upper()
+        if self.synchronous not in {"FULL", "NORMAL"}:
+            raise ValueError("SQLite synchronous mode must be FULL or NORMAL")
         if read_only:
             if not path.is_file():
                 raise FileNotFoundError(path)
@@ -1152,7 +1161,7 @@ class TradingJournal:
     def _initialize(self) -> None:
         with self._connection:
             self._connection.execute("PRAGMA journal_mode=WAL")
-            self._connection.execute("PRAGMA synchronous=FULL")
+            self._connection.execute(f"PRAGMA synchronous={self.synchronous}")
             self._connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS journal(

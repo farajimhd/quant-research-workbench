@@ -6,17 +6,17 @@
 
 - Chat/task ID: unavailable
 - Related tasks: `TASK-0014`, `TASK-0051`, `TASK-0195`, `TASK-0198`
-- Summary written: 2026-09-01 17:58 PDT
+- Summary written: 2026-09-01 19:51 PDT
 
-Reworked historical Replay into a causal, reviewable strategy laboratory;
-added persistent split-adjusted Unified Structural Level Books, position-level
-chart and lifecycle evidence, and repeated SUGP-only UAT of the long-momentum
-squeeze strategy. The latest full 04:00-09:30 ET SUGP run completed four
-positions for +$2,138.732, but exposed a stale accepted-resistance frontier
-that blocked all entries after 04:11, a concurrent snapshot race, misleading
-execution-fragment trade counts, and unacceptable maximum-throughput runtime.
-SUGP remains the only authorized test ticker until these defects are fixed and
-the user accepts the full 1-second chart and lifecycle evidence.
+Reworked historical Replay into a causal, reviewable strategy laboratory with
+persistent split-adjusted Unified Structural Level Books and position-level
+evidence. The continuation added arbitrary-boundary structure batching,
+background prefetch, race-free snapshots, linear incremental reconciliation,
+and lifecycle-authoritative trade projection. The corrected SUGP full session
+processed the same 342,618 events in 25m25.7s rather than about 70m36s and no
+longer latched stale resistance after 04:11. It ended flat but exposed 61
+fee-heavy re-entry lifecycles and net P&L -$14,829.976. SUGP-only visual and
+causal strategy acceptance remains open; broader runs are not authorized.
 
 ### [2026-08-26 08:46 PDT - Repair DeepFM serving drift, forecast gold, and News Synthesis V61](/docs/codex/chat-summaries/2026/CHAT-20260826-0846-news-forecast-gold-reaudit-v61-alignment.md)
 

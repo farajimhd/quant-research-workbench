@@ -1110,6 +1110,32 @@ class JournalTests(unittest.TestCase):
                 )
             read_only.close()
 
+    def test_journal_supports_normal_sync_for_reproducible_historical_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(
+                Path(directory) / "journal.sqlite3",
+                synchronous="NORMAL",
+            )
+            mode = journal._connection.execute("PRAGMA synchronous").fetchone()[0]
+            journal.append(
+                run_id="historical-run",
+                category="execution",
+                entity_type="fill",
+                entity_id="1",
+                payload={"price": 10.0},
+            )
+            journal.close()
+
+            self.assertEqual(mode, 1)
+
+    def test_journal_rejects_unknown_sync_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "FULL or NORMAL"):
+                TradingJournal(
+                    Path(directory) / "journal.sqlite3",
+                    synchronous="OFF",
+                )
+
     def test_journal_batch_is_atomic_and_preserves_per_run_sequence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "journal.sqlite3"

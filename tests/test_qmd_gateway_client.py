@@ -32,6 +32,7 @@ from src.backend.qmd_gateway_client import (
     qmd_current_structure_snapshot,
     qmd_indicator_capabilities,
     qmd_advance_historical_structure_snapshot,
+    qmd_advance_historical_structure_timeline,
     qmd_live_market_state,
     qmd_ticker_state,
     qmd_indicators,
@@ -74,6 +75,32 @@ class QmdGatewayClientTests(unittest.TestCase):
             "/materialize/generic-structure-snapshot-session-advance",
         )
         self.assertNotIn("checkpoint", post_json.call_args.args[1])
+
+    @patch("src.backend.qmd_gateway_client.qmd_history_post_json")
+    def test_historical_structure_timeline_batches_ordered_boundaries(self, post_json) -> None:
+        post_json.return_value = {
+            "complete": True,
+            "session_id": "gslb-uat-1",
+            "boundaries": [
+                {"as_of": "2026-08-21T08:10:01Z", "snapshot": {"unified_levels": []}},
+                {"as_of": "2026-08-21T08:10:02Z", "snapshot": {"unified_levels": []}},
+            ],
+        }
+
+        payload = qmd_advance_historical_structure_timeline(
+            session_id="gslb-uat-1",
+            as_ofs=("2026-08-21T08:10:01+00:00", "2026-08-21T08:10:02+00:00"),
+        )
+
+        self.assertEqual(len(payload["boundaries"]), 2)
+        self.assertEqual(
+            post_json.call_args.args[0],
+            "/materialize/generic-structure-snapshot-session-batch",
+        )
+        self.assertEqual(
+            post_json.call_args.args[1]["as_ofs"],
+            ["2026-08-21T08:10:01+00:00", "2026-08-21T08:10:02+00:00"],
+        )
 
     @patch("src.backend.qmd_gateway_client.qmd_get_json")
     def test_current_structure_snapshot_requires_complete_unified_book(self, get_json) -> None:

@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import polars as pl
 
+from src.market_engine.events import QuoteEvent
 from src.backend.canonical_backtest_service import (
     backtest_comparison_projection,
     canonical_backtest_state,
@@ -349,7 +350,7 @@ class CanonicalProjectionTests(unittest.TestCase):
         self.assertEqual(lifecycles[0]["status"], "open")
         self.assertEqual(lifecycles[0]["execution_ids"], ["open-1"])
 
-    def test_backtest_payload_keeps_fifo_audit_separate_from_position_lifecycle(self) -> None:
+    def test_backtest_payload_projects_completed_positions_not_fifo_fragments(self) -> None:
         executions = [
             Execution("open-1", "DU1", instrument(), "BUY", Decimal("10"), Decimal("100"), NOW, broker_order_id="entry"),
             Execution("open-2", "DU1", instrument(), "BUY", Decimal("10"), Decimal("102"), NOW + timedelta(seconds=1), broker_order_id="entry"),
@@ -371,8 +372,16 @@ class CanonicalProjectionTests(unittest.TestCase):
 
         payload = trading_state_payload(projector.snapshot())
 
-        self.assertEqual(len(payload["closed_trades"]), 3)
+        self.assertEqual(len(payload["closed_trades"]), 1)
         self.assertEqual(len(payload["position_lifecycles"]), 1)
+        self.assertEqual(
+            payload["closed_trades"][0]["execution_ids"],
+            ["open-1", "open-2", "close-1", "close-2"],
+        )
+        self.assertEqual(
+            payload["closed_trades"][0]["trade_id"],
+            payload["position_lifecycles"][0]["lifecycle_id"],
+        )
         self.assertEqual(payload["performance_journal"]["summary"]["episode_count"], 1)
         self.assertEqual(
             payload["performance_journal"]["episode_definition"],
@@ -530,6 +539,65 @@ class CanonicalAdapterTests(unittest.IsolatedAsyncioTestCase):
         await session.bootstrap()
         events = session.apply_websocket_message({"topic": "ssd+DUAbC", "result": [{"key": "NetLiquidation", "amount": 100, "currency": "USD", "timestamp": int(NOW.timestamp() * 1000)}]})
         self.assertEqual(events[0].account_id, "DUAbC")
+
+    async def test_simulated_execution_reconciliation_is_incremental_and_exact(self) -> None:
+        broker = SimulatedBrokerAdapter(["SIM"], mode=TradingMode.BACKTEST)
+        session = CanonicalBrokerSession(
+            broker,
+            mode=TradingMode.BACKTEST,
+            provider=BrokerProvider.SIMULATED,
+        )
+        await session.bootstrap()
+        await broker.submit_intents(
+            "SIM",
+            [
+                OrderIntent(
+                    command_id="incremental-command",
+                    account_id="SIM",
+                    instrument=instrument(),
+                    client_order_id="incremental-client",
+                    side="BUY",
+                    order_type="LMT",
+                    time_in_force="DAY",
+                    quantity=Decimal("5"),
+                    limit_price=Decimal("100"),
+                    created_at=NOW,
+                )
+            ],
+        )
+        executions = await broker.on_market_event(
+            QuoteEvent(
+                ask_exchange=11,
+                ask_price=100.0,
+                ask_size=100.0,
+                bid_exchange=12,
+                bid_price=99.0,
+                bid_size=100.0,
+                conditions=(),
+                indicators=(),
+                ingest_ts=NOW,
+                raw={"conid": 265598},
+                sequence=1,
+                source="test",
+                tape=3,
+                ticker="AAPL",
+                ts=NOW,
+            )
+        )
+
+        with patch.object(
+            broker,
+            "canonical_executions",
+            side_effect=AssertionError("full execution history was rescanned"),
+        ):
+            result = await session.reconcile_executions(executions)
+
+        snapshot = session.projector.snapshot()
+        self.assertEqual(result["status"], "incremental")
+        self.assertEqual(len(snapshot.executions), 1)
+        self.assertEqual(snapshot.executions[0].quantity, Decimal("5"))
+        self.assertEqual(snapshot.positions[0].quantity, Decimal("5"))
+        self.assertTrue(snapshot.orders[0].terminal)
 
 
 class CanonicalBacktestTests(unittest.TestCase):
