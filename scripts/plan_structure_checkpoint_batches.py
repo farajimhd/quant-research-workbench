@@ -39,7 +39,10 @@ def bootstrap_days(*, total: int, maximum_session: int, event_budget: int) -> in
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Plan event-budgeted Generic Structure checkpoint ticker batches."
+        description=(
+            "Plan event-budgeted Generic Structure checkpoint ticker batches from the "
+            "lightweight continuity index; raw compact-event tables are never scanned."
+        )
     )
     parser.add_argument("--ticker-file", action="append", required=True, type=Path)
     parser.add_argument("--start-date", required=True, type=date.fromisoformat)
@@ -47,7 +50,7 @@ def main() -> int:
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument(
         "--estimate-url",
-        default="http://127.0.0.1:8801/estimate/generic-structure-trade-counts",
+        default="http://127.0.0.1:8801/estimate/generic-structure-event-counts",
     )
     parser.add_argument("--event-budget", type=int, default=3_500_000)
     parser.add_argument("--estimate-batch-size", type=int, default=2_000)
@@ -101,8 +104,8 @@ def main() -> int:
     plan_rows: list[dict[str, int | str]] = []
     for ticker in tickers:
         estimate = estimates.get(ticker, {})
-        total = int(estimate.get("total_trade_events") or 0)
-        maximum = int(estimate.get("max_session_trade_events") or 0)
+        total = int(estimate.get("total_events") or 0)
+        maximum = int(estimate.get("max_session_events") or 0)
         days = bootstrap_days(
             total=total,
             maximum_session=maximum,
@@ -112,9 +115,9 @@ def main() -> int:
         plan_rows.append(
             {
                 "bootstrap_days": days,
-                "max_session_trade_events": maximum,
+                "max_session_events": maximum,
                 "ticker": ticker,
-                "total_trade_events": total,
+                "total_events": total,
             }
         )
 
@@ -130,7 +133,7 @@ def main() -> int:
         "group_counts": {str(days): len(rows) for days, rows in sorted(groups.items())},
         "group_files": group_files,
         "rows": plan_rows,
-        "schema_version": 1,
+        "schema_version": 2,
         "source": estimates_payload.get("source"),
         "ticker_count": len(tickers),
     }

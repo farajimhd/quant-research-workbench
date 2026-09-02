@@ -609,6 +609,40 @@ impl StructureFocusCoordinator {
         // advancing the incomplete seed forever.
         let seed = seed
             .filter(|seed| daily_seed_covers_rebuild_start(seed.authority_start, rebuild_start));
+        // Resume is valid only when the complete authority that produced the
+        // prior checkpoint is still identical. This revision includes both
+        // compact-event continuity and the point-in-time split authority. A
+        // corrected archive day or split therefore forces a canonical rebuild
+        // instead of silently carrying stale geometry into later sessions.
+        let seed = if let Some(seed) = seed {
+            let seed_authority_end = New_York
+                .from_local_datetime(
+                    &seed
+                        .session_date
+                        .and_time(NaiveTime::from_hms_opt(20, 0, 0).unwrap()),
+                )
+                .single()
+                .ok_or_else(|| "invalid prior daily checkpoint session boundary".to_string())?
+                .with_timezone(&Utc);
+            let current = self
+                .history_source_revision(&ticker, seed.authority_start, seed_authority_end)
+                .await?;
+            if daily_seed_revision_is_compatible(
+                &seed.source_plan_hash,
+                &seed.source_revision_token,
+                &current,
+            ) {
+                Some(seed)
+            } else {
+                eprintln!(
+                    "Generic Structure daily checkpoint seed for {ticker} session {} is stale; rebuilding from canonical authority",
+                    seed.session_date
+                );
+                None
+            }
+        } else {
+            None
+        };
         let (
             checkpoint,
             replay_start,
@@ -1285,11 +1319,25 @@ fn daily_seed_covers_rebuild_start(
     seed_authority_start <= requested_rebuild_start
 }
 
+fn daily_seed_revision_is_compatible(
+    stored_plan_hash: &str,
+    stored_revision_token: &str,
+    current: &HistorySourceRevision,
+) -> bool {
+    current.complete_for_history
+        && current.request_complete
+        && !stored_plan_hash.trim().is_empty()
+        && !stored_revision_token.trim().is_empty()
+        && current.source_plan_hash == stored_plan_hash
+        && current.token == stored_revision_token
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        checkpoint_advance_endpoint, daily_seed_covers_rebuild_start, next_checkpoint_slice_end,
-        non_retryable_history_error, SymbolActivationLocks,
+        checkpoint_advance_endpoint, daily_seed_covers_rebuild_start,
+        daily_seed_revision_is_compatible, next_checkpoint_slice_end, non_retryable_history_error,
+        HistorySourceRevision, SymbolActivationLocks,
     };
     use chrono::{Duration as ChronoDuration, TimeZone, Utc};
     use std::time::Duration;
@@ -1345,6 +1393,31 @@ mod tests {
 
         assert!(!daily_seed_covers_rebuild_start(shallow, requested));
         assert!(daily_seed_covers_rebuild_start(complete, requested));
+    }
+
+    #[test]
+    fn daily_resume_requires_exact_complete_event_and_split_revision() {
+        let current = HistorySourceRevision {
+            token: "events+split-v2".to_string(),
+            source_plan_hash: "plan-v2".to_string(),
+            complete_for_history: true,
+            request_complete: true,
+        };
+        assert!(daily_seed_revision_is_compatible(
+            "plan-v2",
+            "events+split-v2",
+            &current
+        ));
+        assert!(!daily_seed_revision_is_compatible(
+            "plan-v2",
+            "events+old-split",
+            &current
+        ));
+        assert!(!daily_seed_revision_is_compatible(
+            "old-plan",
+            "events+split-v2",
+            &current
+        ));
     }
 
     #[test]

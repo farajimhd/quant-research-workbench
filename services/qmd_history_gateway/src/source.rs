@@ -19,6 +19,7 @@ use qmd_core::market_products::parse_resolution_us;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -59,6 +60,35 @@ pub struct StructureTradeCountEstimateResponse {
     pub as_of: DateTime<Utc>,
     pub end_date: NaiveDate,
     pub estimates: Vec<StructureTradeCountEstimate>,
+    pub schema_version: u16,
+    pub source: String,
+    pub start_date: NaiveDate,
+}
+
+/// Lightweight campaign-planning estimate sourced from the canonical
+/// continuity index. These counts are planning hints only; streamed compact
+/// events and their exact cursor remain the checkpoint authority.
+#[derive(Clone, Debug, Deserialize)]
+pub struct StructureEventCountEstimateRequest {
+    pub as_of: DateTime<Utc>,
+    pub end_date: NaiveDate,
+    pub start_date: NaiveDate,
+    pub tickers: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct StructureEventCountEstimate {
+    pub max_session_events: u64,
+    pub session_count: u64,
+    pub ticker: String,
+    pub total_events: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct StructureEventCountEstimateResponse {
+    pub as_of: DateTime<Utc>,
+    pub end_date: NaiveDate,
+    pub estimates: Vec<StructureEventCountEstimate>,
     pub schema_version: u16,
     pub source: String,
     pub start_date: NaiveDate,
@@ -752,6 +782,102 @@ impl HistoricalEventSource {
         })
     }
 
+    pub async fn structure_event_count_estimates(
+        &self,
+        request: StructureEventCountEstimateRequest,
+    ) -> Result<StructureEventCountEstimateResponse, String> {
+        if request.start_date >= request.end_date {
+            return Err(
+                "structure event-count estimate requires start_date before end_date".into(),
+            );
+        }
+        if request.as_of > Utc::now() + chrono::Duration::seconds(1) {
+            return Err("structure event-count estimate as_of cannot be in the future".into());
+        }
+        if request.end_date
+            > request
+                .as_of
+                .date_naive()
+                .succ_opt()
+                .unwrap_or(request.end_date)
+        {
+            return Err("structure event-count estimate cannot extend beyond as_of".into());
+        }
+        let mut tickers = request
+            .tickers
+            .iter()
+            .map(|ticker| normalize_ticker(ticker))
+            .collect::<Result<Vec<_>, _>>()?;
+        tickers.sort();
+        tickers.dedup();
+        if tickers.is_empty() || tickers.len() > 25_000 {
+            return Err("structure event-count estimate requires 1..=25000 tickers".into());
+        }
+        let ticker_filter = tickers
+            .iter()
+            .map(|ticker| sql_literal(ticker))
+            .collect::<Vec<_>>()
+            .join(",");
+        let continuity_table = format!(
+            "{}.events_ordinal_continuity",
+            self.config.clickhouse_database
+        );
+        let sql = format!(
+            r#"SELECT
+                ticker,
+                sum(session_events) AS total_events,
+                max(session_events) AS max_session_events,
+                count() AS session_count
+            FROM (
+                SELECT
+                    upper(ticker) AS ticker,
+                    source_date,
+                    argMax(event_count, tuple(build_step, updated_at)) AS session_events
+                FROM {continuity_table}
+                PREWHERE source_date >= toDate({start_date})
+                  AND source_date < toDate({end_date})
+                  AND ticker IN ({ticker_filter})
+                GROUP BY ticker, source_date
+            )
+            GROUP BY ticker
+            ORDER BY ticker
+            FORMAT JSONEachRow"#,
+            start_date = sql_literal(&request.start_date.to_string()),
+            end_date = sql_literal(&request.end_date.to_string()),
+        );
+        #[derive(Deserialize)]
+        struct EstimateRow {
+            max_session_events: u64,
+            session_count: u64,
+            ticker: String,
+            total_events: u64,
+        }
+        let text = self.query_bounded(&sql, 30).await?;
+        let estimates = text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let row = serde_json::from_str::<EstimateRow>(line).map_err(|error| {
+                    format!("invalid structure event-count estimate row: {error}")
+                })?;
+                Ok(StructureEventCountEstimate {
+                    max_session_events: row.max_session_events,
+                    session_count: row.session_count,
+                    ticker: row.ticker,
+                    total_events: row.total_events,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(StructureEventCountEstimateResponse {
+            as_of: request.as_of,
+            end_date: request.end_date,
+            estimates,
+            schema_version: 2,
+            source: continuity_table,
+            start_date: request.start_date,
+        })
+    }
+
     pub async fn source_revision(&self, window: &EventWindow) -> Result<SourceRevision, String> {
         validate_window(window)?;
         let plan = self.source_plan(window).await?;
@@ -870,6 +996,15 @@ impl HistoricalEventSource {
             })
             .collect::<Vec<_>>()
             .join("|");
+        // A persisted structure checkpoint is not compatible merely because
+        // compact events are unchanged. Corporate-action corrections alter
+        // every surviving price and quantity coordinate. Include the
+        // point-in-time split authority in the same revision token so resume
+        // fails closed and rebuilds instead of applying corrected terms on
+        // top of a checkpoint produced with superseded terms.
+        let split_revision_token = self
+            .structure_split_revision_token(&window.tickers, window.start, window.end)
+            .await?;
         Ok(SourceRevision {
             complete_for_history: plan.complete_for_history,
             event_count,
@@ -887,14 +1022,46 @@ impl HistoricalEventSource {
                 .map(|segment| format!("{:?}", segment.tier).to_ascii_lowercase())
                 .collect(),
             token: format!(
-                "{}:{}:{}:{}:{}",
+                "{}:{}:{}:{}:{}:{}",
                 max_build_step,
                 event_count,
                 live_continuation_sequence.unwrap_or_default(),
                 max_updated_at,
-                plan_token
+                plan_token,
+                split_revision_token,
             ),
         })
+    }
+
+    async fn structure_split_revision_token(
+        &self,
+        tickers: &[String],
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<String, String> {
+        if tickers.is_empty() {
+            // Full-market consumers do not restore per-ticker structural
+            // checkpoints. Avoid turning their ordinary revision probes into
+            // an unbounded corporate-action universe query.
+            return Ok("split-unscoped".to_string());
+        }
+        let mut normalized = tickers
+            .iter()
+            .map(|ticker| normalize_ticker(ticker))
+            .collect::<Result<Vec<_>, _>>()?;
+        normalized.sort();
+        normalized.dedup();
+        let ticker_filter = normalized
+            .iter()
+            .map(|ticker| sql_literal(ticker))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = structure_split_revision_sql(&ticker_filter, start, end);
+        let rows = self.query(&sql).await?;
+        Ok(format!(
+            "split-sha256:{:x}",
+            Sha256::digest(rows.as_bytes())
+        ))
     }
 
     pub async fn fetch_batch(
@@ -3259,6 +3426,36 @@ fn structure_split_adjustments_sql(
     )
 }
 
+fn structure_split_revision_sql(
+    ticker_filter: &str,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> String {
+    let start_date = start.with_timezone(&New_York).date_naive();
+    let end_date = end.with_timezone(&New_York).date_naive();
+    format!(
+        r#"SELECT
+            upper(source.provider_ticker) AS ticker,
+            toString(source.execution_date) AS execution_date,
+            argMax(source.split_from, source.inserted_at) AS split_from,
+            argMax(source.split_to, source.inserted_at) AS split_to,
+            formatDateTime(max(source.inserted_at), '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS source_inserted_at
+        FROM q_live.market_stock_split_v1 AS source FINAL
+        WHERE upper(source.provider_ticker) IN ({ticker_filter})
+          AND toDate(source.execution_date) >= toDate({start_date})
+          AND toDate(source.execution_date) <= toDate({end_date})
+          AND source.inserted_at <= parseDateTime64BestEffort({end})
+          AND source.split_from > 0
+          AND source.split_to > 0
+        GROUP BY ticker, source.execution_date
+        ORDER BY ticker, source.execution_date
+        FORMAT JSONEachRow"#,
+        start_date = sql_literal(&start_date.to_string()),
+        end_date = sql_literal(&end_date.to_string()),
+        end = sql_literal(&end.to_rfc3339()),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -3268,9 +3465,9 @@ mod tests {
         materialize_confirmed_recent_coverage, merge_coverage_intervals, merge_daily_chart_bars,
         normalize_ticker, parse_historical_tsv_row, persisted_structure_events_sql,
         recent_coverage_sql, recent_daily_trade_bars_sql, row_to_event, split_adjustment_factors,
-        structure_split_adjustments_sql, ticker_filter, CoverageInterval, EventWindow,
-        HistoricalMacroChartRow, HistoricalRow, LatestEventCoverage, MarketSourceTier,
-        RecentCoverageRow,
+        structure_split_adjustments_sql, structure_split_revision_sql, ticker_filter,
+        CoverageInterval, EventWindow, HistoricalMacroChartRow, HistoricalRow, LatestEventCoverage,
+        MarketSourceTier, RecentCoverageRow,
     };
     use crate::config::HistoricalGatewayConfig;
     use chrono::{NaiveDate, TimeZone, Utc};
@@ -3293,6 +3490,19 @@ mod tests {
         );
         assert!(sql.contains("AND source.ticker IN ('AAPL')\n        WHERE 1"));
         assert!(!sql.contains("WHERE 1 AND source.ticker IN ('AAPL')"));
+    }
+
+    #[test]
+    fn structure_revision_includes_point_in_time_split_terms() {
+        let sql = structure_split_revision_sql(
+            "'AAPL','SUGP'",
+            Utc.with_ymd_and_hms(2026, 2, 20, 9, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 8, 22, 0, 0, 0).unwrap(),
+        );
+        assert!(sql.contains("upper(source.provider_ticker) IN ('AAPL','SUGP')"));
+        assert!(sql.contains("argMax(source.split_from, source.inserted_at)"));
+        assert!(sql.contains("source.inserted_at <= parseDateTime64BestEffort"));
+        assert!(sql.contains("ORDER BY ticker, source.execution_date"));
     }
 
     #[test]

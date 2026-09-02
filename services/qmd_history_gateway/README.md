@@ -202,11 +202,14 @@ Supported bar timeframes are the live QMD set: `100ms`, `1s`, `5s`, `10s`,
   both the successor checkpoint and its point-in-time snapshot. It preserves
   the exact-live-cursor contract above while avoiding a daily-book rebuild on
   every strategy decision second.
-- `POST /estimate/generic-structure-trade-counts` is a loopback-only planning
-  primitive that groups the same compact archive trade authority by ticker and
-  session. Operators use bounded ticker batches to choose restart-safe daily
-  checkpoint intervals without probing each ticker or exceeding rebuild event
-  limits; the estimate never substitutes for the rebuild guard.
+- `POST /estimate/generic-structure-event-counts` is the Campaign v2
+  loopback-only planning primitive. It reads only the canonical
+  `events_ordinal_continuity` index and reports total and largest-session event
+  counts for bounded ticker batches. It never scans compact-event tables and
+  never substitutes for streamed event counts or checkpoint cursors.
+- `POST /estimate/generic-structure-trade-counts` is the legacy raw trade-count
+  estimator retained for compatibility. New checkpoint campaigns must use the
+  continuity-index endpoint above.
 - `POST /materialize/generic-structure-rebuild` reconstructs a checkpoint from
   a fresh shared engine over one explicit, gap-free canonical Archive + Recent
   + Current-Live window. It is an operator recovery primitive, available only

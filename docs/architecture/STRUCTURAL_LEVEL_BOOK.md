@@ -45,6 +45,12 @@ End-of-day checkpoints are immutable, versioned seeds, not mutable forecasts. Th
 - If no compatible checkpoint exists, QMD History rebuilds from canonical history and may persist the completed day as a restart-safe seed.
 - A checkpoint from a later session, different algorithm version, incomplete source window, gap-containing plan, or mismatched revision must fail closed.
 
+Full-universe or multi-session population follows the restart and concurrency
+rules in `docs/data_contracts/structural_checkpoint_campaign_v2.md`. Campaign
+planning reads the lightweight continuity index; it never performs a second
+raw-event scan merely to estimate work. Resume validates the prior checkpoint's
+complete event and split authority before advancing it.
+
 ## Split boundaries
 
 `q_live.market_stock_split_v1` is the corporate-action authority. At 04:00 New York on the split execution date, before the first eligible session event is applied, the checkpoint is transformed exactly once using the split identity recorded in its payload.

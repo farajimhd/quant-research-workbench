@@ -196,7 +196,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--rebuild-start",
         type=parse_date,
-        help="Cold-start history date; defaults to 30 calendar days before --start-date",
+        help="Cold-start history date; defaults to --lookback-days before --start-date",
+    )
+    parser.add_argument(
+        "--lookback-days",
+        type=int,
+        default=180,
+        help="Canonical cold-start horizon when --rebuild-start is omitted (default: 180)",
     )
     parser.add_argument(
         "--qmd-url",
@@ -256,6 +262,8 @@ def main() -> int:
         raise SystemExit("QMD operator token is required via --operator-token or QMD_OPERATOR_TOKEN")
     if args.event_limit is not None and args.event_limit < 1:
         raise SystemExit("--event-limit must be positive")
+    if not 2 <= args.lookback_days <= 3650:
+        raise SystemExit("--lookback-days must be between 2 and 3650")
     if not 0 <= args.bootstrap_days <= 31:
         raise SystemExit("--bootstrap-days must be between 0 and 31")
     if not 1 <= args.workers <= 32:
@@ -271,7 +279,9 @@ def main() -> int:
         raise SystemExit(str(exc)) from exc
     if not tickers:
         raise SystemExit("at least one non-empty --ticker or --ticker-file is required")
-    cold_start_date = args.rebuild_start or (args.start_date - timedelta(days=30))
+    cold_start_date = args.rebuild_start or (
+        args.start_date - timedelta(days=args.lookback_days)
+    )
     rebuild_start = datetime.combine(cold_start_date, time(4, 0), tzinfo=NEW_YORK)
     sessions = checkpoint_schedule(
         rebuild_start=cold_start_date,
@@ -303,7 +313,7 @@ def main() -> int:
         finished = int(snapshot.get("finished") or 0)
         active = len(active_units)
         payload = {
-            "schema_version": 1,
+            "schema_version": 2,
             "status": status,
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "ticker_count": len(tickers),

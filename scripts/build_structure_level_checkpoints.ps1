@@ -18,6 +18,8 @@ param(
     [int]$Workers = 4,
     [ValidateRange(0, 365)]
     [int]$BootstrapDays = 14,
+    [ValidateRange(2, 3650)]
+    [int]$LookbackDays = 180,
     [ValidateRange(0, 10)]
     [int]$MaxRetries = 3,
     [ValidateRange(0.1, 60)]
@@ -66,6 +68,7 @@ try {
         '--timeout-seconds', [string]$TimeoutSeconds,
         '--workers', [string]$Workers,
         '--bootstrap-days', [string]$BootstrapDays,
+        '--lookback-days', [string]$LookbackDays,
         '--max-retries', [string]$MaxRetries,
         '--retry-delay-seconds', [string]$RetryDelaySeconds
     )

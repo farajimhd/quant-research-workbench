@@ -12,6 +12,7 @@ use crate::scanner::{
 use crate::source::{
     split_adjustment_factors, EventCoverage, EventWindow, HistoricalCursor, HistoricalEventSource,
     HistoricalScannerMarketSnapshot, LatestEventCoverage, MarketSourcePlan, SourceRevision,
+    StructureEventCountEstimateRequest, StructureEventCountEstimateResponse,
     StructureTradeCountEstimateRequest, StructureTradeCountEstimateResponse,
 };
 use crate::structure_checkpoint::{
@@ -239,6 +240,12 @@ pub fn app(state: AppState) -> Router {
         .route("/snapshot/chart-bars/{ticker}", get(chart_bar_snapshot))
         .route("/snapshot/scanner-market", get(scanner_market_snapshot))
         .route("/snapshot/scanner-derived", get(scanner_derived_snapshot))
+        .route(
+            "/estimate/generic-structure-event-counts",
+            post(generic_structure_event_count_estimates).layer(DefaultBodyLimit::max(
+                structure_checkpoint_request_max_bytes,
+            )),
+        )
         .route(
             "/estimate/generic-structure-trade-counts",
             post(generic_structure_trade_count_estimates).layer(DefaultBodyLimit::max(
@@ -637,6 +644,29 @@ async fn generic_structure_trade_count_estimates(
     state
         .source
         .structure_trade_count_estimates(request)
+        .await
+        .map(Json)
+        .map_err(service_error)
+}
+
+async fn generic_structure_event_count_estimates(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<StructureEventCountEstimateRequest>,
+) -> Result<Json<StructureEventCountEstimateResponse>, ApiError> {
+    if !is_loopback_bind(&state.config.bind) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "Generic Structure planning estimates are available only when QMD History is bound to loopback",
+                "error_code": "structure_checkpoint_estimate_not_local",
+                "retryable": false,
+                "source": "qmd_history_gateway",
+            })),
+        ));
+    }
+    state
+        .source
+        .structure_event_count_estimates(request)
         .await
         .map(Json)
         .map_err(service_error)
