@@ -1130,6 +1130,10 @@ class JournalTests(unittest.TestCase):
             self.assertEqual(occurrence["action"], "Exact 5% Squeeze")
             self.assertIn("+5.25% from squeeze anchor", occurrence["reason"])
             self.assertEqual(occurrence["reference_price"], 10.525)
+            self.assertEqual(
+                occurrence["event_evidence"]["payload"]["squeeze_move_pct"],
+                5.25,
+            )
             self.assertEqual(journal.strategy_activity_records(run_id="missing"), [])
             consequential = strategy_activity_payload(
                 journal=journal,
@@ -1142,6 +1146,33 @@ class JournalTests(unittest.TestCase):
                 [(row["event_type"], row["action"]) for row in consequential["rows"]],
                 [("decision", "enter_long"), ("signal", "Exact 5% Squeeze")],
             )
+            journal.close()
+
+    def test_strategy_activity_pages_older_rows_without_claiming_truncation_is_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            for index in range(5):
+                journal.append(
+                    run_id="run-a",
+                    category="strategy_decision",
+                    entity_type="signal",
+                    entity_id=f"signal-{index}",
+                    event_time=TS + timedelta(seconds=index),
+                    payload={"strategy_id": "momentum", "ticker": "AAPL", "action": "wait", "ordinal": index},
+                )
+
+            first = strategy_activity_payload(journal=journal, run_id="run-a", limit=2)
+            second = strategy_activity_payload(journal=journal, run_id="run-a", limit=2, offset=first["next_offset"])
+            third = strategy_activity_payload(journal=journal, run_id="run-a", limit=2, offset=second["next_offset"])
+
+            self.assertFalse(first["complete"])
+            self.assertEqual(first["next_offset"], 2)
+            self.assertEqual([row["entity_id"] for row in first["rows"]], ["signal-4", "signal-3"])
+            self.assertFalse(second["complete"])
+            self.assertEqual([row["entity_id"] for row in second["rows"]], ["signal-2", "signal-1"])
+            self.assertTrue(third["complete"])
+            self.assertIsNone(third["next_offset"])
+            self.assertEqual([row["entity_id"] for row in third["rows"]], ["signal-0"])
             journal.close()
 
     def test_strategy_activity_compacts_unselected_structural_book_evidence(self) -> None:

@@ -4950,6 +4950,7 @@ def trading_strategy_activity(
     ticker: str = "",
     event_type: str = "",
     limit: int = 500,
+    offset: int = 0,
     include_decision_evidence: bool = True,
 ) -> dict[str, Any]:
     try:
@@ -4965,6 +4966,7 @@ def trading_strategy_activity(
                 ticker=ticker,
                 event_type=event_type,
                 limit=limit,
+                offset=offset,
                 include_decision_evidence=include_decision_evidence,
             )
         return strategy_activity_payload(
@@ -4975,6 +4977,7 @@ def trading_strategy_activity(
             ticker=ticker,
             event_type=event_type,
             limit=limit,
+            offset=offset,
             include_decision_evidence=include_decision_evidence,
         )
     except (TypeError, ValueError) as exc:

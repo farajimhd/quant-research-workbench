@@ -1845,17 +1845,22 @@ class ReplayRunController:
                 ),
                 include_strategy_activity=False,
             )
-            activity_rows = self.strategy_activity_snapshot(
+            activity_page = self.strategy_activity_snapshot(
                 as_of=self.current_time or self.definition.requested_start,
                 limit=2_000,
                 include_decision_evidence=False,
                 consequential_only=False,
-            )["rows"]
+            )
+            activity_rows = activity_page["rows"]
             # Keep routine wait decisions in the completed-run Canvas: they are
             # the durable explanation for why a strategy did not trade. The
             # bounded bulk projection omits heavyweight condition evidence;
             # the selected record is hydrated on demand by Strategy Activity.
             trading["strategy_activity"] = activity_rows
+            trading["strategy_activity_page"] = {
+                "complete": activity_page["complete"],
+                "next_offset": activity_page.get("next_offset"),
+            }
             self._canvas_state_cache = (now, trading)
         ticker = _ticker(symbol)
         chart_activity_rows = self.strategy_activity_snapshot(
@@ -1872,7 +1877,10 @@ class ReplayRunController:
         # force the browser to ingest every routine wait observation.
         trading = {
             **trading,
-            "strategy_chart_activity": chart_activity_rows,
+            "strategy_chart_activity": [
+                _compact_strategy_chart_activity_row(row)
+                for row in chart_activity_rows
+            ],
         }
         strategy_records = list(trading.get("strategy_activity") or [])
         assignments = (
@@ -1983,6 +1991,7 @@ class ReplayRunController:
         ticker: str = "",
         event_type: str = "",
         limit: int = 500,
+        offset: int = 0,
         include_decision_evidence: bool = True,
         consequential_only: bool = False,
     ) -> dict[str, Any]:
@@ -1999,6 +2008,7 @@ class ReplayRunController:
             ticker=ticker,
             event_type=event_type,
             limit=limit,
+            offset=offset,
             include_decision_evidence=include_decision_evidence,
             consequential_only=consequential_only,
         )
@@ -8392,7 +8402,7 @@ def _check(
 def _compact_strategy_chart_activity_row(row: Mapping[str, Any]) -> dict[str, Any]:
     """Retain chart/action identity without retransmitting gate evidence."""
 
-    return {
+    compact = {
         key: row[key]
         for key in (
             "record_id",
@@ -8422,6 +8432,27 @@ def _compact_strategy_chart_activity_row(row: Mapping[str, Any]) -> dict[str, An
         )
         if row.get(key) is not None
     }
+    chart_plan = _compact_strategy_chart_plan(row.get("gate_snapshot"))
+    if chart_plan:
+        compact["chart_plan"] = chart_plan
+    return compact
+
+
+def _compact_strategy_chart_plan(value: Any) -> dict[str, Any]:
+    """Project only immutable entry-plan prices needed by chart overlays."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    plan: dict[str, Any] = {}
+    for key in (
+        "unified_structural_trigger",
+        "profit_target_selection",
+        "decision_values",
+    ):
+        item = value.get(key)
+        if isinstance(item, Mapping):
+            plan[key] = dict(item)
+    return plan
 
 
 def _ticker(value: Any) -> str:

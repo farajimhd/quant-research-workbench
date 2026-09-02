@@ -1,6 +1,7 @@
 import { Filter, Plus, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
+import { dateInTimeZone } from "../timeZones";
 
 export type TableFilterKind = "boolean" | "category" | "datetime" | "number" | "text";
 export type TableFilterMatchMode = "all" | "any";
@@ -12,6 +13,7 @@ export type TableFilterColumn = {
   kind: TableFilterKind;
   label: string;
   temporalUnit?: "date" | "datetime";
+  timeZone?: string;
 };
 
 export type TableFilterCondition = {
@@ -162,7 +164,10 @@ export function filterRowsByConditions<T extends Record<string, unknown>>(rows: 
   if (!active.length) return rows;
   const columnByKey = new Map(columns.map((column) => [column.key, column]));
   return rows.filter((row) => {
-    const matches = active.map((condition) => matchesTableFilter(row[condition.column], condition, columnByKey.get(condition.column)?.kind ?? "text"));
+    const matches = active.map((condition) => {
+      const column = columnByKey.get(condition.column);
+      return matchesTableFilter(row[condition.column], condition, column?.kind ?? "text", column?.timeZone);
+    });
     return matchMode === "any" ? matches.some(Boolean) : matches.every(Boolean);
   });
 }
@@ -175,7 +180,8 @@ function FilterValueEditor({ column, condition, index, onChange, suggestions }: 
   const inputType = column.kind === "number" ? "number" : column.kind === "datetime" ? column.temporalUnit === "date" ? "date" : "datetime-local" : "text";
   const listId = `market-filter-values-${condition.id}`;
   const changeValue = (event: ChangeEvent<HTMLInputElement>) => onChange({ value: event.target.value });
-  return <label className="market-table-filter-value"><span>Value</span><div><input aria-label={`Filter ${index + 1} value`} list={column.kind === "category" || column.kind === "boolean" || column.kind === "text" ? listId : undefined} onChange={changeValue} placeholder={valuePlaceholder(column.kind)} step={column.kind === "number" ? "any" : undefined} type={inputType} value={condition.value} />{condition.operator === "between" ? <><span>to</span><input aria-label={`Filter ${index + 1} upper value`} onChange={(event) => onChange({ valueSecondary: event.target.value })} step={column.kind === "number" ? "any" : undefined} type={inputType} value={condition.valueSecondary} /></> : null}</div>{suggestions.length && ["category", "boolean", "text"].includes(column.kind) ? <datalist id={listId}>{suggestions.map((value) => <option key={value} value={value} />)}</datalist> : null}</label>;
+  const zoneLabel = column.kind === "datetime" && column.timeZone === "America/New_York" ? " (ET)" : "";
+  return <label className="market-table-filter-value"><span>Value{zoneLabel}</span><div><input aria-label={`Filter ${index + 1} value${zoneLabel}`} list={column.kind === "category" || column.kind === "boolean" || column.kind === "text" ? listId : undefined} onChange={changeValue} placeholder={valuePlaceholder(column.kind)} step={column.kind === "number" ? "any" : undefined} type={inputType} value={condition.value} />{condition.operator === "between" ? <><span>to</span><input aria-label={`Filter ${index + 1} upper value${zoneLabel}`} onChange={(event) => onChange({ valueSecondary: event.target.value })} step={column.kind === "number" ? "any" : undefined} type={inputType} value={condition.valueSecondary} /></> : null}</div>{suggestions.length && ["category", "boolean", "text"].includes(column.kind) ? <datalist id={listId}>{suggestions.map((value) => <option key={value} value={value} />)}</datalist> : null}</label>;
 }
 
 function defaultTableFilter(column: TableFilterColumn): TableFilterCondition {
@@ -199,18 +205,28 @@ function operatorNeedsValue(operator: TableFilterOperator) {
   return operator !== "is_null" && operator !== "not_null";
 }
 
-function matchesTableFilter(value: unknown, condition: TableFilterCondition, kind: TableFilterKind) {
+function matchesTableFilter(value: unknown, condition: TableFilterCondition, kind: TableFilterKind, timeZone?: string) {
   if (condition.operator === "is_null") return isBlank(value);
   if (condition.operator === "not_null") return !isBlank(value);
   if (isBlank(value)) return false;
   if (kind === "number") return compareValues(Number(value), Number(condition.value), Number(condition.valueSecondary), condition.operator);
-  if (kind === "datetime") return compareValues(Date.parse(String(value)), Date.parse(condition.value), Date.parse(condition.valueSecondary), condition.operator);
+  if (kind === "datetime") return compareValues(Date.parse(String(value)), parseFilterDate(condition.value, timeZone), parseFilterDate(condition.valueSecondary, timeZone), condition.operator);
   const source = String(value).toLocaleLowerCase();
   const target = condition.value.trim().toLocaleLowerCase();
   if (condition.operator === "contains") return source.includes(target);
   if (condition.operator === "eq") return source === target;
   if (condition.operator === "neq") return source !== target;
   return false;
+}
+
+function parseFilterDate(value: string, timeZone?: string) {
+  const normalized = value.trim();
+  if (!normalized) return Number.NaN;
+  if (timeZone && /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2})?)?$/.test(normalized)) {
+    const [date, time = "00:00:00"] = normalized.split("T");
+    return dateInTimeZone(date, time, timeZone).getTime();
+  }
+  return Date.parse(normalized);
 }
 
 function compareValues(value: number, target: number, secondary: number, operator: TableFilterOperator) {

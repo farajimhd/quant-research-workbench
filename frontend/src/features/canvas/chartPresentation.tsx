@@ -364,7 +364,9 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
       && time > previousCloseTime
       && time <= entryTime,
     );
-    const gateSnapshot = (entryDecision?.row.gate_snapshot as PreviewRow | undefined) ?? {};
+    const gateSnapshot = (entryDecision?.row.chart_plan as PreviewRow | undefined)
+      ?? (entryDecision?.row.gate_snapshot as PreviewRow | undefined)
+      ?? {};
     const decisionValues = (gateSnapshot.decision_values as PreviewRow | undefined) ?? {};
     const structuralTrigger = (gateSnapshot.unified_structural_trigger as PreviewRow | undefined) ?? {};
     const priorLevels = Array.isArray(structuralTrigger.prior_snapshot_levels)

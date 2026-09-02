@@ -945,6 +945,7 @@ class TradingJournal:
         event_type: str = "",
         as_of: datetime | None = None,
         limit: int = 2000,
+        offset: int = 0,
         consequential_only: bool = False,
     ) -> list[JournalRecord]:
         """Return newest-first durable strategy events across ticker campaigns.
@@ -1005,10 +1006,15 @@ class TradingJournal:
                 "json_extract(payload_json, '$.state'), '')) "
                 "<> 'assignment_state_saved'))"
             )
-        values.append(max(1, min(int(limit), 50_000)))
+        values.extend(
+            (
+                max(1, min(int(limit), 50_001)),
+                max(0, int(offset)),
+            )
+        )
         rows = self._fetchall(
             f"SELECT * FROM journal WHERE {' AND '.join(clauses)} "
-            "ORDER BY event_time DESC, recorded_at DESC, sequence DESC LIMIT ?",
+            "ORDER BY event_time DESC, recorded_at DESC, sequence DESC LIMIT ? OFFSET ?",
             values,
         )
         return [_record(row) for row in rows]

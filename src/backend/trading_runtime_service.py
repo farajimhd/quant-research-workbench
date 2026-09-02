@@ -505,11 +505,13 @@ def strategy_activity_payload(
     ticker: str = "",
     event_type: str = "",
     limit: int = 500,
+    offset: int = 0,
     include_decision_evidence: bool = True,
     consequential_only: bool = False,
 ) -> dict[str, Any]:
     """Project the durable strategy journal into an operator-facing event list."""
     requested_limit = max(1, min(int(limit), 50_000))
+    requested_offset = max(0, int(offset))
     records = (journal or trading_journal()).strategy_activity_records(
         record_id=record_id.strip(),
         strategy_id=strategy_id.strip(),
@@ -517,9 +519,12 @@ def strategy_activity_payload(
         ticker=ticker.strip().upper(),
         event_type=event_type.strip(),
         as_of=as_of,
-        limit=requested_limit,
+        limit=requested_limit + 1,
+        offset=requested_offset,
         consequential_only=consequential_only,
     )
+    complete = len(records) <= requested_limit
+    records = records[:requested_limit]
     rows: list[dict[str, Any]] = []
     seen_decision_entities: set[str] = set()
     for record in records:
@@ -572,6 +577,7 @@ def strategy_activity_payload(
         }
         if decision_values:
             gate_snapshot["decision_values"] = decision_values
+        event_evidence = _strategy_activity_event_evidence(payload, metadata)
         recording_latency_ms = max(
             0.0,
             (record.recorded_at - record.event_time).total_seconds() * 1_000.0,
@@ -624,6 +630,7 @@ def strategy_activity_payload(
                     else ""
                 ),
                 "gate_snapshot": gate_snapshot,
+                "event_evidence": event_evidence if include_decision_evidence else {},
             }
         )
         if len(rows) >= requested_limit:
@@ -635,7 +642,8 @@ def strategy_activity_payload(
         "schema_version": 2,
         "as_of": (as_of or datetime.now(ZoneInfo("UTC"))).isoformat(),
         "source": "trading_journal",
-        "complete": True,
+        "complete": complete,
+        "next_offset": None if complete else requested_offset + len(records),
         "rows": rows,
         "catalog": {
             "strategies": strategies,
@@ -643,6 +651,56 @@ def strategy_activity_payload(
             "tickers": tickers,
             "event_types": list(STRATEGY_ACTIVITY_EVENT_TYPES),
         },
+    }
+
+
+_STRATEGY_ACTIVITY_SUMMARY_KEYS = {
+    "action",
+    "account_id",
+    "reason",
+    "reference_price",
+    "source",
+    "source_authority",
+    "state",
+    "status",
+    "strategy_id",
+    "strategy_revision",
+    "ticker",
+}
+
+
+def _strategy_activity_event_evidence(
+    payload: dict[str, Any], metadata: dict[str, Any]
+) -> dict[str, Any]:
+    """Retain the selected record's non-gate journal evidence for inspection."""
+
+    gate_keys = {
+        "entry_rules",
+        "execution_quality",
+        "liquidity_admission",
+        "macd",
+        "profit_target_selection",
+        "unified_structural_trigger",
+    }
+    payload_evidence = {
+        key: value
+        for key, value in payload.items()
+        if key not in _STRATEGY_ACTIVITY_SUMMARY_KEYS
+        and key != "metadata"
+        and value is not None
+    }
+    metadata_evidence = {
+        key: value
+        for key, value in metadata.items()
+        if key not in gate_keys and value is not None
+    }
+    return {
+        key: value
+        for key, value in {
+            "payload": payload_evidence,
+            "metadata": metadata_evidence,
+        }.items()
+        if value
     }
 
 

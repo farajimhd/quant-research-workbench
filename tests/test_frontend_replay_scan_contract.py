@@ -7,6 +7,7 @@ CANVAS_PAGE = REPO_ROOT / "frontend" / "src" / "pages" / "CanvasConfigurationPag
 SCREENER_CONTAINERS = REPO_ROOT / "frontend" / "src" / "app" / "components" / "MarketScreenerContainers.tsx"
 TRADING_PRESENTATION = REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "tradingPresentation.tsx"
 CHART_PRESENTATION = REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "chartPresentation.tsx"
+TABLE_FILTERS = REPO_ROOT / "frontend" / "src" / "app" / "components" / "TableColumnFilters.tsx"
 TRADING_WORKSPACE = REPO_ROOT / "frontend" / "src" / "app" / "components" / "TradingWorkspace.tsx"
 MARKET_MICROSTRUCTURE = REPO_ROOT / "frontend" / "src" / "app" / "components" / "MarketMicrostructureContainers.tsx"
 
@@ -103,6 +104,7 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert "trade_annotations: showTradeAnnotations ? positionLifecycleAnnotations(trading, linkContext.symbol) : []" in chart_source
     assert "trading?.position_lifecycles" in chart_source
     assert "trading?.strategy_chart_activity ?? trading?.strategy_activity" in chart_source
+    assert "entryDecision?.row.chart_plan" in chart_source
     assert "guideStartTime: planStartTime" in chart_source
     assert "prior_snapshot_levels" in chart_source
     assert "combined_entry_boundary" in chart_source
@@ -177,15 +179,32 @@ def test_strategy_activity_loads_a_reviewable_history_window() -> None:
     assert 'include_decision_evidence: "false"' in container_source
     assert 'record_id: exactRecordId' in container_source
     assert 'className="strategy-activity-inspect"' in container_source
-    assert 'aria-label="Strategy decision details"' in container_source
+    assert 'aria-label="Strategy event details"' in container_source
     assert "strategyEvidenceSections(snapshot)" in container_source
-    assert 'aria-label="Resize decision evidence"' in container_source
+    assert 'aria-label="Resize event evidence"' in container_source
+    assert "Inspect strategy event at" in container_source
     assert 'className="strategy-activity-evidence-cards"' in container_source
     assert "JSON.stringify(snapshot" not in container_source
     assert 'strategy_activity: { eventType: "", limit: 2_000' in configuration_source
     assert "if (historicalRows !== undefined) return;" in container_source
     assert "historicalRows={signalStreamRunId ? preview?.trading.strategy_activity ?? [] : undefined}" in canvas_source
+    assert "historicalPage={signalStreamRunId ? preview?.trading.strategy_activity_page : undefined}" in canvas_source
+    assert 'offset: String(Number(resolvedHistoricalPage.next_offset ?? 0))' in container_source
+    assert 'Load older events' in container_source
+    assert "strategyActivityEvidenceSnapshot(row)" in container_source
+    assert "recorded_event: eventEvidence" in container_source
     assert "limit: 50_000" not in canvas_source.split("function strategyReplayRegistry", 1)[1].split("function normalizeInheritedLayouts", 1)[0]
+
+
+def test_market_time_filters_interpret_wall_clock_inputs_in_exchange_time() -> None:
+    source = TABLE_FILTERS.read_text(encoding="utf-8")
+    container_source = SCREENER_CONTAINERS.read_text(encoding="utf-8")
+
+    assert 'import { dateInTimeZone } from "../timeZones"' in source
+    assert "parseFilterDate(condition.value, timeZone)" in source
+    assert "dateInTimeZone(date, time, timeZone).getTime()" in source
+    assert 'column.timeZone === "America/New_York" ? " (ET)"' in source
+    assert 'timeZone: temporal ? "America/New_York" : undefined' in container_source
 
 
 def test_completed_strategy_review_opens_chart_performance_and_audit_surfaces() -> None:

@@ -35,6 +35,7 @@ from src.backend.replay_run_service import (
     _historical_watchlist_membership_timeline_from_plans,
     _historical_watchlist_plans_at_source_native_events,
     _historical_source_native_signal_identities,
+    _compact_strategy_chart_activity_row,
     _historical_watchlist_assignment_is_observable,
     _historical_signal_events,
     _historical_derived_frames,
@@ -134,6 +135,24 @@ def approved_configuration(*, assignments: list[dict] | None = None) -> dict:
 
 
 class ReplayRunDefinitionTests(unittest.TestCase):
+    def test_chart_activity_retains_only_the_compact_entry_plan(self) -> None:
+        compact = _compact_strategy_chart_activity_row({
+            "record_id": "record-1",
+            "action": "enter_long",
+            "gate_snapshot": {
+                "entry_rules": {"confirmation": {"condition_evidence": {"large": list(range(100))}}},
+                "unified_structural_trigger": {"level": {"price": 3.44}, "prior_snapshot_levels": [{"entry_boundary": 3.44}]},
+                "profit_target_selection": {"selected_target_prices": [3.55]},
+                "decision_values": {"initial_stop": 3.39},
+            },
+        })
+
+        self.assertNotIn("gate_snapshot", compact)
+        self.assertNotIn("entry_rules", compact["chart_plan"])
+        self.assertEqual(compact["chart_plan"]["decision_values"]["initial_stop"], 3.39)
+        self.assertEqual(compact["chart_plan"]["profit_target_selection"]["selected_target_prices"], [3.55])
+        self.assertEqual(compact["chart_plan"]["unified_structural_trigger"]["prior_snapshot_levels"][0]["entry_boundary"], 3.44)
+
     def test_prepared_frame_cache_identity_pins_derived_and_split_revisions(self) -> None:
         runtime_root = Path("D:/TradingML/runtimes/test-replay-cache")
         common = {
@@ -761,12 +780,13 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                         for row in trading["strategy_chart_activity"]
                     )
                 )
-                self.assertTrue(
-                    any(
-                        row.get("action") == "enter_long"
-                        for row in trading["strategy_chart_activity"]
-                    )
+                chart_entry = next(
+                    row
+                    for row in trading["strategy_chart_activity"]
+                    if row.get("action") == "enter_long"
                 )
+                self.assertNotIn("gate_snapshot", chart_entry)
+                self.assertIn("chart_plan", chart_entry)
                 self.assertTrue(
                     any(
                         row.get("action") == "enter_long"

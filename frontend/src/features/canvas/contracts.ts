@@ -149,6 +149,7 @@ export type CanonicalTradingPreview = {
   closed_trades: PreviewRow[];
   activity: PreviewRow[];
   strategy_activity?: PreviewRow[];
+  strategy_activity_page?: { complete?: boolean; next_offset?: number | null };
   strategy_chart_activity?: PreviewRow[];
   closed_trades_note: string;
   performance_snapshot?: PerformanceSnapshot;

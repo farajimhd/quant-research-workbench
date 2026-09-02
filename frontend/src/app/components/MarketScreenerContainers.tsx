@@ -69,7 +69,8 @@ export type WatchUniverseDefinition = {
   universe_id: string;
 };
 export type StrategyActivitySettings = { eventType: string; limit: number; runId: string; strategyId: string; ticker: string };
-type StrategyActivityResponse = { as_of: string; complete: boolean; rows: ScreenerRow[]; source: string };
+type StrategyActivityResponse = { as_of: string; complete: boolean; next_offset?: number | null; rows: ScreenerRow[]; source: string };
+type StrategyActivityPage = { complete?: boolean; next_offset?: number | null };
 type WatchUniverseCatalogResponse = {
   market_discovery?: { column_catalog?: DiscoveryColumn[]; core_scan?: { calculations?: DiscoveryCapability[]; columns?: string[]; name?: string; scan_id?: string }; signal_streams?: DiscoverySignalStream[]; watchlists?: DiscoveryWatchlist[] };
   run_plans?: { plans?: Array<{ name?: string; run_plan_id: string; universe_id: string }>; universes?: WatchUniverseDefinition[] };
@@ -755,7 +756,7 @@ export function WatchUniverseContainer({ asOf, live = false, onSettingsChange, o
   </section>;
 }
 
-export function StrategyActivityContainer({ asOf, focusSequence, historicalRows, onSettingsChange, onTickerSelect, runId, settings }: { asOf: string; focusSequence?: number; historicalRows?: ScreenerRow[]; onSettingsChange: (patch: Partial<StrategyActivitySettings>) => void; onTickerSelect: (ticker: string) => void; runId?: string; settings: StrategyActivitySettings }) {
+export function StrategyActivityContainer({ asOf, focusSequence, historicalPage, historicalRows, onSettingsChange, onTickerSelect, runId, settings }: { asOf: string; focusSequence?: number; historicalPage?: StrategyActivityPage; historicalRows?: ScreenerRow[]; onSettingsChange: (patch: Partial<StrategyActivitySettings>) => void; onTickerSelect: (ticker: string) => void; runId?: string; settings: StrategyActivitySettings }) {
   const [payload, setPayload] = useState<StrategyActivityResponse | null>(null);
   const [error, setError] = useState("");
   const [selectedRecordId, setSelectedRecordId] = useState("");
@@ -763,10 +764,20 @@ export function StrategyActivityContainer({ asOf, focusSequence, historicalRows,
   const [detailError, setDetailError] = useState("");
   const [detailLoading, setDetailLoading] = useState(false);
   const [inspectorWidth, setInspectorWidth] = useState(36);
+  const [olderRows, setOlderRows] = useState<ScreenerRow[]>([]);
+  const [olderPage, setOlderPage] = useState<StrategyActivityPage | null>(null);
+  const [olderLoading, setOlderLoading] = useState(false);
+  const [olderError, setOlderError] = useState("");
   const contentRef = useRef<HTMLDivElement>(null);
   const activityLimit = Math.max(2_000, Math.min(settings.limit, 50_000));
   const asOfRef = useRef(asOf);
   asOfRef.current = asOf;
+  const historicalWindowKey = `${runId ?? ""}:${String(historicalRows?.[0]?.record_id ?? "")}:${historicalRows?.length ?? 0}`;
+  useEffect(() => {
+    setOlderRows([]);
+    setOlderPage(null);
+    setOlderError("");
+  }, [historicalWindowKey]);
   useEffect(() => {
     // Replay and Backtest Canvas already load a bounded, lifecycle-relevant
     // activity projection with the canonical trading snapshot. Re-reading the
@@ -811,13 +822,18 @@ export function StrategyActivityContainer({ asOf, focusSequence, historicalRows,
     refresh();
     return () => { controller.abort(); window.clearTimeout(timer); };
   }, [activityLimit, focusSequence, historicalRows, runId, settings.eventType, settings.strategyId, settings.ticker]);
-  const rows = useMemo(() => (historicalRows ?? payload?.rows ?? []).filter((row) =>
+  const sourceRows = useMemo(() => {
+    const initial = historicalRows ?? payload?.rows ?? [];
+    if (historicalRows === undefined || !olderRows.length) return initial;
+    const seen = new Set(initial.map(strategyActivityRowKey));
+    return [...initial, ...olderRows.filter((row) => !seen.has(strategyActivityRowKey(row)))];
+  }, [historicalRows, olderRows, payload]);
+  const rows = useMemo(() => sourceRows.filter((row) =>
     (!settings.strategyId || String(row.strategy_id) === settings.strategyId)
     && (!settings.runId || String(row.run_id) === settings.runId)
     && (!settings.ticker || String(row.ticker) === settings.ticker)
     && (!settings.eventType || String(row.event_type) === settings.eventType)
-  ), [historicalRows, payload, settings]);
-  const sourceRows = historicalRows ?? payload?.rows ?? [];
+  ), [settings, sourceRows]);
   const strategies = useMemo(() => uniqueValues(sourceRows, "strategy_id"), [sourceRows]);
   const runs = useMemo(() => uniqueValues(sourceRows, "run_id"), [sourceRows]);
   const tickers = useMemo(() => uniqueValues(sourceRows, "ticker"), [sourceRows]);
@@ -832,6 +848,26 @@ export function StrategyActivityContainer({ asOf, focusSequence, historicalRows,
     });
     return { actions: decisions.length - waits.length, decisions: decisions.length, waits: waits.length, blockers: [...blockers.entries()].sort((left, right) => right[1] - left[1]).slice(0, 3) };
   }, [rows]);
+  const resolvedHistoricalPage = olderPage ?? historicalPage ?? { complete: true, next_offset: null };
+  const loadOlder = () => {
+    if (!runId || historicalRows === undefined || olderLoading || resolvedHistoricalPage.complete) return;
+    const query = new URLSearchParams({
+      as_of: asOfRef.current,
+      include_decision_evidence: "false",
+      limit: "2000",
+      offset: String(Number(resolvedHistoricalPage.next_offset ?? 0)),
+      run_id: runId,
+    });
+    setOlderLoading(true);
+    setOlderError("");
+    api<StrategyActivityResponse>(`/api/trading/strategy-activity?${query}`, { timeoutMs: 30000 })
+      .then((response) => {
+        setOlderRows((current) => [...current, ...response.rows]);
+        setOlderPage({ complete: response.complete, next_offset: response.next_offset });
+      })
+      .catch((reason) => setOlderError(reason instanceof Error ? reason.message : String(reason)))
+      .finally(() => setOlderLoading(false));
+  };
   useEffect(() => {
     const exactRecordId = String(selectedSummary?.record_id || "");
     if (!selectedRecordId || !exactRecordId) {
@@ -880,11 +916,13 @@ export function StrategyActivityContainer({ asOf, focusSequence, historicalRows,
       <ActivityFilter label="Run" onChange={(runId) => onSettingsChange({ runId })} options={runs} value={settings.runId} />
       <ActivityFilter label="Ticker" onChange={(ticker) => onSettingsChange({ ticker })} options={tickers} value={settings.ticker} />
       <ActivityFilter label="Event" onChange={(eventType) => onSettingsChange({ eventType })} options={STRATEGY_ACTIVITY_EVENT_OPTIONS.map(({ value }) => value)} value={settings.eventType} />
+      {historicalRows !== undefined && !resolvedHistoricalPage.complete ? <button className="strategy-activity-load-older" disabled={olderLoading} onClick={loadOlder} type="button">{olderLoading ? "Loading older…" : "Load older events"}</button> : null}
     </div>
+    {olderError ? <div className="canvas-inline-error">Older strategy activity unavailable: {olderError}</div> : null}
     <div className="strategy-activity-summary" aria-label="Strategy activity summary"><span><small>Decisions</small><strong>{activitySummary.decisions}</strong></span><span><small>Actions</small><strong>{activitySummary.actions}</strong></span><span><small>Waits</small><strong>{activitySummary.waits}</strong></span><div><small>Leading blockers</small><p>{activitySummary.blockers.length ? activitySummary.blockers.map(([reason, count]) => `${readableEvidenceLabel(reason)} (${count})`).join(" · ") : "None in this view"}</p></div></div>
     <div className="strategy-activity-content" ref={contentRef} style={{ "--strategy-inspector-width": `${inspectorWidth}%` } as CSSProperties}>
-      {error ? <div className="canvas-inline-error">Strategy activity unavailable: {error}</div> : <MarketListTable chronological columns={["event_time", "ticker", "event_type", "action", "state", "reason", "gates", "reason_code", "reference_price", "source"]} customColumns={[]} empty="No causal strategy events match these filters yet. Press Play or advance to the next strategy action." limit={100} lockedColumns={[]} onColumnsChange={() => undefined} onCustomColumnsChange={() => undefined} onRowSelect={(row) => setSelectedRecordId(strategyActivityRowKey(row))} onTickerSelect={onTickerSelect} pinnedSequence={focusSequence} rowAction={(row) => <button aria-label={`Inspect strategy decision at ${String(row.event_time || "unknown time")}`} className="strategy-activity-inspect" onClick={() => setSelectedRecordId(strategyActivityRowKey(row))} type="button">Inspect</button>} rowIdentity={strategyActivityRowKey} rows={rows} selectedRowId={selectedRecordId} title="Strategy activity" />}
-      <div aria-label="Resize decision evidence" aria-orientation="vertical" aria-valuemax={62} aria-valuemin={24} aria-valuenow={Math.round(inspectorWidth)} className="strategy-activity-resizer" onDoubleClick={() => setInspectorWidth(36)} onKeyDown={(event) => { if (event.key === "ArrowLeft") setInspectorWidth((value) => Math.min(62, value + 3)); if (event.key === "ArrowRight") setInspectorWidth((value) => Math.max(24, value - 3)); }} onPointerDown={startInspectorResize} role="separator" tabIndex={0} title="Drag to resize. Double-click to reset."><GripVertical aria-hidden="true" size={14} /></div>
+      {error ? <div className="canvas-inline-error">Strategy activity unavailable: {error}</div> : <MarketListTable chronological columns={["event_time", "ticker", "event_type", "action", "state", "reason", "gates", "reason_code", "reference_price", "source"]} customColumns={[]} empty="No causal strategy events match these filters yet. Press Play or advance to the next strategy action." limit={100} lockedColumns={[]} onColumnsChange={() => undefined} onCustomColumnsChange={() => undefined} onRowSelect={(row) => setSelectedRecordId(strategyActivityRowKey(row))} onTickerSelect={onTickerSelect} pinnedSequence={focusSequence} rowAction={(row) => <button aria-label={`Inspect strategy event at ${String(row.event_time || "unknown time")}`} className="strategy-activity-inspect" onClick={() => setSelectedRecordId(strategyActivityRowKey(row))} type="button">Inspect</button>} rowIdentity={strategyActivityRowKey} rows={rows} selectedRowId={selectedRecordId} title="Strategy activity" />}
+      <div aria-label="Resize event evidence" aria-orientation="vertical" aria-valuemax={62} aria-valuemin={24} aria-valuenow={Math.round(inspectorWidth)} className="strategy-activity-resizer" onDoubleClick={() => setInspectorWidth(36)} onKeyDown={(event) => { if (event.key === "ArrowLeft") setInspectorWidth((value) => Math.min(62, value + 3)); if (event.key === "ArrowRight") setInspectorWidth((value) => Math.max(24, value - 3)); }} onPointerDown={startInspectorResize} role="separator" tabIndex={0} title="Drag to resize. Double-click to reset."><GripVertical aria-hidden="true" size={14} /></div>
       {selectedRecordId ? <StrategyActivityInspector error={detailError} loading={detailLoading} onClose={() => setSelectedRecordId("")} row={selectedDetail ?? selectedSummary} /> : <div className="strategy-activity-inspector-empty"><FileCheck2 size={18} /><span><strong>Inspect any event</strong><small>Open a row to see its strategy revision, exact reason, gate checks, thresholds, and point-in-time evidence.</small></span></div>}
     </div>
   </section>;
@@ -895,19 +933,38 @@ function strategyActivityRowKey(row: ScreenerRow) {
 }
 
 function StrategyActivityInspector({ error, loading, onClose, row }: { error: string; loading: boolean; onClose: () => void; row: ScreenerRow | null }) {
-  const snapshot = (row?.gate_snapshot as ScreenerRow | undefined) ?? {};
+  const snapshot = strategyActivityEvidenceSnapshot(row);
   const sections = strategyEvidenceSections(snapshot);
   const action = readableEvidenceLabel(String(row?.action || row?.event_type || "Strategy event"));
   const outcomeLabel = String(row?.event_type || "") === "decision" ? "Final decision" : "Recorded outcome";
   const decisionTone = String(row?.action || "").toLowerCase() === "wait" ? "waiting" : "action";
-  return <aside className="strategy-activity-inspector" aria-label="Strategy decision details">
-    <header><div><span>Decision evidence</span><strong>{action}</strong></div><button aria-label="Close strategy decision details" onClick={onClose} type="button"><X size={16} /></button></header>
-    {loading ? <div className="strategy-activity-detail-state"><span className="loading-spinner" aria-hidden="true" /> Loading exact journal evidence…</div> : error ? <div className="canvas-inline-error">Decision evidence unavailable: {error}</div> : row ? <>
+  return <aside className="strategy-activity-inspector" aria-label="Strategy event details">
+    <header><div><span>Event evidence</span><strong>{action}</strong></div><button aria-label="Close strategy event details" onClick={onClose} type="button"><X size={16} /></button></header>
+    {loading ? <div className="strategy-activity-detail-state"><span className="loading-spinner" aria-hidden="true" /> Loading exact journal evidence…</div> : error ? <div className="canvas-inline-error">Event evidence unavailable: {error}</div> : row ? <>
       <section className="strategy-activity-decision" data-tone={decisionTone}><small>{outcomeLabel}</small><strong>{action}</strong><span>{String(row.reason || row.reason_code || "No explanation was recorded.")}</span></section>
       <div className="strategy-activity-detail-meta"><span><small>Strategy</small><strong>{String(row.strategy_id || "—")}</strong><em>revision {String(row.strategy_revision ?? "—")}</em></span><span><small>Market time</small><strong><MarketTime value={String(row.event_time || "")} /></strong></span><span><small>Ticker</small><strong>{String(row.ticker || "—")}</strong></span><span><small>State</small><strong>{readableEvidenceLabel(String(row.state || "—"))}</strong></span></div>
-      {sections.length ? <div className="strategy-activity-evidence-cards">{sections.map((section) => <StrategyEvidenceCard key={section.path} section={section} />)}</div> : <p className="strategy-activity-no-evidence">This event has no strategy gate snapshot.</p>}
+      {sections.length ? <div className="strategy-activity-evidence-cards">{sections.map((section) => <StrategyEvidenceCard key={section.path} section={section} />)}</div> : <p className="strategy-activity-no-evidence">This journal event has no additional recorded evidence.</p>}
     </> : <p className="strategy-activity-no-evidence">The selected journal record is unavailable.</p>}
   </aside>;
+}
+
+function strategyActivityEvidenceSnapshot(row: ScreenerRow | null): ScreenerRow {
+  if (!row) return {};
+  const gateSnapshot = (row.gate_snapshot as ScreenerRow | undefined) ?? {};
+  const eventEvidence = (row.event_evidence as ScreenerRow | undefined) ?? {};
+  return {
+    ...gateSnapshot,
+    ...(Object.keys(eventEvidence).length ? { recorded_event: eventEvidence } : {}),
+    journal_identity: {
+      entity_id: row.entity_id,
+      record_id: row.record_id,
+      recorded_at: row.recorded_at,
+      recording_latency_ms: row.recording_latency_ms,
+      run_id: row.run_id,
+      sequence: row.sequence,
+      source: row.source,
+    },
+  };
 }
 
 type StrategyEvidenceFact = { label: string; path: string; result?: "pass" | "fail" | "clear"; value: string };
@@ -1525,6 +1582,7 @@ function tableFilterColumn(definition: FieldDefinition): TableFilterColumn {
     kind: numeric ? "number" : temporal ? "datetime" : presentation === "boolean" ? "boolean" : presentation === "category" ? "category" : "text",
     label: definition.label,
     temporalUnit: presentation === "date" ? "date" : "datetime",
+    timeZone: temporal ? "America/New_York" : undefined,
   };
 }
 
