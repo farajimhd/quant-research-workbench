@@ -2,6 +2,22 @@
 
 ## 2026
 
+### [2026-08-28 time unavailable - Rebuild Replay, structural levels, and SUGP strategy UAT](docs/codex/chat-summaries/2026/CHAT-20260828-UNKNOWN-sugp-replay-structural-strategy-uat.md)
+
+- Chat/task ID: unavailable
+- Related tasks: `TASK-0014`, `TASK-0051`, `TASK-0195`, `TASK-0198`
+- Summary written: 2026-09-01 17:58 PDT
+
+Reworked historical Replay into a causal, reviewable strategy laboratory;
+added persistent split-adjusted Unified Structural Level Books, position-level
+chart and lifecycle evidence, and repeated SUGP-only UAT of the long-momentum
+squeeze strategy. The latest full 04:00-09:30 ET SUGP run completed four
+positions for +$2,138.732, but exposed a stale accepted-resistance frontier
+that blocked all entries after 04:11, a concurrent snapshot race, misleading
+execution-fragment trade counts, and unacceptable maximum-throughput runtime.
+SUGP remains the only authorized test ticker until these defects are fixed and
+the user accepts the full 1-second chart and lifecycle evidence.
+
 ### [2026-08-26 08:46 PDT - Repair DeepFM serving drift, forecast gold, and News Synthesis V61](/docs/codex/chat-summaries/2026/CHAT-20260826-0846-news-forecast-gold-reaudit-v61-alignment.md)
 
 - Chat/task ID: `01a03ec0-9ed5-7b82-9920-77dec0c69ae7`
