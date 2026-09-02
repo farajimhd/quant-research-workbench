@@ -126,7 +126,7 @@ def test_strategy_activity_loads_a_reviewable_history_window() -> None:
     assert "let historicalRetryAvailable = Boolean(runId);" in container_source
     assert "historicalRetryAvailable = false;" in container_source
     assert 'include_decision_evidence: "false"' in container_source
-    assert 'record_id: selectedRecordId' in container_source
+    assert 'record_id: exactRecordId' in container_source
     assert 'className="strategy-activity-inspect"' in container_source
     assert 'aria-label="Strategy decision details"' in container_source
     assert "strategyEvidenceFacts(snapshot)" in container_source
@@ -140,8 +140,10 @@ def test_completed_strategy_review_opens_chart_performance_and_audit_surfaces() 
     source = CANVAS_PAGE.read_text(encoding="utf-8")
     replay_layout = source.split("const STRATEGY_REPLAY_CONTAINER_IDS", 1)[1].split("function normalizeInheritedLayouts", 1)[0]
 
-    assert '"charts_quotes"' in replay_layout
-    assert '"performance_journal"' in replay_layout
+    assert ': WorkspaceContainerId[] = ["performance_journal", "strategy_activity", "positions", "orders", "fills"]' in replay_layout
+    assert "if (state) return state;" in replay_layout
+    assert "availableWorkspaceWidth() - margin * 2" in replay_layout
+    assert "y: margin + index * (height + gap)" in replay_layout
     assert 'timeframe: "1s"' in replay_layout
     assert '"indicator.macd"' in replay_layout
     assert '"strategy.presentation"' in replay_layout
@@ -149,10 +151,29 @@ def test_completed_strategy_review_opens_chart_performance_and_audit_surfaces() 
     assert "registry.linkAssignments.charts_quotes" in replay_layout
     assert "[chartLinkGroup]: { ...registry.linkContexts[chartLinkGroup], symbol: ticker }" in replay_layout
     assert 'chart: { ...chartsQuotesSettings.chart, ...(ticker ? { symbol: ticker } : {}), timeframe: "1s"' in replay_layout
-    assert "openIds.push(requiredKind)" in replay_layout
+    assert "openIds.push(requiredKind)" not in replay_layout
     strategy_container_ids = replay_layout.split("= [", 1)[1].split("];", 1)[0]
-    for expensive_detail in ('"closed_trades"', '"orders"', '"fills"', '"portfolio"', '"signal_stream"', '"watchlist"'):
+    for expensive_detail in ('"charts_quotes"', '"closed_trades"', '"portfolio"', '"signal_stream"', '"watchlist"'):
         assert expensive_detail not in strategy_container_ids
+
+
+def test_historical_workspace_layout_is_stable_across_runs_and_revisions() -> None:
+    source = CANVAS_PAGE.read_text(encoding="utf-8")
+
+    assert '`${runtimeMode}.${replayRun.execution_mode || "manual"}.${runtimeWorkspaceId || canvasId}`' in source
+    assert 'durableHistoricalWorkspace ? "persistent-layout-v1" : runtimeRevision' in source
+    runtime_scope = source.split("const durableHistoricalWorkspace", 1)[1].split("const [overlayEpoch", 1)[0]
+    assert "replayRun.run_id" not in runtime_scope
+
+
+def test_strategy_activity_row_selects_and_highlights_the_evidence_card() -> None:
+    source = SCREENER_CONTAINERS.read_text(encoding="utf-8")
+
+    assert 'onRowSelect={(row) => setSelectedRecordId(strategyActivityRowKey(row))}' in source
+    assert "rowIdentity={strategyActivityRowKey}" in source
+    assert 'data-selectable={selectable ? "true" : undefined}' in source
+    assert 'aria-selected={selectable ? selected : undefined}' in source
+    assert 'event.key !== "Enter" && event.key !== " "' in source
 
 
 def test_backtest_workspaces_use_the_bounded_compact_viewport() -> None:

@@ -819,7 +819,7 @@ export function StrategyActivityContainer({ asOf, focusSequence, historicalRows,
   const strategies = useMemo(() => uniqueValues(sourceRows, "strategy_id"), [sourceRows]);
   const runs = useMemo(() => uniqueValues(sourceRows, "run_id"), [sourceRows]);
   const tickers = useMemo(() => uniqueValues(sourceRows, "ticker"), [sourceRows]);
-  const selectedSummary = useMemo(() => rows.find((row) => String(row.record_id || "") === selectedRecordId) ?? null, [rows, selectedRecordId]);
+  const selectedSummary = useMemo(() => rows.find((row) => strategyActivityRowKey(row) === selectedRecordId) ?? null, [rows, selectedRecordId]);
   const activitySummary = useMemo(() => {
     const decisions = rows.filter((row) => String(row.event_type) === "decision");
     const waits = decisions.filter((row) => String(row.action) === "wait");
@@ -831,9 +831,11 @@ export function StrategyActivityContainer({ asOf, focusSequence, historicalRows,
     return { actions: decisions.length - waits.length, decisions: decisions.length, waits: waits.length, blockers: [...blockers.entries()].sort((left, right) => right[1] - left[1]).slice(0, 3) };
   }, [rows]);
   useEffect(() => {
-    if (!selectedRecordId) {
+    const exactRecordId = String(selectedSummary?.record_id || "");
+    if (!selectedRecordId || !exactRecordId) {
       setSelectedDetail(null);
       setDetailError("");
+      setDetailLoading(false);
       return;
     }
     const controller = new AbortController();
@@ -841,7 +843,7 @@ export function StrategyActivityContainer({ asOf, focusSequence, historicalRows,
       as_of: asOfRef.current,
       include_decision_evidence: "true",
       limit: "1",
-      record_id: selectedRecordId,
+      record_id: exactRecordId,
     });
     if (runId) query.set("run_id", runId);
     setDetailLoading(true);
@@ -851,7 +853,7 @@ export function StrategyActivityContainer({ asOf, focusSequence, historicalRows,
       .catch((reason) => { if (!controller.signal.aborted) setDetailError(reason instanceof Error ? reason.message : String(reason)); })
       .finally(() => { if (!controller.signal.aborted) setDetailLoading(false); });
     return () => controller.abort();
-  }, [runId, selectedRecordId]);
+  }, [runId, selectedRecordId, selectedSummary]);
   return <section className="market-list-surface strategy-activity-surface" aria-label="Strategy activity">
     <header className="market-list-heading"><div><span className="market-list-eyebrow"><FileCheck2 size={12} /> Durable runtime history</span><h3>Strategy Activity</h3><p>{rows.length} causal signals, decisions, and state changes at or before <MarketTime value={asOf} />. Wait decisions are retained so missed trades and blocked entries remain explainable.</p></div><span className="market-list-owner strategy">Trading Journal</span></header>
     <div className="strategy-activity-filters">
@@ -862,10 +864,14 @@ export function StrategyActivityContainer({ asOf, focusSequence, historicalRows,
     </div>
     <div className="strategy-activity-summary" aria-label="Strategy activity summary"><span><small>Decisions</small><strong>{activitySummary.decisions}</strong></span><span><small>Actions</small><strong>{activitySummary.actions}</strong></span><span><small>Waits</small><strong>{activitySummary.waits}</strong></span><div><small>Leading blockers</small><p>{activitySummary.blockers.length ? activitySummary.blockers.map(([reason, count]) => `${readableEvidenceLabel(reason)} (${count})`).join(" · ") : "None in this view"}</p></div></div>
     <div className="strategy-activity-content">
-      {error ? <div className="canvas-inline-error">Strategy activity unavailable: {error}</div> : <MarketListTable chronological columns={["event_time", "ticker", "event_type", "action", "state", "reason", "gates", "reason_code", "reference_price", "source"]} customColumns={[]} empty="No causal strategy events match these filters yet. Press Play or advance to the next strategy action." limit={100} lockedColumns={[]} onColumnsChange={() => undefined} onCustomColumnsChange={() => undefined} onTickerSelect={onTickerSelect} pinnedSequence={focusSequence} rowAction={(row) => <button aria-label={`Inspect strategy decision at ${String(row.event_time || "unknown time")}`} className="strategy-activity-inspect" onClick={() => setSelectedRecordId(String(row.record_id || ""))} type="button">Inspect</button>} rows={rows} title="Strategy activity" />}
+      {error ? <div className="canvas-inline-error">Strategy activity unavailable: {error}</div> : <MarketListTable chronological columns={["event_time", "ticker", "event_type", "action", "state", "reason", "gates", "reason_code", "reference_price", "source"]} customColumns={[]} empty="No causal strategy events match these filters yet. Press Play or advance to the next strategy action." limit={100} lockedColumns={[]} onColumnsChange={() => undefined} onCustomColumnsChange={() => undefined} onRowSelect={(row) => setSelectedRecordId(strategyActivityRowKey(row))} onTickerSelect={onTickerSelect} pinnedSequence={focusSequence} rowAction={(row) => <button aria-label={`Inspect strategy decision at ${String(row.event_time || "unknown time")}`} className="strategy-activity-inspect" onClick={() => setSelectedRecordId(strategyActivityRowKey(row))} type="button">Inspect</button>} rowIdentity={strategyActivityRowKey} rows={rows} selectedRowId={selectedRecordId} title="Strategy activity" />}
       {selectedRecordId ? <StrategyActivityInspector error={detailError} loading={detailLoading} onClose={() => setSelectedRecordId("")} row={selectedDetail ?? selectedSummary} /> : <div className="strategy-activity-inspector-empty"><FileCheck2 size={18} /><span><strong>Inspect any event</strong><small>Open a row to see its strategy revision, exact reason, gate checks, thresholds, and point-in-time evidence.</small></span></div>}
     </div>
   </section>;
+}
+
+function strategyActivityRowKey(row: ScreenerRow) {
+  return String(row.record_id || [row.run_id, row.sequence, row.event_time, row.event_type, row.ticker].map((value) => String(value ?? "")).join(":"));
 }
 
 function StrategyActivityInspector({ error, loading, onClose, row }: { error: string; loading: boolean; onClose: () => void; row: ScreenerRow | null }) {
@@ -985,11 +991,14 @@ function MarketListTable({
   mergeCompanyWithIdentity = true,
   onColumnsChange,
   onCustomColumnsChange,
+  onRowSelect,
   onTickerSelect,
   pinnedSequence,
   recencyRail = false,
   rowAction,
+  rowIdentity,
   rows,
+  selectedRowId,
   sortColumn,
   title,
   viewStateKey,
@@ -1006,11 +1015,14 @@ function MarketListTable({
   mergeCompanyWithIdentity?: boolean;
   onColumnsChange: (columns: string[]) => void;
   onCustomColumnsChange: (columns: ScannerCustomColumn[]) => void;
+  onRowSelect?: (row: ScreenerRow) => void;
   onTickerSelect?: (ticker: string) => void;
   pinnedSequence?: number;
   recencyRail?: boolean;
   rowAction?: (row: ScreenerRow) => ReactNode;
+  rowIdentity?: (row: ScreenerRow) => string;
   rows: ScreenerRow[];
+  selectedRowId?: string;
   sortColumn?: string;
   title: string;
   viewStateKey?: string;
@@ -1156,7 +1168,7 @@ function MarketListTable({
       </div>
       <button aria-expanded={columnPickerOpen} className="market-list-columns-button" onClick={() => setColumnPickerOpen((open) => !open)} type="button"><Columns3 size={14} /> Columns <b>{selectedColumns.length}</b></button>
     </div><TableActiveFilterBar columns={filterColumns} conditions={columnFilters} onChange={setColumnFilters} /></div>
-  <div className="market-list-table-scroll"><table className={`market-list-table${companyInIdentity ? " with-company-identity" : ""}`}><thead><tr>{tableColumns.map((column) => { const definition = catalogField(column, customColumns, catalog); const sorted = sort.column === column; const className = columnClass(column, definition); const menuOpen = headerMenuColumn === column; return column === "logo" ? <th aria-label="Ticker logo" className={className} key={column} /> : <th aria-sort={sorted ? (sort.direction === "asc" ? "ascending" : "descending") : "none"} className={className} data-menu-open={menuOpen ? "true" : undefined} key={column}><button aria-expanded={menuOpen} aria-label={`Configure ${definition.label} column`} onClick={() => setHeaderMenuColumn((current) => current === column ? null : column)} title={`Configure ${definition.label}`} type="button"><span>{definition.label}</span>{sorted ? sort.direction === "asc" ? <ArrowUp size={13} /> : <ArrowDown size={13} /> : <ChevronDown size={13} />}</button>{menuOpen ? <ColumnHeaderMenu column={column} definition={definition} locked={effectiveLockedColumns.includes(column)} onAnchorChange={(value) => changeTechnicalAnchor(column, value)} onMove={(target) => moveColumn(column, target)} onRemove={() => removeColumn(column)} onSort={(direction) => changeSort(column, direction)} onSourceChange={(value) => changeTechnicalSource(column, value)} onTimeframeChange={(value) => changeTechnicalTimeframe(column, value)} ref={headerMenuRef} /> : null}</th>; })}{rowAction ? <th aria-label="Row actions" /> : null}</tr></thead><tbody>{visibleRows.length ? visibleRows.map((row, index) => { const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase(); return <tr data-pinned={pinnedSequence !== undefined && Number(row.sequence) === pinnedSequence ? "true" : undefined} data-recency={recencyRail ? eventRecency(row.event_time, wallClockMs) : undefined} key={`${ticker || "row"}:${row.event_time ?? index}:${index}`}>{tableColumns.map((column) => { const definition = catalogField(column, customColumns, catalog); return <td className={`${toneClass(row[column], column, customColumns, catalog)} ${columnClass(column, definition)}`.trim()} key={column}>{renderMarketCell(row, column, presentations, customColumns, catalog, companyInIdentity, onTickerSelect)}</td>; })}{rowAction ? <td className="market-list-row-action">{rowAction(row)}</td> : null}</tr>; }) : <tr><td className="market-list-empty" colSpan={tableColumns.length + (rowAction ? 1 : 0)}>{empty}</td></tr>}</tbody></table></div>
+  <div className="market-list-table-scroll"><table className={`market-list-table${companyInIdentity ? " with-company-identity" : ""}`}><thead><tr>{tableColumns.map((column) => { const definition = catalogField(column, customColumns, catalog); const sorted = sort.column === column; const className = columnClass(column, definition); const menuOpen = headerMenuColumn === column; return column === "logo" ? <th aria-label="Ticker logo" className={className} key={column} /> : <th aria-sort={sorted ? (sort.direction === "asc" ? "ascending" : "descending") : "none"} className={className} data-menu-open={menuOpen ? "true" : undefined} key={column}><button aria-expanded={menuOpen} aria-label={`Configure ${definition.label} column`} onClick={() => setHeaderMenuColumn((current) => current === column ? null : column)} title={`Configure ${definition.label}`} type="button"><span>{definition.label}</span>{sorted ? sort.direction === "asc" ? <ArrowUp size={13} /> : <ArrowDown size={13} /> : <ChevronDown size={13} />}</button>{menuOpen ? <ColumnHeaderMenu column={column} definition={definition} locked={effectiveLockedColumns.includes(column)} onAnchorChange={(value) => changeTechnicalAnchor(column, value)} onMove={(target) => moveColumn(column, target)} onRemove={() => removeColumn(column)} onSort={(direction) => changeSort(column, direction)} onSourceChange={(value) => changeTechnicalSource(column, value)} onTimeframeChange={(value) => changeTechnicalTimeframe(column, value)} ref={headerMenuRef} /> : null}</th>; })}{rowAction ? <th aria-label="Row actions" /> : null}</tr></thead><tbody>{visibleRows.length ? visibleRows.map((row, index) => { const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase(); const selectable = Boolean(onRowSelect); const selected = Boolean(selectedRowId) && (rowIdentity?.(row) ?? String(row.record_id || "")) === selectedRowId; const selectRow = () => onRowSelect?.(row); return <tr aria-selected={selectable ? selected : undefined} data-pinned={pinnedSequence !== undefined && Number(row.sequence) === pinnedSequence ? "true" : undefined} data-recency={recencyRail ? eventRecency(row.event_time, wallClockMs) : undefined} data-selectable={selectable ? "true" : undefined} key={`${ticker || "row"}:${row.event_time ?? index}:${index}`} onClick={(event) => { const target = event.target; if (target instanceof Element && target.closest("button, a, input, select, textarea")) return; selectRow(); }} onKeyDown={(event) => { if (!selectable || (event.key !== "Enter" && event.key !== " ")) return; event.preventDefault(); selectRow(); }} tabIndex={selectable ? 0 : undefined}>{tableColumns.map((column) => { const definition = catalogField(column, customColumns, catalog); return <td className={`${toneClass(row[column], column, customColumns, catalog)} ${columnClass(column, definition)}`.trim()} key={column}>{renderMarketCell(row, column, presentations, customColumns, catalog, companyInIdentity, onTickerSelect)}</td>; })}{rowAction ? <td className="market-list-row-action">{rowAction(row)}</td> : null}</tr>; }) : <tr><td className="market-list-empty" colSpan={tableColumns.length + (rowAction ? 1 : 0)}>{empty}</td></tr>}</tbody></table></div>
     {columnPickerOpen ? <ColumnPicker catalog={catalog} columns={selectedColumns} customColumns={customColumns} fieldCoverage={fieldCoverage} lockedColumns={effectiveLockedColumns} onAddTechnical={addTechnicalColumn} onChange={onColumnsChange} onClose={() => setColumnPickerOpen(false)} /> : null}
     {newsPopover ? <TickerNewsPopover anchor={newsPopover.anchor} onClose={() => setNewsPopover(null)} ticker={newsPopover.ticker} /> : null}
   </div>;

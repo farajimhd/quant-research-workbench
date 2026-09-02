@@ -57,7 +57,7 @@ import { StockFactsContainer } from "../app/components/StockFactsContainer";
 import { XbrlAnalysisContainer, type XbrlAnalysisSettings } from "../app/components/XbrlAnalysisContainer";
 import { useWallClock } from "../app/components/useWallClock";
 import { TickerIdentity, useTickerPresentations } from "../app/components/TickerIdentity";
-import { TRADING_WORKSPACE_LAYOUT_VERSION, TradingWorkspace, createFocusLayouts, type WorkspaceGroupTemplate } from "../app/components/TradingWorkspace";
+import { TRADING_WORKSPACE_LAYOUT_VERSION, TradingWorkspace, availableWorkspaceHeight, availableWorkspaceWidth, createFocusLayouts, type WorkspaceGroupTemplate } from "../app/components/TradingWorkspace";
 import type { WorkspaceWindowLayout, WorkspaceWindowMeta, WorkspaceWindowStatus } from "../app/components/WorkspaceCanvas";
 import { normalizeWorkspaceGroups } from "../app/workspaceGroups";
 import { TRADING_WORKSPACE_CONTAINERS, containerSupportsCanvasLink, containerSupportsSymbolLink, type WorkspaceContainerDefinition, type WorkspaceContainerId } from "../app/tradingWorkspace";
@@ -541,14 +541,17 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   const accountSignature = [...resolvedAccountKeys].sort().join(".") || runtimeMode;
   const runtimeBase = replayRun?.canvas_profile ?? approvedCanvas?.profile;
   const runtimeRevision = replayRun?.configuration_content_hash || replayRun?.canvas_revision || approvedCanvas?.content_hash || approvedCanvas?.canvas_revision || "draft";
+  const durableHistoricalWorkspace = Boolean(replayRun && !transient && ["backtest", "backtest_debug", "replay"].includes(runtimeMode));
   const runtimeScope = replayRun
-    ? runtimeWorkspaceId
-      ? `${runtimeMode}.${replayRun.run_id}.${runtimeWorkspaceId}`
-      : `${runtimeMode}.${replayRun.execution_mode || "manual"}`
+    ? `${runtimeMode}.${replayRun.execution_mode || "manual"}.${runtimeWorkspaceId || canvasId}`
     : liveMode ? `${runtimeMode}.${accountSignature}` : runtimeMode === "research" ? `research.${runtimeWorkspaceId || canvasId}` : approvedCanvas ? "canvas" : "configuration";
-  const runtimeRegistryStorageKey = runtimeBase ? canvasRuntimeRegistryStorageKey(runtimeScope, runtimeRevision) : "";
+  // Historical workspaces are user presentation preferences, not run output.
+  // Keep one durable namespace per mode/workspace so a new run or immutable
+  // strategy revision cannot silently discard the user's composition.
+  const runtimeStorageRevision = durableHistoricalWorkspace ? "persistent-layout-v1" : runtimeRevision;
+  const runtimeRegistryStorageKey = runtimeBase ? canvasRuntimeRegistryStorageKey(runtimeScope, runtimeStorageRevision) : "";
   const workspaceStorageKey = runtimeBase
-    ? canvasRuntimeWorkspaceStorageKey(runtimeScope, runtimeRevision, canvasId)
+    ? canvasRuntimeWorkspaceStorageKey(runtimeScope, runtimeStorageRevision, canvasId)
     : canvasWorkspaceStorageKey(canvasId);
   const [overlayEpoch, setOverlayEpoch] = useState(0);
   const [runtimeRebase, setRuntimeRebase] = useState<CanvasRuntimeRebase | null>(() => {
@@ -1809,41 +1812,33 @@ function runtimeCanvasState(profile: CanvasRegistry, storageKey: string, canvasI
   const kind = workspaceContainerKind(requestedInstanceId, state);
   return { groups: {}, instances: { [requestedInstanceId]: kind }, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts: createFocusLayouts([requestedInstanceId]), openIds: [requestedInstanceId] };
 }
-const STRATEGY_REPLAY_CONTAINER_IDS: WorkspaceContainerId[] = ["charts_quotes", "strategy_activity", "performance_journal", "positions"];
+const STRATEGY_REPLAY_CONTAINER_IDS: WorkspaceContainerId[] = ["performance_journal", "strategy_activity", "positions", "orders", "fills"];
 function strategyReplayLayouts(openIds: string[]): Record<string, WorkspaceWindowLayout> {
-  const required: Record<string, WorkspaceWindowLayout> = {
-    charts_quotes: { fullscreen: false, h: 760, minimized: false, w: 1752, x: 0, y: 0, z: 10 },
-    strategy_activity: { fullscreen: false, h: 440, minimized: false, w: 900, x: 0, y: 772, z: 9 },
-    performance_journal: { fullscreen: false, h: 440, minimized: false, w: 840, x: 912, y: 772, z: 8 },
-    positions: { fullscreen: false, h: 430, minimized: false, w: 1752, x: 0, y: 1224, z: 7 },
-  };
-  const extras = openIds.filter((id) => !(id in required));
-  const fallback = createFocusLayouts(extras);
-  return Object.fromEntries(openIds.map((id, index) => [id, required[id] ?? { ...fallback[id], y: 2160 + index * 24 }]));
+  const margin = 12;
+  const gap = 12;
+  const width = Math.max(680, availableWorkspaceWidth() - margin * 2);
+  const height = Math.max(540, Math.min(680, Math.floor(availableWorkspaceHeight() * 0.68)));
+  return Object.fromEntries(openIds.map((id, index) => [id, {
+    fullscreen: false,
+    h: height,
+    minimized: false,
+    w: width,
+    x: margin,
+    y: margin + index * (height + gap),
+    z: openIds.length - index,
+  }]));
 }
 function strategyReplayCanvasState(state: CanvasWorkspaceState | null): CanvasWorkspaceState {
-  if (!state) {
-    return {
-      groups: {},
-      instances: Object.fromEntries(STRATEGY_REPLAY_CONTAINER_IDS.map((id) => [id, id])) as Record<string, WorkspaceContainerId>,
-      layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
-      layouts: strategyReplayLayouts(STRATEGY_REPLAY_CONTAINER_IDS),
-      openIds: [...STRATEGY_REPLAY_CONTAINER_IDS],
-    };
-  }
-  const allowed = new Set<WorkspaceContainerId>(STRATEGY_REPLAY_CONTAINER_IDS);
-  const openIds = state.openIds.filter((id) => allowed.has(workspaceContainerKind(id, state)));
-  for (const requiredKind of STRATEGY_REPLAY_CONTAINER_IDS) {
-    if (!openIds.some((id) => workspaceContainerKind(id, state) === requiredKind)) openIds.push(requiredKind);
-  }
-  const open = new Set(openIds);
-  const requiredLayouts = strategyReplayLayouts(openIds);
+  // This is an operator workspace restore, not a publishable profile snapshot.
+  // Preserve every saved presentation choice, including minimized/fullscreen
+  // state, instead of normalizing those choices away.
+  if (state) return state;
   return {
-    groups: normalizeWorkspaceGroups(state.groups, openIds),
-    instances: { ...Object.fromEntries(Object.entries(state.instances).filter(([id]) => open.has(id))), ...Object.fromEntries(STRATEGY_REPLAY_CONTAINER_IDS.filter((id) => open.has(id)).map((id) => [id, id])) } as Record<string, WorkspaceContainerId>,
+    groups: {},
+    instances: Object.fromEntries(STRATEGY_REPLAY_CONTAINER_IDS.map((id) => [id, id])) as Record<string, WorkspaceContainerId>,
     layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
-    layouts: { ...requiredLayouts, ...Object.fromEntries(Object.entries(state.layouts).filter(([id]) => open.has(id))) },
-    openIds,
+    layouts: strategyReplayLayouts(STRATEGY_REPLAY_CONTAINER_IDS),
+    openIds: [...STRATEGY_REPLAY_CONTAINER_IDS],
   };
 }
 function strategyReplayRegistry(registry: CanvasRegistry, run: CanvasReplayRun): CanvasRegistry {

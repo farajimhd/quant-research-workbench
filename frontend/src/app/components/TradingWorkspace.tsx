@@ -1187,7 +1187,7 @@ function createAddedLayout(layouts: Record<string, WorkspaceWindowLayout>, index
     : { fullscreen: false, h: 320, minimized: false, w: Math.min(560, width - 36), x: 18 + offset, y: 18 + offset, z: highest + 1 };
 }
 
-function availableWorkspaceWidth(noSidebar = false) {
+export function availableWorkspaceWidth(noSidebar = false) {
   if (typeof window === "undefined") return 1180;
   const storedScale = Number(window.localStorage.getItem("quant-research-workbench.ui-scale"));
   const scale = Number.isFinite(storedScale) && storedScale > 0 ? storedScale : 1;
@@ -1197,7 +1197,7 @@ function availableWorkspaceWidth(noSidebar = false) {
   return Math.max(680, Math.floor(scaledViewportWidth - shellWidth - contentPadding));
 }
 
-function availableWorkspaceHeight() {
+export function availableWorkspaceHeight() {
   if (typeof window === "undefined") return 900;
   const storedScale = Number(window.localStorage.getItem("quant-research-workbench.ui-scale"));
   const scale = Number.isFinite(storedScale) && storedScale > 0 ? storedScale : 1;
