@@ -149,6 +149,14 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert "return leftX + (rightX - leftX) * ratio" in renderer_source
     assert "The triangle tip is the exact event-time / execution-price coordinate" in renderer_source
     assert "const span = clippedTradeSpan(entryX, exitX, width)" in renderer_source
+    assert "autoscaleInfo(startLogical: number, endLogical: number): AutoscaleInfo | null" in renderer_source
+    assert "tradeAnnotationAutoscaleInfo(this.state, startLogical, endLogical)" in renderer_source
+    assert 'drawCanvasTradeLabel(context, label, right + 4, y + 3' in renderer_source
+    assert renderer_source.index('drawCanvasTradeLine(context, span.left, span.right, entryY') < renderer_source.index('annotation.levelPrices?.slice(0, 3)')
+    assert renderer_source.index('annotation.levelPrices?.slice(0, 3)') < renderer_source.index('drawCanvasTradeArrow(context, entryX, entryY')
+    assert "if (left + labelWidth < 0 || left > width || top + labelHeight < 0 || top > height) return;" in renderer_source
+    assert "Math.max(3, Math.min(preferredLeft" not in renderer_source
+    assert "Math.max(3, Math.min(top" not in renderer_source
     assert "anchor - 3" in renderer_source
     draw_source = renderer_source.split("function drawRegions", 1)[1].split("function drawSessionRegions", 1)[0]
     assert "drawTradeAnnotations(" not in draw_source

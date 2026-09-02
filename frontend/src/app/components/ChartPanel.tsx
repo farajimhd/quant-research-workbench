@@ -440,6 +440,10 @@ class TradeAnnotationPrimitive implements ISeriesPrimitive<Time> {
     return [this.paneView];
   }
 
+  autoscaleInfo(startLogical: number, endLogical: number): AutoscaleInfo | null {
+    return tradeAnnotationAutoscaleInfo(this.state, startLogical, endLogical);
+  }
+
   setState(state: TradeAnnotationPrimitiveState) {
     this.state = state;
     this.requestUpdate?.();
@@ -6302,6 +6306,12 @@ function drawTradeAnnotationPrimitiveGeometry(
     const entryColor = strategyPresentationColor(settings.entry.color, infoColor);
     const exitColor = strategyPresentationColor(settings.exit.color, exitFallbackColor);
     const resultColor = validHexColor(annotation.exitLabelColor, Number(annotation.pnl) > 0 ? successColor : Number(annotation.pnl) < 0 ? dangerColor : exitColor);
+    if (settings.entry.visible) {
+      drawCanvasTradeLine(context, span.left, span.right, entryY, entryColor, annotation.selected ? Math.min(5, settings.entry.lineWidth + 1) : settings.entry.lineWidth, settings.entry.lineStyle, settings.entry.opacity);
+    }
+    if (settings.exit.visible) {
+      drawCanvasTradeLine(context, span.left, span.right, exitY, exitColor, annotation.selected ? Math.min(5, settings.exit.lineWidth + 1) : settings.exit.lineWidth, settings.exit.lineStyle, settings.exit.opacity);
+    }
     if (settings.stop.visible && typeof annotation.stopPrice === "number" && Number.isFinite(annotation.stopPrice)) {
       const y = priceSeries.priceToCoordinate(annotation.stopPrice);
       if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, strategyPresentationColor(settings.stop.color, dangerColor), "SL", chartBackground, width, height, settings.stop);
@@ -6319,12 +6329,10 @@ function drawTradeAnnotationPrimitiveGeometry(
       if (y !== null) drawCanvasTradeGuide(context, span.left, span.right, y, strategyPresentationColor(settings.levels.color, infoColor), "Trigger", chartBackground, width, height, settings.levels);
     }
     if (settings.entry.visible) {
-      drawCanvasTradeLine(context, span.left, span.right, entryY, entryColor, annotation.selected ? Math.min(5, settings.entry.lineWidth + 1) : settings.entry.lineWidth, settings.entry.lineStyle, settings.entry.opacity);
       drawCanvasTradeArrow(context, entryX, entryY, entryColor, "entry", annotation.selected === true, 7, settings.entry.opacity);
       drawCanvasTradeLabel(context, compactTradeLabel(annotation.entryLabelParts, annotation.entryLabel, "Entry"), entryX, entryY + 14, entryColor, chartBackground, annotation.entryLabelSide ?? "left", width, height, settings.entry.labelSize, settings.entry.opacity);
     }
     if (settings.exit.visible) {
-      drawCanvasTradeLine(context, span.left, span.right, exitY, exitColor, annotation.selected ? Math.min(5, settings.exit.lineWidth + 1) : settings.exit.lineWidth, settings.exit.lineStyle, settings.exit.opacity);
       drawCanvasTradeArrow(context, exitX, exitY, exitColor, "exit", annotation.selected === true, 7, settings.exit.opacity);
       drawCanvasTradeLabel(context, compactTradeLabel(annotation.exitLabelParts, annotation.exitLabel, "Exit"), exitX, exitY - settings.exit.labelSize - 15, resultColor, chartBackground, annotation.exitLabelSide ?? "right", width, height, settings.exit.labelSize, settings.exit.opacity);
     }
@@ -6473,7 +6481,7 @@ function drawCanvasTradeGuide(
   context.save();
   drawCanvasTradeLine(context, left, right, y, color, settings.lineWidth, settings.lineStyle, settings.opacity);
   context.restore();
-  drawCanvasTradeLabel(context, label, left, y + 3, color, background, "left", width, height, settings.labelSize, settings.opacity);
+  drawCanvasTradeLabel(context, label, right + 4, y + 3, color, background, "left", width, height, settings.labelSize, settings.opacity);
 }
 
 function drawCanvasTradeLabel(
@@ -6494,16 +6502,50 @@ function drawCanvasTradeLabel(
   context.textBaseline = "middle";
   const labelWidth = Math.ceil(context.measureText(text).width) + 10;
   const labelHeight = fontSize + 7;
-  const preferredLeft = side === "right" ? anchorX - labelWidth : anchorX;
-  const left = Math.max(3, Math.min(preferredLeft, width - labelWidth - 3));
-  const clampedTop = Math.max(3, Math.min(top, height - labelHeight - 3));
+  const left = side === "right" ? anchorX - labelWidth : anchorX;
+  if (left + labelWidth < 0 || left > width || top + labelHeight < 0 || top > height) return;
   context.fillStyle = rgbaFromHex(background, 0.92);
-  context.fillRect(left, clampedTop, labelWidth, labelHeight);
+  context.fillRect(left, top, labelWidth, labelHeight);
   context.strokeStyle = rgbaFromHex(color, 0.36);
   context.lineWidth = 1;
-  context.strokeRect(left + 0.5, clampedTop + 0.5, labelWidth - 1, labelHeight - 1);
+  context.strokeRect(left + 0.5, top + 0.5, labelWidth - 1, labelHeight - 1);
   context.fillStyle = rgbaFromHex(color, opacity);
-  context.fillText(text, left + 5, clampedTop + labelHeight / 2);
+  context.fillText(text, left + 5, top + labelHeight / 2);
+}
+
+function tradeAnnotationAutoscaleInfo(
+  state: TradeAnnotationPrimitiveState,
+  startLogical: number,
+  endLogical: number,
+): AutoscaleInfo | null {
+  if (!state.settings.visible || !state.candles.length) return null;
+  const visibleStart = Math.max(0, Math.floor(Math.min(startLogical, endLogical)));
+  const visibleEnd = Math.min(state.candles.length - 1, Math.ceil(Math.max(startLogical, endLogical)));
+  if (visibleStart > visibleEnd) return null;
+  const prices: number[] = [];
+  state.trades.forEach((trade) => {
+    const tradeStart = Math.max(0, lowerBoundCandleTime(state.candles, Math.min(trade.guideStartTime ?? trade.entryTime, trade.entryTime)) - 1);
+    const tradeEnd = Math.min(state.candles.length - 1, lowerBoundCandleTime(state.candles, trade.exitTime));
+    if (tradeEnd < visibleStart || tradeStart > visibleEnd) return;
+    if (state.settings.entry.visible) prices.push(trade.entryPrice);
+    if (state.settings.exit.visible) prices.push(trade.exitPrice);
+    if (state.settings.levels.visible) {
+      prices.push(...(trade.levelPrices?.slice(0, 3) ?? []));
+      if (typeof trade.triggerPrice === "number") prices.push(trade.triggerPrice);
+    }
+    if (state.settings.stop.visible && typeof trade.stopPrice === "number") prices.push(trade.stopPrice);
+    if (state.settings.targets.visible) prices.push(...(trade.targetPrices ?? []));
+    if (state.settings.adjustments.visible) prices.push(...(trade.fills?.map((fill) => fill.price) ?? []));
+  });
+  if (state.settings.adjustments.visible) {
+    state.executions.forEach((fill) => {
+      const logical = lowerBoundCandleTime(state.candles, fill.time);
+      if (logical >= visibleStart && logical <= visibleEnd) prices.push(fill.price);
+    });
+  }
+  const finitePrices = prices.filter((price) => Number.isFinite(price));
+  if (!finitePrices.length) return null;
+  return { priceRange: { minValue: Math.min(...finitePrices), maxValue: Math.max(...finitePrices) } };
 }
 
 function strategyPresentationColor(value: string, fallback: string) {
