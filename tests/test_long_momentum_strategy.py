@@ -724,6 +724,12 @@ class LongMomentumStrategyTests(unittest.TestCase):
             too_wide.evaluation.signals[0].metadata["execution_quality"]["failed"],
             ["current_spread"],
         )
+        self.assertEqual(
+            too_wide.evaluation.signals[0].metadata["execution_quality"]["thresholds"][
+                "maximum_current_spread_bps"
+            ],
+            100.0,
+        )
 
     def test_admission_and_current_spread_limits_are_independent(self) -> None:
         parameters = default_long_momentum_parameters()

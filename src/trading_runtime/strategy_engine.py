@@ -1187,6 +1187,7 @@ def _current_execution_quality_result(
             "phase": "reentry" if reentry else "initial_entry",
             "minimum_trade_rate_10s": minimum_trade_rate_10s,
             "minimum_trade_rate_60s": minimum_trade_rate_60s,
+            "maximum_current_spread_bps": maximum_current_spread_bps,
             "minimum_vwap_extension_bps": minimum_vwap_extension_bps,
             "maximum_vwap_extension_bps": maximum_vwap_extension_bps,
         },

@@ -2234,6 +2234,75 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 journal.close()
 
+    async def test_runtime_journals_execution_authority_blocker_transitions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            runtime = TradingRuntime.__new__(TradingRuntime)
+            runtime.config = RunConfig(
+                RunMode.BACKTEST,
+                "signal-aware",
+                2,
+                ("DU123",),
+                date(2026, 7, 14),
+                run_id="00000000-0000-0000-0000-000000000098",
+            )
+            runtime.run_id = runtime.config.run_id
+            runtime.journal = journal
+            runtime._last_wait_decision_signatures = {}
+
+            def wait_signal(
+                signal_id: str,
+                *,
+                failed: str,
+                event_time: datetime,
+            ) -> StrategySignal:
+                return StrategySignal(
+                    signal_id=signal_id,
+                    signal_type="current_execution_quality_incomplete",
+                    ticker="SUGP",
+                    event_time=event_time,
+                    action="wait",
+                    direction="neutral",
+                    score=0.0,
+                    confidence=1.0,
+                    reason="current_execution_quality_incomplete",
+                    metadata={
+                        "reason_code": "current_execution_quality_incomplete",
+                        "status": "reentry_cooldown",
+                        "execution_quality": {"failed": [failed]},
+                    },
+                )
+
+            try:
+                for signal in (
+                    wait_signal("spread-1", failed="current_spread", event_time=TS),
+                    wait_signal(
+                        "spread-2",
+                        failed="current_spread",
+                        event_time=TS + timedelta(seconds=1),
+                    ),
+                    wait_signal(
+                        "vwap-1",
+                        failed="vwap_extension_ceiling",
+                        event_time=TS + timedelta(seconds=2),
+                    ),
+                ):
+                    runtime._record_strategy_signals(
+                        StrategyEvaluation(signals=(signal,)),
+                        "DU123",
+                    )
+
+                decisions = [
+                    row for row in journal.records(runtime.run_id)
+                    if row.category == "strategy_decision"
+                ]
+                self.assertEqual(
+                    [row.entity_id for row in decisions],
+                    ["spread-1", "vwap-1"],
+                )
+            finally:
+                journal.close()
+
     async def test_confirmed_external_proposal_is_journaled_before_portfolio_and_oms(self) -> None:
         for index, authority in enumerate(("manual", "semi_automatic"), start=3):
             with self.subTest(authority=authority), tempfile.TemporaryDirectory() as directory:

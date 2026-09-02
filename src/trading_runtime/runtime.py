@@ -77,6 +77,25 @@ def _wait_decision_signature(signal: StrategySignal) -> tuple[Any, ...]:
                             str(row.get("condition_id") or row.get("left_source_id") or "condition"),
                         )
                     )
+    # Some strategy authorities expose their decisive blockers outside the
+    # compiled entry-rule stages. Preserve their identities in the transition
+    # signature so a change such as ``current_spread`` ->
+    # ``vwap_extension_ceiling`` is journaled even though the high-level reason
+    # remains ``current_execution_quality_incomplete``. Numeric evidence still
+    # stays out of the signature, keeping repeated observations compact.
+    for authority_name in (
+        "liquidity_admission",
+        "execution_quality",
+        "entry_candle_confirmation",
+        "entry_momentum_confirmation",
+    ):
+        authority = metadata.get(authority_name)
+        if not isinstance(authority, Mapping):
+            continue
+        for failed in authority.get("failed") or ():
+            failed_conditions.append(
+                ("authority", authority_name, str(failed))
+            )
     return (
         str(signal.action.value if hasattr(signal.action, "value") else signal.action),
         str(metadata.get("reason_code") or signal.reason),
