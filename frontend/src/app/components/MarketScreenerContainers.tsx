@@ -1,5 +1,5 @@
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ArrowUpDown, Check, ChevronDown, ChevronLeft, ChevronRight, Columns3, FileCheck2, Flame, ListFilter, Plus, Search, Star, Trash2, X } from "lucide-react";
-import { forwardRef, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ArrowUpDown, Check, ChevronDown, ChevronLeft, ChevronRight, Columns3, FileCheck2, Flame, GripVertical, ListFilter, Plus, Search, Star, Trash2, X } from "lucide-react";
+import { forwardRef, useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 
 import { api, apiCached, invalidateApiCache } from "../../api/client";
 import { CONFIGURATION_SESSION_CHANGED_EVENT, readConfigurationSession } from "../configurationSession";
@@ -762,6 +762,8 @@ export function StrategyActivityContainer({ asOf, focusSequence, historicalRows,
   const [selectedDetail, setSelectedDetail] = useState<ScreenerRow | null>(null);
   const [detailError, setDetailError] = useState("");
   const [detailLoading, setDetailLoading] = useState(false);
+  const [inspectorWidth, setInspectorWidth] = useState(36);
+  const contentRef = useRef<HTMLDivElement>(null);
   const activityLimit = Math.max(2_000, Math.min(settings.limit, 50_000));
   const asOfRef = useRef(asOf);
   asOfRef.current = asOf;
@@ -854,6 +856,23 @@ export function StrategyActivityContainer({ asOf, focusSequence, historicalRows,
       .finally(() => { if (!controller.signal.aborted) setDetailLoading(false); });
     return () => controller.abort();
   }, [runId, selectedRecordId, selectedSummary]);
+  const resizeInspector = (clientX: number) => {
+    const bounds = contentRef.current?.getBoundingClientRect();
+    if (!bounds || bounds.width <= 0) return;
+    setInspectorWidth(Math.max(24, Math.min(62, ((bounds.right - clientX) / bounds.width) * 100)));
+  };
+  const startInspectorResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const move = (pointerEvent: PointerEvent) => resizeInspector(pointerEvent.clientX);
+    const stop = () => {
+      document.body.classList.remove("strategy-activity-resizing");
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+    };
+    document.body.classList.add("strategy-activity-resizing");
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop, { once: true });
+  };
   return <section className="market-list-surface strategy-activity-surface" aria-label="Strategy activity">
     <header className="market-list-heading"><div><span className="market-list-eyebrow"><FileCheck2 size={12} /> Durable runtime history</span><h3>Strategy Activity</h3><p>{rows.length} causal signals, decisions, and state changes at or before <MarketTime value={asOf} />. Wait decisions are retained so missed trades and blocked entries remain explainable.</p></div><span className="market-list-owner strategy">Trading Journal</span></header>
     <div className="strategy-activity-filters">
@@ -863,8 +882,9 @@ export function StrategyActivityContainer({ asOf, focusSequence, historicalRows,
       <ActivityFilter label="Event" onChange={(eventType) => onSettingsChange({ eventType })} options={STRATEGY_ACTIVITY_EVENT_OPTIONS.map(({ value }) => value)} value={settings.eventType} />
     </div>
     <div className="strategy-activity-summary" aria-label="Strategy activity summary"><span><small>Decisions</small><strong>{activitySummary.decisions}</strong></span><span><small>Actions</small><strong>{activitySummary.actions}</strong></span><span><small>Waits</small><strong>{activitySummary.waits}</strong></span><div><small>Leading blockers</small><p>{activitySummary.blockers.length ? activitySummary.blockers.map(([reason, count]) => `${readableEvidenceLabel(reason)} (${count})`).join(" · ") : "None in this view"}</p></div></div>
-    <div className="strategy-activity-content">
+    <div className="strategy-activity-content" ref={contentRef} style={{ "--strategy-inspector-width": `${inspectorWidth}%` } as CSSProperties}>
       {error ? <div className="canvas-inline-error">Strategy activity unavailable: {error}</div> : <MarketListTable chronological columns={["event_time", "ticker", "event_type", "action", "state", "reason", "gates", "reason_code", "reference_price", "source"]} customColumns={[]} empty="No causal strategy events match these filters yet. Press Play or advance to the next strategy action." limit={100} lockedColumns={[]} onColumnsChange={() => undefined} onCustomColumnsChange={() => undefined} onRowSelect={(row) => setSelectedRecordId(strategyActivityRowKey(row))} onTickerSelect={onTickerSelect} pinnedSequence={focusSequence} rowAction={(row) => <button aria-label={`Inspect strategy decision at ${String(row.event_time || "unknown time")}`} className="strategy-activity-inspect" onClick={() => setSelectedRecordId(strategyActivityRowKey(row))} type="button">Inspect</button>} rowIdentity={strategyActivityRowKey} rows={rows} selectedRowId={selectedRecordId} title="Strategy activity" />}
+      <div aria-label="Resize decision evidence" aria-orientation="vertical" aria-valuemax={62} aria-valuemin={24} aria-valuenow={Math.round(inspectorWidth)} className="strategy-activity-resizer" onDoubleClick={() => setInspectorWidth(36)} onKeyDown={(event) => { if (event.key === "ArrowLeft") setInspectorWidth((value) => Math.min(62, value + 3)); if (event.key === "ArrowRight") setInspectorWidth((value) => Math.max(24, value - 3)); }} onPointerDown={startInspectorResize} role="separator" tabIndex={0} title="Drag to resize. Double-click to reset."><GripVertical aria-hidden="true" size={14} /></div>
       {selectedRecordId ? <StrategyActivityInspector error={detailError} loading={detailLoading} onClose={() => setSelectedRecordId("")} row={selectedDetail ?? selectedSummary} /> : <div className="strategy-activity-inspector-empty"><FileCheck2 size={18} /><span><strong>Inspect any event</strong><small>Open a row to see its strategy revision, exact reason, gate checks, thresholds, and point-in-time evidence.</small></span></div>}
     </div>
   </section>;
@@ -876,38 +896,128 @@ function strategyActivityRowKey(row: ScreenerRow) {
 
 function StrategyActivityInspector({ error, loading, onClose, row }: { error: string; loading: boolean; onClose: () => void; row: ScreenerRow | null }) {
   const snapshot = (row?.gate_snapshot as ScreenerRow | undefined) ?? {};
-  const facts = strategyEvidenceFacts(snapshot);
+  const sections = strategyEvidenceSections(snapshot);
+  const action = readableEvidenceLabel(String(row?.action || row?.event_type || "Strategy event"));
+  const outcomeLabel = String(row?.event_type || "") === "decision" ? "Final decision" : "Recorded outcome";
+  const decisionTone = String(row?.action || "").toLowerCase() === "wait" ? "waiting" : "action";
   return <aside className="strategy-activity-inspector" aria-label="Strategy decision details">
-    <header><div><span>Decision evidence</span><strong>{readableEvidenceLabel(String(row?.action || row?.event_type || "Strategy event"))}</strong></div><button aria-label="Close strategy decision details" onClick={onClose} type="button"><X size={14} /></button></header>
+    <header><div><span>Decision evidence</span><strong>{action}</strong></div><button aria-label="Close strategy decision details" onClick={onClose} type="button"><X size={16} /></button></header>
     {loading ? <div className="strategy-activity-detail-state"><span className="loading-spinner" aria-hidden="true" /> Loading exact journal evidence…</div> : error ? <div className="canvas-inline-error">Decision evidence unavailable: {error}</div> : row ? <>
+      <section className="strategy-activity-decision" data-tone={decisionTone}><small>{outcomeLabel}</small><strong>{action}</strong><span>{String(row.reason || row.reason_code || "No explanation was recorded.")}</span></section>
       <div className="strategy-activity-detail-meta"><span><small>Strategy</small><strong>{String(row.strategy_id || "—")}</strong><em>revision {String(row.strategy_revision ?? "—")}</em></span><span><small>Market time</small><strong><MarketTime value={String(row.event_time || "")} /></strong></span><span><small>Ticker</small><strong>{String(row.ticker || "—")}</strong></span><span><small>State</small><strong>{readableEvidenceLabel(String(row.state || "—"))}</strong></span></div>
-      <section className="strategy-activity-explanation"><small>Why</small><p>{String(row.reason || row.reason_code || "No explanation was recorded.")}</p></section>
-      {facts.length ? <dl className="strategy-activity-evidence-list">{facts.map((fact) => <div data-result={fact.result} key={fact.path}><dt>{fact.label}</dt><dd>{fact.value}</dd></div>)}</dl> : <p className="strategy-activity-no-evidence">This event has no strategy gate snapshot.</p>}
-      {Object.keys(snapshot).length ? <details className="strategy-activity-raw-evidence"><summary>Exact structured evidence</summary><pre>{JSON.stringify(snapshot, null, 2)}</pre></details> : null}
+      {sections.length ? <div className="strategy-activity-evidence-cards">{sections.map((section) => <StrategyEvidenceCard key={section.path} section={section} />)}</div> : <p className="strategy-activity-no-evidence">This event has no strategy gate snapshot.</p>}
     </> : <p className="strategy-activity-no-evidence">The selected journal record is unavailable.</p>}
   </aside>;
 }
 
-function strategyEvidenceFacts(value: unknown, path: string[] = [], result: Array<{ label: string; path: string; result?: string; value: string }> = []) {
+type StrategyEvidenceFact = { label: string; path: string; result?: "pass" | "fail" | "clear"; value: string };
+type StrategyEvidenceSection = { facts: StrategyEvidenceFact[]; label: string; path: string; result?: StrategyEvidenceFact["result"] };
+
+function StrategyEvidenceCard({ section }: { section: StrategyEvidenceSection }) {
+  return <section className="strategy-activity-evidence-card" data-result={section.result}>
+    <header><div><small>Evidence group</small><strong>{section.label}</strong></div>{section.result ? <EvidenceResult result={section.result} /> : null}</header>
+    <dl>{section.facts.map((fact) => <div data-result={fact.result} key={fact.path}><dt>{fact.label}</dt><dd><span>{fact.value}</span>{fact.result ? <EvidenceResult result={fact.result} /> : <em>Recorded</em>}</dd></div>)}</dl>
+  </section>;
+}
+
+function EvidenceResult({ result }: { result: NonNullable<StrategyEvidenceFact["result"]> }) {
+  const label = result === "pass" ? "Pass" : result === "clear" ? "Clear" : "Fail";
+  return <b className="strategy-activity-result" data-result={result}>{result === "fail" ? <X aria-hidden="true" size={12} /> : <Check aria-hidden="true" size={12} />}{label}</b>;
+}
+
+function strategyEvidenceSections(snapshot: ScreenerRow) {
+  return Object.entries(snapshot).flatMap(([key, value]) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return [{ facts: strategyEvidenceFacts(value, [key]), label: readableEvidenceLabel(key), path: key }];
+    }
+    if (key === "entry_rules") {
+      return Object.entries(value as ScreenerRow).map(([stage, stageValue]) => ({
+        facts: strategyEvidenceFacts(stageValue, [key, stage]),
+        label: `${readableEvidenceLabel(stage)} gate`,
+        path: `${key}.${stage}`,
+        result: strategyEvidenceResult(stageValue, stage === "veto"),
+      }));
+    }
+    return [{
+      facts: strategyEvidenceFacts(value, [key]),
+      label: readableEvidenceLabel(key),
+      path: key,
+      result: strategyEvidenceResult(value),
+    }];
+  }).filter((section) => section.facts.length > 0);
+}
+
+function strategyEvidenceResult(value: unknown, inverse = false): StrategyEvidenceFact["result"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as ScreenerRow;
+  const passed = typeof record.passed === "boolean" ? record.passed : record.checks && typeof record.checks === "object" ? Object.values(record.checks as ScreenerRow).every(Boolean) : Array.isArray(record.failed) ? record.failed.length === 0 : undefined;
+  if (passed === undefined) return undefined;
+  if (inverse) return passed ? "fail" : "clear";
+  return passed ? "pass" : "fail";
+}
+
+function strategyEvidenceFacts(value: unknown, path: string[] = [], result: StrategyEvidenceFact[] = []) {
   if (value === null || value === undefined || value === "") return result;
   if (Array.isArray(value)) {
     if (value.every((item) => item === null || ["string", "number", "boolean"].includes(typeof item))) {
-      result.push({ label: readableEvidenceLabel(path.join(" · ")), path: path.join("."), value: value.map(String).join(", ") || "None" });
+      result.push({ label: readableEvidenceLabel(path.at(-1) ?? "Values"), path: path.join("."), value: value.map(String).join(", ") || "None" });
     } else value.forEach((item, index) => strategyEvidenceFacts(item, [...path, String(index + 1)], result));
     return result;
   }
   if (typeof value === "object") {
+    const condition = value as ScreenerRow;
+    if (typeof condition.passed === "boolean" && ("comparator" in condition || "left_value" in condition || "right_value" in condition)) {
+      const leftLabel = readableEvidenceLabel(String(condition.left_source_id || condition.condition_id || `Condition ${path.at(-1) ?? ""}`));
+      const timeframe = String(condition.left_timeframe || "");
+      const comparator = readableEvidenceComparator(String(condition.comparator || "requires"), condition.buffer_bps);
+      const actual = formatStrategyEvidenceValue(condition.left_value);
+      const expected = formatStrategyEvidenceValue(condition.right_value);
+      const inverse = path.includes("veto");
+      result.push({
+        label: `${leftLabel}${timeframe ? ` · ${timeframe}` : ""}`,
+        path: path.join("."),
+        result: inverse ? (condition.passed ? "fail" : "clear") : condition.passed ? "pass" : "fail",
+        value: `Actual ${actual} · ${comparator} ${expected}`,
+      });
+      return result;
+    }
     Object.entries(value as ScreenerRow).forEach(([key, item]) => strategyEvidenceFacts(item, [...path, key], result));
     return result;
   }
   const key = path.at(-1) ?? "value";
+  const parent = path.at(-2) ?? "";
+  const isDecision = typeof value === "boolean" && (parent === "checks" || key === "passed" || parent === "groups");
+  const inverse = path.includes("veto") && (key === "passed" || parent === "groups");
   result.push({
-    label: readableEvidenceLabel(path.join(" · ")),
+    label: readableEvidenceLabel(key === "passed" ? "Gate decision" : path.slice(2).join(" · ") || key),
     path: path.join("."),
-    result: ["passed", "checks"].some((token) => path.includes(token)) && typeof value === "boolean" ? (value ? "pass" : "fail") : undefined,
-    value: typeof value === "boolean" ? (key === "passed" ? (value ? "Passed" : "Failed") : value ? "Yes" : "No") : String(value),
+    result: isDecision ? (inverse ? (value ? "fail" : "clear") : value ? "pass" : "fail") : undefined,
+    value: isDecision ? inverse ? (value ? "Veto triggered" : "Veto not triggered") : value ? "Requirement met" : "Requirement not met" : formatStrategyEvidenceValue(value),
   });
   return result;
+}
+
+function readableEvidenceComparator(comparator: string, bufferBps: unknown) {
+  const labels: Record<string, string> = {
+    above: ">",
+    above_by_bps: "> by",
+    below: "<",
+    equal: "=",
+    greater_than: ">",
+    greater_than_or_equal: "≥",
+    less_than: "<",
+    less_than_or_equal: "≤",
+    not_equal: "≠",
+  };
+  const label = labels[comparator] ?? readableEvidenceLabel(comparator);
+  return comparator === "above_by_bps" && bufferBps !== null && bufferBps !== undefined ? `${label} ${formatStrategyEvidenceValue(bufferBps)} bps vs` : label;
+}
+
+function formatStrategyEvidenceValue(value: unknown) {
+  if (value === null || value === undefined || value === "") return "Unavailable";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (typeof value === "number") return new Intl.NumberFormat(undefined, { maximumFractionDigits: 6 }).format(value);
+  return readableEvidenceLabel(String(value));
 }
 
 function readableEvidenceLabel(value: string) {

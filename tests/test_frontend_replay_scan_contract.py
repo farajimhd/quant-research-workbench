@@ -129,7 +129,10 @@ def test_strategy_activity_loads_a_reviewable_history_window() -> None:
     assert 'record_id: exactRecordId' in container_source
     assert 'className="strategy-activity-inspect"' in container_source
     assert 'aria-label="Strategy decision details"' in container_source
-    assert "strategyEvidenceFacts(snapshot)" in container_source
+    assert "strategyEvidenceSections(snapshot)" in container_source
+    assert 'aria-label="Resize decision evidence"' in container_source
+    assert 'className="strategy-activity-evidence-cards"' in container_source
+    assert "JSON.stringify(snapshot" not in container_source
     assert 'strategy_activity: { eventType: "", limit: 2_000' in configuration_source
     assert "if (historicalRows !== undefined) return;" in container_source
     assert "historicalRows={signalStreamRunId ? preview?.trading.strategy_activity ?? [] : undefined}" in canvas_source
