@@ -622,7 +622,7 @@ class CanonicalProjectionTests(unittest.TestCase):
 
         self.assertEqual(snapshot["schema_version"], 3)
         self.assertEqual(snapshot["max_unrealized_pnl"], "200")
-        self.assertEqual([row["id"] for row in snapshot["metrics"][:5]], ["net_pnl_today", "max_unrealized_pnl", "sharpe_ratio", "win_rate", "maximum_drawdown"])
+        self.assertEqual([row["id"] for row in snapshot["metrics"][:6]], ["net_pnl_today", "unrealized_pnl", "max_unrealized_pnl", "sharpe_ratio", "win_rate", "maximum_drawdown"])
         self.assertEqual(metrics["unrealized_return"]["value"], "0.025")
         self.assertFalse(metrics["sharpe_ratio"]["available"])
         self.assertIsNone(metrics["sharpe_ratio"]["value"])

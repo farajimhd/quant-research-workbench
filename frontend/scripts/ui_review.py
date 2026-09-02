@@ -1005,6 +1005,22 @@ def validate_canvas_interactions(
     if scenario["page"] == "canvas-focus":
         if page.locator(".sidebar").count():
             issues.append("focus canvas renders the application sidebar")
+        positions = page.locator('.workspace-window[data-window-kind="positions"]')
+        if positions.count():
+            if positions.count() != 1:
+                issues.append("focus canvas does not render exactly one Position Manager container")
+                return issues
+            bounds = positions.bounding_box()
+            minimum_height = scenario["viewport"]["height"] - 92
+            if not bounds or bounds["height"] < minimum_height:
+                actual = round(bounds["height"]) if bounds else 0
+                issues.append(f"focus container does not fill the working page ({actual} < {minimum_height})")
+            headers = [value.strip().lower() for value in positions.locator("thead th").all_inner_texts()]
+            if headers[:3] != ["symbol", "open unrealized", "peak unrealized"]:
+                issues.append(f"Position Manager leading columns are incorrect: {headers[:3]}")
+            if positions.locator("tbody tr").count() < 1:
+                issues.append("Position Manager review has no populated position row")
+            return issues
         charts_quotes = page.locator('.workspace-window[data-window-kind="charts_quotes"]')
         if charts_quotes.count():
             if charts_quotes.count() != 1:
@@ -2160,7 +2176,7 @@ def capture(args: argparse.Namespace) -> int:
                     )
                 if scenario["page"] == "canvas-focus":
                     focus_id = args.canvas_id or "review-focus"
-                    focus_container = "charts_quotes" if args.canvas_charts_quotes else "chart"
+                    focus_container = "positions" if args.canvas_position_manager else "charts_quotes" if args.canvas_charts_quotes else "chart"
                     focus_layout = {
                         focus_container: {
                             "fullscreen": True,
@@ -2175,7 +2191,7 @@ def capture(args: argparse.Namespace) -> int:
                     focus_state = {"layoutVersion": 3, "layouts": focus_layout, "openIds": [focus_container]}
                     focus_registry = {
                         "version": 1,
-                        "canvases": [{"id": "main", "label": "Main"}, {"id": focus_id, "label": "Chart focus"}],
+                        "canvases": [{"id": "main", "label": "Main"}, {"id": focus_id, "label": "Position focus" if args.canvas_position_manager else "Chart focus"}],
                         "linkAssignments": {focus_container: "A"},
                         "linkContexts": {
                             "A": {"symbol": args.canvas_symbol, "timeframe": args.canvas_chart_timeframe},
@@ -2545,6 +2561,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--chart-stress-only", action="store_true", help="stop the Canvas interaction review after chart stress")
     result.add_argument("--stub-chart-history", action="store_true", help="use deterministic chart history for frontend-only renderer and interaction QA")
     result.add_argument("--canvas-charts-quotes", action="store_true", help="seed the Charts & Quotes container in Canvas focus review")
+    result.add_argument("--canvas-position-manager", action="store_true", help="seed the Position Manager container in Canvas focus review")
     result.add_argument("--stub-split-events", action="store_true", help="use a deterministic stock-split event for daily chart QA")
     result.add_argument("--stub-service-status", action="store_true", help="use deterministic service contracts for frontend-only Services detail QA")
     result.add_argument("--watchlist-close-only", action="store_true", help="stop after the Watch Universe close and persistence regression")

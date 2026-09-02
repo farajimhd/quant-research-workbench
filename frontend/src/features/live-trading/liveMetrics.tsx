@@ -60,6 +60,7 @@ export function buildSimulationPortfolioMetrics({
     items: [
       { icon: <Banknote size={14} />, label: "Total P/L", tone: signedMetricTone(realized + unrealized), value: money(realized + unrealized) },
       { icon: <CircleDollarSign size={14} />, label: "Realized P/L", tone: signedMetricTone(realized), value: money(realized) },
+      { icon: <Activity size={14} />, label: "Open Unrealized", tone: signedMetricTone(unrealized), value: money(unrealized) },
       { icon: <Activity size={14} />, label: "Peak Unrealized", tone: maxUnrealized > 0 ? "success" : "muted", value: money(maxUnrealized) },
       { icon: <Banknote size={14} />, label: "Cash", tone: cash > startingCash ? "success" : cash < startingCash ? "warning" : "muted", value: money(cash) },
       { icon: <Banknote size={14} />, label: "Equity", tone: signedMetricTone(realized + unrealized), value: money(startingCash + realized + unrealized) },
@@ -106,6 +107,7 @@ export function buildBrokerPortfolioMetrics({
       { icon: <ClipboardList size={14} />, label: "Order Conn", tone: connection.iserver === "blocked" ? "danger" : connection.iserver ? "success" : "muted", value: connection.iserver || "waiting" },
       { icon: <Banknote size={14} />, label: "Total P/L", tone: signedMetricTone(realized + unrealized), value: money(realized + unrealized) },
       { icon: <CircleDollarSign size={14} />, label: "Realized P/L", tone: signedMetricTone(realized), value: money(realized) },
+      { icon: <Activity size={14} />, label: "Open Unrealized", tone: signedMetricTone(unrealized), value: money(unrealized) },
       { icon: <Activity size={14} />, label: "Peak Unrealized", tone: maxUnrealized > 0 ? "success" : "muted", value: money(maxUnrealized) },
       { icon: <Banknote size={14} />, label: "Available", tone: cash ? "info" : "muted", value: money(cash) },
       { icon: <Banknote size={14} />, label: "Net Liq", tone: equity ? "info" : "muted", value: money(equity) },

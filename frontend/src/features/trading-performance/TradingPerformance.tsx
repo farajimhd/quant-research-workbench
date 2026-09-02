@@ -7,7 +7,7 @@ import type { CanonicalTradingPreview, LivePerformanceState, PerformanceMetric, 
 import { finiteNumber } from "../canvas/numbers";
 
 const LIVE_ACCOUNT_KEYS_STORAGE_KEY = "quant-research-workbench.real-live-trading.account-keys";
-const LIVE_PERFORMANCE_STORAGE_KEY = "quant-research-workbench.trading.performance-v3";
+const LIVE_PERFORMANCE_STORAGE_KEY = "quant-research-workbench.trading.performance-v4";
 
 export function readLiveAccountKeys(): string[] {
   try {
@@ -44,11 +44,20 @@ function writeCachedPerformance(accountKeys: string[], mode: string, data: Perfo
 function legacyMetrics(snapshot: PerformanceSnapshot): PerformanceMetric[] {
   return [
     metric("net_pnl_today", "Net P&L today", snapshot.net_pnl_today, "money", "signed", "Today's realized net P&L plus current unrealized P&L."),
+    metric("unrealized_pnl", "Open unrealized", snapshot.unrealized_pnl, "money", "signed", "Current mark-to-market P&L on open positions."),
     metric("max_unrealized_pnl", "Peak unrealized", snapshot.max_unrealized_pnl, "money", "favorable_high", "Sum of each open position's maximum favorable unrealized P&L observed during its current lifecycle."),
-    metric("open_position_count", "Open positions", snapshot.open_position_count, "count", "neutral", "Current non-zero positions across the selected accounts."),
-    metric("realized_pnl_today", "Realized today", snapshot.realized_pnl_today, "money", "signed", "Net P&L from flat-to-flat episodes closed on the New York market date."),
-    metric("available_cash", "Available cash", snapshot.available_cash, "money", "neutral", "Broker available funds, with total cash used only when unavailable."),
+    metric("sharpe_ratio", "Sharpe", null, "ratio", "signed", "Mean closed-episode net return divided by its sample deviation; not annualized."),
+    metric("win_rate", "Win rate", null, "percent", "favorable_high", "Winning closed episodes divided by all closed flat-to-flat episodes."),
+    metric("maximum_drawdown", "Max drawdown", null, "money", "adverse_high", "Largest peak-to-trough decline in cumulative closed-episode net P&L."),
   ];
+}
+
+function headlineMetrics(snapshot: PerformanceSnapshot): PerformanceMetric[] {
+  const published = new Map((snapshot.metrics ?? []).map((row) => [row.id, row]));
+  return legacyMetrics(snapshot).map((fallback) => {
+    const row = published.get(fallback.id);
+    return row ? { ...row, label: fallback.label } : fallback;
+  });
 }
 
 function metric(id: string, label: string, value: string | number | null, format: string, interpretation: string, description: string): PerformanceMetric {
@@ -171,8 +180,8 @@ export function useTradingPerformance({ enabled = true, requestedAccountKeys, mo
 
 export function TradingPerformanceStrip({ state }: { state: LivePerformanceState }) {
   const snapshot = state.data;
-  const rows = (snapshot?.metrics?.length ? snapshot.metrics : snapshot ? legacyMetrics(snapshot) : []).slice(0, 5);
-  while (rows.length < 5) rows.push(metric(`loading-${rows.length}`, "Loading", null, "ratio", "neutral", "Waiting for the canonical trading snapshot."));
+  const rows = snapshot ? headlineMetrics(snapshot) : [];
+  while (rows.length < 6) rows.push(metric(`loading-${rows.length}`, "Loading", null, "ratio", "neutral", "Waiting for the canonical trading snapshot."));
   const freshness = snapshot?.as_of ? new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit", timeZone: "America/New_York" }).format(new Date(snapshot.as_of)) : "";
   return <section aria-label="Trading performance" className="canvas-performance-strip" data-status={state.status} title={freshness ? `Canonical trading snapshot as of ${freshness} ET` : "Canonical trading snapshot is loading"}>
     <div className="canvas-performance-title"><Activity aria-hidden="true" size={13} /><span>Performance</span><i aria-hidden="true" /></div>

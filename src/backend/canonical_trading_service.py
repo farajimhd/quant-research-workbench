@@ -337,13 +337,13 @@ def performance_snapshot(
     summary = dict((report or build_performance_report(episodes, snapshot.executions, snapshot.orders)).get("summary") or {})
     headline_metrics = [
         _performance_metric("net_pnl_today", "Net P&L today", realized_today + unrealized, "money", "signed", "Today's realized net P&L plus current unrealized P&L."),
+        _performance_metric("unrealized_pnl", "Open unrealized", unrealized, "money", "signed", "Current mark-to-market P&L on open positions."),
         _performance_metric("max_unrealized_pnl", "Peak unrealized", max_unrealized, "money", "favorable_high", "Sum of each open position's maximum favorable unrealized P&L observed during its current lifecycle."),
         _performance_metric("sharpe_ratio", "Sharpe", summary.get("sharpe_ratio"), "ratio", "signed", "Mean closed-episode net return divided by its sample deviation; not annualized."),
         _performance_metric("win_rate", "Win rate", summary.get("win_rate"), "percent", "favorable_high", "Winning closed episodes divided by all closed flat-to-flat episodes."),
         _performance_metric("maximum_drawdown", "Max drawdown", summary.get("maximum_drawdown"), "money", "adverse_high", "Largest peak-to-trough decline in cumulative closed-episode net P&L."),
     ]
     supporting_metrics = [
-        _performance_metric("unrealized_pnl", "Current unrealized", unrealized, "money", "signed", "Current mark-to-market P&L on open positions."),
         _performance_metric("unrealized_return", "Open return", unrealized_return, "percent", "signed", "Current unrealized P&L divided by aggregate absolute open cost."),
         _performance_metric("profit_factor", "Profit factor", summary.get("profit_factor"), "ratio", "favorable_high", "Gross winning dollars divided by gross losing dollars."),
         _performance_metric("realized_pnl_today", "Realized today", realized_today, "money", "signed", "Net P&L from flat-to-flat episodes closed on the New York market date."),

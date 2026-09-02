@@ -103,13 +103,19 @@ def test_charts_share_causal_split_events_with_timeframe_defaults_and_controls()
 def test_peak_unrealized_is_shared_by_performance_and_position_surfaces() -> None:
     performance_source = (REPO_ROOT / "frontend" / "src" / "features" / "trading-performance" / "TradingPerformance.tsx").read_text(encoding="utf-8")
     position_source = (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "tradingPresentation.tsx").read_text(encoding="utf-8")
+    table_presentation_source = (REPO_ROOT / "frontend" / "src" / "app" / "components" / "TablePresentation.tsx").read_text(encoding="utf-8")
     live_portfolio_source = (REPO_ROOT / "frontend" / "src" / "features" / "live-trading" / "LivePortfolioContainer.tsx").read_text(encoding="utf-8")
     live_metrics_source = (REPO_ROOT / "frontend" / "src" / "features" / "live-trading" / "liveMetrics.tsx").read_text(encoding="utf-8")
 
+    assert 'metric("unrealized_pnl", "Open unrealized"' in performance_source
     assert 'metric("max_unrealized_pnl", "Peak unrealized"' in performance_source
-    assert '"max_unrealized_pnl"' in position_source
+    assert "headlineMetrics(snapshot)" in performance_source
+    assert '["symbol", "open_unrealized", "peak_unrealized", "side"' in position_source
+    assert 'unrealized(_|$)/.test(key)) presentationValueType = "money"' in table_presentation_source
+    assert 'label="Open unrealized"' in position_source
     assert 'label="Peak unrealized"' in position_source
     assert "position.max_unrealized_pnl" in live_portfolio_source
+    assert live_metrics_source.count('label: "Open Unrealized"') == 2
     assert live_metrics_source.count('label: "Peak Unrealized"') == 2
 
 

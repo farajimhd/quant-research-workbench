@@ -10725,7 +10725,7 @@ button {
   display: grid;
   flex: 1 1 0;
   gap: 0;
-  grid-template-columns: max-content repeat(5, minmax(0, 1fr));
+  grid-template-columns: max-content repeat(6, minmax(0, 1fr));
   min-width: 0;
   overflow: hidden;
   width: auto;
@@ -10816,10 +10816,12 @@ button {
 
 @container canvas-mode-slot (max-width: 700px) {
   .canvas-mode-context-slot:has(.replay-canvas-controls) .canvas-performance-strip {
-    grid-template-columns: max-content repeat(2, minmax(4rem, 1fr));
+    grid-template-columns: repeat(2, minmax(4rem, 1fr));
   }
 
-  .canvas-mode-context-slot:has(.replay-canvas-controls) .canvas-performance-metric:nth-child(n + 4) {
+  .canvas-mode-context-slot:has(.replay-canvas-controls) .canvas-performance-title,
+  .canvas-mode-context-slot:has(.replay-canvas-controls) .canvas-performance-metric:nth-child(2),
+  .canvas-mode-context-slot:has(.replay-canvas-controls) .canvas-performance-metric:nth-child(n + 5) {
     display: none;
   }
 }

@@ -33,6 +33,7 @@ export function presentationForColumn(column: string, override?: TableColumnPres
   else if (key.endsWith("_date") || key === "date") presentationValueType = "date";
   else if (key.includes("pct") || key.includes("percent") || key.includes("return")) presentationValueType = "percent";
   else if (key.includes("bps")) presentationValueType = "basis_points";
+  else if (/(^|_)unrealized(_|$)/.test(key)) presentationValueType = "money";
   else if (/(^|_)(price|bid|ask|open|high|low|close|vwap|stop)(_|$)/.test(key)) presentationValueType = "price";
   else if (/(^|_)(pnl|cash|value|cost|fee|fees|commission|proceeds|notional|market_cap|dollar_volume)(_|$)/.test(key)) presentationValueType = "money";
   else if (/(^|_)(volume|shares|size|count|quantity|qty)(_|$)/.test(key)) presentationValueType = "quantity";
