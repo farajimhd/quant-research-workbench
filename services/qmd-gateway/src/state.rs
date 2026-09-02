@@ -125,7 +125,10 @@ impl SharedMarketState {
         }
     }
 
-    pub async fn apply_event(&self, event: &MarketEvent) -> ScannerRowDelta {
+    pub async fn apply_event(&self, event: &MarketEvent) -> Option<ScannerRowDelta> {
+        if event.is_delayed_trade_report() {
+            return None;
+        }
         let mut state = self.inner.write().await;
         state.events_received += 1;
         state.scanner_sequence = state.scanner_sequence.saturating_add(1);
@@ -164,11 +167,11 @@ impl SharedMarketState {
             row.liquidity_rank = liquidity.liquidity_rank;
             row.liquidity_score = liquidity.liquidity_score;
         }
-        ScannerRowDelta {
+        Some(ScannerRowDelta {
             as_of,
             row,
             sequence,
-        }
+        })
     }
 
     pub async fn metrics(&self) -> StatusMetrics {
@@ -879,8 +882,8 @@ mod tests {
             .await;
         let snapshot = state.scanner_snapshot(10).await;
 
-        assert_eq!(first.sequence, 1);
-        assert_eq!(second.sequence, 2);
+        assert_eq!(first.unwrap().sequence, 1);
+        assert_eq!(second.unwrap().sequence, 2);
         assert_eq!(snapshot.sequence, 2);
         assert_eq!(snapshot.rows[0].last_price, 11.0);
     }
@@ -905,7 +908,7 @@ mod tests {
 
         assert!(snapshot.found);
         assert_eq!(snapshot.authority, "qmd_gateway_live_memory");
-        assert_eq!(snapshot.sequence, delta.sequence);
+        assert_eq!(snapshot.sequence, delta.unwrap().sequence);
         assert_eq!(snapshot.row.unwrap().last_price, 10.0);
         assert!(snapshot.age_ms.is_some());
     }

@@ -17,6 +17,7 @@ from pipelines.market_sip.flatfiles.download_update_events import (
     confirm_auto_update,
     format_auto_update_summary,
     parse_args,
+    raw_event_union_sql,
     trade_raw_row_to_event,
     validate_manual_append_selection,
 )
@@ -62,6 +63,7 @@ class EventEncodingTests(unittest.TestCase):
         self.assertEqual(event["ticker"], "OMEX")
         self.assertEqual(event["event_type"], 1)
         self.assertEqual(event["event_meta"], 19)
+        self.assertEqual(event["execution_timestamp_us"], 1745522406849832)
         self.assertEqual(event["sip_timestamp_us"], 1745522406850095)
         self.assertEqual(event["sequence_number"], 6898024)
         self.assertEqual(event["price_primary_int"], 7690)
@@ -72,6 +74,25 @@ class EventEncodingTests(unittest.TestCase):
         self.assertEqual(event["exchange_secondary"], 0)
         self.assertEqual([event[f"condition_token_{idx}"] for idx in range(1, 6)], [96, 60, 60, 60, 60])
         self.assertEqual(event["event_date"], "2025-04-24")
+
+    def test_raw_union_preserves_execution_clock_and_pushes_ticker_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            day = _day(root, "2026-08-21", cached_quote=True, cached_trade=True)
+            args = argparse.Namespace(
+                condition_token_reference_table="event_condition_token_reference",
+                database="market_sip_compact",
+                drop_trade_correction_codes="7,8,10,11",
+                flatfiles_root_ch="/mnt/d/market-data",
+                flatfiles_root_win=str(root),
+                tickers="SUGP",
+            )
+
+            sql = raw_event_union_sql(args, day)
+
+            self.assertEqual(sql.count("AND ticker IN ('SUGP')"), 2)
+            self.assertIn("participant_timestamp", sql)
+            self.assertIn("AS execution_timestamp_us", sql)
 
 
 class AutoUpdatePlanningTests(unittest.TestCase):

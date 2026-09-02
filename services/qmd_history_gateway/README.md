@@ -21,6 +21,14 @@ explicit compatibility fallback; ordering remains exact, but a legacy archive
 event is not promised to retain the same causation hash as its earlier live row.
 Any uncovered interval is explicit, and the current live tail remains a QMD
 Gateway continuation rather than a hidden physical-table read.
+Compact schema v5 preserves `execution_timestamp_us` separately from
+`sip_timestamp_us`. Causal Scanner, indicator, VWAP, and structural projections
+advance in SIP availability order and ignore trades whose one-second execution
+bucket was already complete when reported. Raw events remain queryable for
+audit. Retrospective chart-only bars are sorted and bucketed by execution time,
+so delayed reports can repair historical display without retroactively changing
+strategy decisions. Same-second reports, including fresh Form-T trades, remain
+eligible under the existing trade-condition rules.
 The application typed QMD client composes that continuation for compact-event
 windows, using this service's exact current-live segment bounds and QMD
 Gateway's versioned bounded page. Chart and historical Scanner continuation are

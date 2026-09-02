@@ -201,7 +201,9 @@ CREATE TABLE market_sip_compact.events
     -- bits 3-5 tape, bits 6-7 reserved.
     event_meta UInt8,
 
-    -- Needed for within-chunk timing features.
+    -- Exchange execution clock and SIP availability clock. Strategy state is
+    -- causal in SIP order; retrospective chart bars use execution time.
+    execution_timestamp_us UInt64,
     sip_timestamp_us UInt64,
 
     -- Unified price fields.
@@ -424,6 +426,7 @@ Quote source row to unified event:
 ```text
 ticker              -> ticker
 event_meta          -> event type 0 plus ask/bid scale and tape bits
+execution_timestamp_us -> participant timestamp, falling back to SIP
 sip_timestamp_us    -> sip_timestamp_us
 price_primary_int   -> ask_price_int
 price_secondary_int -> bid_price_int
@@ -440,6 +443,7 @@ Trade source row to unified event:
 ```text
 ticker              -> ticker
 event_meta          -> event type 1 plus trade scale and tape bits
+execution_timestamp_us -> participant timestamp, falling back to SIP
 sip_timestamp_us    -> sip_timestamp_us
 price_primary_int   -> price_int
 price_secondary_int -> 0
@@ -466,7 +470,6 @@ the event table uses the single dense-token table so every token slot is an
 These fields are intentionally not stored in the final training table:
 
 ```text
-participant_delta_us
 sequence_number
 source_file
 source_date
@@ -477,6 +480,9 @@ raw quote/trade separate column names
 
 `sequence_number` is still required during table construction to break ordering
 ties, but it is not required for training lookup after `ordinal` is assigned.
+The raw `participant_delta_us` encoding is replaced by the exact unsigned
+`execution_timestamp_us`; this avoids the signed 32-bit delta clipping that can
+lose multi-hour delayed-report timestamps.
 
 ## Filtering And Sanitization Rules
 

@@ -419,6 +419,9 @@ fn evaluate_market_event(
     halt_market_context: &HaltMarketContext,
     event: MarketEvent,
 ) -> Vec<LiveSymbolMarketStateEvent> {
+    if event.is_delayed_trade_report() {
+        return Vec::new();
+    }
     match event {
         MarketEvent::Trade(trade) => {
             let conditions = trade.conditions.clone();

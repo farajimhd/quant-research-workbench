@@ -1133,6 +1133,14 @@ async fn chart_bar_snapshot(
             )
             .await
             .map_err(service_error)?
+            // v3 persisted intraday bars were aggregated on SIP availability
+            // time. They remain valid causal-state artifacts, but are not a
+            // retrospective execution-time chart authority. A future rebuilt
+            // population must advertise the explicit v4 revision before this
+            // fast path may serve it.
+            .filter(|persisted| {
+                persisted.source == "qmd_live_intraday_family_bars_v4_execution_time"
+            })
         {
             let event_count = persisted
                 .bars
@@ -1216,6 +1224,28 @@ async fn chart_bar_snapshot(
         )
         .await
         .map_err(service_error)?;
+    if !bars_only && !structure_only && qmd_core::bars::is_supported_timeframe(&timeframe) {
+        // A full chart composes two explicit clocks: retrospective OHLCV uses
+        // execution time, while MACD and strategy evidence stay causal in SIP
+        // availability order. Requesting indicators must never change candles.
+        let chart_bars = state
+            .cache
+            .chart_snapshot(
+                window.clone(),
+                ticker.clone(),
+                timeframe.clone(),
+                product_query.limit.unwrap_or(5_000).clamp(1, 50_000),
+                as_of,
+                before,
+                true,
+                false,
+            )
+            .await
+            .map_err(service_error)?;
+        snapshot.bars = chart_bars.bars;
+        snapshot.has_more = chart_bars.has_more;
+        snapshot.next_before = chart_bars.next_before;
+    }
     let split_adjustments = state
         .source
         .structure_split_adjustments(

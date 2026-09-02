@@ -1248,10 +1248,23 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
     clean_trade_scale = f"if({trade_price_valid}, {trade_scale}, 0)"
     quote_flags = f"toUInt8({clean_bid_scale} + ({clean_ask_scale} * 2) + ({tape_code_sql('tape')} * 4))"
     trade_flags = f"toUInt8({clean_trade_scale} + ({tape_code_sql('tape')} * 2))"
+    requested_tickers = [
+        value.strip().upper()
+        for value in str(getattr(args, "tickers", "") or "").split(",")
+        if value.strip()
+    ]
+    raw_ticker_filter = (
+        "\n          AND ticker IN ("
+        + ", ".join(sql_string(value) for value in sorted(set(requested_tickers)))
+        + ")"
+        if requested_tickers
+        else ""
+    )
     return f"""
     SELECT
         q.ticker AS ticker,
         {quote_event_meta_expr()} AS event_meta,
+        q.execution_timestamp_us AS execution_timestamp_us,
         q.sip_timestamp_us AS sip_timestamp_us,
         q.sequence_number_u32 AS sequence_number,
         q.ask_price_int AS price_primary_int,
@@ -1270,6 +1283,7 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
     (
         SELECT
             ticker,
+            if(toUInt64OrZero(participant_timestamp) > 0, toUInt64(intDiv(toUInt64OrZero(participant_timestamp), 1000)), toUInt64(intDiv(toUInt64OrZero(sip_timestamp), 1000))) AS execution_timestamp_us,
             toUInt64(intDiv(toUInt64OrZero(sip_timestamp), 1000)) AS sip_timestamp_us,
             toUInt32OrZero(sequence_number) AS sequence_number_u32,
             toUInt32(if({quote_price_valid}, {bid_price_int}, 0)) AS bid_price_int,
@@ -1293,7 +1307,7 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
             {indicator_code_expr(1)} AS indicator_code_1,
             arrayElement(splitByChar(',', indicators), 1) AS indicator_raw_1
         FROM file({sql_string(quote_path)}, 'CSVWithNames', {sql_string(QUOTE_SCHEMA_STRING)})
-        WHERE {quote_clean_predicate()}
+        WHERE {quote_clean_predicate()}{raw_ticker_filter}
     ) AS q
     LEFT JOIN {condition_token_reference_subquery(args, "quote_conditions")} AS qc1 ON qc1.modifier_int = q.condition_code_1
     LEFT JOIN {condition_token_reference_subquery(args, "quote_conditions")} AS qc2 ON qc2.modifier_int = q.condition_code_2
@@ -1306,6 +1320,7 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
     SELECT
         t.ticker AS ticker,
         {trade_event_meta_expr()} AS event_meta,
+        t.execution_timestamp_us AS execution_timestamp_us,
         t.sip_timestamp_us AS sip_timestamp_us,
         t.sequence_number_u32 AS sequence_number,
         t.price_int AS price_primary_int,
@@ -1324,6 +1339,7 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
     (
         SELECT
             ticker,
+            if(toUInt64OrZero(participant_timestamp) > 0, toUInt64(intDiv(toUInt64OrZero(participant_timestamp), 1000)), toUInt64(intDiv(toUInt64OrZero(sip_timestamp), 1000))) AS execution_timestamp_us,
             toUInt64(intDiv(toUInt64OrZero(sip_timestamp), 1000)) AS sip_timestamp_us,
             toUInt32OrZero(sequence_number) AS sequence_number_u32,
             toUInt32(if({trade_price_valid}, {trade_price_int}, 0)) AS price_int,
@@ -1343,7 +1359,7 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
             arrayElement(splitByChar(',', conditions), 4) AS condition_raw_4,
             arrayElement(splitByChar(',', conditions), 5) AS condition_raw_5
         FROM file({sql_string(trade_path)}, 'CSVWithNames', {sql_string(TRADE_SCHEMA_STRING)})
-        WHERE {trade_clean_predicate(args)}
+        WHERE {trade_clean_predicate(args)}{raw_ticker_filter}
     ) AS t
     LEFT JOIN {condition_token_reference_subquery(args, "trade_conditions")} AS tc1 ON tc1.modifier_int = t.condition_code_1
     LEFT JOIN {condition_token_reference_subquery(args, "trade_conditions")} AS tc2 ON tc2.modifier_int = t.condition_code_2
@@ -1363,6 +1379,7 @@ INSERT INTO {db}.{table}
     ticker,
     ordinal,
     event_meta,
+    execution_timestamp_us,
     sip_timestamp_us,
     price_primary_int,
     price_secondary_int,
@@ -1382,6 +1399,7 @@ SELECT
     coalesce(c.ordinal_offset, toUInt64(0))
         + toUInt64(row_number() OVER (PARTITION BY e.ticker ORDER BY e.sip_timestamp_us, e.sequence_number, bitAnd(e.event_meta, 1)) - 1) AS ordinal,
     e.event_meta,
+    e.execution_timestamp_us,
     e.sip_timestamp_us,
     e.price_primary_int,
     e.price_secondary_int,
@@ -2767,6 +2785,7 @@ def event_values_match(expected: dict[str, Any], actual: dict[str, Any]) -> bool
     int_fields = [
         "event_type",
         "event_meta",
+        "execution_timestamp_us",
         "sip_timestamp_us",
         "price_primary_int",
         "price_secondary_int",
@@ -2820,6 +2839,10 @@ def quote_raw_row_to_event(row: dict[str, Any], token_maps: dict[str, dict[int, 
         "ticker": str(row["ticker"]),
         "event_type": 0,
         "event_meta": event_meta(0, ask_scale, bid_scale, tape_code(row.get("tape"))),
+        "execution_timestamp_us": (
+            to_int_or_zero(row.get("participant_timestamp"))
+            or to_int_or_zero(row.get("sip_timestamp"))
+        ) // 1000,
         "sip_timestamp_us": to_int_or_zero(row.get("sip_timestamp")) // 1000,
         "sequence_number": to_int_or_zero(row.get("sequence_number")),
         "price_primary_int": ask_int,
@@ -2848,6 +2871,10 @@ def trade_raw_row_to_event(row: dict[str, Any], token_maps: dict[str, dict[int, 
         "ticker": str(row["ticker"]),
         "event_type": 1,
         "event_meta": event_meta(1, trade_scale, 0, tape_code(row.get("tape"))),
+        "execution_timestamp_us": (
+            to_int_or_zero(row.get("participant_timestamp"))
+            or to_int_or_zero(row.get("sip_timestamp"))
+        ) // 1000,
         "sip_timestamp_us": to_int_or_zero(row.get("sip_timestamp")) // 1000,
         "sequence_number": to_int_or_zero(row.get("sequence_number")),
         "price_primary_int": trade_int,

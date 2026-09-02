@@ -1132,6 +1132,9 @@ impl BarShardStore {
 
 impl BarStore {
     fn apply_event(&mut self, event: &MarketEvent) -> Vec<BarRow> {
+        if event.is_delayed_trade_report() {
+            return Vec::new();
+        }
         let mut finalized = Vec::new();
         let sym = event.ticker().to_ascii_uppercase();
         let trade_rule = match event {
@@ -2372,6 +2375,28 @@ mod tests {
         assert_eq!(bar.nbbo_consistent_volume, 100.0);
         assert_eq!(bar.nbbo_consistent_trade_count, 1);
         assert!((bar.nbbo_vwap - 3.31).abs() < 1e-12);
+    }
+
+    #[tokio::test]
+    async fn delayed_trade_report_does_not_revise_current_state_bar() {
+        let rules = TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap();
+        let bars = SharedBarStore::new_without_structure(vec!["1s".into()], 8, 1, rules);
+        let start = Utc.with_ymd_and_hms(2026, 8, 21, 8, 0, 0).unwrap();
+        let mut delayed = trade(
+            start + chrono::Duration::seconds(2),
+            9.99,
+            10_000.0,
+            vec![12],
+        );
+        delayed.participant_ts = Some(start + chrono::Duration::milliseconds(100));
+
+        bars.apply_event(&MarketEvent::Trade(delayed)).await;
+        bars.finalize_due(start + chrono::Duration::seconds(4))
+            .await;
+
+        let snapshot = bars.snapshot("AAPL", "1s", 8).await;
+        assert!(snapshot.current.is_none());
+        assert!(snapshot.history.is_empty());
     }
 
     #[tokio::test]

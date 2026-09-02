@@ -304,6 +304,9 @@ impl CrossSectionEngine {
     }
 
     async fn apply_event(&mut self, event: MarketEvent) -> Result<(), String> {
+        if event.is_delayed_trade_report() {
+            return Ok(());
+        }
         let ticker = event.ticker().to_ascii_uppercase();
         if let MarketEvent::Trade(trade) = &event {
             let rule = self.trade_rules.resolve(&trade.conditions, trade.ts);

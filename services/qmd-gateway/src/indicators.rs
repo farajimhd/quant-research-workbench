@@ -1464,6 +1464,9 @@ impl IndicatorShardStore {
 
 impl IndicatorStore {
     fn apply_event(&mut self, event: &MarketEvent) {
+        if event.is_delayed_trade_report() {
+            return;
+        }
         let ticker = event.ticker().to_ascii_uppercase();
         let tick_window_seconds = self.tick_window_seconds;
         let tick = self

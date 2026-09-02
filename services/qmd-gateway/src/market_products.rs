@@ -565,6 +565,9 @@ impl MarketProductEngine {
     }
 
     pub fn apply_event(&mut self, event: &MarketEvent, as_of: DateTime<Utc>) {
+        if event.is_delayed_trade_report() {
+            return;
+        }
         let Some(coordinate) = session_coordinate(event.ts()) else {
             return;
         };

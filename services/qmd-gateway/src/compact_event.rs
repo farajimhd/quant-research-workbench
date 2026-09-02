@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 use tokio::time::{interval, sleep, Duration, Instant};
 
-pub const LIVE_COMPACT_EVENT_SCHEMA_VERSION: u16 = 4;
+pub const LIVE_COMPACT_EVENT_SCHEMA_VERSION: u16 = 5;
 pub const QUOTE_EVENT_TYPE: u8 = 0;
 pub const TRADE_EVENT_TYPE: u8 = 1;
 const CONDITION_TOKEN_SLOTS: usize = 5;
@@ -33,6 +33,7 @@ pub struct LiveCompactEvent {
     pub condition_token_5: u8,
     pub event_date: String,
     pub event_meta: u8,
+    pub execution_timestamp_us: u64,
     pub exchange_primary: u8,
     pub exchange_secondary: u8,
     pub ingest_ts: DateTime<Utc>,
@@ -66,6 +67,7 @@ impl LiveCompactEvent {
         condition_token_5: u8,
         event_date: String,
         event_meta: u8,
+        execution_timestamp_us: u64,
         exchange_primary: u8,
         exchange_secondary: u8,
         ingest_ts: DateTime<Utc>,
@@ -88,6 +90,7 @@ impl LiveCompactEvent {
             condition_token_5,
             event_date,
             event_meta,
+            execution_timestamp_us,
             exchange_primary,
             exchange_secondary,
             ingest_ts,
@@ -212,6 +215,7 @@ impl CompactEventDecoder {
             "schema_version": event.schema_version,
             "arrival_sequence": event.arrival_sequence,
             "event_meta": event.event_meta,
+            "execution_timestamp_us": event.execution_timestamp_us,
             "issue_flags": event.issue_flags,
             "sip_timestamp_us": event.sip_timestamp_us,
             "correlation_id": event.correlation_id(),
@@ -232,7 +236,12 @@ impl CompactEventDecoder {
                 conditions,
                 exchange: u16::from(event.exchange_primary),
                 ingest_ts: event.ingest_ts,
-                participant_ts: None,
+                participant_ts: (event.execution_timestamp_us > 0)
+                    .then(|| {
+                        Utc.timestamp_micros(event.execution_timestamp_us as i64)
+                            .single()
+                    })
+                    .flatten(),
                 price: f64::from(event.price_primary_int) / primary_scale,
                 raw,
                 sequence: event.source_sequence,
@@ -1571,6 +1580,7 @@ impl CompactEventClickHouseWriter {
                     "arrival_sequence": event.arrival_sequence,
                     "ticker": event.ticker,
                     "event_meta": event.event_meta,
+                    "execution_timestamp_us": event.execution_timestamp_us,
                     "sip_timestamp_us": event.sip_timestamp_us,
                     "price_primary_int": event.price_primary_int,
                     "price_secondary_int": event.price_secondary_int,
@@ -1623,6 +1633,17 @@ impl CompactEventClickHouseWriter {
 
     async fn ensure_compact_event_table(&self) -> Result<(), String> {
         self.execute(&self.create_table_sql(), true).await?;
+        // Schema v5 adds the exchange execution clock without rewriting existing
+        // live rows. A zero value explicitly means that the older row has no
+        // recoverable participant timestamp and therefore falls back to SIP.
+        self.execute(
+            &format!(
+                "ALTER TABLE {} ADD COLUMN IF NOT EXISTS execution_timestamp_us UInt64 DEFAULT 0 AFTER event_meta",
+                self.config.compact_event_table
+            ),
+            true,
+        )
+        .await?;
         let actual = self
             .query(
                 &format!(
@@ -1639,6 +1660,7 @@ impl CompactEventClickHouseWriter {
             ("arrival_sequence", "UInt64"),
             ("ticker", "LowCardinality(String)"),
             ("event_meta", "UInt8"),
+            ("execution_timestamp_us", "UInt64"),
             ("sip_timestamp_us", "UInt64"),
             ("price_primary_int", "UInt32"),
             ("price_secondary_int", "UInt32"),
@@ -1704,6 +1726,7 @@ impl CompactEventClickHouseWriter {
                 arrival_sequence UInt64 CODEC(T64, ZSTD(1)),
                 ticker LowCardinality(String),
                 event_meta UInt8,
+                execution_timestamp_us UInt64 CODEC(DoubleDelta, ZSTD(1)),
                 sip_timestamp_us UInt64 CODEC(DoubleDelta, ZSTD(1)),
                 price_primary_int UInt32 CODEC(T64, ZSTD(1)),
                 price_secondary_int UInt32 CODEC(T64, ZSTD(1)),
@@ -2055,6 +2078,7 @@ fn compact_quote_event(
             bid_scale,
             references.tape_id(quote.tape),
         ),
+        execution_timestamp_us: timestamp_us(quote.ts),
         exchange_primary: encode_u8(quote.ask_exchange),
         exchange_secondary: encode_u8(quote.bid_exchange),
         ingest_ts: quote.ingest_ts,
@@ -2115,6 +2139,7 @@ fn compact_trade_event(
             0,
             references.tape_id(trade.tape),
         ),
+        execution_timestamp_us: timestamp_us(trade.participant_ts.unwrap_or(trade.ts)),
         exchange_primary: encode_u8(trade.exchange),
         exchange_secondary: 0,
         ingest_ts: trade.ingest_ts,
@@ -2584,6 +2609,41 @@ mod tests {
         assert_eq!(converted.event.condition_token_5, 5);
         match refs.decoder().decode(&converted.event) {
             MarketEvent::Trade(decoded) => assert_eq!(decoded.conditions, trade.conditions),
+            MarketEvent::Quote(_) => panic!("expected trade"),
+        }
+    }
+
+    #[test]
+    fn compact_trade_round_trip_preserves_separate_execution_clock() {
+        let sip = Utc.timestamp_millis_opt(1_700_000_005_250).unwrap();
+        let execution = Utc.timestamp_millis_opt(1_700_000_000_125).unwrap();
+        let trade = TradeEvent {
+            conditions: vec![12],
+            exchange: 4,
+            ingest_ts: sip,
+            participant_ts: Some(execution),
+            price: 10.0,
+            raw: serde_json::Value::Null,
+            sequence: 9,
+            size: 100.0,
+            tape: 1,
+            ticker: "TEST".to_string(),
+            trade_id: "1".to_string(),
+            trf_id: 0,
+            trf_ts: None,
+            ts: sip,
+        };
+        let converted = compact_trade_event(&trade, &references()).unwrap().event;
+        assert_eq!(
+            converted.execution_timestamp_us,
+            execution.timestamp_micros() as u64
+        );
+        match references().decoder().decode(&converted) {
+            MarketEvent::Trade(decoded) => {
+                assert_eq!(decoded.ts, sip);
+                assert_eq!(decoded.participant_ts, Some(execution));
+                assert!(MarketEvent::Trade(decoded).is_delayed_trade_report());
+            }
             MarketEvent::Quote(_) => panic!("expected trade"),
         }
     }

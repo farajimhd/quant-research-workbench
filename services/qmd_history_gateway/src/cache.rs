@@ -40,7 +40,7 @@ use std::sync::Mutex as StdMutex;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, OnceCell, Semaphore};
 
 pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v35";
-pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v48";
+pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v51";
 pub const HISTORICAL_CORPORATE_ACTION_REVISION: &str = "retrospective-split-adjusted-v2";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
 const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 11;
@@ -1666,6 +1666,10 @@ impl HistoricalDerivedCache {
             )
         });
         let mut events_processed = 0_u64;
+        // Retrospective chart bars are the one projection that uses exchange
+        // execution time. Buffer only this profile so open/close remain ordered;
+        // causal derived profiles continue streaming in SIP-availability order.
+        let mut chart_events = Vec::<LiveCompactEvent>::new();
         let chunks = split_event_window(&window, self.config.fetch_chunk_hours);
         let per_build_fetches = self
             .config
@@ -1695,7 +1699,14 @@ impl HistoricalDerivedCache {
                     ));
                 }
                 for compact in &events {
+                    if bars_only {
+                        chart_events.push(compact.clone());
+                        continue;
+                    }
                     let event = self.source.market_event(compact);
+                    if event.is_delayed_trade_report() {
+                        continue;
+                    }
                     // Unified Structural Levels are driven only by eligible prints.
                     // Quotes do not alter their price-level book, while replaying
                     // every quote dominates cold historical preparation time.
@@ -1774,6 +1785,35 @@ impl HistoricalDerivedCache {
                     cache_event_type_filter(&profile),
                 ));
                 next_chunk += 1;
+            }
+        }
+        if bars_only {
+            chart_events.sort_by_key(|event| {
+                (
+                    if event.execution_timestamp_us > 0 {
+                        event.execution_timestamp_us
+                    } else {
+                        event.sip_timestamp_us
+                    },
+                    event.source_sequence,
+                    event.event_type(),
+                    event.arrival_sequence,
+                )
+            });
+            for compact in &chart_events {
+                let event = self.source.market_event(compact).for_execution_time_chart();
+                if event.ts() < window.start || event.ts() >= window.end {
+                    continue;
+                }
+                for bar in shard.apply_event(&event).await {
+                    if valid_price_bar(&bar)
+                        && requested_timeframe
+                            .as_ref()
+                            .is_some_and(|timeframe| bar.timeframe.eq_ignore_ascii_case(timeframe))
+                    {
+                        entry.push_bar(bar).await?;
+                    }
+                }
             }
         }
         if let Some(builder) = structure_projection {

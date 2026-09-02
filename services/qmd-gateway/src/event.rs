@@ -72,6 +72,43 @@ impl MarketEvent {
         }
     }
 
+    /// Timestamp at which the event became available to a causal consumer.
+    pub fn availability_ts(&self) -> DateTime<Utc> {
+        self.ts()
+    }
+
+    /// Exchange execution timestamp when supplied, otherwise the SIP timestamp.
+    pub fn execution_ts(&self) -> DateTime<Utc> {
+        match self {
+            MarketEvent::Trade(event) => event.participant_ts.unwrap_or(event.ts),
+            MarketEvent::Quote(event) => event.ts,
+        }
+    }
+
+    /// True when a trade belongs to a one-second bucket that was already complete
+    /// before the report became available. Such reports remain canonical audit
+    /// events but must not revise causal bars, indicators, structure, or gates.
+    pub fn is_delayed_trade_report(&self) -> bool {
+        match self {
+            MarketEvent::Trade(event) => event
+                .participant_ts
+                .is_some_and(|execution| execution.timestamp() < event.ts.timestamp()),
+            MarketEvent::Quote(_) => false,
+        }
+    }
+
+    /// Clone an event for retrospective chart projection. Availability remains
+    /// present in `raw`; only the chart bucket clock moves to execution time.
+    pub fn for_execution_time_chart(&self) -> Self {
+        let mut projected = self.clone();
+        if let MarketEvent::Trade(event) = &mut projected {
+            if let Some(execution) = event.participant_ts {
+                event.ts = execution;
+            }
+        }
+        projected
+    }
+
     pub fn arrival_sequence(&self) -> u64 {
         let raw = match self {
             MarketEvent::Trade(event) => &event.raw,
@@ -80,6 +117,49 @@ impl MarketEvent {
         raw.get("arrival_sequence")
             .and_then(Value::as_u64)
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn trade(sip_ms: i64, participant_ms: i64) -> MarketEvent {
+        let sip = Utc.timestamp_millis_opt(sip_ms).single().unwrap();
+        MarketEvent::Trade(TradeEvent {
+            conditions: vec![12],
+            exchange: 4,
+            ingest_ts: sip,
+            participant_ts: Some(Utc.timestamp_millis_opt(participant_ms).single().unwrap()),
+            price: 3.5,
+            raw: json!({"sip_timestamp_ms": sip_ms}),
+            sequence: 1,
+            size: 100.0,
+            tape: 3,
+            ticker: "TEST".to_string(),
+            trade_id: "1".to_string(),
+            trf_id: 0,
+            trf_ts: None,
+            ts: sip,
+        })
+    }
+
+    #[test]
+    fn same_second_form_t_remains_current_state_eligible() {
+        let event = trade(1_750_000_000_900, 1_750_000_000_100);
+        assert!(!event.is_delayed_trade_report());
+    }
+
+    #[test]
+    fn prior_second_report_is_audit_only_for_current_state() {
+        let event = trade(1_750_000_001_001, 1_750_000_000_999);
+        assert!(event.is_delayed_trade_report());
+        assert_eq!(event.for_execution_time_chart().ts(), event.execution_ts());
+        assert_eq!(
+            event.availability_ts().timestamp_millis(),
+            1_750_000_001_001
+        );
     }
 }
 

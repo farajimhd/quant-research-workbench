@@ -272,6 +272,7 @@ struct HistoricalRow {
     condition_token_5: u8,
     event_date: String,
     event_meta: u8,
+    execution_timestamp_us: u64,
     exchange_primary: u8,
     exchange_secondary: u8,
     ordinal: u64,
@@ -2589,6 +2590,7 @@ fn event_select(
             {ordinal} AS ordinal,
             {source_sequence} AS source_sequence,
             source.event_meta,
+            source.execution_timestamp_us,
             source.sip_timestamp_us,
             source.price_primary_int,
             source.price_secondary_int,
@@ -2956,6 +2958,7 @@ fn row_to_event(row: HistoricalRow) -> LiveCompactEvent {
         row.condition_token_5,
         row.event_date,
         row.event_meta,
+        row.execution_timestamp_us,
         row.exchange_primary,
         row.exchange_secondary,
         ingest_ts,
@@ -2975,9 +2978,9 @@ fn parse_historical_tsv_row(bytes: &[u8]) -> Result<HistoricalRow, String> {
     let text = std::str::from_utf8(bytes)
         .map_err(|error| format!("invalid historical stream UTF-8: {error}"))?;
     let fields = text.split('\t').collect::<Vec<_>>();
-    if fields.len() != 17 {
+    if fields.len() != 18 {
         return Err(format!(
-            "invalid historical stream column count: expected 17, found {}",
+            "invalid historical stream column count: expected 18, found {}",
             fields.len()
         ));
     }
@@ -2986,19 +2989,20 @@ fn parse_historical_tsv_row(bytes: &[u8]) -> Result<HistoricalRow, String> {
         ordinal: parse_tsv_field(&fields, 1, "ordinal")?,
         source_sequence: parse_tsv_field(&fields, 2, "source_sequence")?,
         event_meta: parse_tsv_field(&fields, 3, "event_meta")?,
-        sip_timestamp_us: parse_tsv_field(&fields, 4, "sip_timestamp_us")?,
-        price_primary_int: parse_tsv_field(&fields, 5, "price_primary_int")?,
-        price_secondary_int: parse_tsv_field(&fields, 6, "price_secondary_int")?,
-        size_primary: parse_tsv_field(&fields, 7, "size_primary")?,
-        size_secondary: parse_tsv_field(&fields, 8, "size_secondary")?,
-        exchange_primary: parse_tsv_field(&fields, 9, "exchange_primary")?,
-        exchange_secondary: parse_tsv_field(&fields, 10, "exchange_secondary")?,
-        condition_token_1: parse_tsv_field(&fields, 11, "condition_token_1")?,
-        condition_token_2: parse_tsv_field(&fields, 12, "condition_token_2")?,
-        condition_token_3: parse_tsv_field(&fields, 13, "condition_token_3")?,
-        condition_token_4: parse_tsv_field(&fields, 14, "condition_token_4")?,
-        condition_token_5: parse_tsv_field(&fields, 15, "condition_token_5")?,
-        event_date: fields[16].to_string(),
+        execution_timestamp_us: parse_tsv_field(&fields, 4, "execution_timestamp_us")?,
+        sip_timestamp_us: parse_tsv_field(&fields, 5, "sip_timestamp_us")?,
+        price_primary_int: parse_tsv_field(&fields, 6, "price_primary_int")?,
+        price_secondary_int: parse_tsv_field(&fields, 7, "price_secondary_int")?,
+        size_primary: parse_tsv_field(&fields, 8, "size_primary")?,
+        size_secondary: parse_tsv_field(&fields, 9, "size_secondary")?,
+        exchange_primary: parse_tsv_field(&fields, 10, "exchange_primary")?,
+        exchange_secondary: parse_tsv_field(&fields, 11, "exchange_secondary")?,
+        condition_token_1: parse_tsv_field(&fields, 12, "condition_token_1")?,
+        condition_token_2: parse_tsv_field(&fields, 13, "condition_token_2")?,
+        condition_token_3: parse_tsv_field(&fields, 14, "condition_token_3")?,
+        condition_token_4: parse_tsv_field(&fields, 15, "condition_token_4")?,
+        condition_token_5: parse_tsv_field(&fields, 16, "condition_token_5")?,
+        event_date: fields[17].to_string(),
     })
 }
 
@@ -3234,6 +3238,7 @@ mod tests {
             condition_token_5: 0,
             event_date: "2026-07-13".to_string(),
             event_meta: 6,
+            execution_timestamp_us: 1_752_415_200_000_000,
             exchange_primary: 11,
             exchange_secondary: 12,
             ordinal: 42,
@@ -3266,7 +3271,7 @@ mod tests {
     #[test]
     fn ordered_stream_tsv_parser_preserves_the_compact_wire_columns() {
         let row = parse_historical_tsv_row(
-            b"AAPL\t42\t9001\t6\t1752415200000000\t1001234\t1001200\t20\t25\t11\t12\t3\t4\t5\t0\t0\t2026-07-13",
+            b"AAPL\t42\t9001\t6\t1752415199000000\t1752415200000000\t1001234\t1001200\t20\t25\t11\t12\t3\t4\t5\t0\t0\t2026-07-13",
         )
         .unwrap();
 
@@ -3274,6 +3279,7 @@ mod tests {
         assert_eq!(row.ordinal, 42);
         assert_eq!(row.source_sequence, 9001);
         assert_eq!(row.event_meta, 6);
+        assert_eq!(row.execution_timestamp_us, 1_752_415_199_000_000);
         assert_eq!(row.price_primary_int, 1_001_234);
         assert_eq!(row.size_secondary, 25.0);
         assert_eq!(row.condition_token_3, 5);
