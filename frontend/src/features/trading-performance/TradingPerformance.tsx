@@ -7,7 +7,7 @@ import type { CanonicalTradingPreview, LivePerformanceState, PerformanceMetric, 
 import { finiteNumber } from "../canvas/numbers";
 
 const LIVE_ACCOUNT_KEYS_STORAGE_KEY = "quant-research-workbench.real-live-trading.account-keys";
-const LIVE_PERFORMANCE_STORAGE_KEY = "quant-research-workbench.trading.performance-v2";
+const LIVE_PERFORMANCE_STORAGE_KEY = "quant-research-workbench.trading.performance-v3";
 
 export function readLiveAccountKeys(): string[] {
   try {
@@ -44,7 +44,7 @@ function writeCachedPerformance(accountKeys: string[], mode: string, data: Perfo
 function legacyMetrics(snapshot: PerformanceSnapshot): PerformanceMetric[] {
   return [
     metric("net_pnl_today", "Net P&L today", snapshot.net_pnl_today, "money", "signed", "Today's realized net P&L plus current unrealized P&L."),
-    metric("unrealized_pnl", "Unrealized", snapshot.unrealized_pnl, "money", "signed", "Mark-to-market P&L on currently open positions."),
+    metric("max_unrealized_pnl", "Peak unrealized", snapshot.max_unrealized_pnl, "money", "favorable_high", "Sum of each open position's maximum favorable unrealized P&L observed during its current lifecycle."),
     metric("open_position_count", "Open positions", snapshot.open_position_count, "count", "neutral", "Current non-zero positions across the selected accounts."),
     metric("realized_pnl_today", "Realized today", snapshot.realized_pnl_today, "money", "signed", "Net P&L from flat-to-flat episodes closed on the New York market date."),
     metric("available_cash", "Available cash", snapshot.available_cash, "money", "neutral", "Broker available funds, with total cash used only when unavailable."),
@@ -65,6 +65,10 @@ export function normalizePerformanceSnapshot(payload: CanonicalTradingPreview): 
     return marketSessionDate(closedAt) === sessionDate ? total + finiteNumber(row.net_pnl) : total;
   }, 0);
   const unrealized = finiteNumber(metrics.unrealized_pnl);
+  const maxUnrealized = payload.positions.reduce(
+    (total, row) => total + Math.max(0, finiteNumber(row.max_unrealized_pnl ?? row.unrealized_pnl)),
+    0,
+  );
   const hasAvailableFunds = payload.account_values.some((row) => String(row.key || "").toLowerCase() === "availablefunds" && String(row.segment || "base").toLowerCase() === "base")
     || payload.ledger.some((row) => row.is_base && row.values && typeof row.values === "object" && Object.keys(row.values as Record<string, unknown>).some((key) => key.toLowerCase() === "availablefunds"));
   return {
@@ -72,6 +76,8 @@ export function normalizePerformanceSnapshot(payload: CanonicalTradingPreview): 
     available_cash: hasAvailableFunds ? finiteNumber(metrics.available_funds) : finiteNumber(metrics.total_cash),
     available_cash_basis: hasAvailableFunds ? "available_funds" : "total_cash",
     net_pnl_today: realizedToday + unrealized,
+    max_unrealized_pnl: maxUnrealized,
+    max_unrealized_pnl_basis: "sum_of_open_position_maxima",
     open_position_count: payload.positions.filter((row) => finiteNumber(row.quantity) !== 0).length,
     realized_pnl_today: realizedToday,
     session_date: sessionDate,
@@ -181,6 +187,7 @@ function metricTone(metricValue: PerformanceMetric) {
   const value = Number(metricValue.value);
   if (!metricValue.available || !Number.isFinite(value) || value === 0) return "neutral";
   if (metricValue.interpretation === "signed") return value > 0 ? "positive" : "negative";
+  if (metricValue.interpretation === "favorable_high") return value > 0 ? "positive" : "neutral";
   if (metricValue.interpretation === "adverse_high") return value > 0 ? "negative" : "neutral";
   return "neutral";
 }

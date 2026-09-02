@@ -868,10 +868,12 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
         if (position.symbol !== symbol) return position;
         const unrealizedPnl = (mark - position.avg_price) * position.quantity;
         const unrealizedPnlPct = position.avg_price > 0 ? (mark / position.avg_price) - 1 : 0;
+        const maxUnrealizedPnl = Math.max(position.max_unrealized_pnl ?? 0, unrealizedPnl);
         if (
           Math.abs(position.mark - mark) < 0.000001 &&
           Math.abs(position.unrealized_pnl - unrealizedPnl) < 0.000001 &&
-          Math.abs(position.unrealized_pnl_pct - unrealizedPnlPct) < 0.000001
+          Math.abs(position.unrealized_pnl_pct - unrealizedPnlPct) < 0.000001 &&
+          Math.abs(position.max_unrealized_pnl - maxUnrealizedPnl) < 0.000001
         ) {
           return position;
         }
@@ -880,6 +882,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
           mark,
           unrealized_pnl: unrealizedPnl,
           unrealized_pnl_pct: unrealizedPnlPct,
+          max_unrealized_pnl: maxUnrealizedPnl,
         };
       })
     );

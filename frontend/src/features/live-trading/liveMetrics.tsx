@@ -49,6 +49,7 @@ export function buildSimulationPortfolioMetrics({
 }) {
   const realized = realizedPnlFromTrades(trades);
   const unrealized = positions.reduce((total, row) => total + row.unrealized_pnl, 0);
+  const maxUnrealized = positions.reduce((total, row) => total + (row.max_unrealized_pnl ?? Math.max(0, row.unrealized_pnl)), 0);
   const exposure = positionExposure(positions);
   const cash = Math.max(0, startingCash + realized - positions.reduce((total, row) => total + row.avg_price * row.quantity, 0));
   const stagedOrders = orders.filter((order) => order.status === "STAGED").length;
@@ -59,7 +60,7 @@ export function buildSimulationPortfolioMetrics({
     items: [
       { icon: <Banknote size={14} />, label: "Total P/L", tone: signedMetricTone(realized + unrealized), value: money(realized + unrealized) },
       { icon: <CircleDollarSign size={14} />, label: "Realized P/L", tone: signedMetricTone(realized), value: money(realized) },
-      { icon: <Activity size={14} />, label: "Unrealized P/L", tone: signedMetricTone(unrealized), value: money(unrealized) },
+      { icon: <Activity size={14} />, label: "Peak Unrealized", tone: maxUnrealized > 0 ? "success" : "muted", value: money(maxUnrealized) },
       { icon: <Banknote size={14} />, label: "Cash", tone: cash > startingCash ? "success" : cash < startingCash ? "warning" : "muted", value: money(cash) },
       { icon: <Banknote size={14} />, label: "Equity", tone: signedMetricTone(realized + unrealized), value: money(startingCash + realized + unrealized) },
       { icon: <BarChart3 size={14} />, label: "Exposure", tone: exposure ? "info" : "muted", value: money(exposure) },
@@ -87,6 +88,7 @@ export function buildBrokerPortfolioMetrics({
   const brokerPnl = brokerPnlRows(snapshot);
   const realized = positions.reduce((total, row) => total + (row.realized_pnl ?? 0), 0);
   const unrealized = brokerPnl.length ? brokerPnl.reduce((total, row) => total + numberValue(row, "unrealized_pnl"), 0) : positions.reduce((total, row) => total + row.unrealized_pnl, 0);
+  const maxUnrealized = positions.reduce((total, row) => total + (row.max_unrealized_pnl ?? Math.max(0, row.unrealized_pnl)), 0);
   const exposure = positionExposure(positions);
   const balances = portfolioBalanceRows(snapshot);
   const cash = brokerAvailableFunds(snapshot);
@@ -104,7 +106,7 @@ export function buildBrokerPortfolioMetrics({
       { icon: <ClipboardList size={14} />, label: "Order Conn", tone: connection.iserver === "blocked" ? "danger" : connection.iserver ? "success" : "muted", value: connection.iserver || "waiting" },
       { icon: <Banknote size={14} />, label: "Total P/L", tone: signedMetricTone(realized + unrealized), value: money(realized + unrealized) },
       { icon: <CircleDollarSign size={14} />, label: "Realized P/L", tone: signedMetricTone(realized), value: money(realized) },
-      { icon: <Activity size={14} />, label: "Unrealized P/L", tone: signedMetricTone(unrealized), value: money(unrealized) },
+      { icon: <Activity size={14} />, label: "Peak Unrealized", tone: maxUnrealized > 0 ? "success" : "muted", value: money(maxUnrealized) },
       { icon: <Banknote size={14} />, label: "Available", tone: cash ? "info" : "muted", value: money(cash) },
       { icon: <Banknote size={14} />, label: "Net Liq", tone: equity ? "info" : "muted", value: money(equity) },
       { icon: <BarChart3 size={14} />, label: "Exposure", tone: exposure ? "info" : "muted", value: money(exposure) },

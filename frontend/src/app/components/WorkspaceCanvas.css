@@ -3745,7 +3745,7 @@
   border-radius: 7px;
   display: grid;
   gap: 6px;
-  grid-template-columns: minmax(58px, 0.9fr) repeat(3, minmax(48px, 1fr));
+  grid-template-columns: minmax(58px, 0.9fr) repeat(4, minmax(48px, 1fr));
   min-height: 42px;
   padding: 7px;
 }
@@ -3792,11 +3792,12 @@
   font-size: 14px;
 }
 
-.live-portfolio-position-card.positive div:last-child strong {
+.live-portfolio-position-card.positive .live-position-current-pnl strong,
+.live-portfolio-position-card .live-position-peak-pnl strong {
   color: var(--success);
 }
 
-.live-portfolio-position-card.negative div:last-child strong {
+.live-portfolio-position-card.negative .live-position-current-pnl strong {
   color: var(--danger);
 }
 

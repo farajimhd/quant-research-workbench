@@ -100,6 +100,19 @@ def test_charts_share_causal_split_events_with_timeframe_defaults_and_controls()
     assert "chart.timeScale().height() + 6" in renderer_source
 
 
+def test_peak_unrealized_is_shared_by_performance_and_position_surfaces() -> None:
+    performance_source = (REPO_ROOT / "frontend" / "src" / "features" / "trading-performance" / "TradingPerformance.tsx").read_text(encoding="utf-8")
+    position_source = (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "tradingPresentation.tsx").read_text(encoding="utf-8")
+    live_portfolio_source = (REPO_ROOT / "frontend" / "src" / "features" / "live-trading" / "LivePortfolioContainer.tsx").read_text(encoding="utf-8")
+    live_metrics_source = (REPO_ROOT / "frontend" / "src" / "features" / "live-trading" / "liveMetrics.tsx").read_text(encoding="utf-8")
+
+    assert 'metric("max_unrealized_pnl", "Peak unrealized"' in performance_source
+    assert '"max_unrealized_pnl"' in position_source
+    assert 'label="Peak unrealized"' in position_source
+    assert "position.max_unrealized_pnl" in live_portfolio_source
+    assert live_metrics_source.count('label: "Peak Unrealized"') == 2
+
+
 def test_strategy_activity_pins_the_navigation_stop_record() -> None:
     canvas_source = CANVAS_PAGE.read_text(encoding="utf-8")
     container_source = SCREENER_CONTAINERS.read_text(encoding="utf-8")

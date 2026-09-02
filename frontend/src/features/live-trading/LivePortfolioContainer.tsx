@@ -94,10 +94,15 @@ function PortfolioPositions({ positions, showAccountContext }: { positions: Posi
                   <span>Mark</span>
                   <strong>{money(position.mark)}</strong>
                 </div>
-                <div>
+                <div className="live-position-current-pnl">
                   <span>P/L</span>
                   <strong>{money(position.unrealized_pnl)}</strong>
                   <small>{percent(position.unrealized_pnl_pct)}</small>
+                </div>
+                <div className="live-position-peak-pnl">
+                  <span>Peak P/L</span>
+                  <strong>{money(position.max_unrealized_pnl)}</strong>
+                  <small>Observed lifecycle max</small>
                 </div>
               </article>
             );
@@ -162,6 +167,7 @@ function buildSimulationProfitLossRows(positions: PositionRow[], trades: TradeRo
     ...positions.map((row) => ({
       avg_price: row.avg_price,
       mark: row.mark,
+      max_unrealized_pnl: row.max_unrealized_pnl,
       pnl: row.unrealized_pnl,
       pnl_pct: row.unrealized_pnl_pct,
       quantity: row.quantity,

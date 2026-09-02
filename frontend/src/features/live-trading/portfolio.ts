@@ -45,6 +45,7 @@ export type PositionRow = {
   symbol: string;
   unrealized_pnl: number;
   unrealized_pnl_pct: number;
+  max_unrealized_pnl: number;
 };
 
 export type TradeRow = {
@@ -106,6 +107,7 @@ export function normalizeRealLivePosition(row: Record<string, unknown>): Positio
     symbol,
     unrealized_pnl: unrealizedPnl,
     unrealized_pnl_pct: avgPrice > 0 ? unrealizedPnl / (avgPrice * Math.abs(quantity || 1)) : 0,
+    max_unrealized_pnl: Math.max(0, unrealizedPnl, numberField(row, "max_unrealized_pnl")),
   };
 }
 
@@ -181,6 +183,7 @@ export function upsertPosition(rows: PositionRow[], symbol: string, quantity: nu
   const existing = rows.find((row) => row.symbol === symbol);
   const nextQuantity = (existing?.quantity ?? 0) + quantity;
   const avgPrice = existing ? ((existing.avg_price * existing.quantity) + (price * quantity)) / Math.max(1, nextQuantity) : price;
+  const unrealizedPnl = (mark - avgPrice) * nextQuantity;
   const row = {
     avg_price: avgPrice,
     entry_session_date: existing?.entry_session_date ?? entrySessionDate,
@@ -189,8 +192,9 @@ export function upsertPosition(rows: PositionRow[], symbol: string, quantity: nu
     quantity: nextQuantity,
     stop,
     symbol,
-    unrealized_pnl: (mark - avgPrice) * nextQuantity,
+    unrealized_pnl: unrealizedPnl,
     unrealized_pnl_pct: avgPrice > 0 ? (mark / avgPrice) - 1 : 0,
+    max_unrealized_pnl: Math.max(0, unrealizedPnl, existing?.max_unrealized_pnl ?? 0),
   };
   return [row, ...rows.filter((item) => item.symbol !== symbol)];
 }
@@ -206,6 +210,7 @@ export function reducePosition(rows: PositionRow[], symbol: string, quantity: nu
       quantity: nextQuantity,
       unrealized_pnl: (mark - row.avg_price) * nextQuantity,
       unrealized_pnl_pct: row.avg_price > 0 ? (mark / row.avg_price) - 1 : 0,
+      max_unrealized_pnl: Math.max(row.max_unrealized_pnl ?? 0, (mark - row.avg_price) * nextQuantity),
     }];
   });
 }
@@ -245,6 +250,7 @@ export function buildProfitLossRows(positions: PositionRow[], trades: TradeRow[]
       account: row.account_label,
       avg_price: row.avg_price,
       mark: row.mark,
+      max_unrealized_pnl: row.max_unrealized_pnl,
       pnl: row.unrealized_pnl,
       pnl_pct: row.unrealized_pnl_pct,
       quantity: row.quantity,

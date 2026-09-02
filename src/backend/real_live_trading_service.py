@@ -84,6 +84,9 @@ SCANNER_CONFIGURATION_GENERATION = 0
 NATIVE_SIGNAL_HYDRATION_LOCK = threading.RLock()
 NATIVE_SIGNAL_HYDRATION_LAST_CHECK: dict[str, float] = {}
 NATIVE_SIGNAL_HYDRATION_INTERVAL_SECONDS = 5.0
+OPEN_POSITION_PEAKS_LOCK = threading.RLock()
+OPEN_POSITION_PEAKS: dict[tuple[str, str, int], dict[str, Any]] = {}
+OPEN_POSITION_PEAK_WATERMARKS: dict[str, datetime] = {}
 
 
 def _ranked_unique_tickers(watchlists: list[dict[str, Any]], limit: int) -> list[str]:
@@ -1628,6 +1631,13 @@ def real_live_portfolio_for_account(account: RealLiveAccount, *, now: str | None
                 errors.append(item)
     summary = normalize_account_summary(raw_summary)
     ledger = normalize_ledger(raw_ledger)
+    positions = normalize_positions(position_rows(raw_positions), account, as_of=snapshot_time)
+    observe_open_position_peak_unrealized(
+        positions,
+        account_id=account.account_id,
+        observed_at=snapshot_time,
+        complete=not positions_error,
+    )
     return {
         "as_of": snapshot_time,
         "account_key": account.account_key,
@@ -1641,7 +1651,7 @@ def real_live_portfolio_for_account(account: RealLiveAccount, *, now: str | None
         "errors": account_errors,
         "ledger": ledger,
         "summary": summary,
-        "positions": normalize_positions(position_rows(raw_positions), account, as_of=snapshot_time),
+        "positions": positions,
     }
 
 
@@ -1977,6 +1987,73 @@ def normalize_ibkr_order(item: dict[str, Any], account: RealLiveAccount | None =
 
 def normalize_positions(rows: list[dict[str, Any]], account: RealLiveAccount | None = None, *, as_of: str = "") -> list[dict[str, Any]]:
     return [normalize_position(row, account, as_of=as_of) for row in rows if isinstance(row, dict)]
+
+
+def observe_open_position_peak_unrealized(
+    rows: list[dict[str, Any]],
+    *,
+    account_id: str,
+    observed_at: str,
+    complete: bool,
+) -> None:
+    """Attach the peak favorable open P&L observed for each live position.
+
+    The broker's position snapshot is the current-P&L authority. Keeping the
+    peak here makes it independent of which UI is open. A complete snapshot
+    retires missing positions; direction is part of the identity so a reversal
+    starts a new peak instead of inheriting the prior lifecycle.
+    """
+
+    try:
+        observation_time = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+    except ValueError:
+        observation_time = datetime.now(UTC)
+    active_keys: set[tuple[str, str, int]] = set()
+    with OPEN_POSITION_PEAKS_LOCK:
+        account_watermark = OPEN_POSITION_PEAK_WATERMARKS.get(account_id)
+        current_observation = account_watermark is None or observation_time >= account_watermark
+        for row in rows:
+            quantity = float_value(row.get("quantity"))
+            if quantity == 0:
+                continue
+            instrument_id = str(row.get("conid") or row.get("symbol") or "").strip()
+            if not instrument_id:
+                continue
+            key = (account_id, instrument_id, 1 if quantity > 0 else -1)
+            active_keys.add(key)
+            current = float_value(row.get("unrealized_pnl"))
+            prior = OPEN_POSITION_PEAKS.get(key) if current_observation else None
+            if prior is not None:
+                peak = max(0.0, current, float(prior["peak"]))
+                observed_from = str(prior["observed_from"])
+            else:
+                peak = max(0.0, current)
+                observed_from = observed_at
+            if current_observation:
+                OPEN_POSITION_PEAKS[key] = {
+                    "observed_at": observation_time,
+                    "observed_from": observed_from,
+                    "peak": peak,
+                }
+            row["max_unrealized_pnl"] = peak
+            row["max_unrealized_pnl_as_of"] = observed_at
+            row["max_unrealized_pnl_observed_from"] = observed_from
+            row["max_unrealized_pnl_basis"] = "observed_broker_position_snapshots"
+            raw = dict(row.get("raw_broker_position") or {})
+            raw.update(
+                {
+                    "maxUnrealizedPnl": peak,
+                    "maxUnrealizedPnlAsOf": observed_at,
+                    "maxUnrealizedPnlObservedFrom": observed_from,
+                    "maxUnrealizedPnlBasis": "observed_broker_position_snapshots",
+                }
+            )
+            row["raw_broker_position"] = raw
+        if complete and current_observation:
+            for key in [key for key in OPEN_POSITION_PEAKS if key[0] == account_id and key not in active_keys]:
+                del OPEN_POSITION_PEAKS[key]
+        if current_observation:
+            OPEN_POSITION_PEAK_WATERMARKS[account_id] = observation_time
 
 
 def normalize_position(row: dict[str, Any], account: RealLiveAccount | None = None, *, as_of: str = "") -> dict[str, Any]:

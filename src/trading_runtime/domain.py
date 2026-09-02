@@ -246,6 +246,10 @@ class PositionState:
     average_price: Decimal
     realized_pnl: Decimal
     unrealized_pnl: Decimal
+    max_unrealized_pnl: Decimal | None = None
+    max_unrealized_pnl_observed_from: str = ""
+    max_unrealized_pnl_as_of: str = ""
+    max_unrealized_pnl_basis: str = ""
     model: str = ""
     is_last_to_liquidate: bool = False
     source_event_time: datetime = field(default_factory=utc_now)

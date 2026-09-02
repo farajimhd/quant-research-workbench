@@ -22,7 +22,14 @@ from src.backend.canonical_trading_service import (
     portfolio_metrics,
     trading_state_payload,
 )
-from src.backend.real_live_trading_service import RealLiveAccount, real_live_portfolio
+from src.backend.real_live_trading_service import (
+    OPEN_POSITION_PEAKS,
+    OPEN_POSITION_PEAKS_LOCK,
+    OPEN_POSITION_PEAK_WATERMARKS,
+    RealLiveAccount,
+    observe_open_position_peak_unrealized,
+    real_live_portfolio,
+)
 from src.trading_runtime.canonical_commands import intent_to_ibkr_request
 from src.trading_runtime.canonical_session import CanonicalBrokerSession
 from src.trading_runtime.domain import (
@@ -588,6 +595,20 @@ class CanonicalProjectionTests(unittest.TestCase):
                 average_price=Decimal("100"),
                 realized_pnl=Decimal("0"),
                 unrealized_pnl=Decimal("50"),
+                max_unrealized_pnl=Decimal("125"),
+                source_event_time=NOW,
+            ), PositionState(
+                snapshot_id="positions-1",
+                account_id="DU1",
+                instrument=instrument("MSFT", 272093),
+                quantity=Decimal("20"),
+                market_price=Decimal("49.5"),
+                market_value=Decimal("990"),
+                average_cost=Decimal("1000"),
+                average_price=Decimal("50"),
+                realized_pnl=Decimal("0"),
+                unrealized_pnl=Decimal("-10"),
+                max_unrealized_pnl=Decimal("75"),
                 source_event_time=NOW,
             )],
         )
@@ -599,11 +620,47 @@ class CanonicalProjectionTests(unittest.TestCase):
         )
         metrics = {row["id"]: row for row in snapshot["metrics"]}
 
-        self.assertEqual(snapshot["schema_version"], 2)
-        self.assertEqual([row["id"] for row in snapshot["metrics"][:5]], ["net_pnl_today", "unrealized_pnl", "sharpe_ratio", "win_rate", "maximum_drawdown"])
-        self.assertEqual(metrics["unrealized_return"]["value"], "0.05")
+        self.assertEqual(snapshot["schema_version"], 3)
+        self.assertEqual(snapshot["max_unrealized_pnl"], "200")
+        self.assertEqual([row["id"] for row in snapshot["metrics"][:5]], ["net_pnl_today", "max_unrealized_pnl", "sharpe_ratio", "win_rate", "maximum_drawdown"])
+        self.assertEqual(metrics["unrealized_return"]["value"], "0.025")
         self.assertFalse(metrics["sharpe_ratio"]["available"])
         self.assertIsNone(metrics["sharpe_ratio"]["value"])
+
+    def test_open_position_peak_unrealized_is_retained_then_reset_on_close(self) -> None:
+        account_id = "DU-PEAK-TEST"
+        with OPEN_POSITION_PEAKS_LOCK:
+            OPEN_POSITION_PEAKS.clear()
+            OPEN_POSITION_PEAK_WATERMARKS.clear()
+        try:
+            first = [{"conid": "265598", "symbol": "AAPL", "quantity": 10, "unrealized_pnl": 40}]
+            observe_open_position_peak_unrealized(first, account_id=account_id, observed_at="2026-07-17T10:00:00-04:00", complete=True)
+            second = [{"conid": "265598", "symbol": "AAPL", "quantity": 10, "unrealized_pnl": 15}]
+            observe_open_position_peak_unrealized(second, account_id=account_id, observed_at="2026-07-17T10:01:00-04:00", complete=True)
+
+            self.assertEqual(first[0]["max_unrealized_pnl"], 40)
+            self.assertEqual(second[0]["max_unrealized_pnl"], 40)
+            self.assertEqual(second[0]["max_unrealized_pnl_observed_from"], "2026-07-17T10:00:00-04:00")
+            self.assertEqual(second[0]["raw_broker_position"]["maxUnrealizedPnl"], 40)
+            _, normalized = normalize_position_snapshot(
+                [{**second[0]["raw_broker_position"], "conid": 265598, "ticker": "AAPL", "position": 10}],
+                account_id,
+            )
+            self.assertEqual(normalized[0].max_unrealized_pnl, Decimal("40"))
+
+            stale = [{"conid": "265598", "symbol": "AAPL", "quantity": 10, "unrealized_pnl": 90}]
+            observe_open_position_peak_unrealized(stale, account_id=account_id, observed_at="2026-07-17T09:59:00-04:00", complete=True)
+            self.assertEqual(stale[0]["max_unrealized_pnl"], 90)
+            self.assertEqual(OPEN_POSITION_PEAKS[(account_id, "265598", 1)]["peak"], 40)
+
+            observe_open_position_peak_unrealized([], account_id=account_id, observed_at="2026-07-17T10:02:00-04:00", complete=True)
+            reopened = [{"conid": "265598", "symbol": "AAPL", "quantity": 10, "unrealized_pnl": -5}]
+            observe_open_position_peak_unrealized(reopened, account_id=account_id, observed_at="2026-07-17T10:03:00-04:00", complete=True)
+            self.assertEqual(reopened[0]["max_unrealized_pnl"], 0)
+        finally:
+            with OPEN_POSITION_PEAKS_LOCK:
+                OPEN_POSITION_PEAKS.clear()
+                OPEN_POSITION_PEAK_WATERMARKS.clear()
 
     def test_portfolio_metrics_keep_realized_pnl_after_account_is_flat(self) -> None:
         metrics = portfolio_metrics(
