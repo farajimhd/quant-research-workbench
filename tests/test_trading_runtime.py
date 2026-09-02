@@ -1175,6 +1175,76 @@ class JournalTests(unittest.TestCase):
             self.assertEqual([row["entity_id"] for row in third["rows"]], ["signal-0"])
             journal.close()
 
+    def test_consequential_strategy_activity_includes_only_chartable_oms_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            common = {"strategy_id": "momentum", "ticker": "AAPL", "action": "enter_long"}
+            journal.append(
+                run_id="run-a", category="order_management", entity_type="protection_reconciliation", entity_id="routine",
+                event_time=TS, payload={**common, "status": "reconciled", "actions": []},
+            )
+            journal.append(
+                run_id="run-a", category="order_management", entity_type="protection_reconciliation", entity_id="repair",
+                event_time=TS + timedelta(seconds=1), payload={**common, "status": "repaired", "actions": [{"action": "place_missing_oca_protection", "quantity": 100, "stop_price": 9.5, "target_price": 11.0}]},
+            )
+            journal.append(
+                run_id="run-a", category="order_management", entity_type="order_group_state", entity_id="target",
+                event_time=TS + timedelta(seconds=2), payload={**common, "event": "profit_target_replaced", "target_price": 11.5},
+            )
+            journal.append(
+                run_id="run-a", category="order_management", entity_type="entry_acquisition_frozen_before_exit", entity_id="freeze",
+                event_time=TS + timedelta(seconds=3), payload={**common, "command_order": "cancel_entries_then_submit_exit"},
+            )
+
+            activity = strategy_activity_payload(
+                journal=journal,
+                run_id="run-a",
+                consequential_only=True,
+            )
+
+            self.assertEqual(
+                [row["operation"] for row in activity["rows"]],
+                ["entry_acquisition_frozen_before_exit", "profit_target_replaced", "protection_reconciliation"],
+            )
+            self.assertEqual(activity["rows"][-1]["management_event"]["actions"][0]["stop_price"], 9.5)
+            journal.close()
+
+    def test_assignment_state_exposes_stop_change_without_stringifying_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            journal.append(
+                run_id="run-a",
+                category="strategy",
+                entity_type="strategy_assignment_state",
+                entity_id="assignment-a",
+                event_time=TS,
+                payload={
+                    "strategy_id": "momentum",
+                    "ticker": "AAPL",
+                    "event": "assignment_state_saved",
+                    "state": {
+                        "initial_stop": 9.5,
+                        "active_stop": 9.75,
+                        "large_internal_state": list(range(100)),
+                    },
+                },
+            )
+
+            activity = strategy_activity_payload(
+                journal=journal,
+                run_id="run-a",
+                consequential_only=True,
+            )
+
+            self.assertEqual(len(activity["rows"]), 1)
+            self.assertEqual(activity["rows"][0]["state"], "assignment_state_saved")
+            self.assertNotIn("large_internal_state", activity["rows"][0]["state"])
+            self.assertEqual(
+                activity["rows"][0]["gate_snapshot"]["decision_values"]["active_stop"],
+                9.75,
+            )
+            journal.close()
+
     def test_strategy_activity_compacts_unselected_structural_book_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             journal = TradingJournal(Path(directory) / "journal.sqlite3")
@@ -1223,7 +1293,14 @@ class JournalTests(unittest.TestCase):
             activity = strategy_activity_payload(journal=journal, run_id="run-a")
             gates = activity["rows"][0]["gate_snapshot"]
 
-            self.assertNotIn("qualified_levels", gates["profit_target_selection"])
+            self.assertEqual(
+                gates["profit_target_selection"]["qualified_levels"],
+                [
+                    {"unified_level_id": 0},
+                    {"unified_level_id": 1},
+                    {"unified_level_id": 2},
+                ],
+            )
             self.assertEqual(gates["profit_target_selection"]["selected_target_prices"], [12.5])
             self.assertNotIn("component_levels", gates["unified_structural_trigger"]["level"])
             self.assertEqual(

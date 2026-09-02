@@ -78,7 +78,7 @@ const rendererDataCache = new WeakMap<object, RendererDataCache>();
 type Region = { start: number; end: number; color: string; label: string };
 type TradeLabelPart = { text: string; tone?: "label" | "price" | "pnlLoss" | "pnlWin" | "reason" | "separator" | "size" };
 type TradeFillAnnotation = {
-  kind?: "add" | "profit_target" | "protective_stop" | "trailing_stop" | "position_exit" | "stop_change" | "target_change";
+  kind?: "add" | "profit_target" | "protective_stop" | "trailing_stop" | "position_exit" | "stop_change" | "target_change" | "protection_repair" | "entry_freeze";
   label?: string;
   labelParts?: TradeLabelPart[];
   price: number;
@@ -6425,7 +6425,7 @@ function drawCanvasPositionAdjustment(
     ? semanticColors.entry
     : fill.kind === "profit_target" || fill.kind === "target_change"
       ? semanticColors.success
-      : fill.kind === "protective_stop" || fill.kind === "trailing_stop" || fill.kind === "stop_change"
+      : fill.kind === "protective_stop" || fill.kind === "trailing_stop" || fill.kind === "stop_change" || fill.kind === "protection_repair"
         ? semanticColors.danger
         : semanticColors.exit;
   const color = strategyPresentationColor(settings.color, semanticColor);
@@ -6453,6 +6453,8 @@ function drawCanvasPositionAdjustment(
       position_exit: "Exit",
       stop_change: "SL",
       target_change: "TP",
+      protection_repair: "Reconcile",
+      entry_freeze: "Entry frozen",
     }[fill.kind ?? "position_exit"]),
     x - 45,
     y + 5,
@@ -6480,8 +6482,12 @@ function drawCanvasTradeGuide(
 ) {
   context.save();
   drawCanvasTradeLine(context, left, right, y, color, settings.lineWidth, settings.lineStyle, settings.opacity);
+  const capRadius = Math.max(1.5, Math.min(3.5, settings.lineWidth));
+  context.fillStyle = rgbaFromHex(color, settings.opacity);
+  context.fillRect(left - capRadius, y - capRadius, capRadius * 2, capRadius * 2);
+  context.fillRect(right - capRadius, y - capRadius, capRadius * 2, capRadius * 2);
   context.restore();
-  drawCanvasTradeLabel(context, label, right + 4, y + 3, color, background, "left", width, height, settings.labelSize, settings.opacity);
+  drawCanvasTradeLabel(context, label, (left + right) / 2, y + 3, color, background, "left", width, height, settings.labelSize, settings.opacity);
 }
 
 function drawCanvasTradeLabel(

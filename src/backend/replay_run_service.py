@@ -12,7 +12,7 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime, time as clock_time, timedelta
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Iterator, Mapping, Sequence
+from typing import Any, Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from uuid import uuid4
 from weakref import WeakValueDictionary
 from zoneinfo import ZoneInfo
@@ -1866,7 +1866,6 @@ class ReplayRunController:
         chart_activity_rows = self.strategy_activity_snapshot(
             as_of=self.current_time or self.definition.requested_start,
             ticker=ticker,
-            event_type="decision",
             limit=50_000,
             include_decision_evidence=False,
             consequential_only=True,
@@ -1877,10 +1876,9 @@ class ReplayRunController:
         # force the browser to ingest every routine wait observation.
         trading = {
             **trading,
-            "strategy_chart_activity": [
-                _compact_strategy_chart_activity_row(row)
-                for row in chart_activity_rows
-            ],
+            "strategy_chart_activity": _compact_strategy_chart_activity_rows(
+                chart_activity_rows
+            ),
         }
         strategy_records = list(trading.get("strategy_activity") or [])
         assignments = (
@@ -8429,13 +8427,54 @@ def _compact_strategy_chart_activity_row(row: Mapping[str, Any]) -> dict[str, An
             "trigger_threshold_price",
             "entity_id",
             "source",
+            "operation",
         )
         if row.get(key) is not None
     }
     chart_plan = _compact_strategy_chart_plan(row.get("gate_snapshot"))
     if chart_plan:
         compact["chart_plan"] = chart_plan
+    management_event = row.get("management_event")
+    if isinstance(management_event, Mapping) and management_event:
+        compact["management_event"] = dict(management_event)
     return compact
+
+
+def _compact_strategy_chart_activity_rows(
+    rows: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Compact chart evidence and collapse repeated persisted stop snapshots."""
+
+    compact_rows = [_compact_strategy_chart_activity_row(row) for row in rows]
+    result: list[dict[str, Any]] = []
+    active_stop_by_assignment: dict[str, float] = {}
+    # Journal pages are newest-first. Traverse chronologically so repeated
+    # assignment snapshots do not become thousands of identical chart marks.
+    for row in reversed(compact_rows):
+        if str(row.get("operation") or "") == "assignment_state_saved":
+            chart_plan = row.get("chart_plan")
+            decision_values = (
+                chart_plan.get("decision_values")
+                if isinstance(chart_plan, Mapping)
+                else None
+            )
+            active_stop = (
+                decision_values.get("active_stop")
+                if isinstance(decision_values, Mapping)
+                else None
+            )
+            try:
+                active_stop_value = float(active_stop)
+            except (TypeError, ValueError):
+                continue
+            assignment_key = str(
+                row.get("entity_id") or row.get("ticker") or "assignment"
+            )
+            if active_stop_by_assignment.get(assignment_key) == active_stop_value:
+                continue
+            active_stop_by_assignment[assignment_key] = active_stop_value
+        result.append(row)
+    return result
 
 
 def _compact_strategy_chart_plan(value: Any) -> dict[str, Any]:

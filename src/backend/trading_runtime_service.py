@@ -542,6 +542,11 @@ def strategy_activity_payload(
             if decision_identity:
                 seen_decision_entities.add(decision_identity)
         metadata = dict(payload.get("metadata") or {})
+        structured_state = (
+            dict(payload.get("state") or {})
+            if isinstance(payload.get("state"), dict)
+            else {}
+        )
         action = _strategy_activity_action(record.category, payload)
         gate_snapshot = _compact_strategy_gate_snapshot({
             key: metadata.get(key)
@@ -563,8 +568,8 @@ def strategy_activity_payload(
                 "macd_line": metadata.get("macd_line"),
                 "macd_signal": metadata.get("macd_signal"),
                 "invalidation_price": payload.get("invalidation_price"),
-                "initial_stop": metadata.get("initial_stop"),
-                "active_stop": metadata.get("active_stop"),
+                "initial_stop": metadata.get("initial_stop") or structured_state.get("initial_stop"),
+                "active_stop": metadata.get("active_stop") or structured_state.get("active_stop"),
                 "level_price": metadata.get("level_price"),
                 "profit_targets": metadata.get("profit_targets"),
                 "profit_target": metadata.get("profit_target"),
@@ -595,7 +600,16 @@ def strategy_activity_payload(
                 "ticker": str(payload.get("ticker") or "").upper(),
                 "event_type": row_type,
                 "action": action,
-                "state": str(payload.get("status") or payload.get("state") or ""),
+                "operation": str(payload.get("event") or record.entity_type or ""),
+                "state": str(
+                    payload.get("status")
+                    or (
+                        payload.get("event")
+                        if structured_state
+                        else payload.get("state")
+                    )
+                    or ""
+                ),
                 "reason": _strategy_activity_reason(record.category, payload, metadata),
                 "reason_code": str(
                     payload.get("reason")
@@ -631,6 +645,7 @@ def strategy_activity_payload(
                 ),
                 "gate_snapshot": gate_snapshot,
                 "event_evidence": event_evidence if include_decision_evidence else {},
+                "management_event": _compact_strategy_management_event(payload),
             }
         )
         if len(rows) >= requested_limit:
@@ -704,6 +719,45 @@ def _strategy_activity_event_evidence(
     }
 
 
+def _compact_strategy_management_event(payload: dict[str, Any]) -> dict[str, Any]:
+    """Keep chartable OMS changes without copying repetitive broker state."""
+
+    operation = str(payload.get("event") or "")
+    result = {
+        key: payload[key]
+        for key in (
+            "status",
+            "protected_quantity",
+            "required_quantity",
+            "target_price",
+            "command_order",
+            "exit_action",
+        )
+        if payload.get(key) is not None
+    }
+    if operation:
+        result["operation"] = operation
+    actions = payload.get("actions")
+    if isinstance(actions, (list, tuple)):
+        compact_actions = [
+            {
+                key: action[key]
+                for key in (
+                    "action",
+                    "quantity",
+                    "stop_price",
+                    "target_price",
+                )
+                if action.get(key) is not None
+            }
+            for action in actions
+            if isinstance(action, dict)
+        ]
+        if compact_actions:
+            result["actions"] = compact_actions
+    return result
+
+
 def _compact_strategy_gate_snapshot(
     gates: dict[str, Any], *, include_condition_evidence: bool = True
 ) -> dict[str, Any]:
@@ -750,6 +804,25 @@ def _compact_strategy_gate_snapshot(
             )
             if target.get(key) is not None
         }
+        qualified_levels = target.get("qualified_levels")
+        if isinstance(qualified_levels, (list, tuple)):
+            result["profit_target_selection"]["qualified_levels"] = [
+                {
+                    key: row[key]
+                    for key in (
+                        "unified_level_id",
+                        "ordinal_above_reference",
+                        "price",
+                        "target_price",
+                        "lower",
+                        "upper",
+                        "hold_probability",
+                    )
+                    if row.get(key) is not None
+                }
+                for row in qualified_levels[:3]
+                if isinstance(row, dict)
+            ]
     trigger = result.get("unified_structural_trigger")
     if isinstance(trigger, dict):
         compact_trigger = {

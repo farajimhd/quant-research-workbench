@@ -1001,10 +1001,16 @@ class TradingJournal:
                 "lower(coalesce(json_extract(payload_json, '$.action'), '')) "
                 "NOT IN ('', 'wait')) OR "
                 "(entity_type = 'strategy_assignment_state' AND "
-                "lower(coalesce(json_extract(payload_json, '$.action'), "
-                "json_extract(payload_json, '$.status'), "
-                "json_extract(payload_json, '$.state'), '')) "
-                "<> 'assignment_state_saved'))"
+                "json_extract(payload_json, '$.state.active_stop') IS NOT NULL AND "
+                "(json_extract(payload_json, '$.state.initial_stop') IS NULL OR "
+                "abs(json_extract(payload_json, '$.state.active_stop') - "
+                "json_extract(payload_json, '$.state.initial_stop')) > 0.000000001)) OR "
+                "(category = 'order_management' AND ("
+                "(entity_type = 'protection_reconciliation' AND "
+                "coalesce(json_array_length(json_extract(payload_json, '$.actions')), 0) > 0) OR "
+                "(entity_type = 'order_group_state' AND "
+                "json_extract(payload_json, '$.event') = 'profit_target_replaced') OR "
+                "entity_type = 'entry_acquisition_frozen_before_exit')))"
             )
         values.extend(
             (

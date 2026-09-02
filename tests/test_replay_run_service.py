@@ -153,6 +153,52 @@ class ReplayRunDefinitionTests(unittest.TestCase):
         self.assertEqual(compact["chart_plan"]["profit_target_selection"]["selected_target_prices"], [3.55])
         self.assertEqual(compact["chart_plan"]["unified_structural_trigger"]["prior_snapshot_levels"][0]["entry_boundary"], 3.44)
 
+    def test_chart_activity_retains_only_chartable_management_changes(self) -> None:
+        compact = _compact_strategy_chart_activity_row({
+            "record_id": "record-repair",
+            "event_time": "2026-08-21T08:02:58+00:00",
+            "event_type": "order",
+            "operation": "protection_reconciliation",
+            "management_event": {
+                "status": "repaired",
+                "required_quantity": 5000,
+                "actions": [{
+                    "action": "place_missing_oca_protection",
+                    "quantity": 5000,
+                    "stop_price": 3.39,
+                    "target_price": 3.55,
+                }],
+            },
+            "event_evidence": {"large": list(range(100))},
+        })
+
+        self.assertNotIn("event_evidence", compact)
+        self.assertEqual(compact["operation"], "protection_reconciliation")
+        self.assertEqual(compact["management_event"]["actions"][0]["stop_price"], 3.39)
+
+    def test_chart_activity_collapses_repeated_active_stop_snapshots(self) -> None:
+        from src.backend.replay_run_service import _compact_strategy_chart_activity_rows
+
+        rows = [
+            {
+                "record_id": record_id,
+                "event_time": event_time,
+                "event_type": "campaign_state",
+                "operation": "assignment_state_saved",
+                "entity_id": "assignment-a",
+                "gate_snapshot": {"decision_values": {"active_stop": active_stop}},
+            }
+            for record_id, event_time, active_stop in (
+                ("new", "2026-08-21T08:03:00+00:00", 3.42),
+                ("duplicate", "2026-08-21T08:02:59+00:00", 3.42),
+                ("old", "2026-08-21T08:02:58+00:00", 3.39),
+            )
+        ]
+
+        compact = _compact_strategy_chart_activity_rows(rows)
+
+        self.assertEqual([row["record_id"] for row in compact], ["old", "duplicate"])
+
     def test_prepared_frame_cache_identity_pins_derived_and_split_revisions(self) -> None:
         runtime_root = Path("D:/TradingML/runtimes/test-replay-cache")
         common = {

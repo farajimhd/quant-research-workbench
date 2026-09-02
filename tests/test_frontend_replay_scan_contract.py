@@ -146,14 +146,15 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert 'Number(annotation.pnl) > 0 ? successColor : Number(annotation.pnl) < 0 ? dangerColor : exitColor' in renderer_source
     assert 'fill.kind === "add"' in renderer_source
     assert 'fill.kind === "profit_target" || fill.kind === "target_change"' in renderer_source
-    assert 'fill.kind === "protective_stop" || fill.kind === "trailing_stop" || fill.kind === "stop_change"' in renderer_source
+    assert 'fill.kind === "protective_stop" || fill.kind === "trailing_stop" || fill.kind === "stop_change" || fill.kind === "protection_repair"' in renderer_source
     assert "const ratio = clampNumber((time - leftCandle.time) / duration" in renderer_source
     assert "return leftX + (rightX - leftX) * ratio" in renderer_source
     assert "The triangle tip is the exact event-time / execution-price coordinate" in renderer_source
     assert "const span = clippedTradeSpan(entryX, exitX, width)" in renderer_source
     assert "autoscaleInfo(startLogical: number, endLogical: number): AutoscaleInfo | null" in renderer_source
     assert "tradeAnnotationAutoscaleInfo(this.state, startLogical, endLogical)" in renderer_source
-    assert 'drawCanvasTradeLabel(context, label, right + 4, y + 3' in renderer_source
+    assert 'drawCanvasTradeLabel(context, label, (left + right) / 2, y + 3' in renderer_source
+    assert 'context.fillRect(left - capRadius' in renderer_source
     assert renderer_source.index('drawCanvasTradeLine(context, span.left, span.right, entryY') < renderer_source.index('annotation.levelPrices?.slice(0, 3)')
     assert renderer_source.index('annotation.levelPrices?.slice(0, 3)') < renderer_source.index('drawCanvasTradeArrow(context, entryX, entryY')
     assert "if (left + labelWidth < 0 || left > width || top + labelHeight < 0 || top > height) return;" in renderer_source
@@ -190,7 +191,9 @@ def test_strategy_activity_loads_a_reviewable_history_window() -> None:
     assert "historicalRows={signalStreamRunId ? preview?.trading.strategy_activity ?? [] : undefined}" in canvas_source
     assert "historicalPage={signalStreamRunId ? preview?.trading.strategy_activity_page : undefined}" in canvas_source
     assert 'offset: String(Number(resolvedHistoricalPage.next_offset ?? 0))' in container_source
-    assert 'Load older events' in container_source
+    assert 'Load next 2,000 older events' in container_source
+    assert 'moreAvailable={!resolvedHistoricalPage.complete}' in container_source
+    assert 'Load and open next page' in container_source
     assert "strategyActivityEvidenceSnapshot(row)" in container_source
     assert "recorded_event: eventEvidence" in container_source
     assert "limit: 50_000" not in canvas_source.split("function strategyReplayRegistry", 1)[1].split("function normalizeInheritedLayouts", 1)[0]

@@ -360,6 +360,8 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
       ? Date.parse(String(lifecycles[lifecycleIndex - 1].closed_at || "")) / 1000
       : Number.NEGATIVE_INFINITY;
     const entryDecision = [...activity].reverse().find(({ row: event, time }) =>
+      String(event.event_type || "") === "decision"
+      &&
       String(event.action || "") === "enter_long"
       && time > previousCloseTime
       && time <= entryTime,
@@ -384,11 +386,16 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
     const selectedTargets = Array.isArray(targetSelection.selected_target_prices)
       ? targetSelection.selected_target_prices
       : [];
+    const qualifiedTargets = Array.isArray(targetSelection.qualified_levels)
+      ? (targetSelection.qualified_levels as PreviewRow[]).map((level) => level.target_price ?? level.price)
+      : [];
     const targetPrices = uniquePositivePrices(
-      Array.isArray(decisionValues.profit_targets)
+      qualifiedTargets.length
+        ? qualifiedTargets
+        : Array.isArray(decisionValues.profit_targets)
         ? decisionValues.profit_targets
         : selectedTargets,
-    );
+    ).slice(0, 3);
     const stopPrice = positiveNumber(decisionValues.initial_stop ?? decisionValues.invalidation_price);
     const planStartTime = entryDecision?.time ?? entryTime;
     const quantity = Math.abs(Number(row.quantity || 0));
@@ -412,18 +419,52 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
     let activeTarget = targetPrices[0];
     activity.forEach(({ row: event, time }) => {
       if (time <= planStartTime || time >= exitTime) return;
-      const eventGates = (event.gate_snapshot as PreviewRow | undefined) ?? {};
+      const eventGates = (event.chart_plan as PreviewRow | undefined)
+        ?? (event.gate_snapshot as PreviewRow | undefined)
+        ?? {};
       const values = (eventGates.decision_values as PreviewRow | undefined) ?? {};
       const nextStop = positiveNumber(values.active_stop ?? values.invalidation_price);
       if (nextStop !== undefined && nextStop !== activeStop) {
         activeStop = nextStop;
         fills.push({ kind: "stop_change", label: `SL@${compactPrice(nextStop)}`, price: nextStop, side: "SELL", time });
       }
-      const nextTarget = positiveNumber(values.profit_target);
-      if (String(event.action || "") === "replace_profit_target" && nextTarget !== undefined && nextTarget !== activeTarget) {
+      const management = (event.management_event as PreviewRow | undefined) ?? {};
+      const operation = String(management.operation ?? event.operation ?? "");
+      const nextTarget = positiveNumber(values.profit_target ?? management.target_price);
+      if (operation === "profit_target_replaced" && nextTarget !== undefined && nextTarget !== activeTarget) {
         activeTarget = nextTarget;
         fills.push({ kind: "target_change", label: `TP@${compactPrice(nextTarget)}`, price: nextTarget, side: "SELL", time });
       }
+      const managementActions = Array.isArray(management.actions) ? management.actions as PreviewRow[] : [];
+      managementActions.forEach((managementAction) => {
+        if (String(managementAction.action || "") !== "place_missing_oca_protection") return;
+        const protectedQuantity = positiveNumber(managementAction.quantity ?? management.required_quantity);
+        const repairedStop = positiveNumber(managementAction.stop_price);
+        const repairedTarget = positiveNumber(managementAction.target_price);
+        if (repairedStop !== undefined) fills.push({
+          kind: "protection_repair",
+          label: `RECON ${protectedQuantity ? formatQuantity(protectedQuantity) + " · " : ""}SL@${compactPrice(repairedStop)}`,
+          price: repairedStop,
+          quantity: protectedQuantity,
+          side: "SELL",
+          time,
+        });
+        if (repairedTarget !== undefined) fills.push({
+          kind: "protection_repair",
+          label: `RECON ${protectedQuantity ? formatQuantity(protectedQuantity) + " · " : ""}TP@${compactPrice(repairedTarget)}`,
+          price: repairedTarget,
+          quantity: protectedQuantity,
+          side: "SELL",
+          time,
+        });
+      });
+      if (operation === "entry_acquisition_frozen_before_exit") fills.push({
+        kind: "entry_freeze",
+        label: "ENTRY FROZEN",
+        price: activeStop ?? entryPrice,
+        side: "SELL",
+        time,
+      });
     });
     fills.sort((left, right) => left.time - right.time);
     const entryQuantity = entryAction?.quantity ?? quantity;
