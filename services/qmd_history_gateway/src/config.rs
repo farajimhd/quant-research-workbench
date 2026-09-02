@@ -27,6 +27,7 @@ pub struct HistoricalGatewayConfig {
     pub recent_event_table: String,
     pub recent_event_coverage_table: String,
     pub recent_focused_repair_table: String,
+    pub recent_intraday_family_bars_table: String,
     pub daily_session_bars_table: String,
     pub intraday_base_bars_table: String,
     pub fetch_chunk_hours: usize,
@@ -95,6 +96,10 @@ impl HistoricalGatewayConfig {
             recent_focused_repair_table: env_string(
                 "QMD_HISTORY_RECENT_FOCUSED_REPAIR_TABLE",
                 "qmd_gap_fill_symbol_universe_v1",
+            ),
+            recent_intraday_family_bars_table: env_string(
+                "QMD_HISTORY_RECENT_INTRADAY_FAMILY_BARS_TABLE",
+                "intraday_family_bars_v3",
             ),
             daily_session_bars_table: env_string(
                 "QMD_HISTORY_DAILY_SESSION_BARS_TABLE",
@@ -220,6 +225,12 @@ impl HistoricalGatewayConfig {
         if !valid_identifier(&self.recent_focused_repair_table) {
             return Err(
                 "QMD_HISTORY_RECENT_FOCUSED_REPAIR_TABLE must be a ClickHouse identifier"
+                    .to_string(),
+            );
+        }
+        if !valid_identifier(&self.recent_intraday_family_bars_table) {
+            return Err(
+                "QMD_HISTORY_RECENT_INTRADAY_FAMILY_BARS_TABLE must be a ClickHouse identifier"
                     .to_string(),
             );
         }

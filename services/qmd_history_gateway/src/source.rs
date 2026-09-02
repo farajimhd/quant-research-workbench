@@ -1836,30 +1836,38 @@ impl HistoricalEventSource {
         };
         let sql = projection;
         let text = self.query(&sql).await?;
-        let mut bars = text
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| {
-                let row = serde_json::from_str::<MacroQueryRow>(line)
-                    .map_err(|error| format!("invalid macro bar row: {error}"))?;
-                let is_closed = macro_bar_is_closed(&row.session_date, timeframe, as_of)?;
-                Ok(HistoricalMacroChartRow {
-                    bar_end: parse_clickhouse_datetime(&row.bar_end)?,
-                    bar_family: row.bar_family,
-                    bar_start: parse_clickhouse_datetime(&row.bar_start)?,
-                    close: row.close,
-                    event_count: row.event_count,
-                    high: row.high,
-                    is_closed,
-                    low: row.low,
-                    open: row.open,
-                    session_date: row.session_date,
-                    size_sum: row.size_sum,
-                    ticker: row.ticker,
-                    timeframe: row.timeframe,
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
+        let mut bars = parse_macro_chart_rows(&text, timeframe, as_of)?;
+        let mut source = table;
+        let mut has_large_archive_to_recent_gap = false;
+        if timeframe == "1d" {
+            let archive_latest = bars.last().map(|bar| bar.bar_start.date_naive());
+            let recent_table = format!(
+                "{}.{}",
+                self.config.recent_database, self.config.recent_intraday_family_bars_table
+            );
+            let recent_sql = recent_daily_trade_bars_sql(
+                &recent_table,
+                &ticker,
+                window.start.date_naive(),
+                window.end.date_naive(),
+                as_of,
+            );
+            let recent_text = self.query(&recent_sql).await?;
+            let recent_bars = parse_macro_chart_rows(&recent_text, timeframe, as_of)?;
+            let recent_earliest_after_archive = archive_latest.and_then(|archive| {
+                recent_bars
+                    .iter()
+                    .map(|bar| bar.bar_start.date_naive())
+                    .find(|date| *date > archive)
+            });
+            has_large_archive_to_recent_gap = archive_latest
+                .zip(recent_earliest_after_archive)
+                .is_some_and(|(archive, recent)| recent - archive > chrono::Duration::days(7));
+            if !recent_bars.is_empty() {
+                merge_daily_chart_bars(&mut bars, recent_bars);
+                source = format!("{source}+{recent_table}");
+            }
+        }
         let adjustments = self
             .structure_split_adjustments(
                 &ticker,
@@ -1875,7 +1883,9 @@ impl HistoricalEventSource {
             .last()
             .map(|bar| bar.bar_end.with_timezone(&New_York).date_naive())
             .map(|date| {
-                if date >= freshness_floor {
+                if date >= freshness_floor && has_large_archive_to_recent_gap {
+                    "partial"
+                } else if date >= freshness_floor {
                     "ready"
                 } else {
                     "stale"
@@ -1888,7 +1898,7 @@ impl HistoricalEventSource {
             bars,
             coverage_status,
             latest_session_date,
-            source: table,
+            source,
             split_adjustments: adjustments,
             split_adjusted: true,
             ticker,
@@ -2923,6 +2933,117 @@ fn source_plan_hash(
     format!("fnv1a64:{hash:016x}")
 }
 
+fn recent_daily_trade_bars_sql(
+    table: &str,
+    ticker: &str,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+    as_of: DateTime<Utc>,
+) -> String {
+    format!(
+        r#"SELECT
+            toString(local_date) AS session_date,
+            '1d' AS timeframe,
+            ticker,
+            'trade' AS bar_family,
+            formatDateTime(
+                toDateTime(local_date, 'America/New_York') + INTERVAL 4 HOUR,
+                '%Y-%m-%dT%H:%i:%sZ',
+                'UTC'
+            ) AS bar_start,
+            formatDateTime(
+                toDateTime(local_date, 'America/New_York') + INTERVAL 20 HOUR,
+                '%Y-%m-%dT%H:%i:%sZ',
+                'UTC'
+            ) AS bar_end,
+            argMin(source_open, tuple(bucket_index, updated_at_utc)) AS open,
+            argMax(source_close, tuple(bucket_index, updated_at_utc)) AS close,
+            max(source_high) AS high,
+            min(source_low) AS low,
+            sum(size_sum) AS size_sum,
+            sum(event_count) AS event_count
+        FROM (
+            SELECT
+                ticker,
+                local_date,
+                bucket_index,
+                updated_at_utc,
+                open AS source_open,
+                high AS source_high,
+                low AS source_low,
+                close AS source_close,
+                size_sum,
+                event_count
+            FROM {table} FINAL
+            PREWHERE ticker = {ticker}
+              AND local_date >= toDate('{start_date}')
+              AND local_date < toDate('{end_date}')
+            WHERE label_resolution_us = 3600000000
+              AND bar_family = 'trade'
+              AND calculation_revision = 'qmd-family-bars-v3'
+              AND complete = 1
+              AND updated_at_utc <= parseDateTime64BestEffort({as_of})
+              AND bar_start_session_us >= 14400000000
+              AND bar_start_session_us < 72000000000
+              AND open > 0
+              AND high > 0
+              AND low > 0
+              AND close > 0
+        )
+        GROUP BY ticker, local_date
+        HAVING event_count > 0
+        ORDER BY local_date
+        FORMAT JSONEachRow"#,
+        ticker = sql_literal(ticker),
+        as_of = sql_literal(&as_of.to_rfc3339()),
+    )
+}
+
+fn parse_macro_chart_rows(
+    text: &str,
+    timeframe: &str,
+    as_of: DateTime<Utc>,
+) -> Result<Vec<HistoricalMacroChartRow>, String> {
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let row = serde_json::from_str::<MacroQueryRow>(line)
+                .map_err(|error| format!("invalid macro bar row: {error}"))?;
+            let is_closed = macro_bar_is_closed(&row.session_date, timeframe, as_of)?;
+            Ok(HistoricalMacroChartRow {
+                bar_end: parse_clickhouse_datetime(&row.bar_end)?,
+                bar_family: row.bar_family,
+                bar_start: parse_clickhouse_datetime(&row.bar_start)?,
+                close: row.close,
+                event_count: row.event_count,
+                high: row.high,
+                is_closed,
+                low: row.low,
+                open: row.open,
+                session_date: row.session_date,
+                size_sum: row.size_sum,
+                ticker: row.ticker,
+                timeframe: row.timeframe,
+            })
+        })
+        .collect()
+}
+
+fn merge_daily_chart_bars(
+    archive_bars: &mut Vec<HistoricalMacroChartRow>,
+    recent_bars: Vec<HistoricalMacroChartRow>,
+) {
+    let mut merged = BTreeMap::new();
+    for bar in recent_bars {
+        merged.insert(bar.session_date.clone(), bar);
+    }
+    // Finalized archive rows remain authoritative whenever both tiers cover a session.
+    for bar in archive_bars.drain(..) {
+        merged.insert(bar.session_date.clone(), bar);
+    }
+    *archive_bars = merged.into_values().collect();
+}
+
 fn macro_bar_is_closed(
     session_date: &str,
     timeframe: &str,
@@ -3134,10 +3255,11 @@ mod tests {
         adaptive_structure_chunk_minutes, append_scheduled_gap_segments, archive_session_end_utc,
         build_source_plan, coverage_precedes, event_select, latest_coverage_summary_sql,
         latest_coverage_target_date_sql, macro_bar_is_closed,
-        materialize_confirmed_recent_coverage, merge_coverage_intervals, normalize_ticker,
-        parse_historical_tsv_row, persisted_structure_events_sql, recent_coverage_sql,
-        row_to_event, split_adjustment_factors, ticker_filter, CoverageInterval, EventWindow,
-        HistoricalRow, LatestEventCoverage, MarketSourceTier, RecentCoverageRow,
+        materialize_confirmed_recent_coverage, merge_coverage_intervals, merge_daily_chart_bars,
+        normalize_ticker, parse_historical_tsv_row, persisted_structure_events_sql,
+        recent_coverage_sql, recent_daily_trade_bars_sql, row_to_event, split_adjustment_factors,
+        ticker_filter, CoverageInterval, EventWindow, HistoricalMacroChartRow, HistoricalRow,
+        LatestEventCoverage, MarketSourceTier, RecentCoverageRow,
     };
     use crate::config::HistoricalGatewayConfig;
     use chrono::{NaiveDate, TimeZone, Utc};
@@ -3340,6 +3462,56 @@ mod tests {
             Utc.with_ymd_and_hms(2026, 8, 12, 14, 0, 0).unwrap(),
         )
         .unwrap());
+    }
+
+    #[test]
+    fn recent_daily_bars_are_causal_complete_trade_aggregates() {
+        let sql = recent_daily_trade_bars_sql(
+            "q_live.intraday_family_bars_v3",
+            "SUGP",
+            NaiveDate::from_ymd_opt(2026, 8, 1).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 9, 3).unwrap(),
+            Utc.with_ymd_and_hms(2026, 9, 2, 18, 0, 0).unwrap(),
+        );
+
+        assert!(sql.contains("FROM q_live.intraday_family_bars_v3 FINAL"));
+        assert!(sql.contains("ticker = 'SUGP'"));
+        assert!(sql.contains("label_resolution_us = 3600000000"));
+        assert!(sql.contains("calculation_revision = 'qmd-family-bars-v3'"));
+        assert!(sql.contains("complete = 1"));
+        assert!(sql.contains("updated_at_utc <= parseDateTime64BestEffort"));
+        assert!(sql.contains("AND close > 0"));
+    }
+
+    #[test]
+    fn finalized_daily_archive_rows_override_recent_overlap() {
+        let make_bar = |session_date: &str, close: f64| HistoricalMacroChartRow {
+            bar_end: Utc.with_ymd_and_hms(2026, 8, 18, 0, 0, 0).unwrap(),
+            bar_family: "trade".to_string(),
+            bar_start: Utc.with_ymd_and_hms(2026, 8, 18, 0, 0, 0).unwrap(),
+            close,
+            event_count: 1,
+            high: close,
+            is_closed: true,
+            low: close,
+            open: close,
+            session_date: session_date.to_string(),
+            size_sum: 1.0,
+            ticker: "SUGP".to_string(),
+            timeframe: "1d".to_string(),
+        };
+        let mut archive = vec![make_bar("2026-08-18", 2.25)];
+
+        merge_daily_chart_bars(
+            &mut archive,
+            vec![make_bar("2026-08-18", 2.10), make_bar("2026-08-20", 3.50)],
+        );
+
+        assert_eq!(archive.len(), 2);
+        assert_eq!(archive[0].session_date, "2026-08-18");
+        assert_eq!(archive[0].close, 2.25);
+        assert_eq!(archive[1].session_date, "2026-08-20");
+        assert_eq!(archive[1].close, 3.50);
     }
 
     #[test]
