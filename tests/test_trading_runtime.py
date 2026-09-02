@@ -1062,7 +1062,12 @@ class JournalTests(unittest.TestCase):
                     "metadata": {
                         "entry_rules": {
                             "trigger": {"passed": True},
-                            "confirmation": {"passed": False},
+                            "confirmation": {
+                                "passed": False,
+                                "condition_evidence": {
+                                    "macd": [{"condition_id": "line_positive", "left_value": -0.1, "passed": False}],
+                                },
+                            },
                             "veto": {"passed": False},
                         },
                         "execution_quality": {
@@ -1101,6 +1106,21 @@ class JournalTests(unittest.TestCase):
             self.assertEqual(
                 activity["rows"][2]["gates"],
                 "trigger:pass · confirmation:fail · veto:clear · execution:pass",
+            )
+            wait_record_id = activity["rows"][2]["record_id"]
+            exact_wait = strategy_activity_payload(
+                journal=journal,
+                run_id="run-a",
+                record_id=wait_record_id,
+            )
+            self.assertEqual(len(exact_wait["rows"]), 1)
+            self.assertIn(
+                "condition_evidence",
+                exact_wait["rows"][0]["gate_snapshot"]["entry_rules"]["confirmation"],
+            )
+            self.assertEqual(
+                [record.record_id for record in journal.strategy_activity_records(record_id=wait_record_id)],
+                [wait_record_id],
             )
             self.assertEqual(
                 activity["rows"][0]["reason"],

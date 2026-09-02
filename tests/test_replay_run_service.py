@@ -706,6 +706,28 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
             assert controller._task is not None
             await controller._task
             try:
+                controller._journal.append(
+                    run_id=controller.run_id,
+                    category="strategy_decision",
+                    entity_type="signal",
+                    entity_id="reviewable-wait",
+                    event_time=controller.current_time,
+                    payload={
+                        "strategy_id": STRATEGY_ID,
+                        "strategy_revision": 1,
+                        "ticker": "AAPL",
+                        "action": "wait",
+                        "reason": "current_execution_quality_incomplete",
+                        "metadata": {
+                            "reason_detail": "Wait: current spread exceeds the configured limit.",
+                            "execution_quality": {
+                                "checks": {"current_spread": False},
+                                "facts": {"spread_bps": 125.0},
+                                "failed": ["current_spread"],
+                            },
+                        },
+                    },
+                )
                 journal = [
                     record.payload
                     for record in controller._journal.records(controller.run_id)
@@ -729,6 +751,10 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                     ]
                 )
                 self.assertEqual(len(trading["closed_trades"]), 1)
+                reviewable_wait = next(row for row in trading["strategy_activity"] if row.get("entity_id") == "reviewable-wait")
+                self.assertEqual(reviewable_wait["action"], "wait")
+                self.assertEqual(reviewable_wait["decision_evidence"], "")
+                self.assertFalse(reviewable_wait["gate_snapshot"]["execution_quality"]["checks"]["current_spread"])
                 self.assertTrue(
                     any(
                         row.get("action") == "enter_long"

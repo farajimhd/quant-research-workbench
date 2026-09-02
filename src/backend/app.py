@@ -4930,11 +4930,13 @@ def trading_taxonomy() -> dict[str, Any]:
 @app.get("/api/trading/strategy-activity")
 def trading_strategy_activity(
     as_of: str = "",
+    record_id: str = "",
     strategy_id: str = "",
     run_id: str = "",
     ticker: str = "",
     event_type: str = "",
     limit: int = 500,
+    include_decision_evidence: bool = True,
 ) -> dict[str, Any]:
     try:
         cutoff = datetime.fromisoformat(as_of.replace("Z", "+00:00")) if as_of else None
@@ -4944,18 +4946,22 @@ def trading_strategy_activity(
         if controller is not None:
             return controller.strategy_activity_snapshot(
                 as_of=cutoff,
+                record_id=record_id,
                 strategy_id=strategy_id,
                 ticker=ticker,
                 event_type=event_type,
                 limit=limit,
+                include_decision_evidence=include_decision_evidence,
             )
         return strategy_activity_payload(
             as_of=cutoff,
+            record_id=record_id,
             strategy_id=strategy_id,
             run_id=run_id,
             ticker=ticker,
             event_type=event_type,
             limit=limit,
+            include_decision_evidence=include_decision_evidence,
         )
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

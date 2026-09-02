@@ -1818,25 +1818,15 @@ class ReplayRunController:
             )
             activity_rows = self.strategy_activity_snapshot(
                 as_of=self.current_time or self.definition.requested_start,
-                limit=50_000,
+                limit=2_000,
                 include_decision_evidence=False,
-                consequential_only=True,
+                consequential_only=False,
             )["rows"]
-            trading["strategy_activity"] = [
-                row
-                for row in activity_rows
-                if (
-                    row.get("event_type") in {"signal", "decision"}
-                    and (
-                        row.get("event_type") != "decision"
-                        or row.get("action") not in {"", "wait"}
-                    )
-                )
-                or (
-                    row.get("event_type") == "campaign_state"
-                    and row.get("action") != "assignment_state_saved"
-                )
-            ]
+            # Keep routine wait decisions in the completed-run Canvas: they are
+            # the durable explanation for why a strategy did not trade. The
+            # bounded bulk projection omits heavyweight condition evidence;
+            # the selected record is hydrated on demand by Strategy Activity.
+            trading["strategy_activity"] = activity_rows
             self._canvas_state_cache = (now, trading)
         ticker = _ticker(symbol)
         strategy_records = list(trading.get("strategy_activity") or [])
@@ -1943,6 +1933,7 @@ class ReplayRunController:
         self,
         *,
         as_of: datetime | None = None,
+        record_id: str = "",
         strategy_id: str = "",
         ticker: str = "",
         event_type: str = "",
@@ -1957,6 +1948,7 @@ class ReplayRunController:
         return strategy_activity_payload(
             journal=self._journal,
             as_of=as_of,
+            record_id=record_id,
             strategy_id=strategy_id,
             run_id=self.run_id,
             ticker=ticker,

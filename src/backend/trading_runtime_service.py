@@ -499,6 +499,7 @@ def strategy_activity_payload(
     *,
     journal: TradingJournal | None = None,
     as_of: datetime | None = None,
+    record_id: str = "",
     strategy_id: str = "",
     run_id: str = "",
     ticker: str = "",
@@ -510,6 +511,7 @@ def strategy_activity_payload(
     """Project the durable strategy journal into an operator-facing event list."""
     requested_limit = max(1, min(int(limit), 50_000))
     records = (journal or trading_journal()).strategy_activity_records(
+        record_id=record_id.strip(),
         strategy_id=strategy_id.strip(),
         run_id=run_id.strip(),
         ticker=ticker.strip().upper(),
@@ -546,7 +548,7 @@ def strategy_activity_payload(
                 "profit_target_selection",
             )
             if metadata.get(key) is not None
-        }, include_condition_evidence=action not in {"", "wait"})
+        }, include_condition_evidence=include_decision_evidence)
         decision_values = {
             key: value
             for key, value in {

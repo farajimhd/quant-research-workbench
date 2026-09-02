@@ -938,6 +938,7 @@ class TradingJournal:
     def strategy_activity_records(
         self,
         *,
+        record_id: str = "",
         strategy_id: str = "",
         run_id: str = "",
         ticker: str = "",
@@ -958,6 +959,9 @@ class TradingJournal:
             "'strategy', 'strategy_decision', 'order_management')"
         ]
         values: list[Any] = []
+        if record_id:
+            clauses.append("record_id = ?")
+            values.append(record_id)
         if strategy_id:
             clauses.append("json_extract(payload_json, '$.strategy_id') = ?")
             values.append(strategy_id)
