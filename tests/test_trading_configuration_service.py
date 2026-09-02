@@ -1670,7 +1670,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             profile["lifecycle"]["reentry"]["require_new_confirmation"]
         )
         self.assertEqual(profile["lifecycle"]["reentry"]["pullback_reclaim"], {
-            "enabled": True,
+            "enabled": False,
             "minimum_pullback_atr_multiple": 0.50,
             "minimum_pullback_bps": 25.0,
         })
@@ -1680,6 +1680,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(profile["lifecycle"]["initial_entry"]["capital_request"], {
             "mode": "all_available",
             "value": 1.0,
+            "maximum_quantity": 5_000,
             "allow_replacement": False,
         })
         self.assertEqual(
@@ -1709,6 +1710,14 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(
             profile["parameters"]["structural_entry"]["minimum_hold_probability"],
             0.80,
+        )
+        self.assertEqual(
+            profile["parameters"]["structural_entry"]["selection_mode"],
+            "prior_completed_frame_top_n_below_session_high",
+        )
+        self.assertEqual(
+            profile["parameters"]["structural_entry"]["maximum_entry_levels"],
+            3,
         )
         self.assertEqual(
             profile["parameters"]["structural_entry"]["maximum_break_probability"],

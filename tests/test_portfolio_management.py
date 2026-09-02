@@ -768,6 +768,48 @@ class PortfolioManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("rounded_to_whole_share_lot", decision.reasons)
         self.assertLessEqual(approved.quantity * 102.0, 100_000)
 
+    async def test_all_available_long_honors_strategy_hard_share_cap(self) -> None:
+        policy = PortfolioPolicy(
+            policy_id="share-cap",
+            maximum_position_fraction=1,
+            maximum_ticker_fraction=1,
+            maximum_planned_risk_fraction=1,
+            maximum_open_risk_fraction=1,
+        )
+        profile = PortfolioAccountProfile(
+            "primary",
+            "C1",
+            "replay",
+            "simulated",
+            policy,
+            strategy_allocations={"strategy-a": 1.0},
+        )
+        engine = self.engine([profile])
+        engine.synchronize_snapshot(
+            "C1",
+            summary=summary("C1", equity=1_000_000, available=1_000_000),
+            ledger=ledger("C1", cash=1_000_000),
+            positions=[],
+        )
+        request = intent("hard-share-cap", quantity=1, price=100.0)
+        request = StrategyIntent(
+            **{
+                **request.payload(),
+                "capital_request": CapitalRequest(
+                    mode="all_available",
+                    maximum_quantity=5_000,
+                ),
+                "metadata": {**request.metadata, "ask": 100.0, "bid": 99.99},
+            }
+        )
+
+        decision, approved = await engine.approve(request, account_id="C1")
+
+        self.assertEqual(decision.status, PortfolioDecisionStatus.APPROVED)
+        self.assertIsNotNone(approved)
+        assert approved is not None
+        self.assertEqual(approved.quantity, 5_000)
+
     async def test_capacity_rejection_can_create_explicit_rebalance_proposal(self) -> None:
         policy = PortfolioPolicy(
             policy_id="replacement",

@@ -4043,11 +4043,13 @@ def _default_draft() -> dict[str, Any]:
     squeeze_lifecycle["initial_entry"]["capital_request"] = {
         "mode": "all_available",
         "value": 1.0,
+        "maximum_quantity": 5_000,
         "allow_replacement": False,
     }
     squeeze_lifecycle["reentry"]["capital_request"] = {
         "mode": "all_available",
         "value": 1.0,
+        "maximum_quantity": 5_000,
         "allow_replacement": False,
     }
     squeeze_lifecycle["reentry"]["maximum_attempts"] = 0
@@ -4081,11 +4083,10 @@ def _default_draft() -> dict[str, Any]:
     squeeze_lifecycle["reentry"]["require_new_signal_stream_id"] = ""
     squeeze_lifecycle["reentry"]["after_protective_exit"] = True
     squeeze_lifecycle["reentry"]["pullback_reclaim"] = {
-        # Re-entry is unlimited, but it is not an immediate chase. Each flat
-        # campaign must first form a causal pullback and then reclaim a
-        # qualifying Unified resistance while the exact 1-second MACD regime
-        # is positive and open.
-        "enabled": True,
+        # The exact prior-frame below-to-above resistance crossing is itself
+        # the required reclaim. A second pullback latch would delay or suppress
+        # a valid crossing under the top-three contract.
+        "enabled": False,
         "minimum_pullback_atr_multiple": 0.50,
         "minimum_pullback_bps": 25.0,
     }
@@ -4141,6 +4142,8 @@ def _default_draft() -> dict[str, Any]:
     }
     system_profiles[0]["parameters"]["structural_entry"] = {
         "enabled": True,
+        "selection_mode": "prior_completed_frame_top_n_below_session_high",
+        "maximum_entry_levels": 3,
         # Structural admission is ticker-independent and owned exclusively by
         # the causal Unified Structural Level Book. Other level scores remain
         # observable, but they do not silently veto a level that satisfies the
@@ -4155,11 +4158,9 @@ def _default_draft() -> dict[str, Any]:
         "minimum_level_age_ms": 0,
         "acceptance_buffer_bps": 0.0,
         "acceptance_hold_ms": 15_000,
-        # A causally cleared level remains the campaign's entry frontier until
-        # an entry consumes it.  Wall-clock expiry made a valid break disappear
-        # while VWAP/MACD or the executable spread was still converging, forcing
-        # the strategy to chase the next higher level.
-        "acceptance_expires": False,
+        # Entry acceptance is an exact transition from the prior completed
+        # one-second frame. It is never retained until later gates catch up.
+        "acceptance_expires": True,
         # VWAP extension remains the shared anti-chase authority. The
         # structural trigger must not reject a valid already-cleared level
         # with a second, tighter and contradictory distance ceiling.
@@ -7403,6 +7404,14 @@ def _validate_capital_request(request: dict[str, Any], label: str) -> None:
         raise ValueError(f"{label} fixed quantity must be positive")
     if mode == "all_available" and value not in {0.0, 1.0}:
         raise ValueError(f"{label} all-available requests do not accept a custom value")
+    minimum_quantity = float(request.get("minimum_quantity") or 0.0)
+    maximum_quantity = request.get("maximum_quantity")
+    if minimum_quantity < 0:
+        raise ValueError(f"{label} minimum quantity cannot be negative")
+    if maximum_quantity is not None and float(maximum_quantity) <= 0:
+        raise ValueError(f"{label} maximum quantity must be positive")
+    if maximum_quantity is not None and minimum_quantity > float(maximum_quantity):
+        raise ValueError(f"{label} minimum quantity cannot exceed maximum quantity")
 
 
 def _validate_order_intent(intent: dict[str, Any], label: str) -> None:

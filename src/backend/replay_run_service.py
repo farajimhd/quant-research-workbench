@@ -760,6 +760,7 @@ _STRATEGY_INDICATOR_FIELDS = frozenset(
         "qmd_structure_resistance_upper",
         "qmd_structure_resistance_strength",
         "qmd_structure_resistance_confidence",
+        "qmd_structure_session_high",
         "qmd_structure_unified_levels",
         "qmd_structure_unified_level_delta",
         "structure_bos_direction",
@@ -797,6 +798,7 @@ _STRATEGY_STATEFUL_STRUCTURE_FIELDS = frozenset(
         "qmd_structure_resistance_upper",
         "qmd_structure_resistance_strength",
         "qmd_structure_resistance_confidence",
+        "qmd_structure_session_high",
         "qmd_structure_unified_levels",
         "qmd_structure_unified_level_delta",
         "structure_swing_high",
@@ -2960,6 +2962,9 @@ class ReplayRunController:
             structural_resistance_confidence=float(
                 structural_indicator.get("qmd_structure_resistance_confidence") or 0
             ),
+            structural_session_high=_optional_positive(
+                structural_indicator.get("qmd_structure_session_high")
+            ),
             structural_support_levels=tuple(
                 row for row in unified_levels if int(row.get("side") or 0) > 0
             ),
@@ -3131,6 +3136,9 @@ class ReplayRunController:
                 ),
                 structural_resistance_confidence=float(
                     structural.get("qmd_structure_resistance_confidence") or 0
+                ),
+                structural_session_high=_optional_positive(
+                    structural.get("qmd_structure_session_high")
                 ),
                 structural_support_levels=tuple(
                     dict(row)
@@ -3573,6 +3581,7 @@ class ReplayRunController:
             "qmd_structure_resistance_upper": resistance.get("upper"),
             "qmd_structure_resistance_strength": resistance.get("strength"),
             "qmd_structure_resistance_confidence": resistance.get("confidence"),
+            "qmd_structure_session_high": snapshot.get("session_high"),
             "qmd_structure_support_levels": [
                 row for row in unified_levels if int(row.get("side") or 0) > 0
             ],

@@ -208,6 +208,8 @@ export const EXIT_AUTHORING_PAGES: Array<{ description: string; id: ExitAuthorin
 
 export type CapitalRequestConfig = {
   allow_replacement: boolean;
+  maximum_quantity?: number;
+  minimum_quantity?: number;
   mode: "fixed_quantity" | "mandate_fraction" | "risk_fraction" | "all_available";
   value: number;
 };

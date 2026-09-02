@@ -34,7 +34,7 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 25
+STRATEGY_REVISION = 26
 
 RULE_COMPARATORS = {
     "above_by_bps",
@@ -282,6 +282,7 @@ class StrategyObservation:
     structural_resistance_confidence: float = 0.0
     structural_support_levels: tuple[dict[str, Any], ...] = ()
     structural_resistance_levels: tuple[dict[str, Any], ...] = ()
+    structural_session_high: float | None = None
     structural_up_probability: float = 0.5
     structure_event: str = ""
     structure_direction: str = ""
@@ -1322,6 +1323,15 @@ def _unified_entry_trigger(
     state: dict[str, Any],
 ) -> dict[str, Any]:
     policy = dict(parameters.get("structural_entry") or {})
+    if (
+        str(policy.get("selection_mode") or "").lower()
+        == "prior_completed_frame_top_n_below_session_high"
+    ):
+        return _prior_completed_frame_resistance_trigger(
+            observation,
+            policy,
+            state,
+        )
     buffer_bps = float(policy.get("acceptance_buffer_bps") or 0)
     previous_price = state.get("previous_observed_price")
     # A level's stored side is its last confirmed lifecycle role, not an
@@ -1649,6 +1659,155 @@ def _unified_entry_trigger(
     }
 
 
+def _prior_completed_frame_resistance_trigger(
+    observation: StrategyObservation,
+    policy: dict[str, Any],
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    """Cross only the prior completed 1s frame's qualified resistance set."""
+
+    observed_at = observation.observed_at.isoformat()
+    # This mode has no cross latch. Remove legacy frontier state when a
+    # successor configuration starts from a previously serialized campaign.
+    state.pop("accepted_entry_resistance", None)
+    state.pop("pending_entry_resistance", None)
+    completed_one_second = bool(
+        "bar_close" in observation.evaluation_events
+        and observation.source_timeframe.lower() in {"", "1s"}
+    )
+    if not completed_one_second:
+        return {
+            "passed": False,
+            "reason": "waiting_for_completed_one_second_resistance_snapshot",
+            "level": None,
+            "observed_at": observed_at,
+        }
+    cached = state.get("latest_structural_entry_trigger")
+    if (
+        isinstance(cached, Mapping)
+        and cached.get("observed_at") == observed_at
+        and cached.get("completed_one_second") is True
+    ):
+        return dict(cached)
+
+    prior = state.get("qualified_entry_resistance_snapshot")
+    prior_levels = (
+        [dict(row) for row in prior.get("levels") or () if isinstance(row, Mapping)]
+        if isinstance(prior, Mapping)
+        else []
+    )
+    prior_close = (
+        _level_metric(dict(prior), "reference_close")
+        if isinstance(prior, Mapping)
+        else 0.0
+    )
+    prior_selected_at = (
+        _optional_aware_datetime(prior.get("selected_at"))
+        if isinstance(prior, Mapping)
+        else None
+    )
+    prior_is_immediate = bool(
+        prior_selected_at is not None
+        and 0.0
+        < (observation.observed_at - prior_selected_at).total_seconds()
+        <= 1.001
+    )
+    buffer_bps = float(policy.get("acceptance_buffer_bps") or 0.0)
+    crossed: list[dict[str, Any]] = []
+    for level in prior_levels if prior_is_immediate else ():
+        boundary = _level_metric(level, "entry_boundary", "price")
+        threshold = boundary * (1.0 + buffer_bps / 10_000.0)
+        if boundary > 0 and prior_close <= threshold and observation.price > threshold:
+            crossed.append({**level, "entry_boundary": boundary, "threshold_price": threshold})
+
+    selected_cross = (
+        max(crossed, key=lambda row: float(row["entry_boundary"]))
+        if crossed
+        else None
+    )
+    result: dict[str, Any] = {
+        "passed": selected_cross is not None,
+        "completed_one_second": True,
+        "reason": (
+            "prior_completed_one_second_resistance_crossed"
+            if selected_cross is not None
+            else "waiting_for_prior_top_resistance_cross"
+            if prior_levels and prior_is_immediate
+            else "waiting_for_fresh_prior_completed_one_second_resistance_snapshot"
+            if prior_levels
+            else "waiting_for_prior_completed_one_second_resistance_snapshot"
+        ),
+        "level": dict(selected_cross or {}) or None,
+        "reference_price": (
+            float(selected_cross["entry_boundary"])
+            if selected_cross is not None
+            else None
+        ),
+        "threshold_price": (
+            float(selected_cross["threshold_price"])
+            if selected_cross is not None
+            else None
+        ),
+        "previous_price": prior_close or None,
+        "observed_at": observed_at,
+        "prior_snapshot_selected_at": (
+            prior.get("selected_at") if isinstance(prior, Mapping) else None
+        ),
+        "prior_snapshot_is_immediate": prior_is_immediate,
+        "prior_snapshot_session_high": (
+            prior.get("session_high") if isinstance(prior, Mapping) else None
+        ),
+        "prior_snapshot_levels": prior_levels,
+        "crossed_level_ids": [
+            str(row.get("unified_level_id") or "") for row in crossed
+        ],
+    }
+
+    session_high = observation.structural_session_high
+    maximum_levels = max(1, int(policy.get("maximum_entry_levels") or 3))
+    qualified: list[dict[str, Any]] = []
+    if session_high is not None and session_high > 0:
+        for raw in observation.structural_resistance_levels:
+            if not isinstance(raw, Mapping):
+                continue
+            row = dict(raw)
+            if int(row.get("side") or 0) >= 0:
+                continue
+            price = _level_metric(row, "price", "upper", "lower")
+            if (
+                price <= 0
+                or price > session_high
+                or not _level_is_entry_quality(
+                    row, policy, observed_at=observation.observed_at
+                )
+            ):
+                continue
+            qualified.append({
+                **_compact_structural_level_reference(row),
+                "side": int(row.get("side") or -1),
+                "price": price,
+                "entry_boundary": price,
+                "hold_probability": _level_metric(row, "hold_probability"),
+            })
+    qualified.sort(
+        key=lambda row: (
+            -float(row["entry_boundary"]),
+            str(row.get("unified_level_id") or ""),
+        )
+    )
+    current_levels = qualified[:maximum_levels]
+    state["qualified_entry_resistance_snapshot"] = {
+        "selected_at": observed_at,
+        "session_high": session_high,
+        "reference_close": observation.price,
+        "maximum_entry_levels": maximum_levels,
+        "levels": current_levels,
+    }
+    result["current_snapshot"] = dict(state["qualified_entry_resistance_snapshot"])
+    state["latest_structural_entry_trigger"] = result
+    return result
+
+
 def _entry_rule_result_with_unified_trigger(
     rule_result: dict[str, Any],
     unified_trigger: Mapping[str, Any],
@@ -1731,6 +1890,17 @@ class LongMomentumStrategyEngine:
         state["last_price"] = observation.price
         _record_macd_histogram_history(state, observation)
         _record_structural_anchors(state, observation)
+        structural_policy = dict(parameters.get("structural_entry") or {})
+        if (
+            bool(structural_policy.get("enabled", False))
+            and str(structural_policy.get("selection_mode") or "").lower()
+            == "prior_completed_frame_top_n_below_session_high"
+        ):
+            _prior_completed_frame_resistance_trigger(
+                observation,
+                structural_policy,
+                state,
+            )
         if observation.position_quantity > 0:
             return self._evaluate_position(assignment, observation, parameters, state)
         return self._evaluate_flat(assignment, observation, parameters, state)
@@ -1856,7 +2026,14 @@ class LongMomentumStrategyEngine:
             if replenishment_result is not None:
                 return replenishment_result
 
-        if reentries:
+        structural_selection_mode = str(
+            dict(parameters.get("structural_entry") or {}).get("selection_mode") or ""
+        ).lower()
+        if (
+            reentries
+            and structural_selection_mode
+            != "prior_completed_frame_top_n_below_session_high"
+        ):
             pullback_result = self._regular_reentry_pullback_result(
                 assignment,
                 observation,
@@ -3422,6 +3599,12 @@ def _capital_request_from_payload(payload: dict[str, Any]) -> CapitalRequest:
     return CapitalRequest(
         mode=mode,  # type: ignore[arg-type]
         value=value,
+        minimum_quantity=float(payload.get("minimum_quantity") or 0.0),
+        maximum_quantity=(
+            float(payload["maximum_quantity"])
+            if payload.get("maximum_quantity") is not None
+            else None
+        ),
         allow_replacement=bool(payload.get("allow_replacement", False)),
     )
 

@@ -215,6 +215,7 @@ def strategy_observation_from_market_row(
         structural_resistance_upper=_positive_numeric(row.get("qmd_structure_resistance_upper")),
         structural_resistance_strength=float(row.get("qmd_structure_resistance_strength") or 0),
         structural_resistance_confidence=float(row.get("qmd_structure_resistance_confidence") or 0),
+        structural_session_high=_positive_numeric(row.get("qmd_structure_session_high")),
         structural_support_levels=tuple(
             level for level in unified_levels if int(level.get("side") or 0) > 0
         ),

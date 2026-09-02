@@ -2188,6 +2188,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
             "session_id": "gslb-uat-1",
             "checkpoint": {"sym": "SUGP", "last_arrival_sequence": 10},
             "snapshot": {
+                "session_high": 3.75,
                 "unified_levels": [],
                 "timeframe_states": [
                     {"timeframe": "1s", "swing_high": 3.55, "swing_low": 3.41},
@@ -2234,6 +2235,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(first_context["structure_swing_high"], 3.55)
         self.assertEqual(first_context["structure_swing_low"], 3.41)
+        self.assertEqual(first_context["qmd_structure_session_high"], 3.75)
 
     @patch("src.backend.replay_run_service.qmd_advance_historical_structure_timeline")
     @patch("src.backend.replay_run_service.qmd_historical_structure_snapshot")
@@ -2265,6 +2267,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
                 "event_count": 4,
                 "advanced_event_count": 3,
                 "snapshot": {
+                    "session_high": 3.80,
                     "unified_levels": [],
                     "timeframe_states": [{"timeframe": "5s", "swing_high": 3.70}],
                 },
@@ -2292,6 +2295,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
             "5s",
         )
         self.assertEqual(projected["structure_swing_high"], 3.70)
+        self.assertEqual(projected["qmd_structure_session_high"], 3.80)
         self.assertEqual(len(controller._data_authority), 1)
 
     def test_structure_enrichment_runs_continuously_after_liquidity_admission(self) -> None:

@@ -24,6 +24,8 @@ from src.trading_runtime.strategy_engine import (
     StrategyPermissions,
     default_long_momentum_parameters,
     _execution_policy_from_phase,
+    _capital_request_from_payload,
+    _prior_completed_frame_resistance_trigger,
     _structural_profit_targets,
     entry_stage_without_rule_set,
     evaluate_entry_decision_rules,
@@ -98,6 +100,241 @@ def confirmed_observation(**overrides) -> StrategyObservation:
 
 
 class LongMomentumStrategyTests(unittest.TestCase):
+    def test_prior_frame_top_three_uses_resistance_at_or_below_live_session_high(self) -> None:
+        policy = {
+            "selection_mode": "prior_completed_frame_top_n_below_session_high",
+            "maximum_entry_levels": 3,
+            "minimum_hold_probability": 0.80,
+            "maximum_break_probability": 1.0,
+        }
+        state: dict = {}
+        support = {
+            "unified_level_id": "support-1.49",
+            "side": 1,
+            "price": 1.49,
+            "hold_probability": 0.99,
+        }
+        resistances = tuple(
+            {
+                "unified_level_id": f"r-{price}",
+                "side": -1,
+                "price": price,
+                "hold_probability": hold,
+            }
+            for price, hold in (
+                (1.60, 0.99),
+                (1.55, 0.99),
+                (1.48, 0.80),
+                (1.46, 0.90),
+                (1.42, 0.95),
+                (1.40, 0.79),
+            )
+        ) + (support,)
+
+        first = _prior_completed_frame_resistance_trigger(
+            confirmed_observation(
+                price=1.45,
+                structural_session_high=1.50,
+                structural_support_levels=(support,),
+                structural_resistance_levels=resistances,
+                source_timeframe="1s",
+            ),
+            policy,
+            state,
+        )
+
+        self.assertFalse(first["passed"])
+        self.assertEqual(
+            [row["price"] for row in state["qualified_entry_resistance_snapshot"]["levels"]],
+            [1.48, 1.46, 1.42],
+        )
+        self.assertNotIn(
+            "support-1.49",
+            [row["unified_level_id"] for row in state["qualified_entry_resistance_snapshot"]["levels"]],
+        )
+
+        second = _prior_completed_frame_resistance_trigger(
+            confirmed_observation(
+                observed_at=NOW + timedelta(seconds=1),
+                price=1.47,
+                structural_session_high=1.55,
+                structural_resistance_levels=resistances,
+                source_timeframe="1s",
+            ),
+            policy,
+            state,
+        )
+
+        self.assertTrue(second["passed"])
+        self.assertEqual(second["level"]["unified_level_id"], "r-1.46")
+        self.assertEqual(
+            [row["price"] for row in state["qualified_entry_resistance_snapshot"]["levels"]],
+            [1.55, 1.48, 1.46],
+        )
+
+    def test_prior_frame_cross_is_not_latched_for_a_later_confirmation(self) -> None:
+        policy = {
+            "selection_mode": "prior_completed_frame_top_n_below_session_high",
+            "maximum_entry_levels": 3,
+            "minimum_hold_probability": 0.80,
+            "maximum_break_probability": 1.0,
+        }
+        state: dict = {}
+        level = ({
+            "unified_level_id": "r-10",
+            "side": -1,
+            "price": 10.0,
+            "hold_probability": 0.90,
+        },)
+        _prior_completed_frame_resistance_trigger(
+            confirmed_observation(
+                price=9.99,
+                structural_session_high=10.10,
+                structural_resistance_levels=level,
+                source_timeframe="1s",
+            ),
+            policy,
+            state,
+        )
+        crossed = _prior_completed_frame_resistance_trigger(
+            confirmed_observation(
+                observed_at=NOW + timedelta(seconds=1),
+                price=10.01,
+                structural_session_high=10.10,
+                structural_resistance_levels=level,
+                source_timeframe="1s",
+            ),
+            policy,
+            state,
+        )
+        later = _prior_completed_frame_resistance_trigger(
+            confirmed_observation(
+                observed_at=NOW + timedelta(seconds=2),
+                price=10.02,
+                structural_session_high=10.10,
+                structural_resistance_levels=level,
+                source_timeframe="1s",
+            ),
+            policy,
+            state,
+        )
+
+        self.assertTrue(crossed["passed"])
+        self.assertFalse(later["passed"])
+        self.assertEqual(later["reason"], "waiting_for_prior_top_resistance_cross")
+
+    def test_failed_macd_on_cross_frame_cannot_enter_late_from_old_cross(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["structural_entry"].update({
+            "enabled": True,
+            "selection_mode": "prior_completed_frame_top_n_below_session_high",
+            "maximum_entry_levels": 3,
+            "minimum_salience": 0.0,
+            "minimum_confidence": 0.0,
+            "minimum_reaction_probability": 0.0,
+            "minimum_hold_probability": 0.80,
+            "maximum_break_probability": 1.0,
+            "minimum_independent_pivot_count": 0,
+            "minimum_level_age_ms": 0,
+        })
+        level = ({
+            "unified_level_id": "r-10",
+            "side": -1,
+            "price": 10.0,
+            "hold_probability": 0.90,
+        },)
+        engine = LongMomentumStrategyEngine()
+        prepared = engine.evaluate(
+            assignment(parameters=parameters),
+            confirmed_observation(
+                price=9.99,
+                structural_session_high=10.10,
+                structural_resistance_levels=level,
+                source_timeframe="1s",
+            ),
+        )
+        rejected_cross = engine.evaluate(
+            assignment(parameters=parameters, state=dict(prepared.state)),
+            confirmed_observation(
+                observed_at=NOW + timedelta(seconds=1),
+                price=10.01,
+                macd_line=0.1,
+                macd_signal=0.2,
+                macd_histogram=-0.1,
+                structural_session_high=10.10,
+                structural_resistance_levels=level,
+                source_timeframe="1s",
+            ),
+        )
+        later_positive_macd = engine.evaluate(
+            assignment(parameters=parameters, state=dict(rejected_cross.state)),
+            confirmed_observation(
+                observed_at=NOW + timedelta(seconds=2),
+                price=10.02,
+                structural_session_high=10.10,
+                structural_resistance_levels=level,
+                source_timeframe="1s",
+            ),
+        )
+
+        self.assertEqual(rejected_cross.evaluation.signals[0].action, "wait")
+        self.assertFalse(rejected_cross.evaluation.intents)
+        self.assertEqual(later_positive_macd.evaluation.signals[0].action, "wait")
+        self.assertFalse(later_positive_macd.evaluation.intents)
+
+    def test_top_three_snapshot_keeps_updating_while_position_is_open(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["structural_entry"].update({
+            "enabled": True,
+            "selection_mode": "prior_completed_frame_top_n_below_session_high",
+            "maximum_entry_levels": 3,
+            "minimum_salience": 0.0,
+            "minimum_confidence": 0.0,
+            "minimum_reaction_probability": 0.0,
+            "minimum_hold_probability": 0.80,
+            "maximum_break_probability": 1.0,
+            "minimum_independent_pivot_count": 0,
+            "minimum_level_age_ms": 0,
+        })
+        levels = tuple(
+            {
+                "unified_level_id": f"r-{price}",
+                "side": -1,
+                "price": price,
+                "hold_probability": 0.90,
+            }
+            for price in (10.4, 10.3, 10.2, 10.1)
+        )
+
+        result = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=parameters, status=AssignmentStatus.MANAGING),
+            confirmed_observation(
+                price=10.25,
+                position_quantity=100,
+                average_price=10.0,
+                structural_session_high=10.3,
+                structural_resistance_levels=levels,
+                source_timeframe="1s",
+            ),
+        )
+
+        self.assertEqual(
+            [
+                row["price"]
+                for row in result.state["qualified_entry_resistance_snapshot"]["levels"]
+            ],
+            [10.3, 10.2, 10.1],
+        )
+
+    def test_relative_phase_capital_request_preserves_hard_share_cap(self) -> None:
+        request = _capital_request_from_payload({
+            "mode": "all_available",
+            "value": 1.0,
+            "maximum_quantity": 5_000,
+        })
+
+        self.assertEqual(request.maximum_quantity, 5_000)
+
     def test_default_spread_contract_separates_admission_from_execution(self) -> None:
         liquidity = default_long_momentum_parameters()["liquidity_admission"]
 
