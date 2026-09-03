@@ -5314,8 +5314,8 @@ button {
 }
 
 .strategy-presentation-menu {
-  width: min(820px, calc(var(--app-zoomed-viewport-width) - 16px));
-  max-height: min(680px, calc(var(--app-zoomed-viewport-height) - 16px));
+  width: min(720px, calc(var(--app-zoomed-viewport-width) - 16px));
+  max-height: min(720px, calc(var(--app-zoomed-viewport-height) - 16px));
   overflow: auto;
   padding: 0;
 }
@@ -5335,21 +5335,27 @@ button {
 
 .strategy-presentation-header > div,
 .strategy-presentation-master > span,
-.strategy-presentation-style-title > span {
+.strategy-presentation-behavior label > span,
+.strategy-presentation-element label > span,
+.strategy-presentation-style-intro > span {
   display: grid;
   gap: 2px;
 }
 
 .strategy-presentation-header strong,
 .strategy-presentation-master strong,
-.strategy-presentation-style-title strong {
+.strategy-presentation-behavior strong,
+.strategy-presentation-element strong,
+.strategy-presentation-style-intro strong {
   color: var(--foreground);
   font-size: 12px;
 }
 
 .strategy-presentation-header span,
 .strategy-presentation-master small,
-.strategy-presentation-style-title small {
+.strategy-presentation-behavior small,
+.strategy-presentation-element small,
+.strategy-presentation-style-intro small {
   color: var(--muted-foreground);
   font-size: 10px;
   font-weight: 450;
@@ -5364,39 +5370,140 @@ button {
   padding: 9px 10px;
 }
 
-.strategy-presentation-grid {
+.strategy-presentation-behavior {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
-  padding: 10px 14px 14px;
+  margin: 8px 14px 0;
+  border-bottom: 1px solid var(--surface-border);
+  padding: 0 0 10px;
 }
 
-.strategy-presentation-grid[data-disabled="true"] {
+.strategy-presentation-behavior > label {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) minmax(160px, 0.45fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+}
+
+.strategy-presentation-behavior > label:first-child {
+  grid-template-columns: 18px minmax(0, 1fr);
+}
+
+.strategy-presentation-behavior > label:nth-child(2) {
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 0.45fr);
+}
+
+.strategy-presentation-element-list {
+  display: grid;
+  gap: 1px;
+  padding: 9px 14px 14px;
+}
+
+.strategy-presentation-element-list[data-disabled="true"] {
   opacity: 0.48;
 }
 
-.strategy-presentation-style {
-  min-width: 0;
-  border: 1px solid var(--surface-border);
-  border-radius: 8px;
-  background: color-mix(in oklab, var(--surface-alt) 38%, var(--surface));
-  padding: 9px;
+.strategy-presentation-element {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(154px, auto) 30px;
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  border-bottom: 1px solid color-mix(in oklab, var(--surface-border) 62%, transparent);
+  padding: 5px 4px;
 }
 
-.strategy-presentation-style-title {
+.strategy-presentation-element:last-child {
+  border-bottom: 0;
+}
+
+.strategy-presentation-element > label {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
   align-items: start;
-  min-height: 42px;
-  margin-bottom: 7px;
+  gap: 7px;
+  min-width: 0;
+}
+
+.strategy-presentation-style-summary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.strategy-presentation-style-summary i,
+.strategy-presentation-style-intro > i {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in oklab, var(--foreground) 18%, transparent);
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--surface) 80%, transparent);
+}
+
+.strategy-presentation-style-button,
+.strategy-presentation-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-foreground);
+}
+
+.strategy-presentation-style-button {
+  width: 28px;
+  height: 28px;
+}
+
+.strategy-presentation-style-button:hover,
+.strategy-presentation-style-button:focus-visible,
+.strategy-presentation-back:hover,
+.strategy-presentation-back:focus-visible {
+  border-color: var(--surface-border);
+  background: var(--surface-alt);
+  color: var(--foreground);
+}
+
+.strategy-presentation-style-page .strategy-presentation-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.strategy-presentation-back {
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 7px;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.strategy-presentation-style-intro {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 12px 14px 0;
+  border-bottom: 1px solid var(--surface-border);
+  padding: 0 0 12px;
+}
+
+.strategy-presentation-style-intro > i {
+  width: 24px;
+  height: 24px;
 }
 
 .strategy-presentation-controls {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px 10px;
-}
-
-.strategy-presentation-controls[aria-disabled="true"] {
-  opacity: 0.46;
+  gap: 12px 16px;
+  padding: 14px;
 }
 
 .strategy-presentation-controls > label {
@@ -5455,7 +5562,23 @@ button {
 }
 
 @media (max-width: 760px) {
-  .strategy-presentation-grid {
+  .strategy-presentation-element {
+    grid-template-columns: minmax(0, 1fr) 30px;
+  }
+
+  .strategy-presentation-style-summary {
+    display: none;
+  }
+
+  .strategy-presentation-behavior > label {
+    grid-template-columns: 18px minmax(0, 1fr);
+  }
+
+  .strategy-presentation-behavior .chart-setting-inline {
+    grid-column: 2;
+  }
+
+  .strategy-presentation-controls {
     grid-template-columns: 1fr;
   }
 }

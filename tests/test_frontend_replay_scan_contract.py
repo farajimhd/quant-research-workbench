@@ -153,7 +153,7 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert "lowerBoundCandleTime(state.timeline" in renderer_source
     assert "tradeAutoscaleViewportRef.current !== viewportIdentity" in renderer_source
     assert "candleRef.current?.priceScale().applyOptions({ autoScale: true })" in renderer_source
-    assert renderer_source.index('compactTradeLabel(annotation.exitLabelParts') < renderer_source.index('strategyPresentationColor(settings.stop.color')
+    assert renderer_source.index('compactTradeLabel(annotation.exitLabelParts') < renderer_source.index('drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, stopColor')
     assert "trading?.strategy_chart_activity ?? trading?.strategy_activity" in chart_source
     assert "entryDecision?.row.chart_plan" in chart_source
     assert "guideStartTime: planStartTime" in chart_source
@@ -195,17 +195,22 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert "tradeAnnotationPrimitiveRef.current?.setState" in renderer_source
     assert "drawTradeAnnotationPrimitiveGeometry" in renderer_source
     assert 'const defaultStrategyPresentationSettings: StrategyPresentationSettings' in renderer_source
-    assert 'entry: strategyPresentationStyle("", "solid", 2, 0.95' in renderer_source
-    assert 'exit: strategyPresentationStyle("#C2410C"' in renderer_source
-    assert 'stop: strategyPresentationStyle("", "dashed", 2, 0.95' in renderer_source
-    assert 'targets: strategyPresentationStyle("", "dashed", 2, 0.95' in renderer_source
+    assert 'entryLine: strategyPresentationStyle("", "solid", 2, 0.95' in renderer_source
+    assert 'exitLine: strategyPresentationStyle("#C2410C"' in renderer_source
+    assert 'stopLine: strategyPresentationStyle("", "dashed", 2, 0.95' in renderer_source
+    assert 'targetLine: strategyPresentationStyle("", "dashed", 2, 0.95' in renderer_source
+    assert 'const strategyVisualElementDefinitions: StrategyVisualElementDefinition[]' in renderer_source
+    assert 'className="strategy-presentation-element"' in renderer_source
+    assert 'className="strategy-presentation-style-page"' in renderer_source
+    assert 'Customize ${definition.title} style' in renderer_source
+    assert 'avoidLabelCollisions' in renderer_source
+    assert 'connectorThreshold' in renderer_source
     assert 'settingsStorageKey}.strategy-presentation' in renderer_source
     assert '>Strategy Presentation</span>' in renderer_source
-    assert 'drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, strategyPresentationColor(settings.stop.color, stopColor), "SL"' in renderer_source
+    assert 'drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, stopColor, "SL"' in renderer_source
     assert 'annotation.levelPrices?.slice(0, 3)' in renderer_source
     assert 'annotation.targetPrices?.forEach' in renderer_source
-    assert "const resultColor = Number(annotation.pnl) > 0" in renderer_source
-    assert "? successColor" in renderer_source
+    assert "const exitLabelFallback = Number(annotation.pnl) > 0 ? successColor" in renderer_source
     assert '"--chart-strategy-entry": tokens.chartStrategyEntry' in theme_source
     assert '"--chart-strategy-stop": tokens.chartStrategyStop' in theme_source
     assert '"--chart-strategy-target": tokens.chartStrategyTarget' in theme_source
@@ -222,7 +227,7 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert 'drawCanvasTradeLabel(context, label, (renderedLeft + renderedRight) / 2, y + 3' in renderer_source
     assert "canvasLabelBoxesOverlap" in renderer_source
     assert "drawCanvasCandleConnector" in renderer_source
-    assert "context.setLineDash([2, 3])" in renderer_source
+    assert "context.setLineDash(canvasLineDash(settings.lineStyle, settings.lineWidth))" in renderer_source
     assert 'context.fillRect(renderedLeft - capRadius' in renderer_source
     assert renderer_source.index('drawCanvasTradeLine(context, span.left, span.right, entryY') < renderer_source.index('annotation.levelPrices?.slice(0, 3)')
     assert renderer_source.index('drawCanvasTradeArrow(context, entryX, entryY') < renderer_source.index('annotation.levelPrices?.slice(0, 3)')

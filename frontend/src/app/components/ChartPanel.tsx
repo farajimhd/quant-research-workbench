@@ -21,6 +21,7 @@ import {
 } from "lightweight-charts";
 import {
   AlignCenterHorizontal,
+  ArrowLeft,
   CalendarDays,
   CalendarRange,
   ChartNoAxesCombined,
@@ -33,6 +34,7 @@ import {
   Layers3,
   Maximize2,
   Minimize2,
+  Paintbrush,
   RefreshCcw,
   Settings,
   SlidersHorizontal,
@@ -114,20 +116,29 @@ type TradeAnnotation = {
   triggerPrice?: number;
 };
 type StrategyPresentationStyleSettings = {
+  borderStyle: LegendLineStyle;
+  borderWidth: number;
   color: string;
+  fillOpacity: number;
   labelSize: number;
   lineStyle: LegendLineStyle;
   lineWidth: number;
+  markerSize: number;
   opacity: number;
   visible: boolean;
 };
+type StrategyVisualElementKey =
+  | "entryLine" | "entryArrow" | "entryLabel"
+  | "exitLine" | "exitArrow" | "exitLabel"
+  | "levelLine" | "levelLabel"
+  | "stopLine" | "stopLabel"
+  | "targetLine" | "targetLabel"
+  | "adjustmentLine" | "adjustmentArrow" | "adjustmentLabel"
+  | "connector";
 type StrategyPresentationSettings = {
-  adjustments: StrategyPresentationStyleSettings;
-  entry: StrategyPresentationStyleSettings;
-  exit: StrategyPresentationStyleSettings;
-  levels: StrategyPresentationStyleSettings;
-  stop: StrategyPresentationStyleSettings;
-  targets: StrategyPresentationStyleSettings;
+  avoidLabelCollisions: boolean;
+  connectorThreshold: number;
+  elements: Record<StrategyVisualElementKey, StrategyPresentationStyleSettings>;
   visible: boolean;
 };
 type ChartPreset = "micro" | "tactical" | "context" | "axis-history" | "swing-rails";
@@ -611,15 +622,31 @@ const strategyPresentationStyle = (
   lineWidth: number,
   opacity: number,
   labelSize = 10,
-): StrategyPresentationStyleSettings => ({ color, labelSize, lineStyle, lineWidth, opacity, visible: true });
+  markerSize = 7,
+  fillOpacity = 0.92,
+): StrategyPresentationStyleSettings => ({ borderStyle: lineStyle, borderWidth: 1, color, fillOpacity, labelSize, lineStyle, lineWidth, markerSize, opacity, visible: true });
 
 const defaultStrategyPresentationSettings: StrategyPresentationSettings = {
-  adjustments: strategyPresentationStyle("", "solid", 2, 0.92, 10),
-  entry: strategyPresentationStyle("", "solid", 2, 0.95, 10),
-  exit: strategyPresentationStyle("#C2410C", "solid", 2, 0.9, 10),
-  levels: strategyPresentationStyle("", "dashed", 2, 0.9, 10),
-  stop: strategyPresentationStyle("", "dashed", 2, 0.95, 10),
-  targets: strategyPresentationStyle("", "dashed", 2, 0.95, 10),
+  avoidLabelCollisions: true,
+  connectorThreshold: 18,
+  elements: {
+    entryLine: strategyPresentationStyle("", "solid", 2, 0.95),
+    entryArrow: strategyPresentationStyle("", "solid", 1, 0.95, 10, 7),
+    entryLabel: strategyPresentationStyle("", "solid", 1, 0.95, 10, 7, 0.92),
+    exitLine: strategyPresentationStyle("#C2410C", "solid", 2, 0.9),
+    exitArrow: strategyPresentationStyle("#C2410C", "solid", 1, 0.9, 10, 7),
+    exitLabel: strategyPresentationStyle("", "solid", 1, 0.9, 10, 7, 0.92),
+    levelLine: strategyPresentationStyle("", "dashed", 2, 0.9),
+    levelLabel: strategyPresentationStyle("", "solid", 1, 0.9, 10, 7, 0.92),
+    stopLine: strategyPresentationStyle("", "dashed", 2, 0.95),
+    stopLabel: strategyPresentationStyle("", "solid", 1, 0.95, 10, 7, 0.92),
+    targetLine: strategyPresentationStyle("", "dashed", 2, 0.95),
+    targetLabel: strategyPresentationStyle("", "solid", 1, 0.95, 10, 7, 0.92),
+    adjustmentLine: strategyPresentationStyle("", "solid", 2, 0.92),
+    adjustmentArrow: strategyPresentationStyle("", "solid", 1, 0.92, 10, 5),
+    adjustmentLabel: strategyPresentationStyle("", "solid", 1, 0.92, 10, 7, 0.92),
+    connector: strategyPresentationStyle("", "dashed", 1, 0.82),
+  },
   visible: true,
 };
 
@@ -2776,26 +2803,18 @@ function StrategyPresentationSelect({
   settings: StrategyPresentationSettings;
 }) {
   const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const enabledCount = (Object.keys(settings) as Array<keyof StrategyPresentationSettings>)
-    .filter((key) => key !== "visible" && settings[key].visible).length;
-  const updateStyle = (
-    key: Exclude<keyof StrategyPresentationSettings, "visible">,
-    patch: Partial<StrategyPresentationStyleSettings>,
-  ) => onChange({ ...settings, [key]: { ...settings[key], ...patch } });
+  const [styleElement, setStyleElement] = useState<StrategyVisualElementKey | null>(null);
+  const enabledCount = strategyVisualElementDefinitions.filter((item) => settings.elements[item.key].visible).length;
+  const updateElement = (key: StrategyVisualElementKey, patch: Partial<StrategyPresentationStyleSettings>) => onChange({
+    ...settings,
+    elements: { ...settings.elements, [key]: { ...settings.elements[key], ...patch } },
+  });
   const palette = readChartPalette();
-  const groups: Array<{
-    fallbackColor: string;
-    help: string;
-    key: Exclude<keyof StrategyPresentationSettings, "visible">;
-    title: string;
-  }> = [
-    { fallbackColor: chartSemanticColor("--chart-strategy-entry", "#007DFF"), help: "Confirmed entry price, arrow, and neon-blue label.", key: "entry", title: "Entries" },
-    { fallbackColor: "#C2410C", help: "Final exit path in dark orange; result labels remain green for gains and red for losses.", key: "exit", title: "Exits" },
-    { fallbackColor: palette.text, help: "Up to three resistance levels frozen at the entry decision.", key: "levels", title: "Entry structural levels" },
-    { fallbackColor: chartSemanticColor("--chart-strategy-stop", "#FF1744"), help: "Current broker or OMS stop for an open position; immutable entry-plan stop for completed review when no later protection exists.", key: "stop", title: "Protective stop" },
-    { fallbackColor: chartSemanticColor("--chart-strategy-target", "#00B84F"), help: "Current broker or OMS targets for an open position; immutable entry-plan targets for completed review.", key: "targets", title: "Profit targets" },
-    { fallbackColor: palette.text, help: "Adds plus stop and target revisions at their exact event price and time. Theme mode uses blue, green, red, or dark orange by event meaning.", key: "adjustments", title: "Position changes" },
-  ];
+  const selectedDefinition = strategyVisualElementDefinitions.find((item) => item.key === styleElement) ?? null;
+
+  useEffect(() => {
+    if (!open) setStyleElement(null);
+  }, [open]);
 
   return <div className="chart-column-select chart-strategy-presentation-select">
     <button
@@ -2812,58 +2831,140 @@ function StrategyPresentationSelect({
       <ChevronDown size={14} />
     </button>
     {open ? <ChartColumnMenuPortal anchor={triggerRef.current} className="strategy-presentation-menu">
-      <div className="strategy-presentation-header">
-        <div>
-          <strong>Strategy Presentation</strong>
-          <span>Canonical position evidence · {annotationCount} lifecycle{annotationCount === 1 ? "" : "s"}</span>
+      {selectedDefinition && styleElement ? <StrategyPresentationStylePage
+        definition={selectedDefinition}
+        fallbackColor={strategyVisualElementFallbackColor(styleElement, palette.text)}
+        onBack={() => setStyleElement(null)}
+        onChange={(patch) => updateElement(styleElement, patch)}
+        onReset={() => updateElement(styleElement, defaultStrategyPresentationSettings.elements[styleElement])}
+        settings={settings.elements[styleElement]}
+      /> : <>
+        <div className="strategy-presentation-header">
+          <div>
+            <strong>Strategy Presentation</strong>
+            <span>Canonical position evidence · {annotationCount} lifecycle{annotationCount === 1 ? "" : "s"}</span>
+          </div>
+          <button className="button secondary compact" onClick={onReset} type="button">Reset all</button>
         </div>
-        <button className="button secondary compact" onClick={onReset} type="button">Reset</button>
-      </div>
-      <label className="chart-setting-toggle strategy-presentation-master">
-        <input checked={settings.visible} onChange={(event) => onChange({ ...settings, visible: event.target.checked })} type="checkbox" />
-        <span><strong>Show strategy presentation</strong><small>Controls all strategy-generated lines, fills, and lifecycle labels.</small></span>
-      </label>
-      <div className="strategy-presentation-grid" data-disabled={!settings.visible || undefined}>
-        {groups.map((group) => <StrategyPresentationStyleEditor
-          fallbackColor={group.fallbackColor}
-          help={group.help}
-          key={group.key}
-          onChange={(patch) => updateStyle(group.key, patch)}
-          settings={settings[group.key]}
-          title={group.title}
-        />)}
-      </div>
+        <label className="chart-setting-toggle strategy-presentation-master">
+          <input checked={settings.visible} onChange={(event) => onChange({ ...settings, visible: event.target.checked })} type="checkbox" />
+          <span><strong>Show strategy presentation</strong><small>One switch for all position evidence. Individual elements remain configured below.</small></span>
+        </label>
+        <section className="strategy-presentation-behavior" aria-label="Presentation behavior">
+          <label><input checked={settings.avoidLabelCollisions} onChange={(event) => onChange({ ...settings, avoidLabelCollisions: event.target.checked })} type="checkbox" /><span><strong>Avoid label collisions</strong><small>Moves labels to the nearest clear position while preserving their anchor.</small></span></label>
+          <label><span><strong>Distant-marker connector</strong><small>Minimum vertical distance before a connector is drawn.</small></span><span className="chart-setting-inline"><input aria-label="Distant marker connector threshold" disabled={!settings.elements.connector.visible} max={48} min={8} onChange={(event) => onChange({ ...settings, connectorThreshold: Number(event.target.value) })} type="range" value={settings.connectorThreshold} /><b>{settings.connectorThreshold}px</b></span></label>
+        </section>
+        <div className="strategy-presentation-element-list" data-disabled={!settings.visible || undefined}>
+          {strategyVisualElementDefinitions.map((definition) => {
+            const element = settings.elements[definition.key];
+            const fallbackColor = strategyVisualElementFallbackColor(definition.key, palette.text);
+            return <div className="strategy-presentation-element" key={definition.key}>
+              <label>
+                <input checked={element.visible} onChange={(event) => updateElement(definition.key, { visible: event.target.checked })} type="checkbox" />
+                <span><strong>{definition.title}</strong><small>{definition.help}</small></span>
+              </label>
+              <span className="strategy-presentation-style-summary">
+                <i style={{ background: strategyVisualElementSwatch(definition.key, element, fallbackColor) }} />
+                <span>{strategyVisualStyleSummary(definition.key, element, definition.kind)}</span>
+              </span>
+              <button aria-label={`Customize ${definition.title} style`} className="strategy-presentation-style-button" onClick={() => setStyleElement(definition.key)} title={`Customize ${definition.title} style`} type="button"><Paintbrush size={14} /></button>
+            </div>;
+          })}
+        </div>
+      </>}
     </ChartColumnMenuPortal> : null}
   </div>;
 }
 
-function StrategyPresentationStyleEditor({
+type StrategyVisualElementDefinition = { help: string; key: StrategyVisualElementKey; kind: "connector" | "label" | "line" | "marker"; title: string };
+
+const strategyVisualElementDefinitions: StrategyVisualElementDefinition[] = [
+  { key: "entryLine", kind: "line", title: "Entry price line", help: "Position entry price across the lifecycle." },
+  { key: "entryArrow", kind: "marker", title: "Entry arrow", help: "Exact entry time and execution price." },
+  { key: "entryLabel", kind: "label", title: "Entry label", help: "Direction, quantity, and entry price." },
+  { key: "exitLine", kind: "line", title: "Exit price line", help: "Final exit price across the lifecycle." },
+  { key: "exitArrow", kind: "marker", title: "Exit arrow", help: "Exact exit time and execution price." },
+  { key: "exitLabel", kind: "label", title: "Exit result label", help: "Exit quantity, price, and realized result." },
+  { key: "levelLine", kind: "line", title: "Structural level lines", help: "Entry-frozen resistance or support evidence." },
+  { key: "levelLabel", kind: "label", title: "Structural level labels", help: "L1–L3 and trigger identifiers." },
+  { key: "stopLine", kind: "line", title: "Protective stop line", help: "Current or immutable entry-plan protection." },
+  { key: "stopLabel", kind: "label", title: "Protective stop label", help: "Compact SL identifier attached to protection." },
+  { key: "targetLine", kind: "line", title: "Profit target lines", help: "Current or immutable entry-plan targets." },
+  { key: "targetLabel", kind: "label", title: "Profit target labels", help: "Compact TP identifiers attached to targets." },
+  { key: "adjustmentLine", kind: "line", title: "Position-change line", help: "Exact-price rail for adds and protection revisions." },
+  { key: "adjustmentArrow", kind: "marker", title: "Position-change arrow", help: "Exact event time and revised price." },
+  { key: "adjustmentLabel", kind: "label", title: "Position-change label", help: "Add, target, stop, trail, and repair detail." },
+  { key: "connector", kind: "connector", title: "Distant-marker connector", help: "Dashed link from a distant event marker to its candle." },
+];
+
+function StrategyPresentationStylePage({
+  definition,
   fallbackColor,
-  help,
+  onBack,
   onChange,
+  onReset,
   settings,
-  title,
 }: {
+  definition: StrategyVisualElementDefinition;
   fallbackColor: string;
-  help: string;
+  onBack: () => void;
   onChange: (patch: Partial<StrategyPresentationStyleSettings>) => void;
+  onReset: () => void;
   settings: StrategyPresentationStyleSettings;
-  title: string;
 }) {
   const color = validHexColor(settings.color, validHexColor(fallbackColor, "#111827"));
-  return <section className="strategy-presentation-style">
-    <label className="chart-setting-toggle strategy-presentation-style-title">
-      <input checked={settings.visible} onChange={(event) => onChange({ visible: event.target.checked })} type="checkbox" />
-      <span><strong>{title}</strong><small>{help}</small></span>
-    </label>
-    <div className="strategy-presentation-controls" aria-disabled={!settings.visible}>
-      <label><span>Color</span><span className="strategy-presentation-color"><input aria-label={`${title} color`} disabled={!settings.visible} onChange={(event) => onChange({ color: event.target.value })} type="color" value={color} />{settings.color ? <button disabled={!settings.visible} onClick={() => onChange({ color: "" })} type="button">Theme</button> : <em>Theme</em>}</span></label>
-      <label><span>Style</span><select disabled={!settings.visible} onChange={(event) => onChange({ lineStyle: event.target.value as LegendLineStyle })} value={settings.lineStyle}><option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option></select></label>
-      <label><span>Line size</span><span className="chart-setting-inline"><input disabled={!settings.visible} max={5} min={1} onChange={(event) => onChange({ lineWidth: Number(event.target.value) })} type="range" value={settings.lineWidth} /><b>{settings.lineWidth}px</b></span></label>
-      <label><span>Opacity</span><span className="chart-setting-inline"><input disabled={!settings.visible} max={100} min={15} onChange={(event) => onChange({ opacity: Number(event.target.value) / 100 })} type="range" value={Math.round(settings.opacity * 100)} /><b>{Math.round(settings.opacity * 100)}%</b></span></label>
-      <label><span>Label size</span><span className="chart-setting-inline"><input disabled={!settings.visible} max={16} min={8} onChange={(event) => onChange({ labelSize: Number(event.target.value) })} type="range" value={settings.labelSize} /><b>{settings.labelSize}px</b></span></label>
+  const showsLine = definition.kind === "line" || definition.kind === "connector";
+  const showsMarker = definition.kind === "marker";
+  const showsLabel = definition.kind === "label";
+  return <section className="strategy-presentation-style-page">
+    <div className="strategy-presentation-header">
+      <button className="strategy-presentation-back" onClick={onBack} type="button"><ArrowLeft size={15} /> Elements</button>
+      <div><strong>{definition.title}</strong><span>Visual style · changes apply immediately</span></div>
+      <button className="button secondary compact" onClick={onReset} type="button">Reset style</button>
+    </div>
+    <div className="strategy-presentation-style-intro"><i style={{ background: color }} /><span><strong>{definition.title}</strong><small>{definition.help}</small></span></div>
+    <div className="strategy-presentation-controls">
+      <label><span>Color</span><span className="strategy-presentation-color"><input aria-label={`${definition.title} color`} onChange={(event) => onChange({ color: event.target.value })} type="color" value={color} />{settings.color ? <button onClick={() => onChange({ color: "" })} type="button">Use theme</button> : <em>Theme color</em>}</span></label>
+      <StrategyStyleRange label="Opacity" max={100} min={15} onChange={(value) => onChange({ opacity: value / 100 })} suffix="%" value={Math.round(settings.opacity * 100)} />
+      {showsLine ? <><StrategyStyleSelect label="Edge type" onChange={(lineStyle) => onChange({ lineStyle })} value={settings.lineStyle} /><StrategyStyleRange label="Edge size" max={5} min={1} onChange={(lineWidth) => onChange({ lineWidth })} suffix="px" value={settings.lineWidth} /></> : null}
+      {showsMarker ? <><StrategyStyleRange label="Marker size" max={14} min={4} onChange={(markerSize) => onChange({ markerSize })} suffix="px" value={settings.markerSize} /><StrategyStyleRange label="Fill opacity" max={100} min={15} onChange={(value) => onChange({ fillOpacity: value / 100 })} suffix="%" value={Math.round(settings.fillOpacity * 100)} /><StrategyStyleSelect label="Edge type" onChange={(borderStyle) => onChange({ borderStyle })} value={settings.borderStyle} /><StrategyStyleRange label="Edge size" max={4} min={0} onChange={(borderWidth) => onChange({ borderWidth })} suffix="px" value={settings.borderWidth} /></> : null}
+      {showsLabel ? <><StrategyStyleRange label="Text size" max={16} min={8} onChange={(labelSize) => onChange({ labelSize })} suffix="px" value={settings.labelSize} /><StrategyStyleRange label="Fill opacity" max={100} min={40} onChange={(value) => onChange({ fillOpacity: value / 100 })} suffix="%" value={Math.round(settings.fillOpacity * 100)} /><StrategyStyleSelect label="Edge type" onChange={(borderStyle) => onChange({ borderStyle })} value={settings.borderStyle} /><StrategyStyleRange label="Edge size" max={4} min={0} onChange={(borderWidth) => onChange({ borderWidth })} suffix="px" value={settings.borderWidth} /></> : null}
     </div>
   </section>;
+}
+
+function StrategyStyleRange({ label, max, min, onChange, suffix, value }: { label: string; max: number; min: number; onChange: (value: number) => void; suffix: string; value: number }) {
+  return <label><span>{label}</span><span className="chart-setting-inline"><input aria-label={label} max={max} min={min} onChange={(event) => onChange(Number(event.target.value))} type="range" value={value} /><b>{value}{suffix}</b></span></label>;
+}
+
+function StrategyStyleSelect({ label, onChange, value }: { label: string; onChange: (value: LegendLineStyle) => void; value: LegendLineStyle }) {
+  return <label><span>{label}</span><select aria-label={label} onChange={(event) => onChange(event.target.value as LegendLineStyle)} value={value}><option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option></select></label>;
+}
+
+function strategyVisualElementFallbackColor(key: StrategyVisualElementKey, neutral: string) {
+  if (key.startsWith("entry")) return chartSemanticColor("--chart-strategy-entry", "#007DFF");
+  if (key.startsWith("stop")) return chartSemanticColor("--chart-strategy-stop", "#FF1744");
+  if (key.startsWith("target")) return chartSemanticColor("--chart-strategy-target", "#00B84F");
+  if (key.startsWith("exit")) return "#C2410C";
+  return neutral;
+}
+
+function strategyVisualElementSwatch(key: StrategyVisualElementKey, settings: StrategyPresentationStyleSettings, fallbackColor: string) {
+  if (settings.color) return strategyPresentationColor(settings.color, fallbackColor);
+  if (key === "exitLabel") {
+    return `linear-gradient(90deg, ${chartSemanticColor("--chart-strategy-target", "#00B84F")} 0 50%, ${chartSemanticColor("--danger", "#DC2626")} 50% 100%)`;
+  }
+  if (key.startsWith("adjustment") || key === "connector") {
+    return `linear-gradient(90deg, ${chartSemanticColor("--chart-strategy-entry", "#007DFF")} 0 34%, ${chartSemanticColor("--chart-strategy-target", "#00B84F")} 34% 67%, ${chartSemanticColor("--chart-strategy-stop", "#FF1744")} 67% 100%)`;
+  }
+  return strategyPresentationColor(settings.color, fallbackColor);
+}
+
+function strategyVisualStyleSummary(key: StrategyVisualElementKey, settings: StrategyPresentationStyleSettings, kind: StrategyVisualElementDefinition["kind"]) {
+  const semantic = !settings.color && (key === "exitLabel" || key.startsWith("adjustment") || key === "connector") ? "Semantic · " : "";
+  if (kind === "label") return `${semantic}${settings.labelSize}px text · ${Math.round(settings.opacity * 100)}%`;
+  if (kind === "marker") return `${semantic}${settings.markerSize}px marker · ${Math.round(settings.opacity * 100)}%`;
+  return `${semantic}${settings.lineWidth}px ${settings.lineStyle} · ${Math.round(settings.opacity * 100)}%`;
 }
 
 function SupervisionSelect({
@@ -3765,23 +3866,38 @@ function normalizeStrategyPresentationStyle(
   defaults: StrategyPresentationStyleSettings,
 ): StrategyPresentationStyleSettings {
   return {
+    borderStyle: settings?.borderStyle === "solid" || settings?.borderStyle === "dashed" || settings?.borderStyle === "dotted" ? settings.borderStyle : defaults.borderStyle,
+    borderWidth: Math.round(clampNumber(settings?.borderWidth, 0, 4, defaults.borderWidth)),
     color: settings?.color === "" ? "" : validHexColor(settings?.color, defaults.color || ""),
+    fillOpacity: clampNumber(settings?.fillOpacity, 0.15, 1, defaults.fillOpacity),
     labelSize: Math.round(clampNumber(settings?.labelSize, 8, 16, defaults.labelSize)),
     lineStyle: settings?.lineStyle === "solid" || settings?.lineStyle === "dashed" || settings?.lineStyle === "dotted" ? settings.lineStyle : defaults.lineStyle,
     lineWidth: Math.round(clampNumber(settings?.lineWidth, 1, 5, defaults.lineWidth)),
+    markerSize: Math.round(clampNumber(settings?.markerSize, 4, 14, defaults.markerSize)),
     opacity: clampNumber(settings?.opacity, 0.15, 1, defaults.opacity),
     visible: typeof settings?.visible === "boolean" ? settings.visible : defaults.visible,
   };
 }
 
 function normalizeStrategyPresentationSettings(settings: Partial<StrategyPresentationSettings>): StrategyPresentationSettings {
+  const legacy = settings as Partial<StrategyPresentationSettings> & Partial<Record<"adjustments" | "entry" | "exit" | "levels" | "stop" | "targets", Partial<StrategyPresentationStyleSettings>>>;
+  const legacyByElement: Record<StrategyVisualElementKey, Partial<StrategyPresentationStyleSettings> | undefined> = {
+    entryLine: legacy.entry, entryArrow: legacy.entry, entryLabel: legacy.entry,
+    exitLine: legacy.exit, exitArrow: legacy.exit, exitLabel: legacy.exit ? { ...legacy.exit, color: "" } : undefined,
+    levelLine: legacy.levels, levelLabel: legacy.levels,
+    stopLine: legacy.stop, stopLabel: legacy.stop,
+    targetLine: legacy.targets, targetLabel: legacy.targets,
+    adjustmentLine: legacy.adjustments, adjustmentArrow: legacy.adjustments, adjustmentLabel: legacy.adjustments,
+    connector: legacy.adjustments,
+  };
+  const elements = Object.fromEntries((Object.keys(defaultStrategyPresentationSettings.elements) as StrategyVisualElementKey[]).map((key) => [
+    key,
+    normalizeStrategyPresentationStyle(settings.elements?.[key] ?? legacyByElement[key], defaultStrategyPresentationSettings.elements[key]),
+  ])) as Record<StrategyVisualElementKey, StrategyPresentationStyleSettings>;
   return {
-    adjustments: normalizeStrategyPresentationStyle(settings.adjustments, defaultStrategyPresentationSettings.adjustments),
-    entry: normalizeStrategyPresentationStyle(settings.entry, defaultStrategyPresentationSettings.entry),
-    exit: normalizeStrategyPresentationStyle(settings.exit, defaultStrategyPresentationSettings.exit),
-    levels: normalizeStrategyPresentationStyle(settings.levels, defaultStrategyPresentationSettings.levels),
-    stop: normalizeStrategyPresentationStyle(settings.stop, defaultStrategyPresentationSettings.stop),
-    targets: normalizeStrategyPresentationStyle(settings.targets, defaultStrategyPresentationSettings.targets),
+    avoidLabelCollisions: typeof settings.avoidLabelCollisions === "boolean" ? settings.avoidLabelCollisions : true,
+    connectorThreshold: Math.round(clampNumber(settings.connectorThreshold, 8, 48, defaultStrategyPresentationSettings.connectorThreshold)),
+    elements,
     visible: typeof settings.visible === "boolean" ? settings.visible : defaultStrategyPresentationSettings.visible,
   };
 }
@@ -6316,6 +6432,7 @@ function drawTradeAnnotationPrimitiveGeometry(
   settings: StrategyPresentationSettings,
 ) {
   if (!settings.visible || !timeline.length || width < 1 || height < 1 || (!annotations.length && !executions.length)) return;
+  const elements = settings.elements;
   const chartBackground = validHexColor(readChartPalette().background, "#ffffff");
   const neutralColor = chartSemanticColor("--foreground", "#111827");
   const successColor = chartSemanticColor("--chart-strategy-target", "#00B84F");
@@ -6323,7 +6440,7 @@ function drawTradeAnnotationPrimitiveGeometry(
   const stopColor = chartSemanticColor("--chart-strategy-stop", "#FF1744");
   const infoColor = chartSemanticColor("--chart-strategy-entry", "#007DFF");
   const exitFallbackColor = "#C2410C";
-  const labelLayout: CanvasAnnotationLayout = { boxes: [] };
+  const labelLayout: CanvasAnnotationLayout | undefined = settings.avoidLabelCollisions ? { boxes: [] } : undefined;
   context.save();
   context.globalCompositeOperation = "source-over";
   context.lineCap = "round";
@@ -6344,48 +6461,52 @@ function drawTradeAnnotationPrimitiveGeometry(
     const guideSpan = guideStartX === null
       ? span
       : clippedTradeSpan(guideStartX, exitX, width) ?? span;
-    const entryColor = strategyPresentationColor(settings.entry.color, infoColor);
-    const exitColor = strategyPresentationColor(settings.exit.color, exitFallbackColor);
-    const resultColor = Number(annotation.pnl) > 0
-      ? successColor
-      : Number(annotation.pnl) < 0
-        ? dangerColor
-        : validHexColor(annotation.exitLabelColor, exitColor);
-    if (settings.entry.visible) {
-      drawCanvasTradeLine(context, span.left, span.right, entryY, entryColor, annotation.selected ? Math.min(5, settings.entry.lineWidth + 1) : settings.entry.lineWidth, settings.entry.lineStyle, settings.entry.opacity);
+    const entryLineColor = strategyPresentationColor(elements.entryLine.color, infoColor);
+    const entryArrowColor = strategyPresentationColor(elements.entryArrow.color, infoColor);
+    const entryLabelColor = strategyPresentationColor(elements.entryLabel.color, infoColor);
+    const exitLineColor = strategyPresentationColor(elements.exitLine.color, exitFallbackColor);
+    const exitArrowColor = strategyPresentationColor(elements.exitArrow.color, exitFallbackColor);
+    const exitLabelFallback = Number(annotation.pnl) > 0 ? successColor : Number(annotation.pnl) < 0 ? dangerColor : validHexColor(annotation.exitLabelColor, exitFallbackColor);
+    const exitLabelColor = strategyPresentationColor(elements.exitLabel.color, exitLabelFallback);
+    if (elements.entryLine.visible) {
+      drawCanvasTradeLine(context, span.left, span.right, entryY, entryLineColor, annotation.selected ? Math.min(5, elements.entryLine.lineWidth + 1) : elements.entryLine.lineWidth, elements.entryLine.lineStyle, elements.entryLine.opacity);
     }
-    if (settings.exit.visible && annotation.status !== "open" && exitY !== null) {
-      drawCanvasTradeLine(context, span.left, span.right, exitY, exitColor, annotation.selected ? Math.min(5, settings.exit.lineWidth + 1) : settings.exit.lineWidth, settings.exit.lineStyle, settings.exit.opacity);
+    if (elements.exitLine.visible && annotation.status !== "open" && exitY !== null) {
+      drawCanvasTradeLine(context, span.left, span.right, exitY, exitLineColor, annotation.selected ? Math.min(5, elements.exitLine.lineWidth + 1) : elements.exitLine.lineWidth, elements.exitLine.lineStyle, elements.exitLine.opacity);
     }
-    if (settings.entry.visible) {
-      drawCanvasCandleConnector(context, priceSeries, candles, annotation.entryTime, entryX, entryY, entryColor, settings.entry.opacity);
-      drawCanvasTradeArrow(context, entryX, entryY, entryColor, "entry", annotation.selected === true, 7, settings.entry.opacity);
-      drawCanvasTradeLabel(context, compactTradeLabel(annotation.entryLabelParts, annotation.entryLabel, "Entry"), entryX, entryY + 14, entryColor, chartBackground, annotation.entryLabelSide ?? "left", width, height, settings.entry.labelSize, settings.entry.opacity, labelLayout);
+    if (elements.entryArrow.visible) {
+      if (elements.connector.visible) drawCanvasCandleConnector(context, priceSeries, candles, annotation.entryTime, entryX, entryY, entryArrowColor, elements.connector, settings.connectorThreshold);
+      drawCanvasTradeArrow(context, entryX, entryY, entryArrowColor, "entry", annotation.selected === true, elements.entryArrow);
     }
-    if (settings.exit.visible && annotation.status !== "open" && exitY !== null) {
-      drawCanvasCandleConnector(context, priceSeries, candles, annotation.exitTime ?? endTime, exitX, exitY, exitColor, settings.exit.opacity);
-      drawCanvasTradeArrow(context, exitX, exitY, exitColor, "exit", annotation.selected === true, 7, settings.exit.opacity);
-      drawCanvasTradeLabel(context, compactTradeLabel(annotation.exitLabelParts, annotation.exitLabel, "Exit"), exitX, exitY - settings.exit.labelSize - 15, resultColor, chartBackground, annotation.exitLabelSide ?? "right", width, height, settings.exit.labelSize, settings.exit.opacity, labelLayout);
+    if (elements.entryLabel.visible) {
+      drawCanvasTradeLabel(context, compactTradeLabel(annotation.entryLabelParts, annotation.entryLabel, "Entry"), entryX, entryY + elements.entryArrow.markerSize + 7, entryLabelColor, chartBackground, annotation.entryLabelSide ?? "left", width, height, elements.entryLabel, labelLayout, elements.connector);
+    }
+    if (annotation.status !== "open" && exitY !== null) {
+      if (elements.exitArrow.visible) {
+        if (elements.connector.visible) drawCanvasCandleConnector(context, priceSeries, candles, annotation.exitTime ?? endTime, exitX, exitY, exitArrowColor, elements.connector, settings.connectorThreshold);
+        drawCanvasTradeArrow(context, exitX, exitY, exitArrowColor, "exit", annotation.selected === true, elements.exitArrow);
+      }
+      if (elements.exitLabel.visible) drawCanvasTradeLabel(context, compactTradeLabel(annotation.exitLabelParts, annotation.exitLabel, "Exit"), exitX, exitY - elements.exitLabel.labelSize - elements.exitArrow.markerSize - 8, exitLabelColor, chartBackground, annotation.exitLabelSide ?? "right", width, height, elements.exitLabel, labelLayout, elements.connector);
     }
     // Protection evidence is decision-critical. Paint it after lifecycle
     // labels so dense, fast entry/exit clusters cannot hide every SL/TP line.
-    if (settings.stop.visible && typeof annotation.stopPrice === "number" && Number.isFinite(annotation.stopPrice)) {
+    if ((elements.stopLine.visible || elements.stopLabel.visible) && typeof annotation.stopPrice === "number" && Number.isFinite(annotation.stopPrice)) {
       const y = priceSeries.priceToCoordinate(annotation.stopPrice);
-      if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, strategyPresentationColor(settings.stop.color, stopColor), "SL", chartBackground, width, height, settings.stop, labelLayout);
+      if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, stopColor, "SL", chartBackground, width, height, elements.stopLine, elements.stopLabel, labelLayout, elements.connector);
     }
-    if (settings.levels.visible) annotation.levelPrices?.slice(0, 3).forEach((price, index) => {
+    if (elements.levelLine.visible || elements.levelLabel.visible) annotation.levelPrices?.slice(0, 3).forEach((price, index) => {
       const y = priceSeries.priceToCoordinate(price);
-      if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, strategyPresentationColor(settings.levels.color, neutralColor), `L${index + 1}`, chartBackground, width, height, settings.levels, labelLayout);
+      if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, neutralColor, `L${index + 1}`, chartBackground, width, height, elements.levelLine, elements.levelLabel, labelLayout, elements.connector);
     });
-    if (settings.targets.visible) annotation.targetPrices?.forEach((price, index) => {
+    if (elements.targetLine.visible || elements.targetLabel.visible) annotation.targetPrices?.forEach((price, index) => {
       const y = priceSeries.priceToCoordinate(price);
-      if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, strategyPresentationColor(settings.targets.color, successColor), annotation.targetPrices?.length === 1 ? "TP" : `TP${index + 1}`, chartBackground, width, height, settings.targets, labelLayout);
+      if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, successColor, annotation.targetPrices?.length === 1 ? "TP" : `TP${index + 1}`, chartBackground, width, height, elements.targetLine, elements.targetLabel, labelLayout, elements.connector);
     });
-    if (settings.levels.visible && typeof annotation.triggerPrice === "number" && Number.isFinite(annotation.triggerPrice)) {
+    if ((elements.levelLine.visible || elements.levelLabel.visible) && typeof annotation.triggerPrice === "number" && Number.isFinite(annotation.triggerPrice)) {
       const y = priceSeries.priceToCoordinate(annotation.triggerPrice);
-      if (y !== null) drawCanvasTradeGuide(context, span.left, span.right, y, strategyPresentationColor(settings.levels.color, infoColor), "Trigger", chartBackground, width, height, settings.levels, labelLayout);
+      if (y !== null) drawCanvasTradeGuide(context, span.left, span.right, y, infoColor, "Trigger", chartBackground, width, height, elements.levelLine, elements.levelLabel, labelLayout, elements.connector);
     }
-    if (settings.adjustments.visible) annotation.fills?.forEach((fill) => {
+    if (elements.adjustmentLine.visible || elements.adjustmentArrow.visible || elements.adjustmentLabel.visible) annotation.fills?.forEach((fill) => {
       const x = xForAnnotationTime(chart, fill.time, timeline);
       const y = priceSeries.priceToCoordinate(fill.price);
       if (x === null || y === null || x < -70 || x > width + 70) return;
@@ -6394,19 +6515,20 @@ function drawTradeAnnotationPrimitiveGeometry(
         : fill.kind === "profit_target" || fill.kind === "target_change"
           ? successColor
           : fill.kind === "add"
-            ? entryColor
-            : exitColor;
-      drawCanvasCandleConnector(context, priceSeries, candles, fill.time, x, y, strategyPresentationColor(settings.adjustments.color, adjustmentSemanticColor), settings.adjustments.opacity);
-      drawCanvasPositionAdjustment(context, x, y, fill, chartBackground, width, height, settings.adjustments, { danger: stopColor, entry: entryColor, exit: exitColor, success: successColor }, labelLayout);
+            ? infoColor
+            : exitFallbackColor;
+      const adjustmentArrowColor = strategyPresentationColor(elements.adjustmentArrow.color, adjustmentSemanticColor);
+      if (elements.connector.visible && elements.adjustmentArrow.visible) drawCanvasCandleConnector(context, priceSeries, candles, fill.time, x, y, adjustmentArrowColor, elements.connector, settings.connectorThreshold);
+      drawCanvasPositionAdjustment(context, x, y, fill, chartBackground, width, height, elements.adjustmentLine, elements.adjustmentArrow, elements.adjustmentLabel, { danger: stopColor, entry: infoColor, exit: exitFallbackColor, success: successColor }, labelLayout, elements.connector);
     });
   });
-  if (settings.adjustments.visible) executions.forEach((fill) => {
+  if (elements.adjustmentArrow.visible) executions.forEach((fill) => {
     const x = xForAnnotationTime(chart, fill.time, timeline);
     const y = priceSeries.priceToCoordinate(fill.price);
     if (x === null || y === null || x < -20 || x > width + 20) return;
-    const color = strategyPresentationColor(settings.adjustments.color, fill.side === "BUY" ? infoColor : exitFallbackColor);
-    drawCanvasCandleConnector(context, priceSeries, candles, fill.time, x, y, color, settings.adjustments.opacity);
-    drawCanvasTradeArrow(context, x, y, color, fill.side === "BUY" ? "entry" : "exit", false, 5, settings.adjustments.opacity);
+    const color = strategyPresentationColor(elements.adjustmentArrow.color, fill.side === "BUY" ? infoColor : exitFallbackColor);
+    if (elements.connector.visible) drawCanvasCandleConnector(context, priceSeries, candles, fill.time, x, y, color, elements.connector, settings.connectorThreshold);
+    drawCanvasTradeArrow(context, x, y, color, fill.side === "BUY" ? "entry" : "exit", false, elements.adjustmentArrow);
   });
   context.restore();
 }
@@ -6451,21 +6573,26 @@ function drawCanvasTradeArrow(
   color: string,
   kind: "entry" | "exit",
   selected: boolean,
-  radius = 7,
-  opacity = 1,
+  settings: StrategyPresentationStyleSettings,
 ) {
   // The triangle tip is the exact event-time / execution-price coordinate.
   // Everything else extends away from the candle so the semantic anchor never
   // changes when the chart is panned, scaled, or rendered at another interval.
   const direction = kind === "entry" ? 1 : -1;
-  const size = selected ? radius + 2 : radius;
+  const size = selected ? settings.markerSize + 2 : settings.markerSize;
   context.beginPath();
   context.moveTo(x, y);
   context.lineTo(x - size, y + direction * (size + 4));
   context.lineTo(x + size, y + direction * (size + 4));
   context.closePath();
-  context.fillStyle = rgbaFromHex(color, opacity);
+  context.fillStyle = rgbaFromHex(color, settings.fillOpacity);
   context.fill();
+  if (settings.borderWidth > 0) {
+    context.setLineDash(canvasLineDash(settings.borderStyle, settings.borderWidth));
+    context.strokeStyle = rgbaFromHex(color, settings.opacity);
+    context.lineWidth = settings.borderWidth;
+    context.stroke();
+  }
 }
 
 function drawCanvasPositionAdjustment(
@@ -6476,9 +6603,12 @@ function drawCanvasPositionAdjustment(
   background: string,
   width: number,
   height: number,
-  settings: StrategyPresentationStyleSettings,
+  lineSettings: StrategyPresentationStyleSettings,
+  arrowSettings: StrategyPresentationStyleSettings,
+  labelSettings: StrategyPresentationStyleSettings,
   semanticColors: { danger: string; entry: string; exit: string; success: string },
-  labelLayout: CanvasAnnotationLayout,
+  labelLayout?: CanvasAnnotationLayout,
+  connectorSettings?: StrategyPresentationStyleSettings,
 ) {
   const semanticColor = fill.kind === "add"
     ? semanticColors.entry
@@ -6487,22 +6617,18 @@ function drawCanvasPositionAdjustment(
       : fill.kind === "protective_stop" || fill.kind === "trailing_stop" || fill.kind === "stop_change" || fill.kind === "protection_repair"
         ? semanticColors.danger
         : semanticColors.exit;
-  const color = strategyPresentationColor(settings.color, semanticColor);
-  context.beginPath();
-  context.setLineDash(canvasLineDash(settings.lineStyle, settings.lineWidth));
-  context.strokeStyle = rgbaFromHex(color, settings.opacity);
-  context.lineWidth = settings.lineWidth;
-  context.moveTo(x - 42, y);
-  context.lineTo(x, y);
-  context.stroke();
-  context.beginPath();
-  context.moveTo(x, y);
-  context.lineTo(x - 7, y - 4);
-  context.lineTo(x - 7, y + 4);
-  context.closePath();
-  context.fillStyle = rgbaFromHex(color, settings.opacity);
-  context.fill();
-  drawCanvasTradeLabel(
+  const lineColor = strategyPresentationColor(lineSettings.color, semanticColor);
+  const arrowColor = strategyPresentationColor(arrowSettings.color, semanticColor);
+  const labelColor = strategyPresentationColor(labelSettings.color, semanticColor);
+  if (lineSettings.visible) drawCanvasTradeLine(context, x - 42, x, y, lineColor, lineSettings.lineWidth, lineSettings.lineStyle, lineSettings.opacity);
+  if (arrowSettings.visible) {
+    context.save();
+    context.translate(x, y);
+    context.rotate(Math.PI / 2);
+    drawCanvasTradeArrow(context, 0, 0, arrowColor, "entry", false, arrowSettings);
+    context.restore();
+  }
+  if (labelSettings.visible) drawCanvasTradeLabel(
     context,
     compactTradeLabel(fill.labelParts, fill.label, {
       add: "Add",
@@ -6517,14 +6643,14 @@ function drawCanvasPositionAdjustment(
     }[fill.kind ?? "position_exit"]),
     x - 45,
     y + 5,
-    color,
+    labelColor,
     background,
     "right",
     width,
     height,
-    settings.labelSize,
-    settings.opacity,
+    labelSettings,
     labelLayout,
+    connectorSettings,
   );
 }
 
@@ -6533,13 +6659,15 @@ function drawCanvasTradeGuide(
   left: number,
   right: number,
   y: number,
-  color: string,
+  fallbackColor: string,
   label: string,
   background: string,
   width: number,
   height: number,
-  settings: StrategyPresentationStyleSettings,
-  labelLayout: CanvasAnnotationLayout,
+  lineSettings: StrategyPresentationStyleSettings,
+  labelSettings: StrategyPresentationStyleSettings,
+  labelLayout?: CanvasAnnotationLayout,
+  connectorSettings?: StrategyPresentationStyleSettings,
 ) {
   const minimumWidth = Math.min(56, width);
   const rawLeft = Math.min(left, right);
@@ -6551,16 +6679,20 @@ function drawCanvasTradeGuide(
     renderedLeft = clampNumber(center - minimumWidth / 2, 0, Math.max(0, width - minimumWidth), 0);
     renderedRight = Math.min(width, renderedLeft + minimumWidth);
   }
+  const lineColor = strategyPresentationColor(lineSettings.color, fallbackColor);
+  const labelColor = strategyPresentationColor(labelSettings.color, fallbackColor);
   context.save();
   // Entry/exit arrows retain exact event-time authority. Very short positions
   // receive a bounded guide footprint so their SL/TP evidence stays legible.
-  drawCanvasTradeLine(context, renderedLeft, renderedRight, y, color, settings.lineWidth, settings.lineStyle, settings.opacity);
-  const capRadius = Math.max(1.5, Math.min(3.5, settings.lineWidth));
-  context.fillStyle = rgbaFromHex(color, settings.opacity);
-  context.fillRect(renderedLeft - capRadius, y - capRadius, capRadius * 2, capRadius * 2);
-  context.fillRect(renderedRight - capRadius, y - capRadius, capRadius * 2, capRadius * 2);
+  if (lineSettings.visible) {
+    drawCanvasTradeLine(context, renderedLeft, renderedRight, y, lineColor, lineSettings.lineWidth, lineSettings.lineStyle, lineSettings.opacity);
+    const capRadius = Math.max(1.5, Math.min(3.5, lineSettings.lineWidth));
+    context.fillStyle = rgbaFromHex(lineColor, lineSettings.opacity);
+    context.fillRect(renderedLeft - capRadius, y - capRadius, capRadius * 2, capRadius * 2);
+    context.fillRect(renderedRight - capRadius, y - capRadius, capRadius * 2, capRadius * 2);
+  }
   context.restore();
-  drawCanvasTradeLabel(context, label, (renderedLeft + renderedRight) / 2, y + 3, color, background, "left", width, height, settings.labelSize, settings.opacity, labelLayout);
+  if (labelSettings.visible) drawCanvasTradeLabel(context, label, (renderedLeft + renderedRight) / 2, y + 3, labelColor, background, "left", width, height, labelSettings, labelLayout, connectorSettings);
 }
 
 type CanvasLabelBox = { bottom: number; left: number; right: number; top: number };
@@ -6576,11 +6708,13 @@ function drawCanvasTradeLabel(
   side: "left" | "right",
   width: number,
   height: number,
-  fontSize = 10,
-  opacity = 1,
+  settings: StrategyPresentationStyleSettings,
   layout?: CanvasAnnotationLayout,
+  connectorSettings?: StrategyPresentationStyleSettings,
 ) {
   if (!text) return;
+  const fontSize = settings.labelSize;
+  const opacity = settings.opacity;
   context.font = `600 ${fontSize}px ${canvasInterfaceFont()}`;
   context.textBaseline = "middle";
   const labelWidth = Math.ceil(context.measureText(text).width) + 10;
@@ -6603,23 +6737,28 @@ function drawCanvasTradeLabel(
   const left = box.left;
   top = box.top;
   const labelCenterY = top + labelHeight / 2;
-  if (Math.abs(labelCenterY - preferredCenterY) > 4 || Math.abs(left - preferredLeft) > 4) {
+  if (connectorSettings?.visible !== false && (Math.abs(labelCenterY - preferredCenterY) > 4 || Math.abs(left - preferredLeft) > 4)) {
     const connectorX = clampNumber(anchorX, left, left + labelWidth, anchorX);
+    const connectorColor = strategyPresentationColor(connectorSettings?.color ?? "", color);
+    const connectorWidth = connectorSettings?.lineWidth ?? 1;
     context.save();
     context.beginPath();
-    context.setLineDash([2, 3]);
-    context.strokeStyle = rgbaFromHex(color, Math.min(0.8, opacity));
-    context.lineWidth = 1;
+    context.setLineDash(canvasLineDash(connectorSettings?.lineStyle ?? "dashed", connectorWidth));
+    context.strokeStyle = rgbaFromHex(connectorColor, connectorSettings?.opacity ?? Math.min(0.8, opacity));
+    context.lineWidth = connectorWidth;
     context.moveTo(connectorX, labelCenterY < preferredCenterY ? top + labelHeight : top);
     context.lineTo(anchorX, preferredCenterY);
     context.stroke();
     context.restore();
   }
-  context.fillStyle = rgbaFromHex(background, 0.92);
+  context.fillStyle = rgbaFromHex(background, settings.fillOpacity);
   context.fillRect(left, top, labelWidth, labelHeight);
-  context.strokeStyle = rgbaFromHex(color, 0.36);
-  context.lineWidth = 1;
-  context.strokeRect(left + 0.5, top + 0.5, labelWidth - 1, labelHeight - 1);
+  if (settings.borderWidth > 0) {
+    context.setLineDash(canvasLineDash(settings.borderStyle, settings.borderWidth));
+    context.strokeStyle = rgbaFromHex(color, Math.min(0.72, opacity));
+    context.lineWidth = settings.borderWidth;
+    context.strokeRect(left + settings.borderWidth / 2, top + settings.borderWidth / 2, labelWidth - settings.borderWidth, labelHeight - settings.borderWidth);
+  }
   context.fillStyle = rgbaFromHex(color, opacity);
   context.fillText(text, left + 5, top + labelHeight / 2);
 }
@@ -6640,8 +6779,9 @@ function drawCanvasCandleConnector(
   time: number,
   x: number,
   eventY: number,
-  color: string,
-  opacity: number,
+  fallbackColor: string,
+  settings: StrategyPresentationStyleSettings,
+  threshold: number,
 ) {
   if (!candles.length) return;
   const candle = candles[nearestCandleIndex(candles, time)];
@@ -6649,7 +6789,7 @@ function drawCanvasCandleConnector(
   const highY = priceSeries.priceToCoordinate(candle.high);
   const lowY = priceSeries.priceToCoordinate(candle.low);
   if (highY === null || lowY === null) return;
-  const threshold = 18;
+  const color = strategyPresentationColor(settings.color, fallbackColor);
   const candleOffset = 5;
   let startY: number | null = null;
   let endY: number | null = null;
@@ -6663,9 +6803,9 @@ function drawCanvasCandleConnector(
   if (startY === null || endY === null) return;
   context.save();
   context.beginPath();
-  context.setLineDash([2, 3]);
-  context.strokeStyle = rgbaFromHex(color, Math.min(0.82, opacity));
-  context.lineWidth = 1;
+  context.setLineDash(canvasLineDash(settings.lineStyle, settings.lineWidth));
+  context.strokeStyle = rgbaFromHex(color, settings.opacity);
+  context.lineWidth = settings.lineWidth;
   context.moveTo(x, startY);
   context.lineTo(x, endY);
   context.stroke();
@@ -6688,17 +6828,17 @@ function tradeAnnotationAutoscaleInfo(
       ? visibleEnd
       : Math.min(state.timeline.length - 1, lowerBoundCandleTime(state.timeline, trade.endTime ?? trade.exitTime ?? trade.entryTime));
     if (tradeEnd < visibleStart || tradeStart > visibleEnd) return;
-    if (state.settings.entry.visible) prices.push(trade.entryPrice);
-    if (state.settings.exit.visible && trade.status !== "open" && typeof trade.exitPrice === "number") prices.push(trade.exitPrice);
-    if (state.settings.levels.visible) {
+    if (strategyElementFamilyVisible(state.settings, "entryLine", "entryArrow", "entryLabel")) prices.push(trade.entryPrice);
+    if (strategyElementFamilyVisible(state.settings, "exitLine", "exitArrow", "exitLabel") && trade.status !== "open" && typeof trade.exitPrice === "number") prices.push(trade.exitPrice);
+    if (strategyElementFamilyVisible(state.settings, "levelLine", "levelLabel")) {
       prices.push(...(trade.levelPrices?.slice(0, 3) ?? []));
       if (typeof trade.triggerPrice === "number") prices.push(trade.triggerPrice);
     }
-    if (state.settings.stop.visible && typeof trade.stopPrice === "number") prices.push(trade.stopPrice);
-    if (state.settings.targets.visible) prices.push(...(trade.targetPrices ?? []));
-    if (state.settings.adjustments.visible) prices.push(...(trade.fills?.map((fill) => fill.price) ?? []));
+    if (strategyElementFamilyVisible(state.settings, "stopLine", "stopLabel") && typeof trade.stopPrice === "number") prices.push(trade.stopPrice);
+    if (strategyElementFamilyVisible(state.settings, "targetLine", "targetLabel")) prices.push(...(trade.targetPrices ?? []));
+    if (strategyElementFamilyVisible(state.settings, "adjustmentLine", "adjustmentArrow", "adjustmentLabel")) prices.push(...(trade.fills?.map((fill) => fill.price) ?? []));
   });
-  if (state.settings.adjustments.visible) {
+  if (state.settings.elements.adjustmentArrow.visible) {
     state.executions.forEach((fill) => {
       const logical = lowerBoundCandleTime(state.timeline, fill.time);
       if (logical >= visibleStart && logical <= visibleEnd) prices.push(fill.price);
@@ -6707,6 +6847,10 @@ function tradeAnnotationAutoscaleInfo(
   const finitePrices = prices.filter((price) => Number.isFinite(price));
   if (!finitePrices.length) return null;
   return { priceRange: { minValue: Math.min(...finitePrices), maxValue: Math.max(...finitePrices) } };
+}
+
+function strategyElementFamilyVisible(settings: StrategyPresentationSettings, ...keys: StrategyVisualElementKey[]) {
+  return keys.some((key) => settings.elements[key].visible);
 }
 
 function strategyPresentationColor(value: string, fallback: string) {
