@@ -371,7 +371,7 @@ python scripts\run_structure_checkpoint_campaign.py `
   --liquidity-start-date 2026-08-01 `
   --liquidity-end-date 2026-08-31 `
   --runtime-dir D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v5\canonical-2025-2026 `
-  --process-workers 32
+  --process-workers 80
 ```
 
 Rerunning the identical command is the supported resume operation. The launcher
@@ -389,8 +389,13 @@ written atomically without blocking workers on per-session disk writes. The
 aggregate is stored in `campaign-status.json`, and
 Ctrl+C records `interrupted` before returning exit code 130.
 
+The launcher accepts 1-80 worker processes. On Windows, every shard worker uses
+a current-thread runtime pinned by `--core-index` across processor groups, so
+80 workers occupy 80 distinct logical processors when the host exposes them.
+ClickHouse or storage saturation can still prevent linear speedup.
+
 The launcher uses a prebuilt executable from
-`D:\TradingML\runtimes\bin\structure_checkpoint_campaign.exe` when Cargo is
+`D:\TradingML\runtimes\bin\structure_checkpoint_campaign_v5.exe` when Cargo is
 not installed. Use `--purge-existing-checkpoints` only for an explicitly
 authorized cold reset; it deletes only the named checkpoint set on its first
 run. The full contract is

@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 import time
 
+import pytest
+
 from scripts.run_structure_checkpoint_campaign import (
     aggregate_status,
     archive_previous_attempt_statuses,
@@ -10,6 +12,7 @@ from scripts.run_structure_checkpoint_campaign import (
     parse_launcher_args,
     prepare_shards,
     status_is_fully_certified,
+    validate_process_worker_count,
 )
 
 
@@ -96,6 +99,13 @@ def test_process_worker_option_is_owned_by_launcher() -> None:
 
     assert launcher.process_workers == 32
     assert campaign == ["--workers", "32", "--checkpoint-set-id", "canonical-v16"]
+
+
+def test_launcher_accepts_eighty_bounded_worker_processes() -> None:
+    validate_process_worker_count(1)
+    validate_process_worker_count(80)
+    with pytest.raises(RuntimeError, match="between 1 and 80"):
+        validate_process_worker_count(81)
 
 
 def test_shards_start_priority_tickers_and_balance_estimated_events() -> None:

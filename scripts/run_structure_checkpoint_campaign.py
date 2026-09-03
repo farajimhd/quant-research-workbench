@@ -24,6 +24,7 @@ BUILD_BINARY_NAME = "structure_checkpoint_campaign.exe" if os.name == "nt" else 
 RUNTIME_BINARY_NAME = (
     "structure_checkpoint_campaign_v5.exe" if os.name == "nt" else "structure_checkpoint_campaign_v5"
 )
+MAX_PROCESS_WORKERS = 80
 
 
 def binary_candidates(explicit: str | None, environ: dict[str, str]) -> tuple[Path, ...]:
@@ -152,6 +153,11 @@ def status_is_fully_certified(status: dict[str, Any]) -> bool:
     total_units = int(status.get("total_units", 0))
     certified = int(status.get("counts", {}).get("certified", 0))
     return status.get("status") == "completed" and total_units > 0 and certified == total_units
+
+
+def validate_process_worker_count(workers: int) -> None:
+    if not 1 <= workers <= MAX_PROCESS_WORKERS:
+        raise RuntimeError(f"worker process count must be between 1 and {MAX_PROCESS_WORKERS}")
 
 
 def archive_previous_attempt_statuses(runtime_dir: Path, worker_dirs: list[Path]) -> Path | None:
@@ -290,8 +296,7 @@ def render_rich(status: dict[str, Any], set_id: str):
 
 
 def run_process_campaign(binary: Path, campaign_args: list[str], workers: int, environ: dict[str, str]) -> int:
-    if not 1 <= workers <= 64:
-        raise RuntimeError("--process-workers must be between 1 and 64")
+    validate_process_worker_count(workers)
     runtime_value = option_value(campaign_args, "--runtime-dir")
     set_id = option_value(campaign_args, "--checkpoint-set-id")
     if not runtime_value or not set_id:
@@ -516,7 +521,7 @@ def run_process_campaign(binary: Path, campaign_args: list[str], workers: int, e
 def main(argv: list[str] | None = None) -> int:
     launcher, campaign_args = parse_launcher_args(list(sys.argv[1:] if argv is None else argv))
     if launcher.launcher_help:
-        print("Launcher options: --binary PATH, --no-build, --process-workers 1..64")
+        print(f"Launcher options: --binary PATH, --no-build, --process-workers 1..{MAX_PROCESS_WORKERS}")
         print("All other options are forwarded to structure-checkpoint-campaign v5.")
         return 0
     environ = dict(os.environ)
@@ -528,8 +533,7 @@ def main(argv: list[str] | None = None) -> int:
             if launcher.process_workers is not None
             else int(option_value(campaign_args, "--workers") or "1")
         )
-        if not 1 <= workers <= 64:
-            raise RuntimeError("worker process count must be between 1 and 64")
+        validate_process_worker_count(workers)
         if workers > 1 and "--plan-only" not in campaign_args:
             return run_process_campaign(binary, campaign_args, workers, environ)
         return subprocess.run([str(binary), *campaign_args], env=environ, check=False).returncode

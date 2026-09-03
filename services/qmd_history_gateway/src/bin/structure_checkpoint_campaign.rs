@@ -32,6 +32,7 @@ const INITIAL_ORDINAL_CHUNK: u64 = 250_000;
 const MIN_ORDINAL_CHUNK: u64 = 100_000;
 const MAX_ORDINAL_CHUNK: u64 = 1_000_000;
 const TARGET_FETCH_MILLIS: u128 = 3_000;
+const MAX_WORKERS: usize = 80;
 
 #[derive(Clone, Debug)]
 struct Args {
@@ -1800,7 +1801,7 @@ fn parse_args() -> Result<Args, String> {
                 println!("structure-checkpoint-campaign v5");
                 println!("  --start-date YYYY-MM-DD --end-date YYYY-MM-DD");
                 println!("  --checkpoint-set-id ID");
-                println!("  --runtime-dir PATH [--workers 4]  # allowed: 1-64");
+                println!("  --runtime-dir PATH [--workers 4]  # allowed: 1-{MAX_WORKERS}");
                 println!("  [--priority-ticker SUGP] [--ticker-file PATH]");
                 println!("  [--liquidity-start-date YYYY-MM-DD --liquidity-end-date YYYY-MM-DD]");
                 println!("  [--max-retries 5] [--retry-delay-seconds 2]");
@@ -1878,8 +1879,8 @@ fn validate_checkpoint_set_id(value: &str) -> Result<(), String> {
 }
 
 fn validate_worker_count(workers: usize) -> Result<(), String> {
-    if !(1..=64).contains(&workers) {
-        return Err("--workers must be between 1 and 64".to_string());
+    if !(1..=MAX_WORKERS).contains(&workers) {
+        return Err(format!("--workers must be between 1 and {MAX_WORKERS}"));
     }
     Ok(())
 }
@@ -1996,13 +1997,13 @@ mod tests {
     }
 
     #[test]
-    fn campaign_accepts_up_to_sixty_four_workers() {
+    fn campaign_accepts_up_to_eighty_workers() {
         assert!(validate_worker_count(1).is_ok());
-        assert!(validate_worker_count(32).is_ok());
         assert!(validate_worker_count(64).is_ok());
+        assert!(validate_worker_count(80).is_ok());
         assert_eq!(
-            validate_worker_count(65).unwrap_err(),
-            "--workers must be between 1 and 64"
+            validate_worker_count(81).unwrap_err(),
+            "--workers must be between 1 and 80"
         );
     }
 

@@ -68,3 +68,11 @@ configured authority before a certified row is published.
 Current live checkpoint creation remains driven by the existing daily
 checkpoint workflow. Certification does not introduce a second scheduler or a
 second level-book calculation.
+
+## Worker topology
+
+The standalone launcher accepts 1-80 worker processes. Each Windows worker is
+a single-thread Tokio runtime pinned to a distinct logical processor across
+Windows processor groups. The bound prevents accidental unbounded connection,
+memory, and ClickHouse-query fan-out; additional workers are not assumed to
+produce linear speedup once ClickHouse or storage becomes saturated.
