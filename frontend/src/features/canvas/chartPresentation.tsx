@@ -131,17 +131,20 @@ export function ChartPreview({
   const barGptOriginUs = barGptOriginOverrideUs && barGptOriginOptions.some((row) => row.originUs === barGptOriginOverrideUs)
     ? barGptOriginOverrideUs
     : barGptClockUs;
-  const barGptHistoricalOrigin = Boolean(liveChart.pointInTime || barGptOriginOverrideUs != null);
-  const barGptScopeClockUs = barGptHistoricalOrigin ? barGptOriginUs : null;
   const barGptBaseScopeId = canvasBarGptScopeId(canvasId, instanceId);
-  const barGptScopeId = barGptTriggerMode === "manual" && barGptOriginOverrideUs
-    ? `${barGptBaseScopeId}:origin:${barGptOriginOverrideUs}`
+  const barGptScopeId = barGptTriggerMode === "manual" && barGptOriginUs
+    ? `${barGptBaseScopeId}:origin:${barGptOriginUs}`
     : barGptBaseScopeId;
   const barGptForecastPalette = readBarGptForecastPalette();
   useEffect(() => {
     setBarGptOriginOverrideUs(null);
     setBarGptForecasts([]);
   }, [linkContext.symbol, timeframe]);
+  useEffect(() => {
+    if (barGptTriggerMode !== "manual" || barGptOriginOverrideUs != null || !showBarGpt || !barGptView) return;
+    const latestOrigin = barGptOriginOptions[0]?.originUs;
+    if (latestOrigin) setBarGptOriginOverrideUs(latestOrigin);
+  }, [barGptOriginOptions, barGptOriginOverrideUs, barGptTriggerMode, barGptView, showBarGpt]);
   useEffect(() => {
     if (!showBarGpt || !barGptView) return;
     return acquireBarGptScope(barGptScopeId);
@@ -163,14 +166,14 @@ export function ChartPreview({
         const scope = await api<BarGptScopePayload>(`/api/bar-gpt/scopes/${encodeURIComponent(barGptScopeId)}`, {
           method: "PUT",
           body: JSON.stringify({
-            mode: barGptHistoricalOrigin ? "replay" : "live",
+            mode: liveChart.pointInTime || barGptTriggerMode === "manual" ? "replay" : "live",
             trigger_mode: barGptTriggerMode,
             tickers: [linkContext.symbol],
             model_ids: [`bar_gpt_${barGptVersion}`],
             watchlist_ids: [],
-            clock_us: barGptScopeClockUs,
-            revision: barGptScopeClockUs
-              ? Math.max(1, Math.floor(barGptScopeClockUs / 1_000_000))
+            clock_us: liveChart.pointInTime || barGptTriggerMode === "manual" ? barGptOriginUs : null,
+            revision: liveChart.pointInTime || barGptTriggerMode === "manual"
+              ? Math.max(1, Math.floor((barGptOriginUs ?? Date.now() * 1000) / 1_000_000))
               : 1,
             ttl_ms: 30_000,
             source: "canvas.chart",
@@ -201,7 +204,7 @@ export function ChartPreview({
       window.clearTimeout(timer);
       requestController?.abort();
     };
-  }, [barGptHistoricalOrigin, barGptScopeClockUs, barGptScopeId, barGptTriggerMode, barGptVersion, barGptView, linkContext.symbol, showBarGpt]);
+  }, [barGptOriginUs, barGptScopeId, barGptTriggerMode, barGptVersion, barGptView, linkContext.symbol, liveChart.pointInTime, showBarGpt]);
   const payload = useMemo<ChartPayload>(() => {
     const marketSignalMarkers = qmdMarketSignalChartMarkers(
       liveChart.marketSignalEvents,
