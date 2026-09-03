@@ -1,5 +1,7 @@
 # Structural Checkpoint Campaign v2
 
+> Superseded by [Structural Checkpoint Campaign v3](structural_checkpoint_campaign_v3.md).
+
 ## Purpose
 
 Campaign v2 populates immutable Generic Structure algorithm v16 daily
