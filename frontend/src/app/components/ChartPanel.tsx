@@ -6517,14 +6517,26 @@ function drawCanvasTradeGuide(
   height: number,
   settings: StrategyPresentationStyleSettings,
 ) {
+  const minimumWidth = Math.min(56, width);
+  const rawLeft = Math.min(left, right);
+  const rawRight = Math.max(left, right);
+  const center = clampNumber((rawLeft + rawRight) / 2, 0, width, 0);
+  let renderedLeft = Math.max(0, rawLeft);
+  let renderedRight = Math.min(width, rawRight);
+  if (renderedRight - renderedLeft < minimumWidth) {
+    renderedLeft = clampNumber(center - minimumWidth / 2, 0, Math.max(0, width - minimumWidth), 0);
+    renderedRight = Math.min(width, renderedLeft + minimumWidth);
+  }
   context.save();
-  drawCanvasTradeLine(context, left, right, y, color, settings.lineWidth, settings.lineStyle, settings.opacity);
+  // Entry/exit arrows retain exact event-time authority. Very short positions
+  // receive a bounded guide footprint so their SL/TP evidence stays legible.
+  drawCanvasTradeLine(context, renderedLeft, renderedRight, y, color, settings.lineWidth, settings.lineStyle, settings.opacity);
   const capRadius = Math.max(1.5, Math.min(3.5, settings.lineWidth));
   context.fillStyle = rgbaFromHex(color, settings.opacity);
-  context.fillRect(left - capRadius, y - capRadius, capRadius * 2, capRadius * 2);
-  context.fillRect(right - capRadius, y - capRadius, capRadius * 2, capRadius * 2);
+  context.fillRect(renderedLeft - capRadius, y - capRadius, capRadius * 2, capRadius * 2);
+  context.fillRect(renderedRight - capRadius, y - capRadius, capRadius * 2, capRadius * 2);
   context.restore();
-  drawCanvasTradeLabel(context, label, (left + right) / 2, y + 3, color, background, "left", width, height, settings.labelSize, settings.opacity);
+  drawCanvasTradeLabel(context, label, (renderedLeft + renderedRight) / 2, y + 3, color, background, "left", width, height, settings.labelSize, settings.opacity);
 }
 
 function drawCanvasTradeLabel(
