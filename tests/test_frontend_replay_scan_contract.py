@@ -143,7 +143,11 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert 'const endTime = exitTime ?? asOfTime' in chart_source
     assert 'annotation.status !== "open"' in renderer_source
     assert 'trade.endTime ?? trade.exitTime ?? trade.entryTime' in renderer_source
-    assert renderer_source.index("syncTradeAnnotationPrimitive(payload)") < renderer_source.index("syncRendererData(candleRef.current")
+    assert renderer_source.index("syncTradeAnnotationPrimitive(payload, timeline)") < renderer_source.index("syncRendererData(candleRef.current")
+    assert "timeline: Array<{ time: number }>" in renderer_source
+    assert "lowerBoundCandleTime(state.timeline" in renderer_source
+    assert "tradeAutoscaleViewportRef.current !== viewportIdentity" in renderer_source
+    assert "candleRef.current?.priceScale().applyOptions({ autoScale: true })" in renderer_source
     assert "trading?.strategy_chart_activity ?? trading?.strategy_activity" in chart_source
     assert "entryDecision?.row.chart_plan" in chart_source
     assert "guideStartTime: planStartTime" in chart_source

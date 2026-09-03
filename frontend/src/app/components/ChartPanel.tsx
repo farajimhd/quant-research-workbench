@@ -317,9 +317,9 @@ type PriceZonePrimitiveState = {
 };
 
 type TradeAnnotationPrimitiveState = {
-  candles: Candle[];
   executions: TradeFillAnnotation[];
   settings: StrategyPresentationSettings;
+  timeline: Array<{ time: number }>;
   trades: TradeAnnotation[];
 };
 
@@ -397,7 +397,7 @@ class TradeAnnotationPrimitive implements ISeriesPrimitive<Time> {
   private chart: IChartApi | null = null;
   private requestUpdate: (() => void) | null = null;
   private series: ISeriesApi<"Candlestick"> | null = null;
-  private state: TradeAnnotationPrimitiveState = { candles: [], executions: [], settings: defaultStrategyPresentationSettings, trades: [] };
+  private state: TradeAnnotationPrimitiveState = { executions: [], settings: defaultStrategyPresentationSettings, timeline: [], trades: [] };
   private readonly rendererImpl: IPrimitivePaneRenderer = {
     draw: (target) => {
       if (!this.chart || !this.series) return;
@@ -410,7 +410,7 @@ class TradeAnnotationPrimitive implements ISeriesPrimitive<Time> {
           mediaSize.height,
           this.state.trades,
           this.state.executions,
-          this.state.candles,
+          this.state.timeline,
           this.state.settings,
         );
       });
@@ -724,6 +724,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const suppressEarlierLoadUntilRef = useRef(0);
   const fittedChartKeyRef = useRef("");
   const viewportIdentityRef = useRef("");
+  const tradeAutoscaleViewportRef = useRef("");
   const userViewportClaimedRef = useRef(false);
   const candleWindowRef = useRef<{ first: number; last: number } | null>(null);
   const candleBoundsRef = useRef<NumericBounds>(null);
@@ -971,6 +972,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     cancelPendingInitialFit();
     suppressEarlierLoad();
     command();
+    fitTradeAnnotationPriceScale();
     window.requestAnimationFrame(scheduleOverlayRedrawBurst);
   }
 
@@ -1044,6 +1046,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
 
   useEffect(() => {
     drawCurrentRegions();
+    fitTradeAnnotationPriceScale();
   }, [strategyPresentationSettings, themeSignature]);
 
   useEffect(() => {
@@ -1137,6 +1140,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       viewportIdentityRef.current = viewportIdentity;
       userViewportClaimedRef.current = false;
       fittedChartKeyRef.current = "";
+      tradeAutoscaleViewportRef.current = "";
       candleWindowRef.current = null;
     }
     const fitKey = buildChartFitKey(ticker, timeframe, referenceKey, payload.candles);
@@ -1152,11 +1156,13 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const currentRange = preserveViewport ? priceChartRef.current.timeScale().getVisibleLogicalRange() : null;
     const currentTimeRange = preserveViewport && earlierBarsPrepended ? priceChartRef.current.timeScale().getVisibleRange() : null;
     const timeline = chartTimelineData(payload.candles, timeframe, chartSettingsRef.current.hideEmptyIntervals, payload.timeline_events);
+    const shouldFitTradeEvidence = Boolean(payload.trade_annotations?.length)
+      && tradeAutoscaleViewportRef.current !== viewportIdentity;
     candleBoundsRef.current = candleValueBounds(payload.candles);
     // Trade guides participate in the candle series autoscale. Seed the
     // primitive before setData/fit operations so off-candle SL/TP prices are
     // included in the first visible price range rather than attached after it.
-    syncTradeAnnotationPrimitive(payload);
+    syncTradeAnnotationPrimitive(payload, timeline);
     syncRendererData(candleRef.current, timeline as unknown as RendererDatum[], `candles:${timeframe}`);
     if (forecastCandleRef.current) {
       syncRendererData(
@@ -1183,6 +1189,10 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           fitInitialRange(priceChartRef.current, currentPayload.candles, timeframe, initialFitMode, chartSettingsRef.current.hideEmptyIntervals);
         }
         drawCurrentRegions();
+        if (shouldFitTradeEvidence) {
+          tradeAutoscaleViewportRef.current = viewportIdentity;
+          fitTradeAnnotationPriceScale();
+        }
         initialFitTimerRef.current = null;
       }, 20);
     } else {
@@ -1193,6 +1203,10 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         priceChartRef.current.timeScale().setVisibleLogicalRange(currentRange);
       }
       drawCurrentRegions();
+      if (shouldFitTradeEvidence) {
+        tradeAutoscaleViewportRef.current = viewportIdentity;
+        fitTradeAnnotationPriceScale();
+      }
     }
   }, [deferInitialFitUntilLoaded, effectiveChartSettings.hideEmptyIntervals, initialFitMode, loading, payload, reference, referenceKey, ticker, timeframe]);
 
@@ -1201,6 +1215,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     suppressEarlierLoad();
     fitAroundReference(priceChartRef.current, payload.candles, reference, timeframe, chartSettingsRef.current.hideEmptyIntervals);
     drawCurrentRegions();
+    fitTradeAnnotationPriceScale();
   }, [referenceKey, timeframe]);
 
   useEffect(() => {
@@ -1473,7 +1488,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       legendSettings: legendSettingsRef.current,
       zones: selectedZones,
     });
-    syncTradeAnnotationPrimitive(currentPayload);
+    syncTradeAnnotationPrimitive(currentPayload, timeline);
     syncPriceZoneAxisLines(candleRef.current, selectedZones, legendSettingsRef.current, priceZoneAxisLinesRef.current);
     drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, currentPayload.candles, timeline, chartSettingsRef.current, liveEntryLineRef.current);
     oscillatorPaneRuntimesRef.current.forEach((_runtime, key) => {
@@ -1491,13 +1506,20 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     drawTimelineEvents(chart, timelineEventLayerRef.current, currentPayload.timeline_events ?? []);
   }
 
-  function syncTradeAnnotationPrimitive(currentPayload: ChartPayload) {
+  function syncTradeAnnotationPrimitive(currentPayload: ChartPayload, timeline: Array<{ time: number }>) {
     tradeAnnotationPrimitiveRef.current?.setState({
-      candles: currentPayload.candles,
       executions: currentPayload.execution_annotations ?? [],
       settings: strategyPresentationSettings,
+      // Autoscale logical indexes belong to the rendered series timeline;
+      // raw candles omit explicit whitespace bars and are not index-compatible.
+      timeline,
       trades: currentPayload.trade_annotations ?? [],
     });
+  }
+
+  function fitTradeAnnotationPriceScale() {
+    if (!payloadRef.current?.trade_annotations?.length) return;
+    candleRef.current?.priceScale().applyOptions({ autoScale: true });
   }
 
   function scheduleOverlayRedraw() {
@@ -6207,7 +6229,7 @@ function priceZoneCoordinates(chart: IChartApi, zone: PriceZone, candles: Candle
   return exactStart === null ? coordinates : { ...coordinates, start: exactStart };
 }
 
-function lowerBoundCandleTime(candles: Candle[], target: number) {
+function lowerBoundCandleTime(candles: Array<{ time: number }>, target: number) {
   let left = 0;
   let right = candles.length;
   while (left < right) {
@@ -6286,10 +6308,10 @@ function drawTradeAnnotationPrimitiveGeometry(
   height: number,
   annotations: TradeAnnotation[],
   executions: TradeFillAnnotation[],
-  candles: Candle[],
+  timeline: Array<{ time: number }>,
   settings: StrategyPresentationSettings,
 ) {
-  if (!settings.visible || !candles.length || width < 1 || height < 1 || (!annotations.length && !executions.length)) return;
+  if (!settings.visible || !timeline.length || width < 1 || height < 1 || (!annotations.length && !executions.length)) return;
   const chartBackground = validHexColor(readChartPalette().background, "#ffffff");
   const neutralColor = chartSemanticColor("--foreground", "#111827");
   const successColor = chartSemanticColor("--success", "#16A34A");
@@ -6301,9 +6323,9 @@ function drawTradeAnnotationPrimitiveGeometry(
   context.lineCap = "round";
   context.lineJoin = "round";
   annotations.forEach((annotation) => {
-    const entryX = xForAnnotationTime(chart, annotation.entryTime, candles);
+    const entryX = xForAnnotationTime(chart, annotation.entryTime, timeline);
     const endTime = annotation.endTime ?? annotation.exitTime ?? annotation.entryTime;
-    const resolvedEndX = xForAnnotationTime(chart, endTime, candles);
+    const resolvedEndX = xForAnnotationTime(chart, endTime, timeline);
     const exitX = annotation.status === "open" ? width : resolvedEndX;
     const entryY = priceSeries.priceToCoordinate(annotation.entryPrice);
     const exitY = typeof annotation.exitPrice === "number" ? priceSeries.priceToCoordinate(annotation.exitPrice) : null;
@@ -6312,7 +6334,7 @@ function drawTradeAnnotationPrimitiveGeometry(
     if (!span) return;
     const guideStartX = annotation.guideStartTime === undefined
       ? entryX
-      : xForAnnotationTime(chart, annotation.guideStartTime, candles);
+      : xForAnnotationTime(chart, annotation.guideStartTime, timeline);
     const guideSpan = guideStartX === null
       ? span
       : clippedTradeSpan(guideStartX, exitX, width) ?? span;
@@ -6350,14 +6372,14 @@ function drawTradeAnnotationPrimitiveGeometry(
       drawCanvasTradeLabel(context, compactTradeLabel(annotation.exitLabelParts, annotation.exitLabel, "Exit"), exitX, exitY - settings.exit.labelSize - 15, resultColor, chartBackground, annotation.exitLabelSide ?? "right", width, height, settings.exit.labelSize, settings.exit.opacity);
     }
     if (settings.adjustments.visible) annotation.fills?.forEach((fill) => {
-      const x = xForAnnotationTime(chart, fill.time, candles);
+      const x = xForAnnotationTime(chart, fill.time, timeline);
       const y = priceSeries.priceToCoordinate(fill.price);
       if (x === null || y === null || x < -70 || x > width + 70) return;
       drawCanvasPositionAdjustment(context, x, y, fill, chartBackground, width, height, settings.adjustments, { danger: dangerColor, entry: entryColor, exit: exitColor, success: successColor });
     });
   });
   if (settings.adjustments.visible) executions.forEach((fill) => {
-    const x = xForAnnotationTime(chart, fill.time, candles);
+    const x = xForAnnotationTime(chart, fill.time, timeline);
     const y = priceSeries.priceToCoordinate(fill.price);
     if (x === null || y === null || x < -20 || x > width + 20) return;
     const color = strategyPresentationColor(settings.adjustments.color, fill.side === "BUY" ? infoColor : exitFallbackColor);
@@ -6537,16 +6559,16 @@ function tradeAnnotationAutoscaleInfo(
   startLogical: number,
   endLogical: number,
 ): AutoscaleInfo | null {
-  if (!state.settings.visible || !state.candles.length) return null;
+  if (!state.settings.visible || !state.timeline.length) return null;
   const visibleStart = Math.max(0, Math.floor(Math.min(startLogical, endLogical)));
-  const visibleEnd = Math.min(state.candles.length - 1, Math.ceil(Math.max(startLogical, endLogical)));
+  const visibleEnd = Math.min(state.timeline.length - 1, Math.ceil(Math.max(startLogical, endLogical)));
   if (visibleStart > visibleEnd) return null;
   const prices: number[] = [];
   state.trades.forEach((trade) => {
-    const tradeStart = Math.max(0, lowerBoundCandleTime(state.candles, Math.min(trade.guideStartTime ?? trade.entryTime, trade.entryTime)) - 1);
+    const tradeStart = Math.max(0, lowerBoundCandleTime(state.timeline, Math.min(trade.guideStartTime ?? trade.entryTime, trade.entryTime)) - 1);
     const tradeEnd = trade.status === "open"
       ? visibleEnd
-      : Math.min(state.candles.length - 1, lowerBoundCandleTime(state.candles, trade.endTime ?? trade.exitTime ?? trade.entryTime));
+      : Math.min(state.timeline.length - 1, lowerBoundCandleTime(state.timeline, trade.endTime ?? trade.exitTime ?? trade.entryTime));
     if (tradeEnd < visibleStart || tradeStart > visibleEnd) return;
     if (state.settings.entry.visible) prices.push(trade.entryPrice);
     if (state.settings.exit.visible && trade.status !== "open" && typeof trade.exitPrice === "number") prices.push(trade.exitPrice);
@@ -6560,7 +6582,7 @@ function tradeAnnotationAutoscaleInfo(
   });
   if (state.settings.adjustments.visible) {
     state.executions.forEach((fill) => {
-      const logical = lowerBoundCandleTime(state.candles, fill.time);
+      const logical = lowerBoundCandleTime(state.timeline, fill.time);
       if (logical >= visibleStart && logical <= visibleEnd) prices.push(fill.price);
     });
   }
@@ -6583,7 +6605,7 @@ function compactTradeLabel(parts: TradeLabelPart[] | undefined, fallback: string
   return fromParts || fallback || defaultLabel;
 }
 
-function xForAnnotationTime(chart: IChartApi, time: number, candles: Candle[]) {
+function xForAnnotationTime(chart: IChartApi, time: number, candles: Array<{ time: number }>) {
   const exact = chart.timeScale().timeToCoordinate(time as Time);
   if (exact !== null) return exact;
   const rightIndex = lowerBoundCandleTime(candles, time);
@@ -6667,7 +6689,7 @@ function resolveReferenceTime(reference: ChartReference, candles: Candle[]) {
   return nearest.time;
 }
 
-function nearestCandleIndex(candles: Candle[], targetTime: number) {
+function nearestCandleIndex(candles: Array<{ time: number }>, targetTime: number) {
   let bestIndex = 0;
   let bestDistance = Number.POSITIVE_INFINITY;
   candles.forEach((candle, index) => {
