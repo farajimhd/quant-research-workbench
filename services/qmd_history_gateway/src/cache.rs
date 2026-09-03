@@ -40,7 +40,7 @@ use std::sync::Mutex as StdMutex;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, OnceCell, Semaphore};
 
 pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v35";
-pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v53";
+pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v54";
 pub const HISTORICAL_CORPORATE_ACTION_REVISION: &str = "retrospective-split-adjusted-v2";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
 const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 11;
@@ -197,7 +197,7 @@ struct IndicatorPageWarmup {
 
 #[derive(Clone, Debug, Default)]
 struct ExactIndicatorPrefix {
-    closes: Vec<f64>,
+    closes: VecDeque<f64>,
     session_vwap_seed: SessionVwapSeed,
 }
 
@@ -647,7 +647,9 @@ impl HistoricalDerivedCache {
         // only the last N bars before each page silently changes the EMA and
         // MACD state as the page start advances. Start with the fixed
         // pre-session warm-up, then causally advance it through persisted bars
-        // from the session anchor to this page.
+        // from the session anchor to this page. If the historical bar table has
+        // no rows, reconstruct from canonical history; this path must not make
+        // a backtest depend on QMD Live availability.
         let session_start = session_anchor(window.start)?;
         let warmup_start = indicator_warmup_start(session_start)?;
         let warmup_window = EventWindow {
@@ -664,6 +666,7 @@ impl HistoricalDerivedCache {
                 INDICATOR_EMA_WARMUP_BARS,
                 session_start,
                 None,
+                false,
             )
             .await?
             .map(|snapshot| {
@@ -676,11 +679,23 @@ impl HistoricalDerivedCache {
                     .collect()
             })
             .unwrap_or_default();
+        if ema_closes.is_empty() {
+            ema_closes.extend(
+                self.exact_indicator_prefix(
+                    warmup_window,
+                    timeframe,
+                    live_continuation_sequence,
+                    Some(INDICATOR_EMA_WARMUP_BARS),
+                )
+                .await?
+                .closes,
+            );
+        }
         if window.start > session_start {
             // Same-session EMA state must be advanced with the identical raw
             // trade authority and bar aggregation used by the requested page.
-            // Durable QMD Live bars are a useful pre-session seed, but mixing
-            // their independently repaired close series into an in-session
+            // Durable historical bars are a useful pre-session seed, but mixing
+            // their independently prepared close series into an in-session
             // historical page can change MACD relative to a calculation that
             // started at 04:00. Rebuild only this bounded in-session prefix.
             let exact_prefix = self
@@ -692,6 +707,7 @@ impl HistoricalDerivedCache {
                     },
                     timeframe,
                     live_continuation_sequence,
+                    None,
                 )
                 .await?;
             ema_closes.extend(exact_prefix.closes);
@@ -711,6 +727,7 @@ impl HistoricalDerivedCache {
         window: EventWindow,
         timeframe: &str,
         live_continuation_sequence: Option<u64>,
+        max_closes: Option<usize>,
     ) -> Result<ExactIndicatorPrefix, String> {
         let bars = SharedBarStore::new_without_structure(
             vec![timeframe.to_string()],
@@ -733,7 +750,12 @@ impl HistoricalDerivedCache {
             {
                 return;
             }
-            prefix.closes.push(bar.close);
+            prefix.closes.push_back(bar.close);
+            if let Some(limit) = max_closes {
+                if prefix.closes.len() > limit {
+                    prefix.closes.pop_front();
+                }
+            }
             if bar.volume.is_finite()
                 && bar.volume > 0.0
                 && bar.dollar_volume.is_finite()

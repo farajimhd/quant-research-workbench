@@ -2216,6 +2216,7 @@ impl HistoricalEventSource {
         limit: usize,
         as_of: DateTime<Utc>,
         before: Option<DateTime<Utc>>,
+        allow_live_fallback: bool,
     ) -> Result<Option<HistoricalIntradayChartSnapshot>, String> {
         validate_window(window)?;
         let ticker = normalize_ticker(ticker)?;
@@ -2309,6 +2310,9 @@ impl HistoricalEventSource {
             .collect::<Result<Vec<_>, String>>()?;
         let mut persisted_source = table.clone();
         let mut fallback_has_more = false;
+        if bars.is_empty() && !allow_live_fallback {
+            return Ok(None);
+        }
         if bars.is_empty() {
             let url = format!(
                 "{}/snapshot/intraday-bar-history/{}",

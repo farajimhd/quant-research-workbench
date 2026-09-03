@@ -1163,6 +1163,7 @@ async fn chart_bar_snapshot(
                 product_query.limit.unwrap_or(5_000).clamp(1, 50_000),
                 as_of,
                 before,
+                true,
             )
             .await
             .map_err(service_error)?

@@ -151,7 +151,7 @@ $expectedCheckpointSet = if ($env:QMD_STRUCTURE_CHECKPOINT_SET_ID) {
 } else {
     "canonical-tradable-20250101-20260831-v16-cert-v1"
 }
-$expectedCalculationRevision = "qmd-derived-v53"
+$expectedCalculationRevision = "qmd-derived-v54"
 
 if (-not $BuildOnly -and (Test-ExistingHistoryGateway -Endpoint $endpoint -ExpectedCalculationRevision $expectedCalculationRevision -ExpectedCheckpointTable $expectedCheckpointTable -ExpectedCheckpointSet $expectedCheckpointSet)) {
     return
