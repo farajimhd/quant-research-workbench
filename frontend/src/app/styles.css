@@ -5318,6 +5318,9 @@ button {
   max-height: min(720px, calc(var(--app-zoomed-viewport-height) - 16px));
   overflow: auto;
   padding: 0;
+  font-family: var(--font-body);
+  font-weight: 400;
+  letter-spacing: 0;
 }
 
 .strategy-presentation-header {
@@ -5342,13 +5345,19 @@ button {
   gap: 2px;
 }
 
-.strategy-presentation-header strong,
+.strategy-presentation-header strong {
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .strategy-presentation-master strong,
 .strategy-presentation-behavior strong,
 .strategy-presentation-element strong,
 .strategy-presentation-style-intro strong {
   color: var(--foreground);
   font-size: 12px;
+  font-weight: 500;
 }
 
 .strategy-presentation-header span,
@@ -5358,7 +5367,7 @@ button {
 .strategy-presentation-style-intro small {
   color: var(--muted-foreground);
   font-size: 10px;
-  font-weight: 450;
+  font-weight: 400;
   line-height: 1.35;
 }
 
@@ -5433,6 +5442,7 @@ button {
   gap: 7px;
   color: var(--muted-foreground);
   font-size: 10px;
+  font-weight: 400;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -5482,7 +5492,7 @@ button {
   min-height: 28px;
   padding: 0 7px;
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 500;
 }
 
 .strategy-presentation-style-intro {
@@ -5512,7 +5522,12 @@ button {
   min-width: 0;
   color: var(--muted-foreground);
   font-size: 10px;
-  font-weight: 600;
+  font-weight: 500;
+}
+
+.strategy-presentation-menu .chart-setting-inline b {
+  font-family: var(--font-body);
+  font-weight: 500;
 }
 
 .strategy-presentation-controls select {
@@ -5552,7 +5567,7 @@ button {
   color: var(--primary);
   padding: 0;
   font-size: 10px;
-  font-weight: 650;
+  font-weight: 500;
 }
 
 .strategy-presentation-color em {

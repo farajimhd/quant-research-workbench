@@ -135,6 +135,7 @@ def test_strategy_activity_pins_the_navigation_stop_record() -> None:
 def test_chart_projects_position_lifecycles_with_compact_position_actions() -> None:
     chart_source = (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "chartPresentation.tsx").read_text(encoding="utf-8")
     renderer_source = (REPO_ROOT / "frontend" / "src" / "app" / "components" / "ChartPanel.tsx").read_text(encoding="utf-8")
+    styles_source = (REPO_ROOT / "frontend" / "src" / "app" / "styles.css").read_text(encoding="utf-8")
     theme_source = (REPO_ROOT / "frontend" / "src" / "app" / "theme.ts").read_text(encoding="utf-8")
 
     assert "() => strategyPresentationAvailable ? positionLifecycleAnnotations(chartTrading, linkContext.symbol) : []" in chart_source
@@ -229,6 +230,12 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert "drawCanvasCandleConnector" in renderer_source
     assert "context.setLineDash(canvasLineDash(settings.lineStyle, settings.lineWidth))" in renderer_source
     assert 'context.fillRect(renderedLeft - capRadius' in renderer_source
+    strategy_styles = styles_source.split(".strategy-presentation-menu", 1)[1].split(".app-loading-state", 1)[0]
+    assert "font-family: var(--font-body);" in strategy_styles
+    assert "font-weight: 600;" in strategy_styles
+    assert "font-weight: 500;" in strategy_styles
+    assert "font-weight: 650;" not in strategy_styles
+    assert "font-weight: 700;" not in strategy_styles
     assert renderer_source.index('drawCanvasTradeLine(context, span.left, span.right, entryY') < renderer_source.index('annotation.levelPrices?.slice(0, 3)')
     assert renderer_source.index('drawCanvasTradeArrow(context, entryX, entryY') < renderer_source.index('annotation.levelPrices?.slice(0, 3)')
     assert "const horizontalCandidates = [preferredLeft, preferredLeft - labelWidth / 2, preferredLeft + labelWidth / 2]" in renderer_source
