@@ -200,19 +200,22 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert 'const defaultStrategyPresentationSettings: StrategyPresentationSettings' in renderer_source
     assert 'entryLine: strategyPresentationStyle("#3596FD", "solid", 2, 0.95' in renderer_source
     assert 'entryArrow: strategyPresentationStyle("", "solid", 2, 1, 10, 5, 1)' in renderer_source
-    assert 'entryLabel: { ...strategyPresentationStyle("#64748B", "solid", 1, 1, 10, 7, 0), borderColor: "#64748B"' in renderer_source
+    assert 'entryLabel: { ...strategyPresentationStyle("#64748B", "solid", 1, 1, 10, 7, 1), borderColor: "#007DFF"' in renderer_source
     assert 'entryDirectionPart:' in renderer_source
     assert 'entryShortDirectionPart:' in renderer_source
     assert 'entrySizePart:' in renderer_source
     assert 'entrySeparatorPart:' in renderer_source
     assert 'entryPricePart:' in renderer_source
     assert 'entryShortPricePart:' in renderer_source
+    assert 'entryShortDirectionPart: { ...strategyPresentationStyle("#FF1744", "solid", 1, 1, 10, 7, 1)' in renderer_source
+    assert 'entryPricePart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#007DFF"' in renderer_source
+    assert 'entryShortPricePart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#FF1744"' in renderer_source
     assert 'title: "Long"' in renderer_source
     assert 'title: "Short"' in renderer_source
     assert 'title: "Long price"' in renderer_source
     assert 'title: "Short price"' in renderer_source
     assert 'exitLine: strategyPresentationStyle("#FF3D47"' in renderer_source
-    assert 'exitLabel: { ...strategyPresentationStyle("#64748B", "solid", 1, 1, 10, 7, 0), borderColor: "#64748B"' in renderer_source
+    assert 'exitLabel: { ...strategyPresentationStyle("#64748B", "solid", 1, 1, 10, 7, 0.45), borderColor: "#F75555"' in renderer_source
     assert 'exitReasonPart:' in renderer_source
     assert 'exitShortReasonPart:' in renderer_source
     assert 'exitSizePart:' in renderer_source
@@ -221,6 +224,13 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert 'exitShortPricePart:' in renderer_source
     assert 'exitPnlPart:' in renderer_source
     assert 'exitPnlLossPart:' in renderer_source
+    assert 'exitShortReasonPart: { ...strategyPresentationStyle("#00A846", "solid", 1, 1, 10, 7, 0.18), fillBlur: 2, fillColor: "#FFFFFF"' in renderer_source
+    assert 'exitPricePart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#007DFF"' in renderer_source
+    assert 'exitShortPricePart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#FF1744"' in renderer_source
+    assert 'exitPnlPart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#00A846"' in renderer_source
+    assert 'exitPnlLossPart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#FF1744"' in renderer_source
+    assert "legacyShortLabelStyleDefaults" in renderer_source
+    assert "migrateUntouchedShortStyle ? undefined : configured" in renderer_source
     assert 'title: "Close long"' in renderer_source
     assert 'title: "Cover short"' in renderer_source
     assert 'title: "Profit"' in renderer_source

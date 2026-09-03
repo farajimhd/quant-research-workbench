@@ -679,24 +679,24 @@ const defaultStrategyPresentationSettings: StrategyPresentationSettings = {
   elements: {
     entryLine: strategyPresentationStyle("#3596FD", "solid", 2, 0.95),
     entryArrow: strategyPresentationStyle("", "solid", 2, 1, 10, 5, 1),
-    entryLabel: { ...strategyPresentationStyle("#64748B", "solid", 1, 1, 10, 7, 0), borderColor: "#64748B", borderOpacity: 0.7, labelPaddingX: 5, labelPaddingY: 2 },
-    entryDirectionPart: { ...strategyPresentationStyle("#007DFF", "solid", 1, 1, 10, 7, 0.18), fillBlur: 2, fillColor: "#007DFF", labelPaddingX: 5, labelPaddingY: 2 },
-    entryShortDirectionPart: { ...strategyPresentationStyle("#FF1744", "solid", 1, 1, 10, 7, 0.18), fillBlur: 2, fillColor: "#FF1744", labelPaddingX: 5, labelPaddingY: 2 },
-    entrySizePart: { ...strategyPresentationStyle("", "solid", 1, 1, 12, 7, 0), fontWeight: 600, labelPaddingX: 4, labelPaddingY: 2 },
-    entrySeparatorPart: { ...strategyPresentationStyle("", "solid", 1, 1, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 2, labelPaddingY: 2 },
-    entryPricePart: { ...strategyPresentationStyle("#007DFF", "solid", 1, 1, 10, 7, 1), fillColor: "#FFFFFF", labelPaddingX: 4, labelPaddingY: 2 },
-    entryShortPricePart: { ...strategyPresentationStyle("#FF1744", "solid", 1, 1, 10, 7, 1), fillColor: "#FFFFFF", labelPaddingX: 4, labelPaddingY: 2 },
+    entryLabel: { ...strategyPresentationStyle("#64748B", "solid", 1, 1, 10, 7, 1), borderColor: "#007DFF", borderOpacity: 0.7, fillColor: "#FFFFFF", labelPaddingX: 5, labelPaddingY: 2 },
+    entryDirectionPart: { ...strategyPresentationStyle("#007DFF", "solid", 1, 1, 10, 7, 1), labelPaddingX: 5, labelPaddingY: 2 },
+    entryShortDirectionPart: { ...strategyPresentationStyle("#FF1744", "solid", 1, 1, 10, 7, 1), labelPaddingX: 5, labelPaddingY: 2 },
+    entrySizePart: { ...strategyPresentationStyle("#000000", "solid", 1, 1, 12, 7, 0), fontWeight: 600, labelPaddingX: 4, labelPaddingY: 2 },
+    entrySeparatorPart: { ...strategyPresentationStyle("", "solid", 1, 1, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 2, labelPaddingY: 2, visible: false },
+    entryPricePart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#007DFF", labelPaddingX: 4, labelPaddingY: 2 },
+    entryShortPricePart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#FF1744", labelPaddingX: 4, labelPaddingY: 2 },
     exitLine: strategyPresentationStyle("#FF3D47", "solid", 2, 0.9),
     exitArrow: strategyPresentationStyle("#FF4D55", "solid", 2, 1, 10, 5, 1),
-    exitLabel: { ...strategyPresentationStyle("#64748B", "solid", 1, 1, 10, 7, 0), borderColor: "#64748B", borderOpacity: 0.7, labelPaddingX: 8, labelPaddingY: 2 },
-    exitReasonPart: { ...strategyPresentationStyle("#FF1744", "solid", 1, 1, 10, 7, 0.18), fillBlur: 2, fillColor: "#FF1744", labelPaddingX: 6, labelPaddingY: 2 },
-    exitShortReasonPart: { ...strategyPresentationStyle("#00A846", "solid", 1, 1, 10, 7, 0.18), fillBlur: 2, fillColor: "#00A846", labelPaddingX: 6, labelPaddingY: 2 },
-    exitSizePart: { ...strategyPresentationStyle("", "solid", 1, 1, 12, 7, 0), fontWeight: 600, labelPaddingX: 4, labelPaddingY: 2 },
-    exitSeparatorPart: { ...strategyPresentationStyle("", "solid", 1, 0.9, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 2, labelPaddingY: 2 },
-    exitPricePart: { ...strategyPresentationStyle("#FF1744", "solid", 1, 1, 10, 7, 1), fillColor: "#FFFFFF", labelPaddingX: 4, labelPaddingY: 2 },
-    exitShortPricePart: { ...strategyPresentationStyle("#00A846", "solid", 1, 1, 10, 7, 1), fillColor: "#FFFFFF", labelPaddingX: 4, labelPaddingY: 2 },
-    exitPnlPart: { ...strategyPresentationStyle("#00A846", "solid", 1, 1, 10, 7, 0.18), fillBlur: 2, fillColor: "#00A846", fontWeight: 600, labelPaddingX: 5, labelPaddingY: 2 },
-    exitPnlLossPart: { ...strategyPresentationStyle("#FF1744", "solid", 1, 1, 10, 7, 0.18), fillBlur: 2, fillColor: "#FF1744", fontWeight: 600, labelPaddingX: 5, labelPaddingY: 2 },
+    exitLabel: { ...strategyPresentationStyle("#64748B", "solid", 1, 1, 10, 7, 0.45), borderColor: "#F75555", borderOpacity: 0.7, labelPaddingX: 8, labelPaddingY: 2 },
+    exitReasonPart: { ...strategyPresentationStyle("#FF1744", "solid", 1, 1, 10, 7, 0.18), fillBlur: 2, fillColor: "#FFFFFF", labelPaddingX: 6, labelPaddingY: 2 },
+    exitShortReasonPart: { ...strategyPresentationStyle("#00A846", "solid", 1, 1, 10, 7, 0.18), fillBlur: 2, fillColor: "#FFFFFF", labelPaddingX: 6, labelPaddingY: 2 },
+    exitSizePart: { ...strategyPresentationStyle("#000000", "solid", 1, 1, 12, 7, 0), fontWeight: 600, labelPaddingX: 4, labelPaddingY: 2, visible: false },
+    exitSeparatorPart: { ...strategyPresentationStyle("", "solid", 1, 0.9, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 2, labelPaddingY: 2, visible: false },
+    exitPricePart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#007DFF", labelPaddingX: 4, labelPaddingY: 2 },
+    exitShortPricePart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#FF1744", labelPaddingX: 4, labelPaddingY: 2 },
+    exitPnlPart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#00A846", fontWeight: 600, labelPaddingX: 5, labelPaddingY: 2 },
+    exitPnlLossPart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#FF1744", fontWeight: 600, labelPaddingX: 5, labelPaddingY: 2, visible: false },
     levelLine: strategyPresentationStyle("", "dashed", 1, 0.9),
     levelLabel: { ...strategyPresentationStyle("", "solid", 1, 1, 8, 7, 1), borderWidth: 0, labelPaddingX: 2, labelPaddingY: 1 },
     stopLine: strategyPresentationStyle("", "dashed", 1, 0.95),
@@ -709,6 +709,13 @@ const defaultStrategyPresentationSettings: StrategyPresentationSettings = {
     connector: strategyPresentationStyle("", "dashed", 1, 0.7),
   },
   visible: true,
+};
+
+const legacyShortLabelStyleDefaults: Partial<Record<StrategyVisualElementKey, StrategyPresentationStyleSettings>> = {
+  entryShortDirectionPart: { ...strategyPresentationStyle("#FF1744", "solid", 1, 1, 10, 7, 0.18), fillBlur: 2, fillColor: "#FF1744", labelPaddingX: 5, labelPaddingY: 2 },
+  entryShortPricePart: { ...strategyPresentationStyle("#FF1744", "solid", 1, 1, 10, 7, 1), fillColor: "#FFFFFF", labelPaddingX: 4, labelPaddingY: 2 },
+  exitShortReasonPart: { ...strategyPresentationStyle("#00A846", "solid", 1, 1, 10, 7, 0.18), fillBlur: 2, fillColor: "#00A846", labelPaddingX: 6, labelPaddingY: 2 },
+  exitShortPricePart: { ...strategyPresentationStyle("#00A846", "solid", 1, 1, 10, 7, 1), fillColor: "#FFFFFF", labelPaddingX: 4, labelPaddingY: 2 },
 };
 
 type ChartPalette = {
@@ -4185,10 +4192,20 @@ function normalizeStrategyPresentationSettings(settings: Partial<StrategyPresent
     adjustmentLine: legacy.adjustments, adjustmentArrow: legacy.adjustments, adjustmentLabel: legacy.adjustments,
     connector: legacy.adjustments,
   };
-  const elements = Object.fromEntries((Object.keys(defaultStrategyPresentationSettings.elements) as StrategyVisualElementKey[]).map((key) => [
-    key,
-    normalizeStrategyPresentationStyle(settings.elements?.[key] ?? legacyByElement[key], defaultStrategyPresentationSettings.elements[key]),
-  ])) as Record<StrategyVisualElementKey, StrategyPresentationStyleSettings>;
+  const elements = Object.fromEntries((Object.keys(defaultStrategyPresentationSettings.elements) as StrategyVisualElementKey[]).map((key) => {
+    const configured = settings.elements?.[key] ?? legacyByElement[key];
+    const legacyShortDefault = legacyShortLabelStyleDefaults[key];
+    const migrateUntouchedShortStyle = Boolean(
+      configured
+      && legacyShortDefault
+      && (Object.keys(legacyShortDefault) as Array<keyof StrategyPresentationStyleSettings>)
+        .every((property) => configured[property] === legacyShortDefault[property]),
+    );
+    return [
+      key,
+      normalizeStrategyPresentationStyle(migrateUntouchedShortStyle ? undefined : configured, defaultStrategyPresentationSettings.elements[key]),
+    ];
+  })) as Record<StrategyVisualElementKey, StrategyPresentationStyleSettings>;
   return {
     avoidLabelCollisions: typeof settings.avoidLabelCollisions === "boolean" ? settings.avoidLabelCollisions : true,
     connectorThreshold: Math.round(clampNumber(settings.connectorThreshold, 8, 48, defaultStrategyPresentationSettings.connectorThreshold)),
