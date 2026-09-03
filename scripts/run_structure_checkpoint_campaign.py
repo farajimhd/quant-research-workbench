@@ -27,6 +27,14 @@ RUNTIME_BINARY_NAME = (
 MAX_PROCESS_WORKERS = 80
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest().upper()
+
+
 def binary_candidates(explicit: str | None, environ: dict[str, str]) -> tuple[Path, ...]:
     candidates: list[Path] = []
     if explicit:
@@ -265,6 +273,11 @@ def render_rich(status: dict[str, Any], set_id: str):
     summary.add_column()
     summary.add_column(justify="right")
     summary.add_row("Checkpoint set", set_id)
+    summary.add_row(
+        "Executable",
+        f"{Path(status.get('executable_path', '?')).name} | "
+        f"{status.get('executable_sha256', 'unknown')[:16]}",
+    )
     summary.add_row("Processes", f"{status['worker_processes'] - status['worker_processes_exited']} active | {status['worker_processes_exited']} exited")
     summary.add_row(
         "Durable units",
@@ -295,7 +308,13 @@ def render_rich(status: dict[str, Any], set_id: str):
     )
 
 
-def run_process_campaign(binary: Path, campaign_args: list[str], workers: int, environ: dict[str, str]) -> int:
+def run_process_campaign(
+    binary: Path,
+    binary_sha256: str,
+    campaign_args: list[str],
+    workers: int,
+    environ: dict[str, str],
+) -> int:
     validate_process_worker_count(workers)
     runtime_value = option_value(campaign_args, "--runtime-dir")
     set_id = option_value(campaign_args, "--checkpoint-set-id")
@@ -459,6 +478,8 @@ def run_process_campaign(binary: Path, campaign_args: list[str], workers: int, e
             status = aggregate_status(status_paths, plans, started, rates, processes)
             status["checkpoint_set_id"] = set_id
             status["universe_hash"] = universe_hash
+            status["executable_path"] = str(binary)
+            status["executable_sha256"] = binary_sha256
             if previous_attempt_archive is not None:
                 status["previous_attempt_archive"] = str(previous_attempt_archive)
             atomic_json(aggregate_path, status)
@@ -488,6 +509,8 @@ def run_process_campaign(binary: Path, campaign_args: list[str], workers: int, e
         final = aggregate_status(status_paths, plans, started, rates, processes)
         final["checkpoint_set_id"] = set_id
         final["universe_hash"] = universe_hash
+        final["executable_path"] = str(binary)
+        final["executable_sha256"] = binary_sha256
         if previous_attempt_archive is not None:
             final["previous_attempt_archive"] = str(previous_attempt_archive)
         if interrupted:
@@ -528,6 +551,8 @@ def main(argv: list[str] | None = None) -> int:
     environ["PYTHONDONTWRITEBYTECODE"] = "1"
     try:
         binary = resolve_binary(launcher.binary, not launcher.no_build, environ)
+        binary_sha256 = sha256_file(binary)
+        print(f"Campaign executable: {binary} (SHA-256 {binary_sha256})", flush=True)
         workers = (
             launcher.process_workers
             if launcher.process_workers is not None
@@ -535,7 +560,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         validate_process_worker_count(workers)
         if workers > 1 and "--plan-only" not in campaign_args:
-            return run_process_campaign(binary, campaign_args, workers, environ)
+            return run_process_campaign(binary, binary_sha256, campaign_args, workers, environ)
         return subprocess.run([str(binary), *campaign_args], env=environ, check=False).returncode
     except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
         print(f"Unable to launch structure checkpoint campaign: {exc}", file=sys.stderr)

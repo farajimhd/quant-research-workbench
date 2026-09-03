@@ -1,4 +1,5 @@
 from collections import deque
+import hashlib
 import json
 from pathlib import Path
 import time
@@ -11,6 +12,7 @@ from scripts.run_structure_checkpoint_campaign import (
     binary_candidates,
     parse_launcher_args,
     prepare_shards,
+    sha256_file,
     status_is_fully_certified,
     validate_process_worker_count,
 )
@@ -69,6 +71,13 @@ def test_prebuilt_runtime_binary_is_preferred_without_cargo() -> None:
 
     assert candidates[0] == Path(r"E:\TradingRuntime") / "bin" / candidates[0].name
     assert candidates[0].name == "structure_checkpoint_campaign_v5.exe"
+
+
+def test_executable_hash_is_reported_from_exact_file_bytes(tmp_path: Path) -> None:
+    binary = tmp_path / "campaign.exe"
+    binary.write_bytes(b"corrected-campaign")
+
+    assert sha256_file(binary) == hashlib.sha256(b"corrected-campaign").hexdigest().upper()
 
 
 def test_explicit_binary_precedes_environment_and_runtime_defaults() -> None:
