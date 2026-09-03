@@ -244,8 +244,12 @@ impl ProgressWriter {
     }
 
     async fn retry(&self) -> Result<(), String> {
+        self.retries(1).await
+    }
+
+    async fn retries(&self, count: usize) -> Result<(), String> {
         let mut progress = self.inner.lock().await;
-        progress.counts.retried = progress.counts.retried.saturating_add(1);
+        progress.counts.retried = progress.counts.retried.saturating_add(count);
         Ok(())
     }
 
@@ -361,6 +365,7 @@ struct DayResult {
     event_count: u64,
     advanced_event_count: u64,
     cursor: u64,
+    persistence_retries: usize,
 }
 
 #[derive(Default)]
@@ -1129,6 +1134,7 @@ async fn run_ticker(
                     if result.event_count == event_progress.observed()
                         && result.event_count == session.event_count =>
                 {
+                    progress.retries(result.persistence_retries).await?;
                     event_progress.commit();
                     break Ok(result);
                 }
@@ -1319,8 +1325,8 @@ async fn process_ordinal_session(
     {
         return Err("daily checkpoint authority is incomplete".to_string());
     }
-    writer
-        .persist_daily_structure_checkpoint(&DailyStructureCheckpoint {
+    let persistence_retries = writer
+        .persist_daily_structure_checkpoint_with_retries(&DailyStructureCheckpoint {
             checkpoint_set_id: config.structure_checkpoint_set_id.clone(),
             session_date,
             algorithm_version: checkpoint.algorithm_version,
@@ -1340,6 +1346,7 @@ async fn process_ordinal_session(
         event_count,
         advanced_event_count,
         cursor: checkpoint.last_arrival_sequence,
+        persistence_retries,
     })
 }
 
@@ -1441,6 +1448,10 @@ fn retryable_error(error: &str) -> bool {
         "timeout",
         "connection reset",
         "connection aborted",
+        "connection closed",
+        "broken pipe",
+        "error sending request for url",
+        "request failed before a confirmed response",
         "unexpected eof",
         "error decoding response body",
         "temporarily unavailable",
@@ -1872,6 +1883,12 @@ mod tests {
             "ClickHouse 502 error decoding response body"
         ));
         assert!(retryable_error("memory limit exceeded"));
+        assert!(retryable_error(
+            "error sending request for url (http://clickhouse/?database=q_live)"
+        ));
+        assert!(retryable_error(
+            "ClickHouse idempotent checkpoint request failed before a confirmed response after 5 attempts: connection closed"
+        ));
         assert!(!retryable_error("checkpoint algorithm version mismatch"));
     }
 

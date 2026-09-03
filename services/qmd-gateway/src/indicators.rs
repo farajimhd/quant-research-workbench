@@ -16,6 +16,7 @@ use crate::timefmt::clickhouse_datetime64;
 use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Timelike, Utc};
 use chrono_tz::America::New_York;
 use reqwest::Client;
+use ring::digest::{Context, SHA256};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, VecDeque};
@@ -24,6 +25,8 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, sleep, Duration, MissedTickBehavior};
 
 const STRUCTURE_CHECKPOINT_BATCH_LIMIT: usize = 256;
+const DAILY_STRUCTURE_CHECKPOINT_WRITE_MAX_ATTEMPTS: usize = 5;
+const DAILY_STRUCTURE_CHECKPOINT_WRITE_RETRY_BASE_MILLIS: u64 = 250;
 
 pub const INDICATOR_SCHEMA_VERSION: u16 = 25;
 pub const INDICATOR_CALCULATION_REVISION: &str = "qmd-indicators-v26";
@@ -40,6 +43,98 @@ fn valid_checkpoint_set_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+}
+
+fn daily_structure_checkpoint_deduplication_token(
+    checkpoint_set_id: &str,
+    session_date: NaiveDate,
+    algorithm_version: u16,
+    sym: &str,
+    last_arrival_sequence: u64,
+    source_plan_hash: &str,
+    source_revision_token: &str,
+    snapshot_json: &str,
+) -> String {
+    let fields = [
+        checkpoint_set_id.to_string(),
+        session_date.to_string(),
+        algorithm_version.to_string(),
+        sym.to_ascii_uppercase(),
+        last_arrival_sequence.to_string(),
+        source_plan_hash.to_string(),
+        source_revision_token.to_string(),
+    ];
+    let mut context = Context::new(&SHA256);
+    for field in fields {
+        context.update(field.as_bytes());
+        context.update(&[0]);
+    }
+    context.update(snapshot_json.as_bytes());
+    context
+        .finish()
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn retryable_clickhouse_write_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
+async fn send_idempotent_clickhouse_request(
+    client: &Client,
+    url: &str,
+    user: &str,
+    password: &str,
+    payload: String,
+    max_attempts: usize,
+) -> Result<usize, String> {
+    let attempts = max_attempts.max(1);
+    for attempt in 1..=attempts {
+        let mut request = client
+            .post(url)
+            .header("Content-Type", "text/plain; charset=utf-8")
+            .header("X-ClickHouse-User", user)
+            .body(payload.clone());
+        if !password.is_empty() {
+            request = request.header("X-ClickHouse-Key", password);
+        }
+        match request.send().await {
+            Ok(response) => {
+                let status = response.status();
+                match response.text().await {
+                    Ok(_text) if status.is_success() => return Ok(attempt - 1),
+                    Ok(text) => {
+                        let error = format!("ClickHouse HTTP {status}: {text}");
+                        if attempt == attempts || !retryable_clickhouse_write_status(status) {
+                            return Err(error);
+                        }
+                    }
+                    Err(error) => {
+                        if attempt == attempts {
+                            return Err(format!(
+                                "ClickHouse idempotent checkpoint response failed after {attempt} attempts: {error:#}"
+                            ));
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                if attempt == attempts {
+                    return Err(format!(
+                        "ClickHouse idempotent checkpoint request failed before a confirmed response after {attempt} attempts: {error:#}"
+                    ));
+                }
+            }
+        }
+        sleep(Duration::from_millis(
+            DAILY_STRUCTURE_CHECKPOINT_WRITE_RETRY_BASE_MILLIS
+                .saturating_mul(1_u64 << (attempt - 1).min(6)),
+        ))
+        .await;
+    }
+    unreachable!("idempotent checkpoint write attempt loop always returns")
 }
 
 fn daily_structure_checkpoint_before_sql(
@@ -2963,7 +3058,13 @@ impl IndicatorClickHouseWriter {
             )
             ENGINE = ReplacingMergeTree(built_at)
             PARTITION BY toYYYYMM(session_date)
-            ORDER BY (sym, session_date, algorithm_version, source_plan_hash, source_revision_token)"#,
+            ORDER BY (sym, session_date, algorithm_version, source_plan_hash, source_revision_token)
+            SETTINGS non_replicated_deduplication_window = 10000"#,
+            true,
+        )
+        .await?;
+        self.execute(
+            "ALTER TABLE qmd_structure_daily_checkpoint_v1 MODIFY SETTING non_replicated_deduplication_window = 10000",
             true,
         )
         .await?;
@@ -2985,7 +3086,13 @@ impl IndicatorClickHouseWriter {
             )
             ENGINE = ReplacingMergeTree(built_at)
             PARTITION BY toYYYYMM(session_date)
-            ORDER BY (checkpoint_set_id, sym, session_date, algorithm_version, source_plan_hash, source_revision_token)"#,
+            ORDER BY (checkpoint_set_id, sym, session_date, algorithm_version, source_plan_hash, source_revision_token)
+            SETTINGS non_replicated_deduplication_window = 10000"#,
+            true,
+        )
+        .await?;
+        self.execute(
+            "ALTER TABLE qmd_structure_daily_checkpoint_v2 MODIFY SETTING non_replicated_deduplication_window = 10000",
             true,
         )
         .await?;
@@ -3135,6 +3242,15 @@ impl IndicatorClickHouseWriter {
         &self,
         record: &DailyStructureCheckpoint,
     ) -> Result<(), String> {
+        self.persist_daily_structure_checkpoint_with_retries(record)
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn persist_daily_structure_checkpoint_with_retries(
+        &self,
+        record: &DailyStructureCheckpoint,
+    ) -> Result<usize, String> {
         if !record.source_complete {
             return Err("refusing to persist an incomplete daily structure checkpoint".to_string());
         }
@@ -3176,8 +3292,24 @@ impl IndicatorClickHouseWriter {
         };
         let body = serde_json::to_string(&row)
             .map_err(|error| format!("failed to encode daily structure checkpoint row: {error}"))?;
-        self.query_with_body(&format!("INSERT INTO {table} FORMAT JSONEachRow"), body)
-            .await
+        let deduplication_token = daily_structure_checkpoint_deduplication_token(
+            &record.checkpoint_set_id,
+            record.session_date,
+            record.algorithm_version,
+            &record.sym,
+            record.last_arrival_sequence,
+            &record.source_plan_hash,
+            &record.source_revision_token,
+            &snapshot_json,
+        );
+        self.query_with_idempotent_body(
+            &format!(
+                "INSERT INTO {table} SETTINGS insert_deduplication_token = '{deduplication_token}' FORMAT JSONEachRow"
+            ),
+            body,
+            DAILY_STRUCTURE_CHECKPOINT_WRITE_MAX_ATTEMPTS,
+        )
+        .await
     }
 
     pub async fn count_daily_structure_checkpoints(&self) -> Result<u64, String> {
@@ -3824,6 +3956,29 @@ impl IndicatorClickHouseWriter {
             .map(|_| ())
     }
 
+    async fn query_with_idempotent_body(
+        &self,
+        sql: &str,
+        body: String,
+        max_attempts: usize,
+    ) -> Result<usize, String> {
+        let url = format!(
+            "{}/?database={}",
+            self.config.clickhouse_url,
+            urlencoding::encode(&self.config.clickhouse_database)
+        );
+        let payload = format!("{sql}\n{body}");
+        send_idempotent_clickhouse_request(
+            &self.client,
+            &url,
+            &self.config.clickhouse_user,
+            &self.config.clickhouse_password(),
+            payload,
+            max_attempts,
+        )
+        .await
+    }
+
     async fn query(&self, body: &str, use_database: bool) -> Result<String, String> {
         let url = if use_database {
             format!(
@@ -3974,11 +4129,12 @@ mod tests {
     use super::{
         anchored_flow_relationship, anchored_market_session_date,
         calculate_flow_structure_composite, daily_structure_checkpoint_before_sql,
-        durable_indicator_insert_row, indicator_insert_row, market_structure_reference_sql,
-        parse_market_structure_reference_rows, summarize_canonical_composites,
-        BarIndicatorCalculator, IndicatorKey, MicrostructureCumulativeFlow,
-        MicrostructureSampleAggregate, SessionVwapState, SharedIndicatorStore, TickState,
-        INDICATOR_SCHEMA_VERSION,
+        daily_structure_checkpoint_deduplication_token, durable_indicator_insert_row,
+        indicator_insert_row, market_structure_reference_sql,
+        parse_market_structure_reference_rows, retryable_clickhouse_write_status,
+        send_idempotent_clickhouse_request, summarize_canonical_composites, BarIndicatorCalculator,
+        IndicatorKey, MicrostructureCumulativeFlow, MicrostructureSampleAggregate,
+        SessionVwapState, SharedIndicatorStore, TickState, INDICATOR_SCHEMA_VERSION,
     };
     use crate::bars::{TradeAggregationRules, TradeUpdateRule};
     use crate::capability_catalog::ExecutionScope;
@@ -3987,6 +4143,10 @@ mod tests {
     use crate::scanner::tests::base_bar;
     use chrono::{NaiveDate, TimeZone, Utc};
     use std::collections::{HashMap, VecDeque};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex as StdMutex,
+    };
 
     #[test]
     fn daily_checkpoint_seed_is_scoped_to_one_exact_set() {
@@ -4008,6 +4168,104 @@ mod tests {
         );
         assert!(live_sql.contains("FROM qmd_structure_daily_checkpoint_v1"));
         assert!(!live_sql.contains("WHERE checkpoint_set_id"));
+    }
+
+    #[test]
+    fn daily_checkpoint_insert_identity_is_stable_and_content_sensitive() {
+        let date = NaiveDate::from_ymd_opt(2026, 8, 21).unwrap();
+        let first = daily_structure_checkpoint_deduplication_token(
+            "canonical-v16",
+            date,
+            16,
+            "sugp",
+            42,
+            "plan",
+            "revision",
+            "{\"levels\":[]}",
+        );
+        let repeated = daily_structure_checkpoint_deduplication_token(
+            "canonical-v16",
+            date,
+            16,
+            "SUGP",
+            42,
+            "plan",
+            "revision",
+            "{\"levels\":[]}",
+        );
+        let changed = daily_structure_checkpoint_deduplication_token(
+            "canonical-v16",
+            date,
+            16,
+            "SUGP",
+            43,
+            "plan",
+            "revision",
+            "{\"levels\":[]}",
+        );
+
+        assert_eq!(first, repeated);
+        assert_eq!(first.len(), 64);
+        assert_ne!(first, changed);
+    }
+
+    #[test]
+    fn checkpoint_writer_retries_only_throttling_and_server_statuses() {
+        assert!(retryable_clickhouse_write_status(
+            reqwest::StatusCode::TOO_MANY_REQUESTS
+        ));
+        assert!(retryable_clickhouse_write_status(
+            reqwest::StatusCode::BAD_GATEWAY
+        ));
+        assert!(!retryable_clickhouse_write_status(
+            reqwest::StatusCode::BAD_REQUEST
+        ));
+    }
+
+    #[tokio::test]
+    async fn idempotent_checkpoint_writer_replays_the_exact_payload_after_503() {
+        use axum::{body::Bytes, extract::State, http::StatusCode, routing::post, Router};
+
+        type RequestState = Arc<(AtomicUsize, StdMutex<Vec<Vec<u8>>>)>;
+
+        async fn handler(
+            State(state): State<RequestState>,
+            body: Bytes,
+        ) -> (StatusCode, &'static str) {
+            state.1.lock().unwrap().push(body.to_vec());
+            if state.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                (StatusCode::SERVICE_UNAVAILABLE, "retry")
+            } else {
+                (StatusCode::OK, "")
+            }
+        }
+
+        let state: RequestState = Arc::new((AtomicUsize::new(0), StdMutex::new(Vec::new())));
+        let app = Router::new()
+            .route("/", post(handler))
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let payload = "INSERT INTO checkpoints SETTINGS insert_deduplication_token = 'stable' FORMAT JSONEachRow\n{\"value\":1}".to_string();
+
+        let retries = send_idempotent_clickhouse_request(
+            &reqwest::Client::new(),
+            &format!("http://{address}/"),
+            "test",
+            "",
+            payload.clone(),
+            3,
+        )
+        .await
+        .unwrap();
+
+        server.abort();
+        assert_eq!(retries, 1);
+        assert_eq!(state.0.load(Ordering::SeqCst), 2);
+        let bodies = state.1.lock().unwrap();
+        assert_eq!(bodies.len(), 2);
+        assert!(bodies.iter().all(|body| body == payload.as_bytes()));
     }
 
     #[test]

@@ -37,6 +37,19 @@ three-second fetch. Complete session count, SIP-time order, first/last SIP
 timestamps, ticker, date, cursor, source revision, and split lineage are still
 validated before persistence.
 
+Daily checkpoint persistence is retry-safe. Every insert carries a deterministic
+deduplication token derived from the checkpoint set, ticker, session, algorithm,
+source identity, cursor, and serialized structural state. The writer can retry
+pre-response transport failures, response-stream failures, HTTP 429, and HTTP
+5xx responses without creating a second logical checkpoint. Both daily
+checkpoint tables retain the latest 10,000 non-replicated block identities per
+partition so the ClickHouse token is effective rather than advisory. Exhausted
+transient write failures remain fail-closed: that ticker's later sessions are
+blocked and the same immutable campaign must be resumed from its latest complete
+checkpoint.
+Campaign progress counts recovered persistence retries as well as full-session
+retries, and terminal error records retain the complete transport cause chain.
+
 All `market_sip_compact.events_YYYY` reads use the immutable common historical
 schema. Function F orders and timestamps causal state exclusively by
 `sip_timestamp_us`; it neither requires nor probes an execution-time column.
