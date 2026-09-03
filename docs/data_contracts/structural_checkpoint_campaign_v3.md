@@ -33,7 +33,10 @@ Each worker owns one ticker through the entire requested period. It loads the
 latest compatible checkpoint once, keeps one live book in memory, processes
 completed sessions sequentially, persists the book at every session end, and
 then releases the book before taking another ticker. Different tickers may run
-concurrently; days for one ticker may not.
+concurrently; days for one ticker may not. The standalone campaign accepts
+between 1 and 64 workers; this is an operator-selected capacity ceiling, not a
+claim that every ClickHouse deployment scales efficiently to 64 concurrent
+streams.
 
 `--start-date` is the true cold authority start. With no compatible seed, the
 first checkpoint begins from an empty book at 04:00 America/New_York on that

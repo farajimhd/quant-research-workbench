@@ -1342,7 +1342,7 @@ fn parse_args() -> Result<Args, String> {
             "--help" | "-h" => {
                 println!("structure-checkpoint-campaign v3");
                 println!("  --start-date YYYY-MM-DD --end-date YYYY-MM-DD");
-                println!("  --runtime-dir PATH [--workers 4]");
+                println!("  --runtime-dir PATH [--workers 4]  # allowed: 1-64");
                 println!("  [--priority-ticker SUGP] [--ticker-file PATH]");
                 println!("  [--liquidity-start-date YYYY-MM-DD --liquidity-end-date YYYY-MM-DD]");
                 println!("  [--max-retries 5] [--retry-delay-seconds 2]");
@@ -1357,9 +1357,7 @@ fn parse_args() -> Result<Args, String> {
     if start_date > end_date {
         return Err("--start-date must be on or before --end-date".to_string());
     }
-    if !(1..=32).contains(&workers) {
-        return Err("--workers must be between 1 and 32".to_string());
-    }
+    validate_worker_count(workers)?;
     if max_retries > 10 {
         return Err("--max-retries must be between 0 and 10".to_string());
     }
@@ -1389,6 +1387,13 @@ fn parse_args() -> Result<Args, String> {
     })
 }
 
+fn validate_worker_count(workers: usize) -> Result<(), String> {
+    if !(1..=64).contains(&workers) {
+        return Err("--workers must be between 1 and 64".to_string());
+    }
+    Ok(())
+}
+
 fn parse_date(value: &str) -> Result<NaiveDate, String> {
     NaiveDate::parse_from_str(value, "%Y-%m-%d")
         .map_err(|error| format!("invalid date {value:?}: {error}"))
@@ -1415,8 +1420,9 @@ fn io_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sy
 mod tests {
     use super::{
         dashboard_frame, dashboard_lines, insert_ticker, log_snapshot, merge_ticker_universe,
-        next_advance_boundary, retryable_error, session_is_covered_by_seed, Counts, Progress,
-        ProgressWriter, RecentUnit, TickerPlan, GENERIC_STRUCTURE_ALGORITHM_VERSION,
+        next_advance_boundary, retryable_error, session_is_covered_by_seed, validate_worker_count,
+        Counts, Progress, ProgressWriter, RecentUnit, TickerPlan,
+        GENERIC_STRUCTURE_ALGORITHM_VERSION,
     };
     use chrono::{NaiveDate, TimeZone, Utc};
     use qmd_history_gateway::source::StructureCampaignTicker;
@@ -1479,6 +1485,17 @@ mod tests {
         ));
         assert!(retryable_error("memory limit exceeded"));
         assert!(!retryable_error("checkpoint algorithm version mismatch"));
+    }
+
+    #[test]
+    fn campaign_accepts_up_to_sixty_four_workers() {
+        assert!(validate_worker_count(1).is_ok());
+        assert!(validate_worker_count(32).is_ok());
+        assert!(validate_worker_count(64).is_ok());
+        assert_eq!(
+            validate_worker_count(65).unwrap_err(),
+            "--workers must be between 1 and 64"
+        );
     }
 
     #[test]
