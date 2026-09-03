@@ -3132,7 +3132,7 @@ function StrategyCompositeLabelStylePage({
           <StrategyStyleRange label="Text opacity" max={100} min={15} onChange={(value) => onElementChange(selectedPart.key, { opacity: value / 100 })} suffix="%" value={Math.round(partSettings.opacity * 100)} />
           <StrategyStyleRange label="Text size" max={16} min={8} onChange={(labelSize) => onElementChange(selectedPart.key, { labelSize })} suffix="px" value={partSettings.labelSize} />
           <StrategyFontWeightSelect onChange={(fontWeight) => onElementChange(selectedPart.key, { fontWeight })} value={partSettings.fontWeight} />
-          <StrategyStyleColor defaultLabel="Transparent" fallbackColor={validHexColor(partSettings.fillColor, palette.background)} label="Background color" onChange={(value) => onElementChange(selectedPart.key, { fillColor: value, ...(value && partSettings.fillOpacity === 0 ? { fillOpacity: 1 } : {}) })} value={partSettings.fillColor} />
+          <StrategyStyleColor defaultLabel="Chart background" fallbackColor={validHexColor(partSettings.fillColor, palette.background)} label="Background color" onChange={(value) => onElementChange(selectedPart.key, { fillColor: value, ...(value && partSettings.fillOpacity === 0 ? { fillOpacity: 1 } : {}) })} value={partSettings.fillColor} />
           <StrategyStyleRange label="Background opacity" max={100} min={0} onChange={(value) => onElementChange(selectedPart.key, { fillOpacity: value / 100 })} suffix="%" value={Math.round(partSettings.fillOpacity * 100)} />
           <StrategyStyleRange label="Background blur" max={8} min={0} onChange={(fillBlur) => onElementChange(selectedPart.key, { fillBlur })} suffix="px" value={partSettings.fillBlur} />
           <StrategyStyleRange label="Horizontal padding" max={14} min={2} onChange={(labelPaddingX) => onElementChange(selectedPart.key, { labelPaddingX })} suffix="px" value={partSettings.labelPaddingX} />
@@ -3186,6 +3186,7 @@ function StrategyStyleColor({ defaultLabel, fallbackColor, label, onChange, valu
   return <label><span>{label}</span><span className="strategy-presentation-color"><input
     aria-label={label}
     onBlur={(event) => { if (!value) onChange(event.currentTarget.value); }}
+    onFocus={() => { if (!value) onChange(displayedColor); }}
     onInput={(event) => onChange(event.currentTarget.value)}
     type="color"
     value={displayedColor}

@@ -252,6 +252,7 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert 'value && partSettings.fillOpacity === 0 ? { fillOpacity: 1 }' in renderer_source
     assert 'onInput={(event) => onChange(event.currentTarget.value)}' in renderer_source
     assert 'onBlur={(event) => { if (!value) onChange(event.currentTarget.value); }}' in renderer_source
+    assert 'onFocus={() => { if (!value) onChange(displayedColor); }}' in renderer_source
     assert 'aria-label={`Apply ${displayedColor.toUpperCase()} to ${label}`}' in renderer_source
     assert 'label="Horizontal padding"' in renderer_source
     assert 'label="Vertical padding"' in renderer_source
