@@ -443,6 +443,39 @@ struct PersistedStructureCheckpointRow {
     source_revision_token: String,
 }
 
+fn first_json_difference_path(left: &Value, right: &Value, path: &str) -> Option<String> {
+    match (left, right) {
+        (Value::Array(left), Value::Array(right)) => {
+            if left.len() != right.len() {
+                return Some(format!("{path}.length"));
+            }
+            left.iter()
+                .zip(right)
+                .enumerate()
+                .find_map(|(index, (left, right))| {
+                    first_json_difference_path(left, right, &format!("{path}[{index}]"))
+                })
+        }
+        (Value::Object(left), Value::Object(right)) => {
+            for key in left.keys().chain(right.keys()) {
+                match (left.get(key), right.get(key)) {
+                    (Some(left), Some(right)) => {
+                        if let Some(difference) =
+                            first_json_difference_path(left, right, &format!("{path}.{key}"))
+                        {
+                            return Some(difference);
+                        }
+                    }
+                    _ => return Some(format!("{path}.{key}")),
+                }
+            }
+            None
+        }
+        _ if left == right => None,
+        _ => Some(path.to_string()),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct StockSplitAdjustmentRow {
     execution_date: String,
@@ -2689,8 +2722,22 @@ impl HistoricalEventSource {
         let authority_start = DateTime::parse_from_rfc3339(&row.authority_start)
             .map_err(|error| format!("invalid structure checkpoint authority start: {error}"))?
             .with_timezone(&Utc);
-        let mut checkpoint = serde_json::from_str::<GenericStructureCheckpoint>(&row.snapshot_json)
-            .map_err(|error| format!("invalid persisted structure checkpoint payload: {error}"))?;
+        let stored_checkpoint_value = serde_json::from_str::<Value>(&row.snapshot_json)
+            .map_err(|error| format!("invalid persisted structure checkpoint JSON: {error}"))?;
+        let mut checkpoint = serde_json::from_value::<GenericStructureCheckpoint>(
+            stored_checkpoint_value.clone(),
+        )
+        .map_err(|error| format!("invalid persisted structure checkpoint payload: {error}"))?;
+        let decoded_checkpoint_value = serde_json::to_value(&checkpoint).map_err(|error| {
+            format!("failed to re-encode persisted structure checkpoint: {error}")
+        })?;
+        if let Some(path) =
+            first_json_difference_path(&stored_checkpoint_value, &decoded_checkpoint_value, "$")
+        {
+            return Err(format!(
+                "persisted structure checkpoint is not schema-stable at {path}"
+            ));
+        }
         let session_date = NaiveDate::parse_from_str(&row.session_date, "%Y-%m-%d")
             .map_err(|error| format!("invalid persisted structure checkpoint date: {error}"))?;
         let certification =
@@ -4211,9 +4258,9 @@ mod tests {
     use super::{
         adaptive_structure_chunk_minutes, append_scheduled_gap_segments, archive_session_end_utc,
         build_source_plan, completed_session_dates_between_sql, coverage_precedes, event_select,
-        latest_coverage_summary_sql, latest_coverage_target_date_sql, macro_bar_is_closed,
-        materialize_confirmed_recent_coverage, merge_coverage_intervals, merge_daily_chart_bars,
-        normalize_ticker, ordinal_event_select, parse_historical_tsv_row,
+        first_json_difference_path, latest_coverage_summary_sql, latest_coverage_target_date_sql,
+        macro_bar_is_closed, materialize_confirmed_recent_coverage, merge_coverage_intervals,
+        merge_daily_chart_bars, normalize_ticker, ordinal_event_select, parse_historical_tsv_row,
         persisted_structure_events_sql, recent_coverage_sql, recent_daily_trade_bars_sql,
         row_to_event, split_adjustment_factors, structure_campaign_continuity_sql,
         structure_campaign_tickers_sql, structure_split_adjustments_sql,
@@ -4624,6 +4671,23 @@ mod tests {
         assert!(sql.contains("ORDER BY confirmed_at ASC, event_id ASC"));
         assert!(sql.contains("LIMIT 2000001"));
         assert!(!sql.contains("ORDER BY confirmed_at DESC"));
+    }
+
+    #[test]
+    fn checkpoint_schema_drift_reports_the_first_causal_path() {
+        let stored = serde_json::json!({
+            "algorithm_version": 16,
+            "levels": [{"price": 3.45, "touch_count": 2}],
+        });
+        let decoded = serde_json::json!({
+            "algorithm_version": 16,
+            "levels": [{"price": 3.45, "touch_count": 0}],
+        });
+
+        assert_eq!(
+            first_json_difference_path(&stored, &decoded, "$"),
+            Some("$.levels[0].touch_count".to_string()),
+        );
     }
 
     #[test]
