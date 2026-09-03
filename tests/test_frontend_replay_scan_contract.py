@@ -148,6 +148,7 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert "lowerBoundCandleTime(state.timeline" in renderer_source
     assert "tradeAutoscaleViewportRef.current !== viewportIdentity" in renderer_source
     assert "candleRef.current?.priceScale().applyOptions({ autoScale: true })" in renderer_source
+    assert renderer_source.index('compactTradeLabel(annotation.exitLabelParts') < renderer_source.index('strategyPresentationColor(settings.stop.color')
     assert "trading?.strategy_chart_activity ?? trading?.strategy_activity" in chart_source
     assert "entryDecision?.row.chart_plan" in chart_source
     assert "guideStartTime: planStartTime" in chart_source
@@ -209,7 +210,7 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert 'drawCanvasTradeLabel(context, label, (left + right) / 2, y + 3' in renderer_source
     assert 'context.fillRect(left - capRadius' in renderer_source
     assert renderer_source.index('drawCanvasTradeLine(context, span.left, span.right, entryY') < renderer_source.index('annotation.levelPrices?.slice(0, 3)')
-    assert renderer_source.index('annotation.levelPrices?.slice(0, 3)') < renderer_source.index('drawCanvasTradeArrow(context, entryX, entryY')
+    assert renderer_source.index('drawCanvasTradeArrow(context, entryX, entryY') < renderer_source.index('annotation.levelPrices?.slice(0, 3)')
     assert "if (left + labelWidth < 0 || left > width || top + labelHeight < 0 || top > height) return;" in renderer_source
     assert "Math.max(3, Math.min(preferredLeft" not in renderer_source
     assert "Math.max(3, Math.min(top" not in renderer_source

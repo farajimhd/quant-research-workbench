@@ -6347,6 +6347,16 @@ function drawTradeAnnotationPrimitiveGeometry(
     if (settings.exit.visible && annotation.status !== "open" && exitY !== null) {
       drawCanvasTradeLine(context, span.left, span.right, exitY, exitColor, annotation.selected ? Math.min(5, settings.exit.lineWidth + 1) : settings.exit.lineWidth, settings.exit.lineStyle, settings.exit.opacity);
     }
+    if (settings.entry.visible) {
+      drawCanvasTradeArrow(context, entryX, entryY, entryColor, "entry", annotation.selected === true, 7, settings.entry.opacity);
+      drawCanvasTradeLabel(context, compactTradeLabel(annotation.entryLabelParts, annotation.entryLabel, "Entry"), entryX, entryY + 14, entryColor, chartBackground, annotation.entryLabelSide ?? "left", width, height, settings.entry.labelSize, settings.entry.opacity);
+    }
+    if (settings.exit.visible && annotation.status !== "open" && exitY !== null) {
+      drawCanvasTradeArrow(context, exitX, exitY, exitColor, "exit", annotation.selected === true, 7, settings.exit.opacity);
+      drawCanvasTradeLabel(context, compactTradeLabel(annotation.exitLabelParts, annotation.exitLabel, "Exit"), exitX, exitY - settings.exit.labelSize - 15, resultColor, chartBackground, annotation.exitLabelSide ?? "right", width, height, settings.exit.labelSize, settings.exit.opacity);
+    }
+    // Protection evidence is decision-critical. Paint it after lifecycle
+    // labels so dense, fast entry/exit clusters cannot hide every SL/TP line.
     if (settings.stop.visible && typeof annotation.stopPrice === "number" && Number.isFinite(annotation.stopPrice)) {
       const y = priceSeries.priceToCoordinate(annotation.stopPrice);
       if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, strategyPresentationColor(settings.stop.color, dangerColor), "SL", chartBackground, width, height, settings.stop);
@@ -6362,14 +6372,6 @@ function drawTradeAnnotationPrimitiveGeometry(
     if (settings.levels.visible && typeof annotation.triggerPrice === "number" && Number.isFinite(annotation.triggerPrice)) {
       const y = priceSeries.priceToCoordinate(annotation.triggerPrice);
       if (y !== null) drawCanvasTradeGuide(context, span.left, span.right, y, strategyPresentationColor(settings.levels.color, infoColor), "Trigger", chartBackground, width, height, settings.levels);
-    }
-    if (settings.entry.visible) {
-      drawCanvasTradeArrow(context, entryX, entryY, entryColor, "entry", annotation.selected === true, 7, settings.entry.opacity);
-      drawCanvasTradeLabel(context, compactTradeLabel(annotation.entryLabelParts, annotation.entryLabel, "Entry"), entryX, entryY + 14, entryColor, chartBackground, annotation.entryLabelSide ?? "left", width, height, settings.entry.labelSize, settings.entry.opacity);
-    }
-    if (settings.exit.visible && annotation.status !== "open" && exitY !== null) {
-      drawCanvasTradeArrow(context, exitX, exitY, exitColor, "exit", annotation.selected === true, 7, settings.exit.opacity);
-      drawCanvasTradeLabel(context, compactTradeLabel(annotation.exitLabelParts, annotation.exitLabel, "Exit"), exitX, exitY - settings.exit.labelSize - 15, resultColor, chartBackground, annotation.exitLabelSide ?? "right", width, height, settings.exit.labelSize, settings.exit.opacity);
     }
     if (settings.adjustments.visible) annotation.fills?.forEach((fill) => {
       const x = xForAnnotationTime(chart, fill.time, timeline);
