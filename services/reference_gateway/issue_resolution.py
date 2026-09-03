@@ -112,7 +112,14 @@ AND {otc_predicate}
     )
 
 
-def resolve_massive_active_ticker_issues(client: ClickHouseHttpClient, config: ReferenceGatewayConfig) -> IssueResolutionRuleResult:
+def resolve_massive_active_ticker_issues(
+    client: ClickHouseHttpClient,
+    config: ReferenceGatewayConfig,
+    *,
+    tickers: list[str] | None = None,
+) -> IssueResolutionRuleResult:
+    normalized_tickers = sorted({str(ticker or "").strip().upper() for ticker in tickers or [] if str(ticker or "").strip()})
+    ticker_filter = f"AND upper(source_entity_key) IN ({csv_sql_strings(normalized_tickers)})" if normalized_tickers else ""
     open_issues = query_json_each_row(
         client,
         f"""
@@ -121,6 +128,7 @@ def resolve_massive_active_ticker_issues(client: ClickHouseHttpClient, config: R
         WHERE source_system = 'reference_gateway'
           AND source_entity_kind = 'massive_active_ticker'
           AND {OPEN_STATUS_FILTER}
+          {ticker_filter}
         """,
     )
     if not open_issues:
@@ -136,6 +144,7 @@ def resolve_massive_active_ticker_issues(client: ClickHouseHttpClient, config: R
 source_system = 'reference_gateway'
 AND source_entity_kind = 'massive_active_ticker'
 AND {OPEN_STATUS_FILTER}
+{ticker_filter}
 AND upper(source_entity_key) IN ({csv_sql_strings(sorted(resolved_tickers)) if resolved_tickers else "''"})
 """,
     )

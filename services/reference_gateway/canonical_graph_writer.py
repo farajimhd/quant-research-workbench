@@ -9,6 +9,7 @@ from typing import Any
 from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password, quote_ident, sql_string
 from services.reference_gateway.active_tickers import ActiveTickerPlan, MissingTickerCandidate
 from services.reference_gateway.config import ReferenceGatewayConfig
+from services.reference_gateway.ibkr_contract_identity import resolve_massive_ibkr_contract
 from services.reference_gateway.market_publications import clone_table_schema, table_exists
 from services.reference_gateway.tradability import is_otc_venue
 
@@ -71,8 +72,8 @@ class ExistingGraph:
     duplicate_ciks: set[str]
     security_by_figi: dict[str, str]
     duplicate_figis: set[str]
-    listing_keys: set[tuple[str, str, str]]
-    symbol_tickers: set[str]
+    listing_by_key: dict[tuple[str, str, str], dict[str, Any]]
+    massive_listing_ids_by_ticker: dict[str, set[str]]
 
 
 def write_canonical_graph_candidates(config: ReferenceGatewayConfig, plan: ActiveTickerPlan) -> GraphWriteResult:
@@ -137,8 +138,6 @@ def build_candidate_rows(
     if is_otc_venue(candidate.primary_exchange, candidate.overview.get("primary_exchange")):
         issues.append(issue(candidate, "out_of_scope_otc", "OTC securities are outside the configured US-listed-stock scope.", evidence))
         return {table: [] for table in IDENTITY_TABLES}, issues
-    if ticker in existing.symbol_tickers:
-        issues.append(issue(candidate, "symbol_already_exists", "Ticker already exists in the canonical symbol graph.", evidence))
     cik = normalize_cik(candidate.cik or candidate.overview.get("cik"))
     if not cik:
         issues.append(issue(candidate, "missing_durable_issuer_identifier", "Massive active ticker has no CIK; issuer identity is not durable enough.", evidence))
@@ -173,7 +172,20 @@ def build_candidate_rows(
 
     issuer_id = existing.issuer_by_cik.get(cik) or f"issuer:cik:{cik}"
     security_id = existing.security_by_figi.get(figi) or f"security:figi:{stable_key(figi)}"
-    listing_id = f"listing:{stable_key(security_id + ':' + exchange_code + ':USD')}"
+    listing_key = (security_id, exchange_code, "USD")
+    existing_listing = existing.listing_by_key.get(listing_key)
+    listing_id = str(existing_listing.get("listing_id")) if existing_listing else f"listing:{stable_key(security_id + ':' + exchange_code + ':USD')}"
+    prior_massive_listings = existing.massive_listing_ids_by_ticker.get(ticker, set())
+    if prior_massive_listings and listing_id not in prior_massive_listings:
+        issues.append(
+            issue(
+                candidate,
+                "massive_symbol_listing_conflict",
+                "Massive ticker already maps to a different canonical listing; ticker-event reconciliation is required.",
+                {**evidence, "existing_massive_listing_ids": sorted(prior_massive_listings), "candidate_listing_id": listing_id},
+            )
+        )
+        return {table: [] for table in IDENTITY_TABLES}, issues
     symbol_id = f"symbol:massive:{ticker}"
     ticker_type_id = existing.ticker_type_id_by_provider_code.get(candidate.ticker_type, "")
     inserted_at = dt64(now)
@@ -267,7 +279,7 @@ def build_candidate_rows(
                 "inserted_at": inserted_at,
             }
         )
-    if (security_id, exchange_code, "USD") not in existing.listing_keys:
+    if existing_listing is None:
         rows["id_listing_v1"].append(
             {
                 "listing_id": listing_id,
@@ -288,6 +300,19 @@ def build_candidate_rows(
                 "inserted_at": inserted_at,
             }
         )
+    elif str(existing_listing.get("ibkr_conid") or "") != str(ibkr["conid"]):
+        replacement = dict(existing_listing)
+        replacement.update(
+            {
+                "ibkr_conid": str(ibkr["conid"]),
+                "is_primary_listing": 1,
+                "last_seen_at_utc": inserted_at,
+                "source_run_id": run_id,
+                "source_content_sha256": digest,
+                "inserted_at": inserted_at,
+            }
+        )
+        rows["id_listing_v1"].append(replacement)
     rows["id_symbol_v1"].append(
         {
             "symbol_id": symbol_id,
@@ -364,29 +389,38 @@ def load_existing_graph(client: ClickHouseHttpClient, database: str) -> Existing
     )
     security_by_figi = {str(row["figi"]): str(row["security_ids"][0]) for row in security_rows if int(row.get("security_count") or 0) == 1}
     duplicate_figis = {str(row["figi"]) for row in security_rows if int(row.get("security_count") or 0) > 1}
-    listing_keys = {
-        (str(row["security_id"]), str(row["exchange_code"]).upper(), str(row["currency_code"]).upper())
-        for row in query_json_each_row(
-            client,
-            f"""
-            SELECT security_id, exchange_code, currency_code
-            FROM {table(database, 'id_listing_v1')} FINAL
-            WHERE listing_status = 'active'
-            """,
-        )
+    listing_rows = query_json_each_row(
+        client,
+        f"""
+        SELECT *
+        FROM {table(database, 'id_listing_v1')} FINAL
+        WHERE listing_status = 'active'
+        """,
+    )
+    listing_by_key = {
+        (str(row["security_id"]), str(row["exchange_code"]).upper(), str(row["currency_code"]).upper()): row
+        for row in listing_rows
     }
-    symbol_tickers = {
-        str(row["ticker"]).upper()
-        for row in query_json_each_row(
-            client,
-            f"""
-            SELECT ticker
-            FROM {table(database, 'id_symbol_v1')} FINAL
-            WHERE status = 'active' AND primary_symbol_flag = 1
-            """,
-        )
-    }
-    return ExistingGraph(exchanges, ticker_types, issuer_by_cik, duplicate_ciks, security_by_figi, duplicate_figis, listing_keys, symbol_tickers)
+    massive_listing_ids_by_ticker: dict[str, set[str]] = {}
+    for row in query_json_each_row(
+        client,
+        f"""
+        SELECT ticker, listing_id
+        FROM {table(database, 'id_symbol_v1')} FINAL
+        WHERE source_system = 'massive' AND status = 'active' AND primary_symbol_flag = 1
+        """,
+    ):
+        massive_listing_ids_by_ticker.setdefault(str(row["ticker"]).upper(), set()).add(str(row["listing_id"]))
+    return ExistingGraph(
+        exchanges,
+        ticker_types,
+        issuer_by_cik,
+        duplicate_ciks,
+        security_by_figi,
+        duplicate_figis,
+        listing_by_key,
+        massive_listing_ids_by_ticker,
+    )
 
 
 def update_existing_graph(existing: ExistingGraph, rows_by_table: dict[str, list[dict[str, Any]]]) -> None:
@@ -397,9 +431,11 @@ def update_existing_graph(existing: ExistingGraph, rows_by_table: dict[str, list
         if str(row.get("identifier_kind")).lower() == "figi":
             existing.security_by_figi[str(row["identifier_value_normalized"])] = str(row["security_id"])
     for row in rows_by_table.get("id_listing_v1", []):
-        existing.listing_keys.add((str(row["security_id"]), str(row["exchange_code"]).upper(), str(row["currency_code"]).upper()))
+        key = (str(row["security_id"]), str(row["exchange_code"]).upper(), str(row["currency_code"]).upper())
+        existing.listing_by_key[key] = row
     for row in rows_by_table.get("id_symbol_v1", []):
-        existing.symbol_tickers.add(str(row["ticker"]).upper())
+        if str(row.get("source_system") or "").lower() == "massive":
+            existing.massive_listing_ids_by_ticker.setdefault(str(row["ticker"]).upper(), set()).add(str(row["listing_id"]))
 
 
 def ensure_identity_tables_available(client: ClickHouseHttpClient, config: ReferenceGatewayConfig) -> None:
@@ -473,18 +509,22 @@ def compact_candidate_evidence(candidate: MissingTickerCandidate) -> dict[str, A
 
 
 def select_exact_ibkr_contract(candidate: MissingTickerCandidate) -> dict[str, Any] | None:
-    exact = []
-    for row in candidate.ibkr_candidates:
-        if not row.get("exact_symbol"):
-            continue
-        if not str(row.get("conid") or "").isdigit():
-            continue
-        sec_type = str(row.get("sec_type") or "").upper()
-        currency = str(row.get("currency") or "").upper()
-        if sec_type not in {"STK", "STOCK"} or currency != "USD":
-            continue
-        exact.append(row)
-    return exact[0] if len(exact) == 1 else None
+    resolution = resolve_massive_ibkr_contract(
+        massive_ticker=candidate.ticker,
+        massive_name=candidate.name or str(candidate.overview.get("name") or ""),
+        massive_exchange=candidate.primary_exchange or str(candidate.overview.get("primary_exchange") or ""),
+        definitions=candidate.ibkr_candidates,
+    )
+    if not resolution.accepted:
+        return None
+    return next(
+        (
+            row
+            for row in candidate.ibkr_candidates
+            if str(row.get("conid") or row.get("con_id") or "") == str(resolution.conid)
+        ),
+        None,
+    )
 
 
 def resolve_exchange_code(source_code: str, exchanges: dict[str, dict[str, Any]]) -> str:

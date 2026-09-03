@@ -22,7 +22,7 @@ def main() -> None:
         ticker_type="CS",
         missing_reason="massive_active_ticker_not_in_id_symbol_v1",
         overview={"active": True, "ticker": "ZZZT", "name": "ZZZ Test Corp", "primary_exchange": "XNAS", "currency_name": "usd", "cik": "1234567890"},
-        ibkr_candidates=[{"symbol": "ZZZT", "conid": "123456789", "sec_type": "STK", "exchange": "SMART", "listing_exchange": "NASDAQ", "currency": "USD", "company_name": "ZZZ Test Corp", "exact_symbol": True}],
+        ibkr_candidates=[{"symbol": "ZZZT", "conid": "123456789", "sec_type": "STK", "security_type": "COMMON", "exchange": "SMART", "listing_exchange": "NASDAQ", "currency": "USD", "country_code": "US", "is_us": True, "company_name": "ZZZ Test Corp", "exact_symbol": True}],
         proposed_action="candidate_ready_for_dry_run_graph_resolution",
     )
     graph = ExistingGraph(
@@ -32,8 +32,8 @@ def main() -> None:
         duplicate_ciks=set(),
         security_by_figi={},
         duplicate_figis=set(),
-        listing_keys=set(),
-        symbol_tickers=set(),
+        listing_by_key={},
+        massive_listing_ids_by_ticker={},
     )
     rows, issues = build_candidate_rows(candidate, graph, "smoke", datetime.now(UTC))
     assert not issues, issues

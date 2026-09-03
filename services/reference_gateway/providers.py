@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from typing import Any
+from typing import Any, Iterable
 from urllib import error, parse, request
 
 
@@ -124,6 +124,30 @@ class IbkrReferenceClient:
         )
         rows = result if isinstance(result, list) else result.get("results", []) if isinstance(result, dict) else []
         return [row for row in rows if isinstance(row, dict)]
+
+    def fetch_security_definitions(self, conids: Iterable[int | str]) -> list[dict[str, Any]]:
+        normalized = sorted({int(value) for value in conids if str(value).strip().isdigit() and int(value) > 0})
+        if not normalized:
+            return []
+        if len(normalized) > 200:
+            raise ValueError("IBKR security-definition requests are limited to 200 conids")
+        result = fetch_json(
+            self.base_url + "/trsrv/secdef?" + parse.urlencode({"conids": ",".join(str(value) for value in normalized)}),
+            timeout=self.timeout_seconds,
+            allow_self_signed=True,
+            user_agent="quant-reference-gateway-ibkr/1.0",
+        )
+        rows = result.get("secdef", []) if isinstance(result, dict) else []
+        return [row for row in rows if isinstance(row, dict)]
+
+    def fetch_all_stock_conids(self, exchange: str) -> list[dict[str, Any]]:
+        result = fetch_json(
+            self.base_url + "/trsrv/all-conids?" + parse.urlencode({"exchange": str(exchange).strip().upper()}),
+            timeout=max(30, self.timeout_seconds),
+            allow_self_signed=True,
+            user_agent="quant-reference-gateway-ibkr/1.0",
+        )
+        return [row for row in result if isinstance(row, dict)] if isinstance(result, list) else []
 
     def auth_status(self) -> dict[str, Any]:
         result = fetch_json(

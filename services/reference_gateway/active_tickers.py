@@ -9,6 +9,12 @@ from typing import Any, Callable
 
 from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident, sql_string
 from services.reference_gateway.config import ReferenceGatewayConfig
+from services.reference_gateway.ibkr_contract_identity import (
+    ibkr_search_symbols,
+    normalize_equity_symbol,
+    positive_conids,
+    resolve_massive_ibkr_contract,
+)
 from services.reference_gateway.providers import IbkrReferenceClient, MassiveReferenceClient
 from services.reference_gateway.tradability import is_otc_venue
 
@@ -135,7 +141,11 @@ def run_active_ticker_plan(
         if ibkr is not None:
             emit_progress(on_progress, "ibkr_conids", "running", f"Searching IBKR stock contracts for {ticker} ({index:,}/{len(candidate_rows):,}).", ibkr_searched)
             try:
-                ibkr_rows = compact_ibkr_candidates(ibkr.search_stock_contracts(ticker), ticker)
+                search_rows: list[dict[str, Any]] = []
+                for search_symbol in ibkr_search_symbols(ticker):
+                    search_rows.extend(ibkr.search_stock_contracts(search_symbol))
+                definitions = ibkr.fetch_security_definitions(positive_conids(search_rows))
+                ibkr_rows = compact_ibkr_candidates(search_rows, ticker, definitions)
                 ibkr_searched += 1
             except Exception as exc:  # noqa: BLE001
                 ibkr_rows = [{"error": repr(exc)}]
@@ -176,7 +186,13 @@ def run_active_ticker_plan(
                 missing_reason="massive_active_ticker_not_in_id_symbol_v1",
                 overview=overview,
                 ibkr_candidates=ibkr_rows,
-                proposed_action=proposed_action(overview, ibkr_rows),
+                proposed_action=proposed_action(
+                    overview,
+                    ibkr_rows,
+                    ticker=ticker,
+                    name=row.get("name", ""),
+                    primary_exchange=row.get("primary_exchange", ""),
+                ),
             )
         )
     emit_progress(on_progress, "massive_overview", "completed", f"Fetched {overview_fetched:,} Massive overview row(s).", overview_fetched)
@@ -289,7 +305,7 @@ def normalize_massive_ticker(row: dict[str, Any]) -> dict[str, str]:
         "market": str(row.get("market") or "").strip(),
         "locale": str(row.get("locale") or "").strip(),
         "primary_exchange": str(row.get("primary_exchange") or "").strip(),
-        "currency_symbol": str(row.get("currency_symbol") or "").strip().upper(),
+        "currency_symbol": str(row.get("currency_symbol") or row.get("currency_name") or "").strip().upper(),
         "cik": normalize_cik(row.get("cik")),
         "composite_figi": str(row.get("composite_figi") or "").strip(),
         "share_class_figi": str(row.get("share_class_figi") or "").strip(),
@@ -322,35 +338,69 @@ def compact_overview(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def compact_ibkr_candidates(rows: list[dict[str, Any]], ticker: str) -> list[dict[str, Any]]:
+def compact_ibkr_candidates(
+    rows: list[dict[str, Any]],
+    ticker: str,
+    definitions: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    definitions_by_conid = {
+        int(row.get("conid") or row.get("con_id") or 0): row
+        for row in definitions or []
+        if str(row.get("conid") or row.get("con_id") or "").isdigit()
+    }
     compact: list[dict[str, Any]] = []
-    ticker_upper = ticker.upper()
-    for row in rows[:25]:
+    seen_conids: set[int] = set()
+    ticker_key = normalize_equity_symbol(ticker)
+    for row in rows:
+        try:
+            conid = int(row.get("conid") or row.get("con_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if conid <= 0 or conid in seen_conids:
+            continue
+        seen_conids.add(conid)
+        definition = definitions_by_conid.get(conid, {})
         symbol = str(row.get("symbol") or row.get("ticker") or "").upper()
         compact.append(
             {
                 "symbol": symbol,
-                "conid": str(row.get("conid") or row.get("con_id") or ""),
-                "sec_type": str(row.get("secType") or row.get("assetClass") or ""),
+                "conid": str(conid),
+                "sec_type": str(definition.get("assetClass") or definition.get("instrument_type") or row.get("secType") or row.get("assetClass") or ""),
                 "exchange": str(row.get("exchange") or ""),
-                "listing_exchange": str(row.get("listingExchange") or ""),
-                "currency": str(row.get("currency") or ""),
-                "company_name": str(row.get("companyName") or row.get("description") or ""),
-                "exact_symbol": symbol == ticker_upper if symbol else None,
+                "listing_exchange": str(definition.get("listingExchange") or row.get("listingExchange") or row.get("description") or ""),
+                "currency": str(definition.get("currency") or row.get("currency") or ""),
+                "country_code": str(definition.get("countryCode") or ""),
+                "is_us": definition.get("isUS"),
+                "security_type": str(definition.get("type") or ""),
+                "company_name": str(definition.get("name") or row.get("companyName") or ""),
+                "exact_symbol": normalize_equity_symbol(symbol) == ticker_key if symbol else None,
+                "restricted": row.get("restricted"),
             }
         )
-    return compact
+    return compact[:25]
 
 
-def proposed_action(overview: dict[str, Any], ibkr_rows: list[dict[str, Any]]) -> str:
+def proposed_action(
+    overview: dict[str, Any],
+    ibkr_rows: list[dict[str, Any]],
+    *,
+    ticker: str = "",
+    name: str = "",
+    primary_exchange: str = "",
+) -> str:
     if overview.get("error"):
         return "open_mapping_issue_missing_massive_overview"
     if ibkr_rows and any("error" in row for row in ibkr_rows):
         return "open_mapping_issue_ibkr_lookup_failed"
-    exact_ibkr = [row for row in ibkr_rows if row.get("exact_symbol") and str(row.get("conid") or "").isdigit()]
-    if ibkr_rows and len(exact_ibkr) == 1:
+    resolution = resolve_massive_ibkr_contract(
+        massive_ticker=ticker or str(overview.get("ticker") or ""),
+        massive_name=name or str(overview.get("name") or ""),
+        massive_exchange=primary_exchange or str(overview.get("primary_exchange") or ""),
+        definitions=ibkr_rows,
+    )
+    if resolution.accepted:
         return "candidate_ready_for_dry_run_graph_resolution"
-    if ibkr_rows and len(exact_ibkr) > 1:
+    if resolution.reason == "multiple_matching_primary_contracts":
         return "open_mapping_issue_ambiguous_ibkr_contract"
     return "open_mapping_issue_missing_unique_ibkr_conid"
 
