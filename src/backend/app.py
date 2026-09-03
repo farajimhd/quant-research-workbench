@@ -4961,6 +4961,7 @@ def trading_strategy_activity(
     limit: int = 500,
     offset: int = 0,
     include_decision_evidence: bool = True,
+    consequential_only: bool = False,
 ) -> dict[str, Any]:
     try:
         cutoff = datetime.fromisoformat(as_of.replace("Z", "+00:00")) if as_of else None
@@ -4977,6 +4978,7 @@ def trading_strategy_activity(
                 limit=limit,
                 offset=offset,
                 include_decision_evidence=include_decision_evidence,
+                consequential_only=consequential_only,
             )
         return strategy_activity_payload(
             as_of=cutoff,
@@ -4988,6 +4990,7 @@ def trading_strategy_activity(
             limit=limit,
             offset=offset,
             include_decision_evidence=include_decision_evidence,
+            consequential_only=consequential_only,
         )
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

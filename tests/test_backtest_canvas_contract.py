@@ -16,11 +16,39 @@ from src.backend.app import (
     trading_backtest_run_create,
     trading_backtest_run_canvas,
     trading_backtest_run_command,
+    trading_strategy_activity,
 )
 from src.trading_runtime.runtime import RunMode
 
 
 class BacktestCanvasContractTests(unittest.IsolatedAsyncioTestCase):
+    def test_symbol_scoped_chart_activity_uses_consequential_run_evidence(self) -> None:
+        controller = MagicMock()
+        controller.strategy_activity_snapshot.return_value = {
+            "rows": [{"ticker": "MSFT", "action": "enter_long"}],
+        }
+        with patch("src.backend.app._historical_run_controller", return_value=controller):
+            payload = trading_strategy_activity(
+                run_id="run-1",
+                ticker="MSFT",
+                limit=50_000,
+                include_decision_evidence=False,
+                consequential_only=True,
+            )
+
+        controller.strategy_activity_snapshot.assert_called_once_with(
+            as_of=None,
+            record_id="",
+            strategy_id="",
+            ticker="MSFT",
+            event_type="",
+            limit=50_000,
+            offset=0,
+            include_decision_evidence=False,
+            consequential_only=True,
+        )
+        self.assertEqual(payload["rows"][0]["ticker"], "MSFT")
+
     async def test_projects_canvas_from_the_pinned_backtest_controller(self) -> None:
         controller = MagicMock()
         controller.canvas_payload = AsyncMock(

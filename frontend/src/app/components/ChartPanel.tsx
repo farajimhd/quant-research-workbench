@@ -3764,7 +3764,7 @@ function normalizeStrategyPresentationStyle(
   return {
     color: settings?.color === "" ? "" : validHexColor(settings?.color, defaults.color || ""),
     labelSize: Math.round(clampNumber(settings?.labelSize, 8, 16, defaults.labelSize)),
-    lineStyle: settings?.lineStyle === "solid" || settings?.lineStyle === "dotted" ? settings.lineStyle : defaults.lineStyle,
+    lineStyle: settings?.lineStyle === "solid" || settings?.lineStyle === "dashed" || settings?.lineStyle === "dotted" ? settings.lineStyle : defaults.lineStyle,
     lineWidth: Math.round(clampNumber(settings?.lineWidth, 1, 5, defaults.lineWidth)),
     opacity: clampNumber(settings?.opacity, 0.15, 1, defaults.opacity),
     visible: typeof settings?.visible === "boolean" ? settings.visible : defaults.visible,

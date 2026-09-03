@@ -1274,9 +1274,9 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
     {linkOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} link configuration`} data-canvas-link-popover={instanceId}><div className="canvas-link-guide"><strong>Link color</strong><small>Same color = linked</small></div><LinkColorPicker containerTitle={definition.title} onChange={onLinkChange} value={linkGroup} /><LinkedContainerList containerTitle={definition.title} containers={linkedContainers} /></div> : null}
     {settingsOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} settings`}>{containerFields(definition.id, settings, linkContext, updateSettings, onLinkContextChange)}</div> : null}
     <div className={overlayOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{definition.id === "chart"
-        ? <ChartContainerPreview canvasId={canvasId} cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} linkGroup={linkGroup} liveMode={liveMode} onLinkContextChange={onLinkContextChange} previewContext={previewContext} readOnly={readOnly} runtimeMode={runtimeMode} settings={settings} strategy={preview?.strategy} symbolEditable={symbolEditable} trading={preview?.trading} updateSettings={updateSettings} />
+        ? <ChartContainerPreview canvasId={canvasId} cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} linkGroup={linkGroup} liveMode={liveMode} onLinkContextChange={onLinkContextChange} previewContext={previewContext} readOnly={readOnly} runId={signalStreamRunId} runtimeMode={runtimeMode} settings={settings} strategy={preview?.strategy} symbolEditable={symbolEditable} trading={preview?.trading} updateSettings={updateSettings} />
       : definition.id === "charts_quotes"
-        ? <ChartsQuotesContainerPreview canvasId={canvasId} cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} liveMode={liveMode} onLinkContextChange={onLinkContextChange} previewContext={previewContext} readOnly={readOnly} runtimeMode={runtimeMode} settings={settings} strategy={preview?.strategy} symbolEditable={symbolEditable} trading={preview?.trading} updateSettings={updateSettings} />
+        ? <ChartsQuotesContainerPreview canvasId={canvasId} cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} liveMode={liveMode} onLinkContextChange={onLinkContextChange} previewContext={previewContext} readOnly={readOnly} runId={signalStreamRunId} runtimeMode={runtimeMode} settings={settings} strategy={preview?.strategy} symbolEditable={symbolEditable} trading={preview?.trading} updateSettings={updateSettings} />
       : definition.id === "microstructure"
         ? <QuotesTapeContainer end={liveMode ? undefined : new Date(chartCutoffMs).toISOString()} onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined} settings={settings.microstructure} start={liveMode ? undefined : dateInTimeZone(previewContext.sessionDate, "04:00", "America/New_York").toISOString()} symbol={linkContext.symbol} />
       : definition.id === "facts"
@@ -1352,6 +1352,7 @@ type ChartContainerPreviewProps = {
   linkGroup: CanvasLinkGroupId;
   liveMode: boolean;
   readOnly: boolean;
+  runId?: string;
   runtimeMode: CanvasRuntimeMode;
   onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void;
   previewContext: CanvasPreviewContext;
@@ -1362,17 +1363,17 @@ type ChartContainerPreviewProps = {
   updateSettings: SettingsUpdater;
 };
 
-const ChartContainerPreview = memo(function ChartContainerPreview({ canvasId, cutoffMs, instanceId, linkContext, liveMode, onLinkContextChange, previewContext, runtimeMode, settings, strategy, symbolEditable, trading, updateSettings }: ChartContainerPreviewProps) {
+const ChartContainerPreview = memo(function ChartContainerPreview({ canvasId, cutoffMs, instanceId, linkContext, liveMode, onLinkContextChange, previewContext, runId, runtimeMode, settings, strategy, symbolEditable, trading, updateSettings }: ChartContainerPreviewProps) {
   const historicalMode = runtimeMode === "backtest_debug" ? "debug" : runtimeMode === "backtest" ? "backtest" : "replay";
   const fullSession = runtimeMode === "backtest" || runtimeMode === "backtest_debug";
   const liveChart = useCanvasHistoricalChart(linkContext.symbol, settings.chart.timeframe, cutoffMs, previewContext.sessionDate, settings.chart.visibleIndicators, liveMode, true, historicalMode, fullSession);
   const presentations = useTickerPresentations([linkContext.symbol]);
   const strategyDecisions = useMemo(() => strategyDecisionEvents(strategy), [strategy]);
   const strategyPresentation = useMemo(() => resolvedStrategyPresentation(strategy), [strategy]);
-  return <ChartPreview canvasId={canvasId} changeAsOf={new Date(cutoffMs).toISOString()} chartSettings={settings.chart} fillHeight fullSessionReview={fullSession} instanceId={instanceId} linkContext={linkContext} liveChart={liveChart} logoUrl={presentations[linkContext.symbol]?.logo_url} onChartSettingsChange={(next) => updateSettings((current) => ({ ...current, chart: next }))} onLinkContextChange={onLinkContextChange} strategyDecisions={strategyDecisions} strategyPresentation={strategyPresentation} symbolEditable={symbolEditable} trading={trading} />;
+  return <ChartPreview canvasId={canvasId} changeAsOf={new Date(cutoffMs).toISOString()} chartSettings={settings.chart} fillHeight fullSessionReview={fullSession} instanceId={instanceId} linkContext={linkContext} liveChart={liveChart} logoUrl={presentations[linkContext.symbol]?.logo_url} onChartSettingsChange={(next) => updateSettings((current) => ({ ...current, chart: next }))} onLinkContextChange={onLinkContextChange} runId={runId} strategyDecisions={strategyDecisions} strategyPresentation={strategyPresentation} symbolEditable={symbolEditable} trading={trading} />;
 }, chartContainerPreviewPropsEqual);
 
-function ChartsQuotesContainerPreview({ canvasId, cutoffMs, instanceId, linkContext, liveMode, onLinkContextChange, previewContext, readOnly, runtimeMode, settings, strategy, symbolEditable, trading, updateSettings }: Omit<ChartContainerPreviewProps, "linkGroup">) {
+function ChartsQuotesContainerPreview({ canvasId, cutoffMs, instanceId, linkContext, liveMode, onLinkContextChange, previewContext, readOnly, runId, runtimeMode, settings, strategy, symbolEditable, trading, updateSettings }: Omit<ChartContainerPreviewProps, "linkGroup">) {
   const historicalMode = runtimeMode === "backtest_debug" ? "debug" : runtimeMode === "backtest" ? "backtest" : "replay";
   const fullSession = runtimeMode === "backtest" || runtimeMode === "backtest_debug";
   const main = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.main.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.main.visibleIndicators, liveMode, true, historicalMode, fullSession);
@@ -1395,7 +1396,7 @@ function ChartsQuotesContainerPreview({ canvasId, cutoffMs, instanceId, linkCont
     source: liveMode ? "qmd_live_chart_bar" : "qmd_history_chart_bar",
     tick_size: 0.01,
   } : null;
-  const chartProps = { changeAsOf, linkContext, logoUrl, onLinkContextChange, strategyDecisions, strategyPresentation, symbolEditable: false, toolbarVariant: "compact" as const, trading };
+  const chartProps = { changeAsOf, linkContext, logoUrl, onLinkContextChange, runId, strategyDecisions, strategyPresentation, symbolEditable: false, toolbarVariant: "compact" as const, trading };
   return <ChartsQuotesMarketLayout
     dailyChart={<ChartPreview {...chartProps} appearanceDefaults={CHARTS_QUOTES_CONTEXT_APPEARANCE_DEFAULTS} baseHeight={255} canvasId={canvasId} chartSettings={settings.charts_quotes.daily} fillHeight instanceId={`${instanceId}.daily`} liveChart={daily} onChartSettingsChange={(next) => updateSlot("daily", { ...next, timeframe: "1d" })} timeframes={["1d"]} />}
     end={liveMode ? undefined : changeAsOf}
@@ -1418,6 +1419,7 @@ function chartContainerPreviewPropsEqual(previous: ChartContainerPreviewProps, n
     && previous.cutoffMs === next.cutoffMs
     && previous.liveMode === next.liveMode
     && previous.readOnly === next.readOnly
+    && previous.runId === next.runId
     && previous.runtimeMode === next.runtimeMode
     && previous.linkGroup === next.linkGroup
     && previous.linkContext.symbol === next.linkContext.symbol

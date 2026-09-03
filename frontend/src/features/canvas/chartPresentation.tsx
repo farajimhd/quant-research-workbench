@@ -85,6 +85,7 @@ export function ChartPreview({
   strategyDecisions = EMPTY_STRATEGY_DECISIONS,
   strategyPresentation = DEFAULT_STRATEGY_CHART_PRESENTATION,
   showTradeAnnotations = true,
+  runId,
   trading,
 }: {
   appearanceDefaults?: ChartAppearanceDefaults;
@@ -106,6 +107,7 @@ export function ChartPreview({
   strategyDecisions?: StrategyDecisionEvent[];
   strategyPresentation?: StrategyChartPresentation;
   showTradeAnnotations?: boolean;
+  runId?: string;
   trading?: CanonicalTradingPreview;
 }) {
   const [barGptForecasts, setBarGptForecasts] = useState<BarGptForecast[]>([]);
@@ -113,6 +115,7 @@ export function ChartPreview({
   const [barGptError, setBarGptError] = useState("");
   const [barGptInferring, setBarGptInferring] = useState(false);
   const [barGptOriginOverrideUs, setBarGptOriginOverrideUs] = useState<number | null>(null);
+  const [strategyActivityError, setStrategyActivityError] = useState("");
   const indicators = liveChart.indicators;
   const visibleIndicators = chartSettings.visibleIndicators;
   const timeframe = chartSettings.timeframe;
@@ -201,9 +204,45 @@ export function ChartPreview({
     };
   }, [barGptOriginUs, barGptScopeId, barGptTriggerMode, barGptVersion, barGptView, linkContext.symbol, liveChart.pointInTime, showBarGpt]);
   const strategyPresentationAvailable = showTradeAnnotations && supportsPositionPresentation(timeframe);
+  const [scopedStrategyActivity, setScopedStrategyActivity] = useState<PreviewRow[] | null>(null);
+  useEffect(() => {
+    if (!trading || !strategyPresentationAvailable) {
+      setScopedStrategyActivity(null);
+      setStrategyActivityError("");
+      return;
+    }
+    setScopedStrategyActivity(null);
+    setStrategyActivityError("");
+    const controller = new AbortController();
+    const parameters = new URLSearchParams({
+      as_of: trading?.as_of || changeAsOf,
+      consequential_only: "true",
+      include_decision_evidence: "false",
+      limit: "50000",
+      ticker: linkContext.symbol,
+    });
+    if (runId) parameters.set("run_id", runId);
+    api<{ rows: PreviewRow[] }>(`/api/trading/strategy-activity?${parameters}`, { signal: controller.signal, timeoutMs: runId ? 30_000 : 10_000 })
+      .then((response) => {
+        setScopedStrategyActivity(response.rows);
+        setStrategyActivityError("");
+      })
+      .catch(() => {
+        if (controller.signal.aborted) return;
+        setScopedStrategyActivity(null);
+        setStrategyActivityError("Strategy evidence unavailable");
+      });
+    return () => controller.abort();
+  }, [changeAsOf, linkContext.symbol, runId, strategyPresentationAvailable, trading?.as_of]);
+  const chartTrading = useMemo(
+    () => scopedStrategyActivity === null || !trading
+      ? trading
+      : { ...trading, strategy_chart_activity: scopedStrategyActivity },
+    [scopedStrategyActivity, trading],
+  );
   const tradeAnnotations = useMemo(
-    () => strategyPresentationAvailable ? positionLifecycleAnnotations(trading, linkContext.symbol) : [],
-    [linkContext.symbol, strategyPresentationAvailable, trading],
+    () => strategyPresentationAvailable ? positionLifecycleAnnotations(chartTrading, linkContext.symbol) : [],
+    [chartTrading, linkContext.symbol, strategyPresentationAvailable],
   );
   const payload = useMemo<ChartPayload>(() => {
     const marketSignalMarkers = qmdMarketSignalChartMarkers(
@@ -361,7 +400,7 @@ export function ChartPreview({
       {barGptTriggerMode === "manual" && barGptView ? <label className="canvas-bar-gpt-origin"><span>Origin (ET)</span><select aria-label="BarGPT inference origin" onChange={(event) => { setBarGptOriginOverrideUs(Number(event.target.value)); setBarGptForecasts([]); setBarGptError(""); }} value={barGptOriginUs ?? ""}>{barGptOriginOptions.map((row, index) => <option key={row.originUs} value={row.originUs}>{index === 0 ? `Latest · ${row.label}` : row.label}</option>)}</select></label> : null}
       {barGptTriggerMode === "manual" ? <button disabled={!barGptView || !barGptOriginUs || !barGptReady || barGptInferring} onClick={() => void runManualInference()} type="button">{barGptInferring ? "Running…" : "Infer now"}</button> : null}
     </div> : null}
-    <ChartPanel appearanceDefaults={appearanceDefaults} baseHeight={baseHeight} canLoadEarlier={liveChart.canLoadEarlier} dataStatus={splitEvents.error ? "Split events unavailable" : timeframe === "1d" && liveChart.splitAdjusted ? "Split-adjusted" : undefined} deferInitialFitUntilLoaded={fullSessionReview} displayItemOptions={CHART_INDICATORS} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} fillHeight={fillHeight} indicatorOptions={[]} initialFitMode="default" liveEntryLine={positionLine} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onShowSplitEventsChange={(showSplitEvents) => onChartSettingsChange({ ...chartSettings, showSplitEvents })} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => onChartSettingsChange({ ...chartSettings, visibleIndicators: nextVisibleIndicators })} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} showSplitEvents={chartSettings.showSplitEvents} strategyPresentationEnabled={strategyPresentationAvailable} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={timeframes} toolbarVariant={toolbarVariant} visibleColumns={visibleIndicators} />
+    <ChartPanel appearanceDefaults={appearanceDefaults} baseHeight={baseHeight} canLoadEarlier={liveChart.canLoadEarlier} dataStatus={splitEvents.error ? "Split events unavailable" : strategyActivityError || (timeframe === "1d" && liveChart.splitAdjusted ? "Split-adjusted" : undefined)} deferInitialFitUntilLoaded={fullSessionReview} displayItemOptions={CHART_INDICATORS} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} fillHeight={fillHeight} indicatorOptions={[]} initialFitMode="default" liveEntryLine={positionLine} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onShowSplitEventsChange={(showSplitEvents) => onChartSettingsChange({ ...chartSettings, showSplitEvents })} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => onChartSettingsChange({ ...chartSettings, visibleIndicators: nextVisibleIndicators })} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} showSplitEvents={chartSettings.showSplitEvents} strategyPresentationEnabled={strategyPresentationAvailable} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={timeframes} toolbarVariant={toolbarVariant} visibleColumns={visibleIndicators} />
   </div>;
 }
 

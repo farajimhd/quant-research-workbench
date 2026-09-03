@@ -136,7 +136,11 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     chart_source = (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "chartPresentation.tsx").read_text(encoding="utf-8")
     renderer_source = (REPO_ROOT / "frontend" / "src" / "app" / "components" / "ChartPanel.tsx").read_text(encoding="utf-8")
 
-    assert "() => strategyPresentationAvailable ? positionLifecycleAnnotations(trading, linkContext.symbol) : []" in chart_source
+    assert "() => strategyPresentationAvailable ? positionLifecycleAnnotations(chartTrading, linkContext.symbol) : []" in chart_source
+    assert 'consequential_only: "true"' in chart_source
+    assert 'if (runId) parameters.set("run_id", runId)' in chart_source
+    assert 'ticker: linkContext.symbol' in chart_source
+    assert "strategy_chart_activity: scopedStrategyActivity" in chart_source
     assert "trade_annotations: tradeAnnotations" in chart_source
     assert "trading?.position_lifecycles" in chart_source
     assert 'const status = String(row.status || "").toLowerCase() === "closed" ? "closed" : "open"' in chart_source
@@ -167,6 +171,7 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert 'label: `SL@${compactPrice(nextStop)}`' in chart_source
     assert 'label: `TP@${compactPrice(nextTarget)}`' in chart_source
     assert 'return `${name}${formatQuantity(quantity)}@${compactPrice(price)}`' in chart_source
+    assert 'settings?.lineStyle === "dashed"' in renderer_source
     assert "execution_annotations: []" in chart_source
     assert "positionExecutionActions" in chart_source
     assert '"Long" : "Short"' not in chart_source
