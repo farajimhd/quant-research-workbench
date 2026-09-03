@@ -58,14 +58,14 @@ def test_completed_position_manager_reports_an_outdated_backend_contract() -> No
     assert "will not reinterpret FIFO execution fragments as positions" in source
 
 
-def test_charts_quotes_scopes_trade_annotations_to_the_main_chart() -> None:
+def test_charts_quotes_uses_shared_trade_annotations_on_every_chart() -> None:
     canvas_source = CANVAS_PAGE.read_text(encoding="utf-8")
     chart_source = CHART_PRESENTATION.read_text(encoding="utf-8")
 
     assert "showTradeAnnotations = true" in chart_source
     assert chart_source.count("showTradeAnnotations ?") == 1
     assert "execution_annotations: []" in chart_source
-    assert canvas_source.count("showTradeAnnotations={false}") == 2
+    assert "showTradeAnnotations={false}" not in canvas_source
 
 
 def test_charts_share_causal_split_events_with_timeframe_defaults_and_controls() -> None:
@@ -133,8 +133,13 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     chart_source = (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "chartPresentation.tsx").read_text(encoding="utf-8")
     renderer_source = (REPO_ROOT / "frontend" / "src" / "app" / "components" / "ChartPanel.tsx").read_text(encoding="utf-8")
 
-    assert "trade_annotations: showTradeAnnotations ? positionLifecycleAnnotations(trading, linkContext.symbol) : []" in chart_source
+    assert "() => showTradeAnnotations ? positionLifecycleAnnotations(trading, linkContext.symbol) : []" in chart_source
+    assert "trade_annotations: tradeAnnotations" in chart_source
     assert "trading?.position_lifecycles" in chart_source
+    assert 'const status = String(row.status || "").toLowerCase() === "closed" ? "closed" : "open"' in chart_source
+    assert 'const endTime = exitTime ?? asOfTime' in chart_source
+    assert 'annotation.status !== "open"' in renderer_source
+    assert 'trade.endTime ?? trade.exitTime ?? trade.entryTime' in renderer_source
     assert "trading?.strategy_chart_activity ?? trading?.strategy_activity" in chart_source
     assert "entryDecision?.row.chart_plan" in chart_source
     assert "guideStartTime: planStartTime" in chart_source
@@ -142,6 +147,14 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert "combined_entry_boundary" in chart_source
     assert "levelPrices" in chart_source
     assert "targetPrices" in chart_source
+    assert "lifecycleProtectionOrders" in chart_source
+    assert 'orderType.includes("TRAIL")' in chart_source
+    assert 'orderType.includes("STP")' in chart_source
+    assert 'orderType.includes("LMT")' in chart_source
+    assert 'side === "SHORT" ? Math.min(...brokerStops) : Math.max(...brokerStops)' in chart_source
+    assert '"NO SL"' in chart_source
+    assert '"NO TP"' in chart_source
+    assert '"NO STRATEGY PLAN"' in chart_source
     assert 'label: `SL@${compactPrice(nextStop)}`' in chart_source
     assert 'label: `TP@${compactPrice(nextTarget)}`' in chart_source
     assert 'return `${name}${formatQuantity(quantity)}@${compactPrice(price)}`' in chart_source
@@ -475,12 +488,14 @@ def test_completed_backtest_focus_rehydrates_after_backend_restart() -> None:
     assert 'method: "POST"' in focus_source
 
 
-def test_chart_memo_signature_includes_completed_position_evidence() -> None:
+def test_chart_memo_signature_includes_position_and_protection_evidence() -> None:
     source = CANVAS_PAGE.read_text(encoding="utf-8")
 
     signature_source = source.split("function tradingPositionSignature", 1)[1].split("function strategyDecisionEvents", 1)[0]
     assert "trading?.position_lifecycles" in signature_source
     assert "trading?.executions" in signature_source
+    assert "trading?.orders" in signature_source
+    assert "trading?.strategy_chart_activity ?? trading?.strategy_activity" in signature_source
     assert "row.lifecycle_id" in signature_source
 
 

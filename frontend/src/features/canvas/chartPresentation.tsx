@@ -200,6 +200,10 @@ export function ChartPreview({
       requestController?.abort();
     };
   }, [barGptOriginUs, barGptScopeId, barGptTriggerMode, barGptVersion, barGptView, linkContext.symbol, liveChart.pointInTime, showBarGpt]);
+  const tradeAnnotations = useMemo(
+    () => showTradeAnnotations ? positionLifecycleAnnotations(trading, linkContext.symbol) : [],
+    [linkContext.symbol, showTradeAnnotations, trading],
+  );
   const payload = useMemo<ChartPayload>(() => {
     const marketSignalMarkers = qmdMarketSignalChartMarkers(
       liveChart.marketSignalEvents,
@@ -258,10 +262,10 @@ export function ChartPreview({
       ],
       regions: MACRO_TIMEFRAMES.has(timeframe) ? [] : extendedSessionRegions(liveChart.bars),
       execution_annotations: [],
-      trade_annotations: showTradeAnnotations ? positionLifecycleAnnotations(trading, linkContext.symbol) : [],
+      trade_annotations: tradeAnnotations,
       volume: chartSettings.showVolume ? liveChart.bars.map((bar) => ({ color: bar.close >= bar.open ? "var(--success)" : "var(--danger)", time: Date.parse(bar.bar_start) / 1000, value: bar.volume })) : [],
     };
-  }, [barGptForecastPalette.downBorder, barGptForecastPalette.downFill, barGptForecastPalette.downWick, barGptForecastPalette.upBorder, barGptForecastPalette.upFill, barGptForecastPalette.upWick, barGptForecasts, barGptOriginOptions, barGptOriginUs, barGptVersion, barGptView, chartSettings.showVolume, forecastLineComponents.join("|"), indicators, linkContext.symbol, liveChart.bars, liveChart.marketSignalEvents, liveChart.structureEvents, liveChart.structureLevelHistory, showForecastCandles, showTradeAnnotations, splitEvents.events, strategyDecisions, strategyPresentation, timeframe, trading, visibleIndicators]);
+  }, [barGptForecastPalette.downBorder, barGptForecastPalette.downFill, barGptForecastPalette.downWick, barGptForecastPalette.upBorder, barGptForecastPalette.upFill, barGptForecastPalette.upWick, barGptForecasts, barGptOriginOptions, barGptOriginUs, barGptVersion, barGptView, chartSettings.showVolume, forecastLineComponents.join("|"), indicators, linkContext.symbol, liveChart.bars, liveChart.marketSignalEvents, liveChart.structureEvents, liveChart.structureLevelHistory, showForecastCandles, splitEvents.events, strategyDecisions, strategyPresentation, timeframe, tradeAnnotations, visibleIndicators]);
   function updateChart(symbol: string, nextTimeframe: CanvasChartTimeframe) {
     onChartSettingsChange({
       ...chartSettings,
@@ -286,9 +290,14 @@ export function ChartPreview({
   const positionQuantityLabel = targetQuantity > Math.abs(quantity)
     ? `${formatQuantity(Math.abs(quantity))} filled / ${formatQuantity(targetQuantity)} target`
     : formatQuantity(Math.abs(quantity));
+  const activeLifecycleAnnotation = tradeAnnotations.find((annotation) => annotation.status === "open");
+  const protectionLabelParts = activeLifecycleAnnotation ? [
+    { text: activeLifecycleAnnotation.stopPrice ? `SL ${compactPrice(activeLifecycleAnnotation.stopPrice)}` : "NO SL", tone: activeLifecycleAnnotation.stopPrice ? "price" as const : "pnlLoss" as const },
+    { text: activeLifecycleAnnotation.targetPrices?.length ? `TP ${activeLifecycleAnnotation.targetPrices.map(compactPrice).join("/")}` : "NO TP", tone: activeLifecycleAnnotation.targetPrices?.length ? "price" as const : "pnlLoss" as const },
+  ] : [{ text: "NO STRATEGY PLAN", tone: "pnlLoss" as const }];
   const positionLine = activePosition && averagePrice > 0 ? {
     color: quantity > 0 ? "var(--success)" : "var(--danger)",
-    labelParts: [{ text: quantity > 0 ? "LONG" : "SHORT", tone: "label" }, { text: `${positionQuantityLabel} @ ${money(averagePrice)}`, tone: "price" }],
+    labelParts: [{ text: quantity > 0 ? "LONG" : "SHORT", tone: "label" as const }, { text: `${positionQuantityLabel} @ ${money(averagePrice)}`, tone: "price" as const }, ...protectionLabelParts],
     pnl: Number(activePosition.unrealized_pnl || 0),
     price: averagePrice,
     quantity,
@@ -358,6 +367,7 @@ export function ChartPreview({
 export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | undefined, symbol: string): NonNullable<ChartPayload["trade_annotations"]> {
   const executionsById = new Map((trading?.executions ?? []).map((row) => [String(row.execution_id || ""), row]));
   const normalizedSymbol = symbol.toUpperCase();
+  const asOfTime = parsedTime(trading?.as_of) ?? Date.now() / 1_000;
   const activity = (trading?.strategy_chart_activity ?? trading?.strategy_activity ?? [])
     .filter((row) => String(row.ticker || "").toUpperCase() === normalizedSymbol)
     .map((row) => ({ row, time: Date.parse(String(row.event_time || "")) / 1000 }))
@@ -367,7 +377,7 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
     .filter((row) => String(nestedValue(row, "instrument", "symbol") || "").toUpperCase() === normalizedSymbol)
     .sort((left, right) => Date.parse(String(left.opened_at || "")) - Date.parse(String(right.opened_at || "")));
   return lifecycles.flatMap((row, lifecycleIndex) => {
-    if (String(row.status || "").toLowerCase() !== "closed") return [];
+    const status = String(row.status || "").toLowerCase() === "closed" ? "closed" : "open";
     const side = String(row.side || "LONG").toUpperCase();
     const executionIds = Array.isArray(row.execution_ids) ? row.execution_ids.map(String) : [];
     const actions = positionExecutionActions(executionIds.flatMap((executionId) => {
@@ -375,19 +385,21 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
       return execution ? [execution] : [];
     }), side);
     const entryAction = actions[0];
-    const exitAction = actions.length > 1 ? actions.at(-1) : undefined;
-    const entryPrice = Number(entryAction?.price ?? row.entry_price ?? 0);
-    const exitPrice = Number(exitAction?.price ?? row.exit_price ?? 0);
+    const exitAction = status === "closed" && actions.length > 1 ? actions.at(-1) : undefined;
+    const entryPrice = Number(row.entry_price ?? entryAction?.price ?? 0);
+    const exitPrice = status === "closed" ? Number(row.exit_price ?? exitAction?.price ?? 0) : undefined;
     const entryTime = entryAction?.time ?? Date.parse(String(row.opened_at || "")) / 1000;
-    const exitTime = exitAction?.time ?? Date.parse(String(row.closed_at || "")) / 1000;
-    if (![entryPrice, exitPrice, entryTime, exitTime].every(Number.isFinite) || entryPrice <= 0 || exitPrice <= 0) return [];
+    const exitTime = status === "closed" ? exitAction?.time ?? parsedTime(row.closed_at) : undefined;
+    const endTime = exitTime ?? asOfTime;
+    if (!Number.isFinite(entryPrice) || entryPrice <= 0 || !Number.isFinite(entryTime) || !Number.isFinite(endTime)) return [];
+    if (status === "closed" && (!Number.isFinite(exitPrice) || Number(exitPrice) <= 0 || exitTime === undefined)) return [];
     const previousCloseTime = lifecycleIndex > 0
       ? Date.parse(String(lifecycles[lifecycleIndex - 1].closed_at || "")) / 1000
       : Number.NEGATIVE_INFINITY;
     const entryDecision = [...activity].reverse().find(({ row: event, time }) =>
       String(event.event_type || "") === "decision"
       &&
-      String(event.action || "") === "enter_long"
+      String(event.action || "") === (side === "SHORT" ? "enter_short" : "enter_long")
       && time > previousCloseTime
       && time <= entryTime,
     );
@@ -414,19 +426,20 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
     const qualifiedTargets = Array.isArray(targetSelection.qualified_levels)
       ? (targetSelection.qualified_levels as PreviewRow[]).map((level) => level.target_price ?? level.price)
       : [];
-    const targetPrices = uniquePositivePrices(
+    const plannedTargetPrices = uniquePositivePrices(
       qualifiedTargets.length
         ? qualifiedTargets
         : Array.isArray(decisionValues.profit_targets)
         ? decisionValues.profit_targets
         : selectedTargets,
     ).slice(0, 3);
-    const stopPrice = positiveNumber(decisionValues.initial_stop ?? decisionValues.invalidation_price);
+    const plannedStopPrice = positiveNumber(decisionValues.initial_stop ?? decisionValues.invalidation_price);
     const planStartTime = entryDecision?.time ?? entryTime;
     const quantity = Math.abs(Number(row.quantity || 0));
     const pnl = Number(row.net_pnl || row.gross_pnl || 0);
     const openingSide = side === "SHORT" ? "SELL" : "BUY";
-    const fills: NonNullable<NonNullable<ChartPayload["trade_annotations"]>[number]["fills"]> = actions.slice(1, -1).map((action) => {
+    const lifecycleActions = status === "closed" ? actions.slice(1, -1) : actions.slice(1);
+    const fills: NonNullable<NonNullable<ChartPayload["trade_annotations"]>[number]["fills"]> = lifecycleActions.map((action) => {
       const kind = action.side === openingSide
         ? "add" as const
         : normalizedExecutionRole(action.executionRole, action.price, entryPrice, side);
@@ -440,10 +453,10 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
         time: action.time,
       };
     });
-    let activeStop = stopPrice;
-    let activeTarget = targetPrices[0];
+    let activeStop = plannedStopPrice;
+    let activeTarget = plannedTargetPrices[0];
     activity.forEach(({ row: event, time }) => {
-      if (time <= planStartTime || time >= exitTime) return;
+      if (time <= planStartTime || time >= endTime) return;
       const eventGates = (event.chart_plan as PreviewRow | undefined)
         ?? (event.gate_snapshot as PreviewRow | undefined)
         ?? {};
@@ -491,10 +504,16 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
         time,
       });
     });
+    const currentOrders = status === "open" ? lifecycleProtectionOrders(trading?.orders ?? [], row, normalizedSymbol, side) : [];
+    const brokerStops = uniquePositivePrices(currentOrders.filter((order) => ["protective_stop", "trailing_stop", "protective_exit"].includes(orderRole(order))).map((order) => order.stop_price));
+    const brokerTargets = uniquePositivePrices(currentOrders.filter((order) => orderRole(order) === "profit_target").map((order) => order.limit_price))
+      .sort((left, right) => side === "SHORT" ? right - left : left - right);
+    if (brokerStops.length) activeStop = side === "SHORT" ? Math.min(...brokerStops) : Math.max(...brokerStops);
+    const targetPrices = brokerTargets.length ? brokerTargets : activeTarget !== undefined ? [activeTarget] : plannedTargetPrices;
     fills.sort((left, right) => left.time - right.time);
     const entryQuantity = entryAction?.quantity ?? quantity;
     const exitQuantity = exitAction?.quantity || quantity;
-    const exitKind = exitAction
+    const exitKind = status === "closed" && exitAction
       ? normalizedExecutionRole(exitAction.executionRole, exitAction.price, entryPrice, side)
       : "position_exit";
     const exitLabel = positionExitLabel(String(row.exit_reason || ""), exitKind);
@@ -504,19 +523,56 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
       entryLabel: `${side === "SHORT" ? "Short" : "Long"} ${formatQuantity(entryQuantity)} @ ${entryPrice.toFixed(2)}`,
       entryPrice,
       entryTime,
-      exitColor: side === "SHORT" ? "#16a34a" : "#dc2626",
-      exitLabel: `${exitLabel} ${formatQuantity(exitQuantity)} @ ${exitPrice.toFixed(2)} · ${signedMoneyShort(pnl)}`,
-      exitLabelColor: pnl > 0 ? "#16A34A" : pnl < 0 ? "#DC2626" : "#C2410C",
+      endTime,
+      exitColor: status === "closed" ? side === "SHORT" ? "#16a34a" : "#dc2626" : undefined,
+      exitLabel: status === "closed" ? `${exitLabel} ${formatQuantity(exitQuantity)} @ ${Number(exitPrice).toFixed(2)} · ${signedMoneyShort(pnl)}` : undefined,
+      exitLabelColor: status === "closed" ? pnl > 0 ? "#16A34A" : pnl < 0 ? "#DC2626" : "#C2410C" : undefined,
       exitPrice,
       exitTime,
       fills,
       guideStartTime: planStartTime,
-      id: String(row.lifecycle_id || `${normalizedSymbol}:${entryTime}:${exitTime}`),
+      id: String(row.lifecycle_id || `${normalizedSymbol}:${entryTime}:${endTime}`),
       levelPrices,
       pnl,
-      stopPrice,
+      status,
+      stopPrice: activeStop,
       targetPrices,
     }];
+  });
+}
+
+function parsedTime(value: unknown): number | undefined {
+  const time = Date.parse(String(value || "")) / 1_000;
+  return Number.isFinite(time) ? time : undefined;
+}
+
+function orderRole(order: PreviewRow): string {
+  const explicit = String(
+    order.execution_role
+    ?? nestedValue(order, "raw", "canonical_metadata", "execution_role")
+    ?? nestedValue(order, "raw", "raw", "canonical_metadata", "execution_role")
+    ?? nestedValue(order, "raw", "execution_role")
+    ?? "",
+  ).toLowerCase();
+  if (explicit) return explicit;
+  const orderType = String(order.order_type || "").toUpperCase().replaceAll(" ", "");
+  if (orderType.includes("TRAIL")) return "trailing_stop";
+  if (orderType.includes("STP") || orderType.includes("STOP")) return "protective_stop";
+  if (orderType.includes("LMT") || orderType.includes("LIMIT")) return "profit_target";
+  return "";
+}
+
+function lifecycleProtectionOrders(orders: PreviewRow[], lifecycle: PreviewRow, symbol: string, side: string): PreviewRow[] {
+  const lifecycleOrderIds = new Set(Array.isArray(lifecycle.order_ids) ? lifecycle.order_ids.map(String) : []);
+  const closingSide = side === "SHORT" ? "BUY" : "SELL";
+  return orders.filter((order) => {
+    if (Boolean(order.terminal)) return false;
+    if (String(nestedValue(order, "instrument", "symbol") || "").toUpperCase() !== symbol) return false;
+    if (String(order.account_id || "") !== String(lifecycle.account_id || "")) return false;
+    if (String(order.side || "").toUpperCase() !== closingSide) return false;
+    const orderId = String(order.broker_order_id || order.client_order_id || "");
+    const sameLifecycle = lifecycleOrderIds.size === 0 || lifecycleOrderIds.has(orderId) || String(order.run_id || "") === String(lifecycle.run_id || "");
+    return sameLifecycle && ["profit_target", "protective_stop", "trailing_stop", "protective_exit"].includes(orderRole(order));
   });
 }
 

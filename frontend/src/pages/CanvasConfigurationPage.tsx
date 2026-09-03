@@ -1397,11 +1397,11 @@ function ChartsQuotesContainerPreview({ canvasId, cutoffMs, instanceId, linkCont
   } : null;
   const chartProps = { changeAsOf, linkContext, logoUrl, onLinkContextChange, strategyDecisions, strategyPresentation, symbolEditable: false, toolbarVariant: "compact" as const, trading };
   return <ChartsQuotesMarketLayout
-    dailyChart={<ChartPreview {...chartProps} appearanceDefaults={CHARTS_QUOTES_CONTEXT_APPEARANCE_DEFAULTS} baseHeight={255} canvasId={canvasId} chartSettings={settings.charts_quotes.daily} fillHeight instanceId={`${instanceId}.daily`} liveChart={daily} onChartSettingsChange={(next) => updateSlot("daily", { ...next, timeframe: "1d" })} showTradeAnnotations={false} timeframes={["1d"]} />}
+    dailyChart={<ChartPreview {...chartProps} appearanceDefaults={CHARTS_QUOTES_CONTEXT_APPEARANCE_DEFAULTS} baseHeight={255} canvasId={canvasId} chartSettings={settings.charts_quotes.daily} fillHeight instanceId={`${instanceId}.daily`} liveChart={daily} onChartSettingsChange={(next) => updateSlot("daily", { ...next, timeframe: "1d" })} timeframes={["1d"]} />}
     end={liveMode ? undefined : changeAsOf}
     layout={settings.charts_quotes.layout}
     mainChart={<ChartPreview {...chartProps} baseHeight={460} canvasId={canvasId} chartSettings={settings.charts_quotes.main} fillHeight fullSessionReview={fullSession} instanceId={`${instanceId}.main`} liveChart={main} onChartSettingsChange={(next) => updateSlot("main", next)} timeframes={HISTORICAL_TIMEFRAMES} />}
-    monthChart={<ChartPreview {...chartProps} appearanceDefaults={CHARTS_QUOTES_CONTEXT_APPEARANCE_DEFAULTS} baseHeight={255} canvasId={canvasId} chartSettings={settings.charts_quotes.month} fillHeight instanceId={`${instanceId}.month`} liveChart={month} onChartSettingsChange={(next) => updateSlot("month", { ...next, timeframe: "1mo" })} showTradeAnnotations={false} timeframes={["1mo"]} />}
+    monthChart={<ChartPreview {...chartProps} appearanceDefaults={CHARTS_QUOTES_CONTEXT_APPEARANCE_DEFAULTS} baseHeight={255} canvasId={canvasId} chartSettings={settings.charts_quotes.month} fillHeight instanceId={`${instanceId}.month`} liveChart={month} onChartSettingsChange={(next) => updateSlot("month", { ...next, timeframe: "1mo" })} timeframes={["1mo"]} />}
     onLayoutChange={(layout) => updateSettings((current) => ({ ...current, charts_quotes: { ...current.charts_quotes, layout } }))}
     onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined}
     start={liveMode ? undefined : dateInTimeZone(previewContext.sessionDate, "04:00", "America/New_York").toISOString()}
@@ -1441,10 +1441,18 @@ function tradingPositionSignature(trading: CanonicalTradingPreview | undefined, 
   const executions = (trading?.executions ?? [])
     .filter((row) => String(nestedValue(row, "instrument", "symbol")).toUpperCase() === normalizedSymbol)
     .map((row) => [row.execution_id, row.quantity, row.price, row.side, row.source_event_time].join(":"));
+  const orders = (trading?.orders ?? [])
+    .filter((row) => String(nestedValue(row, "instrument", "symbol")).toUpperCase() === normalizedSymbol)
+    .map((row) => [row.broker_order_id, row.client_order_id, row.lifecycle_state, row.terminal, row.side, row.order_type, row.total_quantity, row.filled_quantity, row.limit_price, row.stop_price, nestedValue(row, "raw", "canonical_metadata", "execution_role"), row.source_event_time].join(":"));
+  const strategyActivity = (trading?.strategy_chart_activity ?? trading?.strategy_activity ?? [])
+    .filter((row) => String(row.ticker || "").toUpperCase() === normalizedSymbol)
+    .map((row) => [row.record_id, row.sequence, row.event_time, row.action, row.operation, JSON.stringify(row.chart_plan ?? row.gate_snapshot ?? {}), JSON.stringify(row.management_event ?? {})].join(":"));
   return JSON.stringify({
     executions,
     lifecycles,
+    orders,
     position: position ? [position.account_id, position.quantity, position.average_price, position.market_price, position.unrealized_pnl, position.source_event_time] : null,
+    strategyActivity,
   });
 }
 

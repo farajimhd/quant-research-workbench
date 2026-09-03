@@ -99,14 +99,16 @@ type TradeAnnotation = {
   exitLabelParts?: TradeLabelPart[];
   exitLabelSide?: "left" | "right";
   exitColor?: string;
-  exitPrice: number;
-  exitTime: number;
+  endTime?: number;
+  exitPrice?: number;
+  exitTime?: number;
   fills?: TradeFillAnnotation[];
   guideStartTime?: number;
   id: string;
   levelPrices?: number[];
   pnl?: number;
   selected?: boolean;
+  status?: "open" | "closed";
   stopPrice?: number;
   targetPrices?: number[];
   triggerPrice?: number;
@@ -790,7 +792,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   ]).size;
   const hasChartData = Boolean(payload?.candles.length);
   const referenceKey = reference ? `${reference.time ?? ""}:${reference.startTime ?? ""}:${reference.endTime ?? ""}:${reference.sessionDate ?? ""}:${reference.minuteOfDay ?? ""}:${reference.label ?? ""}` : "";
-  const liveEntryLineKey = liveEntryLine ? `${liveEntryLine.price}:${liveEntryLine.quantity}:${liveEntryLine.pnl}:${liveEntryLine.color}` : "";
+  const liveEntryLineKey = liveEntryLine ? `${liveEntryLine.price}:${liveEntryLine.quantity}:${liveEntryLine.pnl}:${liveEntryLine.color}:${JSON.stringify(liveEntryLine.labelParts ?? [])}` : "";
   const liveEntryLineForDraw = liveEntryLine ? { ...liveEntryLine, onClose: onLiveEntryClose } : null;
   liveEntryLineRef.current = liveEntryLineForDraw;
   referenceRef.current = reference ?? null;
@@ -2757,8 +2759,8 @@ function StrategyPresentationSelect({
     { fallbackColor: "#2563EB", help: "Confirmed entry price, arrow, and blue label.", key: "entry", title: "Entries" },
     { fallbackColor: "#C2410C", help: "Final exit path in dark orange; result labels remain green for gains and red for losses.", key: "exit", title: "Exits" },
     { fallbackColor: palette.text, help: "Up to three resistance levels frozen at the entry decision.", key: "levels", title: "Entry structural levels" },
-    { fallbackColor: "#DC2626", help: "The initial protective stop, frozen for the lifecycle guide.", key: "stop", title: "Initial stop" },
-    { fallbackColor: palette.text, help: "The original profit target plan, shown whether filled or not.", key: "targets", title: "Profit targets" },
+    { fallbackColor: "#DC2626", help: "Current broker or OMS stop for an open position; immutable entry-plan stop for completed review when no later protection exists.", key: "stop", title: "Protective stop" },
+    { fallbackColor: palette.text, help: "Current broker or OMS targets for an open position; immutable entry-plan targets for completed review.", key: "targets", title: "Profit targets" },
     { fallbackColor: palette.text, help: "Adds plus stop and target revisions at their exact event price and time. Theme mode uses blue, green, red, or dark orange by event meaning.", key: "adjustments", title: "Position changes" },
   ];
 
@@ -6292,10 +6294,12 @@ function drawTradeAnnotationPrimitiveGeometry(
   context.lineJoin = "round";
   annotations.forEach((annotation) => {
     const entryX = xForAnnotationTime(chart, annotation.entryTime, candles);
-    const exitX = xForAnnotationTime(chart, annotation.exitTime, candles);
+    const endTime = annotation.endTime ?? annotation.exitTime ?? annotation.entryTime;
+    const resolvedEndX = xForAnnotationTime(chart, endTime, candles);
+    const exitX = annotation.status === "open" ? width : resolvedEndX;
     const entryY = priceSeries.priceToCoordinate(annotation.entryPrice);
-    const exitY = priceSeries.priceToCoordinate(annotation.exitPrice);
-    if (entryX === null || exitX === null || entryY === null || exitY === null) return;
+    const exitY = typeof annotation.exitPrice === "number" ? priceSeries.priceToCoordinate(annotation.exitPrice) : null;
+    if (entryX === null || exitX === null || entryY === null) return;
     const span = clippedTradeSpan(entryX, exitX, width);
     if (!span) return;
     const guideStartX = annotation.guideStartTime === undefined
@@ -6310,7 +6314,7 @@ function drawTradeAnnotationPrimitiveGeometry(
     if (settings.entry.visible) {
       drawCanvasTradeLine(context, span.left, span.right, entryY, entryColor, annotation.selected ? Math.min(5, settings.entry.lineWidth + 1) : settings.entry.lineWidth, settings.entry.lineStyle, settings.entry.opacity);
     }
-    if (settings.exit.visible) {
+    if (settings.exit.visible && annotation.status !== "open" && exitY !== null) {
       drawCanvasTradeLine(context, span.left, span.right, exitY, exitColor, annotation.selected ? Math.min(5, settings.exit.lineWidth + 1) : settings.exit.lineWidth, settings.exit.lineStyle, settings.exit.opacity);
     }
     if (settings.stop.visible && typeof annotation.stopPrice === "number" && Number.isFinite(annotation.stopPrice)) {
@@ -6333,7 +6337,7 @@ function drawTradeAnnotationPrimitiveGeometry(
       drawCanvasTradeArrow(context, entryX, entryY, entryColor, "entry", annotation.selected === true, 7, settings.entry.opacity);
       drawCanvasTradeLabel(context, compactTradeLabel(annotation.entryLabelParts, annotation.entryLabel, "Entry"), entryX, entryY + 14, entryColor, chartBackground, annotation.entryLabelSide ?? "left", width, height, settings.entry.labelSize, settings.entry.opacity);
     }
-    if (settings.exit.visible) {
+    if (settings.exit.visible && annotation.status !== "open" && exitY !== null) {
       drawCanvasTradeArrow(context, exitX, exitY, exitColor, "exit", annotation.selected === true, 7, settings.exit.opacity);
       drawCanvasTradeLabel(context, compactTradeLabel(annotation.exitLabelParts, annotation.exitLabel, "Exit"), exitX, exitY - settings.exit.labelSize - 15, resultColor, chartBackground, annotation.exitLabelSide ?? "right", width, height, settings.exit.labelSize, settings.exit.opacity);
     }
@@ -6532,10 +6536,12 @@ function tradeAnnotationAutoscaleInfo(
   const prices: number[] = [];
   state.trades.forEach((trade) => {
     const tradeStart = Math.max(0, lowerBoundCandleTime(state.candles, Math.min(trade.guideStartTime ?? trade.entryTime, trade.entryTime)) - 1);
-    const tradeEnd = Math.min(state.candles.length - 1, lowerBoundCandleTime(state.candles, trade.exitTime));
+    const tradeEnd = trade.status === "open"
+      ? visibleEnd
+      : Math.min(state.candles.length - 1, lowerBoundCandleTime(state.candles, trade.endTime ?? trade.exitTime ?? trade.entryTime));
     if (tradeEnd < visibleStart || tradeStart > visibleEnd) return;
     if (state.settings.entry.visible) prices.push(trade.entryPrice);
-    if (state.settings.exit.visible) prices.push(trade.exitPrice);
+    if (state.settings.exit.visible && trade.status !== "open" && typeof trade.exitPrice === "number") prices.push(trade.exitPrice);
     if (state.settings.levels.visible) {
       prices.push(...(trade.levelPrices?.slice(0, 3) ?? []));
       if (typeof trade.triggerPrice === "number") prices.push(trade.triggerPrice);
