@@ -1279,6 +1279,47 @@ impl HistoricalEventSource {
         Ok(receiver)
     }
 
+    /// Stream exactly one bounded ordinal range. Campaign workers use this
+    /// primitive so the HTTP response is fully drained before CPU-heavy level
+    /// calculation begins, preventing ClickHouse socket backpressure.
+    pub fn stream_structure_ordinal_range(
+        &self,
+        session_date: NaiveDate,
+        ticker: &str,
+        first_ordinal: u64,
+        next_ordinal: u64,
+        batch_size: usize,
+    ) -> Result<mpsc::Receiver<Result<Vec<LiveCompactEvent>, String>>, String> {
+        let ticker = normalize_ticker(ticker)?;
+        if first_ordinal >= next_ordinal {
+            return Err("structure ordinal range must be non-empty".to_string());
+        }
+        let batch_size = batch_size.clamp(1, 100_000);
+        let (sender, receiver) = mpsc::channel(2);
+        let source = self.clone();
+        tokio::spawn(async move {
+            let select = ordinal_event_select(
+                &format!(
+                    "{}.{}{}",
+                    source.config.clickhouse_database,
+                    source.config.table_prefix,
+                    session_date.year()
+                ),
+                &ticker,
+                first_ordinal,
+                next_ordinal,
+            );
+            let sql = format!("SELECT * FROM ({select}) ORDER BY ordinal FORMAT TabSeparated");
+            if let Err(error) = source
+                .stream_query_rows(sql, batch_size, sender.clone())
+                .await
+            {
+                let _ = sender.send(Err(error)).await;
+            }
+        });
+        Ok(receiver)
+    }
+
     pub async fn source_revision(&self, window: &EventWindow) -> Result<SourceRevision, String> {
         validate_window(window)?;
         let plan = self.source_plan(window).await?;
@@ -2619,7 +2660,8 @@ impl HistoricalEventSource {
                 source_revision_token,
                 snapshot_json
             FROM {table}
-            WHERE sym = {ticker}
+            WHERE checkpoint_set_id = {checkpoint_set_id}
+              AND sym = {ticker}
               AND algorithm_version = {algorithm_version}
               AND checkpoint_at < parseDateTime64BestEffort({before}, 6, 'UTC')
               AND source_complete = 1
@@ -2627,6 +2669,7 @@ impl HistoricalEventSource {
             LIMIT 1
             FORMAT JSONEachRow"#,
             ticker = sql_literal(&ticker),
+            checkpoint_set_id = sql_literal(&self.config.structure_checkpoint_set_id),
             algorithm_version = GENERIC_STRUCTURE_ALGORITHM_VERSION,
             before = sql_literal(&before.to_rfc3339()),
         );

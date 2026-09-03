@@ -47,6 +47,7 @@ pub struct HistoricalGatewayConfig {
     pub structure_book_max_seed_events: usize,
     pub structure_database: String,
     pub structure_daily_checkpoint_table: String,
+    pub structure_checkpoint_set_id: String,
     pub structure_events_table: String,
     pub table_prefix: String,
     pub watchlist_max_concurrent_materializations: usize,
@@ -172,7 +173,11 @@ impl HistoricalGatewayConfig {
             structure_database: env_string("QMD_HISTORY_STRUCTURE_DATABASE", "q_live"),
             structure_daily_checkpoint_table: env_string(
                 "QMD_HISTORY_STRUCTURE_DAILY_CHECKPOINT_TABLE",
-                "qmd_structure_daily_checkpoint_v1",
+                "qmd_structure_daily_checkpoint_v2",
+            ),
+            structure_checkpoint_set_id: env_string(
+                "QMD_STRUCTURE_CHECKPOINT_SET_ID",
+                "canonical-tradable-20250101-20260831-v16",
             ),
             structure_events_table: env_string(
                 "QMD_HISTORY_STRUCTURE_EVENTS_TABLE",
@@ -265,6 +270,9 @@ impl HistoricalGatewayConfig {
                     .to_string(),
             );
         }
+        if !valid_checkpoint_set_id(&self.structure_checkpoint_set_id) {
+            return Err("QMD_STRUCTURE_CHECKPOINT_SET_ID is invalid".to_string());
+        }
         Ok(())
     }
 }
@@ -274,6 +282,14 @@ fn valid_identifier(value: &str) -> bool {
         && value.chars().enumerate().all(|(index, ch)| {
             ch == '_' || ch.is_ascii_alphanumeric() && (index > 0 || !ch.is_ascii_digit())
         })
+}
+
+fn valid_checkpoint_set_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
 }
 
 fn env_string(name: &str, default: &str) -> String {
@@ -311,7 +327,7 @@ fn env_list(name: &str, default: &[&str]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::valid_identifier;
+    use super::{valid_checkpoint_set_id, valid_identifier};
 
     #[test]
     fn identifiers_are_strict() {
@@ -319,5 +335,15 @@ mod tests {
         assert!(valid_identifier("events_"));
         assert!(!valid_identifier("1events"));
         assert!(!valid_identifier("events_; DROP TABLE x"));
+    }
+
+    #[test]
+    fn checkpoint_set_ids_are_path_and_sql_safe() {
+        assert!(valid_checkpoint_set_id(
+            "canonical-tradable-20250101-20260831-v16"
+        ));
+        assert!(!valid_checkpoint_set_id(""));
+        assert!(!valid_checkpoint_set_id("canonical set"));
+        assert!(!valid_checkpoint_set_id("x'; DROP TABLE y"));
     }
 }

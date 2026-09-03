@@ -34,8 +34,69 @@ const RETAINED_1S_HISTORY_ROWS: usize = 300;
 const RETAINED_OTHER_HISTORY_ROWS: usize = 256;
 const PREMARKET_SESSION_START_SECONDS: u32 = 4 * 60 * 60;
 
+fn valid_checkpoint_set_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+}
+
+fn daily_structure_checkpoint_before_sql(
+    checkpoint_set_id: &str,
+    sym: &str,
+    session_date: NaiveDate,
+) -> String {
+    let (table, set_projection, set_predicate) = if checkpoint_set_id == "live" {
+        (
+            "qmd_structure_daily_checkpoint_v1",
+            "'live' AS checkpoint_set_id",
+            String::new(),
+        )
+    } else {
+        (
+            "qmd_structure_daily_checkpoint_v2",
+            "checkpoint_set_id",
+            format!(
+                "checkpoint_set_id = '{}' AND ",
+                checkpoint_set_id.replace('\'', "''")
+            ),
+        )
+    };
+    format!(
+        r#"SELECT
+            {set_projection},
+            session_date,
+            algorithm_version,
+            sym,
+            toUnixTimestamp64Milli(authority_start) AS authority_start_ms,
+            toUnixTimestamp64Milli(checkpoint_at) AS checkpoint_at_ms,
+            last_arrival_sequence,
+            source_plan_hash,
+            source_revision_token,
+            source_complete,
+            toUnixTimestamp64Milli(built_at) AS built_at_ms,
+            snapshot_json
+        FROM {table}
+        WHERE {set_predicate}sym = '{}'
+          AND session_date < '{}'
+          AND algorithm_version = {}
+          AND source_complete = 1
+        ORDER BY session_date DESC, built_at DESC
+        LIMIT 1
+        FORMAT JSONEachRow"#,
+        sym.replace('\'', "''"),
+        session_date,
+        crate::generic_structure::GENERIC_STRUCTURE_ALGORITHM_VERSION,
+        set_projection = set_projection,
+        table = table,
+        set_predicate = set_predicate,
+    )
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DailyStructureCheckpoint {
+    pub checkpoint_set_id: String,
     pub session_date: NaiveDate,
     pub algorithm_version: u16,
     pub sym: String,
@@ -2529,6 +2590,10 @@ impl IndicatorClickHouseWriter {
         }
     }
 
+    pub fn structure_checkpoint_set_id(&self) -> &str {
+        &self.config.structure_checkpoint_set_id
+    }
+
     pub async fn initialize(&self) -> Result<(), String> {
         if self.config.indicator_table.is_empty()
             || !self
@@ -2903,6 +2968,47 @@ impl IndicatorClickHouseWriter {
         )
         .await?;
         self.execute(
+            r#"CREATE TABLE IF NOT EXISTS qmd_structure_daily_checkpoint_v2
+            (
+                checkpoint_set_id LowCardinality(String),
+                session_date Date,
+                algorithm_version UInt16,
+                sym LowCardinality(String),
+                authority_start DateTime64(6, 'UTC'),
+                checkpoint_at DateTime64(6, 'UTC'),
+                last_arrival_sequence UInt64,
+                source_plan_hash String,
+                source_revision_token String,
+                source_complete UInt8,
+                built_at DateTime64(3, 'UTC'),
+                snapshot_json String
+            )
+            ENGINE = ReplacingMergeTree(built_at)
+            PARTITION BY toYYYYMM(session_date)
+            ORDER BY (checkpoint_set_id, sym, session_date, algorithm_version, source_plan_hash, source_revision_token)"#,
+            true,
+        )
+        .await?;
+        self.execute(
+            r#"CREATE TABLE IF NOT EXISTS qmd_structure_checkpoint_set_registry_v1
+            (
+                checkpoint_set_id String,
+                algorithm_version UInt16,
+                authority_start Date,
+                authority_end Date,
+                universe_hash String,
+                state LowCardinality(String),
+                ticker_count UInt64,
+                checkpoint_count UInt64,
+                event_count UInt64,
+                updated_at DateTime64(3, 'UTC')
+            )
+            ENGINE = ReplacingMergeTree(updated_at)
+            ORDER BY checkpoint_set_id"#,
+            true,
+        )
+        .await?;
+        self.execute(
             r#"CREATE TABLE IF NOT EXISTS qmd_structure_focus_registry_v1
             (
                 sym LowCardinality(String),
@@ -3035,6 +3141,8 @@ impl IndicatorClickHouseWriter {
         if record.algorithm_version != record.checkpoint.algorithm_version
             || record.sym.to_ascii_uppercase() != record.checkpoint.sym.to_ascii_uppercase()
             || record.last_arrival_sequence != record.checkpoint.last_arrival_sequence
+            || !valid_checkpoint_set_id(&record.checkpoint_set_id)
+            || record.checkpoint_set_id != self.config.structure_checkpoint_set_id
             || record.source_plan_hash.trim().is_empty()
             || record.source_revision_token.trim().is_empty()
         {
@@ -3042,7 +3150,7 @@ impl IndicatorClickHouseWriter {
         }
         let snapshot_json = serde_json::to_string(&record.checkpoint)
             .map_err(|error| format!("failed to serialize daily structure checkpoint: {error}"))?;
-        let body = serde_json::to_string(&json!({
+        let mut row = json!({
             "session_date": record.session_date.to_string(),
             "algorithm_version": record.algorithm_version,
             "sym": record.sym.to_ascii_uppercase(),
@@ -3054,19 +3162,28 @@ impl IndicatorClickHouseWriter {
             "source_complete": u8::from(record.source_complete),
             "built_at": clickhouse_datetime64(&record.built_at),
             "snapshot_json": snapshot_json,
-        }))
-        .map_err(|error| format!("failed to encode daily structure checkpoint row: {error}"))?;
-        self.query_with_body(
-            "INSERT INTO qmd_structure_daily_checkpoint_v1 FORMAT JSONEachRow",
-            body,
-        )
-        .await
+        });
+        let table = if record.checkpoint_set_id == "live" {
+            "qmd_structure_daily_checkpoint_v1"
+        } else {
+            row.as_object_mut()
+                .expect("checkpoint row is an object")
+                .insert(
+                    "checkpoint_set_id".to_string(),
+                    json!(record.checkpoint_set_id),
+                );
+            "qmd_structure_daily_checkpoint_v2"
+        };
+        let body = serde_json::to_string(&row)
+            .map_err(|error| format!("failed to encode daily structure checkpoint row: {error}"))?;
+        self.query_with_body(&format!("INSERT INTO {table} FORMAT JSONEachRow"), body)
+            .await
     }
 
     pub async fn count_daily_structure_checkpoints(&self) -> Result<u64, String> {
         let text = self
             .query(
-                "SELECT count() FROM qmd_structure_daily_checkpoint_v1 FORMAT TSV",
+                "SELECT count() FROM qmd_structure_daily_checkpoint_v2 FORMAT TSV",
                 true,
             )
             .await?;
@@ -3075,16 +3192,91 @@ impl IndicatorClickHouseWriter {
             .map_err(|error| format!("invalid daily structure checkpoint count: {error}"))
     }
 
-    /// Delete every persisted historical level-book checkpoint. This is
-    /// deliberately separate from version-aware cleanup because a cold
-    /// campaign must not silently resume from any prior book.
+    pub async fn count_daily_structure_checkpoints_in_set(&self) -> Result<u64, String> {
+        let checkpoint_set_id = self.config.structure_checkpoint_set_id.replace('\'', "''");
+        let text = self
+            .query(
+                &format!(
+                    "SELECT count() FROM qmd_structure_daily_checkpoint_v2 WHERE checkpoint_set_id = '{}' FORMAT TSV",
+                    checkpoint_set_id
+                ),
+                true,
+            )
+            .await?;
+        text.trim()
+            .parse::<u64>()
+            .map_err(|error| format!("invalid checkpoint-set row count: {error}"))
+    }
+
+    pub async fn purge_daily_structure_checkpoint_set(&self) -> Result<u64, String> {
+        let existing = self.count_daily_structure_checkpoints_in_set().await?;
+        if existing == 0 {
+            return Ok(0);
+        }
+        let checkpoint_set_id = self.config.structure_checkpoint_set_id.replace('\'', "''");
+        self.execute(
+            &format!(
+                "ALTER TABLE qmd_structure_daily_checkpoint_v2 DELETE WHERE checkpoint_set_id = '{}' SETTINGS mutations_sync = 2",
+                checkpoint_set_id
+            ),
+            true,
+        )
+        .await?;
+        let remaining = self.count_daily_structure_checkpoints_in_set().await?;
+        if remaining != 0 {
+            return Err(format!(
+                "checkpoint-set purge left {remaining} row(s) in {}",
+                self.config.structure_checkpoint_set_id
+            ));
+        }
+        Ok(existing)
+    }
+
+    pub async fn persist_structure_checkpoint_set_state(
+        &self,
+        authority_start: NaiveDate,
+        authority_end: NaiveDate,
+        universe_hash: &str,
+        state: &str,
+        ticker_count: u64,
+        checkpoint_count: u64,
+        event_count: u64,
+    ) -> Result<(), String> {
+        if !valid_checkpoint_set_id(&self.config.structure_checkpoint_set_id)
+            || !matches!(state, "building" | "sealed" | "failed" | "interrupted")
+            || universe_hash.trim().is_empty()
+        {
+            return Err("invalid structure checkpoint-set state identity".to_string());
+        }
+        let body = serde_json::to_string(&json!({
+            "checkpoint_set_id": self.config.structure_checkpoint_set_id,
+            "algorithm_version": crate::generic_structure::GENERIC_STRUCTURE_ALGORITHM_VERSION,
+            "authority_start": authority_start.to_string(),
+            "authority_end": authority_end.to_string(),
+            "universe_hash": universe_hash,
+            "state": state,
+            "ticker_count": ticker_count,
+            "checkpoint_count": checkpoint_count,
+            "event_count": event_count,
+            "updated_at": clickhouse_datetime64(&Utc::now()),
+        }))
+        .map_err(|error| format!("failed to encode checkpoint-set registry row: {error}"))?;
+        self.query_with_body(
+            "INSERT INTO qmd_structure_checkpoint_set_registry_v1 FORMAT JSONEachRow",
+            body,
+        )
+        .await
+    }
+
+    /// Delete every versioned historical campaign checkpoint. The legacy v1
+    /// table remains the isolated live-service authority.
     pub async fn purge_all_daily_structure_checkpoints(&self) -> Result<u64, String> {
         let existing = self.count_daily_structure_checkpoints().await?;
         if existing == 0 {
             return Ok(0);
         }
         self.execute(
-            "TRUNCATE TABLE qmd_structure_daily_checkpoint_v1 SYNC",
+            "TRUNCATE TABLE qmd_structure_daily_checkpoint_v2 SYNC",
             true,
         )
         .await?;
@@ -3111,31 +3303,10 @@ impl IndicatorClickHouseWriter {
         {
             return Err("invalid daily structure checkpoint ticker".to_string());
         }
-        let escaped = sym.replace('\'', "''");
-        let sql = format!(
-            r#"SELECT
-                session_date,
-                algorithm_version,
-                sym,
-                toUnixTimestamp64Milli(authority_start) AS authority_start_ms,
-                toUnixTimestamp64Milli(checkpoint_at) AS checkpoint_at_ms,
-                last_arrival_sequence,
-                source_plan_hash,
-                source_revision_token,
-                source_complete,
-                toUnixTimestamp64Milli(built_at) AS built_at_ms,
-                snapshot_json
-            FROM qmd_structure_daily_checkpoint_v1
-            WHERE sym = '{}'
-              AND session_date < '{}'
-              AND algorithm_version = {}
-              AND source_complete = 1
-            ORDER BY session_date DESC, built_at DESC
-            LIMIT 1
-            FORMAT JSONEachRow"#,
-            escaped,
+        let sql = daily_structure_checkpoint_before_sql(
+            &self.config.structure_checkpoint_set_id,
+            &sym,
             session_date,
-            crate::generic_structure::GENERIC_STRUCTURE_ALGORITHM_VERSION,
         );
         let text = self.query(&sql, true).await?;
         let Some(line) = text.lines().find(|line| !line.trim().is_empty()) else {
@@ -3174,6 +3345,7 @@ impl IndicatorClickHouseWriter {
         let built_at = DateTime::from_timestamp_millis(built_at_ms as i64)
             .ok_or_else(|| "invalid daily structure checkpoint build timestamp".to_string())?;
         Ok(Some(DailyStructureCheckpoint {
+            checkpoint_set_id: parse_string("checkpoint_set_id"),
             session_date: stored_date,
             algorithm_version: parse_u64("algorithm_version") as u16,
             sym,
@@ -3801,19 +3973,42 @@ fn safe_div(numerator: f64, denominator: f64) -> f64 {
 mod tests {
     use super::{
         anchored_flow_relationship, anchored_market_session_date,
-        calculate_flow_structure_composite, durable_indicator_insert_row, indicator_insert_row,
-        market_structure_reference_sql, parse_market_structure_reference_rows,
-        summarize_canonical_composites, BarIndicatorCalculator, IndicatorKey,
-        MicrostructureCumulativeFlow, MicrostructureSampleAggregate, SessionVwapState,
-        SharedIndicatorStore, TickState, INDICATOR_SCHEMA_VERSION,
+        calculate_flow_structure_composite, daily_structure_checkpoint_before_sql,
+        durable_indicator_insert_row, indicator_insert_row, market_structure_reference_sql,
+        parse_market_structure_reference_rows, summarize_canonical_composites,
+        BarIndicatorCalculator, IndicatorKey, MicrostructureCumulativeFlow,
+        MicrostructureSampleAggregate, SessionVwapState, SharedIndicatorStore, TickState,
+        INDICATOR_SCHEMA_VERSION,
     };
     use crate::bars::{TradeAggregationRules, TradeUpdateRule};
     use crate::capability_catalog::ExecutionScope;
     use crate::computation_targets::{ComputationTargetRequest, SharedComputationTargets};
     use crate::microstructure_interval::MicrostructureIntervalWindow;
     use crate::scanner::tests::base_bar;
-    use chrono::{TimeZone, Utc};
+    use chrono::{NaiveDate, TimeZone, Utc};
     use std::collections::{HashMap, VecDeque};
+
+    #[test]
+    fn daily_checkpoint_seed_is_scoped_to_one_exact_set() {
+        let sql = daily_structure_checkpoint_before_sql(
+            "canonical-tradable-20250101-20260831-v16",
+            "SUGP",
+            NaiveDate::from_ymd_opt(2026, 8, 22).unwrap(),
+        );
+
+        assert!(sql.contains("FROM qmd_structure_daily_checkpoint_v2"));
+        assert!(sql.contains("checkpoint_set_id = 'canonical-tradable-20250101-20260831-v16'"));
+        assert!(sql.contains("sym = 'SUGP'"));
+        assert!(sql.contains("session_date < '2026-08-22'"));
+
+        let live_sql = daily_structure_checkpoint_before_sql(
+            "live",
+            "SUGP",
+            NaiveDate::from_ymd_opt(2026, 8, 22).unwrap(),
+        );
+        assert!(live_sql.contains("FROM qmd_structure_daily_checkpoint_v1"));
+        assert!(!live_sql.contains("WHERE checkpoint_set_id"));
+    }
 
     #[test]
     fn scanner_indicator_row_projects_registered_bar_change_fields() {

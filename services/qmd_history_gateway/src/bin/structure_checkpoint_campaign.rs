@@ -10,6 +10,7 @@ use qmd_history_gateway::source::{
 };
 use serde::Serialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::env;
 use std::fs;
@@ -17,15 +18,27 @@ use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinSet;
 
 const EVENT_RATE_WINDOW_SECONDS: i64 = 300;
 const EVENT_RATE_MIN_SAMPLE_SECONDS: i64 = 15;
+const INITIAL_ORDINAL_CHUNK: u64 = 250_000;
+const MIN_ORDINAL_CHUNK: u64 = 100_000;
+const MAX_ORDINAL_CHUNK: u64 = 1_000_000;
+const TARGET_FETCH_MILLIS: u128 = 3_000;
 
 #[derive(Clone, Debug)]
 struct Args {
+    checkpoint_set_id: String,
+    core_index: Option<usize>,
+    explicit_universe_only: bool,
+    register_set_state: Option<String>,
+    set_event_count: u64,
+    set_ticker_count: u64,
+    set_universe_hash: Option<String>,
+    shard_worker: bool,
     ticker_files: Vec<PathBuf>,
     priority_tickers: Vec<String>,
     start_date: NaiveDate,
@@ -84,6 +97,7 @@ struct Progress {
     started_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     algorithm_version: u16,
+    checkpoint_set_id: String,
     start_date: NaiveDate,
     end_date: NaiveDate,
     ticker_count: usize,
@@ -108,6 +122,7 @@ struct ProgressWriter {
 impl ProgressWriter {
     fn new(
         path: PathBuf,
+        checkpoint_set_id: String,
         start_date: NaiveDate,
         end_date: NaiveDate,
         plans: &[TickerPlan],
@@ -122,11 +137,12 @@ impl ProgressWriter {
             processed_events: AtomicU64::new(0),
             status_notify: Notify::new(),
             inner: Mutex::new(Progress {
-                schema_version: 5,
+                schema_version: 6,
                 status: "running".to_string(),
                 started_at: Utc::now(),
                 updated_at: Utc::now(),
                 algorithm_version: GENERIC_STRUCTURE_ALGORITHM_VERSION,
+                checkpoint_set_id,
                 start_date,
                 end_date,
                 ticker_count: plans.len(),
@@ -378,9 +394,10 @@ impl EventRateWindow {
     }
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = parse_args().map_err(io_error)?;
+    pin_current_thread(args.core_index).map_err(io_error)?;
     let loaded = load_env_files();
     if !loaded.is_empty() {
         eprintln!(
@@ -393,36 +410,70 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         );
     }
     fs::create_dir_all(&args.runtime_dir)?;
-    let history_config = HistoricalGatewayConfig::from_env();
+    let mut history_config = HistoricalGatewayConfig::from_env();
+    history_config.structure_checkpoint_set_id = args.checkpoint_set_id.clone();
     history_config.validate().map_err(io_error)?;
     let source = HistoricalEventSource::initialize(history_config.clone())
         .await
         .map_err(io_error)?;
-    let gateway_config = GatewayConfig::from_env();
+    let mut gateway_config = GatewayConfig::from_env();
+    gateway_config.structure_checkpoint_set_id = args.checkpoint_set_id.clone();
     let writer = IndicatorClickHouseWriter::new(gateway_config, SharedMetrics::new());
-    let automatic_tickers = source
-        .structure_campaign_tickers(
-            args.start_date,
-            args.liquidity_start_date,
-            args.liquidity_end_date,
-            Utc::now(),
-        )
-        .await
-        .map_err(io_error)?;
+    writer.initialize().await.map_err(io_error)?;
+    if let Some(state) = args.register_set_state.as_deref() {
+        let universe_hash = args
+            .set_universe_hash
+            .as_deref()
+            .ok_or_else(|| io_error("--set-universe-hash is required with --register-set-state"))?;
+        let checkpoint_count = writer
+            .count_daily_structure_checkpoints_in_set()
+            .await
+            .map_err(io_error)?;
+        writer
+            .persist_structure_checkpoint_set_state(
+                args.start_date,
+                args.end_date,
+                universe_hash,
+                state,
+                args.set_ticker_count,
+                checkpoint_count,
+                args.set_event_count,
+            )
+            .await
+            .map_err(io_error)?;
+        println!(
+            "Checkpoint set {} registered as {} with {} durable checkpoint row(s).",
+            args.checkpoint_set_id, state, checkpoint_count
+        );
+        return Ok(());
+    }
+    let automatic_tickers = if args.explicit_universe_only {
+        Vec::new()
+    } else {
+        source
+            .structure_campaign_tickers(
+                args.start_date,
+                args.liquidity_start_date,
+                args.liquidity_end_date,
+                Utc::now(),
+            )
+            .await
+            .map_err(io_error)?
+    };
     let file_tickers = load_tickers(&args.ticker_files).map_err(io_error)?;
     let tickers = merge_ticker_universe(&args.priority_tickers, &file_tickers, &automatic_tickers)
         .map_err(io_error)?;
     if tickers.is_empty() {
         return Err(io_error("ticker universe is empty"));
     }
-    writer.initialize().await.map_err(io_error)?;
     if args.purge_existing_checkpoints {
         let deleted = writer
-            .purge_all_daily_structure_checkpoints()
+            .purge_daily_structure_checkpoint_set()
             .await
             .map_err(io_error)?;
         eprintln!(
-            "Removed all {deleted} pre-existing daily structure checkpoint row(s); this campaign will rebuild cold."
+            "Removed {deleted} pre-existing row(s) from checkpoint set {}; this campaign will rebuild that set cold.",
+            args.checkpoint_set_id
         );
     }
     let plans = build_plans(&args, &source, &tickers)
@@ -436,16 +487,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     )?;
     if args.plan_only {
         println!(
-            "Validated Campaign v3 plan: tickers={} units={} plan={}",
+            "Validated Campaign v4 plan: tickers={} units={} plan={}",
             plans.len(),
             plans.iter().map(|plan| plan.sessions.len()).sum::<usize>(),
             plan_path.display()
         );
         return Ok(());
     }
+    let universe_hash = campaign_universe_hash(&plans);
+    let plan_ticker_count = plans.len() as u64;
+    if !args.shard_worker {
+        writer
+            .persist_structure_checkpoint_set_state(
+                args.start_date,
+                args.end_date,
+                &universe_hash,
+                "building",
+                plan_ticker_count,
+                0,
+                0,
+            )
+            .await
+            .map_err(io_error)?;
+    }
     let progress_path = args.runtime_dir.join("campaign-status.json");
     let progress = Arc::new(ProgressWriter::new(
         progress_path.clone(),
+        args.checkpoint_set_id.clone(),
         args.start_date,
         args.end_date,
         &plans,
@@ -537,6 +605,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     } else {
         progress.complete(task_failed).await.map_err(io_error)?
     };
+    let checkpoint_count = writer
+        .count_daily_structure_checkpoints_in_set()
+        .await
+        .unwrap_or_default();
+    let set_state = if interrupted {
+        "interrupted"
+    } else if task_failed || final_progress.counts.failed > 0 {
+        "failed"
+    } else {
+        "sealed"
+    };
+    let set_event_count = if set_state == "sealed" {
+        final_progress.total_estimated_events
+    } else {
+        final_progress.events_processed
+    };
+    if !args.shard_worker {
+        writer
+            .persist_structure_checkpoint_set_state(
+                args.start_date,
+                args.end_date,
+                &universe_hash,
+                set_state,
+                plan_ticker_count,
+                checkpoint_count,
+                set_event_count,
+            )
+            .await
+            .map_err(io_error)?;
+    }
     reporter
         .await
         .map_err(|error| io_error(format!("progress reporter failed: {error}")))?;
@@ -764,7 +862,7 @@ fn dashboard_lines(
     let mut lines = if compact {
         vec![
             format!(
-                "Checkpoint Campaign v3 | {} | v{} | {} workers",
+                "Checkpoint Campaign v4 | {} | v{} | {} workers",
                 state.to_ascii_uppercase(),
                 progress.algorithm_version,
                 workers
@@ -816,7 +914,7 @@ fn dashboard_lines(
     } else {
         vec![
             format!(
-                "Structural Checkpoint Campaign v3 | {} | algorithm v{} | workers {}",
+                "Structural Checkpoint Campaign v4 | {} | algorithm v{} | workers {}",
                 state.to_ascii_uppercase(),
                 progress.algorithm_version,
                 workers
@@ -1111,16 +1209,31 @@ async fn process_ordinal_session(
     {
         engine.apply_split_adjustment(adjustment)?;
     }
-    let mut batches =
-        source.stream_structure_ordinal_session(session, &manifest.ticker, config.batch_size)?;
     let mut event_count = 0_u64;
     let mut advanced_event_count = 0_u64;
     let mut prior_sip = 0_u64;
     let mut first_sip = 0_u64;
     let mut last_sip = 0_u64;
-    while let Some(batch) = batches.recv().await {
-        let batch = batch?;
-        for compact in &batch {
+    let mut first_ordinal = session.first_ordinal;
+    let mut ordinal_chunk = INITIAL_ORDINAL_CHUNK;
+    while first_ordinal < session.next_ordinal {
+        let next_ordinal = first_ordinal
+            .saturating_add(ordinal_chunk)
+            .min(session.next_ordinal);
+        let fetch_started = Instant::now();
+        let mut batches = source.stream_structure_ordinal_range(
+            session_date,
+            &manifest.ticker,
+            first_ordinal,
+            next_ordinal,
+            config.batch_size,
+        )?;
+        let mut buffered = Vec::with_capacity((next_ordinal - first_ordinal) as usize);
+        while let Some(batch) = batches.recv().await {
+            buffered.extend(batch?);
+        }
+        let fetch_millis = fetch_started.elapsed().as_millis().max(1);
+        for compact in &buffered {
             if compact.ticker.to_ascii_uppercase() != manifest.ticker
                 || compact.arrival_sequence < session.first_ordinal
                 || compact.arrival_sequence >= session.next_ordinal
@@ -1161,7 +1274,9 @@ async fn process_ordinal_session(
             }
             event_count = event_count.saturating_add(1);
         }
-        event_progress.record(batch.len() as u64);
+        event_progress.record(buffered.len() as u64);
+        first_ordinal = next_ordinal;
+        ordinal_chunk = next_ordinal_chunk(ordinal_chunk, fetch_millis);
     }
     if event_count != session.event_count
         || (event_count > 0
@@ -1206,6 +1321,7 @@ async fn process_ordinal_session(
     }
     writer
         .persist_daily_structure_checkpoint(&DailyStructureCheckpoint {
+            checkpoint_set_id: config.structure_checkpoint_set_id.clone(),
             session_date,
             algorithm_version: checkpoint.algorithm_version,
             sym: manifest.ticker.clone(),
@@ -1225,6 +1341,19 @@ async fn process_ordinal_session(
         advanced_event_count,
         cursor: checkpoint.last_arrival_sequence,
     })
+}
+
+fn next_ordinal_chunk(current: u64, fetch_millis: u128) -> u64 {
+    if fetch_millis == 0 {
+        return current;
+    }
+    let scaled = (current as u128)
+        .saturating_mul(TARGET_FETCH_MILLIS)
+        .checked_div(fetch_millis)
+        .unwrap_or(current as u128);
+    let lower = (current / 2).max(MIN_ORDINAL_CHUNK) as u128;
+    let upper = current.saturating_mul(2).min(MAX_ORDINAL_CHUNK) as u128;
+    scaled.clamp(lower, upper) as u64
 }
 
 async fn build_plans(
@@ -1427,6 +1556,80 @@ fn merge_ticker_universe(
     Ok(tickers)
 }
 
+fn campaign_universe_hash(plans: &[TickerPlan]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(format!(
+        "algorithm={}\n",
+        GENERIC_STRUCTURE_ALGORITHM_VERSION
+    ));
+    for plan in plans {
+        digest.update(plan.ticker.as_bytes());
+        digest.update(b"\n");
+    }
+    format!("{:x}", digest.finalize())
+}
+
+#[cfg(windows)]
+fn pin_current_thread(core_index: Option<usize>) -> Result<(), String> {
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    struct GroupAffinity {
+        mask: usize,
+        group: u16,
+        reserved: [u16; 3],
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetActiveProcessorGroupCount() -> u16;
+        fn GetActiveProcessorCount(group_number: u16) -> u32;
+        fn GetCurrentThread() -> *mut c_void;
+        fn SetThreadGroupAffinity(
+            thread: *mut c_void,
+            group_affinity: *const GroupAffinity,
+            previous_group_affinity: *mut GroupAffinity,
+        ) -> i32;
+    }
+
+    let Some(mut remaining) = core_index else {
+        return Ok(());
+    };
+    unsafe {
+        let groups = GetActiveProcessorGroupCount();
+        for group in 0..groups {
+            let count = GetActiveProcessorCount(group) as usize;
+            if remaining < count {
+                if remaining >= usize::BITS as usize {
+                    return Err(format!(
+                        "core index {remaining} exceeds processor-group mask"
+                    ));
+                }
+                let affinity = GroupAffinity {
+                    mask: 1usize << remaining,
+                    group,
+                    reserved: [0; 3],
+                };
+                if SetThreadGroupAffinity(GetCurrentThread(), &affinity, std::ptr::null_mut()) == 0
+                {
+                    return Err(format!(
+                        "failed to pin campaign worker to processor group {group} core {remaining}: {}",
+                        std::io::Error::last_os_error()
+                    ));
+                }
+                return Ok(());
+            }
+            remaining -= count;
+        }
+    }
+    Err(format!("core index {} is unavailable", core_index.unwrap()))
+}
+
+#[cfg(not(windows))]
+fn pin_current_thread(_core_index: Option<usize>) -> Result<(), String> {
+    Ok(())
+}
+
 fn parse_args() -> Result<Args, String> {
     let mut values = env::args().skip(1);
     let mut ticker_files = Vec::new();
@@ -1441,6 +1644,14 @@ fn parse_args() -> Result<Args, String> {
     let mut retry_delay_seconds = 2_u64;
     let mut purge_existing_checkpoints = false;
     let mut plan_only = false;
+    let mut checkpoint_set_id = None;
+    let mut core_index = None;
+    let mut explicit_universe_only = false;
+    let mut register_set_state = None;
+    let mut set_event_count = 0_u64;
+    let mut set_ticker_count = 0_u64;
+    let mut set_universe_hash = None;
+    let mut shard_worker = false;
     while let Some(argument) = values.next() {
         let value = |name: &str, values: &mut std::iter::Skip<std::env::Args>| {
             values
@@ -1449,6 +1660,20 @@ fn parse_args() -> Result<Args, String> {
         };
         match argument.as_str() {
             "--ticker-file" => ticker_files.push(PathBuf::from(value(&argument, &mut values)?)),
+            "--checkpoint-set-id" => checkpoint_set_id = Some(value(&argument, &mut values)?),
+            "--core-index" => {
+                core_index = Some(parse_number(&argument, &value(&argument, &mut values)?)?)
+            }
+            "--explicit-universe-only" => explicit_universe_only = true,
+            "--shard-worker" => shard_worker = true,
+            "--register-set-state" => register_set_state = Some(value(&argument, &mut values)?),
+            "--set-universe-hash" => set_universe_hash = Some(value(&argument, &mut values)?),
+            "--set-event-count" => {
+                set_event_count = parse_number(&argument, &value(&argument, &mut values)?)?
+            }
+            "--set-ticker-count" => {
+                set_ticker_count = parse_number(&argument, &value(&argument, &mut values)?)?
+            }
             "--priority-ticker" => priority_tickers.push(value(&argument, &mut values)?),
             "--start-date" => start_date = Some(parse_date(&value(&argument, &mut values)?)?),
             "--end-date" => end_date = Some(parse_date(&value(&argument, &mut values)?)?),
@@ -1469,13 +1694,15 @@ fn parse_args() -> Result<Args, String> {
             "--purge-existing-checkpoints" => purge_existing_checkpoints = true,
             "--plan-only" => plan_only = true,
             "--help" | "-h" => {
-                println!("structure-checkpoint-campaign v3");
+                println!("structure-checkpoint-campaign v4");
                 println!("  --start-date YYYY-MM-DD --end-date YYYY-MM-DD");
+                println!("  --checkpoint-set-id ID");
                 println!("  --runtime-dir PATH [--workers 4]  # allowed: 1-64");
                 println!("  [--priority-ticker SUGP] [--ticker-file PATH]");
                 println!("  [--liquidity-start-date YYYY-MM-DD --liquidity-end-date YYYY-MM-DD]");
                 println!("  [--max-retries 5] [--retry-delay-seconds 2]");
                 println!("  [--purge-existing-checkpoints] [--plan-only]");
+                println!("  [--explicit-universe-only] [--core-index N]");
                 std::process::exit(0);
             }
             _ => return Err(format!("unknown argument {argument:?}; use --help")),
@@ -1485,6 +1712,17 @@ fn parse_args() -> Result<Args, String> {
     let end_date = end_date.ok_or_else(|| "--end-date is required".to_string())?;
     if start_date > end_date {
         return Err("--start-date must be on or before --end-date".to_string());
+    }
+    let checkpoint_set_id =
+        checkpoint_set_id.ok_or_else(|| "--checkpoint-set-id is required".to_string())?;
+    validate_checkpoint_set_id(&checkpoint_set_id)?;
+    if register_set_state
+        .as_deref()
+        .is_some_and(|state| !matches!(state, "building" | "sealed" | "failed" | "interrupted"))
+    {
+        return Err(
+            "--register-set-state must be building, sealed, failed, or interrupted".to_string(),
+        );
     }
     validate_worker_count(workers)?;
     if max_retries > 10 {
@@ -1501,6 +1739,14 @@ fn parse_args() -> Result<Args, String> {
         return Err("--liquidity-start-date must not be after --liquidity-end-date".to_string());
     }
     Ok(Args {
+        checkpoint_set_id,
+        core_index,
+        explicit_universe_only,
+        register_set_state,
+        set_event_count,
+        set_ticker_count,
+        set_universe_hash,
+        shard_worker,
         ticker_files,
         priority_tickers,
         start_date,
@@ -1514,6 +1760,18 @@ fn parse_args() -> Result<Args, String> {
         purge_existing_checkpoints,
         plan_only,
     })
+}
+
+fn validate_checkpoint_set_id(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+    {
+        return Err("--checkpoint-set-id must contain only letters, digits, '.', '-', or '_' and be at most 128 bytes".to_string());
+    }
+    Ok(())
 }
 
 fn validate_worker_count(workers: usize) -> Result<(), String> {
@@ -1549,9 +1807,10 @@ fn io_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sy
 mod tests {
     use super::{
         campaign_fatal_error, dashboard_frame, dashboard_lines, insert_ticker, log_snapshot,
-        merge_ticker_universe, retryable_error, session_is_covered_by_seed, validate_worker_count,
-        AttemptEventProgress, Counts, EventRateWindow, Progress, ProgressWriter, RecentUnit,
-        TickerPlan, GENERIC_STRUCTURE_ALGORITHM_VERSION,
+        merge_ticker_universe, next_ordinal_chunk, retryable_error, session_is_covered_by_seed,
+        validate_checkpoint_set_id, validate_worker_count, AttemptEventProgress, Counts,
+        EventRateWindow, Progress, ProgressWriter, RecentUnit, TickerPlan,
+        GENERIC_STRUCTURE_ALGORITHM_VERSION,
     };
     use chrono::{NaiveDate, TimeZone, Utc};
     use qmd_history_gateway::source::StructureCampaignTicker;
@@ -1639,6 +1898,21 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_ordinal_chunks_are_bounded_and_react_to_fetch_time() {
+        assert_eq!(next_ordinal_chunk(250_000, 1_500), 500_000);
+        assert_eq!(next_ordinal_chunk(250_000, 6_000), 125_000);
+        assert_eq!(next_ordinal_chunk(100_000, 30_000), 100_000);
+        assert_eq!(next_ordinal_chunk(1_000_000, 1), 1_000_000);
+    }
+
+    #[test]
+    fn checkpoint_set_id_is_explicit_and_safe() {
+        assert!(validate_checkpoint_set_id("canonical-tradable-20250101-20260831-v16").is_ok());
+        assert!(validate_checkpoint_set_id("canonical set").is_err());
+        assert!(validate_checkpoint_set_id("x';DROP").is_err());
+    }
+
+    #[test]
     fn event_rate_uses_only_the_fixed_five_minute_window() {
         let start = Utc.with_ymd_and_hms(2026, 9, 3, 14, 0, 0).unwrap();
         let mut window = EventRateWindow::default();
@@ -1666,6 +1940,7 @@ mod tests {
         ));
         let writer = ProgressWriter::new(
             path.clone(),
+            "test-set".to_string(),
             date,
             date,
             &[TickerPlan {
@@ -1693,11 +1968,12 @@ mod tests {
     fn dashboard_preserves_critical_state_at_compact_width() {
         let now = Utc.with_ymd_and_hms(2026, 9, 2, 20, 0, 0).unwrap();
         let progress = Progress {
-            schema_version: 5,
+            schema_version: 6,
             status: "running".to_string(),
             started_at: now - chrono::Duration::minutes(5),
             updated_at: now,
             algorithm_version: GENERIC_STRUCTURE_ALGORITHM_VERSION,
+            checkpoint_set_id: "test-set".to_string(),
             start_date: NaiveDate::from_ymd_opt(2026, 8, 21).unwrap(),
             end_date: NaiveDate::from_ymd_opt(2026, 8, 31).unwrap(),
             ticker_count: 13_888,
@@ -1784,6 +2060,7 @@ mod tests {
         ));
         let writer = ProgressWriter::new(
             path.clone(),
+            "test-set".to_string(),
             date,
             date,
             &[TickerPlan {

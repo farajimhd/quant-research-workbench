@@ -120,6 +120,7 @@ pub struct GatewayConfig {
     pub structure_focus_inactive_batch_size: usize,
     pub structure_focus_inactive_registry_limit: usize,
     pub structure_focus_staging_max_events: usize,
+    pub structure_checkpoint_set_id: String,
     pub historical_flatfile_autorun: bool,
     pub historical_flatfile_update_enabled: bool,
     pub historical_pipeline_code_root: String,
@@ -352,6 +353,7 @@ impl GatewayConfig {
                 50_000,
             )
             .clamp(1_000, 1_000_000),
+            structure_checkpoint_set_id: env_string("QMD_STRUCTURE_CHECKPOINT_SET_ID", "live"),
             historical_flatfile_autorun: env_bool("QMD_HISTORICAL_FLATFILE_AUTORUN", true),
             historical_flatfile_update_enabled: env_bool(
                 "QMD_HISTORICAL_FLATFILE_UPDATE_ENABLED",

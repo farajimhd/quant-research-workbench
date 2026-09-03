@@ -347,7 +347,7 @@ cargo test --offline --manifest-path services\qmd_history_gateway\Cargo.toml
 
 ## Standalone structural checkpoint campaign
 
-The `structure_checkpoint_campaign` binary runs Campaign v3 directly on a
+The `structure_checkpoint_campaign` binary runs Campaign v4 directly on a
 workstation. It uses the continuity index both for workload estimates and exact
 per-session ordinal bounds, daily bars only to prioritize currently tradable
 tickers (with one bounded raw-liquidity fallback when those bars are absent),
@@ -362,18 +362,20 @@ releases it before taking another ticker.
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'
 python scripts\run_structure_checkpoint_campaign.py `
+  --checkpoint-set-id canonical-tradable-20250101-20260831-v16 `
   --priority-ticker SUGP `
   --priority-ticker JUNS `
-  --start-date 2026-01-01 `
+  --start-date 2025-01-01 `
   --end-date 2026-08-31 `
   --liquidity-start-date 2026-08-01 `
   --liquidity-end-date 2026-08-31 `
-  --runtime-dir D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v3\jan-aug `
-  --workers 4
+  --runtime-dir D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v4\canonical-2025-2026 `
+  --process-workers 32
 ```
 
-Rerunning the identical command is the supported resume operation. Each ticker
-starts from its last source- and split-compatible ClickHouse checkpoint. The
+Rerunning the identical command is the supported resume operation. The launcher
+reuses the immutable universe plan and each ticker starts from its last source-
+and split-compatible checkpoint in the exact named set. The
 interactive terminal shows resolved and durable progress, worker assignments,
 rates, ETA, recent work, and failures. Its fixed-row refresh does not repeatedly
 clear the screen or scroll. Redirected output remains plain text.
@@ -381,14 +383,14 @@ ETA uses total events estimated from the ordinal continuity summary and the
 aggregate batch-level processed-event rate from every active worker over a
 rolling five-minute window, rather than assuming every ticker-day costs the
 same. Failed or interrupted attempts roll back their uncommitted event
-contribution. Runtime status schema v5 is written atomically once per second by
-the reporter without blocking workers on per-session disk writes. It is stored
-in `campaign-status.json`, and
+contribution. Aggregate schema v1 and worker schema v6 status documents are
+written atomically without blocking workers on per-session disk writes. The
+aggregate is stored in `campaign-status.json`, and
 Ctrl+C records `interrupted` before returning exit code 130.
 
 The launcher uses a prebuilt executable from
 `D:\TradingML\runtimes\bin\structure_checkpoint_campaign.exe` when Cargo is
 not installed. Use `--purge-existing-checkpoints` only for an explicitly
-authorized cold reset; it deletes every row from the structural checkpoint
-table before rebuilding. The full contract is
-[`structural_checkpoint_campaign_v3.md`](../../docs/data_contracts/structural_checkpoint_campaign_v3.md).
+authorized cold reset; it deletes only the named checkpoint set on its first
+run. The full contract is
+[`structural_checkpoint_campaign_v4.md`](../../docs/data_contracts/structural_checkpoint_campaign_v4.md).

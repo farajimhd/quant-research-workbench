@@ -803,6 +803,10 @@ impl StructureFocusCoordinator {
             return Err("daily structure checkpoint full authority is incomplete".to_string());
         }
         let record = DailyStructureCheckpoint {
+            checkpoint_set_id: self
+                .checkpoint_store
+                .structure_checkpoint_set_id()
+                .to_string(),
             session_date,
             algorithm_version: checkpoint.algorithm_version,
             sym: ticker.clone(),

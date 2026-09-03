@@ -256,6 +256,7 @@ pub struct GapFillService {
     flatfiles: FlatfileDiscovery,
     compact_references: CompactEventReferences,
     focused_repair_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
+    retention_scan: std::sync::Arc<tokio::sync::Mutex<Option<(NaiveDate, String, DateTime<Utc>)>>>,
 }
 
 impl GapFillService {
@@ -278,6 +279,7 @@ impl GapFillService {
             flatfiles,
             compact_references,
             focused_repair_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            retention_scan: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
@@ -2110,12 +2112,22 @@ impl GapFillService {
             return Ok(());
         };
         let latest = self.latest_historical_event_date().await?;
+        {
+            let retention_scan = self.retention_scan.lock().await;
+            if retention_scan
+                .as_ref()
+                .is_some_and(|(prior_cutoff, prior_latest, checked_at)| {
+                    *prior_cutoff == cutoff
+                        && prior_latest == &latest
+                        && *checked_at > Utc::now() - ChronoDuration::hours(6)
+                })
+            {
+                return Ok(());
+            }
+        }
         let old_sessions = self
             .query(
-                &format!(
-                    "SELECT toString(toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York'))) AS session_date, count() FROM {} WHERE toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York')) < toDate('{}') GROUP BY session_date ORDER BY session_date FORMAT TSV",
-                    self.config.compact_event_table, cutoff,
-                ),
+                &retention_event_sessions_sql(&self.config.compact_event_table, cutoff),
                 true,
             )
             .await?;
@@ -2211,6 +2223,7 @@ impl GapFillService {
         let session_rows = session_counts.into_iter().collect::<Vec<_>>();
         let older_rows = session_rows.iter().map(|(_, count)| count).sum::<u64>();
         if older_rows == 0 {
+            *self.retention_scan.lock().await = Some((cutoff, latest, Utc::now()));
             return Ok(());
         }
         let mut blocked_rows = 0u64;
@@ -2266,9 +2279,12 @@ impl GapFillService {
         }
         if blocked_rows > 0 {
             self.record_coverage_run(started_at, "q_live_retention", "retention_blocked_historical_gap", date_start_utc(cutoff), Utc::now(), "retention", submitted_rows, &self.host_role(), "", &json!({"cutoff": cutoff.to_string(), "latest_historical": latest, "blocked_rows": blocked_rows, "blocked_sessions": blocked_sessions, "delete_submitted_rows": submitted_rows, "delete_submitted_sessions": submitted_sessions})).await?;
+            *self.retention_scan.lock().await = Some((cutoff, latest, Utc::now()));
             return Ok(());
         }
-        self.record_coverage_run(started_at, "q_live_retention", "retention_delete_submitted", date_start_utc(cutoff), Utc::now(), "retention", submitted_rows, &self.host_role(), "", &json!({"retained_sessions": sessions.iter().map(ToString::to_string).collect::<Vec<_>>(), "historical_confirmed_through": latest, "delete_submitted_sessions": submitted_sessions})).await
+        self.record_coverage_run(started_at, "q_live_retention", "retention_delete_submitted", date_start_utc(cutoff), Utc::now(), "retention", submitted_rows, &self.host_role(), "", &json!({"retained_sessions": sessions.iter().map(ToString::to_string).collect::<Vec<_>>(), "historical_confirmed_through": latest, "delete_submitted_sessions": submitted_sessions})).await?;
+        *self.retention_scan.lock().await = Some((cutoff, latest, Utc::now()));
+        Ok(())
     }
 
     async fn confirm_flatfile_coverage(&self, latest: &str) -> Result<(), String> {
@@ -2970,6 +2986,15 @@ impl GapFillService {
     }
 }
 
+fn retention_event_sessions_sql(table: &str, cutoff: NaiveDate) -> String {
+    format!(
+        "SELECT toString(toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York'))) AS session_date, count() FROM {} PREWHERE event_date <= toDate('{}') WHERE toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York')) < toDate('{}') GROUP BY session_date ORDER BY session_date FORMAT TSV",
+        table,
+        cutoff.succ_opt().unwrap_or(cutoff),
+        cutoff,
+    )
+}
+
 fn should_run_session_catch_up(mode: &str) -> bool {
     matches!(mode, "auto" | "session" | "session_catch_up")
 }
@@ -3116,6 +3141,16 @@ mod tests {
         let maintenance_window = Utc.with_ymd_and_hms(2026, 8, 11, 2, 0, 0).unwrap();
         assert!(should_defer_whole_market_repair(regular_session));
         assert!(!should_defer_whole_market_repair(maintenance_window));
+    }
+
+    #[test]
+    fn retention_scan_prunes_live_event_date_partitions_before_session_conversion() {
+        let cutoff = NaiveDate::from_ymd_opt(2026, 8, 21).unwrap();
+        let sql = retention_event_sessions_sql("events", cutoff);
+
+        assert!(sql.contains("PREWHERE event_date <= toDate('2026-08-22')"));
+        assert!(sql.contains("< toDate('2026-08-21')"));
+        assert!(sql.contains("America/New_York"));
     }
 
     #[test]
