@@ -185,6 +185,8 @@ type PriceZone = {
   historicalLabelsDefault?: boolean;
   historyBarsDefault?: number;
   historyTimeframeSeconds?: number;
+  holdEvidenceReliability?: number;
+  holdObservationCount?: number;
   holdProbability?: number;
   label: string;
   latest?: boolean;
@@ -312,6 +314,10 @@ type LegendSeriesSettings = {
   lineStyle?: LegendLineStyle;
   lineWidth?: number;
   maximumBreakProbability?: number;
+  minimumHoldEvidenceReliability?: number;
+  minimumHoldObservations?: number;
+  minimumHoldQualityScore?: number;
+  /** Legacy persisted key. Its value already represented conservative quality. */
   minimumHoldProbability?: number;
   minimumPressureMagnitude?: number;
   opacity?: number;
@@ -322,6 +328,8 @@ type LegendSeriesSettings = {
   showLabels?: boolean;
   showUnifiedActive?: boolean;
   showUnifiedBroken?: boolean;
+  showUnifiedQualityLabel?: boolean;
+  /** Legacy persisted key retained only for settings migration. */
   showUnifiedHoldProbability?: boolean;
   showUnifiedResistance?: boolean;
   showUnifiedRoleFlipped?: boolean;
@@ -2211,7 +2219,9 @@ type LegendItem = {
   lineStyle: LegendLineStyle;
   lineWidth: number;
   maximumBreakProbability?: number;
-  minimumHoldProbability?: number;
+  minimumHoldEvidenceReliability?: number;
+  minimumHoldObservations?: number;
+  minimumHoldQualityScore?: number;
   minimumPressureMagnitude?: number;
   opacity: number;
   preset?: ChartPreset;
@@ -2225,7 +2235,7 @@ type LegendItem = {
   showLabels?: boolean;
   showUnifiedActive?: boolean;
   showUnifiedBroken?: boolean;
-  showUnifiedHoldProbability?: boolean;
+  showUnifiedQualityLabel?: boolean;
   showUnifiedResistance?: boolean;
   showUnifiedRoleFlipped?: boolean;
   showUnifiedSupport?: boolean;
@@ -2553,11 +2563,13 @@ function LegendEditor({
       ) : null}
       {item.itemKind === "zone" && item.supportsUnifiedFilters ? (
         <fieldset className="legend-unified-filters">
-          <legend>Observed lifecycle filters</legend>
-          <ScoreThresholdControl label="Minimum hold" value={item.minimumHoldProbability ?? 0} onChange={(minimumHoldProbability) => onUpdate({ minimumHoldProbability })} />
-          <ScoreThresholdControl label="Pressure magnitude" value={item.minimumPressureMagnitude ?? 0} onChange={(minimumPressureMagnitude) => onUpdate({ minimumPressureMagnitude })} />
-          <ScoreThresholdControl label="Maximum break" value={item.maximumBreakProbability ?? 1} onChange={(maximumBreakProbability) => onUpdate({ maximumBreakProbability })} />
-          <small>Filters use recorded holds, accepted breaks, and executed pressure. Changes apply immediately to loaded chart data.</small>
+          <legend>Evidence-quality filters</legend>
+          <ScoreThresholdControl label="Minimum conservative quality" value={item.minimumHoldQualityScore ?? 0} onChange={(minimumHoldQualityScore) => onUpdate({ minimumHoldQualityScore })} />
+          <CountThresholdControl label="Minimum observations" value={item.minimumHoldObservations ?? 0} onChange={(minimumHoldObservations) => onUpdate({ minimumHoldObservations })} />
+          <ScoreThresholdControl label="Minimum evidence depth" value={item.minimumHoldEvidenceReliability ?? 0} onChange={(minimumHoldEvidenceReliability) => onUpdate({ minimumHoldEvidenceReliability })} />
+          <ScoreThresholdControl label="Maximum smoothed break" value={item.maximumBreakProbability ?? 1} onChange={(maximumBreakProbability) => onUpdate({ maximumBreakProbability })} />
+          <ScoreThresholdControl label="Minimum pressure magnitude" value={item.minimumPressureMagnitude ?? 0} onChange={(minimumPressureMagnitude) => onUpdate({ minimumPressureMagnitude })} />
+          <small>Quality is the conservative Wilson lower bound. Observations and evidence depth expose sample support; break and pressure remain separate diagnostics. Changes apply immediately to loaded chart data.</small>
           <span className="legend-filter-subtitle">Visible roles and states</span>
           <span className="legend-filter-grid">
             <UnifiedVisibilityToggle checked={item.showUnifiedSupport !== false} label="Support" onChange={(showUnifiedSupport) => onUpdate({ showUnifiedSupport })} />
@@ -2568,7 +2580,7 @@ function LegendEditor({
           </span>
           <span className="legend-filter-subtitle">Chart labels</span>
           <span className="legend-filter-grid">
-            <UnifiedVisibilityToggle checked={item.showUnifiedHoldProbability !== false} label="Hold probability" onChange={(showUnifiedHoldProbability) => onUpdate({ showUnifiedHoldProbability })} />
+            <UnifiedVisibilityToggle checked={item.showUnifiedQualityLabel !== false} label="Conservative quality" onChange={(showUnifiedQualityLabel) => onUpdate({ showUnifiedQualityLabel })} />
           </span>
         </fieldset>
       ) : null}
@@ -2657,7 +2669,7 @@ function ScoreThresholdControl({ label, onChange, value }: { label: string; onCh
       {label}
       <span className="legend-range-control">
         <input
-          aria-label={`Minimum ${label.toLowerCase()} score`}
+          aria-label={label}
           min={0}
           max={100}
           step={1}
@@ -2666,6 +2678,25 @@ function ScoreThresholdControl({ label, onChange, value }: { label: string; onCh
           onChange={(event) => onChange(Number(event.target.value) / 100)}
         />
         <output>{percent}%</output>
+      </span>
+    </label>
+  );
+}
+
+function CountThresholdControl({ label, onChange, value }: { label: string; onChange: (value: number) => void; value: number }) {
+  const count = Math.max(0, Math.round(value));
+  return (
+    <label>
+      {label}
+      <span className="legend-range-control">
+        <input
+          aria-label={label}
+          min={0}
+          step={1}
+          type="number"
+          value={count}
+          onChange={(event) => onChange(Number(event.target.value))}
+        />
       </span>
     </label>
   );
@@ -3989,7 +4020,9 @@ function buildPriceZoneLegendItems(
       lineStyle: settings.lineStyle,
       lineWidth: settings.lineWidth,
       maximumBreakProbability: settings.maximumBreakProbability,
-      minimumHoldProbability: settings.minimumHoldProbability,
+      minimumHoldEvidenceReliability: settings.minimumHoldEvidenceReliability,
+      minimumHoldObservations: settings.minimumHoldObservations,
+      minimumHoldQualityScore: settings.minimumHoldQualityScore,
       minimumPressureMagnitude: settings.minimumPressureMagnitude,
       opacity: settings.opacity,
       preset: settings.preset,
@@ -4002,7 +4035,7 @@ function buildPriceZoneLegendItems(
       showHistoricalLabels: settings.showHistoricalLabels,
       showUnifiedActive: settings.showUnifiedActive,
       showUnifiedBroken: settings.showUnifiedBroken,
-      showUnifiedHoldProbability: settings.showUnifiedHoldProbability,
+      showUnifiedQualityLabel: settings.showUnifiedQualityLabel,
       showUnifiedResistance: settings.showUnifiedResistance,
       showUnifiedRoleFlipped: settings.showUnifiedRoleFlipped,
       showUnifiedSupport: settings.showUnifiedSupport,
@@ -4557,6 +4590,9 @@ function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettin
     lineStyle: series.lineStyle ?? "solid",
     lineWidth: Math.max(1, Math.min(4, Math.round(series.lineWidth || 1))),
     maximumBreakProbability: 1,
+    minimumHoldEvidenceReliability: 0,
+    minimumHoldObservations: 0,
+    minimumHoldQualityScore: 0,
     minimumHoldProbability: 0,
     minimumPressureMagnitude: 0,
     opacity: 1,
@@ -4567,6 +4603,7 @@ function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettin
     showLabels: true,
     showUnifiedActive: true,
     showUnifiedBroken: true,
+    showUnifiedQualityLabel: true,
     showUnifiedHoldProbability: true,
     showUnifiedResistance: true,
     showUnifiedRoleFlipped: true,
@@ -4589,7 +4626,10 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
     lineStyle: stored.lineStyle || defaults.lineStyle,
     lineWidth: Math.max(1, Math.min(4, Math.round(stored.lineWidth ?? defaults.lineWidth))),
     maximumBreakProbability: clampNumber(stored.maximumBreakProbability, 0, 1, defaults.maximumBreakProbability),
-    minimumHoldProbability: clampNumber(stored.minimumHoldProbability, 0, 1, defaults.minimumHoldProbability),
+    minimumHoldEvidenceReliability: clampNumber(stored.minimumHoldEvidenceReliability, 0, 1, defaults.minimumHoldEvidenceReliability),
+    minimumHoldObservations: Math.max(0, Math.round(stored.minimumHoldObservations ?? defaults.minimumHoldObservations)),
+    minimumHoldQualityScore: clampNumber(stored.minimumHoldQualityScore ?? stored.minimumHoldProbability, 0, 1, defaults.minimumHoldQualityScore),
+    minimumHoldProbability: defaults.minimumHoldProbability,
     minimumPressureMagnitude: clampNumber(stored.minimumPressureMagnitude, 0, 1, defaults.minimumPressureMagnitude),
     opacity: clampNumber(stored.opacity ?? defaults.opacity, 0, 1, 1),
     preset: stored.preset === "tactical" || stored.preset === "context" ? stored.preset : defaults.preset,
@@ -4599,7 +4639,8 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
     showLabels: stored.showLabels ?? defaults.showLabels,
     showUnifiedActive: stored.showUnifiedActive ?? defaults.showUnifiedActive,
     showUnifiedBroken: stored.showUnifiedBroken ?? defaults.showUnifiedBroken,
-    showUnifiedHoldProbability: stored.showUnifiedHoldProbability ?? defaults.showUnifiedHoldProbability,
+    showUnifiedQualityLabel: stored.showUnifiedQualityLabel ?? stored.showUnifiedHoldProbability ?? defaults.showUnifiedQualityLabel,
+    showUnifiedHoldProbability: defaults.showUnifiedHoldProbability,
     showUnifiedResistance: stored.showUnifiedResistance ?? defaults.showUnifiedResistance,
     showUnifiedRoleFlipped: stored.showUnifiedRoleFlipped ?? defaults.showUnifiedRoleFlipped,
     showUnifiedSupport: stored.showUnifiedSupport ?? defaults.showUnifiedSupport,
@@ -4618,7 +4659,9 @@ type ResolvedPriceZoneLegendSettings = {
   lineStyle: LegendLineStyle;
   lineWidth: number;
   maximumBreakProbability: number;
-  minimumHoldProbability: number;
+  minimumHoldEvidenceReliability: number;
+  minimumHoldObservations: number;
+  minimumHoldQualityScore: number;
   minimumPressureMagnitude: number;
   opacity: number;
   preset: ChartPreset;
@@ -4627,7 +4670,7 @@ type ResolvedPriceZoneLegendSettings = {
   showHistoricalLabels: boolean;
   showUnifiedActive: boolean;
   showUnifiedBroken: boolean;
-  showUnifiedHoldProbability: boolean;
+  showUnifiedQualityLabel: boolean;
   showUnifiedResistance: boolean;
   showUnifiedRoleFlipped: boolean;
   showUnifiedSupport: boolean;
@@ -4646,7 +4689,9 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
     lineStyle: stored.lineStyle ?? zoneBorderStyle(zone?.borderStyle),
     lineWidth: Math.max(1, Math.min(4, Math.round(stored.lineWidth ?? zone?.borderWidth ?? 1))),
     maximumBreakProbability: clampNumber(stored.maximumBreakProbability, 0, 1, 1),
-    minimumHoldProbability: clampNumber(stored.minimumHoldProbability, 0, 1, 0),
+    minimumHoldEvidenceReliability: clampNumber(stored.minimumHoldEvidenceReliability, 0, 1, 0),
+    minimumHoldObservations: Math.max(0, Math.round(stored.minimumHoldObservations ?? 0)),
+    minimumHoldQualityScore: clampNumber(stored.minimumHoldQualityScore ?? stored.minimumHoldProbability, 0, 1, 0),
     minimumPressureMagnitude: clampNumber(stored.minimumPressureMagnitude, 0, 1, 0),
     opacity: clampNumber(stored.opacity ?? zone?.opacityDefault ?? 1, 0, 1, 1),
     preset: stored.preset === "tactical"
@@ -4660,7 +4705,7 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
     showHistoricalLabels: stored.showHistoricalLabels ?? zone?.historicalLabelsDefault ?? false,
     showUnifiedActive: stored.showUnifiedActive !== false,
     showUnifiedBroken: stored.showUnifiedBroken !== false,
-    showUnifiedHoldProbability: stored.showUnifiedHoldProbability !== false,
+    showUnifiedQualityLabel: stored.showUnifiedQualityLabel ?? stored.showUnifiedHoldProbability ?? true,
     showUnifiedResistance: stored.showUnifiedResistance !== false,
     showUnifiedRoleFlipped: stored.showUnifiedRoleFlipped !== false,
     showUnifiedSupport: stored.showUnifiedSupport !== false,
@@ -4675,7 +4720,9 @@ function priceZoneMeetsUnifiedFilters(zone: PriceZone, settings: ResolvedPriceZo
   const stateVisible = zone.latest ? settings.showUnifiedActive : settings.showUnifiedBroken;
   const flipVisible = !(Number(zone.roleFlipCount) > 0) || settings.showUnifiedRoleFlipped;
   return roleVisible && stateVisible && flipVisible
-    && clampNumber(zone.holdProbability, 0, 1, 0) >= settings.minimumHoldProbability
+    && clampNumber(zone.holdProbability, 0, 1, 0) >= settings.minimumHoldQualityScore
+    && Math.max(0, Number(zone.holdObservationCount) || 0) >= settings.minimumHoldObservations
+    && clampNumber(zone.holdEvidenceReliability, 0, 1, 0) >= settings.minimumHoldEvidenceReliability
     && Math.abs(clampNumber(zone.pressureBias, -1, 1, 0)) >= settings.minimumPressureMagnitude
     && clampNumber(zone.breakProbability, 0, 1, 0) <= settings.maximumBreakProbability;
 }
@@ -6171,12 +6218,12 @@ function drawPriceZonePrimitiveLabels(
       if (
         zone.annotationKind === "unified-structure-level"
         && zone.latest
-        && settings.showUnifiedHoldProbability
+        && settings.showUnifiedQualityLabel
         && Number.isFinite(zone.holdProbability)
       ) {
-        drawUnifiedHoldProbabilityLabel(
+        drawUnifiedQualityLabel(
           context,
-          `H${Math.round(clampNumber(zone.holdProbability, 0, 1, 0) * 100)}%`,
+          `Q${Math.round(clampNumber(zone.holdProbability, 0, 1, 0) * 100)}%`,
           span,
           center,
           borderColor,
@@ -6271,7 +6318,7 @@ function drawPriceZonePrimitiveLabels(
   });
 }
 
-function drawUnifiedHoldProbabilityLabel(
+function drawUnifiedQualityLabel(
   context: CanvasRenderingContext2D,
   text: string,
   span: HorizontalSpan,

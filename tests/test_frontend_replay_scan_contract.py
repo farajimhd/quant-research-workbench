@@ -575,13 +575,21 @@ def test_unified_structure_scores_can_filter_loaded_levels_without_a_history_req
     chart_source = CHART_PRESENTATION.read_text(encoding="utf-8")
 
     assert "priceZoneMeetsUnifiedFilters(zone, settings)" in renderer_source
-    assert "minimumHoldProbability" in renderer_source
+    assert "minimumHoldQualityScore" in renderer_source
+    assert "minimumHoldObservations" in renderer_source
+    assert "minimumHoldEvidenceReliability" in renderer_source
     assert "minimumPressureMagnitude" in renderer_source
     assert "maximumBreakProbability" in renderer_source
     assert "minimumSalience" not in renderer_source
     assert "minimumReactionProbability" not in renderer_source
     assert "minimumReversalProbability" not in renderer_source
-    assert "Observed lifecycle filters" in renderer_source
+    assert "Evidence-quality filters" in renderer_source
+    assert "Minimum conservative quality" in renderer_source
+    assert "Minimum observations" in renderer_source
+    assert "Minimum evidence depth" in renderer_source
+    assert "Maximum smoothed break" in renderer_source
+    assert 'label="Minimum hold"' not in renderer_source
+    assert 'label="Hold probability"' not in renderer_source
     assert "Changes apply immediately to loaded chart data" in renderer_source
     assert "showUnifiedSupport" in renderer_source
     assert "showUnifiedResistance" in renderer_source
@@ -591,6 +599,8 @@ def test_unified_structure_scores_can_filter_loaded_levels_without_a_history_req
     assert 'zone.latest ? settings.showUnifiedActive : settings.showUnifiedBroken' in renderer_source
     assert "legendSettingsRef.current" in renderer_source
     assert "const holdProbability = boundedUnit(level.hold_probability)" in chart_source
+    assert "holdEvidenceReliability: holdReliability" in chart_source
+    assert "holdObservationCount: holdObservations" in chart_source
     assert "roleFlipCount: Number(level.role_flip_count ?? 0)" in chart_source
     assert 'className="legend-configure-button"' in renderer_source
     assert 'className="legend-label" title={item.label}' in renderer_source

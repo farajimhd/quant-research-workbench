@@ -864,6 +864,8 @@ function pushUnifiedStructureLevels(
       fillOpacity: 0.045 + holdQuality * 0.085,
       historicalLabelsDefault: false,
       historyBarsDefault: 0,
+      holdEvidenceReliability: holdReliability,
+      holdObservationCount: holdObservations,
       holdProbability: holdQuality,
       label: `${low ? "Support" : "Resistance"} · ${String(level.lifecycle || "active").replaceAll("_", " ")} · ${percentLabel(holdQuality)} conservative quality · ${percentLabel(holdProbability)} smoothed hold · ${percentLabel(holdRate)} raw hold · n=${holdObservations} · ${percentLabel(holdReliability)} evidence depth · ${percentLabel(breakProbability)} smoothed break · ${pressureBias >= 0 ? "+" : ""}${Math.round(pressureBias * 100)} executed pressure · ${level.touch_count} tests · ${level.role_flip_count} flips · ${level.independent_pivot_count} pivots (${timeframes}) · ${level.hold_score_revision || "legacy score"}`,
       latest,
