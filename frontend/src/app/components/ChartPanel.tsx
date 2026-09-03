@@ -116,10 +116,16 @@ type TradeAnnotation = {
   triggerPrice?: number;
 };
 type StrategyPresentationStyleSettings = {
+  borderColor: string;
+  borderOpacity: number;
   borderStyle: LegendLineStyle;
   borderWidth: number;
   color: string;
+  fillColor: string;
   fillOpacity: number;
+  fontWeight: 400 | 500 | 600;
+  labelPaddingX: number;
+  labelPaddingY: number;
   labelSize: number;
   lineStyle: LegendLineStyle;
   lineWidth: number;
@@ -624,7 +630,24 @@ const strategyPresentationStyle = (
   labelSize = 10,
   markerSize = 7,
   fillOpacity = 0.92,
-): StrategyPresentationStyleSettings => ({ borderStyle: lineStyle, borderWidth: 1, color, fillOpacity, labelSize, lineStyle, lineWidth, markerSize, opacity, visible: true });
+): StrategyPresentationStyleSettings => ({
+  borderColor: "",
+  borderOpacity: 0.72,
+  borderStyle: lineStyle,
+  borderWidth: 1,
+  color,
+  fillColor: "",
+  fillOpacity,
+  fontWeight: 600,
+  labelPaddingX: 5,
+  labelPaddingY: 4,
+  labelSize,
+  lineStyle,
+  lineWidth,
+  markerSize,
+  opacity,
+  visible: true,
+});
 
 const defaultStrategyPresentationSettings: StrategyPresentationSettings = {
   avoidLabelCollisions: true,
@@ -2864,7 +2887,10 @@ function StrategyPresentationSelect({
                 <span><strong>{definition.title}</strong><small>{definition.help}</small></span>
               </label>
               <span className="strategy-presentation-style-summary">
-                <i style={{ background: strategyVisualElementSwatch(definition.key, element, fallbackColor) }} />
+                <span className="strategy-presentation-style-swatches">
+                  <i title={definition.kind === "label" ? "Text color" : "Element color"} style={{ background: strategyVisualElementSwatch(definition.key, element, fallbackColor) }} />
+                  {definition.kind === "label" ? <i title="Box fill" style={{ background: strategyPresentationColor(element.fillColor, palette.background), borderColor: strategyPresentationColor(element.borderColor, strategyPresentationColor(element.color, fallbackColor)) }} /> : null}
+                </span>
                 <span>{strategyVisualStyleSummary(definition.key, element, definition.kind)}</span>
               </span>
               <button aria-label={`Customize ${definition.title} style`} className="strategy-presentation-style-button" onClick={() => setStyleElement(definition.key)} title={`Customize ${definition.title} style`} type="button"><Paintbrush size={14} /></button>
@@ -2916,21 +2942,52 @@ function StrategyPresentationStylePage({
   const showsLine = definition.kind === "line" || definition.kind === "connector";
   const showsMarker = definition.kind === "marker";
   const showsLabel = definition.kind === "label";
+  const fillColor = validHexColor(settings.fillColor, validHexColor(readChartPalette().background, "#ffffff"));
+  const borderColor = validHexColor(settings.borderColor, color);
+  const defaultTextColorLabel = definition.key === "exitLabel" || definition.key === "adjustmentLabel" ? "Semantic color" : "Theme color";
   return <section className="strategy-presentation-style-page">
     <div className="strategy-presentation-header">
       <button className="strategy-presentation-back" onClick={onBack} type="button"><ArrowLeft size={15} /> Elements</button>
       <div><strong>{definition.title}</strong><span>Visual style · changes apply immediately</span></div>
       <button className="button secondary compact" onClick={onReset} type="button">Reset style</button>
     </div>
-    <div className="strategy-presentation-style-intro"><i style={{ background: color }} /><span><strong>{definition.title}</strong><small>{definition.help}</small></span></div>
+    <div className="strategy-presentation-style-intro"><i style={{ background: showsLabel ? fillColor : color, borderColor: showsLabel ? borderColor : undefined }} /><span><strong>{definition.title}</strong><small>{definition.help}</small></span></div>
     <div className="strategy-presentation-controls">
-      <label><span>Color</span><span className="strategy-presentation-color"><input aria-label={`${definition.title} color`} onChange={(event) => onChange({ color: event.target.value })} type="color" value={color} />{settings.color ? <button onClick={() => onChange({ color: "" })} type="button">Use theme</button> : <em>Theme color</em>}</span></label>
-      <StrategyStyleRange label="Opacity" max={100} min={15} onChange={(value) => onChange({ opacity: value / 100 })} suffix="%" value={Math.round(settings.opacity * 100)} />
-      {showsLine ? <><StrategyStyleSelect label="Edge type" onChange={(lineStyle) => onChange({ lineStyle })} value={settings.lineStyle} /><StrategyStyleRange label="Edge size" max={5} min={1} onChange={(lineWidth) => onChange({ lineWidth })} suffix="px" value={settings.lineWidth} /></> : null}
-      {showsMarker ? <><StrategyStyleRange label="Marker size" max={14} min={4} onChange={(markerSize) => onChange({ markerSize })} suffix="px" value={settings.markerSize} /><StrategyStyleRange label="Fill opacity" max={100} min={15} onChange={(value) => onChange({ fillOpacity: value / 100 })} suffix="%" value={Math.round(settings.fillOpacity * 100)} /><StrategyStyleSelect label="Edge type" onChange={(borderStyle) => onChange({ borderStyle })} value={settings.borderStyle} /><StrategyStyleRange label="Edge size" max={4} min={0} onChange={(borderWidth) => onChange({ borderWidth })} suffix="px" value={settings.borderWidth} /></> : null}
-      {showsLabel ? <><StrategyStyleRange label="Text size" max={16} min={8} onChange={(labelSize) => onChange({ labelSize })} suffix="px" value={settings.labelSize} /><StrategyStyleRange label="Fill opacity" max={100} min={40} onChange={(value) => onChange({ fillOpacity: value / 100 })} suffix="%" value={Math.round(settings.fillOpacity * 100)} /><StrategyStyleSelect label="Edge type" onChange={(borderStyle) => onChange({ borderStyle })} value={settings.borderStyle} /><StrategyStyleRange label="Edge size" max={4} min={0} onChange={(borderWidth) => onChange({ borderWidth })} suffix="px" value={settings.borderWidth} /></> : null}
+      {showsLabel ? <>
+        <section className="strategy-presentation-control-section">
+          <header><strong>Text</strong><span>Foreground appearance, independent of the label box.</span></header>
+          <div className="strategy-presentation-control-grid">
+            <StrategyStyleColor defaultLabel={defaultTextColorLabel} fallbackColor={color} label="Text color" onChange={(value) => onChange({ color: value })} value={settings.color} />
+            <StrategyStyleRange label="Text opacity" max={100} min={15} onChange={(value) => onChange({ opacity: value / 100 })} suffix="%" value={Math.round(settings.opacity * 100)} />
+            <StrategyStyleRange label="Text size" max={16} min={8} onChange={(labelSize) => onChange({ labelSize })} suffix="px" value={settings.labelSize} />
+            <StrategyFontWeightSelect onChange={(fontWeight) => onChange({ fontWeight })} value={settings.fontWeight} />
+          </div>
+        </section>
+        <section className="strategy-presentation-control-section">
+          <header><strong>Box</strong><span>Fill, dimensions, and edge are configured separately.</span></header>
+          <div className="strategy-presentation-control-grid">
+            <StrategyStyleColor defaultLabel="Chart background" fallbackColor={fillColor} label="Fill color" onChange={(value) => onChange({ fillColor: value })} value={settings.fillColor} />
+            <StrategyStyleRange label="Fill opacity" max={100} min={0} onChange={(value) => onChange({ fillOpacity: value / 100 })} suffix="%" value={Math.round(settings.fillOpacity * 100)} />
+            <StrategyStyleRange label="Horizontal padding" max={14} min={2} onChange={(labelPaddingX) => onChange({ labelPaddingX })} suffix="px" value={settings.labelPaddingX} />
+            <StrategyStyleRange label="Vertical padding" max={10} min={1} onChange={(labelPaddingY) => onChange({ labelPaddingY })} suffix="px" value={settings.labelPaddingY} />
+            <StrategyStyleColor defaultLabel="Text color" fallbackColor={borderColor} label="Edge color" onChange={(value) => onChange({ borderColor: value })} value={settings.borderColor} />
+            <StrategyStyleRange label="Edge opacity" max={100} min={0} onChange={(value) => onChange({ borderOpacity: value / 100 })} suffix="%" value={Math.round(settings.borderOpacity * 100)} />
+            <StrategyStyleSelect label="Edge type" onChange={(borderStyle) => onChange({ borderStyle })} value={settings.borderStyle} />
+            <StrategyStyleRange label="Edge size" max={4} min={0} onChange={(borderWidth) => onChange({ borderWidth })} suffix="px" value={settings.borderWidth} />
+          </div>
+        </section>
+      </> : <div className="strategy-presentation-control-grid">
+        <StrategyStyleColor defaultLabel="Theme color" fallbackColor={color} label="Color" onChange={(value) => onChange({ color: value })} value={settings.color} />
+        <StrategyStyleRange label="Opacity" max={100} min={15} onChange={(value) => onChange({ opacity: value / 100 })} suffix="%" value={Math.round(settings.opacity * 100)} />
+        {showsLine ? <><StrategyStyleSelect label="Edge type" onChange={(lineStyle) => onChange({ lineStyle })} value={settings.lineStyle} /><StrategyStyleRange label="Edge size" max={5} min={1} onChange={(lineWidth) => onChange({ lineWidth })} suffix="px" value={settings.lineWidth} /></> : null}
+        {showsMarker ? <><StrategyStyleRange label="Marker size" max={14} min={4} onChange={(markerSize) => onChange({ markerSize })} suffix="px" value={settings.markerSize} /><StrategyStyleRange label="Fill opacity" max={100} min={15} onChange={(value) => onChange({ fillOpacity: value / 100 })} suffix="%" value={Math.round(settings.fillOpacity * 100)} /><StrategyStyleSelect label="Edge type" onChange={(borderStyle) => onChange({ borderStyle })} value={settings.borderStyle} /><StrategyStyleRange label="Edge size" max={4} min={0} onChange={(borderWidth) => onChange({ borderWidth })} suffix="px" value={settings.borderWidth} /></> : null}
+      </div>}
     </div>
   </section>;
+}
+
+function StrategyStyleColor({ defaultLabel, fallbackColor, label, onChange, value }: { defaultLabel: string; fallbackColor: string; label: string; onChange: (value: string) => void; value: string }) {
+  return <label><span>{label}</span><span className="strategy-presentation-color"><input aria-label={label} onChange={(event) => onChange(event.target.value)} type="color" value={validHexColor(value, fallbackColor)} />{value ? <button onClick={() => onChange("")} type="button">Use default</button> : <em>{defaultLabel}</em>}</span></label>;
 }
 
 function StrategyStyleRange({ label, max, min, onChange, suffix, value }: { label: string; max: number; min: number; onChange: (value: number) => void; suffix: string; value: number }) {
@@ -2939,6 +2996,10 @@ function StrategyStyleRange({ label, max, min, onChange, suffix, value }: { labe
 
 function StrategyStyleSelect({ label, onChange, value }: { label: string; onChange: (value: LegendLineStyle) => void; value: LegendLineStyle }) {
   return <label><span>{label}</span><select aria-label={label} onChange={(event) => onChange(event.target.value as LegendLineStyle)} value={value}><option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option></select></label>;
+}
+
+function StrategyFontWeightSelect({ onChange, value }: { onChange: (value: 400 | 500 | 600) => void; value: 400 | 500 | 600 }) {
+  return <label><span>Text weight</span><select aria-label="Text weight" onChange={(event) => onChange(Number(event.target.value) as 400 | 500 | 600)} value={value}><option value={400}>Regular</option><option value={500}>Medium</option><option value={600}>Semibold</option></select></label>;
 }
 
 function strategyVisualElementFallbackColor(key: StrategyVisualElementKey, neutral: string) {
@@ -2962,7 +3023,7 @@ function strategyVisualElementSwatch(key: StrategyVisualElementKey, settings: St
 
 function strategyVisualStyleSummary(key: StrategyVisualElementKey, settings: StrategyPresentationStyleSettings, kind: StrategyVisualElementDefinition["kind"]) {
   const semantic = !settings.color && (key === "exitLabel" || key.startsWith("adjustment") || key === "connector") ? "Semantic · " : "";
-  if (kind === "label") return `${semantic}${settings.labelSize}px text · ${Math.round(settings.opacity * 100)}%`;
+  if (kind === "label") return `${semantic}${settings.labelSize}px/${settings.fontWeight} · ${settings.labelPaddingX}×${settings.labelPaddingY}px box`;
   if (kind === "marker") return `${semantic}${settings.markerSize}px marker · ${Math.round(settings.opacity * 100)}%`;
   return `${semantic}${settings.lineWidth}px ${settings.lineStyle} · ${Math.round(settings.opacity * 100)}%`;
 }
@@ -3865,11 +3926,18 @@ function normalizeStrategyPresentationStyle(
   settings: Partial<StrategyPresentationStyleSettings> | undefined,
   defaults: StrategyPresentationStyleSettings,
 ): StrategyPresentationStyleSettings {
+  const fontWeight = Number(settings?.fontWeight);
   return {
+    borderColor: settings?.borderColor === "" ? "" : validHexColor(settings?.borderColor, defaults.borderColor || ""),
+    borderOpacity: clampNumber(settings?.borderOpacity, 0, 1, defaults.borderOpacity),
     borderStyle: settings?.borderStyle === "solid" || settings?.borderStyle === "dashed" || settings?.borderStyle === "dotted" ? settings.borderStyle : defaults.borderStyle,
     borderWidth: Math.round(clampNumber(settings?.borderWidth, 0, 4, defaults.borderWidth)),
     color: settings?.color === "" ? "" : validHexColor(settings?.color, defaults.color || ""),
-    fillOpacity: clampNumber(settings?.fillOpacity, 0.15, 1, defaults.fillOpacity),
+    fillColor: settings?.fillColor === "" ? "" : validHexColor(settings?.fillColor, defaults.fillColor || ""),
+    fillOpacity: clampNumber(settings?.fillOpacity, 0, 1, defaults.fillOpacity),
+    fontWeight: fontWeight === 400 || fontWeight === 500 || fontWeight === 600 ? fontWeight : defaults.fontWeight,
+    labelPaddingX: Math.round(clampNumber(settings?.labelPaddingX, 2, 14, defaults.labelPaddingX)),
+    labelPaddingY: Math.round(clampNumber(settings?.labelPaddingY, 1, 10, defaults.labelPaddingY)),
     labelSize: Math.round(clampNumber(settings?.labelSize, 8, 16, defaults.labelSize)),
     lineStyle: settings?.lineStyle === "solid" || settings?.lineStyle === "dashed" || settings?.lineStyle === "dotted" ? settings.lineStyle : defaults.lineStyle,
     lineWidth: Math.round(clampNumber(settings?.lineWidth, 1, 5, defaults.lineWidth)),
@@ -6715,10 +6783,14 @@ function drawCanvasTradeLabel(
   if (!text) return;
   const fontSize = settings.labelSize;
   const opacity = settings.opacity;
-  context.font = `600 ${fontSize}px ${canvasInterfaceFont()}`;
+  const paddingX = settings.labelPaddingX;
+  const paddingY = settings.labelPaddingY;
+  const fillColor = strategyPresentationColor(settings.fillColor, background);
+  const borderColor = strategyPresentationColor(settings.borderColor, color);
+  context.font = `${settings.fontWeight} ${fontSize}px ${canvasInterfaceFont()}`;
   context.textBaseline = "middle";
-  const labelWidth = Math.ceil(context.measureText(text).width) + 10;
-  const labelHeight = fontSize + 7;
+  const labelWidth = Math.ceil(context.measureText(text).width) + paddingX * 2;
+  const labelHeight = fontSize + paddingY * 2;
   const preferredLeft = side === "right" ? anchorX - labelWidth : anchorX;
   const preferredCenterY = top + labelHeight / 2;
   const horizontalCandidates = [preferredLeft, preferredLeft - labelWidth / 2, preferredLeft + labelWidth / 2];
@@ -6751,16 +6823,16 @@ function drawCanvasTradeLabel(
     context.stroke();
     context.restore();
   }
-  context.fillStyle = rgbaFromHex(background, settings.fillOpacity);
+  context.fillStyle = rgbaFromHex(fillColor, settings.fillOpacity);
   context.fillRect(left, top, labelWidth, labelHeight);
-  if (settings.borderWidth > 0) {
+  if (settings.borderWidth > 0 && settings.borderOpacity > 0) {
     context.setLineDash(canvasLineDash(settings.borderStyle, settings.borderWidth));
-    context.strokeStyle = rgbaFromHex(color, Math.min(0.72, opacity));
+    context.strokeStyle = rgbaFromHex(borderColor, settings.borderOpacity);
     context.lineWidth = settings.borderWidth;
     context.strokeRect(left + settings.borderWidth / 2, top + settings.borderWidth / 2, labelWidth - settings.borderWidth, labelHeight - settings.borderWidth);
   }
   context.fillStyle = rgbaFromHex(color, opacity);
-  context.fillText(text, left + 5, top + labelHeight / 2);
+  context.fillText(text, left + paddingX, top + labelHeight / 2);
 }
 
 function canvasLabelBoxesOverlap(first: CanvasLabelBox, second: CanvasLabelBox) {

@@ -204,6 +204,15 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert 'className="strategy-presentation-element"' in renderer_source
     assert 'className="strategy-presentation-style-page"' in renderer_source
     assert 'Customize ${definition.title} style' in renderer_source
+    assert 'label="Text color"' in renderer_source
+    assert 'label="Text opacity"' in renderer_source
+    assert '<StrategyFontWeightSelect' in renderer_source
+    assert 'aria-label="Text weight"' in renderer_source
+    assert 'label="Fill color"' in renderer_source
+    assert 'label="Horizontal padding"' in renderer_source
+    assert 'label="Vertical padding"' in renderer_source
+    assert 'label="Edge color"' in renderer_source
+    assert 'label="Edge opacity"' in renderer_source
     assert 'avoidLabelCollisions' in renderer_source
     assert 'connectorThreshold' in renderer_source
     assert 'settingsStorageKey}.strategy-presentation' in renderer_source
@@ -230,6 +239,11 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert "drawCanvasCandleConnector" in renderer_source
     assert "context.setLineDash(canvasLineDash(settings.lineStyle, settings.lineWidth))" in renderer_source
     assert 'context.fillRect(renderedLeft - capRadius' in renderer_source
+    assert 'context.font = `${settings.fontWeight} ${fontSize}px ${canvasInterfaceFont()}`' in renderer_source
+    assert 'const fillColor = strategyPresentationColor(settings.fillColor, background)' in renderer_source
+    assert 'const borderColor = strategyPresentationColor(settings.borderColor, color)' in renderer_source
+    assert 'context.strokeStyle = rgbaFromHex(borderColor, settings.borderOpacity)' in renderer_source
+    assert 'context.fillText(text, left + paddingX' in renderer_source
     strategy_styles = styles_source.split(".strategy-presentation-menu", 1)[1].split(".app-loading-state", 1)[0]
     assert "font-family: var(--font-body);" in strategy_styles
     assert "font-weight: 600;" in strategy_styles
