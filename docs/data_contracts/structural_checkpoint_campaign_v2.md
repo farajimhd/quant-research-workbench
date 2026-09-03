@@ -1,8 +1,10 @@
 # Structural Checkpoint Campaign v2
 
+> Superseded by [Structural Checkpoint Campaign v3](structural_checkpoint_campaign_v3.md).
+
 ## Purpose
 
-Campaign v2 populates immutable Generic Structure algorithm v15 daily
+Campaign v2 populates immutable Generic Structure algorithm v16 daily
 checkpoints without changing the event-native calculation. It is a transport,
 planning, concurrency, persistence, and restart contract; it is not a second
 structural-level algorithm.
@@ -16,7 +18,7 @@ structural-level algorithm.
   never replace streamed events, event counts, or checkpoint cursors.
 - Corporate actions come from `q_live.market_stock_split_v1` as known at the
   requested causal boundary.
-- The calculation is `generic-structure-v15` from the shared Rust QMD library.
+- The calculation is `generic-structure-v16` from the shared Rust QMD library.
 - Durable output is `q_live.qmd_structure_daily_checkpoint_v1`.
 
 No OHLCV, bar, time-bucket, price-level, or trade aggregate may substitute for

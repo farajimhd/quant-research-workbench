@@ -1,8 +1,8 @@
 # QMD Liquidity, Support, and Structure Guide
 
-## Generic Structure v11: persistent level book, timeframe-local swings, and unified structural levels
+## Generic Structure v16: persistent level book, timeframe-local swings, and unified structural levels
 
-Generic Structure v11 has one source stream: ordered eligible executed trades.
+Generic Structure v16 has one source stream: ordered eligible executed trades and quotes.
 It maintains three deliberately separate products:
 
 - an immediate traded-price level book for support/resistance and volume
@@ -45,21 +45,19 @@ for days or months. It is independent of the chart interval: the selected
 interval changes candle display, not level identity or evidence.
 
 The same exact price and pivot timestamp can appear in several timeframe books.
-Those appearances remain listed as sources but count once toward salience,
-confidence, volume, and trade-count evidence. Nearby swings with different
+Those appearances remain listed as sources but count once toward independent
+pivot breadth. Only event-native sources contribute executed volume and trade
+counts. Nearby swings with different
 pivot identities count independently. Broken swings and event-native levels
 between accepted break and confirmed retest are excluded. A confirmed role
 reversal republishes the same stable unified identity with the opposite side.
 A zone's
 `confirmed_at_ms` is the latest confirmation among its sources, which is the
 earliest time the complete displayed cluster was knowable without lookahead.
-`salience` and `confidence` remain bounded evidence scores.
-
-`reaction_probability` combines independent-pivot salience, source confidence,
-repeated tests, accepted breaks, cross-timeframe diversity, and confirmed role
-flips. `hold_probability` is a Beta-smoothed summary of holds versus accepted
-breaks in the current role. These are deterministic evidence-derived scores,
-not calibrated return forecasts or trade instructions. Publication remains
+`hold_probability` is a Beta-smoothed summary of recorded holds versus accepted
+breaks in the current role; `break_probability` is its complement. Unified
+levels do not publish synthetic salience, confidence, reaction, or reversal
+scores. Publication remains
 bounded to sixteen major levels per side; the internal book retains up to 512
 levels and prunes inactive, unpromoted, oldest evidence first.
 
