@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -144,6 +145,23 @@ def read_status(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def archive_previous_attempt_statuses(runtime_dir: Path, worker_dirs: list[Path]) -> Path | None:
+    """Move stale dashboard snapshots aside before a resumed worker launch."""
+    status_paths = [runtime_dir / "campaign-status.json"] + [
+        worker_dir / "campaign-status.json" for worker_dir in worker_dirs
+    ]
+    existing = [path for path in status_paths if path.is_file()]
+    if not existing:
+        return None
+    attempt_id = f"{datetime.now(timezone.utc):%Y%m%dT%H%M%S.%fZ}-{uuid.uuid4().hex[:8]}"
+    archive_dir = runtime_dir / "attempts" / attempt_id
+    for source in existing:
+        destination = archive_dir / source.relative_to(runtime_dir)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        source.replace(destination)
+    return archive_dir
+
+
 def fmt_count(value: int | float) -> str:
     return f"{int(value):,}"
 
@@ -161,6 +179,10 @@ def aggregate_status(paths, plans, started, rates, processes) -> dict[str, Any]:
     counts = {key: sum(int(row.get("counts", {}).get(key, 0)) for row in statuses) for key in keys}
     events = sum(int(row.get("events_processed", 0)) for row in statuses)
     total_events = sum(int(plan.get("estimated_events", 0)) for plan in plans)
+    total_units = sum(len(plan.get("sessions", [])) for plan in plans)
+    # A worker that has not published its new status snapshot is still queued.
+    # Deriving this value from the immutable plan keeps startup progress truthful.
+    counts["queued"] = max(total_units - counts["finished"] - counts["active"], 0)
     now = time.monotonic()
     rates.append((now, events))
     while len(rates) > 1 and rates[1][0] <= now - 300:
@@ -181,7 +203,7 @@ def aggregate_status(paths, plans, started, rates, processes) -> dict[str, Any]:
         "worker_processes": len(processes),
         "worker_processes_exited": exited,
         "ticker_count": len(plans),
-        "total_units": sum(len(plan.get("sessions", [])) for plan in plans),
+        "total_units": total_units,
         "total_estimated_events": total_events,
         "events_processed": events,
         "event_rate_5m": rate,
@@ -226,12 +248,18 @@ def render_rich(status: dict[str, Any], set_id: str):
     active = "  ".join(status["active"][:8]) or "Workers starting or between tickers"
     issue = status["issues"][-1] if status["issues"] else None
     issue_text = "None" if issue is None else f"{issue.get('ticker', '?')} {issue.get('session_date') or ''}: {issue.get('error', '')}"
+    resume_text = (
+        "Previous attempt status archived; this view contains only the current attempt."
+        if status.get("previous_attempt_archive")
+        else "Fresh attempt; no prior dashboard status was present."
+    )
     return Panel(
         Group(
             Text(f"Structural Checkpoint Campaign v4  {status['status'].upper()}", style="bold cyan"),
             summary,
             Text(f"Active  {active}"),
             Text(f"Latest issue  {issue_text}", style="red" if issue else "dim"),
+            Text(resume_text, style="dim"),
             Text("Ctrl+C stops children; rerun the identical command to resume.", style="dim"),
         ),
         border_style="cyan",
@@ -348,6 +376,8 @@ def run_process_campaign(binary: Path, campaign_args: list[str], workers: int, e
         raise RuntimeError("failed to register the checkpoint set before worker launch")
     worker_root = runtime_dir / "workers"
     worker_root.mkdir(parents=True, exist_ok=True)
+    worker_dirs = [worker_root / f"worker-{index + 1:02d}" for index in range(len(shards))]
+    previous_attempt_archive = archive_previous_attempt_statuses(runtime_dir, worker_dirs)
     base_args = remove_options(
         campaign_args,
         {"--workers", "--runtime-dir", "--ticker-file", "--priority-ticker", "--core-index"},
@@ -356,7 +386,7 @@ def run_process_campaign(binary: Path, campaign_args: list[str], workers: int, e
     processes, logs, status_paths = [], [], []
     try:
         for index, shard in enumerate(shards):
-            worker_dir = worker_root / f"worker-{index + 1:02d}"
+            worker_dir = worker_dirs[index]
             worker_dir.mkdir(parents=True, exist_ok=True)
             ticker_file = worker_dir / "tickers.txt"
             ticker_file.write_text("\n".join(str(plan["ticker"]) for plan in shard) + "\n", encoding="utf-8")
@@ -397,6 +427,8 @@ def run_process_campaign(binary: Path, campaign_args: list[str], workers: int, e
             status = aggregate_status(status_paths, plans, started, rates, processes)
             status["checkpoint_set_id"] = set_id
             status["universe_hash"] = universe_hash
+            if previous_attempt_archive is not None:
+                status["previous_attempt_archive"] = str(previous_attempt_archive)
             atomic_json(aggregate_path, status)
             if live:
                 live.update(render_rich(status, set_id), refresh=True)
@@ -424,6 +456,8 @@ def run_process_campaign(binary: Path, campaign_args: list[str], workers: int, e
         final = aggregate_status(status_paths, plans, started, rates, processes)
         final["checkpoint_set_id"] = set_id
         final["universe_hash"] = universe_hash
+        if previous_attempt_archive is not None:
+            final["previous_attempt_archive"] = str(previous_attempt_archive)
         if interrupted:
             final["status"] = "interrupted"
         set_state = "interrupted" if interrupted else (
