@@ -77,6 +77,58 @@ class BarGptServingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "backward"):
             store.publish({**first, "prediction_id": "p0", "event_at_us": now_us - 1, "available_at_us": now_us - 1})
 
+    def test_chart_forecasts_project_matching_next_bar_timeframe(self) -> None:
+        store = ModelFeatureStore()
+        origin_us = 1_800_000_000_000_000
+        fields = {
+            f"model.bargpt.v3.next_bar.{view}.trade_{component}_return.value": value
+            for view, offset in (("1s", 0.0), ("5s", 1.0))
+            for component, value in {
+                "open": 100.0 + offset,
+                "high": 102.0 + offset,
+                "low": 99.0 + offset,
+                "close": 101.0 + offset,
+            }.items()
+        }
+        store.publish({
+            "prediction_id": "next-bars", "ticker": "AAPL", "model_id": "bar_gpt_v3_epoch2",
+            "model_version": "v3", "checkpoint_hash": "hash", "event_at_us": origin_us,
+            "mode": "replay", "scope_id": "replay:origin", "available_at_us": origin_us,
+            "fields": fields, "raw": {},
+        })
+
+        payload = store.chart_forecasts(
+            "AAPL", model_version="v3", scope_id="replay:origin",
+            forecast_kind="next_bar", timeframe="1s",
+        )
+
+        self.assertEqual(payload["row_count"], 1)
+        self.assertEqual(payload["rows"][0]["forecast_kind"], "next_bar")
+        self.assertEqual(payload["rows"][0]["timeframe"], "1s")
+        self.assertEqual(payload["rows"][0]["target_start_us"], origin_us)
+        self.assertEqual(payload["rows"][0]["target_end_us"], origin_us + 1_000_000)
+        self.assertEqual(payload["rows"][0]["close"], 101.0)
+
+    def test_chart_forecasts_preserve_physical_default(self) -> None:
+        store = ModelFeatureStore()
+        origin_us = 1_800_000_000_000_000
+        fields = {
+            f"model.bargpt.v3.physical.5s.trade_{component}_return.q50.value": value
+            for component, value in {"open": 100.0, "high": 102.0, "low": 99.0, "close": 101.0}.items()
+        }
+        store.publish({
+            "prediction_id": "physical", "ticker": "AAPL", "model_id": "bar_gpt_v3_epoch2",
+            "model_version": "v3", "checkpoint_hash": "hash", "event_at_us": origin_us,
+            "mode": "replay", "scope_id": "replay:origin", "available_at_us": origin_us,
+            "fields": fields, "raw": {},
+        })
+
+        payload = store.chart_forecasts("AAPL", model_version="v3", scope_id="replay:origin")
+
+        self.assertEqual(payload["row_count"], 1)
+        self.assertEqual(payload["rows"][0]["forecast_kind"], "physical")
+        self.assertEqual(payload["rows"][0]["target_end_us"], origin_us + 5_000_000)
+
     def test_scope_client_backs_off_when_service_is_offline(self) -> None:
         with patch.dict(os.environ, {"BAR_GPT_SERVICE_URL": "http://127.0.0.1:1"}):
             result = publish_bar_gpt_scope("test", mode="live", tickers=["AAPL"], timeout=0.01)

@@ -20,6 +20,7 @@ if str(REPO_ROOT) not in sys.path:
 
 V2_IMMUTABLE = re.compile(r"checkpoint_latest-bk-chunk\d+-(\d+)samples\.pt$")
 V3_IMMUTABLE = re.compile(r"checkpoint_global_validation_origins_(\d+)\.pt$")
+V3_OUTER_EPOCH_IMMUTABLE = re.compile(r"checkpoint_epoch_(\d+)\.pt$")
 
 
 def _candidate(root: Path, version: str) -> tuple[Path, int]:
@@ -63,17 +64,41 @@ def _checkpoint_contract(path: Path, version: str) -> str:
     return value
 
 
-def build_manifest(root: Path) -> list[dict[str, Any]]:
+def _explicit_candidate(path: Path, version: str) -> tuple[Path, int, str, str]:
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file():
+        raise RuntimeError(f"explicit {version} checkpoint is unavailable: {resolved}")
+    pattern = V2_IMMUTABLE if version == "v2" else V3_IMMUTABLE
+    match = pattern.fullmatch(resolved.name)
+    if match:
+        marker = int(match.group(1))
+        return resolved, marker, f"bar_gpt_{version}_fixed_{marker}", "explicit immutable sample checkpoint"
+    if version == "v3":
+        epoch_match = V3_OUTER_EPOCH_IMMUTABLE.fullmatch(resolved.name)
+        if epoch_match:
+            epoch = int(epoch_match.group(1))
+            return resolved, epoch, f"bar_gpt_v3_epoch_{epoch:04d}", "explicit immutable completed outer-epoch checkpoint"
+    raise RuntimeError(
+        f"explicit {version} checkpoint is not an approved immutable checkpoint filename: {resolved.name}"
+    )
+
+
+def build_manifest(root: Path, *, v3_checkpoint: Path | None = None) -> list[dict[str, Any]]:
     root = root.expanduser().resolve()
     if not root.is_dir():
         raise RuntimeError(f"checkpoint root is unavailable: {root}")
     rows = []
     for version, role in (("v2", "champion"), ("v3", "shadow")):
-        checkpoint, marker = _candidate(root, version)
-        print(f"[select] {version.upper()} immutable marker={marker:,} file={checkpoint.name}")
+        if version == "v3" and v3_checkpoint is not None:
+            checkpoint, marker, model_id, rule = _explicit_candidate(v3_checkpoint, version)
+        else:
+            checkpoint, marker = _candidate(root, version)
+            model_id = f"bar_gpt_{version}_fixed_{marker}"
+            rule = "highest immutable sample marker" if version == "v2" else "highest immutable fixed-panel global-validation origin"
+        print(f"[select] {version.upper()} immutable marker={marker:,} file={checkpoint.name} rule={rule}")
         print(f"[verify] {version.upper()} hashing and reading checkpoint contract")
         rows.append({
-            "model_id": f"bar_gpt_{version}_fixed_{marker}",
+            "model_id": model_id,
             "version": version,
             "checkpoint": str(checkpoint),
             "checkpoint_sha256": _sha256(checkpoint),
@@ -83,7 +108,7 @@ def build_manifest(root: Path) -> list[dict[str, Any]]:
             "selection": {
                 "authority_root": str(root),
                 "immutable_marker": marker,
-                "rule": "highest immutable sample marker" if version == "v2" else "highest immutable fixed-panel global-validation origin",
+                "rule": rule,
             },
         })
     return rows
@@ -114,11 +139,16 @@ def main() -> int:
     )
     parser.add_argument("--checkpoint-root", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--v3-checkpoint",
+        type=Path,
+        help="explicit immutable v3 global-validation or completed outer-epoch checkpoint to deploy as shadow",
+    )
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--check-only", action="store_true")
     args = parser.parse_args()
     try:
-        rows = build_manifest(args.checkpoint_root)
+        rows = build_manifest(args.checkpoint_root, v3_checkpoint=args.v3_checkpoint)
         if args.check_only:
             print(json.dumps(rows, indent=2, sort_keys=True))
         else:

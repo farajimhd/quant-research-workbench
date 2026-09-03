@@ -319,7 +319,11 @@ export type BarGptForecast = {
   model_version: "v2" | "v3";
   origin_us: number;
   available_at_us: number;
+  forecast_kind: "physical" | "next_bar";
   horizon: string;
+  timeframe: string;
+  target_start_us: number;
+  target_end_us: number;
   open: number;
   high: number;
   low: number;

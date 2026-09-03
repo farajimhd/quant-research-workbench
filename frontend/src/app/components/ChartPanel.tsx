@@ -496,6 +496,7 @@ export type ChartTimelineEvent = {
 
 export type ChartPayload = {
   candles: Candle[];
+  forecast_candles?: Candle[];
   volume: Array<{ time: number; value: number; color: string }>;
   overlay_series: ChartSeries[];
   oscillator_series: ChartSeries[];
@@ -692,6 +693,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const timelineEventLayerRef = useRef<HTMLDivElement | null>(null);
   const priceChartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const forecastCandleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const candleMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const indicatorSeriesRef = useRef<Map<string, AnySeriesApi>>(new Map());
@@ -1078,6 +1080,11 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     });
     candleRef.current = candleSeries;
     candleMarkersRef.current = createSeriesMarkers(candleSeries, []);
+    forecastCandleRef.current = priceChart.addSeries(CandlestickSeries, {
+      lastValueVisible: false,
+      priceLineVisible: false,
+      wickVisible: true,
+    });
     const priceZonePrimitive = new PriceZonePrimitive();
     candleSeries.attachPrimitive(priceZonePrimitive);
     priceZonePrimitiveRef.current = priceZonePrimitive;
@@ -1150,6 +1157,13 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const timeline = chartTimelineData(payload.candles, timeframe, chartSettingsRef.current.hideEmptyIntervals, payload.timeline_events);
     candleBoundsRef.current = candleValueBounds(payload.candles);
     syncRendererData(candleRef.current, timeline as unknown as RendererDatum[], `candles:${timeframe}`);
+    if (forecastCandleRef.current) {
+      syncRendererData(
+        forecastCandleRef.current,
+        [...(payload.forecast_candles ?? [])].sort((left, right) => left.time - right.time) as unknown as RendererDatum[],
+        `forecast-candles:${timeframe}`,
+      );
+    }
     syncRendererData(volumeRef.current, volumeDataForSettings(payload, chartSettingsRef.current) as unknown as RendererDatum[], volumeStyleKey(chartSettingsRef.current));
     candleWindowRef.current = nextCandleWindow;
     updateCandleMarkers();
@@ -1546,6 +1560,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     }
     priceChartRef.current = null;
     candleRef.current = null;
+    forecastCandleRef.current = null;
     volumeRef.current = null;
     indicatorSeriesRef.current.clear();
     indicatorSourceRef.current.clear();

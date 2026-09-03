@@ -47,3 +47,30 @@ def test_checkpoint_selection_fails_closed_without_immutable_checkpoint(tmp_path
         assert "no immutable v2 checkpoint" in str(error)
     else:
         raise AssertionError("changing latest checkpoint must not be selected")
+
+
+def test_explicit_v3_outer_epoch_checkpoint_has_immutable_release_identity(tmp_path: Path) -> None:
+    module = _module()
+    checkpoint = tmp_path / "run" / "checkpoints" / "checkpoint_epoch_0002.pt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.touch()
+
+    resolved, marker, model_id, rule = module._explicit_candidate(checkpoint, "v3")
+
+    assert resolved == checkpoint.resolve()
+    assert marker == 2
+    assert model_id == "bar_gpt_v3_epoch_0002"
+    assert rule == "explicit immutable completed outer-epoch checkpoint"
+
+
+def test_explicit_v3_checkpoint_rejects_mutable_filename(tmp_path: Path) -> None:
+    module = _module()
+    checkpoint = tmp_path / "checkpoint_latest.pt"
+    checkpoint.touch()
+
+    try:
+        module._explicit_candidate(checkpoint, "v3")
+    except RuntimeError as error:
+        assert "not an approved immutable checkpoint filename" in str(error)
+    else:
+        raise AssertionError("mutable explicit checkpoint must not be deployable")

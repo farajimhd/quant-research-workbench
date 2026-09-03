@@ -126,8 +126,12 @@ class ModelFeatureStore:
         scope_id: str = "",
         quantile: str = "q50",
         model_id: str = "",
+        forecast_kind: str = "physical",
+        timeframe: str = "",
     ) -> dict[str, Any]:
-        prefix = f"model.bargpt.{model_version}.physical."
+        if forecast_kind not in {"physical", "next_bar"}:
+            raise ValueError("forecast_kind must be physical or next_bar")
+        prefix = f"model.bargpt.{model_version}.{forecast_kind}."
         rows = []
         with self._lock:
             history = [
@@ -140,30 +144,41 @@ class ModelFeatureStore:
             fields = dict(update.get("fields") or {})
             grouped: dict[str, dict[str, float]] = {}
             for field_id, value in fields.items():
-                suffix_marker = f".{quantile}.value"
+                suffix_marker = f".{quantile}.value" if forecast_kind == "physical" else ".value"
                 if not field_id.startswith(prefix) or not field_id.endswith(suffix_marker):
                     continue
                 if value is None:
                     continue
                 rest = field_id[len(prefix):].removesuffix(suffix_marker)
                 try:
-                    horizon, target = rest.split(".", 1)
+                    row_timeframe, target = rest.split(".", 1)
                     family, component, suffix = target.split("_", 2)
                 except ValueError:
                     continue
                 if family != "trade" or suffix != "return" or component not in {"open", "high", "low", "close"}:
                     continue
-                grouped.setdefault(horizon, {})[component] = float(value)
-            for horizon, values in grouped.items():
+                if timeframe and row_timeframe != timeframe:
+                    continue
+                grouped.setdefault(row_timeframe, {})[component] = float(value)
+            for row_timeframe, values in grouped.items():
                 if set(values) != {"open", "high", "low", "close"}:
+                    continue
+                origin_us = int(update["event_at_us"])
+                try:
+                    duration_us = _duration_us(row_timeframe)
+                except ValueError:
                     continue
                 rows.append({
                     "prediction_id": update["prediction_id"],
                     "model_id": update["model_id"],
                     "model_version": update["model_version"],
-                    "origin_us": int(update["event_at_us"]),
+                    "origin_us": origin_us,
                     "available_at_us": int(update["available_at_us"]),
-                    "horizon": horizon,
+                    "forecast_kind": forecast_kind,
+                    "horizon": row_timeframe,
+                    "timeframe": row_timeframe,
+                    "target_start_us": origin_us,
+                    "target_end_us": origin_us + duration_us,
                     **values,
                     "geometry_valid": values["high"] >= max(values["open"], values["close"])
                     and values["low"] <= min(values["open"], values["close"]),
@@ -175,9 +190,21 @@ class ModelFeatureStore:
             "model_version": model_version,
             "model_id": model_id,
             "quantile": quantile,
+            "forecast_kind": forecast_kind,
+            "timeframe": timeframe,
             "rows": rows,
             "row_count": len(rows),
         }
+
+
+def _duration_us(value: str) -> int:
+    units = {"ms": 1_000, "s": 1_000_000, "m": 60_000_000, "h": 3_600_000_000}
+    for suffix in ("ms", "s", "m", "h"):
+        if value.endswith(suffix):
+            amount = value[: -len(suffix)]
+            if amount.isdigit() and int(amount) > 0:
+                return int(amount) * units[suffix]
+    raise ValueError(f"unsupported BarGPT forecast timeframe: {value}")
 
 
 MODEL_FEATURE_STORE = ModelFeatureStore()

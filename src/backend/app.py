@@ -3292,18 +3292,27 @@ def model_feature_chart(
     scope_id: str = "",
     quantile: str = "q50",
     model_id: str = "",
+    forecast_kind: str = "physical",
+    timeframe: str = "",
 ) -> dict[str, Any]:
     if model_version not in {"v2", "v3"}:
         raise HTTPException(status_code=400, detail="model_version must be v2 or v3")
     if quantile not in {"q10", "q50", "q90"}:
         raise HTTPException(status_code=400, detail="quantile must be q10, q50, or q90")
-    return MODEL_FEATURE_STORE.chart_forecasts(
-        ticker,
-        model_version=model_version,
-        scope_id=scope_id,
-        quantile=quantile,
-        model_id=model_id,
-    )
+    if forecast_kind not in {"physical", "next_bar"}:
+        raise HTTPException(status_code=400, detail="forecast_kind must be physical or next_bar")
+    try:
+        return MODEL_FEATURE_STORE.chart_forecasts(
+            ticker,
+            model_version=model_version,
+            scope_id=scope_id,
+            quantile=quantile,
+            model_id=model_id,
+            forecast_kind=forecast_kind,
+            timeframe=timeframe,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/bar-gpt/status")

@@ -433,6 +433,12 @@ export function applyThemeDefinition(target: HTMLElement, themeId: AppThemeId = 
     "--badge-neutral-fg": tokens.mutedForeground,
     "--chart-background": tokens.card,
     "--chart-after-hours": tokens.chartAfterHours,
+    "--chart-forecast-down-border": withOpacity(tokens.danger, theme.tone === "light" ? "0.68" : "0.78"),
+    "--chart-forecast-down-fill": withOpacity(tokens.danger, theme.tone === "light" ? "0.24" : "0.30"),
+    "--chart-forecast-down-wick": withOpacity(tokens.danger, theme.tone === "light" ? "0.76" : "0.84"),
+    "--chart-forecast-up-border": withOpacity(tokens.success, theme.tone === "light" ? "0.68" : "0.78"),
+    "--chart-forecast-up-fill": withOpacity(tokens.success, theme.tone === "light" ? "0.24" : "0.30"),
+    "--chart-forecast-up-wick": withOpacity(tokens.success, theme.tone === "light" ? "0.76" : "0.84"),
     "--chart-grid": mix(tokens.border, tokens.card, theme.tone === "light" ? 0.5 : 0.8),
     "--chart-premarket": tokens.chartPremarket,
     "--chart-text": tokens.mutedForeground
