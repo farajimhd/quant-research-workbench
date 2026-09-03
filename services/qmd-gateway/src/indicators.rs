@@ -13,7 +13,7 @@ use crate::microstructure_interval::{
 };
 use crate::scanner::ScannerPrimitiveRouter;
 use crate::structure_certification::{
-    canonical_json_sha256, validate_checkpoint_certification, StructureCheckpointCertification,
+    checkpoint_sha256, validate_checkpoint_certification, StructureCheckpointCertification,
 };
 use crate::timefmt::clickhouse_datetime64;
 use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Timelike, Utc};
@@ -86,6 +86,12 @@ fn daily_structure_checkpoint_deduplication_token(
 
 fn retryable_clickhouse_write_status(status: reqwest::StatusCode) -> bool {
     status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
+fn serialized_structure_checkpoint_sha256(snapshot_json: &str) -> Result<String, String> {
+    let checkpoint: GenericStructureCheckpoint = serde_json::from_str(snapshot_json)
+        .map_err(|error| format!("failed to decode serialized daily checkpoint: {error}"))?;
+    checkpoint_sha256(&checkpoint)
 }
 
 async fn send_idempotent_clickhouse_request(
@@ -3310,9 +3316,7 @@ impl IndicatorClickHouseWriter {
             &record.source_plan_hash,
             &record.source_revision_token,
         )?;
-        let persisted_snapshot = serde_json::from_str(&snapshot_json)
-            .map_err(|error| format!("failed to decode serialized daily checkpoint: {error}"))?;
-        let persisted_checkpoint_sha256 = canonical_json_sha256(&persisted_snapshot)?;
+        let persisted_checkpoint_sha256 = serialized_structure_checkpoint_sha256(&snapshot_json)?;
         if certification.checkpoint_sha256 != persisted_checkpoint_sha256 {
             return Err(format!(
                 "refusing to persist a checkpoint whose serialized payload hash drifted: certified={}, serialized={persisted_checkpoint_sha256}",
@@ -4216,16 +4220,20 @@ mod tests {
         daily_structure_checkpoint_deduplication_token, durable_indicator_insert_row,
         indicator_insert_row, market_structure_reference_sql,
         parse_market_structure_reference_rows, retryable_clickhouse_write_status,
-        send_idempotent_clickhouse_request, summarize_canonical_composites, BarIndicatorCalculator,
-        IndicatorKey, MicrostructureCumulativeFlow, MicrostructureSampleAggregate,
-        SessionVwapState, SharedIndicatorStore, TickState, INDICATOR_SCHEMA_VERSION,
+        send_idempotent_clickhouse_request, serialized_structure_checkpoint_sha256,
+        summarize_canonical_composites, BarIndicatorCalculator, IndicatorKey,
+        MicrostructureCumulativeFlow, MicrostructureSampleAggregate, SessionVwapState,
+        SharedIndicatorStore, TickState, INDICATOR_SCHEMA_VERSION,
     };
     use crate::bars::{TradeAggregationRules, TradeUpdateRule};
     use crate::capability_catalog::ExecutionScope;
     use crate::computation_targets::{ComputationTargetRequest, SharedComputationTargets};
+    use crate::event::{MarketEvent, TradeEvent};
+    use crate::generic_structure::GenericStructureEngine;
     use crate::microstructure_interval::MicrostructureIntervalWindow;
     use crate::scanner::tests::base_bar;
     use chrono::{NaiveDate, TimeZone, Utc};
+    use serde_json::json;
     use std::collections::{HashMap, VecDeque};
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
@@ -4252,6 +4260,46 @@ mod tests {
         );
         assert!(live_sql.contains("FROM qmd_structure_daily_checkpoint_v1"));
         assert!(!live_sql.contains("WHERE checkpoint_set_id"));
+    }
+
+    #[test]
+    fn serialized_daily_checkpoint_uses_the_certification_hash_authority() {
+        let mut engine = GenericStructureEngine::new("SUGP");
+        let start = Utc.with_ymd_and_hms(2026, 8, 21, 8, 0, 0).unwrap();
+        for (index, price) in [3.45, 3.46, 3.44, 3.48, 3.43, 3.51, 3.47]
+            .into_iter()
+            .cycle()
+            .take(200)
+            .enumerate()
+        {
+            let sequence = index as u64 + 1;
+            engine.apply_event_without_snapshot(
+                &MarketEvent::Trade(TradeEvent {
+                    conditions: Vec::new(),
+                    exchange: 1,
+                    ingest_ts: start + chrono::Duration::milliseconds(index as i64),
+                    participant_ts: None,
+                    price,
+                    raw: json!({"arrival_sequence": sequence}),
+                    sequence,
+                    size: 100.0 + index as f64,
+                    tape: 3,
+                    ticker: "SUGP".to_string(),
+                    trade_id: sequence.to_string(),
+                    trf_id: 0,
+                    trf_ts: None,
+                    ts: start + chrono::Duration::milliseconds(index as i64),
+                }),
+                TradeUpdateRule::regular(),
+            );
+        }
+        let checkpoint = engine.checkpoint();
+        let snapshot_json = serde_json::to_string(&checkpoint).unwrap();
+
+        assert_eq!(
+            serialized_structure_checkpoint_sha256(&snapshot_json).unwrap(),
+            crate::structure_certification::checkpoint_sha256(&checkpoint).unwrap()
+        );
     }
 
     #[test]

@@ -35,6 +35,13 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest().upper()
 
 
+def worker_process_creationflags(platform_name: str = os.name) -> int:
+    """Keep native shard workers attached to the supervisor without spawning consoles."""
+    if platform_name != "nt":
+        return 0
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+
+
 def binary_candidates(explicit: str | None, environ: dict[str, str]) -> tuple[Path, ...]:
     candidates: list[Path] = []
     if explicit:
@@ -719,7 +726,16 @@ def run_process_campaign(
                 "--campaign-control-path", str(control_path),
                 "--shard-worker",
             ]
-            processes.append(subprocess.Popen([str(binary), *child_args], env=environ, stdout=log, stderr=subprocess.STDOUT, text=True))
+            processes.append(
+                subprocess.Popen(
+                    [str(binary), *child_args],
+                    env=environ,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    creationflags=worker_process_creationflags(),
+                )
+            )
             status_paths.append(worker_dir / "campaign-status.json")
     except OSError:
         for process in processes:

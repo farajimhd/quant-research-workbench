@@ -1634,6 +1634,7 @@ fn campaign_fatal_error(error: &str) -> bool {
         "cannot_parse",
         "invalid structure continuity row",
         "invalid structure split row",
+        "serialized payload hash drifted",
     ]
     .iter()
     .any(|marker| error.contains(marker))
@@ -2066,6 +2067,9 @@ mod tests {
             "ClickHouse Code: 386 DB::Exception NO_COMMON_TYPE"
         ));
         assert!(campaign_fatal_error("UNKNOWN_IDENTIFIER source_date"));
+        assert!(campaign_fatal_error(
+            "refusing to persist a checkpoint whose serialized payload hash drifted"
+        ));
         assert!(!campaign_fatal_error(
             "ordinal stream authority mismatch for SUGP 2026-08-21"
         ));

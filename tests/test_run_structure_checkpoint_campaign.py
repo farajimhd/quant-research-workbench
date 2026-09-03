@@ -17,6 +17,7 @@ from scripts.run_structure_checkpoint_campaign import (
     sha256_file,
     status_is_fully_certified,
     validate_process_worker_count,
+    worker_process_creationflags,
 )
 
 
@@ -185,6 +186,11 @@ def test_launcher_accepts_eighty_bounded_worker_processes() -> None:
     validate_process_worker_count(80)
     with pytest.raises(RuntimeError, match="between 1 and 80"):
         validate_process_worker_count(81)
+
+
+def test_native_workers_are_windowless_on_windows_only() -> None:
+    assert worker_process_creationflags("nt") == 0x08000000
+    assert worker_process_creationflags("posix") == 0
 
 
 def test_shards_start_priority_tickers_and_balance_estimated_events() -> None:
