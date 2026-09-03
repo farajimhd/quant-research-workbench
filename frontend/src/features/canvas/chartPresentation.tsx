@@ -131,9 +131,11 @@ export function ChartPreview({
   const barGptOriginUs = barGptOriginOverrideUs && barGptOriginOptions.some((row) => row.originUs === barGptOriginOverrideUs)
     ? barGptOriginOverrideUs
     : barGptClockUs;
+  const barGptHistoricalOrigin = Boolean(liveChart.pointInTime || barGptOriginOverrideUs != null);
+  const barGptScopeClockUs = barGptHistoricalOrigin ? barGptOriginUs : null;
   const barGptBaseScopeId = canvasBarGptScopeId(canvasId, instanceId);
-  const barGptScopeId = barGptTriggerMode === "manual" && barGptOriginUs
-    ? `${barGptBaseScopeId}:origin:${barGptOriginUs}`
+  const barGptScopeId = barGptTriggerMode === "manual" && barGptOriginOverrideUs
+    ? `${barGptBaseScopeId}:origin:${barGptOriginOverrideUs}`
     : barGptBaseScopeId;
   const barGptForecastPalette = readBarGptForecastPalette();
   useEffect(() => {
@@ -161,14 +163,14 @@ export function ChartPreview({
         const scope = await api<BarGptScopePayload>(`/api/bar-gpt/scopes/${encodeURIComponent(barGptScopeId)}`, {
           method: "PUT",
           body: JSON.stringify({
-            mode: liveChart.pointInTime || (barGptTriggerMode === "manual" && barGptOriginOverrideUs != null) ? "replay" : "live",
+            mode: barGptHistoricalOrigin ? "replay" : "live",
             trigger_mode: barGptTriggerMode,
             tickers: [linkContext.symbol],
             model_ids: [`bar_gpt_${barGptVersion}`],
             watchlist_ids: [],
-            clock_us: liveChart.pointInTime || barGptTriggerMode === "manual" ? barGptOriginUs : null,
-            revision: liveChart.pointInTime || barGptTriggerMode === "manual"
-              ? Math.max(1, Math.floor((barGptOriginUs ?? Date.now() * 1000) / 1_000_000))
+            clock_us: barGptScopeClockUs,
+            revision: barGptScopeClockUs
+              ? Math.max(1, Math.floor(barGptScopeClockUs / 1_000_000))
               : 1,
             ttl_ms: 30_000,
             source: "canvas.chart",
@@ -199,7 +201,7 @@ export function ChartPreview({
       window.clearTimeout(timer);
       requestController?.abort();
     };
-  }, [barGptOriginUs, barGptScopeId, barGptTriggerMode, barGptVersion, barGptView, linkContext.symbol, liveChart.pointInTime, showBarGpt]);
+  }, [barGptHistoricalOrigin, barGptScopeClockUs, barGptScopeId, barGptTriggerMode, barGptVersion, barGptView, linkContext.symbol, showBarGpt]);
   const payload = useMemo<ChartPayload>(() => {
     const marketSignalMarkers = qmdMarketSignalChartMarkers(
       liveChart.marketSignalEvents,
