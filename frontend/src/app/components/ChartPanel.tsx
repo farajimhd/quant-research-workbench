@@ -78,7 +78,7 @@ type RendererDatum = { time: Time; [key: string]: unknown };
 type RendererDataCache = { data: RendererDatum[]; styleKey: string };
 const rendererDataCache = new WeakMap<object, RendererDataCache>();
 type Region = { start: number; end: number; color: string; label: string };
-type TradeLabelPart = { text: string; tone?: "label" | "price" | "pnlLoss" | "pnlWin" | "reason" | "separator" | "size" };
+type TradeLabelPart = { text: string; tone?: "exitLong" | "exitPriceLong" | "exitPriceShort" | "exitShort" | "label" | "long" | "pnlLoss" | "pnlWin" | "price" | "priceLong" | "priceShort" | "reason" | "separator" | "short" | "size" };
 type TradeLabelPartSettings = Partial<Record<NonNullable<TradeLabelPart["tone"]>, StrategyPresentationStyleSettings>>;
 type TradeFillAnnotation = {
   kind?: "add" | "profit_target" | "protective_stop" | "trailing_stop" | "position_exit" | "stop_change" | "target_change" | "protection_repair" | "entry_freeze";
@@ -123,6 +123,7 @@ type StrategyPresentationStyleSettings = {
   borderWidth: number;
   color: string;
   fillColor: string;
+  fillBlur: number;
   fillOpacity: number;
   fontWeight: 400 | 500 | 600;
   labelPaddingX: number;
@@ -136,9 +137,9 @@ type StrategyPresentationStyleSettings = {
 };
 type StrategyVisualElementKey =
   | "entryLine" | "entryArrow" | "entryLabel"
-  | "entryDirectionPart" | "entrySizePart" | "entrySeparatorPart" | "entryPricePart"
+  | "entryDirectionPart" | "entryShortDirectionPart" | "entrySizePart" | "entrySeparatorPart" | "entryPricePart" | "entryShortPricePart"
   | "exitLine" | "exitArrow" | "exitLabel"
-  | "exitReasonPart" | "exitSizePart" | "exitSeparatorPart" | "exitPricePart" | "exitPnlPart"
+  | "exitReasonPart" | "exitShortReasonPart" | "exitSizePart" | "exitSeparatorPart" | "exitPricePart" | "exitShortPricePart" | "exitPnlPart" | "exitPnlLossPart"
   | "levelLine" | "levelLabel"
   | "stopLine" | "stopLabel"
   | "targetLine" | "targetLabel"
@@ -645,6 +646,7 @@ const strategyPresentationStyle = (
   borderWidth: 1,
   color,
   fillColor: "",
+  fillBlur: 0,
   fillOpacity,
   fontWeight: 600,
   labelPaddingX: 5,
@@ -663,19 +665,24 @@ const defaultStrategyPresentationSettings: StrategyPresentationSettings = {
   elements: {
     entryLine: strategyPresentationStyle("#3596FD", "solid", 2, 0.95),
     entryArrow: strategyPresentationStyle("", "solid", 2, 1, 10, 5, 1),
-    entryLabel: { ...strategyPresentationStyle("", "solid", 1, 1, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 5, labelPaddingY: 2 },
-    entryDirectionPart: { ...strategyPresentationStyle("", "solid", 1, 1, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 5, labelPaddingY: 2 },
-    entrySizePart: { ...strategyPresentationStyle("", "solid", 1, 1, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 3, labelPaddingY: 2 },
+    entryLabel: { ...strategyPresentationStyle("#64748B", "solid", 1, 1, 10, 7, 0), borderColor: "#64748B", borderOpacity: 0.7, labelPaddingX: 5, labelPaddingY: 2 },
+    entryDirectionPart: { ...strategyPresentationStyle("#007DFF", "solid", 1, 1, 10, 7, 0.18), fillBlur: 2, fillColor: "#007DFF", labelPaddingX: 5, labelPaddingY: 2 },
+    entryShortDirectionPart: { ...strategyPresentationStyle("#FF1744", "solid", 1, 1, 10, 7, 0.18), fillBlur: 2, fillColor: "#FF1744", labelPaddingX: 5, labelPaddingY: 2 },
+    entrySizePart: { ...strategyPresentationStyle("", "solid", 1, 1, 12, 7, 0), fontWeight: 600, labelPaddingX: 4, labelPaddingY: 2 },
     entrySeparatorPart: { ...strategyPresentationStyle("", "solid", 1, 1, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 2, labelPaddingY: 2 },
-    entryPricePart: { ...strategyPresentationStyle("", "solid", 1, 1, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 4, labelPaddingY: 2 },
+    entryPricePart: { ...strategyPresentationStyle("#007DFF", "solid", 1, 1, 10, 7, 1), fillColor: "#FFFFFF", labelPaddingX: 4, labelPaddingY: 2 },
+    entryShortPricePart: { ...strategyPresentationStyle("#FF1744", "solid", 1, 1, 10, 7, 1), fillColor: "#FFFFFF", labelPaddingX: 4, labelPaddingY: 2 },
     exitLine: strategyPresentationStyle("#FF3D47", "solid", 2, 0.9),
     exitArrow: strategyPresentationStyle("#FF4D55", "solid", 2, 1, 10, 5, 1),
-    exitLabel: { ...strategyPresentationStyle("#FF3838", "solid", 2, 0.9, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 8, labelPaddingY: 2 },
-    exitReasonPart: { ...strategyPresentationStyle("", "solid", 1, 0.9, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 6, labelPaddingY: 2 },
-    exitSizePart: { ...strategyPresentationStyle("", "solid", 1, 0.9, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 3, labelPaddingY: 2 },
+    exitLabel: { ...strategyPresentationStyle("#64748B", "solid", 1, 1, 10, 7, 0), borderColor: "#64748B", borderOpacity: 0.7, labelPaddingX: 8, labelPaddingY: 2 },
+    exitReasonPart: { ...strategyPresentationStyle("#FF1744", "solid", 1, 1, 10, 7, 0.18), fillBlur: 2, fillColor: "#FF1744", labelPaddingX: 6, labelPaddingY: 2 },
+    exitShortReasonPart: { ...strategyPresentationStyle("#00A846", "solid", 1, 1, 10, 7, 0.18), fillBlur: 2, fillColor: "#00A846", labelPaddingX: 6, labelPaddingY: 2 },
+    exitSizePart: { ...strategyPresentationStyle("", "solid", 1, 1, 12, 7, 0), fontWeight: 600, labelPaddingX: 4, labelPaddingY: 2 },
     exitSeparatorPart: { ...strategyPresentationStyle("", "solid", 1, 0.9, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 2, labelPaddingY: 2 },
-    exitPricePart: { ...strategyPresentationStyle("", "solid", 1, 0.9, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 4, labelPaddingY: 2 },
-    exitPnlPart: { ...strategyPresentationStyle("", "solid", 1, 0.9, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 5, labelPaddingY: 2 },
+    exitPricePart: { ...strategyPresentationStyle("#FF1744", "solid", 1, 1, 10, 7, 1), fillColor: "#FFFFFF", labelPaddingX: 4, labelPaddingY: 2 },
+    exitShortPricePart: { ...strategyPresentationStyle("#00A846", "solid", 1, 1, 10, 7, 1), fillColor: "#FFFFFF", labelPaddingX: 4, labelPaddingY: 2 },
+    exitPnlPart: { ...strategyPresentationStyle("#00A846", "solid", 1, 1, 10, 7, 0.18), fillBlur: 2, fillColor: "#00A846", fontWeight: 600, labelPaddingX: 5, labelPaddingY: 2 },
+    exitPnlLossPart: { ...strategyPresentationStyle("#FF1744", "solid", 1, 1, 10, 7, 0.18), fillBlur: 2, fillColor: "#FF1744", fontWeight: 600, labelPaddingX: 5, labelPaddingY: 2 },
     levelLine: strategyPresentationStyle("", "dashed", 1, 0.9),
     levelLabel: { ...strategyPresentationStyle("", "solid", 1, 1, 8, 7, 1), borderWidth: 0, labelPaddingX: 2, labelPaddingY: 1 },
     stopLine: strategyPresentationStyle("", "dashed", 1, 0.95),
@@ -2876,10 +2883,19 @@ function StrategyPresentationSelect({
     {open ? <ChartColumnMenuPortal anchor={triggerRef.current} className="strategy-presentation-menu">
       {selectedDefinition && styleElement ? <StrategyPresentationStylePage
         definition={selectedDefinition}
+        elements={settings.elements}
         fallbackColor={strategyVisualElementFallbackColor(styleElement, palette.text)}
         onBack={() => setStyleElement(null)}
         onChange={(patch) => updateElement(styleElement, patch)}
-        onReset={() => updateElement(styleElement, defaultStrategyPresentationSettings.elements[styleElement])}
+        onElementChange={updateElement}
+        onReset={() => {
+          const partDefinitions = strategyLabelPartDefinitions[styleElement as StrategyCompositeLabelKey];
+          const keys = partDefinitions ? [styleElement, ...partDefinitions.map((part) => part.key)] : [styleElement];
+          onChange({
+            ...settings,
+            elements: keys.reduce((elements, key) => ({ ...elements, [key]: defaultStrategyPresentationSettings.elements[key] }), settings.elements),
+          });
+        }}
         settings={settings.elements[styleElement]}
       /> : <>
         <div className="strategy-presentation-header">
@@ -2927,19 +2943,10 @@ type StrategyVisualElementDefinition = { help: string; key: StrategyVisualElemen
 const strategyVisualElementDefinitions: StrategyVisualElementDefinition[] = [
   { key: "entryLine", kind: "line", title: "Entry price line", help: "Position entry price across the lifecycle." },
   { key: "entryArrow", kind: "marker", title: "Entry arrow", help: "Exact entry time and execution price." },
-  { key: "entryLabel", kind: "label", title: "Entry label container", help: "Master label visibility, placement, and fallback style." },
-  { key: "entryDirectionPart", kind: "label", title: "Entry · Direction", help: "Long or short segment of the entry label." },
-  { key: "entrySizePart", kind: "label", title: "Entry · Size", help: "Filled position quantity segment of the entry label." },
-  { key: "entrySeparatorPart", kind: "label", title: "Entry · @ separator", help: "Separator between position size and execution price." },
-  { key: "entryPricePart", kind: "label", title: "Entry · Price", help: "Execution-price segment of the entry label." },
+  { key: "entryLabel", kind: "label", title: "Entry label", help: "One label with independently styled direction, size, separator, and price." },
   { key: "exitLine", kind: "line", title: "Exit price line", help: "Final exit price across the lifecycle." },
   { key: "exitArrow", kind: "marker", title: "Exit arrow", help: "Exact exit time and execution price." },
-  { key: "exitLabel", kind: "label", title: "Exit label container", help: "Master label visibility, placement, and fallback style." },
-  { key: "exitReasonPart", kind: "label", title: "Exit · Reason", help: "Exit action or strategy-reason segment." },
-  { key: "exitSizePart", kind: "label", title: "Exit · Size", help: "Final exit quantity segment." },
-  { key: "exitSeparatorPart", kind: "label", title: "Exit · Separators", help: "The @ and result separators." },
-  { key: "exitPricePart", kind: "label", title: "Exit · Price", help: "Final execution-price segment." },
-  { key: "exitPnlPart", kind: "label", title: "Exit · Realized P&L", help: "Realized gain or loss segment." },
+  { key: "exitLabel", kind: "label", title: "Exit label", help: "One label with independently styled action, size, price, and realized result." },
   { key: "levelLine", kind: "line", title: "Structural level lines", help: "Entry-frozen resistance or support evidence." },
   { key: "levelLabel", kind: "label", title: "Structural level labels", help: "L1–L3 and trigger identifiers." },
   { key: "stopLine", kind: "line", title: "Protective stop line", help: "Current or immutable entry-plan protection." },
@@ -2952,21 +2959,60 @@ const strategyVisualElementDefinitions: StrategyVisualElementDefinition[] = [
   { key: "connector", kind: "connector", title: "Distant-marker connector", help: "Dashed link from a distant event marker to its candle." },
 ];
 
+type StrategyCompositeLabelKey = "entryLabel" | "exitLabel";
+type StrategyLabelPartDefinition = { help: string; key: StrategyVisualElementKey; title: string };
+
+const strategyLabelPartDefinitions: Record<StrategyCompositeLabelKey, StrategyLabelPartDefinition[]> = {
+  entryLabel: [
+    { key: "entryDirectionPart", title: "Long", help: "Long-direction text and soft background." },
+    { key: "entryShortDirectionPart", title: "Short", help: "Short-direction text and soft background." },
+    { key: "entrySizePart", title: "Size", help: "Position quantity, emphasized independently." },
+    { key: "entrySeparatorPart", title: "@", help: "Separator between size and execution price." },
+    { key: "entryPricePart", title: "Long price", help: "Entry price for a long position." },
+    { key: "entryShortPricePart", title: "Short price", help: "Entry price for a short position." },
+  ],
+  exitLabel: [
+    { key: "exitReasonPart", title: "Close long", help: "Exit action for a long position." },
+    { key: "exitShortReasonPart", title: "Cover short", help: "Exit action for a short position." },
+    { key: "exitSizePart", title: "Size", help: "Final exit quantity, emphasized independently." },
+    { key: "exitSeparatorPart", title: "Separators", help: "The @ and realized-result separators." },
+    { key: "exitPricePart", title: "Long-exit price", help: "Execution price when closing a long." },
+    { key: "exitShortPricePart", title: "Short-exit price", help: "Execution price when covering a short." },
+    { key: "exitPnlPart", title: "Profit", help: "Positive realized result." },
+    { key: "exitPnlLossPart", title: "Loss", help: "Negative realized result." },
+  ],
+};
+
 function StrategyPresentationStylePage({
   definition,
+  elements,
   fallbackColor,
   onBack,
   onChange,
+  onElementChange,
   onReset,
   settings,
 }: {
   definition: StrategyVisualElementDefinition;
+  elements: Record<StrategyVisualElementKey, StrategyPresentationStyleSettings>;
   fallbackColor: string;
   onBack: () => void;
   onChange: (patch: Partial<StrategyPresentationStyleSettings>) => void;
+  onElementChange: (key: StrategyVisualElementKey, patch: Partial<StrategyPresentationStyleSettings>) => void;
   onReset: () => void;
   settings: StrategyPresentationStyleSettings;
 }) {
+  const compositeKey = definition.key === "entryLabel" || definition.key === "exitLabel" ? definition.key : null;
+  if (compositeKey) return <StrategyCompositeLabelStylePage
+    definition={definition}
+    elements={elements}
+    fallbackColor={fallbackColor}
+    labelKey={compositeKey}
+    onBack={onBack}
+    onElementChange={onElementChange}
+    onReset={onReset}
+    settings={settings}
+  />;
   const color = validHexColor(settings.color, validHexColor(fallbackColor, "#111827"));
   const showsLine = definition.kind === "line" || definition.kind === "connector";
   const showsMarker = definition.kind === "marker";
@@ -2997,6 +3043,7 @@ function StrategyPresentationStylePage({
           <div className="strategy-presentation-control-grid">
             <StrategyStyleColor defaultLabel="Chart background" fallbackColor={fillColor} label="Fill color" onChange={(value) => onChange({ fillColor: value })} value={settings.fillColor} />
             <StrategyStyleRange label="Fill opacity" max={100} min={0} onChange={(value) => onChange({ fillOpacity: value / 100 })} suffix="%" value={Math.round(settings.fillOpacity * 100)} />
+            <StrategyStyleRange label="Background blur" max={8} min={0} onChange={(fillBlur) => onChange({ fillBlur })} suffix="px" value={settings.fillBlur} />
             <StrategyStyleRange label="Horizontal padding" max={14} min={2} onChange={(labelPaddingX) => onChange({ labelPaddingX })} suffix="px" value={settings.labelPaddingX} />
             <StrategyStyleRange label="Vertical padding" max={10} min={1} onChange={(labelPaddingY) => onChange({ labelPaddingY })} suffix="px" value={settings.labelPaddingY} />
             <StrategyStyleColor defaultLabel="Text color" fallbackColor={borderColor} label="Edge color" onChange={(value) => onChange({ borderColor: value })} value={settings.borderColor} />
@@ -3013,6 +3060,121 @@ function StrategyPresentationStylePage({
       </div>}
     </div>
   </section>;
+}
+
+function StrategyCompositeLabelStylePage({
+  definition,
+  elements,
+  fallbackColor,
+  labelKey,
+  onBack,
+  onElementChange,
+  onReset,
+  settings,
+}: {
+  definition: StrategyVisualElementDefinition;
+  elements: Record<StrategyVisualElementKey, StrategyPresentationStyleSettings>;
+  fallbackColor: string;
+  labelKey: StrategyCompositeLabelKey;
+  onBack: () => void;
+  onElementChange: (key: StrategyVisualElementKey, patch: Partial<StrategyPresentationStyleSettings>) => void;
+  onReset: () => void;
+  settings: StrategyPresentationStyleSettings;
+}) {
+  const partDefinitions = strategyLabelPartDefinitions[labelKey];
+  const [selectedPartKey, setSelectedPartKey] = useState<StrategyVisualElementKey>(partDefinitions[0].key);
+  const selectedPart = partDefinitions.find((part) => part.key === selectedPartKey) ?? partDefinitions[0];
+  const partSettings = elements[selectedPart.key];
+  const palette = readChartPalette();
+  const borderColor = validHexColor(settings.borderColor, validHexColor(settings.color, fallbackColor));
+  const fillColor = validHexColor(settings.fillColor, palette.background);
+  return <section className="strategy-presentation-style-page strategy-presentation-composite-label-page">
+    <div className="strategy-presentation-header">
+      <button className="strategy-presentation-back" onClick={onBack} type="button"><ArrowLeft size={15} /> Elements</button>
+      <div><strong>{definition.title}</strong><span>Unified box · independently styled text parts</span></div>
+      <button className="button secondary compact" onClick={onReset} type="button">Reset label</button>
+    </div>
+    <StrategyCompositeLabelPreview elements={elements} labelKey={labelKey} settings={settings} />
+    <div className="strategy-presentation-controls">
+      <section className="strategy-presentation-control-section">
+        <header><strong>Unified label box</strong><span>One fill and one continuous edge around the complete label.</span></header>
+        <div className="strategy-presentation-control-grid">
+          <StrategyStyleColor defaultLabel="Chart background" fallbackColor={fillColor} label="Box fill" onChange={(value) => onElementChange(labelKey, { fillColor: value })} value={settings.fillColor} />
+          <StrategyStyleRange label="Box fill opacity" max={100} min={0} onChange={(value) => onElementChange(labelKey, { fillOpacity: value / 100 })} suffix="%" value={Math.round(settings.fillOpacity * 100)} />
+          <StrategyStyleColor defaultLabel="Semantic color" fallbackColor={borderColor} label="Unified edge color" onChange={(value) => onElementChange(labelKey, { borderColor: value })} value={settings.borderColor} />
+          <StrategyStyleRange label="Unified edge opacity" max={100} min={0} onChange={(value) => onElementChange(labelKey, { borderOpacity: value / 100 })} suffix="%" value={Math.round(settings.borderOpacity * 100)} />
+          <StrategyStyleSelect label="Unified edge type" onChange={(borderStyle) => onElementChange(labelKey, { borderStyle })} value={settings.borderStyle} />
+          <StrategyStyleRange label="Unified edge size" max={4} min={0} onChange={(borderWidth) => onElementChange(labelKey, { borderWidth })} suffix="px" value={settings.borderWidth} />
+        </div>
+      </section>
+      <section className="strategy-presentation-control-section">
+        <header><strong>Label parts</strong><span>Select a part, then configure its text and background below.</span></header>
+        <div aria-label={`${definition.title} parts`} className="strategy-presentation-part-tabs" role="tablist">
+          {partDefinitions.map((part) => <button
+            aria-selected={part.key === selectedPart.key}
+            className={part.key === selectedPart.key ? "is-active" : undefined}
+            key={part.key}
+            onClick={() => setSelectedPartKey(part.key)}
+            role="tab"
+            type="button"
+          >
+            <i style={{ background: strategyPresentationColor(elements[part.key].fillColor, palette.background), borderColor: strategyPresentationColor(elements[part.key].color, fallbackColor) }} />
+            {part.title}
+          </button>)}
+        </div>
+        <label className="strategy-presentation-part-enabled"><input checked={partSettings.visible} onChange={(event) => onElementChange(selectedPart.key, { visible: event.target.checked })} type="checkbox" /><span><strong>{selectedPart.title}</strong><small>{selectedPart.help}</small></span></label>
+        <div className="strategy-presentation-control-grid">
+          <StrategyStyleColor defaultLabel="Semantic color" fallbackColor={validHexColor(partSettings.color, fallbackColor)} label="Text color" onChange={(value) => onElementChange(selectedPart.key, { color: value })} value={partSettings.color} />
+          <StrategyStyleRange label="Text opacity" max={100} min={15} onChange={(value) => onElementChange(selectedPart.key, { opacity: value / 100 })} suffix="%" value={Math.round(partSettings.opacity * 100)} />
+          <StrategyStyleRange label="Text size" max={16} min={8} onChange={(labelSize) => onElementChange(selectedPart.key, { labelSize })} suffix="px" value={partSettings.labelSize} />
+          <StrategyFontWeightSelect onChange={(fontWeight) => onElementChange(selectedPart.key, { fontWeight })} value={partSettings.fontWeight} />
+          <StrategyStyleColor defaultLabel="Transparent" fallbackColor={validHexColor(partSettings.fillColor, palette.background)} label="Background color" onChange={(value) => onElementChange(selectedPart.key, { fillColor: value })} value={partSettings.fillColor} />
+          <StrategyStyleRange label="Background opacity" max={100} min={0} onChange={(value) => onElementChange(selectedPart.key, { fillOpacity: value / 100 })} suffix="%" value={Math.round(partSettings.fillOpacity * 100)} />
+          <StrategyStyleRange label="Background blur" max={8} min={0} onChange={(fillBlur) => onElementChange(selectedPart.key, { fillBlur })} suffix="px" value={partSettings.fillBlur} />
+          <StrategyStyleRange label="Horizontal padding" max={14} min={2} onChange={(labelPaddingX) => onElementChange(selectedPart.key, { labelPaddingX })} suffix="px" value={partSettings.labelPaddingX} />
+          <StrategyStyleRange label="Vertical padding" max={10} min={1} onChange={(labelPaddingY) => onElementChange(selectedPart.key, { labelPaddingY })} suffix="px" value={partSettings.labelPaddingY} />
+        </div>
+      </section>
+    </div>
+  </section>;
+}
+
+function StrategyCompositeLabelPreview({ elements, labelKey, settings }: { elements: Record<StrategyVisualElementKey, StrategyPresentationStyleSettings>; labelKey: StrategyCompositeLabelKey; settings: StrategyPresentationStyleSettings }) {
+  const palette = readChartPalette();
+  const rows: Array<Array<{ key: StrategyVisualElementKey; text: string }>> = labelKey === "entryLabel" ? [
+    [{ key: "entryDirectionPart", text: "Long" }, { key: "entrySizePart", text: "2,543" }, { key: "entrySeparatorPart", text: "@" }, { key: "entryPricePart", text: "4.40" }],
+    [{ key: "entryShortDirectionPart", text: "Short" }, { key: "entrySizePart", text: "2,543" }, { key: "entrySeparatorPart", text: "@" }, { key: "entryShortPricePart", text: "4.40" }],
+  ] : [
+    [{ key: "exitReasonPart", text: "Exit" }, { key: "exitSizePart", text: "2,518" }, { key: "exitSeparatorPart", text: "@" }, { key: "exitPricePart", text: "4.42" }, { key: "exitSeparatorPart", text: "·" }, { key: "exitPnlPart", text: "+$23.39" }],
+    [{ key: "exitShortReasonPart", text: "Cover" }, { key: "exitSizePart", text: "2,518" }, { key: "exitSeparatorPart", text: "@" }, { key: "exitShortPricePart", text: "4.42" }, { key: "exitSeparatorPart", text: "·" }, { key: "exitPnlLossPart", text: "−$18.20" }],
+  ];
+  const borderColor = strategyPresentationColor(settings.borderColor, settings.color || palette.text);
+  const containerStyle: CSSProperties = {
+    background: rgbaFromHex(strategyPresentationColor(settings.fillColor, palette.background), settings.fillOpacity),
+    borderColor: rgbaFromHex(borderColor, settings.borderOpacity),
+    borderStyle: settings.borderStyle,
+    borderWidth: settings.borderWidth,
+  };
+  return <div className="strategy-presentation-label-preview" aria-label={`${labelKey === "entryLabel" ? "Entry" : "Exit"} label preview`}>
+    <span>Preview</span>
+    <div>
+      {rows.map((row, rowIndex) => <div className="strategy-presentation-label-preview-box" key={rowIndex} style={containerStyle}>
+        {row.map((part, partIndex) => {
+          const partStyle = elements[part.key];
+          const color = strategyPresentationColor(partStyle.color, palette.text);
+          const background = strategyPresentationColor(partStyle.fillColor, palette.background);
+          return partStyle.visible ? <span key={`${part.key}:${partIndex}`} style={{
+            background: rgbaFromHex(background, partStyle.fillOpacity),
+            boxShadow: partStyle.fillBlur > 0 ? `0 0 ${partStyle.fillBlur}px ${rgbaFromHex(background, partStyle.fillOpacity)}` : undefined,
+            color: rgbaFromHex(color, partStyle.opacity),
+            fontSize: partStyle.labelSize,
+            fontWeight: partStyle.fontWeight,
+            padding: `${partStyle.labelPaddingY}px ${partStyle.labelPaddingX}px`,
+          }}>{part.text}</span> : null;
+        })}
+      </div>)}
+    </div>
+  </div>;
 }
 
 function StrategyStyleColor({ defaultLabel, fallbackColor, label, onChange, value }: { defaultLabel: string; fallbackColor: string; label: string; onChange: (value: string) => void; value: string }) {
@@ -3052,6 +3214,8 @@ function strategyVisualElementSwatch(key: StrategyVisualElementKey, settings: St
 
 function strategyVisualStyleSummary(key: StrategyVisualElementKey, settings: StrategyPresentationStyleSettings, kind: StrategyVisualElementDefinition["kind"]) {
   const semantic = !settings.color && (key === "exitLabel" || key.startsWith("adjustment") || key === "connector") ? "Semantic · " : "";
+  if (key === "entryLabel") return `6 parts · ${settings.borderWidth}px ${settings.borderStyle} edge`;
+  if (key === "exitLabel") return `8 parts · ${settings.borderWidth}px ${settings.borderStyle} edge`;
   if (kind === "label") return `${semantic}${settings.labelSize}px/${settings.fontWeight} · ${settings.labelPaddingX}×${settings.labelPaddingY}px box`;
   if (kind === "marker") return `${semantic}${settings.markerSize}px marker · ${Math.round(settings.opacity * 100)}%`;
   return `${semantic}${settings.lineWidth}px ${settings.lineStyle} · ${Math.round(settings.opacity * 100)}%`;
@@ -3963,6 +4127,7 @@ function normalizeStrategyPresentationStyle(
     borderWidth: Math.round(clampNumber(settings?.borderWidth, 0, 4, defaults.borderWidth)),
     color: settings?.color === "" ? "" : validHexColor(settings?.color, defaults.color || ""),
     fillColor: settings?.fillColor === "" ? "" : validHexColor(settings?.fillColor, defaults.fillColor || ""),
+    fillBlur: Math.round(clampNumber(settings?.fillBlur, 0, 8, defaults.fillBlur)),
     fillOpacity: clampNumber(settings?.fillOpacity, 0, 1, defaults.fillOpacity),
     fontWeight: fontWeight === 400 || fontWeight === 500 || fontWeight === 600 ? fontWeight : defaults.fontWeight,
     labelPaddingX: Math.round(clampNumber(settings?.labelPaddingX, 2, 14, defaults.labelPaddingX)),
@@ -3980,9 +4145,9 @@ function normalizeStrategyPresentationSettings(settings: Partial<StrategyPresent
   const legacy = settings as Partial<StrategyPresentationSettings> & Partial<Record<"adjustments" | "entry" | "exit" | "levels" | "stop" | "targets", Partial<StrategyPresentationStyleSettings>>>;
   const legacyByElement: Record<StrategyVisualElementKey, Partial<StrategyPresentationStyleSettings> | undefined> = {
     entryLine: legacy.entry, entryArrow: legacy.entry, entryLabel: legacy.entry,
-    entryDirectionPart: undefined, entrySizePart: undefined, entrySeparatorPart: undefined, entryPricePart: undefined,
+    entryDirectionPart: undefined, entryShortDirectionPart: undefined, entrySizePart: undefined, entrySeparatorPart: undefined, entryPricePart: undefined, entryShortPricePart: undefined,
     exitLine: legacy.exit, exitArrow: legacy.exit, exitLabel: legacy.exit ? { ...legacy.exit, color: "" } : undefined,
-    exitReasonPart: undefined, exitSizePart: undefined, exitSeparatorPart: undefined, exitPricePart: undefined, exitPnlPart: undefined,
+    exitReasonPart: undefined, exitShortReasonPart: undefined, exitSizePart: undefined, exitSeparatorPart: undefined, exitPricePart: undefined, exitShortPricePart: undefined, exitPnlPart: undefined, exitPnlLossPart: undefined,
     levelLine: legacy.levels, levelLabel: legacy.levels,
     stopLine: legacy.stop, stopLabel: legacy.stop,
     targetLine: legacy.targets, targetLabel: legacy.targets,
@@ -6570,16 +6735,20 @@ function drawTradeAnnotationPrimitiveGeometry(
     const exitLabelFallback = Number(annotation.pnl) > 0 ? successColor : Number(annotation.pnl) < 0 ? dangerColor : validHexColor(annotation.exitLabelColor, exitFallbackColor);
     const exitLabelColor = strategyPresentationColor(elements.exitLabel.color, exitLabelFallback);
     const entryLabelPartSettings: TradeLabelPartSettings = {
-      label: elements.entryDirectionPart,
-      price: elements.entryPricePart,
+      long: elements.entryDirectionPart,
+      priceLong: elements.entryPricePart,
+      priceShort: elements.entryShortPricePart,
       separator: elements.entrySeparatorPart,
+      short: elements.entryShortDirectionPart,
       size: elements.entrySizePart,
     };
     const exitLabelPartSettings: TradeLabelPartSettings = {
-      pnlLoss: elements.exitPnlPart,
+      exitLong: elements.exitReasonPart,
+      exitPriceLong: elements.exitPricePart,
+      exitPriceShort: elements.exitShortPricePart,
+      exitShort: elements.exitShortReasonPart,
+      pnlLoss: elements.exitPnlLossPart,
       pnlWin: elements.exitPnlPart,
-      price: elements.exitPricePart,
-      reason: elements.exitReasonPart,
       separator: elements.exitSeparatorPart,
       size: elements.exitSizePart,
     };
@@ -6886,24 +7055,33 @@ function drawCanvasTradeLabel(
     context.stroke();
     context.restore();
   }
+  const containerFillColor = strategyPresentationColor(settings.fillColor, background);
+  context.fillStyle = rgbaFromHex(containerFillColor, settings.fillOpacity);
+  context.fillRect(left, top, labelWidth, labelHeight);
   let segmentLeft = left;
   segments.forEach((segment) => {
     const segmentTop = top + (labelHeight - segment.height) / 2;
     const fillColor = strategyPresentationColor(segment.settings.fillColor, background);
-    const borderColor = strategyPresentationColor(segment.settings.borderColor, segment.color);
+    context.save();
+    if (segment.settings.fillBlur > 0) context.filter = `blur(${segment.settings.fillBlur}px)`;
     context.fillStyle = rgbaFromHex(fillColor, segment.settings.fillOpacity);
-    context.fillRect(segmentLeft, segmentTop, segment.width, segment.height);
-    if (segment.settings.borderWidth > 0 && segment.settings.borderOpacity > 0) {
-      context.setLineDash(canvasLineDash(segment.settings.borderStyle, segment.settings.borderWidth));
-      context.strokeStyle = rgbaFromHex(borderColor, segment.settings.borderOpacity);
-      context.lineWidth = segment.settings.borderWidth;
-      context.strokeRect(segmentLeft + segment.settings.borderWidth / 2, segmentTop + segment.settings.borderWidth / 2, segment.width - segment.settings.borderWidth, segment.height - segment.settings.borderWidth);
-    }
+    const blurInset = Math.min(segment.settings.fillBlur, Math.min(segment.width, segment.height) / 3);
+    context.fillRect(segmentLeft + blurInset / 2, segmentTop + blurInset / 2, segment.width - blurInset, segment.height - blurInset);
+    context.restore();
     context.font = `${segment.settings.fontWeight} ${segment.settings.labelSize}px ${canvasInterfaceFont()}`;
     context.fillStyle = rgbaFromHex(segment.color, segment.settings.opacity);
     context.fillText(segment.text, segmentLeft + segment.settings.labelPaddingX, segmentTop + segment.height / 2);
     segmentLeft += segment.width;
   });
+  if (settings.borderWidth > 0 && settings.borderOpacity > 0) {
+    context.save();
+    const borderColor = strategyPresentationColor(settings.borderColor, color);
+    context.setLineDash(canvasLineDash(settings.borderStyle, settings.borderWidth));
+    context.strokeStyle = rgbaFromHex(borderColor, settings.borderOpacity);
+    context.lineWidth = settings.borderWidth;
+    context.strokeRect(left + settings.borderWidth / 2, top + settings.borderWidth / 2, labelWidth - settings.borderWidth, labelHeight - settings.borderWidth);
+    context.restore();
+  }
 }
 
 function canvasLabelBoxesOverlap(first: CanvasLabelBox, second: CanvasLabelBox) {

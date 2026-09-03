@@ -200,27 +200,31 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert 'const defaultStrategyPresentationSettings: StrategyPresentationSettings' in renderer_source
     assert 'entryLine: strategyPresentationStyle("#3596FD", "solid", 2, 0.95' in renderer_source
     assert 'entryArrow: strategyPresentationStyle("", "solid", 2, 1, 10, 5, 1)' in renderer_source
-    assert 'entryLabel: { ...strategyPresentationStyle("", "solid", 1, 1, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 5, labelPaddingY: 2 }' in renderer_source
+    assert 'entryLabel: { ...strategyPresentationStyle("#64748B", "solid", 1, 1, 10, 7, 0), borderColor: "#64748B"' in renderer_source
     assert 'entryDirectionPart:' in renderer_source
+    assert 'entryShortDirectionPart:' in renderer_source
     assert 'entrySizePart:' in renderer_source
     assert 'entrySeparatorPart:' in renderer_source
     assert 'entryPricePart:' in renderer_source
-    assert 'title: "Entry · Direction"' in renderer_source
-    assert 'title: "Entry · Size"' in renderer_source
-    assert 'title: "Entry · @ separator"' in renderer_source
-    assert 'title: "Entry · Price"' in renderer_source
+    assert 'entryShortPricePart:' in renderer_source
+    assert 'title: "Long"' in renderer_source
+    assert 'title: "Short"' in renderer_source
+    assert 'title: "Long price"' in renderer_source
+    assert 'title: "Short price"' in renderer_source
     assert 'exitLine: strategyPresentationStyle("#FF3D47"' in renderer_source
-    assert 'exitLabel: { ...strategyPresentationStyle("#FF3838", "solid", 2, 0.9, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 8, labelPaddingY: 2 }' in renderer_source
+    assert 'exitLabel: { ...strategyPresentationStyle("#64748B", "solid", 1, 1, 10, 7, 0), borderColor: "#64748B"' in renderer_source
     assert 'exitReasonPart:' in renderer_source
+    assert 'exitShortReasonPart:' in renderer_source
     assert 'exitSizePart:' in renderer_source
     assert 'exitSeparatorPart:' in renderer_source
     assert 'exitPricePart:' in renderer_source
+    assert 'exitShortPricePart:' in renderer_source
     assert 'exitPnlPart:' in renderer_source
-    assert 'title: "Exit · Reason"' in renderer_source
-    assert 'title: "Exit · Size"' in renderer_source
-    assert 'title: "Exit · Separators"' in renderer_source
-    assert 'title: "Exit · Price"' in renderer_source
-    assert 'title: "Exit · Realized P&L"' in renderer_source
+    assert 'exitPnlLossPart:' in renderer_source
+    assert 'title: "Close long"' in renderer_source
+    assert 'title: "Cover short"' in renderer_source
+    assert 'title: "Profit"' in renderer_source
+    assert 'title: "Loss"' in renderer_source
     assert 'levelLabel: { ...strategyPresentationStyle("", "solid", 1, 1, 8, 7, 1), borderWidth: 0, labelPaddingX: 2, labelPaddingY: 1 }' in renderer_source
     assert 'stopLine: strategyPresentationStyle("", "dashed", 1, 0.95' in renderer_source
     assert 'targetLine: strategyPresentationStyle("#008539", "dashed", 1, 1' in renderer_source
@@ -231,6 +235,12 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert 'const strategyVisualElementDefinitions: StrategyVisualElementDefinition[]' in renderer_source
     assert 'className="strategy-presentation-element"' in renderer_source
     assert 'className="strategy-presentation-style-page"' in renderer_source
+    assert 'className="strategy-presentation-style-page strategy-presentation-composite-label-page"' in renderer_source
+    assert 'className="strategy-presentation-part-tabs"' in renderer_source
+    assert 'className="strategy-presentation-label-preview"' in renderer_source
+    definitions_source = renderer_source.split('const strategyVisualElementDefinitions', 1)[1].split('type StrategyCompositeLabelKey', 1)[0]
+    assert 'entryDirectionPart' not in definitions_source
+    assert 'exitReasonPart' not in definitions_source
     assert 'Customize ${definition.title} style' in renderer_source
     assert 'label="Text color"' in renderer_source
     assert 'label="Text opacity"' in renderer_source
@@ -270,22 +280,23 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert 'entryLabelParts: [' in chart_source
     assert '{ text: formatQuantity(entryQuantity), tone: "size" }' in chart_source
     assert '{ text: "@", tone: "separator" }' in chart_source
-    assert '{ text: entryPrice.toFixed(2), tone: "price" }' in chart_source
+    assert '{ text: entryPrice.toFixed(2), tone: side === "SHORT" ? "priceShort" : "priceLong" }' in chart_source
     assert 'exitLabelParts: status === "closed" ? [' in chart_source
-    assert '{ text: exitLabel, tone: "reason" }' in chart_source
+    assert '{ text: exitLabel, tone: side === "SHORT" ? "exitShort" : "exitLong" }' in chart_source
     assert '{ text: formatQuantity(exitQuantity), tone: "size" }' in chart_source
-    assert '{ text: Number(exitPrice).toFixed(2), tone: "price" }' in chart_source
+    assert '{ text: Number(exitPrice).toFixed(2), tone: side === "SHORT" ? "exitPriceShort" : "exitPriceLong" }' in chart_source
     assert '{ text: signedMoneyShort(pnl), tone: pnl >= 0 ? "pnlWin" : "pnlLoss" }' in chart_source
     assert 'const entryLabelPartSettings: TradeLabelPartSettings' in renderer_source
     assert 'const exitLabelPartSettings: TradeLabelPartSettings' in renderer_source
-    assert 'pnlLoss: elements.exitPnlPart' in renderer_source
+    assert 'pnlLoss: elements.exitPnlLossPart' in renderer_source
     assert 'annotation.exitLabelParts, exitLabelPartSettings' in renderer_source
     assert 'parts.map((part)' in renderer_source
     assert 'partSettings?.[part.tone ?? "label"]' in renderer_source
     assert 'context.font = `${segment.settings.fontWeight} ${segment.settings.labelSize}px ${canvasInterfaceFont()}`' in renderer_source
     assert 'const fillColor = strategyPresentationColor(segment.settings.fillColor, background)' in renderer_source
-    assert 'const borderColor = strategyPresentationColor(segment.settings.borderColor, segment.color)' in renderer_source
-    assert 'context.strokeStyle = rgbaFromHex(borderColor, segment.settings.borderOpacity)' in renderer_source
+    assert 'if (segment.settings.fillBlur > 0) context.filter = `blur(${segment.settings.fillBlur}px)`' in renderer_source
+    assert 'const borderColor = strategyPresentationColor(settings.borderColor, color)' in renderer_source
+    assert 'context.strokeStyle = rgbaFromHex(borderColor, settings.borderOpacity)' in renderer_source
     assert 'context.fillText(segment.text, segmentLeft + segment.settings.labelPaddingX' in renderer_source
     presentation_effect = renderer_source.split("// Presentation edits own only primitive paint state.", 1)[1].split("}, [strategyPresentationSettings]);", 1)[0]
     assert "setSettings(strategyPresentationSettings)" in presentation_effect

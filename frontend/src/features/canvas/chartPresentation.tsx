@@ -338,10 +338,10 @@ export function ChartPreview({
   const positionLine = strategyPresentationAvailable && activePosition && averagePrice > 0 ? {
     color: quantity > 0 ? "var(--success)" : "var(--danger)",
     labelParts: [
-      { text: quantity > 0 ? "LONG" : "SHORT", tone: "label" as const },
+      { text: quantity > 0 ? "LONG" : "SHORT", tone: quantity > 0 ? "long" as const : "short" as const },
       { text: positionQuantityLabel, tone: "size" as const },
       { text: "@", tone: "separator" as const },
-      { text: money(averagePrice), tone: "price" as const },
+      { text: money(averagePrice), tone: quantity > 0 ? "priceLong" as const : "priceShort" as const },
       ...protectionLabelParts,
     ],
     pnl: Number(activePosition.unrealized_pnl || 0),
@@ -572,10 +572,10 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
       entryColor: side === "SHORT" ? "#dc2626" : "#16a34a",
       entryLabel: `${side === "SHORT" ? "Short" : "Long"} ${formatQuantity(entryQuantity)} @ ${entryPrice.toFixed(2)}`,
       entryLabelParts: [
-        { text: side === "SHORT" ? "Short" : "Long", tone: "label" },
+        { text: side === "SHORT" ? "Short" : "Long", tone: side === "SHORT" ? "short" : "long" },
         { text: formatQuantity(entryQuantity), tone: "size" },
         { text: "@", tone: "separator" },
-        { text: entryPrice.toFixed(2), tone: "price" },
+        { text: entryPrice.toFixed(2), tone: side === "SHORT" ? "priceShort" : "priceLong" },
       ],
       entryPrice,
       entryTime,
@@ -583,10 +583,10 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
       exitColor: status === "closed" ? side === "SHORT" ? "#16a34a" : "#dc2626" : undefined,
       exitLabel: status === "closed" ? `${exitLabel} ${formatQuantity(exitQuantity)} @ ${Number(exitPrice).toFixed(2)} · ${signedMoneyShort(pnl)}` : undefined,
       exitLabelParts: status === "closed" ? [
-        { text: exitLabel, tone: "reason" },
+        { text: exitLabel, tone: side === "SHORT" ? "exitShort" : "exitLong" },
         { text: formatQuantity(exitQuantity), tone: "size" },
         { text: "@", tone: "separator" },
-        { text: Number(exitPrice).toFixed(2), tone: "price" },
+        { text: Number(exitPrice).toFixed(2), tone: side === "SHORT" ? "exitPriceShort" : "exitPriceLong" },
         { text: "·", tone: "separator" },
         { text: signedMoneyShort(pnl), tone: pnl >= 0 ? "pnlWin" : "pnlLoss" },
       ] : undefined,

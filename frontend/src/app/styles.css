@@ -5519,6 +5519,47 @@ button {
   height: 24px;
 }
 
+.strategy-presentation-label-preview {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  margin: 12px 14px 0;
+  border-bottom: 1px solid var(--surface-border);
+  padding: 0 0 12px;
+}
+
+.strategy-presentation-label-preview > span {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.strategy-presentation-label-preview > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.strategy-presentation-label-preview-box {
+  display: inline-flex;
+  align-items: center;
+  overflow: visible;
+  border-radius: 3px;
+  background: var(--surface);
+  font-family: var(--font-body);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.strategy-presentation-label-preview-box > span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 100%;
+}
+
 .strategy-presentation-controls {
   display: grid;
   gap: 16px;
@@ -5548,6 +5589,72 @@ button {
 }
 
 .strategy-presentation-control-section > header span {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.strategy-presentation-part-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.strategy-presentation-part-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  border: 1px solid var(--surface-border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--muted-foreground);
+  padding: 0 8px;
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.strategy-presentation-part-tabs button:hover,
+.strategy-presentation-part-tabs button:focus-visible {
+  background: var(--surface-alt);
+  color: var(--foreground);
+}
+
+.strategy-presentation-part-tabs button.is-active {
+  border-color: color-mix(in oklab, var(--primary) 46%, var(--surface-border));
+  background: color-mix(in oklab, var(--primary) 8%, var(--surface));
+  color: var(--foreground);
+}
+
+.strategy-presentation-part-tabs i {
+  width: 10px;
+  height: 10px;
+  border: 1px solid;
+  border-radius: 2px;
+}
+
+.strategy-presentation-part-enabled {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  border-top: 1px solid color-mix(in oklab, var(--surface-border) 62%, transparent);
+  padding-top: 9px;
+}
+
+.strategy-presentation-part-enabled > span {
+  display: grid;
+  gap: 2px;
+}
+
+.strategy-presentation-part-enabled strong {
+  color: var(--foreground);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.strategy-presentation-part-enabled small {
   color: var(--muted-foreground);
   font-size: 10px;
   font-weight: 400;
@@ -5900,6 +6007,10 @@ button {
 
 .trade-label-part.reason,
 .trade-label-part.label,
+.trade-label-part.long,
+.trade-label-part.short,
+.trade-label-part.exitLong,
+.trade-label-part.exitShort,
 .trade-label-part.separator {
   color: var(--muted-foreground);
   font-weight: 600;
@@ -5910,7 +6021,11 @@ button {
   font-weight: 700;
 }
 
-.trade-label-part.price {
+.trade-label-part.price,
+.trade-label-part.priceLong,
+.trade-label-part.priceShort,
+.trade-label-part.exitPriceLong,
+.trade-label-part.exitPriceShort {
   color: var(--foreground);
   font-weight: 650;
 }
