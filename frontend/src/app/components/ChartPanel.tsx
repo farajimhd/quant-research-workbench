@@ -3183,21 +3183,16 @@ function StrategyCompositeLabelPreview({ elements, labelKey, settings }: { eleme
 
 function StrategyStyleColor({ defaultLabel, fallbackColor, label, onChange, value }: { defaultLabel: string; fallbackColor: string; label: string; onChange: (value: string) => void; value: string }) {
   const displayedColor = validHexColor(value, fallbackColor);
-  const commitDisplayedColor = () => {
-    // Native color inputs cannot visually distinguish an empty/default value
-    // from an explicit color equal to its fallback (most visibly #FFFFFF).
-    // Commit the shown swatch when customization begins so selecting that same
-    // color does not leave the empty string/transparency sentinel in storage.
-    if (!value) onChange(displayedColor);
-  };
   return <label><span>{label}</span><span className="strategy-presentation-color"><input
     aria-label={label}
-    onChange={(event) => onChange(event.target.value)}
-    onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") commitDisplayedColor(); }}
-    onPointerDown={commitDisplayedColor}
+    onBlur={(event) => { if (!value) onChange(event.currentTarget.value); }}
+    onInput={(event) => onChange(event.currentTarget.value)}
     type="color"
     value={displayedColor}
-  />{value ? <button onClick={() => onChange("")} type="button">Use default</button> : <em>{defaultLabel}</em>}</span></label>;
+  /><code>{displayedColor.toUpperCase()}</code>{value
+    ? <button onClick={() => onChange("")} type="button">Use default</button>
+    : <button aria-label={`Apply ${displayedColor.toUpperCase()} to ${label}`} onClick={() => onChange(displayedColor)} type="button">Apply color</button>
+  }<em>{value ? "Custom" : defaultLabel}</em></span></label>;
 }
 
 function StrategyStyleRange({ label, max, min, onChange, suffix, value }: { label: string; max: number; min: number; onChange: (value: number) => void; suffix: string; value: number }) {
