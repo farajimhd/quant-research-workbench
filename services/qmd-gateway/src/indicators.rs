@@ -12,6 +12,9 @@ use crate::microstructure_interval::{
     MicrostructureIntervalFeatures, MicrostructureIntervalWindow,
 };
 use crate::scanner::ScannerPrimitiveRouter;
+use crate::structure_certification::{
+    validate_checkpoint_certification, StructureCheckpointCertification,
+};
 use crate::timefmt::clickhouse_datetime64;
 use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Timelike, Utc};
 use chrono_tz::America::New_York;
@@ -54,6 +57,7 @@ fn daily_structure_checkpoint_deduplication_token(
     source_plan_hash: &str,
     source_revision_token: &str,
     snapshot_json: &str,
+    certification_json: &str,
 ) -> String {
     let fields = [
         checkpoint_set_id.to_string(),
@@ -70,6 +74,8 @@ fn daily_structure_checkpoint_deduplication_token(
         context.update(&[0]);
     }
     context.update(snapshot_json.as_bytes());
+    context.update(&[0]);
+    context.update(certification_json.as_bytes());
     context
         .finish()
         .as_ref()
@@ -171,7 +177,8 @@ fn daily_structure_checkpoint_before_sql(
             source_revision_token,
             source_complete,
             toUnixTimestamp64Milli(built_at) AS built_at_ms,
-            snapshot_json
+            snapshot_json,
+            certification_json
         FROM {table}
         WHERE {set_predicate}sym = '{}'
           AND session_date < '{}'
@@ -203,6 +210,8 @@ pub struct DailyStructureCheckpoint {
     pub source_complete: bool,
     pub built_at: DateTime<Utc>,
     pub checkpoint: GenericStructureCheckpoint,
+    #[serde(default)]
+    pub certification: Option<StructureCheckpointCertification>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -3054,12 +3063,18 @@ impl IndicatorClickHouseWriter {
                 source_revision_token String,
                 source_complete UInt8,
                 built_at DateTime64(3, 'UTC'),
-                snapshot_json String
+                snapshot_json String,
+                certification_json String DEFAULT ''
             )
             ENGINE = ReplacingMergeTree(built_at)
             PARTITION BY toYYYYMM(session_date)
             ORDER BY (sym, session_date, algorithm_version, source_plan_hash, source_revision_token)
             SETTINGS non_replicated_deduplication_window = 10000"#,
+            true,
+        )
+        .await?;
+        self.execute(
+            "ALTER TABLE qmd_structure_daily_checkpoint_v1 ADD COLUMN IF NOT EXISTS certification_json String DEFAULT ''",
             true,
         )
         .await?;
@@ -3082,12 +3097,18 @@ impl IndicatorClickHouseWriter {
                 source_revision_token String,
                 source_complete UInt8,
                 built_at DateTime64(3, 'UTC'),
-                snapshot_json String
+                snapshot_json String,
+                certification_json String DEFAULT ''
             )
             ENGINE = ReplacingMergeTree(built_at)
             PARTITION BY toYYYYMM(session_date)
             ORDER BY (checkpoint_set_id, sym, session_date, algorithm_version, source_plan_hash, source_revision_token)
             SETTINGS non_replicated_deduplication_window = 10000"#,
+            true,
+        )
+        .await?;
+        self.execute(
+            "ALTER TABLE qmd_structure_daily_checkpoint_v2 ADD COLUMN IF NOT EXISTS certification_json String DEFAULT ''",
             true,
         )
         .await?;
@@ -3107,11 +3128,23 @@ impl IndicatorClickHouseWriter {
                 state LowCardinality(String),
                 ticker_count UInt64,
                 checkpoint_count UInt64,
+                certification_schema_version UInt16 DEFAULT 0,
+                certified_checkpoint_count UInt64 DEFAULT 0,
                 event_count UInt64,
                 updated_at DateTime64(3, 'UTC')
             )
             ENGINE = ReplacingMergeTree(updated_at)
             ORDER BY checkpoint_set_id"#,
+            true,
+        )
+        .await?;
+        self.execute(
+            "ALTER TABLE qmd_structure_checkpoint_set_registry_v1 ADD COLUMN IF NOT EXISTS certification_schema_version UInt16 DEFAULT 0",
+            true,
+        )
+        .await?;
+        self.execute(
+            "ALTER TABLE qmd_structure_checkpoint_set_registry_v1 ADD COLUMN IF NOT EXISTS certified_checkpoint_count UInt64 DEFAULT 0",
             true,
         )
         .await?;
@@ -3266,6 +3299,19 @@ impl IndicatorClickHouseWriter {
         }
         let snapshot_json = serde_json::to_string(&record.checkpoint)
             .map_err(|error| format!("failed to serialize daily structure checkpoint: {error}"))?;
+        let certification = record.certification.as_ref().ok_or_else(|| {
+            "refusing to persist an uncertified daily structure checkpoint".to_string()
+        })?;
+        validate_checkpoint_certification(
+            certification,
+            &record.checkpoint,
+            record.session_date,
+            record.authority_start,
+            &record.source_plan_hash,
+            &record.source_revision_token,
+        )?;
+        let certification_json = serde_json::to_string(certification)
+            .map_err(|error| format!("failed to serialize checkpoint certification: {error}"))?;
         let mut row = json!({
             "session_date": record.session_date.to_string(),
             "algorithm_version": record.algorithm_version,
@@ -3278,6 +3324,7 @@ impl IndicatorClickHouseWriter {
             "source_complete": u8::from(record.source_complete),
             "built_at": clickhouse_datetime64(&record.built_at),
             "snapshot_json": snapshot_json,
+            "certification_json": certification_json,
         });
         let table = if record.checkpoint_set_id == "live" {
             "qmd_structure_daily_checkpoint_v1"
@@ -3301,6 +3348,7 @@ impl IndicatorClickHouseWriter {
             &record.source_plan_hash,
             &record.source_revision_token,
             &snapshot_json,
+            &certification_json,
         );
         self.query_with_idempotent_body(
             &format!(
@@ -3329,7 +3377,7 @@ impl IndicatorClickHouseWriter {
         let text = self
             .query(
                 &format!(
-                    "SELECT count() FROM qmd_structure_daily_checkpoint_v2 WHERE checkpoint_set_id = '{}' FORMAT TSV",
+                    "SELECT count() FROM (SELECT 1 FROM qmd_structure_daily_checkpoint_v2 FINAL WHERE checkpoint_set_id = '{}' GROUP BY sym, session_date, algorithm_version) FORMAT TSV",
                     checkpoint_set_id
                 ),
                 true,
@@ -3338,6 +3386,22 @@ impl IndicatorClickHouseWriter {
         text.trim()
             .parse::<u64>()
             .map_err(|error| format!("invalid checkpoint-set row count: {error}"))
+    }
+
+    pub async fn count_certified_daily_structure_checkpoints_in_set(&self) -> Result<u64, String> {
+        let checkpoint_set_id = self.config.structure_checkpoint_set_id.replace('\'', "''");
+        let text = self
+            .query(
+                &format!(
+                    "SELECT count() FROM (SELECT argMax(certification_json, tuple(built_at, source_plan_hash, source_revision_token)) AS latest_certification FROM qmd_structure_daily_checkpoint_v2 FINAL WHERE checkpoint_set_id = '{}' GROUP BY sym, session_date, algorithm_version) WHERE notEmpty(latest_certification) FORMAT TSV",
+                    checkpoint_set_id
+                ),
+                true,
+            )
+            .await?;
+        text.trim()
+            .parse::<u64>()
+            .map_err(|error| format!("invalid certified checkpoint-set row count: {error}"))
     }
 
     pub async fn purge_daily_structure_checkpoint_set(&self) -> Result<u64, String> {
@@ -3372,6 +3436,7 @@ impl IndicatorClickHouseWriter {
         state: &str,
         ticker_count: u64,
         checkpoint_count: u64,
+        certified_checkpoint_count: u64,
         event_count: u64,
     ) -> Result<(), String> {
         if !valid_checkpoint_set_id(&self.config.structure_checkpoint_set_id)
@@ -3389,6 +3454,8 @@ impl IndicatorClickHouseWriter {
             "state": state,
             "ticker_count": ticker_count,
             "checkpoint_count": checkpoint_count,
+            "certification_schema_version": crate::structure_certification::STRUCTURE_CERTIFICATION_SCHEMA_VERSION,
+            "certified_checkpoint_count": certified_checkpoint_count,
             "event_count": event_count,
             "updated_at": clickhouse_datetime64(&Utc::now()),
         }))
@@ -3465,6 +3532,13 @@ impl IndicatorClickHouseWriter {
         let checkpoint_json = parse_string("snapshot_json");
         let checkpoint = serde_json::from_str::<GenericStructureCheckpoint>(&checkpoint_json)
             .map_err(|error| format!("invalid daily structure checkpoint for {sym}: {error}"))?;
+        let certification_json = parse_string("certification_json");
+        let certification = (!certification_json.trim().is_empty())
+            .then(|| serde_json::from_str::<StructureCheckpointCertification>(&certification_json))
+            .transpose()
+            .map_err(|error| {
+                format!("invalid daily structure checkpoint certification: {error}")
+            })?;
         let stored_date = NaiveDate::parse_from_str(&parse_string("session_date"), "%Y-%m-%d")
             .map_err(|error| format!("invalid daily structure checkpoint date: {error}"))?;
         let checkpoint_at_ms = parse_u64("checkpoint_at_ms");
@@ -3489,6 +3563,7 @@ impl IndicatorClickHouseWriter {
             source_complete: parse_u64("source_complete") == 1,
             built_at,
             checkpoint,
+            certification,
         }))
     }
 
@@ -4182,6 +4257,7 @@ mod tests {
             "plan",
             "revision",
             "{\"levels\":[]}",
+            "{\"chain_sha256\":\"a\"}",
         );
         let repeated = daily_structure_checkpoint_deduplication_token(
             "canonical-v16",
@@ -4192,6 +4268,7 @@ mod tests {
             "plan",
             "revision",
             "{\"levels\":[]}",
+            "{\"chain_sha256\":\"a\"}",
         );
         let changed = daily_structure_checkpoint_deduplication_token(
             "canonical-v16",
@@ -4202,11 +4279,24 @@ mod tests {
             "plan",
             "revision",
             "{\"levels\":[]}",
+            "{\"chain_sha256\":\"a\"}",
+        );
+        let changed_certification = daily_structure_checkpoint_deduplication_token(
+            "canonical-v16",
+            date,
+            16,
+            "SUGP",
+            42,
+            "plan",
+            "revision",
+            "{\"levels\":[]}",
+            "{\"chain_sha256\":\"b\"}",
         );
 
         assert_eq!(first, repeated);
         assert_eq!(first.len(), 64);
         assert_ne!(first, changed);
+        assert_ne!(first, changed_certification);
     }
 
     #[test]

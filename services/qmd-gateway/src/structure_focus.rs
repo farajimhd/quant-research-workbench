@@ -6,6 +6,10 @@ use crate::config::GatewayConfig;
 use crate::gapfill::GapFillService;
 use crate::generic_structure::{GenericStructureCheckpoint, GENERIC_STRUCTURE_ALGORITHM_VERSION};
 use crate::indicators::{DailyStructureCheckpoint, IndicatorClickHouseWriter};
+use crate::structure_certification::{
+    build_checkpoint_certification, checkpoint_sha256, validate_checkpoint_certification,
+    StructureReplayEvidence,
+};
 use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, NaiveTime, TimeZone, Utc};
 use chrono_tz::America::New_York;
 use reqwest::Client;
@@ -120,6 +124,8 @@ pub struct DailyStructureCheckpointBuild {
     pub checkpoint_arrival_sequence: u64,
     pub source_plan_hash: String,
     pub source_revision_token: String,
+    pub checkpoint_sha256: String,
+    pub chain_sha256: String,
     pub status: String,
 }
 
@@ -144,6 +150,7 @@ struct HistoryAdvanceResponse {
     checkpoint: GenericStructureCheckpoint,
     event_count: u64,
     advanced_event_count: u64,
+    event_evidence: StructureReplayEvidence,
     source_plan: HistorySourcePlan,
     source_revision_before: HistorySourceRevision,
     source_revision_after: HistorySourceRevision,
@@ -158,6 +165,7 @@ struct HistoryRebuildResponse {
     replay_start: DateTime<Utc>,
     event_count: u64,
     advanced_event_count: u64,
+    event_evidence: StructureReplayEvidence,
     source_plan: HistorySourcePlan,
     source_revision_before: HistorySourceRevision,
     source_revision_after: HistorySourceRevision,
@@ -573,6 +581,20 @@ impl StructureFocusCoordinator {
                 && current.request_complete
                 && current.source_plan_hash == existing.source_plan_hash
                 && current.token == existing.source_revision_token
+                && existing
+                    .certification
+                    .as_ref()
+                    .is_some_and(|certification| {
+                        validate_checkpoint_certification(
+                            certification,
+                            &existing.checkpoint,
+                            existing.session_date,
+                            existing.authority_start,
+                            &existing.source_plan_hash,
+                            &existing.source_revision_token,
+                        )
+                        .is_ok()
+                    })
             {
                 let checkpoint_updated_at = existing
                     .checkpoint
@@ -595,6 +617,16 @@ impl StructureFocusCoordinator {
                     checkpoint_arrival_sequence: existing.checkpoint.last_arrival_sequence,
                     source_plan_hash: existing.source_plan_hash,
                     source_revision_token: existing.source_revision_token,
+                    checkpoint_sha256: existing
+                        .certification
+                        .as_ref()
+                        .map(|value| value.checkpoint_sha256.clone())
+                        .unwrap_or_default(),
+                    chain_sha256: existing
+                        .certification
+                        .as_ref()
+                        .map(|value| value.chain_sha256.clone())
+                        .unwrap_or_default(),
                     status: "already_current".to_string(),
                 });
             }
@@ -608,7 +640,20 @@ impl StructureFocusCoordinator {
         // shallow checkpoint with a months-long book instead of silently
         // advancing the incomplete seed forever.
         let seed = seed
-            .filter(|seed| daily_seed_covers_rebuild_start(seed.authority_start, rebuild_start));
+            .filter(|seed| daily_seed_covers_rebuild_start(seed.authority_start, rebuild_start))
+            .filter(|seed| {
+                seed.certification.as_ref().is_some_and(|certification| {
+                    validate_checkpoint_certification(
+                        certification,
+                        &seed.checkpoint,
+                        seed.session_date,
+                        seed.authority_start,
+                        &seed.source_plan_hash,
+                        &seed.source_revision_token,
+                    )
+                    .is_ok()
+                })
+            });
         // Resume is valid only when the complete authority that produced the
         // prior checkpoint is still identical. This revision includes both
         // compact-event continuity and the point-in-time split authority. A
@@ -652,7 +697,16 @@ impl StructureFocusCoordinator {
             _slice_revision,
             seeded_from,
             authority_start,
+            event_evidence,
+            predecessor_checkpoint_hash,
+            predecessor_chain_hash,
         ) = if let Some(seed) = seed {
+            let seed_checkpoint_hash = checkpoint_sha256(&seed.checkpoint)?;
+            let seed_chain_hash = seed
+                .certification
+                .as_ref()
+                .map(|value| value.chain_sha256.clone())
+                .unwrap_or_default();
             let replay_start = seed
                 .checkpoint
                 .replayed_through
@@ -686,6 +740,9 @@ impl StructureFocusCoordinator {
                         advanced.source_revision_after.token,
                         Some(seed.session_date),
                         seed.authority_start,
+                        advanced.event_evidence,
+                        seed_checkpoint_hash,
+                        seed_chain_hash,
                     )
                 }
                 Err(error) if non_retryable_history_error(&error).is_some() => {
@@ -723,6 +780,9 @@ impl StructureFocusCoordinator {
                         rebuilt.source_revision_after.token,
                         None,
                         seed.authority_start,
+                        rebuilt.event_evidence,
+                        String::new(),
+                        String::new(),
                     )
                 }
                 Err(error) => return Err(error),
@@ -781,6 +841,9 @@ impl StructureFocusCoordinator {
                 rebuilt.source_revision_after.token,
                 None,
                 rebuild_start,
+                rebuilt.event_evidence,
+                String::new(),
+                String::new(),
             )
         };
         let checkpoint_updated_at = checkpoint
@@ -802,6 +865,18 @@ impl StructureFocusCoordinator {
         {
             return Err("daily structure checkpoint full authority is incomplete".to_string());
         }
+        let certification = build_checkpoint_certification(
+            &checkpoint,
+            event_evidence,
+            session_date,
+            authority_start,
+            &authority_revision.source_plan_hash,
+            &authority_revision.token,
+            predecessor_checkpoint_hash,
+            predecessor_chain_hash,
+        )?;
+        let checkpoint_hash = certification.checkpoint_sha256.clone();
+        let chain_hash = certification.chain_sha256.clone();
         let record = DailyStructureCheckpoint {
             checkpoint_set_id: self
                 .checkpoint_store
@@ -818,6 +893,7 @@ impl StructureFocusCoordinator {
             source_complete: true,
             built_at: Utc::now(),
             checkpoint: checkpoint.clone(),
+            certification: Some(certification),
         };
         self.checkpoint_store
             .persist_daily_structure_checkpoint(&record)
@@ -834,6 +910,8 @@ impl StructureFocusCoordinator {
             checkpoint_arrival_sequence: checkpoint.last_arrival_sequence,
             source_plan_hash: authority_revision.source_plan_hash,
             source_revision_token: authority_revision.token,
+            checkpoint_sha256: checkpoint_hash,
+            chain_sha256: chain_hash,
             status: "completed".to_string(),
         })
     }

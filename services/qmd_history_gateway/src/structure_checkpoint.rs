@@ -10,6 +10,7 @@ use qmd_core::generic_structure::{
     GenericStructureCheckpoint, GenericStructureEngine, GenericStructureEvent,
     GenericStructureSnapshot, StructureSplitAdjustment, GENERIC_STRUCTURE_ALGORITHM_VERSION,
 };
+use qmd_core::structure_certification::{StructureEventAuditor, StructureReplayEvidence};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -264,6 +265,7 @@ pub struct StructureCheckpointAdvanceResponse {
     pub replay_start: DateTime<Utc>,
     pub event_count: u64,
     pub advanced_event_count: u64,
+    pub event_evidence: StructureReplayEvidence,
     pub snapshot: GenericStructureSnapshot,
     pub source_plan: MarketSourcePlan,
     pub source_revision_before: SourceRevision,
@@ -290,6 +292,7 @@ pub struct StructureCheckpointRebuildResponse {
     pub replay_start: DateTime<Utc>,
     pub event_count: u64,
     pub advanced_event_count: u64,
+    pub event_evidence: StructureReplayEvidence,
     pub source_plan: MarketSourcePlan,
     pub source_revision_before: SourceRevision,
     pub source_revision_after: SourceRevision,
@@ -375,9 +378,11 @@ async fn rebuild_structure_checkpoint_inner(
     )?;
     let mut event_count = 0_u64;
     let mut advanced_event_count = 0_u64;
+    let mut event_auditor = StructureEventAuditor::new(false);
     while let Some(batch) = batches.recv().await {
         let mut batch_event_count = 0_u64;
         for compact in batch? {
+            event_auditor.observe(&compact)?;
             event_count = event_count.saturating_add(1);
             if event_count > event_limit as u64 {
                 return Err(format!(
@@ -432,6 +437,10 @@ async fn rebuild_structure_checkpoint_inner(
         );
     }
     checkpoint.replayed_through = Some(request.as_of);
+    let event_evidence = event_auditor.finish();
+    if event_evidence.event_count != event_count {
+        return Err("Generic Structure rebuild certification count mismatch".to_string());
+    }
     Ok(StructureCheckpointRebuildResponse {
         schema_version: STRUCTURE_CHECKPOINT_REBUILD_SCHEMA_VERSION,
         checkpoint,
@@ -440,6 +449,7 @@ async fn rebuild_structure_checkpoint_inner(
         replay_start: request.start,
         event_count,
         advanced_event_count,
+        event_evidence,
         source_plan,
         source_revision_before,
         source_revision_after,
@@ -537,6 +547,7 @@ async fn advance_structure_checkpoint_inner(
     )?;
     let mut event_count = 0_u64;
     let mut advanced_event_count = 0_u64;
+    let mut event_auditor = StructureEventAuditor::new(false);
     while let Some(batch) = batches.recv().await {
         let mut batch_event_count = 0_u64;
         for compact in batch? {
@@ -544,6 +555,7 @@ async fn advance_structure_checkpoint_inner(
             if !exact_live_cursor && event.ts() <= replay_start {
                 continue;
             }
+            event_auditor.observe(&compact)?;
             event_count = event_count.saturating_add(1);
             if event_count > event_limit as u64 {
                 return Err(format!(
@@ -591,6 +603,10 @@ async fn advance_structure_checkpoint_inner(
     if exact_live_cursor && checkpoint.checkpoint_cursor() < initial_cursor {
         return Err("Generic Structure checkpoint replay moved its cursor backward".to_string());
     }
+    let event_evidence = event_auditor.finish();
+    if event_evidence.event_count != event_count {
+        return Err("Generic Structure checkpoint certification count mismatch".to_string());
+    }
     Ok(StructureCheckpointAdvanceResponse {
         schema_version: STRUCTURE_CHECKPOINT_ADVANCEMENT_SCHEMA_VERSION,
         checkpoint,
@@ -598,6 +614,7 @@ async fn advance_structure_checkpoint_inner(
         replay_start,
         event_count,
         advanced_event_count,
+        event_evidence,
         snapshot,
         source_plan,
         source_revision_before,

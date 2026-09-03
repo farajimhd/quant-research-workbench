@@ -20,7 +20,10 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = REPO_ROOT / "services" / "qmd_history_gateway" / "Cargo.toml"
-BINARY_NAME = "structure_checkpoint_campaign.exe" if os.name == "nt" else "structure_checkpoint_campaign"
+BUILD_BINARY_NAME = "structure_checkpoint_campaign.exe" if os.name == "nt" else "structure_checkpoint_campaign"
+RUNTIME_BINARY_NAME = (
+    "structure_checkpoint_campaign_v5.exe" if os.name == "nt" else "structure_checkpoint_campaign_v5"
+)
 
 
 def binary_candidates(explicit: str | None, environ: dict[str, str]) -> tuple[Path, ...]:
@@ -31,9 +34,9 @@ def binary_candidates(explicit: str | None, environ: dict[str, str]) -> tuple[Pa
         candidates.append(Path(configured).expanduser())
     runtime_root = Path(environ.get("TRADING_RUNTIME_ROOT", r"D:\TradingML\runtimes"))
     candidates += [
-        runtime_root / "bin" / BINARY_NAME,
-        runtime_root / "cargo-target" / "quant-research-workbench" / "release" / BINARY_NAME,
-        MANIFEST.parent / "target" / "release" / BINARY_NAME,
+        runtime_root / "bin" / RUNTIME_BINARY_NAME,
+        runtime_root / "cargo-target" / "quant-research-workbench" / "release" / BUILD_BINARY_NAME,
+        MANIFEST.parent / "target" / "release" / BUILD_BINARY_NAME,
     ]
     unique, seen = [], set()
     for candidate in candidates:
@@ -65,7 +68,7 @@ def resolve_binary(explicit: str | None, build: bool, environ: dict[str, str]) -
     if cargo is None:
         raise RuntimeError(
             "Cargo and the campaign binary are missing. Copy the prebuilt binary to "
-            r"D:\TradingML\runtimes\bin\structure_checkpoint_campaign.exe."
+            r"D:\TradingML\runtimes\bin\structure_checkpoint_campaign_v5.exe."
         )
     subprocess.run(
         [cargo, "build", "--release", "--bin", "structure_checkpoint_campaign", "--manifest-path", str(MANIFEST)],
@@ -145,6 +148,12 @@ def read_status(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def status_is_fully_certified(status: dict[str, Any]) -> bool:
+    total_units = int(status.get("total_units", 0))
+    certified = int(status.get("counts", {}).get("certified", 0))
+    return status.get("status") == "completed" and total_units > 0 and certified == total_units
+
+
 def archive_previous_attempt_statuses(runtime_dir: Path, worker_dirs: list[Path]) -> Path | None:
     """Move stale dashboard snapshots aside before a resumed worker launch."""
     status_paths = [runtime_dir / "campaign-status.json"] + [
@@ -175,7 +184,7 @@ def fmt_duration(seconds: float | None) -> str:
 
 def aggregate_status(paths, plans, started, rates, processes) -> dict[str, Any]:
     statuses = [status for path in paths if (status := read_status(path)) is not None]
-    keys = ("active", "blocked", "completed", "failed", "finished", "queued", "retried", "skipped", "unavailable")
+    keys = ("active", "blocked", "certified", "completed", "failed", "finished", "queued", "retried", "skipped", "unavailable")
     counts = {key: sum(int(row.get("counts", {}).get(key, 0)) for row in statuses) for key in keys}
     events = sum(int(row.get("events_processed", 0)) for row in statuses)
     total_events = sum(int(plan.get("estimated_events", 0)) for plan in plans)
@@ -240,7 +249,10 @@ def render_rich(status: dict[str, Any], set_id: str):
     summary.add_column(justify="right")
     summary.add_row("Checkpoint set", set_id)
     summary.add_row("Processes", f"{status['worker_processes'] - status['worker_processes_exited']} active | {status['worker_processes_exited']} exited")
-    summary.add_row("Durable units", f"{fmt_count(counts['finished'])} / {fmt_count(status['total_units'])}")
+    summary.add_row(
+        "Durable units",
+        f"{fmt_count(counts['finished'])} / {fmt_count(status['total_units'])} | {fmt_count(counts['certified'])} certified",
+    )
     summary.add_row("Events", f"{fmt_count(status['events_processed'])} / {fmt_count(total)}  {pct:.1f}%")
     summary.add_row("Throughput", f"{fmt_count(status['event_rate_5m'])}/s aggregate (5m)")
     summary.add_row("Elapsed | ETA", f"{fmt_duration(status['elapsed_seconds'])} | {fmt_duration(status['eta_seconds'])}")
@@ -255,7 +267,7 @@ def render_rich(status: dict[str, Any], set_id: str):
     )
     return Panel(
         Group(
-            Text(f"Structural Checkpoint Campaign v4  {status['status'].upper()}", style="bold cyan"),
+            Text(f"Structural Checkpoint Campaign v5  {status['status'].upper()}", style="bold cyan"),
             summary,
             Text(f"Active  {active}"),
             Text(f"Latest issue  {issue_text}", style="red" if issue else "dim"),
@@ -348,7 +360,11 @@ def run_process_campaign(binary: Path, campaign_args: list[str], workers: int, e
     elif existing_manifest.get("universe_hash") != universe_hash:
         raise RuntimeError("immutable campaign plan no longer matches its persisted universe hash")
     existing_status = read_status(runtime_dir / "campaign-status.json")
-    if existing_manifest is not None and existing_status is not None and existing_status.get("status") == "completed":
+    if (
+        existing_manifest is not None
+        and existing_status is not None
+        and status_is_fully_certified(existing_status)
+    ):
         print(
             f"Checkpoint set {set_id} is already complete and immutable; use a new set id for a rebuild.",
             flush=True,
@@ -490,7 +506,7 @@ def main(argv: list[str] | None = None) -> int:
     launcher, campaign_args = parse_launcher_args(list(sys.argv[1:] if argv is None else argv))
     if launcher.launcher_help:
         print("Launcher options: --binary PATH, --no-build, --process-workers 1..64")
-        print("All other options are forwarded to structure-checkpoint-campaign v4.")
+        print("All other options are forwarded to structure-checkpoint-campaign v5.")
         return 0
     environ = dict(os.environ)
     environ["PYTHONDONTWRITEBYTECODE"] = "1"

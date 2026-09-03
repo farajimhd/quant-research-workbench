@@ -4,6 +4,10 @@ use qmd_core::config::{load_env_files, GatewayConfig};
 use qmd_core::generic_structure::{GenericStructureEngine, GENERIC_STRUCTURE_ALGORITHM_VERSION};
 use qmd_core::indicators::{DailyStructureCheckpoint, IndicatorClickHouseWriter};
 use qmd_core::metrics::SharedMetrics;
+use qmd_core::structure_certification::{
+    build_checkpoint_certification, checkpoint_sha256, validate_checkpoint_certification,
+    StructureEventAuditor,
+};
 use qmd_history_gateway::config::HistoricalGatewayConfig;
 use qmd_history_gateway::source::{
     HistoricalEventSource, StructureCampaignTicker, StructureEventCountEstimateRequest,
@@ -65,6 +69,7 @@ struct TickerPlan {
 struct Counts {
     active: usize,
     blocked: usize,
+    certified: usize,
     completed: usize,
     failed: usize,
     finished: usize,
@@ -194,8 +199,14 @@ impl ProgressWriter {
                 .saturating_add(progress.counts.active),
         );
         match outcome {
-            "completed" => progress.counts.completed += 1,
-            "skipped" => progress.counts.skipped += 1,
+            "completed" => {
+                progress.counts.completed += 1;
+                progress.counts.certified += 1;
+            }
+            "skipped" => {
+                progress.counts.skipped += 1;
+                progress.counts.certified += 1;
+            }
             "unavailable" => progress.counts.unavailable += 1,
             _ => progress.counts.failed += 1,
         }
@@ -366,6 +377,8 @@ struct DayResult {
     advanced_event_count: u64,
     cursor: u64,
     persistence_retries: usize,
+    checkpoint_sha256: String,
+    chain_sha256: String,
 }
 
 #[derive(Default)]
@@ -434,6 +447,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .count_daily_structure_checkpoints_in_set()
             .await
             .map_err(io_error)?;
+        let certified_checkpoint_count = writer
+            .count_certified_daily_structure_checkpoints_in_set()
+            .await
+            .map_err(io_error)?;
+        if state == "sealed" && certified_checkpoint_count != checkpoint_count {
+            return Err(io_error(format!(
+                "refusing to seal checkpoint set with {certified_checkpoint_count} certified row(s) out of {checkpoint_count} durable row(s)"
+            )));
+        }
         writer
             .persist_structure_checkpoint_set_state(
                 args.start_date,
@@ -442,6 +464,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 state,
                 args.set_ticker_count,
                 checkpoint_count,
+                certified_checkpoint_count,
                 args.set_event_count,
             )
             .await
@@ -492,7 +515,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     )?;
     if args.plan_only {
         println!(
-            "Validated Campaign v4 plan: tickers={} units={} plan={}",
+            "Validated Campaign v5 plan: tickers={} units={} plan={}",
             plans.len(),
             plans.iter().map(|plan| plan.sessions.len()).sum::<usize>(),
             plan_path.display()
@@ -509,6 +532,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 &universe_hash,
                 "building",
                 plan_ticker_count,
+                0,
                 0,
                 0,
             )
@@ -614,9 +638,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .count_daily_structure_checkpoints_in_set()
         .await
         .unwrap_or_default();
+    let certified_checkpoint_count = writer
+        .count_certified_daily_structure_checkpoints_in_set()
+        .await
+        .unwrap_or_default();
     let set_state = if interrupted {
         "interrupted"
-    } else if task_failed || final_progress.counts.failed > 0 {
+    } else if task_failed
+        || final_progress.counts.failed > 0
+        || certified_checkpoint_count != checkpoint_count
+    {
         "failed"
     } else {
         "sealed"
@@ -635,6 +666,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 set_state,
                 plan_ticker_count,
                 checkpoint_count,
+                certified_checkpoint_count,
                 set_event_count,
             )
             .await
@@ -867,7 +899,7 @@ fn dashboard_lines(
     let mut lines = if compact {
         vec![
             format!(
-                "Checkpoint Campaign v4 | {} | v{} | {} workers",
+                "Checkpoint Campaign v5 | {} | v{} | {} workers",
                 state.to_ascii_uppercase(),
                 progress.algorithm_version,
                 workers
@@ -886,8 +918,9 @@ fn dashboard_lines(
                 percentage,
             ),
             format!(
-                "Durable {} | current {} | retries {} | failed {}",
+                "Durable {} | certified {} | current {} | retries {} | failed {}",
                 format_count(progress.counts.completed as u64),
+                format_count(progress.counts.certified as u64),
                 format_count(progress.counts.skipped as u64),
                 format_count(progress.counts.retried as u64),
                 format_count(progress.counts.failed as u64),
@@ -919,7 +952,7 @@ fn dashboard_lines(
     } else {
         vec![
             format!(
-                "Structural Checkpoint Campaign v4 | {} | algorithm v{} | workers {}",
+                "Structural Checkpoint Campaign v5 | {} | algorithm v{} | workers {}",
                 state.to_ascii_uppercase(),
                 progress.algorithm_version,
                 workers
@@ -938,8 +971,9 @@ fn dashboard_lines(
                 format_count(progress.total_units as u64)
             ),
             format!(
-                "Durable {:>8} | current {:>8} | retries {:>6} | unavailable {:>6} | failed {:>4} | blocked {:>6}",
+                "Durable {:>8} | certified {:>8} | current {:>8} | retries {:>6} | unavailable {:>6} | failed {:>4} | blocked {:>6}",
                 format_count(progress.counts.completed as u64),
+                format_count(progress.counts.certified as u64),
                 format_count(progress.counts.skipped as u64),
                 format_count(progress.counts.retried as u64),
                 format_count(progress.counts.unavailable as u64),
@@ -1093,11 +1127,34 @@ async fn run_ticker(
                         && row.source_plan_hash == session.source_revision.source_plan_hash
                         && row.source_revision_token == session.source_revision.token
                 })
+        })
+        .filter(|row| {
+            row.certification.as_ref().is_some_and(|certification| {
+                validate_checkpoint_certification(
+                    certification,
+                    &row.checkpoint,
+                    row.session_date,
+                    row.authority_start,
+                    &row.source_plan_hash,
+                    &row.source_revision_token,
+                )
+                .is_ok()
+            })
         });
     let seed_session = seed.as_ref().map(|row| row.session_date);
     let seed_cursor = seed
         .as_ref()
         .map(|row| row.last_arrival_sequence)
+        .unwrap_or_default();
+    let mut predecessor_checkpoint_sha256 = seed
+        .as_ref()
+        .map(|row| checkpoint_sha256(&row.checkpoint))
+        .transpose()?
+        .unwrap_or_default();
+    let mut predecessor_chain_sha256 = seed
+        .as_ref()
+        .and_then(|row| row.certification.as_ref())
+        .map(|certification| certification.chain_sha256.clone())
         .unwrap_or_default();
     let mut engine = GenericStructureEngine::new(&plan.ticker);
     if let Some(seed) = seed {
@@ -1127,6 +1184,8 @@ async fn run_ticker(
                 &rules,
                 &mut engine,
                 &mut event_progress,
+                predecessor_checkpoint_sha256.clone(),
+                predecessor_chain_sha256.clone(),
             )
             .await;
             match build_result {
@@ -1162,6 +1221,8 @@ async fn run_ticker(
         };
         match result {
             Ok(result) => {
+                predecessor_checkpoint_sha256 = result.checkpoint_sha256.clone();
+                predecessor_chain_sha256 = result.chain_sha256.clone();
                 progress
                     .finish_unit(
                         &plan.ticker,
@@ -1204,6 +1265,8 @@ async fn process_ordinal_session(
     rules: &qmd_core::bars::TradeAggregationRules,
     engine: &mut GenericStructureEngine,
     event_progress: &mut AttemptEventProgress<'_>,
+    predecessor_checkpoint_sha256: String,
+    predecessor_chain_sha256: String,
 ) -> Result<DayResult, String> {
     let session_date = session.session_date;
     let authority_end = session_end(session_date)?;
@@ -1222,6 +1285,7 @@ async fn process_ordinal_session(
     let mut last_sip = 0_u64;
     let mut first_ordinal = session.first_ordinal;
     let mut ordinal_chunk = INITIAL_ORDINAL_CHUNK;
+    let mut event_auditor = StructureEventAuditor::new(true);
     while first_ordinal < session.next_ordinal {
         let next_ordinal = first_ordinal
             .saturating_add(ordinal_chunk)
@@ -1266,6 +1330,7 @@ async fn process_ordinal_session(
             if first_sip == 0 {
                 first_sip = compact.sip_timestamp_us;
             }
+            event_auditor.observe(compact)?;
             prior_sip = compact.sip_timestamp_us;
             last_sip = compact.sip_timestamp_us;
             let event = source.market_event(compact);
@@ -1325,6 +1390,30 @@ async fn process_ordinal_session(
     {
         return Err("daily checkpoint authority is incomplete".to_string());
     }
+    let event_evidence = event_auditor.finish();
+    if event_evidence.event_count != event_count
+        || (event_count > 0
+            && (event_evidence.first_arrival_sequence != session.first_ordinal
+                || event_evidence.last_arrival_sequence.saturating_add(1) != session.next_ordinal
+                || event_evidence.ordinal_contiguous != Some(true)))
+    {
+        return Err(format!(
+            "daily checkpoint certification evidence does not cover the exact ordinal range for {} {}",
+            manifest.ticker, session_date,
+        ));
+    }
+    let certification = build_checkpoint_certification(
+        &checkpoint,
+        event_evidence,
+        session_date,
+        manifest.authority_start,
+        &revision.source_plan_hash,
+        &revision.token,
+        predecessor_checkpoint_sha256,
+        predecessor_chain_sha256,
+    )?;
+    let checkpoint_hash = certification.checkpoint_sha256.clone();
+    let chain_hash = certification.chain_sha256.clone();
     let persistence_retries = writer
         .persist_daily_structure_checkpoint_with_retries(&DailyStructureCheckpoint {
             checkpoint_set_id: config.structure_checkpoint_set_id.clone(),
@@ -1339,6 +1428,7 @@ async fn process_ordinal_session(
             source_complete: true,
             built_at: Utc::now(),
             checkpoint: checkpoint.clone(),
+            certification: Some(certification),
         })
         .await?;
     Ok(DayResult {
@@ -1347,6 +1437,8 @@ async fn process_ordinal_session(
         advanced_event_count,
         cursor: checkpoint.last_arrival_sequence,
         persistence_retries,
+        checkpoint_sha256: checkpoint_hash,
+        chain_sha256: chain_hash,
     })
 }
 
@@ -1705,7 +1797,7 @@ fn parse_args() -> Result<Args, String> {
             "--purge-existing-checkpoints" => purge_existing_checkpoints = true,
             "--plan-only" => plan_only = true,
             "--help" | "-h" => {
-                println!("structure-checkpoint-campaign v4");
+                println!("structure-checkpoint-campaign v5");
                 println!("  --start-date YYYY-MM-DD --end-date YYYY-MM-DD");
                 println!("  --checkpoint-set-id ID");
                 println!("  --runtime-dir PATH [--workers 4]  # allowed: 1-64");
@@ -1998,6 +2090,7 @@ mod tests {
             total_estimated_events: 50_000_000,
             counts: Counts {
                 active: 2,
+                certified: 10_000,
                 completed: 10_000,
                 queued: 190_691,
                 retried: 7,

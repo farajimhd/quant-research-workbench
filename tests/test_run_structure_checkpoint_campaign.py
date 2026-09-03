@@ -9,12 +9,25 @@ from scripts.run_structure_checkpoint_campaign import (
     binary_candidates,
     parse_launcher_args,
     prepare_shards,
+    status_is_fully_certified,
 )
 
 
 class _RunningProcess:
     def poll(self):
         return None
+
+
+def test_only_complete_certified_status_short_circuits_a_resume() -> None:
+    assert status_is_fully_certified(
+        {"status": "completed", "total_units": 2, "counts": {"certified": 2}}
+    )
+    assert not status_is_fully_certified(
+        {"status": "completed", "total_units": 2, "counts": {"certified": 0}}
+    )
+    assert not status_is_fully_certified(
+        {"status": "failed", "total_units": 2, "counts": {"certified": 2}}
+    )
 
 
 def test_prebuilt_runtime_binary_is_preferred_without_cargo() -> None:

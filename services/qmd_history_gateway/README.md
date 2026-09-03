@@ -348,7 +348,7 @@ cargo test --offline --manifest-path services\qmd_history_gateway\Cargo.toml
 
 ## Standalone structural checkpoint campaign
 
-The `structure_checkpoint_campaign` binary runs Campaign v4 directly on a
+The `structure_checkpoint_campaign` binary runs Campaign v5 directly on a
 workstation. It uses the continuity index both for workload estimates and exact
 per-session ordinal bounds, daily bars only to prioritize currently tradable
 tickers (with one bounded raw-liquidity fallback when those bars are absent),
@@ -370,7 +370,7 @@ python scripts\run_structure_checkpoint_campaign.py `
   --end-date 2026-08-31 `
   --liquidity-start-date 2026-08-01 `
   --liquidity-end-date 2026-08-31 `
-  --runtime-dir D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v4\canonical-2025-2026 `
+  --runtime-dir D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v5\canonical-2025-2026 `
   --process-workers 32
 ```
 
@@ -394,4 +394,4 @@ The launcher uses a prebuilt executable from
 not installed. Use `--purge-existing-checkpoints` only for an explicitly
 authorized cold reset; it deletes only the named checkpoint set on its first
 run. The full contract is
-[`structural_checkpoint_campaign_v4.md`](../../docs/data_contracts/structural_checkpoint_campaign_v4.md).
+[`structural_checkpoint_campaign_v5.md`](../../docs/data_contracts/structural_checkpoint_campaign_v5.md).
