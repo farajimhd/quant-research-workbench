@@ -106,6 +106,10 @@ impl StructureEventAuditor {
 pub fn checkpoint_sha256(checkpoint: &GenericStructureCheckpoint) -> Result<String, String> {
     let value = serde_json::to_value(checkpoint)
         .map_err(|error| format!("failed to canonicalize structure checkpoint: {error}"))?;
+    canonical_json_sha256(&value)
+}
+
+pub fn canonical_json_sha256(value: &Value) -> Result<String, String> {
     let mut bytes = Vec::new();
     write_canonical_json(&value, &mut bytes)?;
     Ok(sha256(&bytes))

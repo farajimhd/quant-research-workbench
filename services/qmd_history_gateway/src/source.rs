@@ -17,7 +17,8 @@ use qmd_core::indicators::{
 };
 use qmd_core::market_products::parse_resolution_us;
 use qmd_core::structure_certification::{
-    validate_checkpoint_certification, StructureCheckpointCertification,
+    canonical_json_sha256, checkpoint_sha256, validate_checkpoint_certification,
+    StructureCheckpointCertification,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -2736,6 +2737,13 @@ impl HistoricalEventSource {
         {
             return Err(format!(
                 "persisted structure checkpoint is not schema-stable at {path}"
+            ));
+        }
+        let stored_checkpoint_sha256 = canonical_json_sha256(&stored_checkpoint_value)?;
+        let decoded_checkpoint_sha256 = checkpoint_sha256(&checkpoint)?;
+        if stored_checkpoint_sha256 != decoded_checkpoint_sha256 {
+            return Err(format!(
+                "persisted structure checkpoint is not canonically stable: stored={stored_checkpoint_sha256}, decoded={decoded_checkpoint_sha256}"
             ));
         }
         let session_date = NaiveDate::parse_from_str(&row.session_date, "%Y-%m-%d")
