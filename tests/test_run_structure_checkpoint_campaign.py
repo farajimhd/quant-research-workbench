@@ -7,6 +7,7 @@ import time
 import pytest
 
 from scripts.run_structure_checkpoint_campaign import (
+    _DetachedProcessView,
     aggregate_status,
     archive_previous_attempt_statuses,
     binary_candidates,
@@ -109,6 +110,33 @@ def test_process_worker_option_is_owned_by_launcher() -> None:
 
     assert launcher.process_workers == 32
     assert campaign == ["--workers", "32", "--checkpoint-set-id", "canonical-v16"]
+
+
+def test_monitor_option_is_owned_by_launcher() -> None:
+    launcher, campaign = parse_launcher_args(
+        [
+            "--monitor-existing",
+            "--runtime-dir",
+            r"D:\runtime",
+            "--checkpoint-set-id",
+            "set-v1",
+        ]
+    )
+
+    assert launcher.monitor_existing is True
+    assert campaign == [
+        "--runtime-dir",
+        r"D:\runtime",
+        "--checkpoint-set-id",
+        "set-v1",
+    ]
+
+
+def test_detached_process_view_uses_durable_worker_state() -> None:
+    assert _DetachedProcessView(None).poll() is None
+    assert _DetachedProcessView({"status": "running"}).poll() is None
+    assert _DetachedProcessView({"status": "completed"}).poll() == 0
+    assert _DetachedProcessView({"status": "failed"}).poll() == 1
 
 
 def test_launcher_accepts_eighty_bounded_worker_processes() -> None:

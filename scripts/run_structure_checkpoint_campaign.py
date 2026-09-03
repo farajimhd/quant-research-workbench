@@ -96,6 +96,7 @@ def parse_launcher_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]
     parser.add_argument("--binary")
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--launcher-help", action="store_true")
+    parser.add_argument("--monitor-existing", action="store_true")
     parser.add_argument("--process-workers", type=int)
     return parser.parse_known_args(argv)
 
@@ -286,26 +287,169 @@ def render_rich(status: dict[str, Any], set_id: str):
     summary.add_row("Events", f"{fmt_count(status['events_processed'])} / {fmt_count(total)}  {pct:.1f}%")
     summary.add_row("Throughput", f"{fmt_count(status['event_rate_5m'])}/s aggregate (5m)")
     summary.add_row("Elapsed | ETA", f"{fmt_duration(status['elapsed_seconds'])} | {fmt_duration(status['eta_seconds'])}")
+    if status.get("monitor_mode") == "reattached":
+        oldest = status.get("oldest_worker_status_age_seconds")
+        summary.add_row(
+            "Worker status",
+            f"{status.get('stale_workers', 0)} stale | oldest {oldest:.0f}s"
+            if oldest is not None
+            else "waiting for first worker status",
+        )
     summary.add_row("Queue", f"{fmt_count(counts['queued'])} queued | {counts['retried']} retries | {counts['failed']} failed | {counts['blocked']} blocked")
     active = "  ".join(status["active"][:8]) or "Workers starting or between tickers"
     issue = status["issues"][-1] if status["issues"] else None
     issue_text = "None" if issue is None else f"{issue.get('ticker', '?')} {issue.get('session_date') or ''}: {issue.get('error', '')}"
-    resume_text = (
-        "Previous attempt status archived; this view contains only the current attempt."
-        if status.get("previous_attempt_archive")
-        else "Fresh attempt; no prior dashboard status was present."
+    if status.get("monitor_mode") == "reattached":
+        resume_text = "Reattached read-only process view; progress comes from durable worker snapshots."
+    elif status.get("previous_attempt_archive"):
+        resume_text = "Previous attempt status archived; this view contains only the current attempt."
+    else:
+        resume_text = "Fresh attempt; no prior dashboard status was present."
+    control_text = (
+        "Ctrl+C closes this reattached monitor; campaign workers continue."
+        if status.get("monitor_mode") == "reattached"
+        else "Ctrl+C stops children; rerun the identical command to resume."
     )
     return Panel(
         Group(
-            Text(f"Structural Checkpoint Campaign v5  {status['status'].upper()}", style="bold cyan"),
+            Text(
+                f"Structural Checkpoint Campaign v5  {status['status'].upper()}"
+                + ("  REATTACHED" if status.get("monitor_mode") == "reattached" else ""),
+                style="bold cyan",
+            ),
             summary,
             Text(f"Active  {active}"),
             Text(f"Latest issue  {issue_text}", style="red" if issue else "dim"),
             Text(resume_text, style="dim"),
-            Text("Ctrl+C stops children; rerun the identical command to resume.", style="dim"),
+            Text(control_text, style="dim"),
         ),
         border_style="cyan",
     )
+
+
+class _DetachedProcessView:
+    def __init__(self, status: dict[str, Any] | None):
+        self.status = status
+
+    def poll(self) -> int | None:
+        if self.status is None or self.status.get("status") == "running":
+            return None
+        return 0 if self.status.get("status") == "completed" else 1
+
+
+def _status_timestamp(value: dict[str, Any] | None, key: str) -> datetime | None:
+    if value is None or not value.get(key):
+        return None
+    try:
+        return datetime.fromisoformat(str(value[key]).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def monitor_existing_campaign(
+    binary: Path,
+    binary_sha256: str,
+    campaign_args: list[str],
+    environ: dict[str, str],
+) -> int:
+    runtime_value = option_value(campaign_args, "--runtime-dir")
+    set_id = option_value(campaign_args, "--checkpoint-set-id")
+    if not runtime_value or not set_id:
+        raise RuntimeError("monitor mode requires --runtime-dir and --checkpoint-set-id")
+    runtime_dir = Path(runtime_value)
+    manifest = read_status(runtime_dir / "campaign-manifest.json")
+    plan_path = runtime_dir / "planner" / "campaign-plan.json"
+    aggregate_path = runtime_dir / "campaign-status.json"
+    if manifest is None or not plan_path.is_file():
+        raise RuntimeError("monitor mode requires an existing immutable campaign manifest and plan")
+    if manifest.get("checkpoint_set_id") != set_id:
+        raise RuntimeError("monitor checkpoint set does not match the runtime manifest")
+    existing = read_status(aggregate_path)
+    if (
+        existing is not None
+        and existing.get("status") == "running"
+        and aggregate_path.is_file()
+        and time.time() - aggregate_path.stat().st_mtime < 10
+    ):
+        raise RuntimeError("the original campaign supervisor is still publishing fresh status")
+    plans = json.loads(plan_path.read_text(encoding="utf-8"))
+    worker_dirs = sorted((runtime_dir / "workers").glob("worker-*"))
+    status_paths = [worker_dir / "campaign-status.json" for worker_dir in worker_dirs]
+    if not status_paths:
+        raise RuntimeError("monitor mode found no campaign workers")
+    initial_rows = [read_status(path) for path in status_paths]
+    starts = [value for row in initial_rows if (value := _status_timestamp(row, "started_at"))]
+    elapsed = max((datetime.now(timezone.utc) - min(starts)).total_seconds(), 0.0) if starts else 0.0
+    started = time.monotonic() - elapsed
+    rates: deque[tuple[float, int]] = deque()
+    interactive = sys.stdout.isatty()
+    live, last_plain = None, 0.0
+    if interactive:
+        try:
+            from rich.live import Live
+        except ImportError as exc:
+            raise RuntimeError("Rich is required for the interactive campaign monitor") from exc
+        live = Live(refresh_per_second=1, transient=False)
+        live.start()
+    try:
+        while True:
+            rows = [read_status(path) for path in status_paths]
+            views = [_DetachedProcessView(row) for row in rows]
+            status = aggregate_status(status_paths, plans, started, rates, views)
+            now = datetime.now(timezone.utc)
+            ages = [
+                max((now - updated).total_seconds(), 0.0)
+                for row in rows
+                if (updated := _status_timestamp(row, "updated_at"))
+            ]
+            status.update(
+                {
+                    "checkpoint_set_id": set_id,
+                    "universe_hash": manifest.get("universe_hash"),
+                    "executable_path": str(binary),
+                    "executable_sha256": binary_sha256,
+                    "monitor_mode": "reattached",
+                    "stale_workers": sum(age > 120 for age in ages) + sum(row is None for row in rows),
+                    "oldest_worker_status_age_seconds": max(ages, default=None),
+                }
+            )
+            if status["stale_workers"] and status["status"] == "running":
+                status["status"] = "stale"
+            atomic_json(aggregate_path, status)
+            if live:
+                live.update(render_rich(status, set_id), refresh=True)
+            elif time.monotonic() - last_plain >= 15:
+                print(render_plain(status), flush=True)
+                last_plain = time.monotonic()
+            if all(row is not None and row.get("status") != "running" for row in rows):
+                all_certified = all(status_is_fully_certified(row) for row in rows if row is not None)
+                set_state = "sealed" if all_certified else "failed"
+                register_args = [
+                    str(binary),
+                    "--start-date", str(manifest["start_date"]),
+                    "--end-date", str(manifest["end_date"]),
+                    "--checkpoint-set-id", set_id,
+                    "--runtime-dir", str(runtime_dir),
+                    "--register-set-state", set_state,
+                    "--set-universe-hash", str(manifest["universe_hash"]),
+                    "--set-ticker-count", str(manifest["ticker_count"]),
+                    "--set-event-count", str(status["total_estimated_events"] if all_certified else status["events_processed"]),
+                ]
+                if subprocess.run(register_args, env=environ, check=False).returncode:
+                    status["status"] = "failed"
+                    status.setdefault("issues", []).append(
+                        {"ticker": "checkpoint-set", "error": "reattached registry finalization failed"}
+                    )
+                    atomic_json(aggregate_path, status)
+                    return 1
+                return 0 if all_certified else 1
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nMonitor closed; campaign workers continue independently.", file=sys.stderr, flush=True)
+        return 0
+    finally:
+        if live:
+            live.stop()
 
 
 def run_process_campaign(
@@ -544,7 +688,10 @@ def run_process_campaign(
 def main(argv: list[str] | None = None) -> int:
     launcher, campaign_args = parse_launcher_args(list(sys.argv[1:] if argv is None else argv))
     if launcher.launcher_help:
-        print(f"Launcher options: --binary PATH, --no-build, --process-workers 1..{MAX_PROCESS_WORKERS}")
+        print(
+            "Launcher options: --binary PATH, --no-build, --monitor-existing, "
+            f"--process-workers 1..{MAX_PROCESS_WORKERS}"
+        )
         print("All other options are forwarded to structure-checkpoint-campaign v5.")
         return 0
     environ = dict(os.environ)
@@ -553,6 +700,8 @@ def main(argv: list[str] | None = None) -> int:
         binary = resolve_binary(launcher.binary, not launcher.no_build, environ)
         binary_sha256 = sha256_file(binary)
         print(f"Campaign executable: {binary} (SHA-256 {binary_sha256})", flush=True)
+        if launcher.monitor_existing:
+            return monitor_existing_campaign(binary, binary_sha256, campaign_args, environ)
         workers = (
             launcher.process_workers
             if launcher.process_workers is not None

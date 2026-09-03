@@ -410,3 +410,22 @@ not installed. Use `--purge-existing-checkpoints` only for an explicitly
 authorized cold reset; it deletes only the named checkpoint set on its first
 run. The full contract is
 [`structural_checkpoint_campaign_v5.md`](../../docs/data_contracts/structural_checkpoint_campaign_v5.md).
+
+If the parent progress window exits while the worker status files continue to
+advance, do not rerun the campaign command because that can launch duplicate
+workers. Reattach a dashboard to the existing immutable manifest and plan:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python scripts\run_structure_checkpoint_campaign.py `
+  --monitor-existing `
+  --no-build `
+  --binary D:\TradingML\runtimes\bin\structure_checkpoint_campaign_v6.exe `
+  --checkpoint-set-id canonical-tradable-20250101-20260831-v16-cert-v1 `
+  --runtime-dir D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v5\canonical-tradable-20250101-20260831-v16-cert-v1
+```
+
+The reattached monitor reconstructs aggregate progress and ETA from the atomic
+per-worker status files, reports worker-status freshness, and finalizes the set
+registry only after every worker reaches a terminal certified state. Ctrl+C
+closes this monitor without stopping the independently running workers.
