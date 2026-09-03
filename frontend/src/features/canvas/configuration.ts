@@ -20,11 +20,11 @@ export const READ_ONLY_BLOCKED_CONTAINERS = new Set<WorkspaceContainerId>([
 export const DEFAULT_WATCHLIST_TAB_IDS = ["top-large-cap-gainers", "top-mid-cap-gainers", "top-small-cap-gainers", "top-penny-gainers"];
 export const DEFAULT_SETTINGS: ContainerSettings = {
   version: 29,
-  chart: { showSplitEvents: false, showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.flow_structure_composite"], barGptVersion: "v2", barGptQuantile: "q50", barGptHorizon: "all", barGptTriggerMode: "auto", barGptOriginUs: null },
+  chart: { showSplitEvents: false, showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.flow_structure_composite"], barGptVersion: "v2", barGptQuantile: "q50", barGptHorizon: "all", barGptTriggerMode: "auto" },
   charts_quotes: {
-    main: { showSplitEvents: false, showVolume: true, symbol: "AAPL", timeframe: "10s", visibleIndicators: ["indicator.vwap", "indicator.macd"], barGptVersion: "v2", barGptQuantile: "q50", barGptHorizon: "all", barGptTriggerMode: "auto", barGptOriginUs: null },
-    month: { showSplitEvents: false, showVolume: true, symbol: "AAPL", timeframe: "1mo", visibleIndicators: [], barGptVersion: "v2", barGptQuantile: "q50", barGptHorizon: "all", barGptTriggerMode: "auto", barGptOriginUs: null },
-    daily: { showSplitEvents: true, showVolume: true, symbol: "AAPL", timeframe: "1d", visibleIndicators: [], barGptVersion: "v2", barGptQuantile: "q50", barGptHorizon: "all", barGptTriggerMode: "auto", barGptOriginUs: null },
+    main: { showSplitEvents: false, showVolume: true, symbol: "AAPL", timeframe: "10s", visibleIndicators: ["indicator.vwap", "indicator.macd"], barGptVersion: "v2", barGptQuantile: "q50", barGptHorizon: "all", barGptTriggerMode: "auto" },
+    month: { showSplitEvents: false, showVolume: true, symbol: "AAPL", timeframe: "1mo", visibleIndicators: [], barGptVersion: "v2", barGptQuantile: "q50", barGptHorizon: "all", barGptTriggerMode: "auto" },
+    daily: { showSplitEvents: true, showVolume: true, symbol: "AAPL", timeframe: "1d", visibleIndicators: [], barGptVersion: "v2", barGptQuantile: "q50", barGptHorizon: "all", barGptTriggerMode: "auto" },
     layout: { lowerRowPercent: 33, monthColumnPercent: 40, reservedColumnPercent: 20, tapeColumnPercent: 20 },
   },
   microstructure: { limit: 1024 },

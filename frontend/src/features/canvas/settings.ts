@@ -132,7 +132,6 @@ function normalizeChartSlot(stored: Partial<CanvasChartSettings> | undefined, de
     ...defaults,
     ...(stored ?? {}),
     showSplitEvents: typeof stored?.showSplitEvents === "boolean" ? stored.showSplitEvents : timeframe === "1d",
-    barGptOriginUs: Number.isFinite(stored?.barGptOriginUs) ? Number(stored?.barGptOriginUs) : null,
     timeframe,
     visibleIndicators: Array.from(new Set(visibleIndicators)),
   };

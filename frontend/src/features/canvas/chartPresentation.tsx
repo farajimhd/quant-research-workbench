@@ -112,7 +112,7 @@ export function ChartPreview({
   const [barGptScope, setBarGptScope] = useState<BarGptScopePayload | null>(null);
   const [barGptError, setBarGptError] = useState("");
   const [barGptInferring, setBarGptInferring] = useState(false);
-  const barGptOriginOverrideUs = chartSettings.barGptOriginUs;
+  const [barGptOriginOverrideUs, setBarGptOriginOverrideUs] = useState<number | null>(null);
   const indicators = liveChart.indicators;
   const visibleIndicators = chartSettings.visibleIndicators;
   const timeframe = chartSettings.timeframe;
@@ -137,16 +137,9 @@ export function ChartPreview({
     : barGptBaseScopeId;
   const barGptForecastPalette = readBarGptForecastPalette();
   useEffect(() => {
-    if (chartSettings.barGptOriginUs != null) onChartSettingsChange({ ...chartSettings, barGptOriginUs: null });
+    setBarGptOriginOverrideUs(null);
     setBarGptForecasts([]);
-    // The origin belongs to one symbol and timeframe; never carry it across either boundary.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [linkContext.symbol, timeframe]);
-  useEffect(() => {
-    if (barGptTriggerMode !== "manual" || barGptOriginOverrideUs != null || !showBarGpt || !barGptView) return;
-    const latestOrigin = barGptOriginOptions[0]?.originUs;
-    if (latestOrigin) onChartSettingsChange({ ...chartSettings, barGptOriginUs: latestOrigin });
-  }, [barGptOriginOptions, barGptOriginOverrideUs, barGptTriggerMode, barGptView, chartSettings, onChartSettingsChange, showBarGpt]);
   useEffect(() => {
     if (!showBarGpt || !barGptView) return;
     return acquireBarGptScope(barGptScopeId);
@@ -355,7 +348,7 @@ export function ChartPreview({
       <label><span>Model</span><select aria-label="BarGPT model version" onChange={(event) => onChartSettingsChange({ ...chartSettings, barGptVersion: event.target.value as BarGptChartVersion })} value={barGptVersion}><option value="v2">V2</option><option value="v3">V3</option></select></label>
       <label><span>Prediction</span><select aria-label="BarGPT prediction timeframe" disabled value={barGptView ?? "unavailable"}><option value={barGptView ?? "unavailable"}>{barGptView ? `Next ${barGptView} bar` : `Unavailable on ${timeframe}`}</option></select></label>
       <label><span>Trigger</span><select aria-label="BarGPT trigger mode" onChange={(event) => onChartSettingsChange({ ...chartSettings, barGptTriggerMode: event.target.value as CanvasChartSettings["barGptTriggerMode"] })} value={barGptTriggerMode}><option value="auto">Auto</option><option value="manual">Manual</option></select></label>
-      {barGptTriggerMode === "manual" && barGptView ? <label className="canvas-bar-gpt-origin"><span>Origin (ET)</span><select aria-label="BarGPT inference origin" onChange={(event) => { onChartSettingsChange({ ...chartSettings, barGptOriginUs: Number(event.target.value) }); setBarGptForecasts([]); setBarGptError(""); }} value={barGptOriginUs ?? ""}>{barGptOriginOptions.map((row, index) => <option key={row.originUs} value={row.originUs}>{index === 0 ? `Latest · ${row.label}` : row.label}</option>)}</select></label> : null}
+      {barGptTriggerMode === "manual" && barGptView ? <label className="canvas-bar-gpt-origin"><span>Origin (ET)</span><select aria-label="BarGPT inference origin" onChange={(event) => { setBarGptOriginOverrideUs(Number(event.target.value)); setBarGptForecasts([]); setBarGptError(""); }} value={barGptOriginUs ?? ""}>{barGptOriginOptions.map((row, index) => <option key={row.originUs} value={row.originUs}>{index === 0 ? `Latest · ${row.label}` : row.label}</option>)}</select></label> : null}
       {barGptTriggerMode === "manual" ? <button disabled={!barGptView || !barGptOriginUs || !barGptReady || barGptInferring} onClick={() => void runManualInference()} type="button">{barGptInferring ? "Running…" : "Infer now"}</button> : null}
     </div> : null}
     <ChartPanel appearanceDefaults={appearanceDefaults} baseHeight={baseHeight} canLoadEarlier={liveChart.canLoadEarlier} dataStatus={splitEvents.error ? "Split events unavailable" : timeframe === "1d" && liveChart.splitAdjusted ? "Split-adjusted" : undefined} deferInitialFitUntilLoaded={fullSessionReview} displayItemOptions={CHART_INDICATORS} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} fillHeight={fillHeight} indicatorOptions={[]} initialFitMode="default" liveEntryLine={positionLine} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onShowSplitEventsChange={(showSplitEvents) => onChartSettingsChange({ ...chartSettings, showSplitEvents })} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => onChartSettingsChange({ ...chartSettings, visibleIndicators: nextVisibleIndicators })} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} showSplitEvents={chartSettings.showSplitEvents} strategyPresentationEnabled={showTradeAnnotations} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={timeframes} toolbarVariant={toolbarVariant} visibleColumns={visibleIndicators} />
