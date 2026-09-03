@@ -151,6 +151,7 @@ type StrategyPresentationSettings = {
   elements: Record<StrategyVisualElementKey, StrategyPresentationStyleSettings>;
   visible: boolean;
 };
+type StrategyPresentationSettingsUpdate = StrategyPresentationSettings | ((current: StrategyPresentationSettings) => StrategyPresentationSettings);
 type ChartPreset = "micro" | "tactical" | "context" | "axis-history" | "swing-rails";
 type PriceZone = {
   annotationKind?: "band" | "bos" | "choch" | "level-footprint" | "swing-footprint" | "structure-break" | "level" | "luld-line" | "liquidity-resistance" | "liquidity-support" | "signal-episode-rail" | "signal-episode-range" | "swing-high" | "swing-low" | "unified-structure-level";
@@ -894,10 +895,13 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     setChartSettings(next);
   };
 
-  const updateStrategyPresentationSettings = (next: StrategyPresentationSettings) => {
-    const normalized = normalizeStrategyPresentationSettings(next);
-    saveStrategyPresentationSettings(normalized, strategyPresentationStorageKey);
-    setStrategyPresentationSettings(normalized);
+  const updateStrategyPresentationSettings = (update: StrategyPresentationSettingsUpdate) => {
+    setStrategyPresentationSettings((current) => {
+      const next = typeof update === "function" ? update(current) : update;
+      const normalized = normalizeStrategyPresentationSettings(next);
+      saveStrategyPresentationSettings(normalized, strategyPresentationStorageKey);
+      return normalized;
+    });
   };
 
   const resetStrategyPresentationSettings = () => {
@@ -2846,7 +2850,7 @@ function StrategyPresentationSelect({
   settings,
 }: {
   annotationCount: number;
-  onChange: (settings: StrategyPresentationSettings) => void;
+  onChange: (settings: StrategyPresentationSettingsUpdate) => void;
   onOpenChange: (value: boolean) => void;
   onReset: () => void;
   open: boolean;
@@ -2855,10 +2859,10 @@ function StrategyPresentationSelect({
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const [styleElement, setStyleElement] = useState<StrategyVisualElementKey | null>(null);
   const enabledCount = strategyVisualElementDefinitions.filter((item) => settings.elements[item.key].visible).length;
-  const updateElement = (key: StrategyVisualElementKey, patch: Partial<StrategyPresentationStyleSettings>) => onChange({
-    ...settings,
-    elements: { ...settings.elements, [key]: { ...settings.elements[key], ...patch } },
-  });
+  const updateElement = (key: StrategyVisualElementKey, patch: Partial<StrategyPresentationStyleSettings>) => onChange((current) => ({
+    ...current,
+    elements: { ...current.elements, [key]: { ...current.elements[key], ...patch } },
+  }));
   const palette = readChartPalette();
   const selectedDefinition = strategyVisualElementDefinitions.find((item) => item.key === styleElement) ?? null;
 
@@ -2891,10 +2895,10 @@ function StrategyPresentationSelect({
         onReset={() => {
           const partDefinitions = strategyLabelPartDefinitions[styleElement as StrategyCompositeLabelKey];
           const keys = partDefinitions ? [styleElement, ...partDefinitions.map((part) => part.key)] : [styleElement];
-          onChange({
-            ...settings,
-            elements: keys.reduce((elements, key) => ({ ...elements, [key]: defaultStrategyPresentationSettings.elements[key] }), settings.elements),
-          });
+          onChange((current) => ({
+            ...current,
+            elements: keys.reduce((elements, key) => ({ ...elements, [key]: defaultStrategyPresentationSettings.elements[key] }), current.elements),
+          }));
         }}
         settings={settings.elements[styleElement]}
       /> : <>
@@ -2906,12 +2910,12 @@ function StrategyPresentationSelect({
           <button className="button secondary compact" onClick={onReset} type="button">Reset all</button>
         </div>
         <label className="chart-setting-toggle strategy-presentation-master">
-          <input checked={settings.visible} onChange={(event) => onChange({ ...settings, visible: event.target.checked })} type="checkbox" />
+          <input checked={settings.visible} onChange={(event) => onChange((current) => ({ ...current, visible: event.target.checked }))} type="checkbox" />
           <span><strong>Show strategy presentation</strong><small>One switch for all position evidence. Individual elements remain configured below.</small></span>
         </label>
         <section className="strategy-presentation-behavior" aria-label="Presentation behavior">
-          <label><input checked={settings.avoidLabelCollisions} onChange={(event) => onChange({ ...settings, avoidLabelCollisions: event.target.checked })} type="checkbox" /><span><strong>Avoid label collisions</strong><small>Moves labels to the nearest clear position while preserving their anchor.</small></span></label>
-          <label><span><strong>Distant-marker connector</strong><small>Minimum vertical distance before a connector is drawn.</small></span><span className="chart-setting-inline"><input aria-label="Distant marker connector threshold" disabled={!settings.elements.connector.visible} max={48} min={8} onChange={(event) => onChange({ ...settings, connectorThreshold: Number(event.target.value) })} type="range" value={settings.connectorThreshold} /><b>{settings.connectorThreshold}px</b></span></label>
+          <label><input checked={settings.avoidLabelCollisions} onChange={(event) => onChange((current) => ({ ...current, avoidLabelCollisions: event.target.checked }))} type="checkbox" /><span><strong>Avoid label collisions</strong><small>Moves labels to the nearest clear position while preserving their anchor.</small></span></label>
+          <label><span><strong>Distant-marker connector</strong><small>Minimum vertical distance before a connector is drawn.</small></span><span className="chart-setting-inline"><input aria-label="Distant marker connector threshold" disabled={!settings.elements.connector.visible} max={48} min={8} onChange={(event) => onChange((current) => ({ ...current, connectorThreshold: Number(event.target.value) }))} type="range" value={settings.connectorThreshold} /><b>{settings.connectorThreshold}px</b></span></label>
         </section>
         <div className="strategy-presentation-element-list" data-disabled={!settings.visible || undefined}>
           {strategyVisualElementDefinitions.map((definition) => {
@@ -3041,12 +3045,12 @@ function StrategyPresentationStylePage({
         <section className="strategy-presentation-control-section">
           <header><strong>Box</strong><span>Fill, dimensions, and edge are configured separately.</span></header>
           <div className="strategy-presentation-control-grid">
-            <StrategyStyleColor defaultLabel="Chart background" fallbackColor={fillColor} label="Fill color" onChange={(value) => onChange({ fillColor: value })} value={settings.fillColor} />
+            <StrategyStyleColor defaultLabel="Chart background" fallbackColor={fillColor} label="Fill color" onChange={(value) => onChange({ fillColor: value, ...(value && settings.fillOpacity === 0 ? { fillOpacity: 1 } : {}) })} value={settings.fillColor} />
             <StrategyStyleRange label="Fill opacity" max={100} min={0} onChange={(value) => onChange({ fillOpacity: value / 100 })} suffix="%" value={Math.round(settings.fillOpacity * 100)} />
             <StrategyStyleRange label="Background blur" max={8} min={0} onChange={(fillBlur) => onChange({ fillBlur })} suffix="px" value={settings.fillBlur} />
             <StrategyStyleRange label="Horizontal padding" max={14} min={2} onChange={(labelPaddingX) => onChange({ labelPaddingX })} suffix="px" value={settings.labelPaddingX} />
             <StrategyStyleRange label="Vertical padding" max={10} min={1} onChange={(labelPaddingY) => onChange({ labelPaddingY })} suffix="px" value={settings.labelPaddingY} />
-            <StrategyStyleColor defaultLabel="Text color" fallbackColor={borderColor} label="Edge color" onChange={(value) => onChange({ borderColor: value })} value={settings.borderColor} />
+            <StrategyStyleColor defaultLabel="Text color" fallbackColor={borderColor} label="Edge color" onChange={(value) => onChange({ borderColor: value, ...(value && settings.borderOpacity === 0 ? { borderOpacity: 1 } : {}) })} value={settings.borderColor} />
             <StrategyStyleRange label="Edge opacity" max={100} min={0} onChange={(value) => onChange({ borderOpacity: value / 100 })} suffix="%" value={Math.round(settings.borderOpacity * 100)} />
             <StrategyStyleSelect label="Edge type" onChange={(borderStyle) => onChange({ borderStyle })} value={settings.borderStyle} />
             <StrategyStyleRange label="Edge size" max={4} min={0} onChange={(borderWidth) => onChange({ borderWidth })} suffix="px" value={settings.borderWidth} />
@@ -3099,9 +3103,9 @@ function StrategyCompositeLabelStylePage({
       <section className="strategy-presentation-control-section">
         <header><strong>Unified label box</strong><span>One fill and one continuous edge around the complete label.</span></header>
         <div className="strategy-presentation-control-grid">
-          <StrategyStyleColor defaultLabel="Chart background" fallbackColor={fillColor} label="Box fill" onChange={(value) => onElementChange(labelKey, { fillColor: value })} value={settings.fillColor} />
+          <StrategyStyleColor defaultLabel="Chart background" fallbackColor={fillColor} label="Box fill" onChange={(value) => onElementChange(labelKey, { fillColor: value, ...(value && settings.fillOpacity === 0 ? { fillOpacity: 1 } : {}) })} value={settings.fillColor} />
           <StrategyStyleRange label="Box fill opacity" max={100} min={0} onChange={(value) => onElementChange(labelKey, { fillOpacity: value / 100 })} suffix="%" value={Math.round(settings.fillOpacity * 100)} />
-          <StrategyStyleColor defaultLabel="Semantic color" fallbackColor={borderColor} label="Unified edge color" onChange={(value) => onElementChange(labelKey, { borderColor: value })} value={settings.borderColor} />
+          <StrategyStyleColor defaultLabel="Semantic color" fallbackColor={borderColor} label="Unified edge color" onChange={(value) => onElementChange(labelKey, { borderColor: value, ...(value && settings.borderOpacity === 0 ? { borderOpacity: 1 } : {}) })} value={settings.borderColor} />
           <StrategyStyleRange label="Unified edge opacity" max={100} min={0} onChange={(value) => onElementChange(labelKey, { borderOpacity: value / 100 })} suffix="%" value={Math.round(settings.borderOpacity * 100)} />
           <StrategyStyleSelect label="Unified edge type" onChange={(borderStyle) => onElementChange(labelKey, { borderStyle })} value={settings.borderStyle} />
           <StrategyStyleRange label="Unified edge size" max={4} min={0} onChange={(borderWidth) => onElementChange(labelKey, { borderWidth })} suffix="px" value={settings.borderWidth} />
@@ -3128,7 +3132,7 @@ function StrategyCompositeLabelStylePage({
           <StrategyStyleRange label="Text opacity" max={100} min={15} onChange={(value) => onElementChange(selectedPart.key, { opacity: value / 100 })} suffix="%" value={Math.round(partSettings.opacity * 100)} />
           <StrategyStyleRange label="Text size" max={16} min={8} onChange={(labelSize) => onElementChange(selectedPart.key, { labelSize })} suffix="px" value={partSettings.labelSize} />
           <StrategyFontWeightSelect onChange={(fontWeight) => onElementChange(selectedPart.key, { fontWeight })} value={partSettings.fontWeight} />
-          <StrategyStyleColor defaultLabel="Transparent" fallbackColor={validHexColor(partSettings.fillColor, palette.background)} label="Background color" onChange={(value) => onElementChange(selectedPart.key, { fillColor: value })} value={partSettings.fillColor} />
+          <StrategyStyleColor defaultLabel="Transparent" fallbackColor={validHexColor(partSettings.fillColor, palette.background)} label="Background color" onChange={(value) => onElementChange(selectedPart.key, { fillColor: value, ...(value && partSettings.fillOpacity === 0 ? { fillOpacity: 1 } : {}) })} value={partSettings.fillColor} />
           <StrategyStyleRange label="Background opacity" max={100} min={0} onChange={(value) => onElementChange(selectedPart.key, { fillOpacity: value / 100 })} suffix="%" value={Math.round(partSettings.fillOpacity * 100)} />
           <StrategyStyleRange label="Background blur" max={8} min={0} onChange={(fillBlur) => onElementChange(selectedPart.key, { fillBlur })} suffix="px" value={partSettings.fillBlur} />
           <StrategyStyleRange label="Horizontal padding" max={14} min={2} onChange={(labelPaddingX) => onElementChange(selectedPart.key, { labelPaddingX })} suffix="px" value={partSettings.labelPaddingX} />
@@ -3178,7 +3182,22 @@ function StrategyCompositeLabelPreview({ elements, labelKey, settings }: { eleme
 }
 
 function StrategyStyleColor({ defaultLabel, fallbackColor, label, onChange, value }: { defaultLabel: string; fallbackColor: string; label: string; onChange: (value: string) => void; value: string }) {
-  return <label><span>{label}</span><span className="strategy-presentation-color"><input aria-label={label} onChange={(event) => onChange(event.target.value)} type="color" value={validHexColor(value, fallbackColor)} />{value ? <button onClick={() => onChange("")} type="button">Use default</button> : <em>{defaultLabel}</em>}</span></label>;
+  const displayedColor = validHexColor(value, fallbackColor);
+  const commitDisplayedColor = () => {
+    // Native color inputs cannot visually distinguish an empty/default value
+    // from an explicit color equal to its fallback (most visibly #FFFFFF).
+    // Commit the shown swatch when customization begins so selecting that same
+    // color does not leave the empty string/transparency sentinel in storage.
+    if (!value) onChange(displayedColor);
+  };
+  return <label><span>{label}</span><span className="strategy-presentation-color"><input
+    aria-label={label}
+    onChange={(event) => onChange(event.target.value)}
+    onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") commitDisplayedColor(); }}
+    onPointerDown={commitDisplayedColor}
+    type="color"
+    value={displayedColor}
+  />{value ? <button onClick={() => onChange("")} type="button">Use default</button> : <em>{defaultLabel}</em>}</span></label>;
 }
 
 function StrategyStyleRange({ label, max, min, onChange, suffix, value }: { label: string; max: number; min: number; onChange: (value: number) => void; suffix: string; value: number }) {

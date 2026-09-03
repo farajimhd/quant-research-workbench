@@ -5707,8 +5707,20 @@ button {
   height: 25px;
   border: 1px solid var(--surface-border);
   border-radius: 5px;
-  background: var(--surface);
+  background-color: var(--surface);
+  background-image:
+    linear-gradient(45deg, color-mix(in oklab, var(--foreground) 12%, transparent) 25%, transparent 25%),
+    linear-gradient(-45deg, color-mix(in oklab, var(--foreground) 12%, transparent) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, color-mix(in oklab, var(--foreground) 12%, transparent) 75%),
+    linear-gradient(-45deg, transparent 75%, color-mix(in oklab, var(--foreground) 12%, transparent) 75%);
+  background-position: 0 0, 0 4px, 4px -4px, -4px 0;
+  background-size: 8px 8px;
   padding: 2px;
+}
+
+.strategy-presentation-color input[type="color"]::-webkit-color-swatch {
+  border: 1px solid color-mix(in oklab, var(--foreground) 28%, transparent);
+  border-radius: 2px;
 }
 
 .strategy-presentation-color button {

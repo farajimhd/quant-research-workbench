@@ -247,6 +247,11 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert '<StrategyFontWeightSelect' in renderer_source
     assert 'aria-label="Text weight"' in renderer_source
     assert 'label="Fill color"' in renderer_source
+    assert 'value && settings.fillOpacity === 0 ? { fillOpacity: 1 }' in renderer_source
+    assert 'value && settings.borderOpacity === 0 ? { borderOpacity: 1 }' in renderer_source
+    assert 'value && partSettings.fillOpacity === 0 ? { fillOpacity: 1 }' in renderer_source
+    assert 'onPointerDown={commitDisplayedColor}' in renderer_source
+    assert 'if (!value) onChange(displayedColor)' in renderer_source
     assert 'label="Horizontal padding"' in renderer_source
     assert 'label="Vertical padding"' in renderer_source
     assert 'label="Edge color"' in renderer_source
