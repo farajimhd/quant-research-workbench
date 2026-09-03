@@ -354,6 +354,8 @@ decoder/engine for calculation, and the shared ClickHouse writer for immutable
 daily checkpoints. QMD HTTP services are not required on that host.
 Long gaps between persisted checkpoint dates are advanced through bounded
 72-hour-or-shorter causal segments without persisting artificial boundaries.
+Empty sparse-symbol segments preserve the prior exact cursor while moving the
+certified replay boundary forward; they do not synthesize structural events.
 
 ```powershell
 cargo run --release --manifest-path services\qmd_history_gateway\Cargo.toml `

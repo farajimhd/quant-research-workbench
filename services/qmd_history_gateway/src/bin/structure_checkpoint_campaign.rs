@@ -903,11 +903,20 @@ async fn build_day(
     let checkpoint_at = checkpoint
         .updated_at
         .ok_or_else(|| "calculated checkpoint has no exact event time".to_string())?;
-    if checkpoint.algorithm_version != GENERIC_STRUCTURE_ALGORITHM_VERSION
-        || checkpoint.sym.to_ascii_uppercase() != ticker
-        || checkpoint.last_arrival_sequence == 0
-    {
-        return Err("calculated checkpoint identity is invalid".to_string());
+    if checkpoint.algorithm_version != GENERIC_STRUCTURE_ALGORITHM_VERSION {
+        return Err(format!(
+            "calculated checkpoint algorithm v{} does not match v{}",
+            checkpoint.algorithm_version, GENERIC_STRUCTURE_ALGORITHM_VERSION
+        ));
+    }
+    if checkpoint.sym.to_ascii_uppercase() != ticker {
+        return Err(format!(
+            "calculated checkpoint ticker {} does not match {ticker}",
+            checkpoint.sym
+        ));
+    }
+    if checkpoint.last_arrival_sequence == 0 {
+        return Err("calculated checkpoint has no exact event cursor".to_string());
     }
     let revision = source
         .source_revision(&EventWindow {

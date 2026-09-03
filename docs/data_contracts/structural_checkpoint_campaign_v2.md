@@ -73,6 +73,12 @@ events or split terms were corrected, the seed is rejected and the ticker is
 rebuilt from canonical authority. Corrected split terms must never be applied
 on top of geometry produced with superseded split terms.
 
+Historical transport cursors are reset only while reading a new archive
+segment. If that segment produces no successor structural cursor, the prior
+nonzero exact cursor remains the checkpoint identity; if a successor exists,
+it replaces the prior cursor. Sparse or inactive symbols therefore retain a
+valid unchanged book without manufacturing an event or losing provenance.
+
 Existing checkpoints for different tickers may end on different dates. Resume
 is consequently per ticker, not one global campaign date. A restart may safely
 resubmit units: compatible completed units return `already_current`, while only

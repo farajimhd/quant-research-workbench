@@ -486,6 +486,8 @@ async fn advance_structure_checkpoint_inner(
     // the live/recent feed. Preserve all structural state while resetting only
     // that source-specific cursor, then consume events strictly after the
     // certified boundary. Live advancement remains exact-cursor strict.
+    let historical_seed_cursor =
+        (!exact_live_cursor).then_some(request.checkpoint.last_arrival_sequence);
     if !exact_live_cursor {
         request.checkpoint.last_arrival_sequence = 0;
     }
@@ -550,6 +552,7 @@ async fn advance_structure_checkpoint_inner(
     }
     let snapshot = engine.snapshot(request.as_of);
     let mut checkpoint = engine.checkpoint();
+    restore_historical_seed_cursor(&mut checkpoint, historical_seed_cursor);
     checkpoint.replayed_through = Some(request.as_of);
     if exact_live_cursor && checkpoint.checkpoint_cursor() < initial_cursor {
         return Err("Generic Structure checkpoint replay moved its cursor backward".to_string());
@@ -644,6 +647,7 @@ pub async fn advance_historical_structure_timeline(
     // arrival sequence. Historical continuation is ordered by canonical event
     // identity inside the pinned source window, exactly like the single-step
     // historical advancement path.
+    let historical_seed_cursor = checkpoint.last_arrival_sequence;
     checkpoint.last_arrival_sequence = 0;
     let mut engine = GenericStructureEngine::new(&ticker);
     engine.seed_checkpoint(&checkpoint);
@@ -736,6 +740,7 @@ pub async fn advance_historical_structure_timeline(
         );
     }
     let mut successor = engine.checkpoint();
+    restore_historical_seed_cursor(&mut successor, Some(historical_seed_cursor));
     successor.replayed_through = Some(final_as_of);
     Ok((
         successor,
@@ -1113,6 +1118,15 @@ trait CheckpointCursor {
     fn checkpoint_cursor(&self) -> (i64, u64);
 }
 
+fn restore_historical_seed_cursor(
+    checkpoint: &mut GenericStructureCheckpoint,
+    seed_cursor: Option<u64>,
+) {
+    if checkpoint.last_arrival_sequence == 0 {
+        checkpoint.last_arrival_sequence = seed_cursor.unwrap_or_default();
+    }
+}
+
 impl CheckpointCursor for GenericStructureCheckpoint {
     fn checkpoint_cursor(&self) -> (i64, u64) {
         (
@@ -1127,9 +1141,9 @@ impl CheckpointCursor for GenericStructureCheckpoint {
 #[cfg(test)]
 mod tests {
     use super::{
-        checkpoint_from_persisted_structure_events, validate_exact_cursor_plan,
-        validate_rebuild_source_plan, validate_request, HistoricalStructureSessionRegistry,
-        MarketSourcePlan, StructureCheckpointAdvanceRequest,
+        checkpoint_from_persisted_structure_events, restore_historical_seed_cursor,
+        validate_exact_cursor_plan, validate_rebuild_source_plan, validate_request,
+        HistoricalStructureSessionRegistry, MarketSourcePlan, StructureCheckpointAdvanceRequest,
     };
     use crate::config::HistoricalGatewayConfig;
     use crate::source::{MarketSourceSegment, MarketSourceTier};
@@ -1183,6 +1197,30 @@ mod tests {
             validate_request(&config, &request, true).unwrap_err(),
             "Generic Structure checkpoint must have an exact nonzero arrival cursor"
         );
+    }
+
+    #[test]
+    fn empty_historical_segment_preserves_prior_exact_cursor() {
+        let as_of = Utc.with_ymd_and_hms(2026, 8, 24, 20, 0, 0).unwrap();
+        let mut checkpoint = GenericStructureEngine::new("AACB").checkpoint();
+        checkpoint.updated_at = Some(as_of - chrono::Duration::days(3));
+        checkpoint.replayed_through = Some(as_of);
+        checkpoint.last_arrival_sequence = 0;
+
+        restore_historical_seed_cursor(&mut checkpoint, Some(42_017));
+
+        assert_eq!(checkpoint.last_arrival_sequence, 42_017);
+        assert_eq!(checkpoint.replayed_through, Some(as_of));
+    }
+
+    #[test]
+    fn historical_segment_with_new_cursor_does_not_restore_stale_cursor() {
+        let mut checkpoint = GenericStructureEngine::new("AACB").checkpoint();
+        checkpoint.last_arrival_sequence = 52_100;
+
+        restore_historical_seed_cursor(&mut checkpoint, Some(42_017));
+
+        assert_eq!(checkpoint.last_arrival_sequence, 52_100);
     }
 
     #[test]
