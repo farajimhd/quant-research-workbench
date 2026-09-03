@@ -199,11 +199,15 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert "drawTradeAnnotationPrimitiveGeometry" in renderer_source
     assert 'const defaultStrategyPresentationSettings: StrategyPresentationSettings' in renderer_source
     assert 'entryLine: strategyPresentationStyle("#3596FD", "solid", 2, 0.95' in renderer_source
-    assert 'entryLabel: { ...strategyPresentationStyle("", "solid", 1, 0.95, 10, 7, 1), borderOpacity: 0, labelPaddingX: 2, labelPaddingY: 1 }' in renderer_source
+    assert 'entryArrow: strategyPresentationStyle("", "solid", 2, 1, 10, 5, 1)' in renderer_source
+    assert 'entryLabel: { ...strategyPresentationStyle("", "solid", 1, 1, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 5, labelPaddingY: 2 }' in renderer_source
     assert 'exitLine: strategyPresentationStyle("#FF3D47"' in renderer_source
-    assert 'exitLabel: { ...strategyPresentationStyle("#FF3838", "solid", 2, 0.9, 10, 7, 1), borderOpacity: 1, borderWidth: 0, labelPaddingX: 14, labelPaddingY: 6 }' in renderer_source
+    assert 'exitLabel: { ...strategyPresentationStyle("#FF3838", "solid", 2, 0.9, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 8, labelPaddingY: 2 }' in renderer_source
+    assert 'levelLabel: { ...strategyPresentationStyle("", "solid", 1, 1, 8, 7, 1), borderWidth: 0, labelPaddingX: 2, labelPaddingY: 1 }' in renderer_source
     assert 'stopLine: strategyPresentationStyle("", "dashed", 1, 0.95' in renderer_source
     assert 'targetLine: strategyPresentationStyle("#008539", "dashed", 1, 1' in renderer_source
+    assert 'stopLabel: { ...strategyPresentationStyle("", "dashed", 2, 1, 8, 7, 1), borderOpacity: 0.49, borderStyle: "solid", borderWidth: 0, labelPaddingX: 2, labelPaddingY: 2 }' in renderer_source
+    assert 'targetLabel: { ...strategyPresentationStyle("", "dashed", 2, 1, 8, 7, 1), borderOpacity: 1, borderStyle: "solid", borderWidth: 0, labelPaddingX: 2, labelPaddingY: 1 }' in renderer_source
     assert 'adjustmentLabel: { ...strategyPresentationStyle("#8C6E96", "solid", 2, 1, 8, 7, 0.92), borderWidth: 0, labelPaddingX: 2, labelPaddingY: 1 }' in renderer_source
     assert 'connector: strategyPresentationStyle("", "dashed", 1, 0.7)' in renderer_source
     assert 'const strategyVisualElementDefinitions: StrategyVisualElementDefinition[]' in renderer_source
