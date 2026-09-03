@@ -18,6 +18,11 @@ class _RunningProcess:
         return None
 
 
+class _ExitedProcess:
+    def poll(self):
+        return 1
+
+
 def test_only_complete_certified_status_short_circuits_a_resume() -> None:
     assert status_is_fully_certified(
         {"status": "completed", "total_units": 2, "counts": {"certified": 2}}
@@ -28,6 +33,32 @@ def test_only_complete_certified_status_short_circuits_a_resume() -> None:
     assert not status_is_fully_certified(
         {"status": "failed", "total_units": 2, "counts": {"certified": 2}}
     )
+
+
+def test_exited_process_cannot_leave_phantom_active_worker(tmp_path: Path) -> None:
+    status_path = tmp_path / "campaign-status.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "counts": {"active": 1, "finished": 2},
+                "events_processed": 10,
+                "active": {"SUGP": "2026-08-21"},
+                "issues": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    status = aggregate_status(
+        [status_path],
+        [{"estimated_events": 10, "sessions": [1, 2, 3]}],
+        time.monotonic(),
+        deque(),
+        [_ExitedProcess()],
+    )
+
+    assert status["counts"]["active"] == 0
+    assert status["counts"]["queued"] == 1
+    assert status["active"] == []
 
 
 def test_prebuilt_runtime_binary_is_preferred_without_cargo() -> None:

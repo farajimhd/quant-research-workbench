@@ -183,9 +183,17 @@ def fmt_duration(seconds: float | None) -> str:
 
 
 def aggregate_status(paths, plans, started, rates, processes) -> dict[str, Any]:
-    statuses = [status for path in paths if (status := read_status(path)) is not None]
+    worker_statuses = [read_status(path) for path in paths]
+    statuses = [status for status in worker_statuses if status is not None]
     keys = ("active", "blocked", "certified", "completed", "failed", "finished", "queued", "retried", "skipped", "unavailable")
     counts = {key: sum(int(row.get("counts", {}).get(key, 0)) for row in statuses) for key in keys}
+    # A force-terminated child cannot publish its final snapshot. Never retain
+    # that stale file's active count after the process has actually exited.
+    counts["active"] = sum(
+        int((status or {}).get("counts", {}).get("active", 0))
+        for status, process in zip(worker_statuses, processes, strict=True)
+        if process.poll() is None
+    )
     events = sum(int(row.get("events_processed", 0)) for row in statuses)
     total_events = sum(int(plan.get("estimated_events", 0)) for plan in plans)
     total_units = sum(len(plan.get("sessions", [])) for plan in plans)
@@ -200,8 +208,11 @@ def aggregate_status(paths, plans, started, rates, processes) -> dict[str, Any]:
     if len(rates) > 1 and now - rates[0][0] >= 15 and events >= rates[0][1]:
         rate = (events - rates[0][1]) / (now - rates[0][0])
     active, issues = [], []
-    for worker, row in enumerate(statuses):
-        active += [f"W{worker + 1:02d} {ticker}@{date}" for ticker, date in row.get("active", {}).items()]
+    for worker, (row, process) in enumerate(zip(worker_statuses, processes, strict=True)):
+        if row is None:
+            continue
+        if process.poll() is None:
+            active += [f"W{worker + 1:02d} {ticker}@{date}" for ticker, date in row.get("active", {}).items()]
         issues += row.get("issues", [])[-2:]
     exited = sum(process.poll() is not None for process in processes)
     failed_processes = sum(process.poll() not in (None, 0) for process in processes)
