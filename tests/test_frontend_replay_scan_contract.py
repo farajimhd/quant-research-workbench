@@ -198,10 +198,14 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert "settings: strategyPresentationSettingsRef.current" in renderer_source
     assert "drawTradeAnnotationPrimitiveGeometry" in renderer_source
     assert 'const defaultStrategyPresentationSettings: StrategyPresentationSettings' in renderer_source
-    assert 'entryLine: strategyPresentationStyle("", "solid", 2, 0.95' in renderer_source
-    assert 'exitLine: strategyPresentationStyle("#C2410C"' in renderer_source
-    assert 'stopLine: strategyPresentationStyle("", "dashed", 2, 0.95' in renderer_source
-    assert 'targetLine: strategyPresentationStyle("", "dashed", 2, 0.95' in renderer_source
+    assert 'entryLine: strategyPresentationStyle("#3596FD", "solid", 2, 0.95' in renderer_source
+    assert 'entryLabel: { ...strategyPresentationStyle("", "solid", 1, 0.95, 10, 7, 1), borderOpacity: 0, labelPaddingX: 2, labelPaddingY: 1 }' in renderer_source
+    assert 'exitLine: strategyPresentationStyle("#FF3D47"' in renderer_source
+    assert 'exitLabel: { ...strategyPresentationStyle("#FF3838", "solid", 2, 0.9, 10, 7, 1), borderOpacity: 1, borderWidth: 0, labelPaddingX: 14, labelPaddingY: 6 }' in renderer_source
+    assert 'stopLine: strategyPresentationStyle("", "dashed", 1, 0.95' in renderer_source
+    assert 'targetLine: strategyPresentationStyle("#008539", "dashed", 1, 1' in renderer_source
+    assert 'adjustmentLabel: { ...strategyPresentationStyle("#8C6E96", "solid", 2, 1, 8, 7, 0.92), borderWidth: 0, labelPaddingX: 2, labelPaddingY: 1 }' in renderer_source
+    assert 'connector: strategyPresentationStyle("", "dashed", 1, 0.7)' in renderer_source
     assert 'const strategyVisualElementDefinitions: StrategyVisualElementDefinition[]' in renderer_source
     assert 'className="strategy-presentation-element"' in renderer_source
     assert 'className="strategy-presentation-style-page"' in renderer_source
@@ -263,6 +267,16 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert renderer_source.index('drawCanvasTradeArrow(context, entryX, entryY') < renderer_source.index('annotation.levelPrices?.slice(0, 3)')
     assert "const horizontalCandidates = [preferredLeft, preferredLeft - labelWidth / 2, preferredLeft + labelWidth / 2]" in renderer_source
     assert "const verticalOffsets = Array.from({ length: 33 }" in renderer_source
+    assert "const candidateTop = top + offset" in renderer_source
+    label_source = renderer_source.split("function drawCanvasTradeLabel", 1)[1].split("function canvasLabelBoxesOverlap", 1)[0]
+    assert "clampNumber(candidateLeft" not in label_source
+    assert "clampNumber(top + offset" not in label_source
+    assert "box.right <= 0 || box.left >= width || box.bottom <= 0 || box.top >= height" in label_source
+    assert 'const exitX = resolvedEndX' in renderer_source
+    assert 'annotation.status === "open" ? width : resolvedEndX' not in renderer_source
+    annotation_time_source = renderer_source.split("function xForAnnotationTime", 1)[1].split("function drawReferenceLine", 1)[0]
+    assert "time < candles[0].time || time >= candles[candles.length - 1].time + candleDuration" in annotation_time_source
+    assert "nearestCandleIndex" not in annotation_time_source
     assert "layout?.boxes.push(box)" in renderer_source
     assert "anchor - 3" in renderer_source
     draw_source = renderer_source.split("function drawRegions", 1)[1].split("function drawSessionRegions", 1)[0]

@@ -658,22 +658,22 @@ const defaultStrategyPresentationSettings: StrategyPresentationSettings = {
   avoidLabelCollisions: true,
   connectorThreshold: 18,
   elements: {
-    entryLine: strategyPresentationStyle("", "solid", 2, 0.95),
-    entryArrow: strategyPresentationStyle("", "solid", 1, 0.95, 10, 7),
-    entryLabel: strategyPresentationStyle("", "solid", 1, 0.95, 10, 7, 0.92),
-    exitLine: strategyPresentationStyle("#C2410C", "solid", 2, 0.9),
-    exitArrow: strategyPresentationStyle("#C2410C", "solid", 1, 0.9, 10, 7),
-    exitLabel: strategyPresentationStyle("", "solid", 1, 0.9, 10, 7, 0.92),
-    levelLine: strategyPresentationStyle("", "dashed", 2, 0.9),
+    entryLine: strategyPresentationStyle("#3596FD", "solid", 2, 0.95),
+    entryArrow: strategyPresentationStyle("", "solid", 2, 0.95, 10, 7),
+    entryLabel: { ...strategyPresentationStyle("", "solid", 1, 0.95, 10, 7, 1), borderOpacity: 0, labelPaddingX: 2, labelPaddingY: 1 },
+    exitLine: strategyPresentationStyle("#FF3D47", "solid", 2, 0.9),
+    exitArrow: strategyPresentationStyle("#FF4D55", "solid", 2, 1, 10, 5, 1),
+    exitLabel: { ...strategyPresentationStyle("#FF3838", "solid", 2, 0.9, 10, 7, 1), borderOpacity: 1, borderWidth: 0, labelPaddingX: 14, labelPaddingY: 6 },
+    levelLine: strategyPresentationStyle("", "dashed", 1, 0.9),
     levelLabel: strategyPresentationStyle("", "solid", 1, 0.9, 10, 7, 0.92),
-    stopLine: strategyPresentationStyle("", "dashed", 2, 0.95),
-    stopLabel: strategyPresentationStyle("", "solid", 1, 0.95, 10, 7, 0.92),
-    targetLine: strategyPresentationStyle("", "dashed", 2, 0.95),
-    targetLabel: strategyPresentationStyle("", "solid", 1, 0.95, 10, 7, 0.92),
-    adjustmentLine: strategyPresentationStyle("", "solid", 2, 0.92),
-    adjustmentArrow: strategyPresentationStyle("", "solid", 1, 0.92, 10, 5),
-    adjustmentLabel: strategyPresentationStyle("", "solid", 1, 0.92, 10, 7, 0.92),
-    connector: strategyPresentationStyle("", "dashed", 1, 0.82),
+    stopLine: strategyPresentationStyle("", "dashed", 1, 0.95),
+    stopLabel: { ...strategyPresentationStyle("", "dashed", 2, 0.95, 10, 7, 0.92), borderStyle: "solid" },
+    targetLine: strategyPresentationStyle("#008539", "dashed", 1, 1),
+    targetLabel: { ...strategyPresentationStyle("", "dashed", 2, 1, 10, 7, 1), borderOpacity: 1, borderStyle: "solid" },
+    adjustmentLine: strategyPresentationStyle("#986B9E", "solid", 1, 0.92),
+    adjustmentArrow: { ...strategyPresentationStyle("#8D6E96", "solid", 2, 1, 10, 4, 1), borderWidth: 0 },
+    adjustmentLabel: { ...strategyPresentationStyle("#8C6E96", "solid", 2, 1, 8, 7, 0.92), borderWidth: 0, labelPaddingX: 2, labelPaddingY: 1 },
+    connector: strategyPresentationStyle("", "dashed", 1, 0.7),
   },
   visible: true,
 };
@@ -6525,7 +6525,9 @@ function drawTradeAnnotationPrimitiveGeometry(
     const entryX = xForAnnotationTime(chart, annotation.entryTime, timeline);
     const endTime = annotation.endTime ?? annotation.exitTime ?? annotation.entryTime;
     const resolvedEndX = xForAnnotationTime(chart, endTime, timeline);
-    const exitX = annotation.status === "open" ? width : resolvedEndX;
+    // Lifecycle geometry is always owned by event time. Tying an open
+    // position to the pane edge makes it float while the user pans.
+    const exitX = resolvedEndX;
     const entryY = priceSeries.priceToCoordinate(annotation.entryPrice);
     const exitY = typeof annotation.exitPrice === "number" ? priceSeries.priceToCoordinate(annotation.exitPrice) : null;
     if (entryX === null || exitX === null || entryY === null) return;
@@ -6804,15 +6806,18 @@ function drawCanvasTradeLabel(
   const horizontalCandidates = [preferredLeft, preferredLeft - labelWidth / 2, preferredLeft + labelWidth / 2];
   const verticalStep = labelHeight + 3;
   const verticalOffsets = Array.from({ length: 33 }, (_, index) => index === 0 ? 0 : Math.ceil(index / 2) * (index % 2 === 1 ? -1 : 1) * verticalStep);
-  const candidates = verticalOffsets.flatMap((offset) => horizontalCandidates.map((candidateLeft) => {
-    const left = clampNumber(candidateLeft, 3, Math.max(3, width - labelWidth - 3), 3);
-    const candidateTop = clampNumber(top + offset, 3, Math.max(3, height - labelHeight - 3), 3);
+  // Labels remain in the same chart-coordinate space as their price/time
+  // anchors. Do not clamp them to the pane: canvas clipping lets them enter
+  // and leave naturally as the user pans or rescales the chart.
+  const candidates = verticalOffsets.flatMap((offset) => horizontalCandidates.map((left) => {
+    const candidateTop = top + offset;
     return { bottom: candidateTop + labelHeight, left, right: left + labelWidth, top: candidateTop };
   }));
   const occupied = layout?.boxes ?? [];
   const box = candidates.find((candidate) => occupied.every((placed) => !canvasLabelBoxesOverlap(candidate, placed)))
     ?? candidates.reduce((best, candidate) => canvasLabelOverlapArea(candidate, occupied) < canvasLabelOverlapArea(best, occupied) ? candidate : best, candidates[0]);
   if (!box) return;
+  if (box.right <= 0 || box.left >= width || box.bottom <= 0 || box.top >= height) return;
   layout?.boxes.push(box);
   const left = box.left;
   top = box.top;
@@ -6943,6 +6948,9 @@ function compactTradeLabel(parts: TradeLabelPart[] | undefined, fallback: string
 }
 
 function xForAnnotationTime(chart: IChartApi, time: number, candles: Array<{ time: number }>) {
+  if (!candles.length) return null;
+  const candleDuration = estimateCandleDuration(candles);
+  if (time < candles[0].time || time >= candles[candles.length - 1].time + candleDuration) return null;
   const exact = chart.timeScale().timeToCoordinate(time as Time);
   if (exact !== null) return exact;
   const rightIndex = lowerBoundCandleTime(candles, time);
@@ -6958,8 +6966,10 @@ function xForAnnotationTime(chart: IChartApi, time: number, candles: Array<{ tim
       return leftX + (rightX - leftX) * ratio;
     }
   }
-  const nearest = candles[nearestCandleIndex(candles, time)];
-  return nearest ? chart.timeScale().timeToCoordinate(nearest.time as Time) : null;
+  if (leftIndex === candles.length - 1) {
+    return chart.timeScale().timeToCoordinate(candles[leftIndex].time as Time);
+  }
+  return null;
 }
 
 function drawReferenceLine(chart: IChartApi, layer: HTMLDivElement | null, candles: Candle[], reference?: ChartReference | null) {
@@ -7113,7 +7123,7 @@ function estimateBarWidth(chart: IChartApi, candles: Candle[]) {
   return Math.max(2, Math.min(24, deltas[Math.floor(deltas.length / 2)] ?? 4));
 }
 
-function estimateCandleDuration(candles: Candle[]) {
+function estimateCandleDuration(candles: Array<{ time: number }>) {
   const deltas = candles
     .slice(1)
     .map((candle, index) => candle.time - candles[index].time)
