@@ -195,6 +195,7 @@ struct HealthPayload {
     service: &'static str,
     source: &'static str,
     status: &'static str,
+    structure_algorithm_version: u16,
 }
 
 #[derive(Debug, Serialize)]
@@ -748,6 +749,8 @@ async fn health(State(state): State<Arc<AppState>>) -> Result<Json<HealthPayload
         service: "qmd_history_gateway",
         source: "market_source_plan:archive+recent+live_continuation",
         status: "ready",
+        structure_algorithm_version:
+            qmd_core::generic_structure::GENERIC_STRUCTURE_ALGORITHM_VERSION,
     }))
 }
 

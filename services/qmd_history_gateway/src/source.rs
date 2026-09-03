@@ -16,6 +16,9 @@ use qmd_core::indicators::{
     parse_market_structure_reference_rows, MarketStructureReferenceLevels,
 };
 use qmd_core::market_products::parse_resolution_us;
+use qmd_core::structure_certification::{
+    validate_checkpoint_certification, StructureCheckpointCertification,
+};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -433,6 +436,8 @@ struct PersistedStructureEventRow {
 #[derive(Debug, Deserialize)]
 struct PersistedStructureCheckpointRow {
     authority_start: String,
+    certification_json: String,
+    session_date: String,
     snapshot_json: String,
     source_plan_hash: String,
     source_revision_token: String,
@@ -2656,10 +2661,12 @@ impl HistoricalEventSource {
         let sql = format!(
             r#"SELECT
                 formatDateTime(authority_start, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS authority_start,
+                toString(session_date) AS session_date,
                 source_plan_hash,
                 source_revision_token,
-                snapshot_json
-            FROM {table}
+                snapshot_json,
+                certification_json
+            FROM {table} FINAL
             WHERE checkpoint_set_id = {checkpoint_set_id}
               AND sym = {ticker}
               AND algorithm_version = {algorithm_version}
@@ -2684,6 +2691,21 @@ impl HistoricalEventSource {
             .with_timezone(&Utc);
         let mut checkpoint = serde_json::from_str::<GenericStructureCheckpoint>(&row.snapshot_json)
             .map_err(|error| format!("invalid persisted structure checkpoint payload: {error}"))?;
+        let session_date = NaiveDate::parse_from_str(&row.session_date, "%Y-%m-%d")
+            .map_err(|error| format!("invalid persisted structure checkpoint date: {error}"))?;
+        let certification =
+            serde_json::from_str::<StructureCheckpointCertification>(&row.certification_json)
+                .map_err(|error| {
+                    format!("persisted structure checkpoint lacks valid certification: {error}")
+                })?;
+        validate_checkpoint_certification(
+            &certification,
+            &checkpoint,
+            session_date,
+            authority_start,
+            &row.source_plan_hash,
+            &row.source_revision_token,
+        )?;
         if checkpoint.algorithm_version != GENERIC_STRUCTURE_ALGORITHM_VERSION
             || checkpoint.sym.to_ascii_uppercase() != ticker
             || checkpoint.last_arrival_sequence == 0

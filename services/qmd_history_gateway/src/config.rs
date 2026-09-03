@@ -177,7 +177,7 @@ impl HistoricalGatewayConfig {
             ),
             structure_checkpoint_set_id: env_string(
                 "QMD_STRUCTURE_CHECKPOINT_SET_ID",
-                "canonical-tradable-20250101-20260831-v16",
+                "canonical-tradable-20250101-20260831-v16-cert-v1",
             ),
             structure_events_table: env_string(
                 "QMD_HISTORY_STRUCTURE_EVENTS_TABLE",

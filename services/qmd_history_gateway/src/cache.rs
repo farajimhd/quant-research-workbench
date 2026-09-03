@@ -44,7 +44,7 @@ pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v52";
 pub const HISTORICAL_CORPORATE_ACTION_REVISION: &str = "retrospective-split-adjusted-v2";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
 const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 11;
-const PREPARED_STRUCTURE_SEED_CACHE_SCHEMA_VERSION: u16 = 2;
+const PREPARED_STRUCTURE_SEED_CACHE_SCHEMA_VERSION: u16 = 3;
 // Prepared structure books have their own algorithm authority. Bar-indicator
 // changes (for example MACD or VWAP warm-up fixes) must not invalidate and
 // cold-rebuild the complete 180-day level book. v43 is the last legacy shared
@@ -1907,6 +1907,7 @@ impl HistoricalDerivedCache {
             .structure_split_adjustments(ticker, split_horizon_start, before)
             .await?;
         let key = structure_seed_cache_key(
+            &self.config.structure_checkpoint_set_id,
             ticker,
             rebuild_start,
             before,
@@ -1914,6 +1915,7 @@ impl HistoricalDerivedCache {
             &split_adjustments,
         )?;
         let legacy_key = structure_seed_cache_key_for_revision(
+            &self.config.structure_checkpoint_set_id,
             ticker,
             rebuild_start,
             before,
@@ -2224,6 +2226,7 @@ impl HistoricalDerivedCache {
 }
 
 fn structure_seed_cache_key(
+    checkpoint_set_id: &str,
     ticker: &str,
     rebuild_start: DateTime<Utc>,
     before: DateTime<Utc>,
@@ -2231,6 +2234,7 @@ fn structure_seed_cache_key(
     split_adjustments: &[qmd_core::generic_structure::StructureSplitAdjustment],
 ) -> Result<String, String> {
     structure_seed_cache_key_for_revision(
+        checkpoint_set_id,
         ticker,
         rebuild_start,
         before,
@@ -2241,6 +2245,7 @@ fn structure_seed_cache_key(
 }
 
 fn structure_seed_cache_key_for_revision(
+    checkpoint_set_id: &str,
     ticker: &str,
     rebuild_start: DateTime<Utc>,
     before: DateTime<Utc>,
@@ -2252,7 +2257,8 @@ fn structure_seed_cache_key_for_revision(
         .map_err(|error| format!("failed to hash structure split authority: {error}"))?;
     let split_revision = format!("{:x}", Sha256::digest(split_bytes));
     Ok(format!(
-        "{}:{}:{}:{}:{}:{}:{}",
+        "{}:{}:{}:{}:{}:{}:{}:{}",
+        checkpoint_set_id,
         ticker.trim().to_ascii_uppercase(),
         rebuild_start.timestamp_micros(),
         before.timestamp_micros(),
@@ -3348,6 +3354,7 @@ mod tests {
             source_inserted_at: Utc.with_ymd_and_hms(2026, 8, 1, 9, 0, 0).unwrap(),
         };
         let original = structure_seed_cache_key(
+            "certified-set-v1",
             "SUGP",
             rebuild_start,
             before,
@@ -3358,6 +3365,7 @@ mod tests {
         let mut corrected = adjustment.clone();
         corrected.source_inserted_at += Duration::hours(1);
         let corrected = structure_seed_cache_key(
+            "certified-set-v1",
             "SUGP",
             rebuild_start,
             before,
@@ -3365,9 +3373,17 @@ mod tests {
             &[corrected],
         )
         .unwrap();
-        let no_split =
-            structure_seed_cache_key("SUGP", rebuild_start, before, "event-revision", &[]).unwrap();
+        let no_split = structure_seed_cache_key(
+            "certified-set-v1",
+            "SUGP",
+            rebuild_start,
+            before,
+            "event-revision",
+            &[],
+        )
+        .unwrap();
         let legacy = structure_seed_cache_key_for_revision(
+            "certified-set-v1",
             "SUGP",
             rebuild_start,
             before,
@@ -3380,6 +3396,18 @@ mod tests {
         assert_ne!(original, corrected);
         assert_ne!(original, no_split);
         assert_ne!(original, legacy);
+        assert_ne!(
+            original,
+            structure_seed_cache_key(
+                "another-certified-set",
+                "SUGP",
+                rebuild_start,
+                before,
+                "event-revision",
+                std::slice::from_ref(&adjustment),
+            )
+            .unwrap()
+        );
         assert!(original.contains(&format!(
             "qmd-structure-v{GENERIC_STRUCTURE_ALGORITHM_VERSION}"
         )));

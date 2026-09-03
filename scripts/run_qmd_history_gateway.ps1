@@ -1,5 +1,7 @@
 param(
     [switch]$BuildOnly,
+    [switch]$NoBuild,
+    [string]$BinaryPath = "",
     [string]$CargoTargetDir = ""
 )
 
@@ -86,7 +88,11 @@ function Test-HistoryPortOpen {
 }
 
 function Test-ExistingHistoryGateway {
-    param($Endpoint)
+    param(
+        $Endpoint,
+        [string]$ExpectedCheckpointTable,
+        [string]$ExpectedCheckpointSet
+    )
 
     $health = $null
     try {
@@ -105,38 +111,68 @@ function Test-ExistingHistoryGateway {
     if ($health.status -ne "ready" -or $health.running -ne $true) {
         throw "QMD History is already bound at $($Endpoint.BaseUrl), but it is not ready (status=$($health.status)). Inspect that process instead of starting a duplicate."
     }
+    if ($health.structure_algorithm_version -ne 16 -or
+        $health.config.structure_daily_checkpoint_table -ne $ExpectedCheckpointTable -or
+        $health.config.structure_checkpoint_set_id -ne $ExpectedCheckpointSet) {
+        throw (
+            "QMD History is running with incompatible structural authority: " +
+            "algorithm=$($health.structure_algorithm_version), " +
+            "table=$($health.config.structure_daily_checkpoint_table), " +
+            "set=$($health.config.structure_checkpoint_set_id). Expected algorithm=16, " +
+            "table=$ExpectedCheckpointTable, set=$ExpectedCheckpointSet. Stop and restart this service."
+        )
+    }
 
     Write-Host "qmd-history-gateway is already running and ready at $($Endpoint.BaseUrl)."
     Write-Host "No second process was started. Stop the existing gateway first only when a restart is required."
     return $true
 }
 
-if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+if ($BuildOnly -and $NoBuild) {
+    throw "-BuildOnly and -NoBuild cannot be combined."
+}
+if (-not $NoBuild -and -not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     throw "Cargo is required. Run scripts\install_rust_windows.ps1 first."
 }
 
 $endpoint = Resolve-HistoryEndpoint -Bind (Resolve-HistoryBind)
 $resolvedCargoTargetDir = Resolve-CargoTargetDirectory -Requested $CargoTargetDir
+$expectedCheckpointTable = if ($env:QMD_HISTORY_STRUCTURE_DAILY_CHECKPOINT_TABLE) {
+    $env:QMD_HISTORY_STRUCTURE_DAILY_CHECKPOINT_TABLE.Trim()
+} else {
+    "qmd_structure_daily_checkpoint_v2"
+}
+$expectedCheckpointSet = if ($env:QMD_STRUCTURE_CHECKPOINT_SET_ID) {
+    $env:QMD_STRUCTURE_CHECKPOINT_SET_ID.Trim()
+} else {
+    "canonical-tradable-20250101-20260831-v16-cert-v1"
+}
 
-if (-not $BuildOnly -and (Test-ExistingHistoryGateway -Endpoint $endpoint)) {
+if (-not $BuildOnly -and (Test-ExistingHistoryGateway -Endpoint $endpoint -ExpectedCheckpointTable $expectedCheckpointTable -ExpectedCheckpointSet $expectedCheckpointSet)) {
     return
 }
 
 Push-Location $repoRoot
 try {
-    Write-Host "Building qmd-history-gateway from shared qmd_core..."
-    Write-Host "Cargo target: $resolvedCargoTargetDir"
-    cargo build --offline --locked --release --manifest-path $manifest --target-dir $resolvedCargoTargetDir
-    if ($LASTEXITCODE -ne 0) {
-        throw "qmd-history-gateway build failed with exit code $LASTEXITCODE"
+    if (-not $NoBuild) {
+        Write-Host "Building qmd-history-gateway from shared qmd_core..."
+        Write-Host "Cargo target: $resolvedCargoTargetDir"
+        cargo build --offline --locked --release --manifest-path $manifest --target-dir $resolvedCargoTargetDir
+        if ($LASTEXITCODE -ne 0) {
+            throw "qmd-history-gateway build failed with exit code $LASTEXITCODE"
+        }
     }
     if ($BuildOnly) {
         return
     }
-    if (Test-ExistingHistoryGateway -Endpoint $endpoint) {
+    if (Test-ExistingHistoryGateway -Endpoint $endpoint -ExpectedCheckpointTable $expectedCheckpointTable -ExpectedCheckpointSet $expectedCheckpointSet) {
         return
     }
-    $gatewayExecutable = Join-Path $resolvedCargoTargetDir "release\qmd-history-gateway.exe"
+    $gatewayExecutable = if ($BinaryPath.Trim()) {
+        [IO.Path]::GetFullPath($BinaryPath.Trim())
+    } else {
+        Join-Path $resolvedCargoTargetDir "release\qmd-history-gateway.exe"
+    }
     if (-not (Test-Path -LiteralPath $gatewayExecutable -PathType Leaf)) {
         throw "QMD History build succeeded but the executable is missing: $gatewayExecutable"
     }

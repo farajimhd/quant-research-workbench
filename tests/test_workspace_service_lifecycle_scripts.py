@@ -189,6 +189,11 @@ def test_qmd_cargo_output_is_external_and_binary_is_executed_directly() -> None:
     assert "cargo run" not in source
     assert '& $gatewayexecutable' in source
     assert "cargo output must be outside the repository" in source
+    assert 'structure_algorithm_version -ne 16' in source
+    assert 'qmd_structure_daily_checkpoint_v2' in source
+    assert 'canonical-tradable-20250101-20260831-v16-cert-v1' in source
+    assert '[switch]$nobuild' in source
+    assert '[string]$binarypath' in source
     assert r"d:\tradingml\runtimes\qmd_gateway" in live_source
     assert 'join-path $resolvedruntimeroot "logs"' in live_source
     assert '$env:qmd_host_role = $hostrole.tolowerinvariant()' in live_source

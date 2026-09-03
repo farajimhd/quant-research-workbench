@@ -67,15 +67,20 @@ service:
 The launcher is idempotent. Before building or starting another process, it
 resolves `QMD_HISTORY_BIND` and checks `/health`. If the expected historical
 gateway is already running and ready, it reports that state and exits
-successfully. If the address belongs to another service, or the port is open
-without a ready historical `/health` response, it stops with an actionable
-address-conflict message instead of attempting a duplicate bind.
+successfully only when algorithm version, checkpoint table, and checkpoint-set
+authority also match. A stale structural authority requires an explicit
+restart. `-NoBuild -BinaryPath PATH` starts a clean prebuilt release without
+requiring Cargo or compiling unrelated working-tree changes. If the address
+belongs to another service, or the port is open without a ready historical
+`/health` response, startup stops with an actionable conflict message.
 
 Configuration uses `QMD_HISTORY_CLICKHOUSE_URL`, `QMD_HISTORY_DATABASE`,
 `QMD_HISTORY_TABLE_PREFIX`, `QMD_HISTORY_DAILY_SESSION_BARS_TABLE`,
 `QMD_HISTORY_INTRADAY_BASE_BARS_TABLE`, `QMD_HISTORY_CLICKHOUSE_USER`,
 `QMD_HISTORY_CLICKHOUSE_PASSWORD`, `QMD_HISTORY_BIND`,
 `QMD_HISTORY_STRUCTURE_DATABASE`, `QMD_HISTORY_STRUCTURE_EVENTS_TABLE`,
+`QMD_HISTORY_STRUCTURE_DAILY_CHECKPOINT_TABLE`,
+`QMD_STRUCTURE_CHECKPOINT_SET_ID`,
 `QMD_HISTORY_RECENT_DATABASE`, `QMD_HISTORY_RECENT_EVENT_TABLE`,
 `QMD_HISTORY_RECENT_EVENT_COVERAGE_TABLE`, `QMD_HISTORY_LIVE_GATEWAY_URL`,
 `QMD_HISTORY_BATCH_SIZE`, `QMD_HISTORY_MAX_EVENTS_PER_REQUEST`,
@@ -136,6 +141,11 @@ Defaults:
   use the persisted event-derived grid when the requested ticker, date, and
   resolution exist, and otherwise fall back to causal raw-event reconstruction.
 - generic-structure database/table: `q_live.qmd_structure_events_v2`
+- certified daily-checkpoint authority:
+  `q_live.qmd_structure_daily_checkpoint_v2` set
+  `canonical-tradable-20250101-20260831-v16-cert-v1`; checkpoint payload,
+  split lineage, source revision, and certification chain are validated before
+  a seed can be used
 - batch size: `25000`
 - maximum events in one derived calculation: `10000000`
 - revision-aware derived cache entries: `256`
@@ -363,7 +373,7 @@ releases it before taking another ticker.
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'
 python scripts\run_structure_checkpoint_campaign.py `
-  --checkpoint-set-id canonical-tradable-20250101-20260831-v16 `
+  --checkpoint-set-id canonical-tradable-20250101-20260831-v16-cert-v1 `
   --priority-ticker SUGP `
   --priority-ticker JUNS `
   --start-date 2025-01-01 `
