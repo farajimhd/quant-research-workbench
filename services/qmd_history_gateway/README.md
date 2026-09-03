@@ -352,6 +352,8 @@ directly on a workstation. It uses the continuity index for workload planning,
 the canonical completed-session authority for scheduling, the shared v15
 decoder/engine for calculation, and the shared ClickHouse writer for immutable
 daily checkpoints. QMD HTTP services are not required on that host.
+Long gaps between persisted checkpoint dates are advanced through bounded
+72-hour-or-shorter causal segments without persisting artificial boundaries.
 
 ```powershell
 cargo run --release --manifest-path services\qmd_history_gateway\Cargo.toml `
@@ -367,6 +369,7 @@ cargo run --release --manifest-path services\qmd_history_gateway\Cargo.toml `
 Rerunning the identical command is the supported resume operation. Each ticker
 starts from its last source- and split-compatible ClickHouse checkpoint. The
 interactive terminal shows resolved and durable progress, worker assignments,
-rates, ETA, recent work, and failures. Redirected output remains plain text.
+rates, ETA, recent work, and failures. Its fixed-row refresh does not repeatedly
+clear the screen or scroll. Redirected output remains plain text.
 Runtime status schema v3 is written atomically to `campaign-status.json`, and
 Ctrl+C records `interrupted` before returning exit code 130.

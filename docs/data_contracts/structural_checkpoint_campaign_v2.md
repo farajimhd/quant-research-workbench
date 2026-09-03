@@ -37,6 +37,13 @@ bounded by the builder, QMD Live, QMD History, and ClickHouse query limits.
 Increasing worker count does not authorize unbounded ClickHouse threads or
 memory.
 
+Sparse persisted checkpoint dates do not broaden a replay request. Advancement
+between them is internally segmented at the shared historical runtime's maximum
+window (72 hours by default), with the checkpoint carried across every segment.
+Only planned daily boundaries are persisted. Rebuild and advancement event
+limits come from their respective shared runtime authorities rather than one
+incompatible campaign-level override.
+
 The workstation entry point is the standalone Rust binary
 `structure_checkpoint_campaign` in the QMD History crate. It connects directly
 to the configured historical and writable ClickHouse authorities; QMD Live and
@@ -83,8 +90,10 @@ root. Report schema v3 exposes queued, active, completed, already-current,
 unavailable, failed, and dependency-blocked units, processed event totals,
 recent completions, exact active ticker/session assignments, and failures. The
 interactive terminal renders a stable one-second dashboard from this same
-state; redirected output emits a plain snapshot every 15 seconds without ANSI
-control sequences. The report is operational evidence, not checkpoint
+state. It clears once at startup, then updates fixed rows in place without
+full-screen refresh flicker and restores the cursor on every exit path.
+Redirected output emits a plain snapshot every 15 seconds without ANSI control
+sequences. The report is operational evidence, not checkpoint
 authority; ClickHouse compatibility checks remain authoritative after a missing
 or stale report.
 

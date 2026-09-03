@@ -36,7 +36,6 @@ struct Args {
     workers: usize,
     lookback_days: i64,
     event_budget: u64,
-    event_limit: usize,
     plan_only: bool,
 }
 
@@ -270,6 +269,12 @@ struct DayResult {
     cursor: u64,
 }
 
+struct BoundaryAdvance {
+    checkpoint: qmd_core::generic_structure::GenericStructureCheckpoint,
+    event_count: u64,
+    advanced_event_count: u64,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = parse_args().map_err(io_error)?;
@@ -342,16 +347,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let writer = writer.clone();
         let config = history_config.clone();
         let progress = progress.clone();
-        let event_limit = args.event_limit;
         tasks.spawn(async move {
             let mut errors = Vec::new();
             loop {
                 let Some(plan) = queue.lock().await.pop_front() else {
                     break;
                 };
-                if let Err(error) =
-                    run_ticker(&config, &source, &writer, &progress, plan, event_limit).await
-                {
+                if let Err(error) = run_ticker(&config, &source, &writer, &progress, plan).await {
                     errors.push(error);
                 }
             }
@@ -420,6 +422,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 async fn report_progress(progress: Arc<ProgressWriter>, status_path: PathBuf, workers: usize) {
     let interactive = std::io::stdout().is_terminal();
     let color = interactive && env::var_os("NO_COLOR").is_none();
+    let _terminal = TerminalSession::enter(interactive);
     let refresh = if interactive {
         Duration::from_secs(1)
     } else {
@@ -446,23 +449,58 @@ async fn report_progress(progress: Arc<ProgressWriter>, status_path: PathBuf, wo
 fn render_dashboard(progress: &Progress, status_path: &PathBuf, workers: usize, color: bool) {
     let width = terminal_width();
     let lines = dashboard_lines(progress, status_path, workers, width);
+    let frame = dashboard_frame(&lines, progress, color);
     let mut stdout = std::io::stdout().lock();
-    let _ = write!(stdout, "\x1b[2J\x1b[H");
-    for (index, line) in lines.iter().enumerate() {
-        if index == 0 && color {
-            let code = match progress.status.as_str() {
-                "completed" => "32",
-                "running" if progress.counts.failed == 0 => "36",
-                "running" => "33",
-                "interrupted" => "33",
-                _ => "31",
-            };
-            let _ = writeln!(stdout, "\x1b[{code}m{line}\x1b[0m");
-        } else {
-            let _ = writeln!(stdout, "{line}");
+    let _ = stdout.write_all(frame.as_bytes());
+    let _ = stdout.flush();
+}
+
+struct TerminalSession {
+    interactive: bool,
+}
+
+impl TerminalSession {
+    fn enter(interactive: bool) -> Self {
+        if interactive {
+            let mut stdout = std::io::stdout().lock();
+            let _ = write!(stdout, "\x1b[2J\x1b[H\x1b[?25l");
+            let _ = stdout.flush();
+        }
+        Self { interactive }
+    }
+}
+
+impl Drop for TerminalSession {
+    fn drop(&mut self) {
+        if self.interactive {
+            let mut stdout = std::io::stdout().lock();
+            let _ = write!(stdout, "\x1b[?25h");
+            let _ = stdout.flush();
         }
     }
-    let _ = stdout.flush();
+}
+
+fn dashboard_frame(lines: &[String], progress: &Progress, color: bool) -> String {
+    let status_color = match progress.status.as_str() {
+        "completed" => "32",
+        "running" if progress.counts.failed == 0 => "36",
+        "running" | "interrupted" => "33",
+        _ => "31",
+    };
+    let mut frame = String::from("\x1b[H");
+    for (index, line) in lines.iter().enumerate() {
+        frame.push_str("\x1b[2K");
+        if index == 0 && color {
+            frame.push_str(&format!("\x1b[1;{status_color}m{line}\x1b[0m"));
+        } else if (index == 2 || index == 3) && color {
+            frame.push_str(&format!("\x1b[1m{line}\x1b[0m"));
+        } else {
+            frame.push_str(line);
+        }
+        frame.push('\n');
+    }
+    frame.push_str("\x1b[J");
+    frame
 }
 
 fn render_log_snapshot(progress: &Progress, workers: usize) {
@@ -742,7 +780,6 @@ async fn run_ticker(
     writer: &IndicatorClickHouseWriter,
     progress: &ProgressWriter,
     plan: TickerPlan,
-    event_limit: usize,
 ) -> Result<(), String> {
     for (index, session_date) in plan.sessions.iter().copied().enumerate() {
         progress.activate(&plan.ticker, session_date).await?;
@@ -753,7 +790,6 @@ async fn run_ticker(
             &plan.ticker,
             session_date,
             plan.rebuild_start,
-            event_limit,
         )
         .await
         {
@@ -793,7 +829,6 @@ async fn build_day(
     ticker: &str,
     session_date: NaiveDate,
     rebuild_start: DateTime<Utc>,
-    event_limit: usize,
 ) -> Result<DayResult, String> {
     let authority_end = session_end(session_date)?;
     let as_of = authority_end - ChronoDuration::microseconds(1);
@@ -831,23 +866,7 @@ async fn build_day(
 
     let (checkpoint, event_count, advanced_event_count, authority_start) = if let Some(seed) = seed
     {
-        let advanced = advance_historical_structure_snapshot(
-            config,
-            source,
-            StructureCheckpointAdvanceRequest {
-                schema_version: STRUCTURE_CHECKPOINT_ADVANCEMENT_SCHEMA_VERSION,
-                checkpoint: seed.checkpoint,
-                as_of,
-                expected_source_plan_hash: None,
-                event_limit: Some(event_limit),
-            },
-        )
-        .await?;
-        if !advanced.complete
-            || advanced.source_revision_before.token != advanced.source_revision_after.token
-        {
-            return Err("historical checkpoint advancement was source-inconsistent".to_string());
-        }
+        let advanced = advance_to_boundary(config, source, seed.checkpoint, as_of).await?;
         (
             advanced.checkpoint,
             advanced.event_count,
@@ -864,7 +883,7 @@ async fn build_day(
                 start: rebuild_start,
                 as_of,
                 expected_source_plan_hash: None,
-                event_limit: Some(event_limit),
+                event_limit: None,
             },
         )
         .await?;
@@ -943,6 +962,66 @@ async fn checkpoint_revision_matches(
         && current.request_complete
         && current.source_plan_hash == checkpoint.source_plan_hash
         && current.token == checkpoint.source_revision_token)
+}
+
+async fn advance_to_boundary(
+    config: &HistoricalGatewayConfig,
+    source: &HistoricalEventSource,
+    mut checkpoint: qmd_core::generic_structure::GenericStructureCheckpoint,
+    target_as_of: DateTime<Utc>,
+) -> Result<BoundaryAdvance, String> {
+    let mut event_count = 0_u64;
+    let mut advanced_event_count = 0_u64;
+    loop {
+        let replay_start = checkpoint
+            .replayed_through
+            .or(checkpoint.updated_at)
+            .ok_or_else(|| "checkpoint has no replay boundary".to_string())?;
+        if replay_start >= target_as_of {
+            break;
+        }
+        let segment_as_of = next_advance_boundary(
+            replay_start,
+            target_as_of,
+            config.structure_checkpoint_max_window_hours,
+        );
+        let advanced = advance_historical_structure_snapshot(
+            config,
+            source,
+            StructureCheckpointAdvanceRequest {
+                schema_version: STRUCTURE_CHECKPOINT_ADVANCEMENT_SCHEMA_VERSION,
+                checkpoint,
+                as_of: segment_as_of,
+                expected_source_plan_hash: None,
+                event_limit: None,
+            },
+        )
+        .await?;
+        if !advanced.complete
+            || advanced.source_revision_before.token != advanced.source_revision_after.token
+        {
+            return Err("historical checkpoint advancement was source-inconsistent".to_string());
+        }
+        event_count = event_count.saturating_add(advanced.event_count);
+        advanced_event_count = advanced_event_count.saturating_add(advanced.advanced_event_count);
+        checkpoint = advanced.checkpoint;
+    }
+    Ok(BoundaryAdvance {
+        checkpoint,
+        event_count,
+        advanced_event_count,
+    })
+}
+
+fn next_advance_boundary(
+    replay_start: DateTime<Utc>,
+    target_as_of: DateTime<Utc>,
+    max_window_hours: usize,
+) -> DateTime<Utc> {
+    std::cmp::min(
+        target_as_of,
+        replay_start + ChronoDuration::hours(max_window_hours.max(1) as i64),
+    )
 }
 
 async fn build_plans(
@@ -1133,7 +1212,6 @@ fn parse_args() -> Result<Args, String> {
     let mut workers = 4_usize;
     let mut lookback_days = 180_i64;
     let mut event_budget = 3_500_000_u64;
-    let mut event_limit = 50_000_000_usize;
     let mut plan_only = false;
     while let Some(argument) = values.next() {
         let value = |name: &str, values: &mut std::iter::Skip<std::env::Args>| {
@@ -1153,16 +1231,13 @@ fn parse_args() -> Result<Args, String> {
             "--event-budget" => {
                 event_budget = parse_number(&argument, &value(&argument, &mut values)?)?
             }
-            "--event-limit" => {
-                event_limit = parse_number(&argument, &value(&argument, &mut values)?)?
-            }
             "--plan-only" => plan_only = true,
             "--help" | "-h" => {
                 println!("structure-checkpoint-campaign");
                 println!("  --ticker-file PATH [--ticker-file PATH]");
                 println!("  --start-date YYYY-MM-DD --end-date YYYY-MM-DD");
                 println!("  --runtime-dir PATH [--workers 4] [--lookback-days 180]");
-                println!("  [--event-budget 3500000] [--event-limit 50000000]");
+                println!("  [--event-budget 3500000]");
                 println!("  [--plan-only]");
                 std::process::exit(0);
             }
@@ -1183,8 +1258,8 @@ fn parse_args() -> Result<Args, String> {
     if !(2..=3650).contains(&lookback_days) {
         return Err("--lookback-days must be between 2 and 3650".to_string());
     }
-    if event_budget == 0 || event_limit == 0 {
-        return Err("--event-budget and --event-limit must be positive".to_string());
+    if event_budget == 0 {
+        return Err("--event-budget must be positive".to_string());
     }
     Ok(Args {
         ticker_files,
@@ -1194,7 +1269,6 @@ fn parse_args() -> Result<Args, String> {
         workers,
         lookback_days,
         event_budget,
-        event_limit,
         plan_only,
     })
 }
@@ -1224,8 +1298,8 @@ fn io_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sy
 #[cfg(test)]
 mod tests {
     use super::{
-        bootstrap_days, dashboard_lines, insert_ticker, log_snapshot, Counts, Progress,
-        ProgressWriter, RecentUnit, TickerPlan,
+        bootstrap_days, dashboard_frame, dashboard_lines, insert_ticker, log_snapshot,
+        next_advance_boundary, Counts, Progress, ProgressWriter, RecentUnit, TickerPlan,
     };
     use chrono::{NaiveDate, TimeZone, Utc};
     use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -1244,6 +1318,23 @@ mod tests {
         insert_ticker(" sugp ", &mut tickers).unwrap();
         insert_ticker("SUGP", &mut tickers).unwrap();
         assert_eq!(tickers.into_iter().collect::<Vec<_>>(), vec!["SUGP"]);
+    }
+
+    #[test]
+    fn checkpoint_advancement_segments_never_exceed_runtime_window() {
+        let mut cursor = Utc.with_ymd_and_hms(2026, 2, 22, 9, 0, 0).unwrap();
+        let target = Utc.with_ymd_and_hms(2026, 3, 6, 0, 59, 59).unwrap();
+        let mut boundaries = Vec::new();
+        while cursor < target {
+            let next = next_advance_boundary(cursor, target, 72);
+            assert!(next > cursor);
+            assert!(next - cursor <= chrono::Duration::hours(72));
+            boundaries.push(next);
+            cursor = next;
+        }
+
+        assert_eq!(boundaries.last().copied(), Some(target));
+        assert!(boundaries.len() > 1);
     }
 
     #[test]
@@ -1307,6 +1398,10 @@ mod tests {
         assert!(lines.iter().any(|line| line.contains("Resolved")));
         assert!(lines.iter().any(|line| line.contains("Ctrl+C")));
         assert!(!lines.iter().any(|line| line.contains('\u{1b}')));
+        let frame = dashboard_frame(&wide_lines, &progress, true);
+        assert!(frame.starts_with("\u{1b}[H"));
+        assert!(!frame.contains("\u{1b}[2J"));
+        assert!(frame.ends_with("\u{1b}[J"));
         let plain = log_snapshot(&progress, 4);
         assert!(plain.contains("progress=11003/201694 (5.5%)"));
         assert!(!plain.contains('\u{1b}'));
