@@ -333,8 +333,11 @@ type LegendSeriesSettings = {
 type LegendSettingsMap = Record<string, LegendSeriesSettings>;
 
 type PriceZonePrimitiveState = {
+  appearanceSettings: ChartAppearanceSettings | null;
   candles: Candle[];
   legendSettings: LegendSettingsMap;
+  regions: Region[];
+  timeline: CandleSeriesDatum[];
   zones: PriceZone[];
 };
 
@@ -350,11 +353,21 @@ class PriceZonePrimitive implements ISeriesPrimitive<Time> {
   private chart: IChartApi | null = null;
   private requestUpdate: (() => void) | null = null;
   private series: ISeriesApi<"Candlestick"> | null = null;
-  private state: PriceZonePrimitiveState = { candles: [], legendSettings: {}, zones: [] };
+  private state: PriceZonePrimitiveState = { appearanceSettings: null, candles: [], legendSettings: {}, regions: [], timeline: [], zones: [] };
   private readonly rendererImpl: IPrimitivePaneRenderer = {
     draw: (target) => {
       if (!this.chart || !this.series) return;
       target.useMediaCoordinateSpace(({ context, mediaSize }) => {
+        if (this.state.appearanceSettings) drawSessionRegionPrimitiveGeometry(
+          this.chart as IChartApi,
+          context,
+          mediaSize.width,
+          mediaSize.height,
+          this.state.regions,
+          this.state.timeline,
+          this.state.candles,
+          this.state.appearanceSettings,
+        );
         drawPriceZonePrimitiveGeometry(
           this.chart as IChartApi,
           this.series as ISeriesApi<"Candlestick">,
@@ -1567,13 +1580,16 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     });
     const timeline = chartTimelineData(currentPayload.candles, timeframe, chartSettingsRef.current.hideEmptyIntervals);
     priceZonePrimitiveRef.current?.setState({
+      appearanceSettings: chartSettingsRef.current,
       candles: currentPayload.candles,
       legendSettings: legendSettingsRef.current,
+      regions: currentPayload.regions,
+      timeline,
       zones: selectedZones,
     });
     syncTradeAnnotationPrimitive(currentPayload, timeline);
     syncPriceZoneAxisLines(candleRef.current, selectedZones, legendSettingsRef.current, priceZoneAxisLinesRef.current);
-    drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, currentPayload.candles, timeline, chartSettingsRef.current, liveEntryLineRef.current);
+    drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.candles, liveEntryLineRef.current);
     oscillatorPaneRuntimesRef.current.forEach((_runtime, key) => {
       drawSessionRegions(
         chart,
@@ -5308,16 +5324,55 @@ function drawRegions(
   chart: IChartApi,
   priceSeries: ISeriesApi<"Candlestick"> | null,
   layer: HTMLDivElement | null,
-  regions: Region[],
   candles: Candle[],
-  timeline: CandleSeriesDatum[],
-  settings: ChartAppearanceSettings,
   liveEntryLine?: LiveEntryLine | null
 ) {
   if (!layer) return;
-  const plotLayer = drawSessionRegions(chart, layer, regions, timeline, candles, settings, true);
-  if (!plotLayer) return;
+  clearOverlayLayer(layer);
   drawLiveEntryLine(chart, priceSeries, layer, candles, liveEntryLine);
+}
+
+function drawSessionRegionPrimitiveGeometry(
+  chart: IChartApi,
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  regions: Region[],
+  timeline: CandleSeriesDatum[],
+  candles: Candle[],
+  settings: ChartAppearanceSettings,
+) {
+  if (!timeline.length || width < 1 || height < 1) return;
+  context.save();
+  context.globalCompositeOperation = "source-over";
+  regions.forEach((region) => {
+    const coordinates = sessionRegionCoordinates(chart, region, timeline);
+    if (!coordinates) return;
+    const span = clippedHorizontalSpan(coordinates.start, coordinates.end, width);
+    if (!span) return;
+    context.fillStyle = sessionRegionColor(region, settings);
+    context.fillRect(span.left, 0, span.width, height);
+  });
+  if (settings.daySeparatorsVisible && candles.length > 1) {
+    const barWidth = estimateBarWidth(chart, candles);
+    let previousDate = marketDate(candles[0].time);
+    context.beginPath();
+    context.setLineDash(canvasLineDash(settings.daySeparatorStyle, 1));
+    context.strokeStyle = rgbaFromHex(settings.daySeparatorColor, 0.78);
+    context.lineWidth = 1;
+    candles.slice(1).forEach((candle) => {
+      const currentDate = marketDate(candle.time);
+      if (currentDate === previousDate) return;
+      previousDate = currentDate;
+      const coordinate = chart.timeScale().timeToCoordinate(candle.time as Time);
+      if (!isVisibleCoordinate(coordinate, width)) return;
+      const x = Number(coordinate) - barWidth / 2;
+      context.moveTo(x, 0);
+      context.lineTo(x, height);
+    });
+    context.stroke();
+  }
+  context.restore();
 }
 
 function drawSessionRegions(

@@ -337,6 +337,11 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     draw_source = renderer_source.split("function drawRegions", 1)[1].split("function drawSessionRegions", 1)[0]
     assert "drawTradeAnnotations(" not in draw_source
     assert "drawExecutionAnnotations(" not in draw_source
+    assert "drawSessionRegionPrimitiveGeometry(" in renderer_source
+    assert 'zOrder: () => "bottom"' in renderer_source
+    assert "context.fillStyle = sessionRegionColor(region, settings)" in renderer_source
+    assert "clearOverlayLayer(layer)" in draw_source
+    assert "drawSessionRegions(chart, layer" not in draw_source
 
 
 def test_strategy_activity_loads_a_reviewable_history_window() -> None:
