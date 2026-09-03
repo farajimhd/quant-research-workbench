@@ -79,6 +79,7 @@ type RendererDataCache = { data: RendererDatum[]; styleKey: string };
 const rendererDataCache = new WeakMap<object, RendererDataCache>();
 type Region = { start: number; end: number; color: string; label: string };
 type TradeLabelPart = { text: string; tone?: "label" | "price" | "pnlLoss" | "pnlWin" | "reason" | "separator" | "size" };
+type TradeLabelPartSettings = Partial<Record<NonNullable<TradeLabelPart["tone"]>, StrategyPresentationStyleSettings>>;
 type TradeFillAnnotation = {
   kind?: "add" | "profit_target" | "protective_stop" | "trailing_stop" | "position_exit" | "stop_change" | "target_change" | "protection_repair" | "entry_freeze";
   label?: string;
@@ -135,7 +136,9 @@ type StrategyPresentationStyleSettings = {
 };
 type StrategyVisualElementKey =
   | "entryLine" | "entryArrow" | "entryLabel"
+  | "entryDirectionPart" | "entrySizePart" | "entrySeparatorPart" | "entryPricePart"
   | "exitLine" | "exitArrow" | "exitLabel"
+  | "exitReasonPart" | "exitSizePart" | "exitSeparatorPart" | "exitPricePart" | "exitPnlPart"
   | "levelLine" | "levelLabel"
   | "stopLine" | "stopLabel"
   | "targetLine" | "targetLabel"
@@ -661,9 +664,18 @@ const defaultStrategyPresentationSettings: StrategyPresentationSettings = {
     entryLine: strategyPresentationStyle("#3596FD", "solid", 2, 0.95),
     entryArrow: strategyPresentationStyle("", "solid", 2, 1, 10, 5, 1),
     entryLabel: { ...strategyPresentationStyle("", "solid", 1, 1, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 5, labelPaddingY: 2 },
+    entryDirectionPart: { ...strategyPresentationStyle("", "solid", 1, 1, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 5, labelPaddingY: 2 },
+    entrySizePart: { ...strategyPresentationStyle("", "solid", 1, 1, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 3, labelPaddingY: 2 },
+    entrySeparatorPart: { ...strategyPresentationStyle("", "solid", 1, 1, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 2, labelPaddingY: 2 },
+    entryPricePart: { ...strategyPresentationStyle("", "solid", 1, 1, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 4, labelPaddingY: 2 },
     exitLine: strategyPresentationStyle("#FF3D47", "solid", 2, 0.9),
     exitArrow: strategyPresentationStyle("#FF4D55", "solid", 2, 1, 10, 5, 1),
     exitLabel: { ...strategyPresentationStyle("#FF3838", "solid", 2, 0.9, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 8, labelPaddingY: 2 },
+    exitReasonPart: { ...strategyPresentationStyle("", "solid", 1, 0.9, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 6, labelPaddingY: 2 },
+    exitSizePart: { ...strategyPresentationStyle("", "solid", 1, 0.9, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 3, labelPaddingY: 2 },
+    exitSeparatorPart: { ...strategyPresentationStyle("", "solid", 1, 0.9, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 2, labelPaddingY: 2 },
+    exitPricePart: { ...strategyPresentationStyle("", "solid", 1, 0.9, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 4, labelPaddingY: 2 },
+    exitPnlPart: { ...strategyPresentationStyle("", "solid", 1, 0.9, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 5, labelPaddingY: 2 },
     levelLine: strategyPresentationStyle("", "dashed", 1, 0.9),
     levelLabel: { ...strategyPresentationStyle("", "solid", 1, 1, 8, 7, 1), borderWidth: 0, labelPaddingX: 2, labelPaddingY: 1 },
     stopLine: strategyPresentationStyle("", "dashed", 1, 0.95),
@@ -2915,10 +2927,19 @@ type StrategyVisualElementDefinition = { help: string; key: StrategyVisualElemen
 const strategyVisualElementDefinitions: StrategyVisualElementDefinition[] = [
   { key: "entryLine", kind: "line", title: "Entry price line", help: "Position entry price across the lifecycle." },
   { key: "entryArrow", kind: "marker", title: "Entry arrow", help: "Exact entry time and execution price." },
-  { key: "entryLabel", kind: "label", title: "Entry label", help: "Direction, quantity, and entry price." },
+  { key: "entryLabel", kind: "label", title: "Entry label container", help: "Master label visibility, placement, and fallback style." },
+  { key: "entryDirectionPart", kind: "label", title: "Entry · Direction", help: "Long or short segment of the entry label." },
+  { key: "entrySizePart", kind: "label", title: "Entry · Size", help: "Filled position quantity segment of the entry label." },
+  { key: "entrySeparatorPart", kind: "label", title: "Entry · @ separator", help: "Separator between position size and execution price." },
+  { key: "entryPricePart", kind: "label", title: "Entry · Price", help: "Execution-price segment of the entry label." },
   { key: "exitLine", kind: "line", title: "Exit price line", help: "Final exit price across the lifecycle." },
   { key: "exitArrow", kind: "marker", title: "Exit arrow", help: "Exact exit time and execution price." },
-  { key: "exitLabel", kind: "label", title: "Exit result label", help: "Exit quantity, price, and realized result." },
+  { key: "exitLabel", kind: "label", title: "Exit label container", help: "Master label visibility, placement, and fallback style." },
+  { key: "exitReasonPart", kind: "label", title: "Exit · Reason", help: "Exit action or strategy-reason segment." },
+  { key: "exitSizePart", kind: "label", title: "Exit · Size", help: "Final exit quantity segment." },
+  { key: "exitSeparatorPart", kind: "label", title: "Exit · Separators", help: "The @ and result separators." },
+  { key: "exitPricePart", kind: "label", title: "Exit · Price", help: "Final execution-price segment." },
+  { key: "exitPnlPart", kind: "label", title: "Exit · Realized P&L", help: "Realized gain or loss segment." },
   { key: "levelLine", kind: "line", title: "Structural level lines", help: "Entry-frozen resistance or support evidence." },
   { key: "levelLabel", kind: "label", title: "Structural level labels", help: "L1–L3 and trigger identifiers." },
   { key: "stopLine", kind: "line", title: "Protective stop line", help: "Current or immutable entry-plan protection." },
@@ -3959,7 +3980,9 @@ function normalizeStrategyPresentationSettings(settings: Partial<StrategyPresent
   const legacy = settings as Partial<StrategyPresentationSettings> & Partial<Record<"adjustments" | "entry" | "exit" | "levels" | "stop" | "targets", Partial<StrategyPresentationStyleSettings>>>;
   const legacyByElement: Record<StrategyVisualElementKey, Partial<StrategyPresentationStyleSettings> | undefined> = {
     entryLine: legacy.entry, entryArrow: legacy.entry, entryLabel: legacy.entry,
+    entryDirectionPart: undefined, entrySizePart: undefined, entrySeparatorPart: undefined, entryPricePart: undefined,
     exitLine: legacy.exit, exitArrow: legacy.exit, exitLabel: legacy.exit ? { ...legacy.exit, color: "" } : undefined,
+    exitReasonPart: undefined, exitSizePart: undefined, exitSeparatorPart: undefined, exitPricePart: undefined, exitPnlPart: undefined,
     levelLine: legacy.levels, levelLabel: legacy.levels,
     stopLine: legacy.stop, stopLabel: legacy.stop,
     targetLine: legacy.targets, targetLabel: legacy.targets,
@@ -6546,6 +6569,20 @@ function drawTradeAnnotationPrimitiveGeometry(
     const exitArrowColor = strategyPresentationColor(elements.exitArrow.color, exitFallbackColor);
     const exitLabelFallback = Number(annotation.pnl) > 0 ? successColor : Number(annotation.pnl) < 0 ? dangerColor : validHexColor(annotation.exitLabelColor, exitFallbackColor);
     const exitLabelColor = strategyPresentationColor(elements.exitLabel.color, exitLabelFallback);
+    const entryLabelPartSettings: TradeLabelPartSettings = {
+      label: elements.entryDirectionPart,
+      price: elements.entryPricePart,
+      separator: elements.entrySeparatorPart,
+      size: elements.entrySizePart,
+    };
+    const exitLabelPartSettings: TradeLabelPartSettings = {
+      pnlLoss: elements.exitPnlPart,
+      pnlWin: elements.exitPnlPart,
+      price: elements.exitPricePart,
+      reason: elements.exitReasonPart,
+      separator: elements.exitSeparatorPart,
+      size: elements.exitSizePart,
+    };
     if (elements.entryLine.visible) {
       drawCanvasTradeLine(context, span.left, span.right, entryY, entryLineColor, annotation.selected ? Math.min(5, elements.entryLine.lineWidth + 1) : elements.entryLine.lineWidth, elements.entryLine.lineStyle, elements.entryLine.opacity);
     }
@@ -6557,14 +6594,14 @@ function drawTradeAnnotationPrimitiveGeometry(
       drawCanvasTradeArrow(context, entryX, entryY, entryArrowColor, "entry", annotation.selected === true, elements.entryArrow);
     }
     if (elements.entryLabel.visible) {
-      drawCanvasTradeLabel(context, compactTradeLabel(annotation.entryLabelParts, annotation.entryLabel, "Entry"), entryX, entryY + elements.entryArrow.markerSize + 7, entryLabelColor, chartBackground, annotation.entryLabelSide ?? "left", width, height, elements.entryLabel, labelLayout, elements.connector);
+      drawCanvasTradeLabel(context, compactTradeLabel(annotation.entryLabelParts, annotation.entryLabel, "Entry"), entryX, entryY + elements.entryArrow.markerSize + 7, entryLabelColor, chartBackground, annotation.entryLabelSide ?? "left", width, height, elements.entryLabel, labelLayout, elements.connector, annotation.entryLabelParts, entryLabelPartSettings);
     }
     if (annotation.status !== "open" && exitY !== null) {
       if (elements.exitArrow.visible) {
         if (elements.connector.visible) drawCanvasCandleConnector(context, priceSeries, candles, annotation.exitTime ?? endTime, exitX, exitY, exitArrowColor, elements.connector, settings.connectorThreshold);
         drawCanvasTradeArrow(context, exitX, exitY, exitArrowColor, "exit", annotation.selected === true, elements.exitArrow);
       }
-      if (elements.exitLabel.visible) drawCanvasTradeLabel(context, compactTradeLabel(annotation.exitLabelParts, annotation.exitLabel, "Exit"), exitX, exitY - elements.exitLabel.labelSize - elements.exitArrow.markerSize - 8, exitLabelColor, chartBackground, annotation.exitLabelSide ?? "right", width, height, elements.exitLabel, labelLayout, elements.connector);
+      if (elements.exitLabel.visible) drawCanvasTradeLabel(context, compactTradeLabel(annotation.exitLabelParts, annotation.exitLabel, "Exit"), exitX, exitY - elements.exitLabel.labelSize - elements.exitArrow.markerSize - 8, exitLabelColor, chartBackground, annotation.exitLabelSide ?? "right", width, height, elements.exitLabel, labelLayout, elements.connector, annotation.exitLabelParts, exitLabelPartSettings);
     }
     // Protection evidence is decision-critical. Paint it after lifecycle
     // labels so dense, fast entry/exit clusters cannot hide every SL/TP line.
@@ -6789,18 +6826,31 @@ function drawCanvasTradeLabel(
   settings: StrategyPresentationStyleSettings,
   layout?: CanvasAnnotationLayout,
   connectorSettings?: StrategyPresentationStyleSettings,
+  parts?: TradeLabelPart[],
+  partSettings?: TradeLabelPartSettings,
 ) {
   if (!text) return;
-  const fontSize = settings.labelSize;
-  const opacity = settings.opacity;
-  const paddingX = settings.labelPaddingX;
-  const paddingY = settings.labelPaddingY;
-  const fillColor = strategyPresentationColor(settings.fillColor, background);
-  const borderColor = strategyPresentationColor(settings.borderColor, color);
-  context.font = `${settings.fontWeight} ${fontSize}px ${canvasInterfaceFont()}`;
+  const segmentInputs = parts?.length
+    ? parts.map((part) => ({
+      color: strategyPresentationColor(partSettings?.[part.tone ?? "label"]?.color ?? "", color),
+      settings: partSettings?.[part.tone ?? "label"] ?? settings,
+      text: part.text,
+    }))
+    : [{ color, settings, text }];
+  const segments = segmentInputs
+    .filter((segment) => segment.text && segment.settings.visible)
+    .map((segment) => {
+      context.font = `${segment.settings.fontWeight} ${segment.settings.labelSize}px ${canvasInterfaceFont()}`;
+      return {
+        ...segment,
+        height: segment.settings.labelSize + segment.settings.labelPaddingY * 2,
+        width: Math.ceil(context.measureText(segment.text).width) + segment.settings.labelPaddingX * 2,
+      };
+    });
+  if (!segments.length) return;
   context.textBaseline = "middle";
-  const labelWidth = Math.ceil(context.measureText(text).width) + paddingX * 2;
-  const labelHeight = fontSize + paddingY * 2;
+  const labelWidth = segments.reduce((total, segment) => total + segment.width, 0);
+  const labelHeight = Math.max(...segments.map((segment) => segment.height));
   const preferredLeft = side === "right" ? anchorX - labelWidth : anchorX;
   const preferredCenterY = top + labelHeight / 2;
   const horizontalCandidates = [preferredLeft, preferredLeft - labelWidth / 2, preferredLeft + labelWidth / 2];
@@ -6829,23 +6879,31 @@ function drawCanvasTradeLabel(
     context.save();
     context.beginPath();
     context.setLineDash(canvasLineDash(connectorSettings?.lineStyle ?? "dashed", connectorWidth));
-    context.strokeStyle = rgbaFromHex(connectorColor, connectorSettings?.opacity ?? Math.min(0.8, opacity));
+    context.strokeStyle = rgbaFromHex(connectorColor, connectorSettings?.opacity ?? Math.min(0.8, settings.opacity));
     context.lineWidth = connectorWidth;
     context.moveTo(connectorX, labelCenterY < preferredCenterY ? top + labelHeight : top);
     context.lineTo(anchorX, preferredCenterY);
     context.stroke();
     context.restore();
   }
-  context.fillStyle = rgbaFromHex(fillColor, settings.fillOpacity);
-  context.fillRect(left, top, labelWidth, labelHeight);
-  if (settings.borderWidth > 0 && settings.borderOpacity > 0) {
-    context.setLineDash(canvasLineDash(settings.borderStyle, settings.borderWidth));
-    context.strokeStyle = rgbaFromHex(borderColor, settings.borderOpacity);
-    context.lineWidth = settings.borderWidth;
-    context.strokeRect(left + settings.borderWidth / 2, top + settings.borderWidth / 2, labelWidth - settings.borderWidth, labelHeight - settings.borderWidth);
-  }
-  context.fillStyle = rgbaFromHex(color, opacity);
-  context.fillText(text, left + paddingX, top + labelHeight / 2);
+  let segmentLeft = left;
+  segments.forEach((segment) => {
+    const segmentTop = top + (labelHeight - segment.height) / 2;
+    const fillColor = strategyPresentationColor(segment.settings.fillColor, background);
+    const borderColor = strategyPresentationColor(segment.settings.borderColor, segment.color);
+    context.fillStyle = rgbaFromHex(fillColor, segment.settings.fillOpacity);
+    context.fillRect(segmentLeft, segmentTop, segment.width, segment.height);
+    if (segment.settings.borderWidth > 0 && segment.settings.borderOpacity > 0) {
+      context.setLineDash(canvasLineDash(segment.settings.borderStyle, segment.settings.borderWidth));
+      context.strokeStyle = rgbaFromHex(borderColor, segment.settings.borderOpacity);
+      context.lineWidth = segment.settings.borderWidth;
+      context.strokeRect(segmentLeft + segment.settings.borderWidth / 2, segmentTop + segment.settings.borderWidth / 2, segment.width - segment.settings.borderWidth, segment.height - segment.settings.borderWidth);
+    }
+    context.font = `${segment.settings.fontWeight} ${segment.settings.labelSize}px ${canvasInterfaceFont()}`;
+    context.fillStyle = rgbaFromHex(segment.color, segment.settings.opacity);
+    context.fillText(segment.text, segmentLeft + segment.settings.labelPaddingX, segmentTop + segment.height / 2);
+    segmentLeft += segment.width;
+  });
 }
 
 function canvasLabelBoxesOverlap(first: CanvasLabelBox, second: CanvasLabelBox) {
