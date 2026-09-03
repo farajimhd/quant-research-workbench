@@ -107,9 +107,14 @@ pub fn checkpoint_sha256(checkpoint: &GenericStructureCheckpoint) -> Result<Stri
     // Certification owns causal state. Presentation/selection projections are
     // recomputed from raw counts on load and must not strand a valid v16 chain
     // when their schema evolves.
-    let mut value = checkpoint_json_value(checkpoint)?;
+    let value = checkpoint_json_value(checkpoint)?;
+    canonical_json_sha256(&checkpoint_certification_value(&value))
+}
+
+pub fn checkpoint_certification_value(value: &Value) -> Value {
+    let mut value = value.clone();
     remove_recomputable_hold_projections(&mut value);
-    canonical_json_sha256(&value)
+    value
 }
 
 fn remove_recomputable_hold_projections(value: &mut Value) {

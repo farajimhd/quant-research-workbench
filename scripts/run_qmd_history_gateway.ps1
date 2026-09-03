@@ -90,6 +90,7 @@ function Test-HistoryPortOpen {
 function Test-ExistingHistoryGateway {
     param(
         $Endpoint,
+        [string]$ExpectedCalculationRevision,
         [string]$ExpectedCheckpointTable,
         [string]$ExpectedCheckpointSet
     )
@@ -111,14 +112,17 @@ function Test-ExistingHistoryGateway {
     if ($health.status -ne "ready" -or $health.running -ne $true) {
         throw "QMD History is already bound at $($Endpoint.BaseUrl), but it is not ready (status=$($health.status)). Inspect that process instead of starting a duplicate."
     }
-    if ($health.structure_algorithm_version -ne 16 -or
+    if ($health.calculation_revision -ne $ExpectedCalculationRevision -or
+        $health.structure_algorithm_version -ne 16 -or
         $health.config.structure_daily_checkpoint_table -ne $ExpectedCheckpointTable -or
         $health.config.structure_checkpoint_set_id -ne $ExpectedCheckpointSet) {
         throw (
             "QMD History is running with incompatible structural authority: " +
+            "calculation_revision=$($health.calculation_revision), " +
             "algorithm=$($health.structure_algorithm_version), " +
             "table=$($health.config.structure_daily_checkpoint_table), " +
-            "set=$($health.config.structure_checkpoint_set_id). Expected algorithm=16, " +
+            "set=$($health.config.structure_checkpoint_set_id). Expected calculation_revision=" +
+            "$ExpectedCalculationRevision, algorithm=16, " +
             "table=$ExpectedCheckpointTable, set=$ExpectedCheckpointSet. Stop and restart this service."
         )
     }
@@ -147,8 +151,9 @@ $expectedCheckpointSet = if ($env:QMD_STRUCTURE_CHECKPOINT_SET_ID) {
 } else {
     "canonical-tradable-20250101-20260831-v16-cert-v1"
 }
+$expectedCalculationRevision = "qmd-derived-v53"
 
-if (-not $BuildOnly -and (Test-ExistingHistoryGateway -Endpoint $endpoint -ExpectedCheckpointTable $expectedCheckpointTable -ExpectedCheckpointSet $expectedCheckpointSet)) {
+if (-not $BuildOnly -and (Test-ExistingHistoryGateway -Endpoint $endpoint -ExpectedCalculationRevision $expectedCalculationRevision -ExpectedCheckpointTable $expectedCheckpointTable -ExpectedCheckpointSet $expectedCheckpointSet)) {
     return
 }
 
@@ -165,7 +170,7 @@ try {
     if ($BuildOnly) {
         return
     }
-    if (Test-ExistingHistoryGateway -Endpoint $endpoint -ExpectedCheckpointTable $expectedCheckpointTable -ExpectedCheckpointSet $expectedCheckpointSet) {
+    if (Test-ExistingHistoryGateway -Endpoint $endpoint -ExpectedCalculationRevision $expectedCalculationRevision -ExpectedCheckpointTable $expectedCheckpointTable -ExpectedCheckpointSet $expectedCheckpointSet) {
         return
     }
     $gatewayExecutable = if ($BinaryPath.Trim()) {

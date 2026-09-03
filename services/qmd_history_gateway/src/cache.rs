@@ -14,7 +14,7 @@ use qmd_core::compact_event::LiveCompactEvent;
 use qmd_core::event::MarketEvent;
 use qmd_core::generic_structure::{
     GenericStructureCheckpoint, GenericStructureEngine, GenericStructureEvent,
-    StructureLevelCandidate, GENERIC_STRUCTURE_ALGORITHM_VERSION,
+    StructureLevelCandidate, GENERIC_STRUCTURE_ALGORITHM_VERSION, STRUCTURE_HOLD_SCORE_REVISION,
 };
 use qmd_core::indicators::{
     BarIndicatorCalculator, IndicatorRow, MarketStructureReferenceLevels,
@@ -40,7 +40,7 @@ use std::sync::Mutex as StdMutex;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, OnceCell, Semaphore};
 
 pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v35";
-pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v52";
+pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v53";
 pub const HISTORICAL_CORPORATE_ACTION_REVISION: &str = "retrospective-split-adjusted-v2";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
 const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 11;
@@ -2240,7 +2240,9 @@ fn structure_seed_cache_key(
         before,
         source_revision_token,
         split_adjustments,
-        &format!("qmd-structure-v{GENERIC_STRUCTURE_ALGORITHM_VERSION}"),
+        &format!(
+            "qmd-structure-v{GENERIC_STRUCTURE_ALGORITHM_VERSION}-{STRUCTURE_HOLD_SCORE_REVISION}"
+        ),
     )
 }
 
@@ -3312,7 +3314,7 @@ mod tests {
         HISTORICAL_CALCULATION_REVISION, HISTORICAL_CORPORATE_ACTION_REVISION,
         HISTORICAL_ENGINE_VERSION, LEGACY_STRUCTURE_CALCULATION_REVISION,
         MAX_ENCOUNTERED_STRUCTURE_LEVELS, PREPARED_BAR_CACHE_SCHEMA_VERSION,
-        PREPARED_STRUCTURE_SEED_CACHE_SCHEMA_VERSION,
+        PREPARED_STRUCTURE_SEED_CACHE_SCHEMA_VERSION, STRUCTURE_HOLD_SCORE_REVISION,
     };
     use crate::source::EventWindow;
     use chrono::{DateTime, Duration, NaiveDate, TimeZone, Utc};
@@ -3409,7 +3411,7 @@ mod tests {
             .unwrap()
         );
         assert!(original.contains(&format!(
-            "qmd-structure-v{GENERIC_STRUCTURE_ALGORITHM_VERSION}"
+            "qmd-structure-v{GENERIC_STRUCTURE_ALGORITHM_VERSION}-{STRUCTURE_HOLD_SCORE_REVISION}"
         )));
         assert!(legacy.contains(LEGACY_STRUCTURE_CALCULATION_REVISION));
     }
