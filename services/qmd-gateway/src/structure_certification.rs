@@ -104,9 +104,21 @@ impl StructureEventAuditor {
 }
 
 pub fn checkpoint_sha256(checkpoint: &GenericStructureCheckpoint) -> Result<String, String> {
-    let value = serde_json::to_value(checkpoint)
-        .map_err(|error| format!("failed to canonicalize structure checkpoint: {error}"))?;
+    let value = checkpoint_json_value(checkpoint)?;
     canonical_json_sha256(&value)
+}
+
+/// Return the checkpoint exactly as its durable JSON representation decodes.
+///
+/// `serde_json::to_value` retains the full binary `f64` value while the JSON
+/// text serializer emits the shortest decimal that round-trips to that value.
+/// Certification must therefore use the latter: it is the representation that
+/// ClickHouse stores and subsequent readers verify.
+pub fn checkpoint_json_value(checkpoint: &GenericStructureCheckpoint) -> Result<Value, String> {
+    let encoded = serde_json::to_string(checkpoint)
+        .map_err(|error| format!("failed to serialize structure checkpoint: {error}"))?;
+    serde_json::from_str(&encoded)
+        .map_err(|error| format!("failed to decode serialized structure checkpoint: {error}"))
 }
 
 pub fn canonical_json_sha256(value: &Value) -> Result<String, String> {
@@ -116,8 +128,10 @@ pub fn canonical_json_sha256(value: &Value) -> Result<String, String> {
 }
 
 pub fn split_sha256(checkpoint: &GenericStructureCheckpoint) -> Result<String, String> {
-    let value = serde_json::to_value(&checkpoint.applied_split_adjustments)
-        .map_err(|error| format!("failed to canonicalize structure splits: {error}"))?;
+    let encoded = serde_json::to_string(&checkpoint.applied_split_adjustments)
+        .map_err(|error| format!("failed to serialize structure splits: {error}"))?;
+    let value = serde_json::from_str(&encoded)
+        .map_err(|error| format!("failed to decode serialized structure splits: {error}"))?;
     let mut bytes = Vec::new();
     write_canonical_json(&value, &mut bytes)?;
     Ok(sha256(&bytes))
@@ -348,8 +362,34 @@ fn write_canonical_json(value: &Value, output: &mut Vec<u8>) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bars::TradeUpdateRule;
     use crate::compact_event::LIVE_COMPACT_EVENT_SCHEMA_VERSION;
+    use crate::event::{MarketEvent, TradeEvent};
     use chrono::TimeZone;
+    use serde_json::json;
+
+    fn first_difference(left: &Value, right: &Value, path: &str) -> Option<String> {
+        match (left, right) {
+            (Value::Array(left), Value::Array(right)) => left
+                .iter()
+                .zip(right)
+                .enumerate()
+                .find_map(|(index, (left, right))| {
+                    first_difference(left, right, &format!("{path}[{index}]"))
+                }),
+            (Value::Object(left), Value::Object(right)) => left
+                .keys()
+                .chain(right.keys())
+                .find_map(|key| match (left.get(key), right.get(key)) {
+                    (Some(left), Some(right)) => {
+                        first_difference(left, right, &format!("{path}.{key}"))
+                    }
+                    _ => Some(format!("{path}.{key}")),
+                }),
+            _ if left == right => None,
+            _ => Some(format!("{path}: {left} != {right}")),
+        }
+    }
 
     fn compact(ordinal: u64, sip: u64) -> LiveCompactEvent {
         LiveCompactEvent::from_persisted_fields(
@@ -452,5 +492,50 @@ mod tests {
         )
         .unwrap_err()
         .contains("chain is incomplete"));
+    }
+
+    #[test]
+    fn checkpoint_hash_matches_its_serialized_payload_after_market_updates() {
+        let mut engine = crate::generic_structure::GenericStructureEngine::new("SUGP");
+        let start = Utc.with_ymd_and_hms(2026, 8, 21, 8, 0, 0).unwrap();
+        for (index, price) in [3.45, 3.46, 3.44, 3.48, 3.43, 3.51, 3.47]
+            .into_iter()
+            .cycle()
+            .take(200)
+            .enumerate()
+        {
+            let sequence = index as u64 + 1;
+            engine.apply_event_without_snapshot(
+                &MarketEvent::Trade(TradeEvent {
+                    conditions: Vec::new(),
+                    exchange: 1,
+                    ingest_ts: start + chrono::Duration::milliseconds(index as i64),
+                    participant_ts: None,
+                    price,
+                    raw: json!({"arrival_sequence": sequence}),
+                    sequence,
+                    size: 100.0 + index as f64,
+                    tape: 3,
+                    ticker: "SUGP".to_string(),
+                    trade_id: sequence.to_string(),
+                    trf_id: 0,
+                    trf_ts: None,
+                    ts: start + chrono::Duration::milliseconds(index as i64),
+                }),
+                TradeUpdateRule::regular(),
+            );
+        }
+        let checkpoint = engine.checkpoint();
+        let certified = checkpoint_sha256(&checkpoint).unwrap();
+        let serialized = serde_json::to_string(&checkpoint).unwrap();
+        let persisted = serde_json::from_str(&serialized).unwrap();
+        let in_memory = serde_json::to_value(&checkpoint).unwrap();
+
+        assert_eq!(
+            certified,
+            canonical_json_sha256(&persisted).unwrap(),
+            "{}",
+            first_difference(&in_memory, &persisted, "$").unwrap_or_default(),
+        );
     }
 }

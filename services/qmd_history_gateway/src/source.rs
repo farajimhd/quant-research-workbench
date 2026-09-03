@@ -17,8 +17,8 @@ use qmd_core::indicators::{
 };
 use qmd_core::market_products::parse_resolution_us;
 use qmd_core::structure_certification::{
-    canonical_json_sha256, checkpoint_sha256, validate_checkpoint_certification,
-    StructureCheckpointCertification,
+    canonical_json_sha256, checkpoint_json_value, checkpoint_sha256,
+    validate_checkpoint_certification, StructureCheckpointCertification,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -2729,9 +2729,7 @@ impl HistoricalEventSource {
             stored_checkpoint_value.clone(),
         )
         .map_err(|error| format!("invalid persisted structure checkpoint payload: {error}"))?;
-        let decoded_checkpoint_value = serde_json::to_value(&checkpoint).map_err(|error| {
-            format!("failed to re-encode persisted structure checkpoint: {error}")
-        })?;
+        let decoded_checkpoint_value = checkpoint_json_value(&checkpoint)?;
         if let Some(path) =
             first_json_difference_path(&stored_checkpoint_value, &decoded_checkpoint_value, "$")
         {

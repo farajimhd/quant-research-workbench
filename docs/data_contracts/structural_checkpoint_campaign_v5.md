@@ -28,7 +28,9 @@ Every daily checkpoint row stores `certification_json` with:
 Canonical checkpoint hashing recursively sorts JSON object keys. Hash identity
 therefore does not depend on Rust `HashMap` iteration order, worker assignment,
 chunk size, or JSON object insertion order. Floating-point values retain their
-serialized value; no rounding is introduced for certification.
+exact durable JSON representation: the serializer's shortest lossless decimal
+is hashed, rather than an in-memory formatter's expanded binary approximation.
+No lossy numeric rounding is introduced for certification.
 
 ## Fail-closed behavior
 
