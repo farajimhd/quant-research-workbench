@@ -58,12 +58,15 @@ def test_completed_position_manager_reports_an_outdated_backend_contract() -> No
     assert "will not reinterpret FIFO execution fragments as positions" in source
 
 
-def test_charts_quotes_uses_shared_trade_annotations_on_every_chart() -> None:
+def test_charts_quotes_limits_position_presentation_to_intraday_charts() -> None:
     canvas_source = CANVAS_PAGE.read_text(encoding="utf-8")
     chart_source = CHART_PRESENTATION.read_text(encoding="utf-8")
 
     assert "showTradeAnnotations = true" in chart_source
-    assert chart_source.count("showTradeAnnotations ?") == 1
+    assert "showTradeAnnotations && supportsPositionPresentation(timeframe)" in chart_source
+    assert "return !MACRO_TIMEFRAMES.has(timeframe)" in chart_source
+    assert "strategyPresentationEnabled={strategyPresentationAvailable}" in chart_source
+    assert "strategyPresentationAvailable && activePosition" in chart_source
     assert "execution_annotations: []" in chart_source
     assert "showTradeAnnotations={false}" not in canvas_source
 
@@ -133,13 +136,14 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     chart_source = (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "chartPresentation.tsx").read_text(encoding="utf-8")
     renderer_source = (REPO_ROOT / "frontend" / "src" / "app" / "components" / "ChartPanel.tsx").read_text(encoding="utf-8")
 
-    assert "() => showTradeAnnotations ? positionLifecycleAnnotations(trading, linkContext.symbol) : []" in chart_source
+    assert "() => strategyPresentationAvailable ? positionLifecycleAnnotations(trading, linkContext.symbol) : []" in chart_source
     assert "trade_annotations: tradeAnnotations" in chart_source
     assert "trading?.position_lifecycles" in chart_source
     assert 'const status = String(row.status || "").toLowerCase() === "closed" ? "closed" : "open"' in chart_source
     assert 'const endTime = exitTime ?? asOfTime' in chart_source
     assert 'annotation.status !== "open"' in renderer_source
     assert 'trade.endTime ?? trade.exitTime ?? trade.entryTime' in renderer_source
+    assert renderer_source.index("syncTradeAnnotationPrimitive(payload)") < renderer_source.index("syncRendererData(candleRef.current")
     assert "trading?.strategy_chart_activity ?? trading?.strategy_activity" in chart_source
     assert "entryDecision?.row.chart_plan" in chart_source
     assert "guideStartTime: planStartTime" in chart_source
@@ -272,7 +276,7 @@ def test_completed_strategy_review_opens_chart_performance_and_audit_surfaces() 
     assert 'timeframe: "1s"' in replay_layout
     assert '"indicator.macd"' in replay_layout
     assert '"strategy.presentation"' not in replay_layout
-    assert 'strategyPresentationEnabled={showTradeAnnotations}' in (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "chartPresentation.tsx").read_text(encoding="utf-8")
+    assert 'strategyPresentationEnabled={strategyPresentationAvailable}' in (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "chartPresentation.tsx").read_text(encoding="utf-8")
     assert "run.tickers?.[0]" in replay_layout
     assert "registry.linkAssignments.charts_quotes" in replay_layout
     assert "[chartLinkGroup]: { ...registry.linkContexts[chartLinkGroup], symbol: ticker }" in replay_layout

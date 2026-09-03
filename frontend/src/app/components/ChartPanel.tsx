@@ -1153,6 +1153,10 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const currentTimeRange = preserveViewport && earlierBarsPrepended ? priceChartRef.current.timeScale().getVisibleRange() : null;
     const timeline = chartTimelineData(payload.candles, timeframe, chartSettingsRef.current.hideEmptyIntervals, payload.timeline_events);
     candleBoundsRef.current = candleValueBounds(payload.candles);
+    // Trade guides participate in the candle series autoscale. Seed the
+    // primitive before setData/fit operations so off-candle SL/TP prices are
+    // included in the first visible price range rather than attached after it.
+    syncTradeAnnotationPrimitive(payload);
     syncRendererData(candleRef.current, timeline as unknown as RendererDatum[], `candles:${timeframe}`);
     if (forecastCandleRef.current) {
       syncRendererData(
@@ -1469,12 +1473,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       legendSettings: legendSettingsRef.current,
       zones: selectedZones,
     });
-    tradeAnnotationPrimitiveRef.current?.setState({
-      candles: currentPayload.candles,
-      executions: currentPayload.execution_annotations ?? [],
-      settings: strategyPresentationSettings,
-      trades: currentPayload.trade_annotations ?? [],
-    });
+    syncTradeAnnotationPrimitive(currentPayload);
     syncPriceZoneAxisLines(candleRef.current, selectedZones, legendSettingsRef.current, priceZoneAxisLinesRef.current);
     drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, currentPayload.candles, timeline, chartSettingsRef.current, liveEntryLineRef.current);
     oscillatorPaneRuntimesRef.current.forEach((_runtime, key) => {
@@ -1490,6 +1489,15 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     });
     drawReferenceLine(chart, referenceLayerRef.current, currentPayload.candles, showReferenceLineRef.current ? referenceRef.current : null);
     drawTimelineEvents(chart, timelineEventLayerRef.current, currentPayload.timeline_events ?? []);
+  }
+
+  function syncTradeAnnotationPrimitive(currentPayload: ChartPayload) {
+    tradeAnnotationPrimitiveRef.current?.setState({
+      candles: currentPayload.candles,
+      executions: currentPayload.execution_annotations ?? [],
+      settings: strategyPresentationSettings,
+      trades: currentPayload.trade_annotations ?? [],
+    });
   }
 
   function scheduleOverlayRedraw() {

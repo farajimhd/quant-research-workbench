@@ -200,9 +200,10 @@ export function ChartPreview({
       requestController?.abort();
     };
   }, [barGptOriginUs, barGptScopeId, barGptTriggerMode, barGptVersion, barGptView, linkContext.symbol, liveChart.pointInTime, showBarGpt]);
+  const strategyPresentationAvailable = showTradeAnnotations && supportsPositionPresentation(timeframe);
   const tradeAnnotations = useMemo(
-    () => showTradeAnnotations ? positionLifecycleAnnotations(trading, linkContext.symbol) : [],
-    [linkContext.symbol, showTradeAnnotations, trading],
+    () => strategyPresentationAvailable ? positionLifecycleAnnotations(trading, linkContext.symbol) : [],
+    [linkContext.symbol, strategyPresentationAvailable, trading],
   );
   const payload = useMemo<ChartPayload>(() => {
     const marketSignalMarkers = qmdMarketSignalChartMarkers(
@@ -295,7 +296,7 @@ export function ChartPreview({
     { text: activeLifecycleAnnotation.stopPrice ? `SL ${compactPrice(activeLifecycleAnnotation.stopPrice)}` : "NO SL", tone: activeLifecycleAnnotation.stopPrice ? "price" as const : "pnlLoss" as const },
     { text: activeLifecycleAnnotation.targetPrices?.length ? `TP ${activeLifecycleAnnotation.targetPrices.map(compactPrice).join("/")}` : "NO TP", tone: activeLifecycleAnnotation.targetPrices?.length ? "price" as const : "pnlLoss" as const },
   ] : [{ text: "NO STRATEGY PLAN", tone: "pnlLoss" as const }];
-  const positionLine = activePosition && averagePrice > 0 ? {
+  const positionLine = strategyPresentationAvailable && activePosition && averagePrice > 0 ? {
     color: quantity > 0 ? "var(--success)" : "var(--danger)",
     labelParts: [{ text: quantity > 0 ? "LONG" : "SHORT", tone: "label" as const }, { text: `${positionQuantityLabel} @ ${money(averagePrice)}`, tone: "price" as const }, ...protectionLabelParts],
     pnl: Number(activePosition.unrealized_pnl || 0),
@@ -360,8 +361,12 @@ export function ChartPreview({
       {barGptTriggerMode === "manual" && barGptView ? <label className="canvas-bar-gpt-origin"><span>Origin (ET)</span><select aria-label="BarGPT inference origin" onChange={(event) => { setBarGptOriginOverrideUs(Number(event.target.value)); setBarGptForecasts([]); setBarGptError(""); }} value={barGptOriginUs ?? ""}>{barGptOriginOptions.map((row, index) => <option key={row.originUs} value={row.originUs}>{index === 0 ? `Latest · ${row.label}` : row.label}</option>)}</select></label> : null}
       {barGptTriggerMode === "manual" ? <button disabled={!barGptView || !barGptOriginUs || !barGptReady || barGptInferring} onClick={() => void runManualInference()} type="button">{barGptInferring ? "Running…" : "Infer now"}</button> : null}
     </div> : null}
-    <ChartPanel appearanceDefaults={appearanceDefaults} baseHeight={baseHeight} canLoadEarlier={liveChart.canLoadEarlier} dataStatus={splitEvents.error ? "Split events unavailable" : timeframe === "1d" && liveChart.splitAdjusted ? "Split-adjusted" : undefined} deferInitialFitUntilLoaded={fullSessionReview} displayItemOptions={CHART_INDICATORS} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} fillHeight={fillHeight} indicatorOptions={[]} initialFitMode="default" liveEntryLine={positionLine} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onShowSplitEventsChange={(showSplitEvents) => onChartSettingsChange({ ...chartSettings, showSplitEvents })} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => onChartSettingsChange({ ...chartSettings, visibleIndicators: nextVisibleIndicators })} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} showSplitEvents={chartSettings.showSplitEvents} strategyPresentationEnabled={showTradeAnnotations} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={timeframes} toolbarVariant={toolbarVariant} visibleColumns={visibleIndicators} />
+    <ChartPanel appearanceDefaults={appearanceDefaults} baseHeight={baseHeight} canLoadEarlier={liveChart.canLoadEarlier} dataStatus={splitEvents.error ? "Split events unavailable" : timeframe === "1d" && liveChart.splitAdjusted ? "Split-adjusted" : undefined} deferInitialFitUntilLoaded={fullSessionReview} displayItemOptions={CHART_INDICATORS} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} fillHeight={fillHeight} indicatorOptions={[]} initialFitMode="default" liveEntryLine={positionLine} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onShowSplitEventsChange={(showSplitEvents) => onChartSettingsChange({ ...chartSettings, showSplitEvents })} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => onChartSettingsChange({ ...chartSettings, visibleIndicators: nextVisibleIndicators })} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} showSplitEvents={chartSettings.showSplitEvents} strategyPresentationEnabled={strategyPresentationAvailable} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={timeframes} toolbarVariant={toolbarVariant} visibleColumns={visibleIndicators} />
   </div>;
+}
+
+export function supportsPositionPresentation(timeframe: CanvasChartTimeframe): boolean {
+  return !MACRO_TIMEFRAMES.has(timeframe);
 }
 
 export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | undefined, symbol: string): NonNullable<ChartPayload["trade_annotations"]> {
