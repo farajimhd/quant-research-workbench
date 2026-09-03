@@ -68,7 +68,7 @@ def test_prebuilt_runtime_binary_is_preferred_without_cargo() -> None:
     candidates = binary_candidates(None, {"TRADING_RUNTIME_ROOT": r"E:\TradingRuntime"})
 
     assert candidates[0] == Path(r"E:\TradingRuntime") / "bin" / candidates[0].name
-    assert candidates[0].name == "structure_checkpoint_campaign_v6.exe"
+    assert candidates[0].name == "structure_checkpoint_campaign_v5.exe"
 
 
 def test_explicit_binary_precedes_environment_and_runtime_defaults() -> None:

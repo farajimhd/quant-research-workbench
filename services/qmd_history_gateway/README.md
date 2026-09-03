@@ -405,7 +405,7 @@ a current-thread runtime pinned by `--core-index` across processor groups, so
 ClickHouse or storage saturation can still prevent linear speedup.
 
 The launcher uses a prebuilt executable from
-`D:\TradingML\runtimes\bin\structure_checkpoint_campaign_v6.exe` when Cargo is
+`D:\TradingML\runtimes\bin\structure_checkpoint_campaign_v5.exe` when Cargo is
 not installed. Use `--purge-existing-checkpoints` only for an explicitly
 authorized cold reset; it deletes only the named checkpoint set on its first
 run. The full contract is
