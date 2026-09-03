@@ -375,9 +375,11 @@ interactive terminal shows resolved and durable progress, worker assignments,
 rates, ETA, recent work, and failures. Its fixed-row refresh does not repeatedly
 clear the screen or scroll. Redirected output remains plain text.
 ETA uses total events estimated from the ordinal continuity summary and the
-actual processed-event rate over a rolling five-minute window, rather than
-assuming every ticker-day costs the same. Runtime status schema v5 is written
-atomically to `campaign-status.json`, and
+aggregate batch-level processed-event rate from every active worker over a
+rolling five-minute window, rather than assuming every ticker-day costs the
+same. Failed or interrupted attempts roll back their uncommitted event
+contribution. Runtime status schema v5 is written atomically to
+`campaign-status.json`, and
 Ctrl+C records `interrupted` before returning exit code 130.
 
 The launcher uses a prebuilt executable from

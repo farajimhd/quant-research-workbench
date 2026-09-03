@@ -9,9 +9,10 @@ use qmd_history_gateway::source::{
     EventWindow, HistoricalEventSource, StructureCampaignTicker, StructureEventCountEstimateRequest,
 };
 use qmd_history_gateway::structure_checkpoint::{
-    advance_historical_structure_snapshot, rebuild_structure_checkpoint,
-    StructureCheckpointAdvanceRequest, StructureCheckpointRebuildRequest,
-    STRUCTURE_CHECKPOINT_ADVANCEMENT_SCHEMA_VERSION, STRUCTURE_CHECKPOINT_REBUILD_SCHEMA_VERSION,
+    advance_historical_structure_snapshot_with_progress,
+    rebuild_structure_checkpoint_with_progress, StructureCheckpointAdvanceRequest,
+    StructureCheckpointRebuildRequest, STRUCTURE_CHECKPOINT_ADVANCEMENT_SCHEMA_VERSION,
+    STRUCTURE_CHECKPOINT_REBUILD_SCHEMA_VERSION,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -20,6 +21,7 @@ use std::env;
 use std::fs;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, Notify};
@@ -104,6 +106,7 @@ struct Progress {
 struct ProgressWriter {
     path: PathBuf,
     inner: Mutex<Progress>,
+    processed_events: AtomicU64,
     status_notify: Notify,
 }
 
@@ -120,6 +123,7 @@ impl ProgressWriter {
         });
         Self {
             path,
+            processed_events: AtomicU64::new(0),
             status_notify: Notify::new(),
             inner: Mutex::new(Progress {
                 schema_version: 5,
@@ -183,7 +187,6 @@ impl ProgressWriter {
             "unavailable" => progress.counts.unavailable += 1,
             _ => progress.counts.failed += 1,
         }
-        progress.events_processed = progress.events_processed.saturating_add(event_count);
         progress.events_advanced = progress
             .events_advanced
             .saturating_add(advanced_event_count);
@@ -264,10 +267,13 @@ impl ProgressWriter {
     }
 
     async fn snapshot(&self) -> Progress {
-        self.inner.lock().await.clone()
+        let mut progress = self.inner.lock().await.clone();
+        progress.events_processed = self.processed_events.load(Ordering::Relaxed);
+        progress
     }
 
     fn write_locked(&self, progress: &mut Progress) -> Result<(), String> {
+        progress.events_processed = self.processed_events.load(Ordering::Relaxed);
         progress.updated_at = Utc::now();
         let bytes = serde_json::to_vec_pretty(progress)
             .map_err(|error| format!("failed to encode campaign progress: {error}"))?;
@@ -276,6 +282,51 @@ impl ProgressWriter {
             .map_err(|error| format!("failed to write {}: {error}", temporary.display()))?;
         fs::rename(&temporary, &self.path)
             .map_err(|error| format!("failed to publish {}: {error}", self.path.display()))
+    }
+
+    fn record_events(&self, count: u64) {
+        self.processed_events.fetch_add(count, Ordering::Relaxed);
+    }
+
+    fn rollback_events(&self, count: u64) {
+        self.processed_events.fetch_sub(count, Ordering::Relaxed);
+    }
+}
+
+struct AttemptEventProgress<'a> {
+    campaign: &'a ProgressWriter,
+    observed: AtomicU64,
+    committed: bool,
+}
+
+impl<'a> AttemptEventProgress<'a> {
+    fn new(campaign: &'a ProgressWriter) -> Self {
+        Self {
+            campaign,
+            observed: AtomicU64::new(0),
+            committed: false,
+        }
+    }
+
+    fn record(&self, count: u64) {
+        self.observed.fetch_add(count, Ordering::Relaxed);
+        self.campaign.record_events(count);
+    }
+
+    fn observed(&self) -> u64 {
+        self.observed.load(Ordering::Relaxed)
+    }
+
+    fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for AttemptEventProgress<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.campaign.rollback_events(self.observed());
+        }
     }
 }
 
@@ -302,11 +353,9 @@ struct EventRateWindow {
 
 impl EventRateWindow {
     fn observe(&mut self, observed_at: DateTime<Utc>, processed_events: u64) -> Option<f64> {
-        if self
-            .samples
-            .back()
-            .is_some_and(|(prior_at, _)| observed_at < *prior_at)
-        {
+        if self.samples.back().is_some_and(|(prior_at, prior_events)| {
+            observed_at < *prior_at || processed_events < *prior_events
+        }) {
             self.samples.clear();
         }
         self.samples.push_back((observed_at, processed_events));
@@ -948,18 +997,33 @@ async fn run_ticker(
         let starting_checkpoint = checkpoint.clone();
         let mut attempt = 0_usize;
         let result = loop {
-            match build_day_from_state(
-                config,
-                source,
-                writer,
-                &plan.ticker,
-                session_date,
-                authority_start,
-                starting_checkpoint.clone(),
-            )
-            .await
-            {
-                Ok(result) => break Ok(result),
+            let mut event_progress = AttemptEventProgress::new(progress);
+            let build_result = {
+                let on_events = |count| event_progress.record(count);
+                build_day_from_state(
+                    config,
+                    source,
+                    writer,
+                    &plan.ticker,
+                    session_date,
+                    authority_start,
+                    starting_checkpoint.clone(),
+                    &on_events,
+                )
+                .await
+            };
+            match build_result {
+                Ok(result) if result.event_count == event_progress.observed() => {
+                    event_progress.commit();
+                    break Ok(result);
+                }
+                Ok(result) => {
+                    break Err(format!(
+                        "event progress mismatch: streamed {} but completed {}",
+                        event_progress.observed(),
+                        result.event_count
+                    ))
+                }
                 Err(error) if retryable_error(&error) && attempt < max_retries => {
                     attempt += 1;
                     progress.retry().await?;
@@ -1017,18 +1081,19 @@ async fn build_day_from_state(
     session_date: NaiveDate,
     authority_start: DateTime<Utc>,
     checkpoint: Option<qmd_core::generic_structure::GenericStructureCheckpoint>,
+    on_events: &(dyn Fn(u64) + Send + Sync),
 ) -> Result<DayResult, String> {
     let authority_end = session_end(session_date)?;
     let as_of = authority_end - ChronoDuration::microseconds(1);
     let (checkpoint, event_count, advanced_event_count) = if let Some(checkpoint) = checkpoint {
-        let advanced = advance_to_boundary(config, source, checkpoint, as_of).await?;
+        let advanced = advance_to_boundary(config, source, checkpoint, as_of, on_events).await?;
         (
             advanced.checkpoint,
             advanced.event_count,
             advanced.advanced_event_count,
         )
     } else {
-        let rebuilt = rebuild_structure_checkpoint(
+        let rebuilt = rebuild_structure_checkpoint_with_progress(
             config,
             source,
             StructureCheckpointRebuildRequest {
@@ -1039,6 +1104,7 @@ async fn build_day_from_state(
                 expected_source_plan_hash: None,
                 event_limit: None,
             },
+            on_events,
         )
         .await?;
         if !rebuilt.complete
@@ -1133,6 +1199,7 @@ async fn advance_to_boundary(
     source: &HistoricalEventSource,
     mut checkpoint: qmd_core::generic_structure::GenericStructureCheckpoint,
     target_as_of: DateTime<Utc>,
+    on_events: &(dyn Fn(u64) + Send + Sync),
 ) -> Result<BoundaryAdvance, String> {
     let mut event_count = 0_u64;
     let mut advanced_event_count = 0_u64;
@@ -1149,7 +1216,7 @@ async fn advance_to_boundary(
             target_as_of,
             config.structure_checkpoint_max_window_hours,
         );
-        let advanced = advance_historical_structure_snapshot(
+        let advanced = advance_historical_structure_snapshot_with_progress(
             config,
             source,
             StructureCheckpointAdvanceRequest {
@@ -1159,6 +1226,7 @@ async fn advance_to_boundary(
                 expected_source_plan_hash: None,
                 event_limit: None,
             },
+            on_events,
         )
         .await?;
         if !advanced.complete
@@ -1500,8 +1568,8 @@ mod tests {
     use super::{
         dashboard_frame, dashboard_lines, insert_ticker, log_snapshot, merge_ticker_universe,
         next_advance_boundary, retryable_error, session_is_covered_by_seed, validate_worker_count,
-        Counts, EventRateWindow, Progress, ProgressWriter, RecentUnit, TickerPlan,
-        GENERIC_STRUCTURE_ALGORITHM_VERSION,
+        AttemptEventProgress, Counts, EventRateWindow, Progress, ProgressWriter, RecentUnit,
+        TickerPlan, GENERIC_STRUCTURE_ALGORITHM_VERSION,
     };
     use chrono::{NaiveDate, TimeZone, Utc};
     use qmd_history_gateway::source::StructureCampaignTicker;
@@ -1607,6 +1675,42 @@ mod tests {
             window.observe(start + chrono::Duration::seconds(360), 3_700),
             Some(10.0)
         );
+        assert_eq!(
+            window.observe(start + chrono::Duration::seconds(370), 3_600),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn active_worker_events_are_aggregated_and_aborted_attempts_roll_back() {
+        let date = NaiveDate::from_ymd_opt(2026, 8, 21).unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "structure-campaign-worker-progress-{}.json",
+            std::process::id()
+        ));
+        let writer = ProgressWriter::new(
+            path.clone(),
+            date,
+            date,
+            &[TickerPlan {
+                ticker: "SUGP".to_string(),
+                rebuild_start: Utc.with_ymd_and_hms(2026, 8, 21, 8, 0, 0).unwrap(),
+                sessions: vec![date],
+                estimated_events: 1_000,
+            }],
+        );
+        let mut committed = AttemptEventProgress::new(&writer);
+        let aborted = AttemptEventProgress::new(&writer);
+        committed.record(100);
+        aborted.record(200);
+        assert_eq!(writer.snapshot().await.events_processed, 300);
+
+        committed.commit();
+        drop(committed);
+        drop(aborted);
+
+        assert_eq!(writer.snapshot().await.events_processed, 100);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

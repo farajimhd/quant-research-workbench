@@ -67,7 +67,10 @@ Progress schema v5 is atomically published to `campaign-status.json`. It
 reports queued, active, completed, skipped/current, unavailable, retried,
 failed, and dependency-blocked units; exact active ticker/day ownership; event
 counts; the ordinal-summary total event estimate; recent completions; elapsed
-time; and ETA. ETA is the remaining estimated event count divided by the actual
+time; and ETA. Every worker publishes batch-level progress into one global
+event counter, including workers still inside a long ticker-day. Failed,
+retried, or interrupted attempts roll back their uncommitted contribution. ETA
+is the remaining estimated event count divided by this aggregate actual
 processed-event rate over the latest fixed five-minute observation window. It
 warms up until that window has at least 15 seconds of evidence. Interactive
 output is a fixed-row dashboard with one initial clear and in-place updates, so

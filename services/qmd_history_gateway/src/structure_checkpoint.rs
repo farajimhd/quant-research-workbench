@@ -301,7 +301,16 @@ pub async fn rebuild_structure_checkpoint(
     source: &HistoricalEventSource,
     request: StructureCheckpointRebuildRequest,
 ) -> Result<StructureCheckpointRebuildResponse, String> {
-    rebuild_structure_checkpoint_inner(config, source, request, None).await
+    rebuild_structure_checkpoint_inner(config, source, request, None, None).await
+}
+
+pub async fn rebuild_structure_checkpoint_with_progress(
+    config: &HistoricalGatewayConfig,
+    source: &HistoricalEventSource,
+    request: StructureCheckpointRebuildRequest,
+    on_events: &(dyn Fn(u64) + Send + Sync),
+) -> Result<StructureCheckpointRebuildResponse, String> {
+    rebuild_structure_checkpoint_inner(config, source, request, None, Some(on_events)).await
 }
 
 pub(crate) async fn rebuild_trade_structure_checkpoint(
@@ -309,7 +318,7 @@ pub(crate) async fn rebuild_trade_structure_checkpoint(
     source: &HistoricalEventSource,
     request: StructureCheckpointRebuildRequest,
 ) -> Result<StructureCheckpointRebuildResponse, String> {
-    rebuild_structure_checkpoint_inner(config, source, request, Some(1)).await
+    rebuild_structure_checkpoint_inner(config, source, request, Some(1), None).await
 }
 
 async fn rebuild_structure_checkpoint_inner(
@@ -317,6 +326,7 @@ async fn rebuild_structure_checkpoint_inner(
     source: &HistoricalEventSource,
     request: StructureCheckpointRebuildRequest,
     event_type_filter: Option<u8>,
+    on_events: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<StructureCheckpointRebuildResponse, String> {
     let ticker = validate_rebuild_request(config, &request)?;
     let replay_end = request
@@ -366,6 +376,7 @@ async fn rebuild_structure_checkpoint_inner(
     let mut event_count = 0_u64;
     let mut advanced_event_count = 0_u64;
     while let Some(batch) = batches.recv().await {
+        let mut batch_event_count = 0_u64;
         for compact in batch? {
             event_count = event_count.saturating_add(1);
             if event_count > event_limit as u64 {
@@ -388,6 +399,12 @@ async fn rebuild_structure_checkpoint_inner(
             engine.apply_event_without_snapshot(&event, rules.resolve(conditions, event.ts()));
             if engine.checkpoint_cursor() != before {
                 advanced_event_count = advanced_event_count.saturating_add(1);
+            }
+            batch_event_count = batch_event_count.saturating_add(1);
+        }
+        if batch_event_count > 0 {
+            if let Some(on_events) = on_events {
+                on_events(batch_event_count);
             }
         }
     }
@@ -435,7 +452,7 @@ pub async fn advance_structure_checkpoint(
     source: &HistoricalEventSource,
     request: StructureCheckpointAdvanceRequest,
 ) -> Result<StructureCheckpointAdvanceResponse, String> {
-    advance_structure_checkpoint_inner(config, source, request, true).await
+    advance_structure_checkpoint_inner(config, source, request, true, None).await
 }
 
 pub async fn advance_historical_structure_snapshot(
@@ -443,7 +460,16 @@ pub async fn advance_historical_structure_snapshot(
     source: &HistoricalEventSource,
     request: StructureCheckpointAdvanceRequest,
 ) -> Result<StructureCheckpointAdvanceResponse, String> {
-    advance_structure_checkpoint_inner(config, source, request, false).await
+    advance_structure_checkpoint_inner(config, source, request, false, None).await
+}
+
+pub async fn advance_historical_structure_snapshot_with_progress(
+    config: &HistoricalGatewayConfig,
+    source: &HistoricalEventSource,
+    request: StructureCheckpointAdvanceRequest,
+    on_events: &(dyn Fn(u64) + Send + Sync),
+) -> Result<StructureCheckpointAdvanceResponse, String> {
+    advance_structure_checkpoint_inner(config, source, request, false, Some(on_events)).await
 }
 
 async fn advance_structure_checkpoint_inner(
@@ -451,6 +477,7 @@ async fn advance_structure_checkpoint_inner(
     source: &HistoricalEventSource,
     mut request: StructureCheckpointAdvanceRequest,
     exact_live_cursor: bool,
+    on_events: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<StructureCheckpointAdvanceResponse, String> {
     let replay_start = validate_request(config, &request, exact_live_cursor)?;
     let ticker = request.checkpoint.sym.trim().to_ascii_uppercase();
@@ -511,6 +538,7 @@ async fn advance_structure_checkpoint_inner(
     let mut event_count = 0_u64;
     let mut advanced_event_count = 0_u64;
     while let Some(batch) = batches.recv().await {
+        let mut batch_event_count = 0_u64;
         for compact in batch? {
             let event = source.market_event(&compact);
             if !exact_live_cursor && event.ts() <= replay_start {
@@ -537,6 +565,12 @@ async fn advance_structure_checkpoint_inner(
             engine.apply_event_without_snapshot(&event, trade_rule);
             if engine.checkpoint_cursor() != before {
                 advanced_event_count = advanced_event_count.saturating_add(1);
+            }
+            batch_event_count = batch_event_count.saturating_add(1);
+        }
+        if batch_event_count > 0 {
+            if let Some(on_events) = on_events {
+                on_events(batch_event_count);
             }
         }
     }
@@ -803,6 +837,7 @@ pub async fn materialize_structure_snapshot(
                     event_limit: request.event_limit,
                 },
                 false,
+                None,
             )
             .await?;
             let mut engine = GenericStructureEngine::new(&ticker);
@@ -876,6 +911,7 @@ pub async fn materialize_structure_snapshot(
             event_limit: request.event_limit,
         },
         false,
+        None,
     )
     .await?;
     let mut engine = GenericStructureEngine::new(&ticker);
@@ -942,6 +978,7 @@ pub async fn materialize_structure_snapshot_from_seed(
             event_limit: request.event_limit,
         },
         false,
+        None,
     )
     .await?;
     let mut engine = GenericStructureEngine::new(&ticker);
