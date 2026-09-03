@@ -3940,12 +3940,12 @@ fn structure_campaign_continuity_sql(
             argMax(last_sip_timestamp_us, tuple(build_step, updated_at)) AS last_sip_timestamp_us,
             argMax(build_step, tuple(build_step, updated_at)) AS max_build_step,
             toString(max(updated_at)) AS max_updated_at
-        FROM `{archive_database}`.`events_ordinal_continuity`
-        PREWHERE ticker = {ticker}
-          AND source_date >= toDate({start_date})
-          AND source_date <= toDate({end_date})
-        GROUP BY source_date
-        ORDER BY source_date
+        FROM `{archive_database}`.`events_ordinal_continuity` AS source
+        PREWHERE source.ticker = {ticker}
+          AND source.source_date >= toDate({start_date})
+          AND source.source_date <= toDate({end_date})
+        GROUP BY source.source_date
+        ORDER BY source.source_date
         FORMAT JSONEachRow"#,
         ticker = sql_literal(ticker),
         start_date = sql_literal(&start_date.to_string()),
@@ -4256,10 +4256,12 @@ mod tests {
             NaiveDate::from_ymd_opt(2026, 8, 20).unwrap(),
             NaiveDate::from_ymd_opt(2026, 8, 21).unwrap(),
         );
-        assert!(sql.contains("PREWHERE ticker = 'SUGP'"));
+        assert!(sql.contains("PREWHERE source.ticker = 'SUGP'"));
+        assert!(sql.contains("source.source_date >= toDate('2026-08-20')"));
+        assert!(!sql.contains("PREWHERE ticker ="));
         assert!(sql.contains("argMax(next_ordinal"));
         assert!(sql.contains("argMax(last_ordinal"));
-        assert!(sql.contains("GROUP BY source_date"));
+        assert!(sql.contains("GROUP BY source.source_date"));
     }
 
     #[test]

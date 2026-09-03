@@ -65,7 +65,8 @@ count, first/last SIP timestamps, ordinal bounds, session date, source
 completeness, and revision identity are proven.
 Transient transport/capacity failures receive bounded exponential retries;
 semantic or compatibility failures stop that ticker and mark later sessions
-blocked.
+blocked. Systemic query-contract failures request a campaign-wide stop so one
+schema or SQL error cannot be repeated across the remaining ticker queue.
 
 ## Destructive cold reset
 

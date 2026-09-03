@@ -15,7 +15,7 @@ use std::env;
 use std::fs;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, Notify};
@@ -100,6 +100,7 @@ struct Progress {
 struct ProgressWriter {
     path: PathBuf,
     inner: Mutex<Progress>,
+    abort_requested: AtomicBool,
     processed_events: AtomicU64,
     status_notify: Notify,
 }
@@ -117,6 +118,7 @@ impl ProgressWriter {
         });
         Self {
             path,
+            abort_requested: AtomicBool::new(false),
             processed_events: AtomicU64::new(0),
             status_notify: Notify::new(),
             inner: Mutex::new(Progress {
@@ -289,6 +291,14 @@ impl ProgressWriter {
 
     fn rollback_events(&self, count: u64) {
         self.processed_events.fetch_sub(count, Ordering::Relaxed);
+    }
+
+    fn request_abort(&self) {
+        self.abort_requested.store(true, Ordering::Release);
+    }
+
+    fn abort_requested(&self) -> bool {
+        self.abort_requested.load(Ordering::Acquire)
     }
 }
 
@@ -464,6 +474,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         tasks.spawn(async move {
             let mut errors = Vec::new();
             loop {
+                if progress.abort_requested() {
+                    break;
+                }
                 let Some(plan) = queue.lock().await.pop_front() else {
                     break;
                 };
@@ -478,6 +491,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 )
                 .await
                 {
+                    if campaign_fatal_error(&error) {
+                        progress.request_abort();
+                    }
                     errors.push(error);
                 }
             }
@@ -1306,6 +1322,21 @@ fn retryable_error(error: &str) -> bool {
     .any(|marker| error.contains(marker))
 }
 
+fn campaign_fatal_error(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    [
+        "no_common_type",
+        "unknown_identifier",
+        "unknown_table",
+        "syntax_error",
+        "cannot_parse",
+        "invalid structure continuity row",
+        "invalid structure split row",
+    ]
+    .iter()
+    .any(|marker| error.contains(marker))
+}
+
 fn load_tickers(paths: &[PathBuf]) -> Result<Vec<String>, String> {
     let mut tickers = Vec::new();
     let mut seen = HashSet::new();
@@ -1517,10 +1548,10 @@ fn io_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sy
 #[cfg(test)]
 mod tests {
     use super::{
-        dashboard_frame, dashboard_lines, insert_ticker, log_snapshot, merge_ticker_universe,
-        retryable_error, session_is_covered_by_seed, validate_worker_count, AttemptEventProgress,
-        Counts, EventRateWindow, Progress, ProgressWriter, RecentUnit, TickerPlan,
-        GENERIC_STRUCTURE_ALGORITHM_VERSION,
+        campaign_fatal_error, dashboard_frame, dashboard_lines, insert_ticker, log_snapshot,
+        merge_ticker_universe, retryable_error, session_is_covered_by_seed, validate_worker_count,
+        AttemptEventProgress, Counts, EventRateWindow, Progress, ProgressWriter, RecentUnit,
+        TickerPlan, GENERIC_STRUCTURE_ALGORITHM_VERSION,
     };
     use chrono::{NaiveDate, TimeZone, Utc};
     use qmd_history_gateway::source::StructureCampaignTicker;
@@ -1583,6 +1614,17 @@ mod tests {
         ));
         assert!(retryable_error("memory limit exceeded"));
         assert!(!retryable_error("checkpoint algorithm version mismatch"));
+    }
+
+    #[test]
+    fn systemic_query_contract_failures_abort_the_campaign() {
+        assert!(campaign_fatal_error(
+            "ClickHouse Code: 386 DB::Exception NO_COMMON_TYPE"
+        ));
+        assert!(campaign_fatal_error("UNKNOWN_IDENTIFIER source_date"));
+        assert!(!campaign_fatal_error(
+            "ordinal stream authority mismatch for SUGP 2026-08-21"
+        ));
     }
 
     #[test]
