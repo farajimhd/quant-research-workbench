@@ -11,6 +11,13 @@ quote and trade tables. With the default `--events-table events`, production
 rows are routed by source-day year into `market_sip_compact.events_YYYY`. Bars
 are rebuilt from the same yearly source table after event insertion succeeds.
 
+This is the only production entry point permitted to append rows to the
+canonical annual event archive. Every `events_YYYY` table must retain the exact
+common 16-column schema. The updater validates that schema and fails if any
+column is missing, has a different type, or has been added. Application
+services and repair scripts must not alter these tables; schema evolution uses
+new versioned tables and an explicit cutover.
+
 ## What It Builds
 
 The pipeline writes:

@@ -37,6 +37,12 @@ three-second fetch. Complete session count, SIP-time order, first/last SIP
 timestamps, ticker, date, cursor, source revision, and split lineage are still
 validated before persistence.
 
+All `market_sip_compact.events_YYYY` reads use the immutable common historical
+schema. Function F orders and timestamps causal state exclusively by
+`sip_timestamp_us`; it neither requires nor probes an execution-time column.
+The adapter supplies `0` for the optional live-wire execution clock. Campaign
+code must never alter an archive table to satisfy a reader schema.
+
 ## Resume, purge, and progress
 
 `--checkpoint-set-id` is mandatory. `--purge-existing-checkpoints` deletes only

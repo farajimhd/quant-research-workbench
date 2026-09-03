@@ -30,36 +30,23 @@ This avoids open-ended timestamp scans such as:
 sip_timestamp_us <= <origin>
 ```
 
-## Build Script
+## Canonical update authority
 
-Build the final table with:
-
-```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_unified_events.py --rebuild
-```
-
-Use `--rebuild` when moving from the older ticker-at-a-time builder to this
-daily continuity builder. The script refuses to append if `events` already has
-rows but `events_ordinal_continuity` is empty, because that state cannot preserve
-ordinal correctness.
-
-`--rebuild` is intentionally destructive. It drops and recreates the events,
-build-manifest, continuity, train-index, and validation-index tables. For these
-explicit rebuild drops, the script passes ClickHouse drop-size settings:
+The canonical `market_sip_compact.events_YYYY` population is already built.
+Append new flat-file days only with the managed updater documented in
+`FLATFILE_EVENT_UPDATE.md`:
 
 ```text
-max_table_size_to_drop = 0
-max_partition_size_to_drop = 0
+pipelines/market_sip/flatfiles/download_update_events.py
 ```
 
-This is required because ClickHouse protects large tables from accidental drops
-by default. The override is only used in the `--rebuild` table-drop path.
+`run_build_unified_events.py` and
+`clickhouse_build_unified_events.py` expose lower-level construction logic for
+noncanonical scratch databases and tables. They fail closed before inserting
+into canonical annual archives. A full canonical rebuild now requires a new
+versioned-table design and explicit cutover rather than an in-place `--rebuild`.
 
-The launcher calls:
-
-```text
-pipelines/market_sip/events/clickhouse_build_unified_events.py
-```
+The updater reuses the following deterministic construction behavior:
 
 Default behavior:
 
@@ -150,19 +137,10 @@ days per minute
 ETA
 ```
 
-Ctrl+C is handled. The active day is marked `interrupted` in
-`events_build_manifest` when the Python process receives the interrupt, and a
-`run_interrupted` row is appended to the JSONL report. To resume after Ctrl+C,
-use:
-
-```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_unified_events.py --retry-started --force-day-delete
-```
-
-`--force-day-delete` is required for interrupted/started day retries so the
-script deletes rows for that event date and the matching continuity rows before
-rebuilding it. This avoids duplicate rows if ClickHouse had already committed
-part or all of the interrupted insert.
+Ctrl+C is handled by the managed updater. The active day is marked
+`interrupted` in `events_build_manifest`, and the updater's documented resume
+mode synchronously removes only that incomplete day before inserting it again.
+Do not resume canonical work through the lower-level unified-events builder.
 
 Retry deletes use synchronous ClickHouse mutations (`mutations_sync = 2`) before
 the day is rebuilt.
@@ -201,9 +179,7 @@ CREATE TABLE market_sip_compact.events
     -- bits 3-5 tape, bits 6-7 reserved.
     event_meta UInt8,
 
-    -- Exchange execution clock and SIP availability clock. Strategy state is
-    -- causal in SIP order; retrospective chart bars use execution time.
-    execution_timestamp_us UInt64,
+    -- Canonical historical availability clock.
     sip_timestamp_us UInt64,
 
     -- Unified price fields.
@@ -426,7 +402,6 @@ Quote source row to unified event:
 ```text
 ticker              -> ticker
 event_meta          -> event type 0 plus ask/bid scale and tape bits
-execution_timestamp_us -> participant timestamp, falling back to SIP
 sip_timestamp_us    -> sip_timestamp_us
 price_primary_int   -> ask_price_int
 price_secondary_int -> bid_price_int
@@ -443,7 +418,6 @@ Trade source row to unified event:
 ```text
 ticker              -> ticker
 event_meta          -> event type 1 plus trade scale and tape bits
-execution_timestamp_us -> participant timestamp, falling back to SIP
 sip_timestamp_us    -> sip_timestamp_us
 price_primary_int   -> price_int
 price_secondary_int -> 0
@@ -470,6 +444,7 @@ the event table uses the single dense-token table so every token slot is an
 These fields are intentionally not stored in the final training table:
 
 ```text
+participant_delta_us
 sequence_number
 source_file
 source_date
@@ -478,11 +453,31 @@ raw quote/trade condition strings
 raw quote/trade separate column names
 ```
 
-`sequence_number` is still required during table construction to break ordering
-ties, but it is not required for training lookup after `ordinal` is assigned.
-The raw `participant_delta_us` encoding is replaced by the exact unsigned
-`execution_timestamp_us`; this avoids the signed 32-bit delta clipping that can
-lose multi-hour delayed-report timestamps.
+`sequence_number` and `participant_delta_us` remain available in source flat
+files but are not part of the immutable historical compact-event contract.
+`sequence_number` is required during construction to break ordering ties; it is
+not required after `ordinal` is assigned. Historical causal consumers advance
+on `sip_timestamp_us`.
+
+## Archive mutation authority
+
+`market_sip_compact.events_YYYY` tables have one fixed 16-column schema. Once a
+year table exists, application services and ad-hoc repair tools must not add,
+drop, rename, materialize, or update its columns. QMD Live writes only to
+`q_live`; it must never use `market_sip_compact` as its persistence database.
+
+New historical source days may be appended only through
+`pipelines/market_sip/flatfiles/download_update_events.py`. That updater owns the
+validated download, deterministic daily insert, continuity/index update, and
+restart-safe manifest transaction. The lower-level unified-events builder is
+available for noncanonical scratch tables, but is fail-closed against direct
+inserts into canonical yearly archives. Any future historical schema revision
+requires new versioned tables and an explicit cutover; it must not mutate an
+existing `events_YYYY` table in place.
+
+The optional exchange/participant execution clock belongs to the live
+`q_live.events` contract. Historical readers synthesize zero for the live wire
+field and retain SIP time as the only historical timing authority.
 
 ## Filtering And Sanitization Rules
 

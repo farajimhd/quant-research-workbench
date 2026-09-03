@@ -1128,6 +1128,7 @@ impl CompactEventClickHouseWriter {
         if !self.config.persist_compact_events {
             return Ok(());
         }
+        validate_live_compact_write_database(&self.config.clickhouse_database)?;
         self.execute(
             &format!(
                 "CREATE DATABASE IF NOT EXISTS `{}`",
@@ -1963,6 +1964,16 @@ impl CompactEventClickHouseWriter {
     }
 }
 
+fn validate_live_compact_write_database(database: &str) -> Result<(), String> {
+    if database.trim().eq_ignore_ascii_case("market_sip_compact") {
+        return Err(
+            "QMD live compact persistence cannot target immutable historical archive database market_sip_compact; use q_live"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 async fn merge_compact_inputs_live_first(
     mut live_receiver: mpsc::Receiver<MarketEvent>,
     mut repair_receiver: mpsc::Receiver<MarketEvent>,
@@ -2388,6 +2399,14 @@ mod tests {
             quote_indicators: [(7, 31)].into_iter().collect(),
             tapes: [(1, 0), (2, 1), (3, 2)].into_iter().collect(),
         }
+    }
+
+    #[test]
+    fn live_compact_writer_refuses_the_historical_archive_database() {
+        assert!(validate_live_compact_write_database("q_live").is_ok());
+        let error = validate_live_compact_write_database(" market_sip_compact ")
+            .expect_err("historical archive must be write-protected from QMD live");
+        assert!(error.contains("immutable historical archive"));
     }
 
     #[test]

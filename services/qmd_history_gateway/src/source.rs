@@ -3179,6 +3179,15 @@ fn event_select(
     } else {
         "source.ordinal"
     };
+    // The immutable market_sip_compact.events_YYYY archive contract has no
+    // participant/execution clock. Only q_live.events carries that optional
+    // live enrichment. Keep one stable wire shape without requiring or
+    // mutating the historical archive schema.
+    let execution_timestamp = if recent {
+        "source.execution_timestamp_us"
+    } else {
+        "toUInt64(0)"
+    };
     let final_clause = if recent { " FINAL" } else { "" };
     let cursor_filter = cursor
         .filter(|value| value.sip_timestamp_us > 0)
@@ -3198,7 +3207,7 @@ fn event_select(
             {ordinal} AS ordinal,
             {source_sequence} AS source_sequence,
             source.event_meta,
-            source.execution_timestamp_us,
+            {execution_timestamp} AS execution_timestamp_us,
             source.sip_timestamp_us,
             source.price_primary_int,
             source.price_secondary_int,
@@ -3232,7 +3241,7 @@ fn ordinal_event_select(table: &str, ticker: &str, first: u64, next: u64) -> Str
             source.ordinal AS ordinal,
             source.ordinal AS source_sequence,
             source.event_meta,
-            source.execution_timestamp_us,
+            toUInt64(0) AS execution_timestamp_us,
             source.sip_timestamp_us,
             source.price_primary_int,
             source.price_secondary_int,
@@ -4210,7 +4219,23 @@ mod tests {
             None,
         );
         assert!(sql.contains("AND source.ticker IN ('AAPL')\n        WHERE 1"));
+        assert!(sql.contains("source.execution_timestamp_us AS execution_timestamp_us"));
         assert!(!sql.contains("WHERE 1 AND source.ticker IN ('AAPL')"));
+    }
+
+    #[test]
+    fn archive_event_fetch_does_not_require_an_execution_clock_column() {
+        let sql = event_select(
+            "market_sip_compact.events_2025",
+            false,
+            Utc.with_ymd_and_hms(2025, 1, 2, 9, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2025, 1, 2, 10, 0, 0).unwrap(),
+            " AND source.ticker IN ('AAPL')",
+            None,
+        );
+
+        assert!(sql.contains("toUInt64(0) AS execution_timestamp_us"));
+        assert!(!sql.contains("source.execution_timestamp_us"));
     }
 
     #[test]
@@ -4289,6 +4314,8 @@ mod tests {
         assert!(sql.contains("source.ordinal < 20"));
         assert!(!sql.contains("source.sip_timestamp_us >="));
         assert!(!sql.contains("source.event_date >="));
+        assert!(sql.contains("toUInt64(0) AS execution_timestamp_us"));
+        assert!(!sql.contains("source.execution_timestamp_us"));
     }
 
     #[test]
@@ -4385,7 +4412,7 @@ mod tests {
             condition_token_5: 0,
             event_date: "2026-07-13".to_string(),
             event_meta: 6,
-            execution_timestamp_us: 1_752_415_200_000_000,
+            execution_timestamp_us: 0,
             exchange_primary: 11,
             exchange_secondary: 12,
             ordinal: 42,
@@ -4408,6 +4435,7 @@ mod tests {
                 assert_eq!(quote.sequence, 42);
                 assert_eq!(quote.conditions, vec![7]);
                 assert_eq!(quote.tape, 1);
+                assert_eq!(quote.raw["execution_timestamp_us"], 0);
                 assert_eq!(quote.raw["correlation_id"], "source:AAPL:2026-07-13");
                 assert_eq!(quote.raw["causation_id"], compact.causation_id());
             }
@@ -4418,7 +4446,7 @@ mod tests {
     #[test]
     fn ordered_stream_tsv_parser_preserves_the_compact_wire_columns() {
         let row = parse_historical_tsv_row(
-            b"AAPL\t42\t9001\t6\t1752415199000000\t1752415200000000\t1001234\t1001200\t20\t25\t11\t12\t3\t4\t5\t0\t0\t2026-07-13",
+            b"AAPL\t42\t9001\t6\t0\t1752415200000000\t1001234\t1001200\t20\t25\t11\t12\t3\t4\t5\t0\t0\t2026-07-13",
         )
         .unwrap();
 
@@ -4426,7 +4454,7 @@ mod tests {
         assert_eq!(row.ordinal, 42);
         assert_eq!(row.source_sequence, 9001);
         assert_eq!(row.event_meta, 6);
-        assert_eq!(row.execution_timestamp_us, 1_752_415_199_000_000);
+        assert_eq!(row.execution_timestamp_us, 0);
         assert_eq!(row.price_primary_int, 1_001_234);
         assert_eq!(row.size_secondary, 25.0);
         assert_eq!(row.condition_token_3, 5);

@@ -56,12 +56,36 @@ DEFAULT_CONDITION_TOKEN_REFERENCE_TABLE = "event_condition_token_reference"
 DEFAULT_DROP_TRADE_CORRECTION_CODES = "7,8,10,11"
 CONDITION_TOKEN_SLOTS = 5
 CONDITION_TOKEN_COLUMNS = tuple(f"condition_token_{idx}" for idx in range(1, CONDITION_TOKEN_SLOTS + 1))
+CANONICAL_ARCHIVE_DATABASE = "market_sip_compact"
+CANONICAL_ARCHIVE_COLUMNS = {
+    "ticker": "LowCardinality(String)",
+    "ordinal": "UInt64",
+    "event_meta": "UInt8",
+    "sip_timestamp_us": "UInt64",
+    "price_primary_int": "UInt32",
+    "price_secondary_int": "UInt32",
+    "size_primary": "Float32",
+    "size_secondary": "Float32",
+    "exchange_primary": "UInt8",
+    "exchange_secondary": "UInt8",
+    "condition_token_1": "UInt8",
+    "condition_token_2": "UInt8",
+    "condition_token_3": "UInt8",
+    "condition_token_4": "UInt8",
+    "condition_token_5": "UInt8",
+    "event_date": "Date",
+}
 
 
 def events_table_uses_year_suffix(events_table: str) -> bool:
     """Return true when the logical events table should be routed to events_<year>."""
     value = str(events_table or DEFAULT_EVENTS_TABLE).strip()
-    return value == DEFAULT_EVENTS_TABLE or "{year}" in value
+    suffix = value.removeprefix(DEFAULT_YEARLY_EVENTS_TABLE_PREFIX)
+    return (
+        value == DEFAULT_EVENTS_TABLE
+        or "{year}" in value
+        or (len(suffix) == 4 and suffix.isdigit())
+    )
 
 
 def events_table_for_year(events_table: str, year: int) -> str:
@@ -79,6 +103,20 @@ def events_table_for_source_date(events_table: str, source_date: str | datetime)
     else:
         year = datetime.fromisoformat(str(source_date)[:10]).year
     return events_table_for_year(events_table, year)
+
+
+def assert_archive_write_entrypoint(args: argparse.Namespace, entrypoint: str) -> None:
+    """Prevent ad-hoc writers from mutating the canonical annual archive."""
+    if (
+        str(args.database).strip() == CANONICAL_ARCHIVE_DATABASE
+        and events_table_uses_year_suffix(str(args.events_table))
+        and entrypoint != "download_update_events"
+    ):
+        raise RuntimeError(
+            "market_sip_compact.events_YYYY is an immutable-schema archive; "
+            "only pipelines/market_sip/flatfiles/download_update_events.py may append "
+            "new source days. Use a noncanonical database/table for rebuild experiments."
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,7 +244,6 @@ CREATE TABLE IF NOT EXISTS {db}.{table}
     ticker LowCardinality(String),
     ordinal UInt64 CODEC(T64, ZSTD(1)),
     event_meta UInt8,
-    execution_timestamp_us UInt64 CODEC(DoubleDelta, ZSTD(1)),
     sip_timestamp_us UInt64 CODEC(DoubleDelta, ZSTD(1)),
     price_primary_int UInt32 CODEC(T64, ZSTD(1)),
     price_secondary_int UInt32 CODEC(T64, ZSTD(1)),
@@ -229,25 +266,7 @@ ORDER BY (ticker, ordinal)
 
 
 def validate_events_table_schema(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
-    expected = {
-        "ticker": "LowCardinality(String)",
-        "ordinal": "UInt64",
-        "event_meta": "UInt8",
-        "execution_timestamp_us": "UInt64",
-        "sip_timestamp_us": "UInt64",
-        "price_primary_int": "UInt32",
-        "price_secondary_int": "UInt32",
-        "size_primary": "Float32",
-        "size_secondary": "Float32",
-        "exchange_primary": "UInt8",
-        "exchange_secondary": "UInt8",
-        "condition_token_1": "UInt8",
-        "condition_token_2": "UInt8",
-        "condition_token_3": "UInt8",
-        "condition_token_4": "UInt8",
-        "condition_token_5": "UInt8",
-        "event_date": "Date",
-    }
+    expected = CANONICAL_ARCHIVE_COLUMNS
     rows = client.query_tsv(
         f"""
 SELECT name, type
@@ -264,18 +283,18 @@ FORMAT TSV
         name, col_type = line.split("\t", 1)
         actual[name] = col_type
     missing = [name for name in expected if name not in actual]
-    stale = [name for name in ("event_type", "event_flags", "conditions_packed", "condition_tokens_packed") if name in actual]
+    unexpected = sorted(set(actual) - set(expected))
     wrong_type = [
         f"{name}: expected {expected_type}, got {actual[name]}"
         for name, expected_type in expected.items()
         if name in actual and actual[name] != expected_type
     ]
-    if missing or stale or wrong_type:
+    if missing or unexpected or wrong_type:
         details = []
         if missing:
             details.append(f"missing={missing}")
-        if stale:
-            details.append(f"stale={stale}")
+        if unexpected:
+            details.append(f"unexpected={unexpected}")
         if wrong_type:
             details.append(f"wrong_type={wrong_type}")
         raise RuntimeError(
@@ -695,7 +714,6 @@ def event_union_day_sql(args: argparse.Namespace, job: DayJob) -> str:
     SELECT
         q.ticker AS ticker,
         {quote_event_meta_expr()} AS event_meta,
-        toUInt64(greatest(0, toInt64(q.sip_timestamp_us) + toInt64(q.participant_delta_us))) AS execution_timestamp_us,
         q.sip_timestamp_us AS sip_timestamp_us,
         q.sequence_number AS sequence_number,
         q.ask_price_int AS price_primary_int,
@@ -741,7 +759,6 @@ def event_union_day_sql(args: argparse.Namespace, job: DayJob) -> str:
     SELECT
         t.ticker AS ticker,
         {trade_event_meta_expr()} AS event_meta,
-        toUInt64(greatest(0, toInt64(t.sip_timestamp_us) + toInt64(t.participant_delta_us))) AS execution_timestamp_us,
         t.sip_timestamp_us AS sip_timestamp_us,
         t.sequence_number AS sequence_number,
         t.price_int AS price_primary_int,
@@ -793,7 +810,6 @@ def event_union_sql(args: argparse.Namespace, job: TickerJob) -> str:
     SELECT
         q.ticker AS ticker,
         {quote_event_meta_expr()} AS event_meta,
-        toUInt64(greatest(0, toInt64(q.sip_timestamp_us) + toInt64(q.participant_delta_us))) AS execution_timestamp_us,
         q.sip_timestamp_us AS sip_timestamp_us,
         q.sequence_number AS sequence_number,
         q.ask_price_int AS price_primary_int,
@@ -839,7 +855,6 @@ def event_union_sql(args: argparse.Namespace, job: TickerJob) -> str:
     SELECT
         t.ticker AS ticker,
         {trade_event_meta_expr()} AS event_meta,
-        toUInt64(greatest(0, toInt64(t.sip_timestamp_us) + toInt64(t.participant_delta_us))) AS execution_timestamp_us,
         t.sip_timestamp_us AS sip_timestamp_us,
         t.sequence_number AS sequence_number,
         t.price_int AS price_primary_int,
@@ -891,7 +906,6 @@ INSERT INTO {db}.{table}
     ticker,
     ordinal,
     event_meta,
-    execution_timestamp_us,
     sip_timestamp_us,
     price_primary_int,
     price_secondary_int,
@@ -910,7 +924,6 @@ SELECT
     ticker,
     toUInt64(row_number() OVER (PARTITION BY ticker ORDER BY sip_timestamp_us, sequence_number, bitAnd(event_meta, 1)) - 1) AS ordinal,
     event_meta,
-    execution_timestamp_us,
     sip_timestamp_us,
     price_primary_int,
     price_secondary_int,
@@ -943,7 +956,6 @@ INSERT INTO {db}.{table}
     ticker,
     ordinal,
     event_meta,
-    execution_timestamp_us,
     sip_timestamp_us,
     price_primary_int,
     price_secondary_int,
@@ -963,7 +975,6 @@ SELECT
     coalesce(c.ordinal_offset, toUInt64(0))
         + toUInt64(row_number() OVER (PARTITION BY e.ticker ORDER BY e.sip_timestamp_us, e.sequence_number, bitAnd(e.event_meta, 1)) - 1) AS ordinal,
     e.event_meta,
-    e.execution_timestamp_us,
     e.sip_timestamp_us,
     e.price_primary_int,
     e.price_secondary_int,
@@ -1606,6 +1617,8 @@ def main() -> None:
     loaded_env_files = load_env_files(discover_clickhouse_env_files(), verbose=True)
     args = parse_args()
     validate_args(args)
+    if not args.dry_run and not args.no_build_events:
+        assert_archive_write_entrypoint(args, "clickhouse_build_unified_events")
     output_root = Path(args.output_root_win)
     output_root.mkdir(parents=True, exist_ok=True)
     run_id = "unified_events_" + datetime.now().strftime("%Y%m%d_%H%M%S")

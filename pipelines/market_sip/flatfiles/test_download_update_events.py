@@ -8,6 +8,12 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+from pipelines.market_sip.events.clickhouse_build_unified_events import (
+    CANONICAL_ARCHIVE_COLUMNS,
+    assert_archive_write_entrypoint,
+    create_events_table_sql,
+    validate_events_table_schema,
+)
 from pipelines.market_sip.flatfiles.download_massive_sip_flatfiles import DownloadJob
 from pipelines.market_sip.flatfiles.download_update_events import (
     DayFiles,
@@ -38,6 +44,40 @@ def _day(root: Path, source_date: str, *, cached_quote: bool = False, cached_tra
 
 
 class EventEncodingTests(unittest.TestCase):
+    def test_canonical_archive_schema_and_writer_boundary_are_explicit(self) -> None:
+        args = argparse.Namespace(database="market_sip_compact", events_table="events")
+        sql = create_events_table_sql(
+            argparse.Namespace(
+                database="market_sip_compact",
+                events_table="events_2026",
+                partition_mode="month",
+                partition_buckets=256,
+                storage_policy="sip_raw_ssd",
+            )
+        )
+
+        self.assertNotIn("execution_timestamp_us", sql)
+        assert_archive_write_entrypoint(args, "download_update_events")
+        with self.assertRaisesRegex(RuntimeError, "only .*download_update_events.py"):
+            assert_archive_write_entrypoint(args, "clickhouse_build_unified_events")
+        with self.assertRaisesRegex(RuntimeError, "only .*download_update_events.py"):
+            assert_archive_write_entrypoint(
+                argparse.Namespace(database="market_sip_compact", events_table="events_2026"),
+                "clickhouse_build_unified_events",
+            )
+
+    def test_canonical_archive_schema_rejects_any_extra_column(self) -> None:
+        rows = [f"{name}\t{col_type}" for name, col_type in CANONICAL_ARCHIVE_COLUMNS.items()]
+        rows.append("execution_timestamp_us\tUInt64")
+        client = mock.Mock()
+        client.query_tsv.return_value = "\n".join(rows)
+
+        with self.assertRaisesRegex(RuntimeError, "unexpected=.*execution_timestamp_us"):
+            validate_events_table_schema(
+                client,
+                argparse.Namespace(database="market_sip_compact", events_table="events_2026"),
+            )
+
     def test_clickhouse_price_int_uses_clickhouse_half_even_rounding(self) -> None:
         self.assertEqual(clickhouse_price_int("0.76905"), 7690)
 
@@ -63,7 +103,6 @@ class EventEncodingTests(unittest.TestCase):
         self.assertEqual(event["ticker"], "OMEX")
         self.assertEqual(event["event_type"], 1)
         self.assertEqual(event["event_meta"], 19)
-        self.assertEqual(event["execution_timestamp_us"], 1745522406849832)
         self.assertEqual(event["sip_timestamp_us"], 1745522406850095)
         self.assertEqual(event["sequence_number"], 6898024)
         self.assertEqual(event["price_primary_int"], 7690)
@@ -75,7 +114,7 @@ class EventEncodingTests(unittest.TestCase):
         self.assertEqual([event[f"condition_token_{idx}"] for idx in range(1, 6)], [96, 60, 60, 60, 60])
         self.assertEqual(event["event_date"], "2025-04-24")
 
-    def test_raw_union_preserves_execution_clock_and_pushes_ticker_filter(self) -> None:
+    def test_raw_union_pushes_ticker_filter_without_expanding_archive_schema(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             day = _day(root, "2026-08-21", cached_quote=True, cached_trade=True)
@@ -91,8 +130,7 @@ class EventEncodingTests(unittest.TestCase):
             sql = raw_event_union_sql(args, day)
 
             self.assertEqual(sql.count("AND ticker IN ('SUGP')"), 2)
-            self.assertIn("participant_timestamp", sql)
-            self.assertIn("AS execution_timestamp_us", sql)
+            self.assertNotIn("execution_timestamp_us", sql)
 
 
 class AutoUpdatePlanningTests(unittest.TestCase):

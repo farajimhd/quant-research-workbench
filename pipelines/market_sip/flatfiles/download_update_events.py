@@ -45,6 +45,7 @@ from pipelines.market_sip.events.clickhouse_build_unified_events import (  # noq
     indicator_code_expr,
     indicator_token_reference_subquery,
     events_table_for_source_date,
+    assert_archive_write_entrypoint,
     events_table_uses_year_suffix,
     insert_day_manifest,
     latest_day_status,
@@ -1264,7 +1265,6 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
     SELECT
         q.ticker AS ticker,
         {quote_event_meta_expr()} AS event_meta,
-        q.execution_timestamp_us AS execution_timestamp_us,
         q.sip_timestamp_us AS sip_timestamp_us,
         q.sequence_number_u32 AS sequence_number,
         q.ask_price_int AS price_primary_int,
@@ -1283,7 +1283,6 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
     (
         SELECT
             ticker,
-            if(toUInt64OrZero(participant_timestamp) > 0, toUInt64(intDiv(toUInt64OrZero(participant_timestamp), 1000)), toUInt64(intDiv(toUInt64OrZero(sip_timestamp), 1000))) AS execution_timestamp_us,
             toUInt64(intDiv(toUInt64OrZero(sip_timestamp), 1000)) AS sip_timestamp_us,
             toUInt32OrZero(sequence_number) AS sequence_number_u32,
             toUInt32(if({quote_price_valid}, {bid_price_int}, 0)) AS bid_price_int,
@@ -1320,7 +1319,6 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
     SELECT
         t.ticker AS ticker,
         {trade_event_meta_expr()} AS event_meta,
-        t.execution_timestamp_us AS execution_timestamp_us,
         t.sip_timestamp_us AS sip_timestamp_us,
         t.sequence_number_u32 AS sequence_number,
         t.price_int AS price_primary_int,
@@ -1339,7 +1337,6 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
     (
         SELECT
             ticker,
-            if(toUInt64OrZero(participant_timestamp) > 0, toUInt64(intDiv(toUInt64OrZero(participant_timestamp), 1000)), toUInt64(intDiv(toUInt64OrZero(sip_timestamp), 1000))) AS execution_timestamp_us,
             toUInt64(intDiv(toUInt64OrZero(sip_timestamp), 1000)) AS sip_timestamp_us,
             toUInt32OrZero(sequence_number) AS sequence_number_u32,
             toUInt32(if({trade_price_valid}, {trade_price_int}, 0)) AS price_int,
@@ -1379,7 +1376,6 @@ INSERT INTO {db}.{table}
     ticker,
     ordinal,
     event_meta,
-    execution_timestamp_us,
     sip_timestamp_us,
     price_primary_int,
     price_secondary_int,
@@ -1399,7 +1395,6 @@ SELECT
     coalesce(c.ordinal_offset, toUInt64(0))
         + toUInt64(row_number() OVER (PARTITION BY e.ticker ORDER BY e.sip_timestamp_us, e.sequence_number, bitAnd(e.event_meta, 1)) - 1) AS ordinal,
     e.event_meta,
-    e.execution_timestamp_us,
     e.sip_timestamp_us,
     e.price_primary_int,
     e.price_secondary_int,
@@ -1906,6 +1901,7 @@ def ensure_event_table(client: ClickHouseHttpClient, args: argparse.Namespace) -
 
 
 def ensure_tables(client: ClickHouseHttpClient, args: argparse.Namespace, days: list[DayFiles] | None = None) -> None:
+    assert_archive_write_entrypoint(args, "download_update_events")
     client.execute(f"CREATE DATABASE IF NOT EXISTS {quote_ident(args.database)}")
     if days and events_table_uses_year_suffix(str(args.events_table)):
         for table in sorted({event_args_for_day(args, day).events_table for day in days}):
@@ -2785,7 +2781,6 @@ def event_values_match(expected: dict[str, Any], actual: dict[str, Any]) -> bool
     int_fields = [
         "event_type",
         "event_meta",
-        "execution_timestamp_us",
         "sip_timestamp_us",
         "price_primary_int",
         "price_secondary_int",
@@ -2839,10 +2834,6 @@ def quote_raw_row_to_event(row: dict[str, Any], token_maps: dict[str, dict[int, 
         "ticker": str(row["ticker"]),
         "event_type": 0,
         "event_meta": event_meta(0, ask_scale, bid_scale, tape_code(row.get("tape"))),
-        "execution_timestamp_us": (
-            to_int_or_zero(row.get("participant_timestamp"))
-            or to_int_or_zero(row.get("sip_timestamp"))
-        ) // 1000,
         "sip_timestamp_us": to_int_or_zero(row.get("sip_timestamp")) // 1000,
         "sequence_number": to_int_or_zero(row.get("sequence_number")),
         "price_primary_int": ask_int,
@@ -2871,10 +2862,6 @@ def trade_raw_row_to_event(row: dict[str, Any], token_maps: dict[str, dict[int, 
         "ticker": str(row["ticker"]),
         "event_type": 1,
         "event_meta": event_meta(1, trade_scale, 0, tape_code(row.get("tape"))),
-        "execution_timestamp_us": (
-            to_int_or_zero(row.get("participant_timestamp"))
-            or to_int_or_zero(row.get("sip_timestamp"))
-        ) // 1000,
         "sip_timestamp_us": to_int_or_zero(row.get("sip_timestamp")) // 1000,
         "sequence_number": to_int_or_zero(row.get("sequence_number")),
         "price_primary_int": trade_int,
