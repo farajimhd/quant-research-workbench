@@ -25,6 +25,9 @@ use std::time::Duration;
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinSet;
 
+const EVENT_RATE_WINDOW_SECONDS: i64 = 300;
+const EVENT_RATE_MIN_SAMPLE_SECONDS: i64 = 15;
+
 #[derive(Clone, Debug)]
 struct Args {
     ticker_files: Vec<PathBuf>,
@@ -89,6 +92,7 @@ struct Progress {
     end_date: NaiveDate,
     ticker_count: usize,
     total_units: usize,
+    total_estimated_events: u64,
     counts: Counts,
     events_processed: u64,
     events_advanced: u64,
@@ -111,11 +115,14 @@ impl ProgressWriter {
         plans: &[TickerPlan],
     ) -> Self {
         let total_units = plans.iter().map(|plan| plan.sessions.len()).sum();
+        let total_estimated_events = plans.iter().fold(0_u64, |total, plan| {
+            total.saturating_add(plan.estimated_events)
+        });
         Self {
             path,
             status_notify: Notify::new(),
             inner: Mutex::new(Progress {
-                schema_version: 4,
+                schema_version: 5,
                 status: "running".to_string(),
                 started_at: Utc::now(),
                 updated_at: Utc::now(),
@@ -124,6 +131,7 @@ impl ProgressWriter {
                 end_date,
                 ticker_count: plans.len(),
                 total_units,
+                total_estimated_events,
                 counts: Counts {
                     queued: total_units,
                     ..Counts::default()
@@ -285,6 +293,39 @@ struct BoundaryAdvance {
     checkpoint: qmd_core::generic_structure::GenericStructureCheckpoint,
     event_count: u64,
     advanced_event_count: u64,
+}
+
+#[derive(Default)]
+struct EventRateWindow {
+    samples: VecDeque<(DateTime<Utc>, u64)>,
+}
+
+impl EventRateWindow {
+    fn observe(&mut self, observed_at: DateTime<Utc>, processed_events: u64) -> Option<f64> {
+        if self
+            .samples
+            .back()
+            .is_some_and(|(prior_at, _)| observed_at < *prior_at)
+        {
+            self.samples.clear();
+        }
+        self.samples.push_back((observed_at, processed_events));
+        let cutoff = observed_at - ChronoDuration::seconds(EVENT_RATE_WINDOW_SECONDS);
+        while self
+            .samples
+            .get(1)
+            .is_some_and(|(sample_at, _)| *sample_at <= cutoff)
+        {
+            self.samples.pop_front();
+        }
+        let (first_at, first_events) = self.samples.front().copied()?;
+        let (last_at, last_events) = self.samples.back().copied()?;
+        let elapsed = (last_at - first_at).num_milliseconds() as f64 / 1_000.0;
+        if elapsed < EVENT_RATE_MIN_SAMPLE_SECONDS as f64 || last_events < first_events {
+            return None;
+        }
+        Some((last_events - first_events) as f64 / elapsed)
+    }
 }
 
 #[tokio::main]
@@ -471,13 +512,15 @@ async fn report_progress(progress: Arc<ProgressWriter>, status_path: PathBuf, wo
     } else {
         Duration::from_secs(15)
     };
+    let mut event_rate_window = EventRateWindow::default();
     loop {
         let status_changed = progress.status_notify.notified();
         let snapshot = progress.snapshot().await;
+        let event_rate = event_rate_window.observe(Utc::now(), snapshot.events_processed);
         if interactive {
-            render_dashboard(&snapshot, &status_path, workers, color);
+            render_dashboard(&snapshot, &status_path, workers, color, event_rate);
         } else {
-            render_log_snapshot(&snapshot, workers);
+            render_log_snapshot(&snapshot, workers, event_rate);
         }
         if snapshot.status != "running" {
             break;
@@ -489,9 +532,15 @@ async fn report_progress(progress: Arc<ProgressWriter>, status_path: PathBuf, wo
     }
 }
 
-fn render_dashboard(progress: &Progress, status_path: &PathBuf, workers: usize, color: bool) {
+fn render_dashboard(
+    progress: &Progress,
+    status_path: &PathBuf,
+    workers: usize,
+    color: bool,
+    event_rate: Option<f64>,
+) {
     let width = terminal_width();
-    let lines = dashboard_lines(progress, status_path, workers, width);
+    let lines = dashboard_lines(progress, status_path, workers, width, event_rate);
     let frame = dashboard_frame(&lines, progress, color);
     let mut stdout = std::io::stdout().lock();
     let _ = stdout.write_all(frame.as_bytes());
@@ -546,15 +595,18 @@ fn dashboard_frame(lines: &[String], progress: &Progress, color: bool) -> String
     frame
 }
 
-fn render_log_snapshot(progress: &Progress, workers: usize) {
-    println!("{}", log_snapshot(progress, workers));
+fn render_log_snapshot(progress: &Progress, workers: usize, event_rate: Option<f64>) {
+    println!("{}", log_snapshot(progress, workers, event_rate));
 }
 
-fn log_snapshot(progress: &Progress, workers: usize) -> String {
+fn log_snapshot(progress: &Progress, workers: usize, event_rate: Option<f64>) -> String {
     let resolved = resolved_units(progress);
     let percentage = percentage(resolved, progress.total_units);
+    let eta = event_eta_seconds(progress, event_rate)
+        .map(format_duration)
+        .unwrap_or_else(|| "warming_up".to_string());
     format!(
-        "{} status={} progress={}/{} ({:.1}%) active={}/{} queued={} completed={} current={} retried={} unavailable={} failed={} blocked={} events={} elapsed={}",
+        "{} status={} progress={}/{} ({:.1}%) active={}/{} queued={} completed={} current={} retried={} unavailable={} failed={} blocked={} events={}/{} event_rate_5m={:.0}/s elapsed={} eta={}",
         Utc::now().format("%Y-%m-%dT%H:%M:%SZ"),
         progress.status,
         resolved,
@@ -570,7 +622,10 @@ fn log_snapshot(progress: &Progress, workers: usize) -> String {
         progress.counts.failed,
         progress.counts.blocked,
         progress.events_processed,
+        progress.total_estimated_events,
+        event_rate.unwrap_or_default(),
         format_duration(elapsed_seconds(progress)),
+        eta,
     )
 }
 
@@ -579,20 +634,15 @@ fn dashboard_lines(
     status_path: &PathBuf,
     workers: usize,
     width: usize,
+    event_rate: Option<f64>,
 ) -> Vec<String> {
     let resolved = resolved_units(progress);
     let percentage = percentage(resolved, progress.total_units);
     let elapsed = elapsed_seconds(progress);
     let unit_rate = rate(resolved as u64, elapsed);
-    let event_rate = rate(progress.events_processed, elapsed);
-    let eta = if elapsed >= 10 && resolved >= 3 && resolved < progress.total_units {
-        let remaining = progress.total_units - resolved;
-        Some(format_duration(
-            (remaining as f64 / unit_rate.max(0.000_001)) as i64,
-        ))
-    } else {
-        None
-    };
+    let eta = event_eta_seconds(progress, event_rate).map(format_duration);
+    let event_percentage =
+        percentage_u64(progress.events_processed, progress.total_estimated_events);
     let compact = width < 80;
     let bar_width = if compact {
         width.saturating_sub(38).clamp(10, 22)
@@ -687,11 +737,15 @@ fn dashboard_lines(
                 format_count(progress.counts.queued as u64),
             ),
             format!(
-                "Active {}/{} | {:.2} checkpoints/s | {} events/s",
-                progress.counts.active,
-                workers,
-                unit_rate,
-                format_count(event_rate.round() as u64),
+                "Events {}/{} ({:.1}%) | 5m rate {}/s",
+                format_count(progress.events_processed),
+                format_count(progress.total_estimated_events),
+                event_percentage,
+                format_count(event_rate.unwrap_or_default().round() as u64),
+            ),
+            format!(
+                "Active {}/{} | {:.2} checkpoints/s",
+                progress.counts.active, workers, unit_rate,
             ),
             format!("Elapsed {} | ETA {eta}", format_duration(elapsed)),
             format!("Active: {active}"),
@@ -731,14 +785,20 @@ fn dashboard_lines(
                 format_count(progress.counts.blocked as u64),
             ),
             format!(
-                "Active {}/{} | queued {} | {:.2} checkpoints/s | {}/s | elapsed {} | ETA {}",
+                "Events {} / {} ({:.1}%) | 5m rate {}/s | elapsed {} | ETA {}",
+                format_count(progress.events_processed),
+                format_count(progress.total_estimated_events),
+                event_percentage,
+                format_count(event_rate.unwrap_or_default().round() as u64),
+                format_duration(elapsed),
+                eta,
+            ),
+            format!(
+                "Active {}/{} | queued {} | {:.2} checkpoints/s",
                 progress.counts.active,
                 workers,
                 format_count(progress.counts.queued as u64),
                 unit_rate,
-                format_count(event_rate.round() as u64),
-                format_duration(elapsed),
-                eta,
             ),
             format!("Active: {active}"),
             format!("Latest: {recent}"),
@@ -769,6 +829,25 @@ fn percentage(value: usize, total: usize) -> f64 {
     } else {
         value as f64 * 100.0 / total as f64
     }
+}
+
+fn percentage_u64(value: u64, total: u64) -> f64 {
+    if total == 0 {
+        100.0
+    } else {
+        value.min(total) as f64 * 100.0 / total as f64
+    }
+}
+
+fn event_eta_seconds(progress: &Progress, event_rate: Option<f64>) -> Option<i64> {
+    let event_rate = event_rate.filter(|value| value.is_finite() && *value > 0.0)?;
+    let remaining = progress
+        .total_estimated_events
+        .saturating_sub(progress.events_processed);
+    if remaining == 0 {
+        return Some(0);
+    }
+    Some((remaining as f64 / event_rate).ceil() as i64)
 }
 
 fn elapsed_seconds(progress: &Progress) -> i64 {
@@ -1421,7 +1500,7 @@ mod tests {
     use super::{
         dashboard_frame, dashboard_lines, insert_ticker, log_snapshot, merge_ticker_universe,
         next_advance_boundary, retryable_error, session_is_covered_by_seed, validate_worker_count,
-        Counts, Progress, ProgressWriter, RecentUnit, TickerPlan,
+        Counts, EventRateWindow, Progress, ProgressWriter, RecentUnit, TickerPlan,
         GENERIC_STRUCTURE_ALGORITHM_VERSION,
     };
     use chrono::{NaiveDate, TimeZone, Utc};
@@ -1516,10 +1595,25 @@ mod tests {
     }
 
     #[test]
+    fn event_rate_uses_only_the_fixed_five_minute_window() {
+        let start = Utc.with_ymd_and_hms(2026, 9, 3, 14, 0, 0).unwrap();
+        let mut window = EventRateWindow::default();
+        assert_eq!(window.observe(start, 100), None);
+        assert_eq!(
+            window.observe(start + chrono::Duration::seconds(60), 700),
+            Some(10.0)
+        );
+        assert_eq!(
+            window.observe(start + chrono::Duration::seconds(360), 3_700),
+            Some(10.0)
+        );
+    }
+
+    #[test]
     fn dashboard_preserves_critical_state_at_compact_width() {
         let now = Utc.with_ymd_and_hms(2026, 9, 2, 20, 0, 0).unwrap();
         let progress = Progress {
-            schema_version: 4,
+            schema_version: 5,
             status: "running".to_string(),
             started_at: now - chrono::Duration::minutes(5),
             updated_at: now,
@@ -1528,6 +1622,7 @@ mod tests {
             end_date: NaiveDate::from_ymd_opt(2026, 8, 31).unwrap(),
             ticker_count: 13_888,
             total_units: 201_694,
+            total_estimated_events: 50_000_000,
             counts: Counts {
                 active: 2,
                 completed: 10_000,
@@ -1561,9 +1656,20 @@ mod tests {
             issues: Vec::new(),
         };
 
-        let lines = dashboard_lines(&progress, &PathBuf::from("D:/runtime/status.json"), 4, 60);
-        let wide_lines =
-            dashboard_lines(&progress, &PathBuf::from("D:/runtime/status.json"), 4, 120);
+        let lines = dashboard_lines(
+            &progress,
+            &PathBuf::from("D:/runtime/status.json"),
+            4,
+            60,
+            Some(2_000.0),
+        );
+        let wide_lines = dashboard_lines(
+            &progress,
+            &PathBuf::from("D:/runtime/status.json"),
+            4,
+            120,
+            Some(2_000.0),
+        );
 
         println!(
             "COMPACT\n{}\nWIDE\n{}",
@@ -1575,14 +1681,17 @@ mod tests {
         assert!(wide_lines.iter().all(|line| line.chars().count() <= 120));
         assert!(lines[0].contains("DEGRADED"));
         assert!(lines.iter().any(|line| line.contains("Resolved")));
+        assert!(lines.iter().any(|line| line.contains("5m rate")));
         assert!(lines.iter().any(|line| line.contains("Ctrl+C")));
         assert!(!lines.iter().any(|line| line.contains('\u{1b}')));
         let frame = dashboard_frame(&wide_lines, &progress, true);
         assert!(frame.starts_with("\u{1b}[H"));
         assert!(!frame.contains("\u{1b}[2J"));
         assert!(frame.ends_with("\u{1b}[J"));
-        let plain = log_snapshot(&progress, 4);
+        let plain = log_snapshot(&progress, 4, Some(2_000.0));
         assert!(plain.contains("progress=11003/201694 (5.5%)"));
+        assert!(plain.contains("events=12345678/50000000"));
+        assert!(plain.contains("event_rate_5m=2000/s"));
         assert!(!plain.contains('\u{1b}'));
     }
 
@@ -1615,6 +1724,7 @@ mod tests {
         let persisted: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(persisted["status"], "interrupted");
+        assert_eq!(persisted["total_estimated_events"], 123);
         let _ = std::fs::remove_file(path);
     }
 }

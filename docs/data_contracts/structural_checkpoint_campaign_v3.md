@@ -63,12 +63,15 @@ compatible per-ticker resume is desired.
 
 ## Progress and restart
 
-Progress schema v4 is atomically published to `campaign-status.json`. It
+Progress schema v5 is atomically published to `campaign-status.json`. It
 reports queued, active, completed, skipped/current, unavailable, retried,
 failed, and dependency-blocked units; exact active ticker/day ownership; event
-counts; recent completions; elapsed time; rates; and ETA. Interactive output is
-a fixed-row dashboard with one initial clear and in-place updates, so it does
-not flicker. Redirected output is plain text without ANSI sequences.
+counts; the ordinal-summary total event estimate; recent completions; elapsed
+time; and ETA. ETA is the remaining estimated event count divided by the actual
+processed-event rate over the latest fixed five-minute observation window. It
+warms up until that window has at least 15 seconds of evidence. Interactive
+output is a fixed-row dashboard with one initial clear and in-place updates, so
+it does not flicker. Redirected output is plain text without ANSI sequences.
 
 Ctrl+C writes `interrupted` and returns active units to the resumable queue.
 Rerunning the same command verifies persisted seeds and resumes each ticker
