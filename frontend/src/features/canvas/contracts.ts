@@ -460,6 +460,7 @@ export type CanvasChartSettings = {
   barGptQuantile: BarGptChartQuantile;
   barGptHorizon: "all" | "5s" | "30s" | "1m" | "5m" | "15m" | "1h";
   barGptTriggerMode: "auto" | "manual";
+  barGptOriginUs: number | null;
 };
 export type ContainerSettings = {
   version: 29;
