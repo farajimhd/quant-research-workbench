@@ -1499,16 +1499,11 @@ fn unified_structure_level_map(levels: &Value) -> BTreeMap<String, (Value, Value
                 object.remove("touch_count");
                 object.remove("hold_count");
                 object.remove("last_test_at_ms");
-                // The chart communicates these scores as whole-percent
-                // evidence and draws them across a finite pixel span.
+                // The chart communicates the observed hold rate as a whole-
+                // percent value across a finite pixel span.
                 // Sub-percent churn is not presentation-significant and must
                 // not turn every trade-bearing bar into a new state.
-                for key in [
-                    "reaction_probability",
-                    "hold_probability",
-                    "salience",
-                    "confidence",
-                ] {
+                for key in ["hold_probability"] {
                     if let Some(number) = object.get(key).and_then(Value::as_f64) {
                         object.insert(key.to_string(), json!((number * 20.0).round() / 20.0));
                     }
@@ -2835,15 +2830,14 @@ mod tests {
 
     #[test]
     fn unified_structure_projection_keeps_only_material_transitions_and_terminal_state() {
-        let level = |reaction: f64, volume: f64| {
+        let level = |hold: f64, volume: f64| {
             json!({
                 "unified_level_id": 17,
                 "side": 1,
                 "lower": 9.98,
                 "upper": 10.02,
                 "price": 10.0,
-                "reaction_probability": reaction,
-                "hold_probability": 0.6,
+                "hold_probability": hold,
                 "touch_count": 3,
                 "hold_count": 2,
                 "break_count": 0,

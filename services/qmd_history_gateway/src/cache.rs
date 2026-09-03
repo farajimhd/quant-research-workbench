@@ -334,12 +334,7 @@ fn unified_structure_level_map(levels: &Value) -> BTreeMap<String, (Value, Value
                 ] {
                     object.remove(key);
                 }
-                for key in [
-                    "reaction_probability",
-                    "hold_probability",
-                    "salience",
-                    "confidence",
-                ] {
+                for key in ["hold_probability"] {
                     if let Some(number) = object.get(key).and_then(Value::as_f64) {
                         object.insert(key.to_string(), json!((number * 20.0).round() / 20.0));
                     }
@@ -3307,10 +3302,11 @@ mod tests {
         structure_seed_cache_key_for_revision, write_prepared_bar_cache,
         write_prepared_structure_seed_cache, CacheEntry, CacheProfile, ChartBarRow, EntryState,
         PreparedBarCacheArtifact, PreparedStructureSeedCacheArtifact, SourceRevision,
-        StructureProjectionBuilder, HISTORICAL_CALCULATION_REVISION,
-        HISTORICAL_CORPORATE_ACTION_REVISION, HISTORICAL_ENGINE_VERSION,
-        LEGACY_STRUCTURE_CALCULATION_REVISION, MAX_ENCOUNTERED_STRUCTURE_LEVELS,
-        PREPARED_BAR_CACHE_SCHEMA_VERSION, PREPARED_STRUCTURE_SEED_CACHE_SCHEMA_VERSION,
+        StructureProjectionBuilder, GENERIC_STRUCTURE_ALGORITHM_VERSION,
+        HISTORICAL_CALCULATION_REVISION, HISTORICAL_CORPORATE_ACTION_REVISION,
+        HISTORICAL_ENGINE_VERSION, LEGACY_STRUCTURE_CALCULATION_REVISION,
+        MAX_ENCOUNTERED_STRUCTURE_LEVELS, PREPARED_BAR_CACHE_SCHEMA_VERSION,
+        PREPARED_STRUCTURE_SEED_CACHE_SCHEMA_VERSION,
     };
     use crate::source::EventWindow;
     use chrono::{DateTime, Duration, NaiveDate, TimeZone, Utc};
@@ -3384,7 +3380,9 @@ mod tests {
         assert_ne!(original, corrected);
         assert_ne!(original, no_split);
         assert_ne!(original, legacy);
-        assert!(original.contains("qmd-structure-v15"));
+        assert!(original.contains(&format!(
+            "qmd-structure-v{GENERIC_STRUCTURE_ALGORITHM_VERSION}"
+        )));
         assert!(legacy.contains(LEGACY_STRUCTURE_CALCULATION_REVISION));
     }
 

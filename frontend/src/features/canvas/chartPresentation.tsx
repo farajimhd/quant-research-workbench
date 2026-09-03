@@ -719,9 +719,8 @@ function pushUnifiedStructureLevels(
     const low = level.side > 0;
     const color = low ? "var(--success)" : "var(--danger)";
     const timeframes = level.timeframes.join(" · ");
-    const reactionProbability = boundedUnit(level.reaction_probability ?? level.confidence);
+    const holdProbability = boundedUnit(level.hold_probability);
     const breakProbability = boundedUnit(level.break_probability ?? (1 - level.hold_probability));
-    const reversalProbability = boundedUnit(level.reversal_probability ?? reactionProbability);
     const pressureBias = Math.max(-1, Math.min(1, Number(level.pressure_bias) || 0));
     zones.push({
       annotationKind: "unified-structure-level",
@@ -731,32 +730,29 @@ function pushUnifiedStructureLevels(
       borderStyle: "solid",
       borderWidth: 0,
       color,
-      compactLabel: `${low ? "S" : "R"} ${Math.round(reactionProbability * 100)}%`,
-      confidence: boundedUnit(level.confidence),
+      compactLabel: `${low ? "S" : "R"} H${Math.round(holdProbability * 100)}%`,
       breakProbability,
       defaultVisible: true,
       displayItemId: "indicator.qmd_unified_structure",
       end,
       extendToRightEdge: latest,
       fillColor: color,
-      fillOpacity: 0.045 + boundedUnit(level.salience) * 0.085,
+      fillOpacity: 0.045 + holdProbability * 0.085,
       historicalLabelsDefault: false,
       historyBarsDefault: 0,
-      holdProbability: boundedUnit(level.hold_probability),
-      label: `${low ? "Support" : "Resistance"} · ${String(level.lifecycle || "active").replaceAll("_", " ")} · ${percentLabel(reactionProbability)} react · ${percentLabel(level.hold_probability)} hold · ${percentLabel(breakProbability)} break · ${percentLabel(reversalProbability)} reversal · ${pressureBias >= 0 ? "+" : ""}${Math.round(pressureBias * 100)}% pressure · ${level.touch_count} tests · ${level.role_flip_count} flips · ${level.independent_pivot_count} pivots (${timeframes})`,
+      holdProbability,
+      label: `${low ? "Support" : "Resistance"} · ${String(level.lifecycle || "active").replaceAll("_", " ")} · ${percentLabel(holdProbability)} observed hold · ${percentLabel(breakProbability)} observed break · ${pressureBias >= 0 ? "+" : ""}${Math.round(pressureBias * 100)} executed pressure · ${level.touch_count} tests · ${level.role_flip_count} flips · ${level.independent_pivot_count} pivots (${timeframes})`,
       latest,
       legendLabel: "Unified structural level book",
       lower: level.lower,
       minPixelHeight: 9,
-      probabilityLineRatio: reactionProbability,
-      probabilityLineWidth: 1.5 + boundedUnit(level.salience) * 2.5,
+      probabilityLineRatio: holdProbability,
+      probabilityLineWidth: Math.min(4, 1.5 + Number(level.independent_pivot_count || 0) * 0.5),
       renderMode: "zone",
       roleFlipCount: Number(level.role_flip_count ?? 0),
       pressureBias,
-      reversalProbability,
       settingsId: "indicator.qmd_unified_structure.level-book-v2",
       start,
-      strength: boundedUnit(level.salience),
       tone: low ? "buy" : "sell",
       totalVolume: level.total_volume,
       buyVolume: level.buy_volume,
@@ -852,7 +848,7 @@ function isQmdUnifiedStructureLevel(value: unknown): value is QmdUnifiedStructur
     && (Number(row.side) === 1 || Number(row.side) === -1)
     && Number(row.lower) > 0
     && Number(row.upper) >= Number(row.lower)
-    && Number.isFinite(Number(row.reaction_probability ?? row.confidence))
+    && Number.isFinite(Number(row.hold_probability))
     && Array.isArray(row.timeframes)
     && Array.isArray(row.sources);
 }

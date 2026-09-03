@@ -326,7 +326,7 @@ def test_structural_history_can_span_all_loaded_chart_bars() -> None:
     assert "historyBarsDefault: 0" in chart_source
     assert 'annotationKind: "unified-structure-level"' in chart_source
     assert "borderOpacity: 0" in chart_source
-    assert "probabilityLineRatio: reactionProbability" in chart_source
+    assert "probabilityLineRatio: holdProbability" in chart_source
     assert 'zone.annotationKind === "unified-structure-level"' in renderer_source
     assert "span.left + span.width * probability" in renderer_source
     projected_history = history_api_source.split("fn project_chart_snapshot", 1)[1].split("fn compact_projected_unified_structure_history", 1)[0]
@@ -419,11 +419,13 @@ def test_unified_structure_scores_can_filter_loaded_levels_without_a_history_req
     chart_source = CHART_PRESENTATION.read_text(encoding="utf-8")
 
     assert "priceZoneMeetsUnifiedFilters(zone, settings)" in renderer_source
-    assert "minimumSalience" in renderer_source
-    assert "minimumReactionProbability" in renderer_source
     assert "minimumHoldProbability" in renderer_source
-    assert "minimumConfidence" in renderer_source
-    assert "Levels must meet every enabled evidence threshold" in renderer_source
+    assert "minimumPressureMagnitude" in renderer_source
+    assert "maximumBreakProbability" in renderer_source
+    assert "minimumSalience" not in renderer_source
+    assert "minimumReactionProbability" not in renderer_source
+    assert "minimumReversalProbability" not in renderer_source
+    assert "Observed lifecycle filters" in renderer_source
     assert "Changes apply immediately to loaded chart data" in renderer_source
     assert "showUnifiedSupport" in renderer_source
     assert "showUnifiedResistance" in renderer_source
@@ -432,7 +434,7 @@ def test_unified_structure_scores_can_filter_loaded_levels_without_a_history_req
     assert "showUnifiedRoleFlipped" in renderer_source
     assert 'zone.latest ? settings.showUnifiedActive : settings.showUnifiedBroken' in renderer_source
     assert "legendSettingsRef.current" in renderer_source
-    assert "holdProbability: boundedUnit(level.hold_probability)" in chart_source
+    assert "const holdProbability = boundedUnit(level.hold_probability)" in chart_source
     assert "roleFlipCount: Number(level.role_flip_count ?? 0)" in chart_source
     assert 'className="legend-configure-button"' in renderer_source
     assert 'className="legend-label" title={item.label}' in renderer_source

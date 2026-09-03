@@ -1309,6 +1309,7 @@ mod tests {
     use super::{
         bootstrap_days, dashboard_frame, dashboard_lines, insert_ticker, log_snapshot,
         next_advance_boundary, Counts, Progress, ProgressWriter, RecentUnit, TickerPlan,
+        GENERIC_STRUCTURE_ALGORITHM_VERSION,
     };
     use chrono::{NaiveDate, TimeZone, Utc};
     use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -1354,7 +1355,7 @@ mod tests {
             status: "running".to_string(),
             started_at: now - chrono::Duration::minutes(5),
             updated_at: now,
-            algorithm_version: 15,
+            algorithm_version: GENERIC_STRUCTURE_ALGORITHM_VERSION,
             start_date: NaiveDate::from_ymd_opt(2026, 8, 21).unwrap(),
             end_date: NaiveDate::from_ymd_opt(2026, 8, 31).unwrap(),
             ticker_count: 13_888,
