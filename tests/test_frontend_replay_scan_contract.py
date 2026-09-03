@@ -135,6 +135,7 @@ def test_strategy_activity_pins_the_navigation_stop_record() -> None:
 def test_chart_projects_position_lifecycles_with_compact_position_actions() -> None:
     chart_source = (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "chartPresentation.tsx").read_text(encoding="utf-8")
     renderer_source = (REPO_ROOT / "frontend" / "src" / "app" / "components" / "ChartPanel.tsx").read_text(encoding="utf-8")
+    theme_source = (REPO_ROOT / "frontend" / "src" / "app" / "theme.ts").read_text(encoding="utf-8")
 
     assert "() => strategyPresentationAvailable ? positionLifecycleAnnotations(chartTrading, linkContext.symbol) : []" in chart_source
     assert 'consequential_only: "true"' in chart_source
@@ -194,15 +195,20 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert "tradeAnnotationPrimitiveRef.current?.setState" in renderer_source
     assert "drawTradeAnnotationPrimitiveGeometry" in renderer_source
     assert 'const defaultStrategyPresentationSettings: StrategyPresentationSettings' in renderer_source
-    assert 'entry: strategyPresentationStyle("#2563EB"' in renderer_source
+    assert 'entry: strategyPresentationStyle("", "solid", 2, 0.95' in renderer_source
     assert 'exit: strategyPresentationStyle("#C2410C"' in renderer_source
-    assert 'stop: strategyPresentationStyle("#DC2626"' in renderer_source
+    assert 'stop: strategyPresentationStyle("", "dashed", 2, 0.95' in renderer_source
+    assert 'targets: strategyPresentationStyle("", "dashed", 2, 0.95' in renderer_source
     assert 'settingsStorageKey}.strategy-presentation' in renderer_source
     assert '>Strategy Presentation</span>' in renderer_source
-    assert 'drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, strategyPresentationColor(settings.stop.color, dangerColor), "SL"' in renderer_source
+    assert 'drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, strategyPresentationColor(settings.stop.color, stopColor), "SL"' in renderer_source
     assert 'annotation.levelPrices?.slice(0, 3)' in renderer_source
     assert 'annotation.targetPrices?.forEach' in renderer_source
-    assert 'Number(annotation.pnl) > 0 ? successColor : Number(annotation.pnl) < 0 ? dangerColor : exitColor' in renderer_source
+    assert "const resultColor = Number(annotation.pnl) > 0" in renderer_source
+    assert "? successColor" in renderer_source
+    assert '"--chart-strategy-entry": tokens.chartStrategyEntry' in theme_source
+    assert '"--chart-strategy-stop": tokens.chartStrategyStop' in theme_source
+    assert '"--chart-strategy-target": tokens.chartStrategyTarget' in theme_source
     assert 'fill.kind === "add"' in renderer_source
     assert 'fill.kind === "profit_target" || fill.kind === "target_change"' in renderer_source
     assert 'fill.kind === "protective_stop" || fill.kind === "trailing_stop" || fill.kind === "stop_change" || fill.kind === "protection_repair"' in renderer_source
@@ -214,12 +220,15 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert "tradeAnnotationAutoscaleInfo(this.state, startLogical, endLogical)" in renderer_source
     assert "const minimumWidth = Math.min(56, width)" in renderer_source
     assert 'drawCanvasTradeLabel(context, label, (renderedLeft + renderedRight) / 2, y + 3' in renderer_source
+    assert "canvasLabelBoxesOverlap" in renderer_source
+    assert "drawCanvasCandleConnector" in renderer_source
+    assert "context.setLineDash([2, 3])" in renderer_source
     assert 'context.fillRect(renderedLeft - capRadius' in renderer_source
     assert renderer_source.index('drawCanvasTradeLine(context, span.left, span.right, entryY') < renderer_source.index('annotation.levelPrices?.slice(0, 3)')
     assert renderer_source.index('drawCanvasTradeArrow(context, entryX, entryY') < renderer_source.index('annotation.levelPrices?.slice(0, 3)')
-    assert "if (left + labelWidth < 0 || left > width || top + labelHeight < 0 || top > height) return;" in renderer_source
-    assert "Math.max(3, Math.min(preferredLeft" not in renderer_source
-    assert "Math.max(3, Math.min(top" not in renderer_source
+    assert "const horizontalCandidates = [preferredLeft, preferredLeft - labelWidth / 2, preferredLeft + labelWidth / 2]" in renderer_source
+    assert "const verticalOffsets = Array.from({ length: 33 }" in renderer_source
+    assert "layout?.boxes.push(box)" in renderer_source
     assert "anchor - 3" in renderer_source
     draw_source = renderer_source.split("function drawRegions", 1)[1].split("function drawSessionRegions", 1)[0]
     assert "drawTradeAnnotations(" not in draw_source
