@@ -22,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = REPO_ROOT / "services" / "qmd_history_gateway" / "Cargo.toml"
 BUILD_BINARY_NAME = "structure_checkpoint_campaign.exe" if os.name == "nt" else "structure_checkpoint_campaign"
 RUNTIME_BINARY_NAME = (
-    "structure_checkpoint_campaign_v5.exe" if os.name == "nt" else "structure_checkpoint_campaign_v5"
+    "structure_checkpoint_campaign_v6.exe" if os.name == "nt" else "structure_checkpoint_campaign_v6"
 )
 MAX_PROCESS_WORKERS = 80
 
@@ -69,7 +69,7 @@ def resolve_binary(explicit: str | None, build: bool, environ: dict[str, str]) -
     if cargo is None:
         raise RuntimeError(
             "Cargo and the campaign binary are missing. Copy the prebuilt binary to "
-            r"D:\TradingML\runtimes\bin\structure_checkpoint_campaign_v5.exe."
+            r"D:\TradingML\runtimes\bin\structure_checkpoint_campaign_v6.exe."
         )
     subprocess.run(
         [cargo, "build", "--release", "--bin", "structure_checkpoint_campaign", "--manifest-path", str(MANIFEST)],
