@@ -79,10 +79,14 @@ session date, algorithm version, source-plan hash, source-revision token, exact
 cursor, authority start, and payload.
 
 The standalone builder writes its progress report atomically under the runtime
-root. Report schema v2 exposes queued, active, completed, already-current,
-unavailable, retried, failed, and dependency-blocked units. The report is
-operational evidence, not checkpoint authority; ClickHouse compatibility checks
-remain authoritative after a missing or stale report.
+root. Report schema v3 exposes queued, active, completed, already-current,
+unavailable, failed, and dependency-blocked units, processed event totals,
+recent completions, exact active ticker/session assignments, and failures. The
+interactive terminal renders a stable one-second dashboard from this same
+state; redirected output emits a plain snapshot every 15 seconds without ANSI
+control sequences. The report is operational evidence, not checkpoint
+authority; ClickHouse compatibility checks remain authoritative after a missing
+or stale report.
 
 ## Validation gate
 

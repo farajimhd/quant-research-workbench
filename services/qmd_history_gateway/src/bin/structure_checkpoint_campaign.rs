@@ -15,12 +15,14 @@ use qmd_history_gateway::structure_checkpoint::{
 };
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
 use std::fs;
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{Mutex, Semaphore};
+use std::time::Duration;
+use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinSet;
 
 const BOOTSTRAP_BUCKETS: [u32; 7] = [90, 56, 28, 14, 7, 3, 1];
@@ -65,9 +67,19 @@ struct Issue {
 }
 
 #[derive(Clone, Debug, Serialize)]
+struct RecentUnit {
+    ticker: String,
+    session_date: NaiveDate,
+    outcome: String,
+    event_count: u64,
+    cursor: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
 struct Progress {
     schema_version: u16,
     status: String,
+    started_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     algorithm_version: u16,
     start_date: NaiveDate,
@@ -75,13 +87,17 @@ struct Progress {
     ticker_count: usize,
     total_units: usize,
     counts: Counts,
+    events_processed: u64,
+    events_advanced: u64,
     active: BTreeMap<String, NaiveDate>,
+    recent: VecDeque<RecentUnit>,
     issues: Vec<Issue>,
 }
 
 struct ProgressWriter {
     path: PathBuf,
     inner: Mutex<Progress>,
+    status_notify: Notify,
 }
 
 impl ProgressWriter {
@@ -94,9 +110,11 @@ impl ProgressWriter {
         let total_units = plans.iter().map(|plan| plan.sessions.len()).sum();
         Self {
             path,
+            status_notify: Notify::new(),
             inner: Mutex::new(Progress {
-                schema_version: 2,
+                schema_version: 3,
                 status: "running".to_string(),
+                started_at: Utc::now(),
                 updated_at: Utc::now(),
                 algorithm_version: GENERIC_STRUCTURE_ALGORITHM_VERSION,
                 start_date,
@@ -107,7 +125,10 @@ impl ProgressWriter {
                     queued: total_units,
                     ..Counts::default()
                 },
+                events_processed: 0,
+                events_advanced: 0,
                 active: BTreeMap::new(),
+                recent: VecDeque::new(),
                 issues: Vec::new(),
             }),
         }
@@ -117,10 +138,24 @@ impl ProgressWriter {
         let mut progress = self.inner.lock().await;
         progress.active.insert(ticker.to_string(), session_date);
         progress.counts.active = progress.active.len();
+        progress.counts.queued = progress.total_units.saturating_sub(
+            progress
+                .counts
+                .finished
+                .saturating_add(progress.counts.active),
+        );
         self.write_locked(&mut progress)
     }
 
-    async fn finish_unit(&self, ticker: &str, outcome: &str) -> Result<(), String> {
+    async fn finish_unit(
+        &self,
+        ticker: &str,
+        session_date: NaiveDate,
+        outcome: &str,
+        event_count: u64,
+        advanced_event_count: u64,
+        cursor: u64,
+    ) -> Result<(), String> {
         let mut progress = self.inner.lock().await;
         progress.active.remove(ticker);
         progress.counts.active = progress.active.len();
@@ -137,6 +172,18 @@ impl ProgressWriter {
             "unavailable" => progress.counts.unavailable += 1,
             _ => progress.counts.failed += 1,
         }
+        progress.events_processed = progress.events_processed.saturating_add(event_count);
+        progress.events_advanced = progress
+            .events_advanced
+            .saturating_add(advanced_event_count);
+        progress.recent.push_front(RecentUnit {
+            ticker: ticker.to_string(),
+            session_date,
+            outcome: outcome.to_string(),
+            event_count,
+            cursor,
+        });
+        progress.recent.truncate(5);
         self.write_locked(&mut progress)
     }
 
@@ -170,15 +217,37 @@ impl ProgressWriter {
         self.write_locked(&mut progress)
     }
 
-    async fn complete(&self) -> Result<Progress, String> {
+    async fn complete(&self, force_failed: bool) -> Result<Progress, String> {
         let mut progress = self.inner.lock().await;
-        progress.status = if progress.counts.failed == 0 {
+        progress.status = if progress.counts.failed == 0 && !force_failed {
             "completed".to_string()
         } else {
             "failed".to_string()
         };
         self.write_locked(&mut progress)?;
-        Ok(progress.clone())
+        let final_progress = progress.clone();
+        drop(progress);
+        self.status_notify.notify_waiters();
+        Ok(final_progress)
+    }
+
+    async fn interrupt(&self) -> Result<Progress, String> {
+        let mut progress = self.inner.lock().await;
+        progress.status = "interrupted".to_string();
+        progress.active.clear();
+        progress.counts.active = 0;
+        progress.counts.queued = progress
+            .total_units
+            .saturating_sub(progress.counts.finished);
+        self.write_locked(&mut progress)?;
+        let final_progress = progress.clone();
+        drop(progress);
+        self.status_notify.notify_waiters();
+        Ok(final_progress)
+    }
+
+    async fn snapshot(&self) -> Progress {
+        self.inner.lock().await.clone()
     }
 
     fn write_locked(&self, progress: &mut Progress) -> Result<(), String> {
@@ -259,58 +328,412 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         progress.write_locked(&mut initial).map_err(io_error)?;
     }
 
-    println!(
-        "Structural Checkpoint Campaign v2: tickers={} units={} workers={} algorithm=v{} status={}",
-        plans.len(),
-        plans.iter().map(|plan| plan.sessions.len()).sum::<usize>(),
-        args.workers.min(plans.len()),
-        GENERIC_STRUCTURE_ALGORITHM_VERSION,
-        progress_path.display()
-    );
-
-    let permits = Arc::new(Semaphore::new(args.workers.min(plans.len()).max(1)));
+    let worker_count = args.workers.min(plans.len()).max(1);
+    let reporter = tokio::spawn(report_progress(
+        progress.clone(),
+        progress_path.clone(),
+        worker_count,
+    ));
+    let queue = Arc::new(Mutex::new(VecDeque::from(plans)));
     let mut tasks = JoinSet::new();
-    for plan in plans {
-        let permit = permits.clone().acquire_owned().await?;
+    for _worker_id in 0..worker_count {
+        let queue = queue.clone();
         let source = source.clone();
         let writer = writer.clone();
         let config = history_config.clone();
         let progress = progress.clone();
         let event_limit = args.event_limit;
         tasks.spawn(async move {
-            let _permit = permit;
-            run_ticker(&config, &source, &writer, &progress, plan, event_limit).await
+            let mut errors = Vec::new();
+            loop {
+                let Some(plan) = queue.lock().await.pop_front() else {
+                    break;
+                };
+                if let Err(error) =
+                    run_ticker(&config, &source, &writer, &progress, plan, event_limit).await
+                {
+                    errors.push(error);
+                }
+            }
+            errors
         });
     }
 
     let mut task_failed = false;
-    while let Some(result) = tasks.join_next().await {
-        match result {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                task_failed = true;
-                eprintln!("ticker worker failed: {error}");
+    let mut worker_errors = Vec::new();
+    let mut interrupted = false;
+    while !tasks.is_empty() {
+        tokio::select! {
+            signal = tokio::signal::ctrl_c() => {
+                if signal.is_ok() {
+                    interrupted = true;
+                    tasks.abort_all();
+                }
             }
-            Err(error) => {
-                task_failed = true;
-                eprintln!("ticker worker panicked or was cancelled: {error}");
+            result = tasks.join_next() => {
+                match result {
+                    Some(Ok(errors)) => {
+                        task_failed |= !errors.is_empty();
+                        worker_errors.extend(errors);
+                    }
+                    Some(Err(error)) if interrupted && error.is_cancelled() => {}
+                    Some(Err(error)) => {
+                        task_failed = true;
+                        worker_errors.push(format!("worker panicked or was cancelled: {error}"));
+                    }
+                    None => break,
+                }
             }
         }
+        if interrupted {
+            while tasks.join_next().await.is_some() {}
+            break;
+        }
     }
-    let final_progress = progress.complete().await.map_err(io_error)?;
-    println!(
-        "Campaign {}: completed={} already_current={} unavailable={} failed={} blocked={}",
-        final_progress.status,
-        final_progress.counts.completed,
-        final_progress.counts.skipped,
-        final_progress.counts.unavailable,
-        final_progress.counts.failed,
-        final_progress.counts.blocked,
-    );
+    let final_progress = if interrupted {
+        progress.interrupt().await.map_err(io_error)?
+    } else {
+        progress.complete(task_failed).await.map_err(io_error)?
+    };
+    reporter
+        .await
+        .map_err(|error| io_error(format!("progress reporter failed: {error}")))?;
+    for error in worker_errors.iter().take(20) {
+        eprintln!("worker failure: {error}");
+    }
+    if worker_errors.len() > 20 {
+        eprintln!(
+            "{} additional worker failures are recorded in {}",
+            worker_errors.len() - 20,
+            progress_path.display()
+        );
+    }
+    if interrupted {
+        std::process::exit(130);
+    }
     if task_failed || final_progress.counts.failed > 0 {
         std::process::exit(1);
     }
     Ok(())
+}
+
+async fn report_progress(progress: Arc<ProgressWriter>, status_path: PathBuf, workers: usize) {
+    let interactive = std::io::stdout().is_terminal();
+    let color = interactive && env::var_os("NO_COLOR").is_none();
+    let refresh = if interactive {
+        Duration::from_secs(1)
+    } else {
+        Duration::from_secs(15)
+    };
+    loop {
+        let status_changed = progress.status_notify.notified();
+        let snapshot = progress.snapshot().await;
+        if interactive {
+            render_dashboard(&snapshot, &status_path, workers, color);
+        } else {
+            render_log_snapshot(&snapshot, workers);
+        }
+        if snapshot.status != "running" {
+            break;
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(refresh) => {}
+            _ = status_changed => {}
+        }
+    }
+}
+
+fn render_dashboard(progress: &Progress, status_path: &PathBuf, workers: usize, color: bool) {
+    let width = terminal_width();
+    let lines = dashboard_lines(progress, status_path, workers, width);
+    let mut stdout = std::io::stdout().lock();
+    let _ = write!(stdout, "\x1b[2J\x1b[H");
+    for (index, line) in lines.iter().enumerate() {
+        if index == 0 && color {
+            let code = match progress.status.as_str() {
+                "completed" => "32",
+                "running" if progress.counts.failed == 0 => "36",
+                "running" => "33",
+                "interrupted" => "33",
+                _ => "31",
+            };
+            let _ = writeln!(stdout, "\x1b[{code}m{line}\x1b[0m");
+        } else {
+            let _ = writeln!(stdout, "{line}");
+        }
+    }
+    let _ = stdout.flush();
+}
+
+fn render_log_snapshot(progress: &Progress, workers: usize) {
+    println!("{}", log_snapshot(progress, workers));
+}
+
+fn log_snapshot(progress: &Progress, workers: usize) -> String {
+    let resolved = resolved_units(progress);
+    let percentage = percentage(resolved, progress.total_units);
+    format!(
+        "{} status={} progress={}/{} ({:.1}%) active={}/{} queued={} completed={} current={} unavailable={} failed={} blocked={} events={} elapsed={}",
+        Utc::now().format("%Y-%m-%dT%H:%M:%SZ"),
+        progress.status,
+        resolved,
+        progress.total_units,
+        percentage,
+        progress.counts.active,
+        workers,
+        progress.counts.queued,
+        progress.counts.completed,
+        progress.counts.skipped,
+        progress.counts.unavailable,
+        progress.counts.failed,
+        progress.counts.blocked,
+        progress.events_processed,
+        format_duration(elapsed_seconds(progress)),
+    )
+}
+
+fn dashboard_lines(
+    progress: &Progress,
+    status_path: &PathBuf,
+    workers: usize,
+    width: usize,
+) -> Vec<String> {
+    let resolved = resolved_units(progress);
+    let percentage = percentage(resolved, progress.total_units);
+    let elapsed = elapsed_seconds(progress);
+    let unit_rate = rate(resolved as u64, elapsed);
+    let event_rate = rate(progress.events_processed, elapsed);
+    let eta = if elapsed >= 10 && resolved >= 3 && resolved < progress.total_units {
+        let remaining = progress.total_units - resolved;
+        Some(format_duration(
+            (remaining as f64 / unit_rate.max(0.000_001)) as i64,
+        ))
+    } else {
+        None
+    };
+    let compact = width < 80;
+    let bar_width = if compact {
+        width.saturating_sub(38).clamp(10, 22)
+    } else {
+        width.saturating_sub(34).clamp(10, 42)
+    };
+    let filled = if progress.total_units == 0 {
+        bar_width
+    } else {
+        ((resolved as f64 / progress.total_units as f64) * bar_width as f64).round() as usize
+    }
+    .min(bar_width);
+    let bar = format!("{}{}", "#".repeat(filled), "-".repeat(bar_width - filled));
+    let active = if progress.active.is_empty() {
+        "waiting for workers".to_string()
+    } else {
+        progress
+            .active
+            .iter()
+            .take(if width >= 110 { 8 } else { 4 })
+            .map(|(ticker, date)| format!("{ticker}@{date}"))
+            .collect::<Vec<_>>()
+            .join("  ")
+    };
+    let recent = progress
+        .recent
+        .front()
+        .map(|unit| {
+            format!(
+                "{}@{} {}  events={} cursor={}",
+                unit.ticker,
+                unit.session_date,
+                unit.outcome,
+                format_count(unit.event_count),
+                unit.cursor
+            )
+        })
+        .unwrap_or_else(|| "none yet".to_string());
+    let failure = progress
+        .issues
+        .last()
+        .map(|issue| {
+            format!(
+                "{}{}: {}",
+                issue.ticker,
+                issue
+                    .session_date
+                    .map(|date| format!("@{date}"))
+                    .unwrap_or_default(),
+                issue.error
+            )
+        })
+        .unwrap_or_else(|| "none".to_string());
+    let state = if progress.status == "running" && progress.counts.failed > 0 {
+        "DEGRADED"
+    } else {
+        progress.status.as_str()
+    };
+    let eta = eta.unwrap_or_else(|| "warming up".to_string());
+    let mut lines = if compact {
+        vec![
+            format!(
+                "Checkpoint Campaign v2 | {} | v{} | {} workers",
+                state.to_ascii_uppercase(),
+                progress.algorithm_version,
+                workers
+            ),
+            format!(
+                "{} to {} | {} tickers | {} UTC",
+                progress.start_date,
+                progress.end_date,
+                format_count(progress.ticker_count as u64),
+                progress.updated_at.format("%H:%M:%S")
+            ),
+            format!(
+                "Resolved {}/{} ({:.1}%) [{bar}]",
+                format_count(resolved as u64),
+                format_count(progress.total_units as u64),
+                percentage,
+            ),
+            format!(
+                "Durable {} | current {} | failed {}",
+                format_count(progress.counts.completed as u64),
+                format_count(progress.counts.skipped as u64),
+                format_count(progress.counts.failed as u64),
+            ),
+            format!(
+                "Unavailable {} | blocked {} | queued {}",
+                format_count(progress.counts.unavailable as u64),
+                format_count(progress.counts.blocked as u64),
+                format_count(progress.counts.queued as u64),
+            ),
+            format!(
+                "Active {}/{} | {:.2} checkpoints/s | {} events/s",
+                progress.counts.active,
+                workers,
+                unit_rate,
+                format_count(event_rate.round() as u64),
+            ),
+            format!("Elapsed {} | ETA {eta}", format_duration(elapsed)),
+            format!("Active: {active}"),
+            format!("Latest: {recent}"),
+            format!("Latest failure: {failure}"),
+            format!("Status: {}", status_path.display()),
+            "Ctrl+C stops safely; rerun the same command to resume.".to_string(),
+        ]
+    } else {
+        vec![
+            format!(
+                "Structural Checkpoint Campaign v2 | {} | algorithm v{} | workers {}",
+                state.to_ascii_uppercase(),
+                progress.algorithm_version,
+                workers
+            ),
+            format!(
+                "Range {} to {} | {:>6} tickers | updated {} UTC",
+                progress.start_date,
+                progress.end_date,
+                format_count(progress.ticker_count as u64),
+                progress.updated_at.format("%H:%M:%S")
+            ),
+            format!(
+                "Resolved [{bar}] {:>5.1}%  {} / {}",
+                percentage,
+                format_count(resolved as u64),
+                format_count(progress.total_units as u64)
+            ),
+            format!(
+                "Durable {:>8} | current {:>8} | unavailable {:>6} | failed {:>4} | blocked {:>6}",
+                format_count(progress.counts.completed as u64),
+                format_count(progress.counts.skipped as u64),
+                format_count(progress.counts.unavailable as u64),
+                format_count(progress.counts.failed as u64),
+                format_count(progress.counts.blocked as u64),
+            ),
+            format!(
+                "Active {}/{} | queued {} | {:.2} checkpoints/s | {}/s | elapsed {} | ETA {}",
+                progress.counts.active,
+                workers,
+                format_count(progress.counts.queued as u64),
+                unit_rate,
+                format_count(event_rate.round() as u64),
+                format_duration(elapsed),
+                eta,
+            ),
+            format!("Active: {active}"),
+            format!("Latest: {recent}"),
+            format!("Latest failure: {failure}"),
+            format!("Durable status: {}", status_path.display()),
+            "Ctrl+C safely stops workers; rerun the same command to resume.".to_string(),
+        ]
+    };
+    for line in &mut lines {
+        *line = truncate_line(line, width);
+    }
+    lines
+}
+
+fn resolved_units(progress: &Progress) -> usize {
+    progress
+        .counts
+        .completed
+        .saturating_add(progress.counts.skipped)
+        .saturating_add(progress.counts.unavailable)
+        .saturating_add(progress.counts.failed)
+        .saturating_add(progress.counts.blocked)
+}
+
+fn percentage(value: usize, total: usize) -> f64 {
+    if total == 0 {
+        100.0
+    } else {
+        value as f64 * 100.0 / total as f64
+    }
+}
+
+fn elapsed_seconds(progress: &Progress) -> i64 {
+    (Utc::now() - progress.started_at).num_seconds().max(0)
+}
+
+fn rate(value: u64, elapsed_seconds: i64) -> f64 {
+    if elapsed_seconds <= 0 {
+        0.0
+    } else {
+        value as f64 / elapsed_seconds as f64
+    }
+}
+
+fn format_duration(seconds: i64) -> String {
+    let seconds = seconds.max(0);
+    let hours = seconds / 3_600;
+    let minutes = seconds % 3_600 / 60;
+    let seconds = seconds % 60;
+    format!("{hours:02}:{minutes:02}:{seconds:02}")
+}
+
+fn format_count(value: u64) -> String {
+    let digits = value.to_string();
+    let mut result = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, character) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            result.push(',');
+        }
+        result.push(character);
+    }
+    result
+}
+
+fn terminal_width() -> usize {
+    env::var("COLUMNS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(120)
+        .clamp(60, 240)
+}
+
+fn truncate_line(value: &str, width: usize) -> String {
+    let count = value.chars().count();
+    if count <= width {
+        return value.to_string();
+    }
+    let keep = width.saturating_sub(3);
+    format!("{}...", value.chars().take(keep).collect::<String>())
 }
 
 async fn run_ticker(
@@ -335,20 +758,21 @@ async fn run_ticker(
         .await
         {
             Ok(result) => {
-                println!(
-                    "{} {} {} events={} advanced={} cursor={}",
-                    result.status,
-                    plan.ticker,
-                    session_date,
-                    result.event_count,
-                    result.advanced_event_count,
-                    result.cursor
-                );
-                progress.finish_unit(&plan.ticker, result.status).await?;
+                progress
+                    .finish_unit(
+                        &plan.ticker,
+                        session_date,
+                        result.status,
+                        result.event_count,
+                        result.advanced_event_count,
+                        result.cursor,
+                    )
+                    .await?;
             }
             Err(error) if no_history_error(&error) => {
-                println!("unavailable {} {}: {}", plan.ticker, session_date, error);
-                progress.finish_unit(&plan.ticker, "unavailable").await?;
+                progress
+                    .finish_unit(&plan.ticker, session_date, "unavailable", 0, 0, 0)
+                    .await?;
             }
             Err(error) => {
                 let blocked = plan.sessions.len().saturating_sub(index + 1);
@@ -799,8 +1223,13 @@ fn io_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sy
 
 #[cfg(test)]
 mod tests {
-    use super::{bootstrap_days, insert_ticker};
-    use std::collections::BTreeSet;
+    use super::{
+        bootstrap_days, dashboard_lines, insert_ticker, log_snapshot, Counts, Progress,
+        ProgressWriter, RecentUnit, TickerPlan,
+    };
+    use chrono::{NaiveDate, TimeZone, Utc};
+    use std::collections::{BTreeMap, BTreeSet, VecDeque};
+    use std::path::PathBuf;
 
     #[test]
     fn planner_uses_bounded_bootstrap_intervals() {
@@ -815,5 +1244,102 @@ mod tests {
         insert_ticker(" sugp ", &mut tickers).unwrap();
         insert_ticker("SUGP", &mut tickers).unwrap();
         assert_eq!(tickers.into_iter().collect::<Vec<_>>(), vec!["SUGP"]);
+    }
+
+    #[test]
+    fn dashboard_preserves_critical_state_at_compact_width() {
+        let now = Utc.with_ymd_and_hms(2026, 9, 2, 20, 0, 0).unwrap();
+        let progress = Progress {
+            schema_version: 3,
+            status: "running".to_string(),
+            started_at: now - chrono::Duration::minutes(5),
+            updated_at: now,
+            algorithm_version: 15,
+            start_date: NaiveDate::from_ymd_opt(2026, 8, 21).unwrap(),
+            end_date: NaiveDate::from_ymd_opt(2026, 8, 31).unwrap(),
+            ticker_count: 13_888,
+            total_units: 201_694,
+            counts: Counts {
+                active: 2,
+                completed: 10_000,
+                queued: 190_691,
+                skipped: 1_000,
+                failed: 1,
+                blocked: 2,
+                finished: 11_003,
+                unavailable: 0,
+            },
+            events_processed: 12_345_678,
+            events_advanced: 11_000_000,
+            active: BTreeMap::from([
+                (
+                    "SUGP".to_string(),
+                    NaiveDate::from_ymd_opt(2026, 8, 21).unwrap(),
+                ),
+                (
+                    "AAPL".to_string(),
+                    NaiveDate::from_ymd_opt(2026, 8, 31).unwrap(),
+                ),
+            ]),
+            recent: VecDeque::from([RecentUnit {
+                ticker: "MSFT".to_string(),
+                session_date: NaiveDate::from_ymd_opt(2026, 8, 31).unwrap(),
+                outcome: "completed".to_string(),
+                event_count: 456_789,
+                cursor: 987_654,
+            }]),
+            issues: Vec::new(),
+        };
+
+        let lines = dashboard_lines(&progress, &PathBuf::from("D:/runtime/status.json"), 4, 60);
+        let wide_lines =
+            dashboard_lines(&progress, &PathBuf::from("D:/runtime/status.json"), 4, 120);
+
+        println!(
+            "COMPACT\n{}\nWIDE\n{}",
+            lines.join("\n"),
+            wide_lines.join("\n")
+        );
+
+        assert!(lines.iter().all(|line| line.chars().count() <= 60));
+        assert!(wide_lines.iter().all(|line| line.chars().count() <= 120));
+        assert!(lines[0].contains("DEGRADED"));
+        assert!(lines.iter().any(|line| line.contains("Resolved")));
+        assert!(lines.iter().any(|line| line.contains("Ctrl+C")));
+        assert!(!lines.iter().any(|line| line.contains('\u{1b}')));
+        let plain = log_snapshot(&progress, 4);
+        assert!(plain.contains("progress=11003/201694 (5.5%)"));
+        assert!(!plain.contains('\u{1b}'));
+    }
+
+    #[tokio::test]
+    async fn interruption_returns_active_work_to_the_resumable_queue() {
+        let date = NaiveDate::from_ymd_opt(2026, 8, 21).unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "structure-campaign-interrupt-{}.json",
+            std::process::id()
+        ));
+        let writer = ProgressWriter::new(
+            path.clone(),
+            date,
+            date,
+            &[TickerPlan {
+                ticker: "SUGP".to_string(),
+                rebuild_start: Utc.with_ymd_and_hms(2026, 2, 22, 9, 0, 0).unwrap(),
+                sessions: vec![date],
+            }],
+        );
+        writer.activate("SUGP", date).await.unwrap();
+
+        let interrupted = writer.interrupt().await.unwrap();
+
+        assert_eq!(interrupted.status, "interrupted");
+        assert_eq!(interrupted.counts.active, 0);
+        assert_eq!(interrupted.counts.queued, 1);
+        assert!(interrupted.active.is_empty());
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted["status"], "interrupted");
+        let _ = std::fs::remove_file(path);
     }
 }

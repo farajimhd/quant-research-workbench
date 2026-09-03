@@ -366,4 +366,7 @@ cargo run --release --manifest-path services\qmd_history_gateway\Cargo.toml `
 
 Rerunning the identical command is the supported resume operation. Each ticker
 starts from its last source- and split-compatible ClickHouse checkpoint. The
-runtime status is written atomically to `campaign-status.json`.
+interactive terminal shows resolved and durable progress, worker assignments,
+rates, ETA, recent work, and failures. Redirected output remains plain text.
+Runtime status schema v3 is written atomically to `campaign-status.json`, and
+Ctrl+C records `interrupted` before returning exit code 130.
