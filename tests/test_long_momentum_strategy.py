@@ -25,6 +25,8 @@ from src.trading_runtime.strategy_engine import (
     default_long_momentum_parameters,
     _execution_policy_from_phase,
     _capital_request_from_payload,
+    _compact_structural_level_reference,
+    _level_is_entry_quality,
     _prior_completed_frame_resistance_trigger,
     _structural_profit_targets,
     entry_stage_without_rule_set,
@@ -41,6 +43,31 @@ from src.backend import trading_runtime_service
 
 
 NOW = datetime(2026, 7, 24, 14, 0, tzinfo=timezone.utc)
+
+
+def test_structural_quality_uses_backend_score_and_preserves_audit_evidence() -> None:
+    level = {
+        "unified_level_id": 7,
+        "price": 3.45,
+        "created_at_ms": int(NOW.timestamp() * 1_000) - 1_000,
+        "hold_probability": 0.90,
+        "hold_quality_score": 0.42,
+        "hold_rate": 1.0,
+        "hold_observation_count": 2,
+        "hold_evidence_reliability": 0.2,
+        "hold_score_revision": "beta22-wilson90-v1",
+    }
+    policy = {
+        "minimum_hold_probability": 0.0,
+        "minimum_hold_quality_score": 0.50,
+        "minimum_hold_observations": 2,
+    }
+
+    assert not _level_is_entry_quality(level, policy, observed_at=NOW)
+    reference = _compact_structural_level_reference(level)
+    assert reference["hold_quality_score"] == 0.42
+    assert reference["hold_observation_count"] == 2
+    assert reference["hold_score_revision"] == "beta22-wilson90-v1"
 
 
 def assignment(
@@ -3588,7 +3615,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
 
         self.assertEqual(result.evaluation.signals[0].action, "hold")
 
-    def test_entry_stop_and_trail_use_second_support_above_strict_hold_gate(self) -> None:
+    def test_entry_stop_and_trail_use_second_evidence_bearing_support(self) -> None:
         levels = tuple(
             {
                 "unified_level_id": level_id,
@@ -3616,10 +3643,10 @@ class LongMomentumStrategyTests(unittest.TestCase):
 
         intent = result.evaluation.intents[0]
         evidence = result.evaluation.signals[0].metadata["protective_stop_selection"]
-        self.assertEqual(intent.invalidation_price, 95.0)
-        self.assertEqual(intent.trailing_amount, 5.0)
-        self.assertEqual(evidence["selected_support_level"]["unified_level_id"], "second-qualified")
-        self.assertEqual(evidence["qualified_level_count"], 3)
+        self.assertEqual(intent.invalidation_price, 98.0)
+        self.assertEqual(intent.trailing_amount, 2.0)
+        self.assertEqual(evidence["selected_support_level"]["unified_level_id"], "at-threshold")
+        self.assertEqual(evidence["qualified_level_count"], 4)
 
     def test_entry_stop_and_trail_cap_second_support_distance_at_parameterized_risk(self) -> None:
         parameters = default_long_momentum_parameters()

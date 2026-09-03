@@ -1477,7 +1477,9 @@ class TradingConfigurationServiceTests(unittest.TestCase):
                 "structure_buffer_bps": 0.0,
                 "volatility_multiple": 1.25,
                 "maximum_risk_pct": 15.0,
-                "minimum_hold_probability": 0.85,
+                "minimum_hold_probability": 0.0,
+                "minimum_hold_quality_score": 0.0,
+                "minimum_hold_observations": 1,
                 "support_level_ordinal": 2,
                 "prefer_closer_hybrid": True,
             },
@@ -1817,7 +1819,15 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertEqual(
             profile["parameters"]["structural_entry"]["minimum_hold_probability"],
-            0.80,
+            0.0,
+        )
+        self.assertEqual(
+            profile["parameters"]["structural_entry"]["minimum_hold_quality_score"],
+            0.0,
+        )
+        self.assertEqual(
+            profile["parameters"]["structural_entry"]["minimum_hold_observations"],
+            1,
         )
         self.assertEqual(
             profile["parameters"]["structural_entry"]["selection_mode"],

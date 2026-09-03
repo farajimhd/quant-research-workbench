@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 16;
+pub const STRUCTURE_HOLD_SCORE_REVISION: &str = "beta22-wilson90-v1";
+const HOLD_SCORE_Z: f64 = 1.281_551_565_544_600_4;
+const HOLD_RELIABILITY_HALF_LIFE: f64 = 8.0;
 pub const STRUCTURE_TIMEFRAMES: [(&str, i64); 10] = [
     ("100ms", 100),
     ("1s", 1_000),
@@ -197,6 +200,25 @@ pub struct UnifiedStructureLevel {
     /// level failure frequency and is not a forecast of the next price move.
     #[serde(default)]
     pub break_probability: f64,
+    /// Raw observed hold frequency. This remains zero until at least one
+    /// hold/accepted-break outcome exists.
+    #[serde(default)]
+    pub hold_rate: f64,
+    /// Number of causal hold/accepted-break outcomes supporting the score.
+    #[serde(default)]
+    pub hold_observation_count: u32,
+    /// Evidence depth in [0, 1], with eight outcomes representing half of the
+    /// asymptotic reliability. This is not directional alpha.
+    #[serde(default)]
+    pub hold_evidence_reliability: f64,
+    /// Conservative one-sided 90% Wilson lower bound over the Beta(2, 2)
+    /// posterior pseudo-observations. Use this comparable score for ranking;
+    /// do not interpret it as an empirically calibrated return probability.
+    #[serde(default)]
+    pub hold_quality_score: f64,
+    /// Exact deterministic scoring contract used for the derived fields.
+    #[serde(default)]
+    pub hold_score_revision: String,
     #[serde(default)]
     pub touch_count: u32,
     #[serde(default)]
@@ -1809,6 +1831,9 @@ impl GenericStructureEngine {
         self.candidate_low_at = checkpoint.candidate_low_at;
         self.levels = checkpoint.levels.clone();
         self.unified_tracks = checkpoint.unified_tracks.clone();
+        for track in &mut self.unified_tracks {
+            refresh_unified_hold_evidence(&mut track.level);
+        }
         self.timeframe_states = checkpoint.timeframe_states.clone();
         self.session_anchor = checkpoint.session_anchor;
         self.session_high = checkpoint.session_high;
@@ -2342,9 +2367,6 @@ fn unified_structure_level(
         .map(|source| source.role_flip_count)
         .max()
         .unwrap_or_default();
-    let hold_probability = ((2.0 + hold_count as f64)
-        / (4.0 + hold_count as f64 + break_count as f64))
-        .clamp(0.0, 1.0);
     let geometry_sources = sources
         .iter()
         .filter(|source| source.source_kind == "level_book")
@@ -2411,7 +2433,6 @@ fn unified_structure_level(
     } else {
         0.0
     };
-    let break_probability = (1.0 - hold_probability).clamp(0.0, 1.0);
     let last_test_at_ms = sources
         .iter()
         .map(|source| source.last_test_at_ms)
@@ -2425,7 +2446,7 @@ fn unified_structure_level(
         .map(|source| source.level_id)
         .unwrap_or_default();
     let unified_level_id = stable_hash(&format!("{sym}|unified-book|{anchor_level_id}"));
-    UnifiedStructureLevel {
+    let mut level = UnifiedStructureLevel {
         unified_level_id,
         side,
         price,
@@ -2442,8 +2463,13 @@ fn unified_structure_level(
         neutral_volume,
         trade_count,
         pressure_bias,
-        hold_probability,
-        break_probability,
+        hold_probability: 0.0,
+        break_probability: 0.0,
+        hold_rate: 0.0,
+        hold_observation_count: 0,
+        hold_evidence_reliability: 0.0,
+        hold_quality_score: 0.0,
+        hold_score_revision: String::new(),
         touch_count,
         hold_count,
         break_count,
@@ -2452,7 +2478,9 @@ fn unified_structure_level(
         lifecycle: "active".to_string(),
         pending_side: 0,
         sources,
-    }
+    };
+    refresh_unified_hold_evidence(&mut level);
+    level
 }
 
 fn merge_unified_candidate(track: &mut UnifiedLevelTrack, candidate: UnifiedStructureLevel) {
@@ -2549,16 +2577,44 @@ fn refresh_unified_track_evidence(track: &mut UnifiedLevelTrack) {
         .fold(0_u64, |total, source| {
             total.saturating_add(source.trade_count)
         });
-    track.level.hold_probability = ((2.0 + track.level.hold_count as f64)
-        / (4.0 + track.level.hold_count as f64 + track.level.break_count as f64))
-        .clamp(0.0, 1.0);
-    track.level.break_probability = (1.0 - track.level.hold_probability).clamp(0.0, 1.0);
+    refresh_unified_hold_evidence(&mut track.level);
     let directional_volume = track.level.buy_volume + track.level.sell_volume;
     track.level.pressure_bias = if directional_volume > 0.0 {
         ((track.level.buy_volume - track.level.sell_volume) / directional_volume).clamp(-1.0, 1.0)
     } else {
         0.0
     };
+}
+
+fn refresh_unified_hold_evidence(level: &mut UnifiedStructureLevel) {
+    let holds = level.hold_count as f64;
+    let breaks = level.break_count as f64;
+    let observations = holds + breaks;
+    let posterior_successes = holds + 2.0;
+    let posterior_total = observations + 4.0;
+    let posterior_mean = (posterior_successes / posterior_total).clamp(0.0, 1.0);
+    let z2 = HOLD_SCORE_Z * HOLD_SCORE_Z;
+    let denominator = 1.0 + z2 / posterior_total;
+    let center = posterior_mean + z2 / (2.0 * posterior_total);
+    let spread = HOLD_SCORE_Z
+        * ((posterior_mean * (1.0 - posterior_mean) / posterior_total
+            + z2 / (4.0 * posterior_total * posterior_total))
+            .max(0.0))
+        .sqrt();
+    level.hold_probability = posterior_mean;
+    level.break_probability = (1.0 - posterior_mean).clamp(0.0, 1.0);
+    level.hold_rate = if observations > 0.0 {
+        (holds / observations).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    level.hold_observation_count = level.hold_count.saturating_add(level.break_count);
+    level.hold_evidence_reliability =
+        (observations / (observations + HOLD_RELIABILITY_HALF_LIFE)).clamp(0.0, 1.0);
+    level.hold_quality_score = ((center - spread) / denominator).clamp(0.0, 1.0);
+    if level.hold_score_revision != STRUCTURE_HOLD_SCORE_REVISION {
+        level.hold_score_revision = STRUCTURE_HOLD_SCORE_REVISION.to_string();
+    }
 }
 
 fn consolidate_unified_tracks(tracks: &mut Vec<UnifiedLevelTrack>) {
@@ -3559,6 +3615,11 @@ mod tests {
             pressure_bias: 1.0 / 3.0,
             hold_probability: 0.5,
             break_probability: 0.5,
+            hold_rate: 0.0,
+            hold_observation_count: 0,
+            hold_evidence_reliability: 0.0,
+            hold_quality_score: 0.0,
+            hold_score_revision: String::new(),
             touch_count: 1,
             hold_count: 0,
             break_count: 0,
@@ -3655,6 +3716,14 @@ mod tests {
         assert_eq!(engine.unified_tracks[0].level.hold_count, 6);
         assert_eq!(engine.unified_tracks[0].level.break_count, 0);
         assert!((engine.unified_tracks[0].level.hold_probability - 0.8).abs() < 1e-12);
+        assert_eq!(engine.unified_tracks[0].level.hold_observation_count, 6);
+        assert_eq!(engine.unified_tracks[0].level.hold_rate, 1.0);
+        assert_eq!(
+            engine.unified_tracks[0].level.hold_score_revision,
+            STRUCTURE_HOLD_SCORE_REVISION
+        );
+        assert!(engine.unified_tracks[0].level.hold_quality_score < 0.8);
+        assert!(engine.unified_tracks[0].level.hold_quality_score > 0.5);
         let serialized = serde_json::to_value(&engine.unified_tracks[0].level).unwrap();
         for removed in [
             "salience",
@@ -4483,6 +4552,48 @@ mod tests {
         let legacy_checkpoint =
             serde_json::from_value::<GenericStructureCheckpoint>(legacy_without_watermark).unwrap();
         assert_eq!(legacy_checkpoint.replayed_through, None);
+    }
+
+    #[test]
+    fn checkpoint_seed_repairs_missing_or_stale_derived_hold_scores() {
+        let mut source = GenericStructureEngine::new("TEST");
+        let mut level = unified_test_level(41, -1, 9.99, 10.01);
+        level.hold_count = 10;
+        level.break_count = 1;
+        level.hold_probability = 0.01;
+        level.hold_quality_score = 0.99;
+        source.unified_tracks.push(UnifiedLevelTrack {
+            level,
+            lifecycle: LevelLifecycle::Active,
+            last_relation: -1,
+        });
+        let mut legacy = serde_json::to_value(source.checkpoint()).unwrap();
+        let serialized_level = legacy
+            .get_mut("unified_tracks")
+            .and_then(|tracks| tracks.as_array_mut())
+            .and_then(|tracks| tracks.first_mut())
+            .and_then(|track| track.get_mut("level"))
+            .and_then(|level| level.as_object_mut())
+            .unwrap();
+        for field in [
+            "hold_rate",
+            "hold_observation_count",
+            "hold_evidence_reliability",
+            "hold_quality_score",
+            "hold_score_revision",
+        ] {
+            serialized_level.remove(field);
+        }
+        let checkpoint = serde_json::from_value::<GenericStructureCheckpoint>(legacy).unwrap();
+        let mut restored = GenericStructureEngine::new("TEST");
+        restored.seed_checkpoint(&checkpoint);
+        let repaired = &restored.unified_tracks[0].level;
+
+        assert_eq!(repaired.hold_observation_count, 11);
+        assert_eq!(repaired.hold_score_revision, STRUCTURE_HOLD_SCORE_REVISION);
+        assert!((repaired.hold_probability - 0.8).abs() < 1e-12);
+        assert!(repaired.hold_quality_score < repaired.hold_probability);
+        assert!(repaired.hold_quality_score > 0.5);
     }
 
     #[test]

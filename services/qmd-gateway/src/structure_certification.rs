@@ -104,8 +104,37 @@ impl StructureEventAuditor {
 }
 
 pub fn checkpoint_sha256(checkpoint: &GenericStructureCheckpoint) -> Result<String, String> {
-    let value = checkpoint_json_value(checkpoint)?;
+    // Certification owns causal state. Presentation/selection projections are
+    // recomputed from raw counts on load and must not strand a valid v16 chain
+    // when their schema evolves.
+    let mut value = checkpoint_json_value(checkpoint)?;
+    remove_recomputable_hold_projections(&mut value);
     canonical_json_sha256(&value)
+}
+
+fn remove_recomputable_hold_projections(value: &mut Value) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                remove_recomputable_hold_projections(value);
+            }
+        }
+        Value::Object(values) => {
+            for field in [
+                "hold_rate",
+                "hold_observation_count",
+                "hold_evidence_reliability",
+                "hold_quality_score",
+                "hold_score_revision",
+            ] {
+                values.remove(field);
+            }
+            for value in values.values_mut() {
+                remove_recomputable_hold_projections(value);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Return the checkpoint exactly as its durable JSON representation decodes.
@@ -528,8 +557,11 @@ mod tests {
         let checkpoint = engine.checkpoint();
         let certified = checkpoint_sha256(&checkpoint).unwrap();
         let serialized = serde_json::to_string(&checkpoint).unwrap();
-        let persisted = serde_json::from_str(&serialized).unwrap();
+        let mut persisted = serde_json::from_str(&serialized).unwrap();
+        remove_recomputable_hold_projections(&mut persisted);
         let in_memory = serde_json::to_value(&checkpoint).unwrap();
+        let legacy_checkpoint: crate::generic_structure::GenericStructureCheckpoint =
+            serde_json::from_value(persisted.clone()).unwrap();
 
         assert_eq!(
             certified,
@@ -537,5 +569,18 @@ mod tests {
             "{}",
             first_difference(&in_memory, &persisted, "$").unwrap_or_default(),
         );
+        assert_eq!(checkpoint_sha256(&legacy_checkpoint).unwrap(), certified);
+    }
+
+    #[test]
+    fn derived_hold_projections_do_not_invalidate_legacy_checkpoint_certification() {
+        let checkpoint = crate::generic_structure::GenericStructureEngine::new("SUGP").checkpoint();
+        let hash = checkpoint_sha256(&checkpoint).unwrap();
+        let mut legacy_value = serde_json::to_value(&checkpoint).unwrap();
+        remove_recomputable_hold_projections(&mut legacy_value);
+        let legacy_checkpoint: crate::generic_structure::GenericStructureCheckpoint =
+            serde_json::from_value(legacy_value).unwrap();
+
+        assert_eq!(checkpoint_sha256(&legacy_checkpoint).unwrap(), hash);
     }
 }

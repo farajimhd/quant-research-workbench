@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, time as clock_time, timedelta, timezone
 from enum import StrEnum
-from math import exp, floor
+from math import floor
 from typing import Any, Mapping
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -502,7 +502,9 @@ def default_long_momentum_parameters() -> dict[str, Any]:
                 "structure_buffer_bps": 0.0,
                 "volatility_multiple": 1.25,
                 "maximum_risk_pct": 15.0,
-                "minimum_hold_probability": 0.85,
+                "minimum_hold_probability": 0.0,
+                "minimum_hold_quality_score": 0.0,
+                "minimum_hold_observations": 1,
                 "support_level_ordinal": 2,
                 "prefer_closer_hybrid": True,
             },
@@ -701,6 +703,10 @@ def resolve_long_momentum_parameters(overrides: dict[str, Any] | None = None) ->
     if str(stop.get("method") or "") == "ordinal_qualified_support":
         if not 0 <= float(stop.get("minimum_hold_probability") or 0) < 1:
             raise ValueError("Protective support hold threshold must be in [0, 1)")
+        if not 0 <= float(stop.get("minimum_hold_quality_score") or 0) <= 1:
+            raise ValueError("Protective support quality score must be in [0, 1]")
+        if int(stop.get("minimum_hold_observations") or 0) < 0:
+            raise ValueError("Protective support observation count cannot be negative")
         if int(stop.get("support_level_ordinal") or 0) < 1:
             raise ValueError("Protective support level ordinal must be positive")
     sizing = parameters["sizing"]
@@ -1295,6 +1301,11 @@ def _compact_structural_level_reference(row: Mapping[str, Any] | None) -> dict[s
         "confidence",
         "reaction_probability",
         "hold_probability",
+        "hold_rate",
+        "hold_observation_count",
+        "hold_evidence_reliability",
+        "hold_quality_score",
+        "hold_score_revision",
         "reversal_probability",
         "independent_pivot_count",
         "source_count",
@@ -1341,6 +1352,14 @@ def _level_is_entry_quality(
         else 0.0
     )
     hold_probability = _level_metric(row, "hold_probability")
+    hold_quality = _level_metric(row, "hold_quality_score", "hold_probability")
+    hold_observations = _level_metric(row, "hold_observation_count")
+    if "hold_observation_count" not in row:
+        hold_observations = (
+            _level_metric(row, "hold_count") + _level_metric(row, "break_count")
+            if "hold_count" in row or "break_count" in row
+            else float("hold_probability" in row)
+        )
     break_probability = _level_metric(row, "break_probability")
     if "break_probability" not in row:
         break_probability = max(0.0, 1.0 - hold_probability)
@@ -1355,6 +1374,8 @@ def _level_is_entry_quality(
         >= float(policy.get("minimum_reaction_probability") or 0)
         and hold_probability
         >= float(policy.get("minimum_hold_probability") or 0)
+        and hold_quality >= float(policy.get("minimum_hold_quality_score") or 0)
+        and hold_observations >= float(policy.get("minimum_hold_observations") or 0)
         and break_probability
         <= float(policy.get("maximum_break_probability", 1.0))
         and (
@@ -1397,9 +1418,10 @@ def _consolidated_structure_levels(
         representative = max(
             components,
             key=lambda item: (
-                _level_metric(item, "salience", "strength"),
-                _level_metric(item, "confidence"),
-                _level_metric(item, "reaction_probability"),
+                _level_metric(item, "hold_quality_score", "hold_probability"),
+                _level_metric(item, "hold_observation_count"),
+                _level_metric(item, "role_flip_count"),
+                _level_metric(item, "independent_pivot_count"),
             ),
         )
         current.update(representative)
@@ -5885,7 +5907,9 @@ def _initial_stop(
         1 + direction * maximum_risk_pct / 100
     )
     if method == "ordinal_qualified_support":
-        minimum_hold = float(stop.get("minimum_hold_probability") or 0.85)
+        minimum_hold = float(stop.get("minimum_hold_probability", 0.85))
+        minimum_quality = float(stop.get("minimum_hold_quality_score") or 0.0)
+        minimum_observations = float(stop.get("minimum_hold_observations") or 0.0)
         ordinal = max(1, int(stop.get("support_level_ordinal") or 2))
         rows = _consolidated_structure_levels(
             [dict(row) for row in observation.structural_support_levels],
@@ -5903,7 +5927,19 @@ def _initial_stop(
             )
             # The requested threshold is strict: a level at exactly 85% does
             # not satisfy a contract expressed as hold_probability > 85%.
-            if on_protective_side and _level_metric(row, "hold_probability") > minimum_hold:
+            observations = _level_metric(row, "hold_observation_count")
+            if "hold_observation_count" not in row:
+                observations = (
+                    _level_metric(row, "hold_count") + _level_metric(row, "break_count")
+                    if "hold_count" in row or "break_count" in row
+                    else float("hold_probability" in row)
+                )
+            if (
+                on_protective_side
+                and _level_metric(row, "hold_probability") > minimum_hold
+                and _level_metric(row, "hold_quality_score", "hold_probability") >= minimum_quality
+                and observations >= minimum_observations
+            ):
                 qualified.append((candidate, row))
         qualified.sort(key=lambda item: item[0], reverse=side == "long")
         selected_row = qualified[ordinal - 1][1] if len(qualified) >= ordinal else None
@@ -5935,6 +5971,8 @@ def _initial_stop(
                 "maximum_risk_pct": maximum_risk_pct,
                 "maximum_risk_stop": round(maximum_risk, 4),
                 "minimum_hold_probability_exclusive": minimum_hold,
+                "minimum_hold_quality_score": minimum_quality,
+                "minimum_hold_observations": minimum_observations,
                 "support_level_ordinal": ordinal,
                 "qualified_level_count": len(qualified),
                 "qualified_levels_truncated": len(audit_rows) < len(qualified),
@@ -6084,24 +6122,9 @@ def _luld_target(
 
 
 def _profit_level_score(row: dict[str, Any]) -> float:
-    salience = _level_metric(row, "salience", "strength")
-    confidence = _level_metric(row, "confidence")
-    reaction = _level_metric(row, "reaction_probability")
-    reversal = _level_metric(row, "reversal_probability")
-    hold = _level_metric(row, "hold_probability")
-    pivot_breadth = 1.0 - exp(-max(0.0, _level_metric(row, "independent_pivot_count")))
-    role_flip = 1.0 - exp(-max(0.0, _level_metric(row, "role_flip_count")))
-    pressure = abs(_level_metric(row, "pressure_bias"))
-    return (
-        0.20 * salience
-        + 0.20 * confidence
-        + 0.20 * reaction
-        + 0.15 * reversal
-        + 0.10 * hold
-        + 0.05 * pivot_breadth
-        + 0.05 * role_flip
-        + 0.05 * pressure
-    )
+    """Rank levels by the backend-owned conservative hold-evidence score."""
+
+    return _level_metric(row, "hold_quality_score", "hold_probability")
 
 
 def _structural_profit_targets(
@@ -6141,6 +6164,14 @@ def _structural_profit_targets(
         reaction = _level_metric(dict(row), "reaction_probability")
         reversal = _level_metric(dict(row), "reversal_probability")
         hold = _level_metric(dict(row), "hold_probability")
+        hold_quality = _level_metric(dict(row), "hold_quality_score", "hold_probability")
+        hold_observations = _level_metric(dict(row), "hold_observation_count")
+        if "hold_observation_count" not in row:
+            hold_observations = (
+                _level_metric(dict(row), "hold_count") + _level_metric(dict(row), "break_count")
+                if "hold_count" in row or "break_count" in row
+                else float("hold_probability" in row)
+            )
         break_probability = _level_metric(dict(row), "break_probability")
         if "break_probability" not in row:
             break_probability = max(0.0, 1.0 - hold)
@@ -6157,6 +6188,8 @@ def _structural_profit_targets(
             and reaction >= float(policy.get("minimum_reaction_probability") or 0.0)
             and reversal >= float(policy.get("minimum_reversal_probability") or 0.0)
             and hold >= float(policy.get("minimum_hold_probability") or 0.0)
+            and hold_quality >= float(policy.get("minimum_hold_quality_score") or 0.0)
+            and hold_observations >= float(policy.get("minimum_hold_observations") or 0.0)
             and break_probability
             <= float(policy.get("maximum_break_probability", 1.0))
             and (

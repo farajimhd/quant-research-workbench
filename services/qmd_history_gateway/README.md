@@ -358,7 +358,7 @@ cargo test --offline --manifest-path services\qmd_history_gateway\Cargo.toml
 
 ## Standalone structural checkpoint campaign
 
-The `structure_checkpoint_campaign` binary runs Campaign v5 directly on a
+The `structure_checkpoint_campaign` binary runs Campaign v6 directly on a
 workstation. It uses the continuity index both for workload estimates and exact
 per-session ordinal bounds, daily bars only to prioritize currently tradable
 tickers (with one bounded raw-liquidity fallback when those bars are absent),
@@ -380,24 +380,29 @@ python scripts\run_structure_checkpoint_campaign.py `
   --end-date 2026-08-31 `
   --liquidity-start-date 2026-08-01 `
   --liquidity-end-date 2026-08-31 `
-  --runtime-dir D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v5\canonical-2025-2026 `
+  --runtime-dir D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v6\canonical-2025-2026 `
   --process-workers 80
 ```
 
 Rerunning the identical command is the supported resume operation. The launcher
 reuses the immutable universe plan and each ticker starts from its last source-
 and split-compatible checkpoint in the exact named set. The
-interactive terminal shows resolved and durable progress, worker assignments,
+launcher detaches a durable supervisor before opening the read-only interactive
+terminal. Closing the terminal does not stop the campaign. The display shows
+resolved and durable progress, worker assignments,
 rates, ETA, recent work, and failures. Its fixed-row refresh does not repeatedly
 clear the screen or scroll. Redirected output remains plain text.
 ETA uses total events estimated from the ordinal continuity summary and the
 aggregate batch-level processed-event rate from every active worker over a
 rolling five-minute window, rather than assuming every ticker-day costs the
 same. Failed or interrupted attempts roll back their uncommitted event
-contribution. Aggregate schema v1 and worker schema v6 status documents are
+contribution. Aggregate schema v1 and worker schema v7 status documents are
 written atomically without blocking workers on per-session disk writes. The
 aggregate is stored in `campaign-status.json`, and
-Ctrl+C records `interrupted` before returning exit code 130.
+Ctrl+C closes only the read-only monitor. Use `--stop-existing graceful` to
+finish and certify each worker's active day before stopping, or
+`--stop-existing fast` to roll back the active incomplete day at the next
+ordinal-chunk boundary.
 
 The launcher accepts 1-80 worker processes. On Windows, every shard worker uses
 a current-thread runtime pinned by `--core-index` across processor groups, so
@@ -405,11 +410,11 @@ a current-thread runtime pinned by `--core-index` across processor groups, so
 ClickHouse or storage saturation can still prevent linear speedup.
 
 The launcher uses a prebuilt executable from
-`D:\TradingML\runtimes\bin\structure_checkpoint_campaign_v5.exe` when Cargo is
+`D:\TradingML\runtimes\bin\structure_checkpoint_campaign_v6.exe` when Cargo is
 not installed. Use `--purge-existing-checkpoints` only for an explicitly
 authorized cold reset; it deletes only the named checkpoint set on its first
 run. The full contract is
-[`structural_checkpoint_campaign_v5.md`](../../docs/data_contracts/structural_checkpoint_campaign_v5.md).
+[`structural_checkpoint_campaign_v6.md`](../../docs/data_contracts/structural_checkpoint_campaign_v6.md).
 
 If the parent progress window exits while the worker status files continue to
 advance, do not rerun the campaign command because that can launch duplicate
@@ -426,6 +431,12 @@ python scripts\run_structure_checkpoint_campaign.py `
 ```
 
 The reattached monitor reconstructs aggregate progress and ETA from the atomic
-per-worker status files, reports worker-status freshness, and finalizes the set
-registry only after every worker reaches a terminal certified state. Ctrl+C
-closes this monitor without stopping the independently running workers.
+per-worker status files and reports worker-status freshness. It is strictly
+read-only: only the detached supervisor writes aggregate status or finalizes
+the set registry. Ctrl+C closes this monitor without stopping the independently
+running workers.
+
+At every v16 checkpoint load, the shared engine recomputes derived hold score
+fields from raw causal hold and accepted-break counts before applying another
+event. This repairs old checkpoint presentations and strategy evidence without
+purging or replaying otherwise valid checkpoint history.

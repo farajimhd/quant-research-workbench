@@ -13,6 +13,7 @@ from scripts.run_structure_checkpoint_campaign import (
     binary_candidates,
     parse_launcher_args,
     prepare_shards,
+    request_campaign_stop,
     sha256_file,
     status_is_fully_certified,
     validate_process_worker_count,
@@ -71,7 +72,7 @@ def test_prebuilt_runtime_binary_is_preferred_without_cargo() -> None:
     candidates = binary_candidates(None, {"TRADING_RUNTIME_ROOT": r"E:\TradingRuntime"})
 
     assert candidates[0] == Path(r"E:\TradingRuntime") / "bin" / candidates[0].name
-    assert candidates[0].name == "structure_checkpoint_campaign_v5.exe"
+    assert candidates[0].name == "structure_checkpoint_campaign_v6.exe"
 
 
 def test_executable_hash_is_reported_from_exact_file_bytes(tmp_path: Path) -> None:
@@ -130,6 +131,46 @@ def test_monitor_option_is_owned_by_launcher() -> None:
         "--checkpoint-set-id",
         "set-v1",
     ]
+
+
+def test_stop_option_publishes_validated_campaign_control(tmp_path: Path) -> None:
+    (tmp_path / "campaign-manifest.json").write_text(
+        json.dumps({"checkpoint_set_id": "set-v1"}), encoding="utf-8"
+    )
+
+    path = request_campaign_stop(tmp_path, "set-v1", "fast")
+    request = json.loads(path.read_text(encoding="utf-8"))
+
+    assert request["checkpoint_set_id"] == "set-v1"
+    assert request["action"] == "stop_fast"
+    assert request["request_id"]
+
+
+def test_supervisor_and_stop_options_are_not_forwarded_to_native_worker() -> None:
+    launcher, campaign = parse_launcher_args(
+        [
+            "--supervisor-child",
+            "--foreground-supervisor",
+            "--stop-existing",
+            "graceful",
+            "--checkpoint-set-id",
+            "set-v1",
+        ]
+    )
+
+    assert launcher.supervisor_child is True
+    assert launcher.foreground_supervisor is True
+    assert launcher.stop_existing == "graceful"
+    assert campaign == ["--checkpoint-set-id", "set-v1"]
+
+
+def test_stop_request_rejects_a_different_checkpoint_set(tmp_path: Path) -> None:
+    (tmp_path / "campaign-manifest.json").write_text(
+        json.dumps({"checkpoint_set_id": "set-v1"}), encoding="utf-8"
+    )
+
+    with pytest.raises(RuntimeError, match="does not match"):
+        request_campaign_stop(tmp_path, "set-v2", "graceful")
 
 
 def test_detached_process_view_uses_durable_worker_state() -> None:

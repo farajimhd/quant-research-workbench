@@ -81,6 +81,11 @@ export type QmdUnifiedStructureLevel = {
   pressure_bias: number;
   hold_probability: number;
   break_probability: number;
+  hold_rate?: number;
+  hold_observation_count?: number;
+  hold_evidence_reliability?: number;
+  hold_quality_score?: number;
+  hold_score_revision?: string;
   touch_count: number;
   hold_count: number;
   break_count: number;

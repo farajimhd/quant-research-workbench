@@ -18,13 +18,21 @@ The current canonical market-event contract identifies a listing by normalized S
 
 ## Evidence fields
 
-- `hold_probability` and `break_probability`: beta-smoothed lifecycle frequencies in the current role.
+- `hold_count` and `break_count`: raw causal lifecycle outcomes and the durable scoring authority.
+- `hold_rate`: unsmoothed observed hold frequency; zero before the first outcome.
+- `hold_probability` and `break_probability`: Beta(2, 2)-smoothed lifecycle frequencies retained for compatibility.
+- `hold_quality_score`: one-sided 90% Wilson lower bound over the Beta pseudo-observations, used for comparable conservative ranking rather than as a calibrated forecast.
+- `hold_observation_count`, `hold_evidence_reliability`, and `hold_score_revision`: evidence depth and exact derived-score contract needed for audit and presentation.
 - `pressure_bias`: signed executed-volume imbalance around the range in `[-1, 1]`; positive is buyer-initiated pressure and negative is seller-initiated pressure.
 - `touch_count`, `hold_count`, `break_count`, `role_flip_count`: causal lifecycle counts.
 - `buy_volume`, `sell_volume`, `neutral_volume`, `trade_count`: merged executed activity associated with event-native sources. Timeframe corroboration does not duplicate volume.
 - `confirmed_at_ms`: first instant at which the episode was tradable without lookahead.
 
 Unified levels expose recorded evidence rather than synthetic importance, confidence, reaction, or reversal scores. Candidate selection and capacity ranking use explicit lifecycle state, bounded hold/touch/flip counts, independent-pivot breadth, causal recency, and distance from the current reference. These ranking facts never rewrite the earlier range geometry or confirmation time.
+
+Every checkpoint load recomputes the derived hold fields from raw counts before
+advancement. This repairs older v16 rows non-destructively; no valid checkpoint
+needs event replay solely because a derived-score field was missing or stale.
 
 Chart bars use the same retrospective split basis as the checkpoint: every bar before a split boundary is multiplied by the cumulative `split_from / split_to` price factor and its share volume by the inverse factor. Daily and macro responses expose `coverage_status`, `latest_session_date`, and `split_adjusted`; stale daily authority is shown to the operator rather than silently presented as current context.
 
@@ -42,7 +50,7 @@ End-of-day checkpoints are immutable, versioned seeds, not mutable forecasts. Th
 - A checkpoint from a later session, different algorithm version, incomplete source window, gap-containing plan, or mismatched revision must fail closed.
 
 Full-universe or multi-session population follows the restart and concurrency
-rules in `docs/data_contracts/structural_checkpoint_campaign_v2.md`. Campaign
+rules in `docs/data_contracts/structural_checkpoint_campaign_v6.md`. Campaign
 planning reads the lightweight continuity index; it never performs a second
 raw-event scan merely to estimate work. Resume validates the prior checkpoint's
 complete event and split authority before advancing it.

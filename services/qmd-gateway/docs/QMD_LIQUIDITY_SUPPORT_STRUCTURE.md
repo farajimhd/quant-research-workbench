@@ -54,8 +54,13 @@ reversal republishes the same stable unified identity with the opposite side.
 A zone's
 `confirmed_at_ms` is the latest confirmation among its sources, which is the
 earliest time the complete displayed cluster was knowable without lookahead.
-`hold_probability` is a Beta-smoothed summary of recorded holds versus accepted
-breaks in the current role; `break_probability` is its complement. Unified
+`hold_probability` is a Beta(2, 2)-smoothed summary of recorded holds versus accepted
+breaks in the current role; `break_probability` is its complement.
+`hold_quality_score` is the conservative one-sided 90% Wilson lower bound over
+those pseudo-observations, while `hold_rate`, `hold_observation_count`,
+`hold_evidence_reliability`, and `hold_score_revision` expose the raw result,
+sample depth, and exact scoring contract. The score supports relative ranking;
+it is not an empirically calibrated return probability. Unified
 levels do not publish synthetic salience, confidence, reaction, or reversal
 scores. Publication remains
 bounded to sixteen major levels per side; the internal book retains up to 512
@@ -134,7 +139,7 @@ response, and QMD flow together.
 This is the calculation and service-contract authority for QMD liquidity,
 support/resistance, market structure, and structural-pressure indicators. It
 documents indicator schema version 20 and generic-structure algorithm version
-10. The application rendering contract is documented in
+16. The application rendering contract is documented in
 [`frontend/src/app/QMD_LIQUIDITY_SUPPORT_STRUCTURE.md`](../../../frontend/src/app/QMD_LIQUIDITY_SUPPORT_STRUCTURE.md).
 
 ## Scope and Interpretation Boundary

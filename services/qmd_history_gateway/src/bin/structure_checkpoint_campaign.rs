@@ -12,7 +12,7 @@ use qmd_history_gateway::config::HistoricalGatewayConfig;
 use qmd_history_gateway::source::{
     HistoricalEventSource, StructureCampaignTicker, StructureEventCountEstimateRequest,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet, VecDeque};
@@ -33,6 +33,8 @@ const MIN_ORDINAL_CHUNK: u64 = 100_000;
 const MAX_ORDINAL_CHUNK: u64 = 1_000_000;
 const TARGET_FETCH_MILLIS: u128 = 3_000;
 const MAX_WORKERS: usize = 80;
+const CAMPAIGN_STOP_REQUESTED: &str = "campaign stop requested";
+static STATUS_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug)]
 struct Args {
@@ -44,6 +46,7 @@ struct Args {
     set_ticker_count: u64,
     set_universe_hash: Option<String>,
     shard_worker: bool,
+    campaign_control_path: Option<PathBuf>,
     ticker_files: Vec<PathBuf>,
     priority_tickers: Vec<String>,
     start_date: NaiveDate,
@@ -119,6 +122,8 @@ struct Progress {
 
 struct ProgressWriter {
     path: PathBuf,
+    checkpoint_set_id: String,
+    campaign_control_path: Option<PathBuf>,
     inner: Mutex<Progress>,
     abort_requested: AtomicBool,
     processed_events: AtomicU64,
@@ -128,6 +133,7 @@ struct ProgressWriter {
 impl ProgressWriter {
     fn new(
         path: PathBuf,
+        campaign_control_path: Option<PathBuf>,
         checkpoint_set_id: String,
         start_date: NaiveDate,
         end_date: NaiveDate,
@@ -139,11 +145,13 @@ impl ProgressWriter {
         });
         Self {
             path,
+            checkpoint_set_id: checkpoint_set_id.clone(),
+            campaign_control_path,
             abort_requested: AtomicBool::new(false),
             processed_events: AtomicU64::new(0),
             status_notify: Notify::new(),
             inner: Mutex::new(Progress {
-                schema_version: 6,
+                schema_version: 7,
                 status: "running".to_string(),
                 started_at: Utc::now(),
                 updated_at: Utc::now(),
@@ -310,11 +318,33 @@ impl ProgressWriter {
         progress.updated_at = Utc::now();
         let bytes = serde_json::to_vec_pretty(progress)
             .map_err(|error| format!("failed to encode campaign progress: {error}"))?;
-        let temporary = self.path.with_extension("json.tmp");
+        let sequence = STATUS_WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temporary =
+            self.path
+                .with_extension(format!("json.{}.{}.tmp", std::process::id(), sequence));
         fs::write(&temporary, bytes)
             .map_err(|error| format!("failed to write {}: {error}", temporary.display()))?;
-        fs::rename(&temporary, &self.path)
-            .map_err(|error| format!("failed to publish {}: {error}", self.path.display()))
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut delay = Duration::from_millis(20);
+        loop {
+            match fs::rename(&temporary, &self.path) {
+                Ok(()) => return Ok(()),
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::PermissionDenied
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(delay);
+                    delay = (delay * 2).min(Duration::from_millis(500));
+                }
+                Err(error) => {
+                    let _ = fs::remove_file(&temporary);
+                    return Err(format!(
+                        "failed to publish {}: {error}",
+                        self.path.display()
+                    ));
+                }
+            }
+        }
     }
 
     fn record_events(&self, count: u64) {
@@ -332,6 +362,33 @@ impl ProgressWriter {
     fn abort_requested(&self) -> bool {
         self.abort_requested.load(Ordering::Acquire)
     }
+
+    fn requested_stop_mode(&self) -> Option<StopMode> {
+        let path = self.campaign_control_path.as_ref()?;
+        let bytes = fs::read(path).ok()?;
+        let request = serde_json::from_slice::<CampaignControl>(&bytes).ok()?;
+        if request.schema_version != 1 || request.checkpoint_set_id != self.checkpoint_set_id {
+            return None;
+        }
+        match request.action.as_str() {
+            "stop_fast" => Some(StopMode::Fast),
+            "stop_graceful" => Some(StopMode::Graceful),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StopMode {
+    Graceful,
+    Fast,
+}
+
+#[derive(Debug, Deserialize)]
+struct CampaignControl {
+    schema_version: u16,
+    checkpoint_set_id: String,
+    action: String,
 }
 
 struct AttemptEventProgress<'a> {
@@ -516,7 +573,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     )?;
     if args.plan_only {
         println!(
-            "Validated Campaign v5 plan: tickers={} units={} plan={}",
+            "Validated Campaign v6 plan: tickers={} units={} plan={}",
             plans.len(),
             plans.iter().map(|plan| plan.sessions.len()).sum::<usize>(),
             plan_path.display()
@@ -543,6 +600,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let progress_path = args.runtime_dir.join("campaign-status.json");
     let progress = Arc::new(ProgressWriter::new(
         progress_path.clone(),
+        args.campaign_control_path.clone(),
         args.checkpoint_set_id.clone(),
         args.start_date,
         args.end_date,
@@ -572,7 +630,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         tasks.spawn(async move {
             let mut errors = Vec::new();
             loop {
-                if progress.abort_requested() {
+                if progress.abort_requested() || progress.requested_stop_mode().is_some() {
                     break;
                 }
                 let Some(plan) = queue.lock().await.pop_front() else {
@@ -589,6 +647,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 )
                 .await
                 {
+                    if error == CAMPAIGN_STOP_REQUESTED {
+                        progress.request_abort();
+                        break;
+                    }
                     if campaign_fatal_error(&error) {
                         progress.request_abort();
                     }
@@ -630,6 +692,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             break;
         }
     }
+    interrupted |= progress.requested_stop_mode().is_some();
     let final_progress = if interrupted {
         progress.interrupt().await.map_err(io_error)?
     } else {
@@ -900,7 +963,7 @@ fn dashboard_lines(
     let mut lines = if compact {
         vec![
             format!(
-                "Checkpoint Campaign v5 | {} | v{} | {} workers",
+                "Checkpoint Campaign v6 | {} | v{} | {} workers",
                 state.to_ascii_uppercase(),
                 progress.algorithm_version,
                 workers
@@ -953,7 +1016,7 @@ fn dashboard_lines(
     } else {
         vec![
             format!(
-                "Structural Checkpoint Campaign v5 | {} | algorithm v{} | workers {}",
+                "Structural Checkpoint Campaign v6 | {} | algorithm v{} | workers {}",
                 state.to_ascii_uppercase(),
                 progress.algorithm_version,
                 workers
@@ -1164,6 +1227,9 @@ async fn run_ticker(
     let rules = source.trade_aggregation_rules();
 
     for session in &manifest.sessions {
+        if progress.requested_stop_mode().is_some() {
+            return Err(CAMPAIGN_STOP_REQUESTED.to_string());
+        }
         let session_date = session.session_date;
         if session_is_covered_by_seed(session_date, seed_session) {
             progress
@@ -1288,6 +1354,9 @@ async fn process_ordinal_session(
     let mut ordinal_chunk = INITIAL_ORDINAL_CHUNK;
     let mut event_auditor = StructureEventAuditor::new(true);
     while first_ordinal < session.next_ordinal {
+        if event_progress.campaign.requested_stop_mode() == Some(StopMode::Fast) {
+            return Err(CAMPAIGN_STOP_REQUESTED.to_string());
+        }
         let next_ordinal = first_ordinal
             .saturating_add(ordinal_chunk)
             .min(session.next_ordinal);
@@ -1756,6 +1825,7 @@ fn parse_args() -> Result<Args, String> {
     let mut set_ticker_count = 0_u64;
     let mut set_universe_hash = None;
     let mut shard_worker = false;
+    let mut campaign_control_path = None;
     while let Some(argument) = values.next() {
         let value = |name: &str, values: &mut std::iter::Skip<std::env::Args>| {
             values
@@ -1770,6 +1840,9 @@ fn parse_args() -> Result<Args, String> {
             }
             "--explicit-universe-only" => explicit_universe_only = true,
             "--shard-worker" => shard_worker = true,
+            "--campaign-control-path" => {
+                campaign_control_path = Some(PathBuf::from(value(&argument, &mut values)?))
+            }
             "--register-set-state" => register_set_state = Some(value(&argument, &mut values)?),
             "--set-universe-hash" => set_universe_hash = Some(value(&argument, &mut values)?),
             "--set-event-count" => {
@@ -1798,7 +1871,7 @@ fn parse_args() -> Result<Args, String> {
             "--purge-existing-checkpoints" => purge_existing_checkpoints = true,
             "--plan-only" => plan_only = true,
             "--help" | "-h" => {
-                println!("structure-checkpoint-campaign v5");
+                println!("structure-checkpoint-campaign v6");
                 println!("  --start-date YYYY-MM-DD --end-date YYYY-MM-DD");
                 println!("  --checkpoint-set-id ID");
                 println!("  --runtime-dir PATH [--workers 4]  # allowed: 1-{MAX_WORKERS}");
@@ -1807,6 +1880,7 @@ fn parse_args() -> Result<Args, String> {
                 println!("  [--max-retries 5] [--retry-delay-seconds 2]");
                 println!("  [--purge-existing-checkpoints] [--plan-only]");
                 println!("  [--explicit-universe-only] [--core-index N]");
+                println!("  [--campaign-control-path PATH]  # supervisor-owned stop control");
                 std::process::exit(0);
             }
             _ => return Err(format!("unknown argument {argument:?}; use --help")),
@@ -1851,6 +1925,7 @@ fn parse_args() -> Result<Args, String> {
         set_ticker_count,
         set_universe_hash,
         shard_worker,
+        campaign_control_path,
         ticker_files,
         priority_tickers,
         start_date,
@@ -2050,6 +2125,7 @@ mod tests {
         ));
         let writer = ProgressWriter::new(
             path.clone(),
+            None,
             "test-set".to_string(),
             date,
             date,
@@ -2171,6 +2247,7 @@ mod tests {
         ));
         let writer = ProgressWriter::new(
             path.clone(),
+            None,
             "test-set".to_string(),
             date,
             date,
@@ -2194,5 +2271,35 @@ mod tests {
         assert_eq!(persisted["status"], "interrupted");
         assert_eq!(persisted["total_estimated_events"], 123);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn campaign_control_is_scoped_to_the_checkpoint_set() {
+        let date = NaiveDate::from_ymd_opt(2026, 8, 21).unwrap();
+        let root =
+            std::env::temp_dir().join(format!("structure-campaign-control-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let control = root.join("campaign-control.json");
+        let writer = ProgressWriter::new(
+            root.join("status.json"),
+            Some(control.clone()),
+            "test-set".to_string(),
+            date,
+            date,
+            &[],
+        );
+        std::fs::write(
+            &control,
+            br#"{"schema_version":1,"checkpoint_set_id":"other-set","action":"stop_fast"}"#,
+        )
+        .unwrap();
+        assert_eq!(writer.requested_stop_mode(), None);
+        std::fs::write(
+            &control,
+            br#"{"schema_version":1,"checkpoint_set_id":"test-set","action":"stop_fast"}"#,
+        )
+        .unwrap();
+        assert_eq!(writer.requested_stop_mode(), Some(super::StopMode::Fast));
+        let _ = std::fs::remove_dir_all(root);
     }
 }

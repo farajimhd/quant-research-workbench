@@ -840,6 +840,10 @@ function pushUnifiedStructureLevels(
     const color = low ? "var(--success)" : "var(--danger)";
     const timeframes = level.timeframes.join(" · ");
     const holdProbability = boundedUnit(level.hold_probability);
+    const holdRate = boundedUnit(level.hold_rate ?? level.hold_probability);
+    const holdQuality = boundedUnit(level.hold_quality_score ?? level.hold_probability);
+    const holdObservations = Math.max(0, Number(level.hold_observation_count ?? (level.hold_count + level.break_count)) || 0);
+    const holdReliability = boundedUnit(level.hold_evidence_reliability ?? 0);
     const breakProbability = boundedUnit(level.break_probability ?? (1 - level.hold_probability));
     const pressureBias = Math.max(-1, Math.min(1, Number(level.pressure_bias) || 0));
     zones.push({
@@ -850,23 +854,23 @@ function pushUnifiedStructureLevels(
       borderStyle: "solid",
       borderWidth: 0,
       color,
-      compactLabel: `${low ? "S" : "R"} H${Math.round(holdProbability * 100)}%`,
+      compactLabel: `${low ? "S" : "R"} Q${Math.round(holdQuality * 100)} · n${holdObservations}`,
       breakProbability,
       defaultVisible: true,
       displayItemId: "indicator.qmd_unified_structure",
       end,
       extendToRightEdge: latest,
       fillColor: color,
-      fillOpacity: 0.045 + holdProbability * 0.085,
+      fillOpacity: 0.045 + holdQuality * 0.085,
       historicalLabelsDefault: false,
       historyBarsDefault: 0,
-      holdProbability,
-      label: `${low ? "Support" : "Resistance"} · ${String(level.lifecycle || "active").replaceAll("_", " ")} · ${percentLabel(holdProbability)} observed hold · ${percentLabel(breakProbability)} observed break · ${pressureBias >= 0 ? "+" : ""}${Math.round(pressureBias * 100)} executed pressure · ${level.touch_count} tests · ${level.role_flip_count} flips · ${level.independent_pivot_count} pivots (${timeframes})`,
+      holdProbability: holdQuality,
+      label: `${low ? "Support" : "Resistance"} · ${String(level.lifecycle || "active").replaceAll("_", " ")} · ${percentLabel(holdQuality)} conservative quality · ${percentLabel(holdProbability)} smoothed hold · ${percentLabel(holdRate)} raw hold · n=${holdObservations} · ${percentLabel(holdReliability)} evidence depth · ${percentLabel(breakProbability)} smoothed break · ${pressureBias >= 0 ? "+" : ""}${Math.round(pressureBias * 100)} executed pressure · ${level.touch_count} tests · ${level.role_flip_count} flips · ${level.independent_pivot_count} pivots (${timeframes}) · ${level.hold_score_revision || "legacy score"}`,
       latest,
       legendLabel: "Unified structural level book",
       lower: level.lower,
       minPixelHeight: 9,
-      probabilityLineRatio: holdProbability,
+      probabilityLineRatio: holdQuality,
       probabilityLineWidth: Math.min(4, 1.5 + Number(level.independent_pivot_count || 0) * 0.5),
       renderMode: "zone",
       roleFlipCount: Number(level.role_flip_count ?? 0),

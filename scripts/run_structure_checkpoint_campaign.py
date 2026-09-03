@@ -8,7 +8,6 @@ import hashlib
 import json
 import os
 import shutil
-import signal
 import subprocess
 import sys
 import time
@@ -22,9 +21,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = REPO_ROOT / "services" / "qmd_history_gateway" / "Cargo.toml"
 BUILD_BINARY_NAME = "structure_checkpoint_campaign.exe" if os.name == "nt" else "structure_checkpoint_campaign"
 RUNTIME_BINARY_NAME = (
-    "structure_checkpoint_campaign_v5.exe" if os.name == "nt" else "structure_checkpoint_campaign_v5"
+    "structure_checkpoint_campaign_v6.exe" if os.name == "nt" else "structure_checkpoint_campaign_v6"
 )
 MAX_PROCESS_WORKERS = 80
+HOLD_SCORE_REVISION = "beta22-wilson90-v1"
 
 
 def sha256_file(path: Path) -> str:
@@ -77,7 +77,7 @@ def resolve_binary(explicit: str | None, build: bool, environ: dict[str, str]) -
     if cargo is None:
         raise RuntimeError(
             "Cargo and the campaign binary are missing. Copy the prebuilt binary to "
-            r"D:\TradingML\runtimes\bin\structure_checkpoint_campaign_v5.exe."
+            r"D:\TradingML\runtimes\bin\structure_checkpoint_campaign_v6.exe."
         )
     subprocess.run(
         [cargo, "build", "--release", "--bin", "structure_checkpoint_campaign", "--manifest-path", str(MANIFEST)],
@@ -97,6 +97,9 @@ def parse_launcher_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--launcher-help", action="store_true")
     parser.add_argument("--monitor-existing", action="store_true")
+    parser.add_argument("--stop-existing", choices=("graceful", "fast"))
+    parser.add_argument("--supervisor-child", action="store_true")
+    parser.add_argument("--foreground-supervisor", action="store_true")
     parser.add_argument("--process-workers", type=int)
     return parser.parse_known_args(argv)
 
@@ -146,9 +149,151 @@ def prepare_shards(plans: list[dict[str, Any]], worker_count: int) -> list[list[
 
 
 def atomic_json(path: Path, value: dict[str, Any]) -> None:
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, indent=2), encoding="utf-8")
-    temporary.replace(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(value, indent=2), encoding="utf-8")
+        deadline = time.monotonic() + 5.0
+        delay = 0.02
+        while True:
+            try:
+                os.replace(temporary, path)
+                return
+            except OSError as exc:
+                if time.monotonic() >= deadline or getattr(exc, "winerror", None) not in (5, 32):
+                    raise
+                time.sleep(delay)
+                delay = min(delay * 2, 0.5)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def campaign_control_path(runtime_dir: Path) -> Path:
+    return runtime_dir / "campaign-control.json"
+
+
+def request_campaign_stop(runtime_dir: Path, set_id: str, mode: str) -> Path:
+    manifest = read_status(runtime_dir / "campaign-manifest.json")
+    if manifest is None or manifest.get("checkpoint_set_id") != set_id:
+        raise RuntimeError("stop request does not match an existing campaign manifest")
+    path = campaign_control_path(runtime_dir)
+    atomic_json(
+        path,
+        {
+            "schema_version": 1,
+            "checkpoint_set_id": set_id,
+            "action": f"stop_{mode}",
+            "request_id": uuid.uuid4().hex,
+            "requested_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    return path
+
+
+def process_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def launch_detached_supervisor(
+    binary: Path,
+    binary_sha256: str,
+    campaign_args: list[str],
+    workers: int,
+    environ: dict[str, str],
+) -> int:
+    runtime_value = option_value(campaign_args, "--runtime-dir")
+    set_id = option_value(campaign_args, "--checkpoint-set-id")
+    if not runtime_value or not set_id:
+        raise RuntimeError("process mode requires --runtime-dir and --checkpoint-set-id")
+    runtime_dir = Path(runtime_value)
+    supervisor_dir = runtime_dir / "supervisor"
+    supervisor_dir.mkdir(parents=True, exist_ok=True)
+    identity_path = supervisor_dir / "supervisor.json"
+    existing = read_status(identity_path)
+    if existing is not None and process_is_running(int(existing.get("pid", 0))):
+        raise RuntimeError(
+            f"campaign supervisor PID {existing['pid']} is already running; use --monitor-existing or --stop-existing"
+        )
+    log_path = supervisor_dir / "supervisor.log"
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--binary",
+        str(binary),
+        "--no-build",
+        "--supervisor-child",
+        "--process-workers",
+        str(workers),
+        *campaign_args,
+    ]
+    creationflags = 0
+    popen_kwargs: dict[str, Any] = {}
+    if os.name == "nt":
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+    else:
+        popen_kwargs["start_new_session"] = True
+    with log_path.open("a", encoding="utf-8") as log:
+        process = subprocess.Popen(
+            command,
+            cwd=REPO_ROOT,
+            env=environ,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            text=True,
+            creationflags=creationflags,
+            **popen_kwargs,
+        )
+    launched_at = time.time()
+    atomic_json(
+        identity_path,
+        {
+            "schema_version": 1,
+            "status": "running",
+            "checkpoint_set_id": set_id,
+            "pid": process.pid,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "executable_path": str(binary),
+            "executable_sha256": binary_sha256,
+            "worker_processes": workers,
+            "log_path": str(log_path),
+        },
+    )
+    print(
+        f"Detached campaign supervisor PID {process.pid}; closing this terminal will not stop workers.",
+        flush=True,
+    )
+    deadline = time.monotonic() + 300
+    plan_path = runtime_dir / "planner" / "campaign-plan.json"
+    manifest_path = runtime_dir / "campaign-manifest.json"
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError(
+                f"detached supervisor exited with code {process.returncode}; inspect {log_path}"
+            )
+        fresh_worker_status = any(
+            path.stat().st_mtime >= launched_at - 1
+            for path in (runtime_dir / "workers").glob("worker-*/campaign-status.json")
+        )
+        if (
+            plan_path.is_file()
+            and manifest_path.is_file()
+            and fresh_worker_status
+        ):
+            break
+        time.sleep(1)
+    else:
+        raise RuntimeError(f"detached supervisor did not publish its plan within five minutes; inspect {log_path}")
+    return monitor_existing_campaign(binary, binary_sha256, campaign_args, environ)
 
 
 def read_status(path: Path) -> dict[str, Any] | None:
@@ -275,6 +420,10 @@ def render_rich(status: dict[str, Any], set_id: str):
     summary.add_column(justify="right")
     summary.add_row("Checkpoint set", set_id)
     summary.add_row(
+        "Hold evidence",
+        f"{HOLD_SCORE_REVISION} | repaired from raw counts on load",
+    )
+    summary.add_row(
         "Executable",
         f"{Path(status.get('executable_path', '?')).name} | "
         f"{status.get('executable_sha256', 'unknown')[:16]}",
@@ -313,7 +462,7 @@ def render_rich(status: dict[str, Any], set_id: str):
     return Panel(
         Group(
             Text(
-                f"Structural Checkpoint Campaign v5  {status['status'].upper()}"
+                f"Structural Checkpoint Campaign v6  {status['status'].upper()}"
                 + ("  REATTACHED" if status.get("monitor_mode") == "reattached" else ""),
                 style="bold cyan",
             ),
@@ -359,19 +508,10 @@ def monitor_existing_campaign(
     runtime_dir = Path(runtime_value)
     manifest = read_status(runtime_dir / "campaign-manifest.json")
     plan_path = runtime_dir / "planner" / "campaign-plan.json"
-    aggregate_path = runtime_dir / "campaign-status.json"
     if manifest is None or not plan_path.is_file():
         raise RuntimeError("monitor mode requires an existing immutable campaign manifest and plan")
     if manifest.get("checkpoint_set_id") != set_id:
         raise RuntimeError("monitor checkpoint set does not match the runtime manifest")
-    existing = read_status(aggregate_path)
-    if (
-        existing is not None
-        and existing.get("status") == "running"
-        and aggregate_path.is_file()
-        and time.time() - aggregate_path.stat().st_mtime < 10
-    ):
-        raise RuntimeError("the original campaign supervisor is still publishing fresh status")
     plans = json.loads(plan_path.read_text(encoding="utf-8"))
     worker_dirs = sorted((runtime_dir / "workers").glob("worker-*"))
     status_paths = [worker_dir / "campaign-status.json" for worker_dir in worker_dirs]
@@ -415,7 +555,6 @@ def monitor_existing_campaign(
             )
             if status["stale_workers"] and status["status"] == "running":
                 status["status"] = "stale"
-            atomic_json(aggregate_path, status)
             if live:
                 live.update(render_rich(status, set_id), refresh=True)
             elif time.monotonic() - last_plain >= 15:
@@ -423,25 +562,6 @@ def monitor_existing_campaign(
                 last_plain = time.monotonic()
             if all(row is not None and row.get("status") != "running" for row in rows):
                 all_certified = all(status_is_fully_certified(row) for row in rows if row is not None)
-                set_state = "sealed" if all_certified else "failed"
-                register_args = [
-                    str(binary),
-                    "--start-date", str(manifest["start_date"]),
-                    "--end-date", str(manifest["end_date"]),
-                    "--checkpoint-set-id", set_id,
-                    "--runtime-dir", str(runtime_dir),
-                    "--register-set-state", set_state,
-                    "--set-universe-hash", str(manifest["universe_hash"]),
-                    "--set-ticker-count", str(manifest["ticker_count"]),
-                    "--set-event-count", str(status["total_estimated_events"] if all_certified else status["events_processed"]),
-                ]
-                if subprocess.run(register_args, env=environ, check=False).returncode:
-                    status["status"] = "failed"
-                    status.setdefault("issues", []).append(
-                        {"ticker": "checkpoint-set", "error": "reattached registry finalization failed"}
-                    )
-                    atomic_json(aggregate_path, status)
-                    return 1
                 return 0 if all_certified else 1
             time.sleep(1)
     except KeyboardInterrupt:
@@ -473,6 +593,8 @@ def run_process_campaign(
                 "Rich is required for the interactive campaign dashboard; install it in this environment"
             ) from exc
     runtime_dir = Path(runtime_value)
+    control_path = campaign_control_path(runtime_dir)
+    control_path.unlink(missing_ok=True)
     planner_dir = runtime_dir / "planner"
     planner_dir.mkdir(parents=True, exist_ok=True)
     plan_path = planner_dir / "campaign-plan.json"
@@ -575,7 +697,7 @@ def run_process_campaign(
     previous_attempt_archive = archive_previous_attempt_statuses(runtime_dir, worker_dirs)
     base_args = remove_options(
         campaign_args,
-        {"--workers", "--runtime-dir", "--ticker-file", "--priority-ticker", "--core-index"},
+        {"--workers", "--runtime-dir", "--ticker-file", "--priority-ticker", "--core-index", "--campaign-control-path"},
         {"--purge-existing-checkpoints", "--plan-only", "--explicit-universe-only"},
     )
     processes, logs, status_paths = [], [], []
@@ -594,6 +716,7 @@ def run_process_campaign(
                 "--runtime-dir", str(worker_dir),
                 "--workers", "1",
                 "--core-index", str(index),
+                "--campaign-control-path", str(control_path),
                 "--shard-worker",
             ]
             processes.append(subprocess.Popen([str(binary), *child_args], env=environ, stdout=log, stderr=subprocess.STDOUT, text=True))
@@ -635,14 +758,17 @@ def run_process_campaign(
             time.sleep(1)
     except KeyboardInterrupt:
         interrupted = True
-        print("\nStop requested; waiting for worker checkpoints...", file=sys.stderr, flush=True)
+        request_campaign_stop(runtime_dir, set_id, "fast")
+        print("\nFast stop requested; workers will stop at ordinal-chunk boundaries...", file=sys.stderr, flush=True)
     finally:
+        control = read_status(control_path)
+        interrupted = interrupted or bool(
+            control
+            and control.get("checkpoint_set_id") == set_id
+            and control.get("action") in {"stop_fast", "stop_graceful"}
+        )
         if interrupted:
-            if os.name != "nt":
-                for process in processes:
-                    if process.poll() is None:
-                        process.send_signal(signal.SIGINT)
-            deadline = time.monotonic() + 20
+            deadline = time.monotonic() + 60
             while time.monotonic() < deadline and any(p.poll() is None for p in processes):
                 time.sleep(0.25)
             for process in processes:
@@ -690,9 +816,10 @@ def main(argv: list[str] | None = None) -> int:
     if launcher.launcher_help:
         print(
             "Launcher options: --binary PATH, --no-build, --monitor-existing, "
+            "--stop-existing {graceful,fast}, --foreground-supervisor, "
             f"--process-workers 1..{MAX_PROCESS_WORKERS}"
         )
-        print("All other options are forwarded to structure-checkpoint-campaign v5.")
+        print("All other options are forwarded to structure-checkpoint-campaign v6.")
         return 0
     environ = dict(os.environ)
     environ["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -700,6 +827,19 @@ def main(argv: list[str] | None = None) -> int:
         binary = resolve_binary(launcher.binary, not launcher.no_build, environ)
         binary_sha256 = sha256_file(binary)
         print(f"Campaign executable: {binary} (SHA-256 {binary_sha256})", flush=True)
+        print(
+            f"Checkpoint migration: {HOLD_SCORE_REVISION} derived evidence is "
+            "repaired from raw counts on load; no purge required.",
+            flush=True,
+        )
+        if launcher.stop_existing:
+            runtime_value = option_value(campaign_args, "--runtime-dir")
+            set_id = option_value(campaign_args, "--checkpoint-set-id")
+            if not runtime_value or not set_id:
+                raise RuntimeError("stop mode requires --runtime-dir and --checkpoint-set-id")
+            path = request_campaign_stop(Path(runtime_value), set_id, launcher.stop_existing)
+            print(f"Published {launcher.stop_existing} stop request: {path}", flush=True)
+            return 0
         if launcher.monitor_existing:
             return monitor_existing_campaign(binary, binary_sha256, campaign_args, environ)
         workers = (
@@ -709,7 +849,31 @@ def main(argv: list[str] | None = None) -> int:
         )
         validate_process_worker_count(workers)
         if workers > 1 and "--plan-only" not in campaign_args:
-            return run_process_campaign(binary, binary_sha256, campaign_args, workers, environ)
+            if not launcher.supervisor_child and not launcher.foreground_supervisor:
+                return launch_detached_supervisor(
+                    binary, binary_sha256, campaign_args, workers, environ
+                )
+            result = run_process_campaign(binary, binary_sha256, campaign_args, workers, environ)
+            if launcher.supervisor_child:
+                runtime_value = option_value(campaign_args, "--runtime-dir")
+                identity_path = Path(runtime_value) / "supervisor" / "supervisor.json"
+                identity = read_status(identity_path) or {}
+                atomic_json(
+                    identity_path,
+                    {
+                        **identity,
+                        "status": (
+                            "completed"
+                            if result == 0
+                            else "interrupted"
+                            if result == 130
+                            else "failed"
+                        ),
+                        "finished_at": datetime.now(timezone.utc).isoformat(),
+                        "exit_code": result,
+                    },
+                )
+            return result
         return subprocess.run([str(binary), *campaign_args], env=environ, check=False).returncode
     except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
         print(f"Unable to launch structure checkpoint campaign: {exc}", file=sys.stderr)
