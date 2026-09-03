@@ -161,7 +161,7 @@ export function ChartPreview({
         const scope = await api<BarGptScopePayload>(`/api/bar-gpt/scopes/${encodeURIComponent(barGptScopeId)}`, {
           method: "PUT",
           body: JSON.stringify({
-            mode: liveChart.pointInTime || barGptTriggerMode === "manual" ? "replay" : "live",
+            mode: liveChart.pointInTime || (barGptTriggerMode === "manual" && barGptOriginOverrideUs != null) ? "replay" : "live",
             trigger_mode: barGptTriggerMode,
             tickers: [linkContext.symbol],
             model_ids: [`bar_gpt_${barGptVersion}`],
