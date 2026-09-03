@@ -17,9 +17,9 @@ The output authority is `q_live.qmd_structure_daily_checkpoint_v1`.
 
 The automatic universe is:
 
-1. current active primary USD listings; then
+1. symbols whose latest canonical universe row has `is_tradable = 1`; then
 2. tickers with canonical events on the requested cold-start date that are not
-   already current listings.
+   already in that tradable set.
 
 Current listings are ordered by bounded dollar volume for the configured
 liquidity period. Explicit `--priority-ticker` values precede that automatic
@@ -46,9 +46,23 @@ first later session. Thus a ticker persisted through August 20 automatically
 starts at August 21 when the requested end is later; it does not replay January
 through August 20.
 
-Canonical events are fetched in bounded causal windows. The checkpoint is
-carried between windows and days without database reload. A day is persisted
-only after source completeness and before/after revision equality are proven.
+Before processing a ticker, the worker reads its ordinal-continuity rows and
+split history once for the complete requested period. Canonical events are then
+fetched in bounded `[first_ordinal, next_ordinal)` chunks using the physical
+`(ticker, ordinal)` archive key. Session dates and checkpoint boundaries are
+derived from the pinned continuity manifest, not used as raw-event scan
+predicates. The checkpoint is carried between ordinal chunks and days without
+database reload. Sessions with no ticker events still receive a durable
+checkpoint and never trigger a cumulative rebuild from the cold start.
+
+The campaign and ordinary historical revision authority use the latest
+canonical split terms for each execution date. Split terms are fetched once per
+ticker, applied once by the shared engine, and included in every affected
+checkpoint revision token. A later split correction therefore invalidates the
+older checkpoint lineage and requires a rebuild; it is never applied as an
+additional second split. A day is persisted only after the streamed event
+count, first/last SIP timestamps, ordinal bounds, session date, source
+completeness, and revision identity are proven.
 Transient transport/capacity failures receive bounded exponential retries;
 semantic or compatibility failures stop that ticker and mark later sessions
 blocked.
@@ -63,7 +77,9 @@ compatible per-ticker resume is desired.
 
 ## Progress and restart
 
-Progress schema v5 is atomically published to `campaign-status.json`. It
+Progress schema v5 is atomically published to `campaign-status.json` once per
+second by a single reporter. Workers update in-memory counters and never
+serialize on per-session filesystem writes. It
 reports queued, active, completed, skipped/current, unavailable, retried,
 failed, and dependency-blocked units; exact active ticker/day ownership; event
 counts; the ordinal-summary total event estimate; recent completions; elapsed
@@ -74,7 +90,8 @@ is the remaining estimated event count divided by this aggregate actual
 processed-event rate over the latest fixed five-minute observation window. It
 warms up until that window has at least 15 seconds of evidence. Interactive
 output is a fixed-row dashboard with one initial clear and in-place updates, so
-it does not flicker. Redirected output is plain text without ANSI sequences.
+it does not flicker. Redirected output is plain text without ANSI sequences and
+is emitted every 15 seconds.
 
 Ctrl+C writes `interrupted` and returns active units to the resumable queue.
 Rerunning the same command verifies persisted seeds and resumes each ticker

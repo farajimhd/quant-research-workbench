@@ -348,13 +348,16 @@ cargo test --offline --manifest-path services\qmd_history_gateway\Cargo.toml
 ## Standalone structural checkpoint campaign
 
 The `structure_checkpoint_campaign` binary runs Campaign v3 directly on a
-workstation. It uses the continuity index only for workload estimates, daily
-bars only to prioritize current active tickers, the canonical completed-session
-authority for scheduling, the shared v16 decoder/engine for event-native
-calculation, and the shared ClickHouse writer for immutable daily checkpoints.
-QMD HTTP services are not required on that host. One worker owns one ticker
-through the whole period, keeps its book in memory, persists every completed
-session, and releases it before taking another ticker.
+workstation. It uses the continuity index both for workload estimates and exact
+per-session ordinal bounds, daily bars only to prioritize currently tradable
+tickers (with one bounded raw-liquidity fallback when those bars are absent),
+the canonical completed-session authority for scheduling, the shared v16
+decoder/engine for event-native calculation, and the shared ClickHouse writer
+for immutable daily checkpoints. QMD HTTP services are not required on that
+host. One worker owns one ticker through the whole period, loads continuity and
+split authority once, streams bounded `(ticker, ordinal)` ranges, keeps its book
+in memory, persists every completed session including empty ticker-days, and
+releases it before taking another ticker.
 
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'
@@ -378,8 +381,9 @@ ETA uses total events estimated from the ordinal continuity summary and the
 aggregate batch-level processed-event rate from every active worker over a
 rolling five-minute window, rather than assuming every ticker-day costs the
 same. Failed or interrupted attempts roll back their uncommitted event
-contribution. Runtime status schema v5 is written atomically to
-`campaign-status.json`, and
+contribution. Runtime status schema v5 is written atomically once per second by
+the reporter without blocking workers on per-session disk writes. It is stored
+in `campaign-status.json`, and
 Ctrl+C records `interrupted` before returning exit code 130.
 
 The launcher uses a prebuilt executable from

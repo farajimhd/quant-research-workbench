@@ -103,6 +103,28 @@ pub struct StructureCampaignTicker {
     pub ticker: String,
 }
 
+/// One immutable archive session in a ticker-owned structure campaign.
+/// Ordinal bounds are inclusive/exclusive and come from the canonical
+/// continuity index, whose identity is pinned into `source_revision`.
+#[derive(Clone, Debug)]
+pub struct StructureCampaignSession {
+    pub event_count: u64,
+    pub first_ordinal: u64,
+    pub first_sip_timestamp_us: u64,
+    pub last_sip_timestamp_us: u64,
+    pub next_ordinal: u64,
+    pub session_date: NaiveDate,
+    pub source_revision: SourceRevision,
+}
+
+#[derive(Clone, Debug)]
+pub struct StructureCampaignManifest {
+    pub authority_start: DateTime<Utc>,
+    pub sessions: Vec<StructureCampaignSession>,
+    pub split_adjustments: Vec<StructureSplitAdjustment>,
+    pub ticker: String,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct EventCoverage {
     pub complete: bool,
@@ -422,6 +444,27 @@ struct StockSplitAdjustmentRow {
     split_from: f64,
     split_to: f64,
     source_inserted_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct StructureCampaignContinuityRow {
+    event_count: u64,
+    first_sip_timestamp_us: u64,
+    last_ordinal: u64,
+    last_sip_timestamp_us: u64,
+    max_build_step: u64,
+    max_updated_at: String,
+    next_ordinal: u64,
+    source_date: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct StructureSplitRevisionRow {
+    execution_date: String,
+    source_inserted_at: String,
+    split_from: f64,
+    split_to: f64,
+    ticker: String,
 }
 
 impl HistoricalEventSource {
@@ -932,6 +975,19 @@ impl HistoricalEventSource {
         if as_of > Utc::now() + chrono::Duration::seconds(1) {
             return Err("structure campaign ticker as_of cannot be in the future".to_string());
         }
+        let liquidity_coverage_sql = structure_campaign_liquidity_coverage_sql(
+            &self.config.clickhouse_database,
+            &self.config.daily_session_bars_table,
+            priority_start_date,
+            priority_end_date,
+            as_of,
+        )?;
+        let liquidity_rows = self
+            .query_bounded(&liquidity_coverage_sql, 60)
+            .await?
+            .trim()
+            .parse::<u64>()
+            .map_err(|error| format!("invalid structure liquidity coverage count: {error}"))?;
         let sql = structure_campaign_tickers_sql(
             &self.config.clickhouse_database,
             &self.config.daily_session_bars_table,
@@ -940,6 +996,7 @@ impl HistoricalEventSource {
             priority_start_date,
             priority_end_date,
             as_of,
+            liquidity_rows > 0,
         )?;
         #[derive(Deserialize)]
         struct Row {
@@ -947,7 +1004,7 @@ impl HistoricalEventSource {
             priority_dollar_volume: f64,
             ticker: String,
         }
-        self.query_bounded(&sql, 60)
+        self.query_bounded(&sql, if liquidity_rows > 0 { 60 } else { 900 })
             .await?
             .lines()
             .filter(|line| !line.trim().is_empty())
@@ -961,6 +1018,265 @@ impl HistoricalEventSource {
                 })
             })
             .collect()
+    }
+
+    /// Pin every piece of archive authority needed by one ticker before its
+    /// worker starts. The daily loop performs no continuity or split queries.
+    pub async fn structure_campaign_manifest(
+        &self,
+        ticker: &str,
+        authority_start: DateTime<Utc>,
+        session_dates: &[NaiveDate],
+    ) -> Result<StructureCampaignManifest, String> {
+        let ticker = normalize_ticker(ticker)?;
+        let Some(final_session) = session_dates.last().copied() else {
+            return Err("structure campaign manifest requires at least one session".to_string());
+        };
+        if session_dates.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err("structure campaign sessions must be strictly increasing".to_string());
+        }
+        let final_end = archive_session_end_utc(final_session)?;
+        let archive = self.latest_coverage_before(None).await?;
+        let archive_end = archive
+            .session_date
+            .as_deref()
+            .map(|value| {
+                NaiveDate::parse_from_str(value, "%Y-%m-%d")
+                    .map_err(|error| format!("invalid archive coverage date {value:?}: {error}"))
+                    .and_then(archive_session_end_utc)
+            })
+            .transpose()?
+            .ok_or_else(|| "structure campaign archive coverage is unavailable".to_string())?;
+        if archive_end < final_end {
+            return Err(format!(
+                "structure campaign requires archive coverage through {final_session}, latest is {}",
+                archive.session_date.as_deref().unwrap_or("unavailable")
+            ));
+        }
+
+        let continuity_sql = structure_campaign_continuity_sql(
+            &self.config.clickhouse_database,
+            &ticker,
+            authority_start.with_timezone(&New_York).date_naive(),
+            final_session,
+        );
+        let continuity_text = self.query_bounded(&continuity_sql, 60).await?;
+        let mut continuity = BTreeMap::new();
+        for line in continuity_text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+        {
+            let row = serde_json::from_str::<StructureCampaignContinuityRow>(line)
+                .map_err(|error| format!("invalid structure continuity row: {error}"))?;
+            let date = NaiveDate::parse_from_str(&row.source_date, "%Y-%m-%d")
+                .map_err(|error| format!("invalid structure continuity date: {error}"))?;
+            if row.event_count > 0 {
+                let expected_next = row
+                    .last_ordinal
+                    .checked_add(1)
+                    .ok_or_else(|| "structure continuity ordinal overflow".to_string())?;
+                if row.next_ordinal != expected_next || row.next_ordinal < row.event_count {
+                    return Err(format!(
+                        "structure continuity is not a closed ordinal range for {ticker} {date}"
+                    ));
+                }
+            }
+            continuity.insert(date, row);
+        }
+
+        let split_sql =
+            structure_split_revision_sql(&sql_literal(&ticker), authority_start, final_end);
+        let split_text = self.query_bounded(&split_sql, 60).await?;
+        let mut split_rows = Vec::new();
+        let mut split_adjustments = Vec::new();
+        for line in split_text.lines().filter(|line| !line.trim().is_empty()) {
+            let row = serde_json::from_str::<StructureSplitRevisionRow>(line)
+                .map_err(|error| format!("invalid structure split row: {error}"))?;
+            let execution_date = NaiveDate::parse_from_str(&row.execution_date, "%Y-%m-%d")
+                .map_err(|error| format!("invalid stock split execution_date: {error}"))?;
+            let effective_at = New_York
+                .with_ymd_and_hms(
+                    execution_date.year(),
+                    execution_date.month(),
+                    execution_date.day(),
+                    4,
+                    0,
+                    0,
+                )
+                .single()
+                .ok_or_else(|| "invalid New York stock split boundary".to_string())?
+                .with_timezone(&Utc);
+            let source_inserted_at = DateTime::parse_from_rfc3339(&row.source_inserted_at)
+                .map_err(|error| format!("invalid stock split inserted_at: {error}"))?
+                .with_timezone(&Utc);
+            split_adjustments.push(StructureSplitAdjustment {
+                execution_date,
+                effective_at,
+                split_from: row.split_from,
+                split_to: row.split_to,
+                source_inserted_at,
+            });
+            split_rows.push(row);
+        }
+
+        let mut cumulative_event_count = 0_u64;
+        let mut cumulative_max_build_step = 0_u64;
+        let mut cumulative_max_updated_at = String::new();
+        let mut sessions = Vec::with_capacity(session_dates.len());
+        for session_date in session_dates.iter().copied() {
+            let authority_end = archive_session_end_utc(session_date)?;
+            let window = EventWindow {
+                start: authority_start,
+                end: authority_end,
+                tickers: vec![ticker.clone()],
+            };
+            let plan = build_source_plan(
+                &window,
+                vec![ticker.clone()],
+                archive.session_date.clone(),
+                Some(archive_end),
+                Vec::new(),
+                &self.config,
+            );
+            if !plan.complete_for_history
+                || plan
+                    .segments
+                    .iter()
+                    .any(|segment| !segment.queryable_by_history)
+            {
+                return Err(format!(
+                    "structure campaign source plan is incomplete for {ticker} {session_date}"
+                ));
+            }
+            let row = continuity.get(&session_date);
+            if let Some(row) = row {
+                cumulative_event_count = cumulative_event_count.saturating_add(row.event_count);
+                cumulative_max_build_step = cumulative_max_build_step.max(row.max_build_step);
+                cumulative_max_updated_at =
+                    cumulative_max_updated_at.max(row.max_updated_at.clone());
+            }
+            let split_revision_token = split_revision_token(split_rows.iter().filter(|row| {
+                NaiveDate::parse_from_str(&row.execution_date, "%Y-%m-%d")
+                    .is_ok_and(|date| date <= session_date)
+            }))?;
+            let plan_token = plan
+                .segments
+                .iter()
+                .map(|segment| {
+                    format!(
+                        "{:?}:{}:{}",
+                        segment.tier,
+                        segment.start.timestamp_micros(),
+                        segment.end.timestamp_micros()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("|");
+            let source_revision = SourceRevision {
+                complete_for_history: true,
+                event_count: cumulative_event_count,
+                live_continuation_sequence: None,
+                max_build_step: cumulative_max_build_step,
+                max_updated_at: cumulative_max_updated_at.clone(),
+                request_complete: true,
+                source_plan_hash: plan.plan_hash.clone(),
+                source_tiers: plan
+                    .segments
+                    .iter()
+                    .map(|segment| format!("{:?}", segment.tier).to_ascii_lowercase())
+                    .collect(),
+                token: format!(
+                    "{}:{}:0:{}:{}:{}",
+                    cumulative_max_build_step,
+                    cumulative_event_count,
+                    cumulative_max_updated_at,
+                    plan_token,
+                    split_revision_token,
+                ),
+            };
+            let (event_count, first_ordinal, next_ordinal, first_sip, last_sip) = row
+                .map(|row| {
+                    (
+                        row.event_count,
+                        row.next_ordinal.saturating_sub(row.event_count),
+                        row.next_ordinal,
+                        row.first_sip_timestamp_us,
+                        row.last_sip_timestamp_us,
+                    )
+                })
+                .unwrap_or_default();
+            sessions.push(StructureCampaignSession {
+                event_count,
+                first_ordinal,
+                first_sip_timestamp_us: first_sip,
+                last_sip_timestamp_us: last_sip,
+                next_ordinal,
+                session_date,
+                source_revision,
+            });
+        }
+        Ok(StructureCampaignManifest {
+            authority_start,
+            sessions,
+            split_adjustments,
+            ticker,
+        })
+    }
+
+    /// Stream one archive session by its physical `(ticker, ordinal)` key.
+    /// Requests are split into bounded ordinal ranges while the response body
+    /// remains incrementally decoded into bounded event batches.
+    pub fn stream_structure_ordinal_session(
+        &self,
+        session: &StructureCampaignSession,
+        ticker: &str,
+        batch_size: usize,
+    ) -> Result<mpsc::Receiver<Result<Vec<LiveCompactEvent>, String>>, String> {
+        let ticker = normalize_ticker(ticker)?;
+        let batch_size = batch_size.clamp(1, 100_000);
+        let (sender, receiver) = mpsc::channel(2);
+        let source = self.clone();
+        let session = session.clone();
+        tokio::spawn(async move {
+            let result = async {
+                if session.event_count == 0 {
+                    return Ok(());
+                }
+                const ORDINALS_PER_QUERY: u64 = 1_000_000;
+                let mut first = session.first_ordinal;
+                while first < session.next_ordinal {
+                    if sender.is_closed() {
+                        return Ok(());
+                    }
+                    let next = first
+                        .saturating_add(ORDINALS_PER_QUERY)
+                        .min(session.next_ordinal);
+                    let select = ordinal_event_select(
+                        &format!(
+                            "{}.{}{}",
+                            source.config.clickhouse_database,
+                            source.config.table_prefix,
+                            session.session_date.year()
+                        ),
+                        &ticker,
+                        first,
+                        next,
+                    );
+                    let sql =
+                        format!("SELECT * FROM ({select}) ORDER BY ordinal FORMAT TabSeparated");
+                    source
+                        .stream_query_rows(sql, batch_size, sender.clone())
+                        .await?;
+                    first = next;
+                }
+                Ok(())
+            }
+            .await;
+            if let Err(error) = result {
+                let _ = sender.send(Err(error)).await;
+            }
+        });
+        Ok(receiver)
     }
 
     pub async fn source_revision(&self, window: &EventWindow) -> Result<SourceRevision, String> {
@@ -1013,8 +1329,8 @@ impl HistoricalEventSource {
                     GROUP BY ticker, source_date
                 )
                 FORMAT JSONEachRow"#,
-                archive_start.date_naive(),
-                last_inclusive.date_naive(),
+                archive_start.with_timezone(&New_York).date_naive(),
+                last_inclusive.with_timezone(&New_York).date_naive(),
             );
             let text = self.query(&sql).await?;
             serde_json::from_str::<SourceRevisionRow>(text.trim())
@@ -1084,9 +1400,9 @@ impl HistoricalEventSource {
         // A persisted structure checkpoint is not compatible merely because
         // compact events are unchanged. Corporate-action corrections alter
         // every surviving price and quantity coordinate. Include the
-        // point-in-time split authority in the same revision token so resume
-        // fails closed and rebuilds instead of applying corrected terms on
-        // top of a checkpoint produced with superseded terms.
+        // latest canonical split authority in the same revision token so
+        // resume fails closed and rebuilds instead of applying corrected terms
+        // on top of a checkpoint produced with superseded terms.
         let split_revision_token = self
             .structure_split_revision_token(&window.tickers, window.start, window.end)
             .await?;
@@ -1142,11 +1458,16 @@ impl HistoricalEventSource {
             .collect::<Vec<_>>()
             .join(",");
         let sql = structure_split_revision_sql(&ticker_filter, start, end);
-        let rows = self.query(&sql).await?;
-        Ok(format!(
-            "split-sha256:{:x}",
-            Sha256::digest(rows.as_bytes())
-        ))
+        let text = self.query(&sql).await?;
+        let rows = text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                serde_json::from_str::<StructureSplitRevisionRow>(line)
+                    .map_err(|error| format!("invalid structure split revision row: {error}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        split_revision_token(rows.iter())
     }
 
     pub async fn fetch_batch(
@@ -2380,7 +2701,7 @@ impl HistoricalEventSource {
                 .single()
                 .ok_or_else(|| "invalid New York stock split boundary".to_string())?
                 .with_timezone(&Utc);
-            if effective_at <= after || effective_at > through {
+            if effective_at < after || effective_at > through {
                 continue;
             }
             let source_inserted_at = DateTime::parse_from_rfc3339(&row.source_inserted_at)
@@ -2858,6 +3179,35 @@ fn event_select(
         end_date = last_inclusive.date_naive(),
         start_us = start.timestamp_micros(),
         end_us = end.timestamp_micros(),
+    )
+}
+
+fn ordinal_event_select(table: &str, ticker: &str, first: u64, next: u64) -> String {
+    format!(
+        r#"SELECT
+            upper(source.ticker) AS ticker,
+            source.ordinal AS ordinal,
+            source.ordinal AS source_sequence,
+            source.event_meta,
+            source.execution_timestamp_us,
+            source.sip_timestamp_us,
+            source.price_primary_int,
+            source.price_secondary_int,
+            source.size_primary,
+            source.size_secondary,
+            source.exchange_primary,
+            source.exchange_secondary,
+            source.condition_token_1,
+            source.condition_token_2,
+            source.condition_token_3,
+            source.condition_token_4,
+            source.condition_token_5,
+            toString(source.event_date) AS event_date
+        FROM {table} AS source
+        PREWHERE source.ticker = {ticker}
+          AND source.ordinal >= {first}
+          AND source.ordinal < {next}"#,
+        ticker = sql_literal(ticker),
     )
 }
 
@@ -3420,6 +3770,7 @@ fn structure_campaign_tickers_sql(
     priority_start_date: NaiveDate,
     priority_end_date: NaiveDate,
     as_of: DateTime<Utc>,
+    use_daily_liquidity: bool,
 ) -> Result<String, String> {
     for (name, value) in [
         ("archive database", archive_database),
@@ -3439,6 +3790,27 @@ fn structure_campaign_tickers_sql(
     let priority_end_exclusive = priority_end_date
         .succ_opt()
         .ok_or_else(|| "structure campaign priority end date overflow".to_string())?;
+    let liquidity_source = if use_daily_liquidity {
+        format!(
+            r#"SELECT
+                upper(if(empty(ifNull(canonical_ticker, '')), source_ticker, canonical_ticker)) AS ticker,
+                sumIf(trade_close * trade_size_sum, trade_present = 1) AS priority_dollar_volume
+            FROM `{archive_database}`.`{daily_table}` FINAL
+            PREWHERE session_date >= toDate('{priority_start_date}')
+              AND session_date < toDate('{priority_end_exclusive}')
+            WHERE adjusted = 0
+              AND identity_status != 'ambiguous_source_ticker'
+              AND available_at_us <= toUInt64({available_at_us})
+            GROUP BY ticker"#,
+            available_at_us = as_of.timestamp_micros().max(0),
+        )
+    } else {
+        structure_campaign_raw_liquidity_sql(
+            archive_database,
+            priority_start_date,
+            priority_end_date,
+        )?
+    };
     Ok(format!(
         r#"SELECT
             universe.ticker AS ticker,
@@ -3446,14 +3818,14 @@ fn structure_campaign_tickers_sql(
             ifNull(max(liquidity.priority_dollar_volume), 0.0) AS priority_dollar_volume
         FROM
         (
-            SELECT upper(symbol.ticker) AS ticker, toUInt8(1) AS currently_active
-            FROM `{reference_database}`.`id_symbol_v1` AS symbol FINAL
-            INNER JOIN `{reference_database}`.`id_listing_v1` AS listing FINAL
-                ON listing.listing_id = symbol.listing_id
-            WHERE symbol.status = 'active'
-              AND symbol.primary_symbol_flag = 1
-              AND listing.listing_status = 'active'
-              AND listing.currency_code = 'USD'
+            SELECT upper(ticker) AS ticker, toUInt8(1) AS currently_active
+            FROM `{reference_database}`.`feature_tradable_universe_v1` FINAL
+            WHERE universe_date = (
+                SELECT max(universe_date)
+                FROM `{reference_database}`.`feature_tradable_universe_v1` FINAL
+                WHERE universe_date <= toDate('{as_of_date}')
+            )
+              AND is_tradable = 1
 
             UNION ALL
 
@@ -3465,23 +3837,120 @@ fn structure_campaign_tickers_sql(
         ) AS universe
         LEFT JOIN
         (
-            SELECT
-                upper(if(empty(ifNull(canonical_ticker, '')), source_ticker, canonical_ticker)) AS ticker,
-                sumIf(trade_close * trade_size_sum, trade_present = 1) AS priority_dollar_volume
-            FROM `{archive_database}`.`{daily_table}` FINAL
-            PREWHERE session_date >= toDate('{priority_start_date}')
-              AND session_date < toDate('{priority_end_exclusive}')
-            WHERE adjusted = 0
-              AND identity_status != 'ambiguous_source_ticker'
-              AND available_at_us <= toUInt64({available_at_us})
-            GROUP BY ticker
+            {liquidity_source}
         ) AS liquidity USING ticker
         GROUP BY universe.ticker
         HAVING match(universe.ticker, '^[A-Z0-9._-]{{1,32}}$')
         ORDER BY currently_active DESC, priority_dollar_volume DESC, ticker
         FORMAT JSONEachRow"#,
+        as_of_date = as_of.date_naive(),
+    ))
+}
+
+fn structure_campaign_raw_liquidity_sql(
+    archive_database: &str,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+) -> Result<String, String> {
+    let mut selects = Vec::new();
+    for year in start_date.year()..=end_date.year() {
+        let left = if year == start_date.year() {
+            start_date
+        } else {
+            NaiveDate::from_ymd_opt(year, 1, 1)
+                .ok_or_else(|| "invalid liquidity year boundary".to_string())?
+        };
+        let right = if year == end_date.year() {
+            end_date
+        } else {
+            NaiveDate::from_ymd_opt(year, 12, 31)
+                .ok_or_else(|| "invalid liquidity year boundary".to_string())?
+        };
+        selects.push(format!(
+            r#"SELECT ticker, event_meta, price_primary_int, size_primary
+               FROM `{archive_database}`.`events_{year}`
+               PREWHERE event_date >= toDate('{left}')
+                 AND event_date <= toDate('{right}')
+                 AND bitAnd(event_meta, 1) = 1"#
+        ));
+    }
+    Ok(format!(
+        r#"SELECT
+            upper(ticker) AS ticker,
+            sum(
+                (toFloat64(price_primary_int) /
+                    if(bitAnd(event_meta, 2) != 0, 10000.0, 100.0)) *
+                toFloat64(size_primary)
+            ) AS priority_dollar_volume
+        FROM ({})
+        GROUP BY ticker"#,
+        selects.join(" UNION ALL ")
+    ))
+}
+
+fn structure_campaign_liquidity_coverage_sql(
+    archive_database: &str,
+    daily_table: &str,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+    as_of: DateTime<Utc>,
+) -> Result<String, String> {
+    for (name, value) in [
+        ("archive database", archive_database),
+        ("daily table", daily_table),
+    ] {
+        if value.is_empty()
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            return Err(format!(
+                "structure campaign {name} is not a valid identifier"
+            ));
+        }
+    }
+    let end_exclusive = end_date
+        .succ_opt()
+        .ok_or_else(|| "structure campaign liquidity end date overflow".to_string())?;
+    Ok(format!(
+        "SELECT count() FROM `{archive_database}`.`{daily_table}` FINAL \
+         PREWHERE session_date >= toDate('{start_date}') \
+           AND session_date < toDate('{end_exclusive}') \
+         WHERE adjusted = 0 \
+           AND identity_status != 'ambiguous_source_ticker' \
+           AND available_at_us <= toUInt64({available_at_us}) \
+         FORMAT TSV",
         available_at_us = as_of.timestamp_micros().max(0),
     ))
+}
+
+fn structure_campaign_continuity_sql(
+    archive_database: &str,
+    ticker: &str,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+) -> String {
+    format!(
+        r#"SELECT
+            toString(source_date) AS source_date,
+            argMax(event_count, tuple(build_step, updated_at)) AS event_count,
+            argMax(next_ordinal, tuple(build_step, updated_at)) AS next_ordinal,
+            argMax(last_ordinal, tuple(build_step, updated_at)) AS last_ordinal,
+            argMax(first_sip_timestamp_us, tuple(build_step, updated_at)) AS first_sip_timestamp_us,
+            argMax(last_sip_timestamp_us, tuple(build_step, updated_at)) AS last_sip_timestamp_us,
+            argMax(build_step, tuple(build_step, updated_at)) AS max_build_step,
+            toString(max(updated_at)) AS max_updated_at
+        FROM `{archive_database}`.`events_ordinal_continuity`
+        PREWHERE ticker = {ticker}
+          AND source_date >= toDate({start_date})
+          AND source_date <= toDate({end_date})
+        GROUP BY source_date
+        ORDER BY source_date
+        FORMAT JSONEachRow"#,
+        ticker = sql_literal(ticker),
+        start_date = sql_literal(&start_date.to_string()),
+        end_date = sql_literal(&end_date.to_string()),
+    )
 }
 
 fn sql_literal(value: &str) -> String {
@@ -3598,7 +4067,6 @@ fn structure_split_adjustments_sql(
         WHERE upper(source.provider_ticker) = {ticker}
           AND toDate(source.execution_date) >= toDate({start_date})
           AND toDate(source.execution_date) <= toDate({end_date})
-          AND source.inserted_at <= parseDateTime64BestEffort({through})
           AND source.split_from > 0
           AND source.split_to > 0
         GROUP BY source.execution_date
@@ -3607,7 +4075,6 @@ fn structure_split_adjustments_sql(
         ticker = sql_literal(ticker),
         start_date = sql_literal(&start_date.to_string()),
         end_date = sql_literal(&end_date.to_string()),
-        through = sql_literal(&through.to_rfc3339()),
     )
 }
 
@@ -3629,7 +4096,6 @@ fn structure_split_revision_sql(
         WHERE upper(source.provider_ticker) IN ({ticker_filter})
           AND toDate(source.execution_date) >= toDate({start_date})
           AND toDate(source.execution_date) <= toDate({end_date})
-          AND source.inserted_at <= parseDateTime64BestEffort({end})
           AND source.split_from > 0
           AND source.split_to > 0
         GROUP BY ticker, source.execution_date
@@ -3637,8 +4103,33 @@ fn structure_split_revision_sql(
         FORMAT JSONEachRow"#,
         start_date = sql_literal(&start_date.to_string()),
         end_date = sql_literal(&end_date.to_string()),
-        end = sql_literal(&end.to_rfc3339()),
     )
+}
+
+fn split_revision_token<'a>(
+    rows: impl Iterator<Item = &'a StructureSplitRevisionRow>,
+) -> Result<String, String> {
+    let mut identities = rows
+        .map(|row| {
+            let inserted_at = DateTime::parse_from_rfc3339(&row.source_inserted_at)
+                .map_err(|error| format!("invalid stock split inserted_at: {error}"))?;
+            Ok(format!(
+                "{}|{}|{:016x}|{:016x}|{}",
+                row.ticker.to_ascii_uppercase(),
+                row.execution_date,
+                row.split_from.to_bits(),
+                row.split_to.to_bits(),
+                inserted_at.timestamp_micros(),
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    identities.sort();
+    let mut hasher = Sha256::new();
+    for identity in identities {
+        hasher.update(identity.as_bytes());
+        hasher.update([b'\n']);
+    }
+    Ok(format!("split-sha256:{:x}", hasher.finalize()))
 }
 
 #[cfg(test)]
@@ -3648,8 +4139,9 @@ mod tests {
         build_source_plan, completed_session_dates_between_sql, coverage_precedes, event_select,
         latest_coverage_summary_sql, latest_coverage_target_date_sql, macro_bar_is_closed,
         materialize_confirmed_recent_coverage, merge_coverage_intervals, merge_daily_chart_bars,
-        normalize_ticker, parse_historical_tsv_row, persisted_structure_events_sql,
-        recent_coverage_sql, recent_daily_trade_bars_sql, row_to_event, split_adjustment_factors,
+        normalize_ticker, ordinal_event_select, parse_historical_tsv_row,
+        persisted_structure_events_sql, recent_coverage_sql, recent_daily_trade_bars_sql,
+        row_to_event, split_adjustment_factors, structure_campaign_continuity_sql,
         structure_campaign_tickers_sql, structure_split_adjustments_sql,
         structure_split_revision_sql, ticker_filter, CoverageInterval, EventWindow,
         HistoricalMacroChartRow, HistoricalRow, LatestEventCoverage, MarketSourceTier,
@@ -3679,7 +4171,7 @@ mod tests {
     }
 
     #[test]
-    fn campaign_universe_prioritizes_current_listings_by_bounded_liquidity() {
+    fn campaign_universe_prioritizes_current_tradable_symbols_by_bounded_liquidity() {
         let sql = structure_campaign_tickers_sql(
             "market_sip_compact",
             "daily_session_bars_by_symbol_time_v1",
@@ -3688,15 +4180,33 @@ mod tests {
             NaiveDate::from_ymd_opt(2026, 8, 1).unwrap(),
             NaiveDate::from_ymd_opt(2026, 8, 31).unwrap(),
             Utc.with_ymd_and_hms(2026, 9, 1, 0, 0, 0).unwrap(),
+            true,
         )
         .unwrap();
 
-        assert!(sql.contains("id_symbol_v1"));
+        assert!(sql.contains("feature_tradable_universe_v1"));
+        assert!(sql.contains("is_tradable = 1"));
+        assert!(!sql.contains("currency_code = 'USD'"));
         assert!(sql.contains("HAVING match(universe.ticker"));
         assert!(sql.contains("events_ordinal_continuity"));
         assert!(sql.contains("session_date >= toDate('2026-08-01')"));
         assert!(sql.contains("session_date < toDate('2026-09-01')"));
         assert!(sql.contains("ORDER BY currently_active DESC, priority_dollar_volume DESC, ticker"));
+
+        let raw_sql = structure_campaign_tickers_sql(
+            "market_sip_compact",
+            "daily_session_bars_by_symbol_time_v1",
+            "q_live",
+            NaiveDate::from_ymd_opt(2026, 1, 2).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 8, 1).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 8, 31).unwrap(),
+            Utc.with_ymd_and_hms(2026, 9, 1, 0, 0, 0).unwrap(),
+            false,
+        )
+        .unwrap();
+        assert!(raw_sql.contains("events_2026"));
+        assert!(raw_sql.contains("bitAnd(event_meta, 1) = 1"));
+        assert!(raw_sql.contains("toFloat64(price_primary_int)"));
     }
 
     #[test]
@@ -3716,7 +4226,7 @@ mod tests {
     }
 
     #[test]
-    fn structure_revision_includes_point_in_time_split_terms() {
+    fn structure_revision_uses_latest_split_terms_for_the_execution_horizon() {
         let sql = structure_split_revision_sql(
             "'AAPL','SUGP'",
             Utc.with_ymd_and_hms(2026, 2, 20, 9, 0, 0).unwrap(),
@@ -3724,8 +4234,32 @@ mod tests {
         );
         assert!(sql.contains("upper(source.provider_ticker) IN ('AAPL','SUGP')"));
         assert!(sql.contains("argMax(source.split_from, source.inserted_at)"));
-        assert!(sql.contains("source.inserted_at <= parseDateTime64BestEffort"));
+        assert!(!sql.contains("source.inserted_at <= parseDateTime64BestEffort"));
         assert!(sql.contains("ORDER BY ticker, source.execution_date"));
+    }
+
+    #[test]
+    fn campaign_event_fetch_uses_the_physical_ticker_ordinal_key() {
+        let sql = ordinal_event_select("market_sip_compact.events_2026", "SUGP", 10, 20);
+        assert!(sql.contains("source.ticker = 'SUGP'"));
+        assert!(sql.contains("source.ordinal >= 10"));
+        assert!(sql.contains("source.ordinal < 20"));
+        assert!(!sql.contains("source.sip_timestamp_us >="));
+        assert!(!sql.contains("source.event_date >="));
+    }
+
+    #[test]
+    fn campaign_continuity_plan_pins_exact_daily_ordinal_bounds() {
+        let sql = structure_campaign_continuity_sql(
+            "market_sip_compact",
+            "SUGP",
+            NaiveDate::from_ymd_opt(2026, 8, 20).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 8, 21).unwrap(),
+        );
+        assert!(sql.contains("PREWHERE ticker = 'SUGP'"));
+        assert!(sql.contains("argMax(next_ordinal"));
+        assert!(sql.contains("argMax(last_ordinal"));
+        assert!(sql.contains("GROUP BY source_date"));
     }
 
     #[test]
@@ -4220,15 +4754,13 @@ mod tests {
     }
 
     #[test]
-    fn split_adjustment_query_is_bounded_by_source_availability() {
+    fn split_adjustment_query_uses_latest_canonical_terms_for_the_execution_horizon() {
         let after = Utc.with_ymd_and_hms(2026, 8, 1, 8, 0, 0).unwrap();
         let through = Utc.with_ymd_and_hms(2026, 8, 6, 14, 15, 0).unwrap();
         let sql = structure_split_adjustments_sql("SUGP", after, through);
 
         assert!(sql.contains("upper(source.provider_ticker) = 'SUGP'"));
-        assert!(sql.contains(
-            "source.inserted_at <= parseDateTime64BestEffort('2026-08-06T14:15:00+00:00')"
-        ));
+        assert!(!sql.contains("source.inserted_at <= parseDateTime64BestEffort"));
         assert!(sql.contains("argMax(source.split_from, source.inserted_at)"));
         assert!(sql.contains("argMax(source.split_to, source.inserted_at)"));
     }

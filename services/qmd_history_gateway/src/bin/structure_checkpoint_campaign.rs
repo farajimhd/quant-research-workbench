@@ -1,18 +1,12 @@
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, NaiveDate, NaiveTime, TimeZone, Utc};
 use chrono_tz::America::New_York;
 use qmd_core::config::{load_env_files, GatewayConfig};
-use qmd_core::generic_structure::GENERIC_STRUCTURE_ALGORITHM_VERSION;
+use qmd_core::generic_structure::{GenericStructureEngine, GENERIC_STRUCTURE_ALGORITHM_VERSION};
 use qmd_core::indicators::{DailyStructureCheckpoint, IndicatorClickHouseWriter};
 use qmd_core::metrics::SharedMetrics;
 use qmd_history_gateway::config::HistoricalGatewayConfig;
 use qmd_history_gateway::source::{
-    EventWindow, HistoricalEventSource, StructureCampaignTicker, StructureEventCountEstimateRequest,
-};
-use qmd_history_gateway::structure_checkpoint::{
-    advance_historical_structure_snapshot_with_progress,
-    rebuild_structure_checkpoint_with_progress, StructureCheckpointAdvanceRequest,
-    StructureCheckpointRebuildRequest, STRUCTURE_CHECKPOINT_ADVANCEMENT_SCHEMA_VERSION,
-    STRUCTURE_CHECKPOINT_REBUILD_SCHEMA_VERSION,
+    HistoricalEventSource, StructureCampaignTicker, StructureEventCountEstimateRequest,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -159,7 +153,7 @@ impl ProgressWriter {
                 .finished
                 .saturating_add(progress.counts.active),
         );
-        self.write_locked(&mut progress)
+        Ok(())
     }
 
     async fn finish_unit(
@@ -198,7 +192,7 @@ impl ProgressWriter {
             cursor,
         });
         progress.recent.truncate(5);
-        self.write_locked(&mut progress)
+        Ok(())
     }
 
     async fn fail_ticker(
@@ -234,7 +228,7 @@ impl ProgressWriter {
     async fn retry(&self) -> Result<(), String> {
         let mut progress = self.inner.lock().await;
         progress.counts.retried = progress.counts.retried.saturating_add(1);
-        self.write_locked(&mut progress)
+        Ok(())
     }
 
     async fn complete(&self, force_failed: bool) -> Result<Progress, String> {
@@ -270,6 +264,11 @@ impl ProgressWriter {
         let mut progress = self.inner.lock().await.clone();
         progress.events_processed = self.processed_events.load(Ordering::Relaxed);
         progress
+    }
+
+    async fn persist(&self) -> Result<(), String> {
+        let mut progress = self.inner.lock().await;
+        self.write_locked(&mut progress)
     }
 
     fn write_locked(&self, progress: &mut Progress) -> Result<(), String> {
@@ -336,14 +335,6 @@ struct DayResult {
     event_count: u64,
     advanced_event_count: u64,
     cursor: u64,
-    authority_start: DateTime<Utc>,
-    checkpoint: qmd_core::generic_structure::GenericStructureCheckpoint,
-}
-
-struct BoundaryAdvance {
-    checkpoint: qmd_core::generic_structure::GenericStructureCheckpoint,
-    event_count: u64,
-    advanced_event_count: u64,
 }
 
 #[derive(Default)]
@@ -556,20 +547,23 @@ async fn report_progress(progress: Arc<ProgressWriter>, status_path: PathBuf, wo
     let interactive = std::io::stdout().is_terminal();
     let color = interactive && env::var_os("NO_COLOR").is_none();
     let _terminal = TerminalSession::enter(interactive);
-    let refresh = if interactive {
-        Duration::from_secs(1)
-    } else {
-        Duration::from_secs(15)
-    };
+    let refresh = Duration::from_secs(1);
+    let mut last_log_at = Utc::now() - ChronoDuration::seconds(15);
     let mut event_rate_window = EventRateWindow::default();
     loop {
         let status_changed = progress.status_notify.notified();
+        if let Err(error) = progress.persist().await {
+            eprintln!("failed to persist campaign status: {error}");
+        }
         let snapshot = progress.snapshot().await;
         let event_rate = event_rate_window.observe(Utc::now(), snapshot.events_processed);
         if interactive {
             render_dashboard(&snapshot, &status_path, workers, color, event_rate);
-        } else {
+        } else if snapshot.status != "running"
+            || (Utc::now() - last_log_at) >= ChronoDuration::seconds(15)
+        {
             render_log_snapshot(&snapshot, workers, event_rate);
+            last_log_at = Utc::now();
         }
         if snapshot.status != "running" {
             break;
@@ -957,6 +951,9 @@ async fn run_ticker(
     max_retries: usize,
     retry_delay_seconds: u64,
 ) -> Result<(), String> {
+    let manifest = source
+        .structure_campaign_manifest(&plan.ticker, plan.rebuild_start, &plan.sessions)
+        .await?;
     let after_last_session = plan
         .sessions
         .last()
@@ -966,27 +963,31 @@ async fn run_ticker(
     let seed = writer
         .load_daily_structure_checkpoint_before(&plan.ticker, after_last_session)
         .await?
-        .filter(|row| row.authority_start <= plan.rebuild_start);
-    let seed = if let Some(seed) = seed {
-        let seed_end = session_end(seed.session_date)?;
-        checkpoint_revision_matches(source, &seed, seed_end)
-            .await?
-            .then_some(seed)
-    } else {
-        None
-    };
+        .filter(|row| row.authority_start == plan.rebuild_start)
+        .filter(|row| {
+            manifest
+                .sessions
+                .iter()
+                .find(|session| session.session_date == row.session_date)
+                .is_some_and(|session| {
+                    row.source_complete
+                        && row.source_plan_hash == session.source_revision.source_plan_hash
+                        && row.source_revision_token == session.source_revision.token
+                })
+        });
     let seed_session = seed.as_ref().map(|row| row.session_date);
     let seed_cursor = seed
         .as_ref()
         .map(|row| row.last_arrival_sequence)
         .unwrap_or_default();
-    let mut authority_start = seed
-        .as_ref()
-        .map(|row| row.authority_start)
-        .unwrap_or(plan.rebuild_start);
-    let mut checkpoint = seed.map(|row| row.checkpoint);
+    let mut engine = GenericStructureEngine::new(&plan.ticker);
+    if let Some(seed) = seed {
+        engine.seed_checkpoint(&seed.checkpoint);
+    }
+    let rules = source.trade_aggregation_rules();
 
-    for (index, session_date) in plan.sessions.iter().copied().enumerate() {
+    for session in &manifest.sessions {
+        let session_date = session.session_date;
         if session_is_covered_by_seed(session_date, seed_session) {
             progress
                 .finish_unit(&plan.ticker, session_date, "skipped", 0, 0, seed_cursor)
@@ -994,26 +995,26 @@ async fn run_ticker(
             continue;
         }
         progress.activate(&plan.ticker, session_date).await?;
-        let starting_checkpoint = checkpoint.clone();
         let mut attempt = 0_usize;
         let result = loop {
             let mut event_progress = AttemptEventProgress::new(progress);
-            let build_result = {
-                let on_events = |count| event_progress.record(count);
-                build_day_from_state(
-                    config,
-                    source,
-                    writer,
-                    &plan.ticker,
-                    session_date,
-                    authority_start,
-                    starting_checkpoint.clone(),
-                    &on_events,
-                )
-                .await
-            };
+            let checkpoint_before = engine.checkpoint();
+            let build_result = process_ordinal_session(
+                config,
+                source,
+                writer,
+                &manifest,
+                session,
+                &rules,
+                &mut engine,
+                &mut event_progress,
+            )
+            .await;
             match build_result {
-                Ok(result) if result.event_count == event_progress.observed() => {
+                Ok(result)
+                    if result.event_count == event_progress.observed()
+                        && result.event_count == session.event_count =>
+                {
                     event_progress.commit();
                     break Ok(result);
                 }
@@ -1025,6 +1026,7 @@ async fn run_ticker(
                     ))
                 }
                 Err(error) if retryable_error(&error) && attempt < max_retries => {
+                    engine.seed_checkpoint(&checkpoint_before);
                     attempt += 1;
                     progress.retry().await?;
                     tokio::time::sleep(Duration::from_secs(
@@ -1032,13 +1034,14 @@ async fn run_ticker(
                     ))
                     .await;
                 }
-                Err(error) => break Err(error),
+                Err(error) => {
+                    engine.seed_checkpoint(&checkpoint_before);
+                    break Err(error);
+                }
             }
         };
         match result {
             Ok(result) => {
-                authority_start = result.authority_start;
-                checkpoint = Some(result.checkpoint);
                 progress
                     .finish_unit(
                         &plan.ticker,
@@ -1050,14 +1053,13 @@ async fn run_ticker(
                     )
                     .await?;
             }
-            Err(error) if no_history_error(&error) => {
-                checkpoint = starting_checkpoint;
-                progress
-                    .finish_unit(&plan.ticker, session_date, "unavailable", 0, 0, 0)
-                    .await?;
-            }
             Err(error) => {
-                let blocked = plan.sessions.len().saturating_sub(index + 1);
+                let index = manifest
+                    .sessions
+                    .iter()
+                    .position(|value| value.session_date == session_date)
+                    .unwrap_or_default();
+                let blocked = manifest.sessions.len().saturating_sub(index + 1);
                 progress
                     .fail_ticker(&plan.ticker, Some(session_date), blocked, error.clone())
                     .await?;
@@ -1065,7 +1067,7 @@ async fn run_ticker(
             }
         }
     }
-    drop(checkpoint);
+    drop(engine);
     Ok(())
 }
 
@@ -1073,77 +1075,112 @@ fn session_is_covered_by_seed(session_date: NaiveDate, seed_session: Option<Naiv
     seed_session.is_some_and(|date| session_date <= date)
 }
 
-async fn build_day_from_state(
+async fn process_ordinal_session(
     config: &HistoricalGatewayConfig,
     source: &HistoricalEventSource,
     writer: &IndicatorClickHouseWriter,
-    ticker: &str,
-    session_date: NaiveDate,
-    authority_start: DateTime<Utc>,
-    checkpoint: Option<qmd_core::generic_structure::GenericStructureCheckpoint>,
-    on_events: &(dyn Fn(u64) + Send + Sync),
+    manifest: &qmd_history_gateway::source::StructureCampaignManifest,
+    session: &qmd_history_gateway::source::StructureCampaignSession,
+    rules: &qmd_core::bars::TradeAggregationRules,
+    engine: &mut GenericStructureEngine,
+    event_progress: &mut AttemptEventProgress<'_>,
 ) -> Result<DayResult, String> {
+    let session_date = session.session_date;
     let authority_end = session_end(session_date)?;
     let as_of = authority_end - ChronoDuration::microseconds(1);
-    let (checkpoint, event_count, advanced_event_count) = if let Some(checkpoint) = checkpoint {
-        let advanced = advance_to_boundary(config, source, checkpoint, as_of, on_events).await?;
-        (
-            advanced.checkpoint,
-            advanced.event_count,
-            advanced.advanced_event_count,
-        )
-    } else {
-        let rebuilt = rebuild_structure_checkpoint_with_progress(
-            config,
-            source,
-            StructureCheckpointRebuildRequest {
-                schema_version: STRUCTURE_CHECKPOINT_REBUILD_SCHEMA_VERSION,
-                ticker: ticker.to_string(),
-                start: authority_start,
-                as_of,
-                expected_source_plan_hash: None,
-                event_limit: None,
-            },
-            on_events,
-        )
-        .await?;
-        if !rebuilt.complete
-            || rebuilt.source_revision_before.token != rebuilt.source_revision_after.token
-        {
-            return Err("historical checkpoint rebuild was source-inconsistent".to_string());
+    for adjustment in manifest
+        .split_adjustments
+        .iter()
+        .filter(|adjustment| adjustment.effective_at <= as_of)
+    {
+        engine.apply_split_adjustment(adjustment)?;
+    }
+    let mut batches =
+        source.stream_structure_ordinal_session(session, &manifest.ticker, config.batch_size)?;
+    let mut event_count = 0_u64;
+    let mut advanced_event_count = 0_u64;
+    let mut prior_sip = 0_u64;
+    let mut first_sip = 0_u64;
+    let mut last_sip = 0_u64;
+    while let Some(batch) = batches.recv().await {
+        let batch = batch?;
+        for compact in &batch {
+            if compact.ticker.to_ascii_uppercase() != manifest.ticker
+                || compact.arrival_sequence < session.first_ordinal
+                || compact.arrival_sequence >= session.next_ordinal
+            {
+                return Err(format!(
+                    "ordinal stream escaped its pinned range for {} {}",
+                    manifest.ticker, session_date
+                ));
+            }
+            if prior_sip > compact.sip_timestamp_us {
+                return Err(format!(
+                    "ordinal stream is not SIP-time monotonic for {} {}",
+                    manifest.ticker, session_date
+                ));
+            }
+            let event_at = DateTime::<Utc>::from_timestamp_micros(compact.sip_timestamp_us as i64)
+                .ok_or_else(|| "ordinal stream contains an invalid SIP timestamp".to_string())?;
+            if event_at.with_timezone(&New_York).date_naive() != session_date {
+                return Err(format!(
+                    "ordinal stream event date does not match {} {}",
+                    manifest.ticker, session_date
+                ));
+            }
+            if first_sip == 0 {
+                first_sip = compact.sip_timestamp_us;
+            }
+            prior_sip = compact.sip_timestamp_us;
+            last_sip = compact.sip_timestamp_us;
+            let event = source.market_event(compact);
+            let before = engine.checkpoint_cursor();
+            let conditions = match &event {
+                qmd_core::event::MarketEvent::Trade(event) => event.conditions.as_slice(),
+                qmd_core::event::MarketEvent::Quote(event) => event.conditions.as_slice(),
+            };
+            engine.apply_event_without_snapshot(&event, rules.resolve(conditions, event.ts()));
+            if engine.checkpoint_cursor() != before {
+                advanced_event_count = advanced_event_count.saturating_add(1);
+            }
+            event_count = event_count.saturating_add(1);
         }
-        (
-            rebuilt.checkpoint,
-            rebuilt.event_count,
-            rebuilt.advanced_event_count,
-        )
-    };
-
-    let checkpoint_at = checkpoint
-        .updated_at
-        .ok_or_else(|| "calculated checkpoint has no exact event time".to_string())?;
+        event_progress.record(batch.len() as u64);
+    }
+    if event_count != session.event_count
+        || (event_count > 0
+            && (first_sip != session.first_sip_timestamp_us
+                || last_sip != session.last_sip_timestamp_us))
+    {
+        return Err(format!(
+            "ordinal stream authority mismatch for {} {}: expected {} events {}..{}, received {} events {}..{}",
+            manifest.ticker,
+            session_date,
+            session.event_count,
+            session.first_sip_timestamp_us,
+            session.last_sip_timestamp_us,
+            event_count,
+            first_sip,
+            last_sip,
+        ));
+    }
+    let mut checkpoint = engine.checkpoint();
+    checkpoint.replayed_through = Some(as_of);
+    engine.seed_checkpoint(&checkpoint);
+    let checkpoint_at = checkpoint.updated_at.unwrap_or(as_of);
     if checkpoint.algorithm_version != GENERIC_STRUCTURE_ALGORITHM_VERSION {
         return Err(format!(
             "calculated checkpoint algorithm v{} does not match v{}",
             checkpoint.algorithm_version, GENERIC_STRUCTURE_ALGORITHM_VERSION
         ));
     }
-    if checkpoint.sym.to_ascii_uppercase() != ticker {
+    if checkpoint.sym.to_ascii_uppercase() != manifest.ticker {
         return Err(format!(
-            "calculated checkpoint ticker {} does not match {ticker}",
-            checkpoint.sym
+            "calculated checkpoint ticker {} does not match {}",
+            checkpoint.sym, manifest.ticker,
         ));
     }
-    if checkpoint.last_arrival_sequence == 0 {
-        return Err("calculated checkpoint has no exact event cursor".to_string());
-    }
-    let revision = source
-        .source_revision(&EventWindow {
-            start: authority_start,
-            end: authority_end,
-            tickers: vec![ticker.to_string()],
-        })
-        .await?;
+    let revision = &session.source_revision;
     if !revision.complete_for_history
         || !revision.request_complete
         || revision.source_plan_hash.trim().is_empty()
@@ -1155,12 +1192,12 @@ async fn build_day_from_state(
         .persist_daily_structure_checkpoint(&DailyStructureCheckpoint {
             session_date,
             algorithm_version: checkpoint.algorithm_version,
-            sym: ticker.to_string(),
-            authority_start,
+            sym: manifest.ticker.clone(),
+            authority_start: manifest.authority_start,
             checkpoint_at,
             last_arrival_sequence: checkpoint.last_arrival_sequence,
-            source_plan_hash: revision.source_plan_hash,
-            source_revision_token: revision.token,
+            source_plan_hash: revision.source_plan_hash.clone(),
+            source_revision_token: revision.token.clone(),
             source_complete: true,
             built_at: Utc::now(),
             checkpoint: checkpoint.clone(),
@@ -1171,89 +1208,7 @@ async fn build_day_from_state(
         event_count,
         advanced_event_count,
         cursor: checkpoint.last_arrival_sequence,
-        authority_start,
-        checkpoint,
     })
-}
-
-async fn checkpoint_revision_matches(
-    source: &HistoricalEventSource,
-    checkpoint: &DailyStructureCheckpoint,
-    authority_end: DateTime<Utc>,
-) -> Result<bool, String> {
-    let current = source
-        .source_revision(&EventWindow {
-            start: checkpoint.authority_start,
-            end: authority_end,
-            tickers: vec![checkpoint.sym.clone()],
-        })
-        .await?;
-    Ok(current.complete_for_history
-        && current.request_complete
-        && current.source_plan_hash == checkpoint.source_plan_hash
-        && current.token == checkpoint.source_revision_token)
-}
-
-async fn advance_to_boundary(
-    config: &HistoricalGatewayConfig,
-    source: &HistoricalEventSource,
-    mut checkpoint: qmd_core::generic_structure::GenericStructureCheckpoint,
-    target_as_of: DateTime<Utc>,
-    on_events: &(dyn Fn(u64) + Send + Sync),
-) -> Result<BoundaryAdvance, String> {
-    let mut event_count = 0_u64;
-    let mut advanced_event_count = 0_u64;
-    loop {
-        let replay_start = checkpoint
-            .replayed_through
-            .or(checkpoint.updated_at)
-            .ok_or_else(|| "checkpoint has no replay boundary".to_string())?;
-        if replay_start >= target_as_of {
-            break;
-        }
-        let segment_as_of = next_advance_boundary(
-            replay_start,
-            target_as_of,
-            config.structure_checkpoint_max_window_hours,
-        );
-        let advanced = advance_historical_structure_snapshot_with_progress(
-            config,
-            source,
-            StructureCheckpointAdvanceRequest {
-                schema_version: STRUCTURE_CHECKPOINT_ADVANCEMENT_SCHEMA_VERSION,
-                checkpoint,
-                as_of: segment_as_of,
-                expected_source_plan_hash: None,
-                event_limit: None,
-            },
-            on_events,
-        )
-        .await?;
-        if !advanced.complete
-            || advanced.source_revision_before.token != advanced.source_revision_after.token
-        {
-            return Err("historical checkpoint advancement was source-inconsistent".to_string());
-        }
-        event_count = event_count.saturating_add(advanced.event_count);
-        advanced_event_count = advanced_event_count.saturating_add(advanced.advanced_event_count);
-        checkpoint = advanced.checkpoint;
-    }
-    Ok(BoundaryAdvance {
-        checkpoint,
-        event_count,
-        advanced_event_count,
-    })
-}
-
-fn next_advance_boundary(
-    replay_start: DateTime<Utc>,
-    target_as_of: DateTime<Utc>,
-    max_window_hours: usize,
-) -> DateTime<Utc> {
-    std::cmp::min(
-        target_as_of,
-        replay_start + ChronoDuration::hours(max_window_hours.max(1) as i64),
-    )
 }
 
 async fn build_plans(
@@ -1328,10 +1283,6 @@ fn session_end(session_date: NaiveDate) -> Result<DateTime<Utc>, String> {
         .single()
         .map(|value| value.with_timezone(&Utc))
         .ok_or_else(|| "invalid New York checkpoint session boundary".to_string())
-}
-
-fn no_history_error(error: &str) -> bool {
-    error.contains("found no canonical events")
 }
 
 fn retryable_error(error: &str) -> bool {
@@ -1567,9 +1518,9 @@ fn io_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sy
 mod tests {
     use super::{
         dashboard_frame, dashboard_lines, insert_ticker, log_snapshot, merge_ticker_universe,
-        next_advance_boundary, retryable_error, session_is_covered_by_seed, validate_worker_count,
-        AttemptEventProgress, Counts, EventRateWindow, Progress, ProgressWriter, RecentUnit,
-        TickerPlan, GENERIC_STRUCTURE_ALGORITHM_VERSION,
+        retryable_error, session_is_covered_by_seed, validate_worker_count, AttemptEventProgress,
+        Counts, EventRateWindow, Progress, ProgressWriter, RecentUnit, TickerPlan,
+        GENERIC_STRUCTURE_ALGORITHM_VERSION,
     };
     use chrono::{NaiveDate, TimeZone, Utc};
     use qmd_history_gateway::source::StructureCampaignTicker;
@@ -1643,23 +1594,6 @@ mod tests {
             validate_worker_count(65).unwrap_err(),
             "--workers must be between 1 and 64"
         );
-    }
-
-    #[test]
-    fn checkpoint_advancement_segments_never_exceed_runtime_window() {
-        let mut cursor = Utc.with_ymd_and_hms(2026, 2, 22, 9, 0, 0).unwrap();
-        let target = Utc.with_ymd_and_hms(2026, 3, 6, 0, 59, 59).unwrap();
-        let mut boundaries = Vec::new();
-        while cursor < target {
-            let next = next_advance_boundary(cursor, target, 72);
-            assert!(next > cursor);
-            assert!(next - cursor <= chrono::Duration::hours(72));
-            boundaries.push(next);
-            cursor = next;
-        }
-
-        assert_eq!(boundaries.last().copied(), Some(target));
-        assert!(boundaries.len() > 1);
     }
 
     #[test]
