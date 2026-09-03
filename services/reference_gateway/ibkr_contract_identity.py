@@ -72,7 +72,10 @@ class IbkrContractResolution:
 
 def normalize_equity_symbol(value: Any) -> str:
     """Normalize only separator syntax while preserving the share-class suffix."""
-    return " ".join(re.sub(r"[^A-Z0-9]+", " ", str(value or "").upper()).split())
+    tokens = re.sub(r"[^A-Z0-9]+", " ", str(value or "").upper()).split()
+    if len(tokens) >= 2 and re.fullmatch(r"PR[A-Z]", tokens[-1]):
+        tokens[-1] = "P" + tokens[-1][-1]
+    return " ".join(tokens)
 
 
 def ibkr_search_symbols(massive_ticker: str) -> tuple[str, ...]:
@@ -97,6 +100,25 @@ def search_row_is_stock(row: dict[str, Any]) -> bool:
         and str(section.get("secType") or section.get("sec_type") or "").strip().upper() in {"STK", "STOCK"}
         for section in sections
     ) or str(row.get("secType") or row.get("sec_type") or row.get("assetClass") or "").strip().upper() in {"STK", "STOCK"}
+
+
+def published_contract_matches(ticker: str, definition: dict[str, Any]) -> tuple[bool, str]:
+    if not search_row_is_stock(definition):
+        return False, "not_stock"
+    if str(definition.get("currency") or "").strip().upper() != "USD":
+        return False, "not_usd"
+    country_code = str(definition.get("countryCode") or definition.get("country_code") or "").strip().upper()
+    is_us = definition.get("isUS") if "isUS" in definition else definition.get("is_us")
+    if country_code != "US" or is_us is False:
+        return False, "not_us_contract"
+    if definition.get("restricted") is True:
+        return False, "broker_restricted"
+    broker_symbol = definition.get("ticker") or definition.get("symbol") or definition.get("local_symbol")
+    if normalize_equity_symbol(broker_symbol) != normalize_equity_symbol(ticker):
+        return False, "wrong_symbol_or_share_class"
+    if not str(definition.get("listingExchange") or definition.get("listing_exchange") or "").strip():
+        return False, "missing_primary_exchange"
+    return True, "exact_published_ibkr_contract"
 
 
 def positive_conids(rows: Iterable[dict[str, Any]]) -> tuple[int, ...]:

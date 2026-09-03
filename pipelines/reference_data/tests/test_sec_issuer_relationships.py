@@ -197,6 +197,20 @@ class SecIssuerRelationshipTests(unittest.TestCase):
         self.assertIn("sync_sec_issuer_relationships.py", str(run.call_args_list[0].args[0][1]))
         self.assertIn("step_06_build_q_live_bridge_features.py", str(run.call_args_list[1].args[0][1]))
 
+    def test_tradable_rebuild_replaces_same_date_rows(self) -> None:
+        config = SimpleNamespace(
+            execute=True,
+            test_write_mode=False,
+            rebuild_tradable_in_test_mode=False,
+            clickhouse_write_database="q_live",
+        )
+        completed = SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+        with mock.patch.object(publication_rebuild.subprocess, "run", return_value=completed) as run:
+            result = publication_rebuild.rebuild_tradable_publications(config, reason="test")
+
+        self.assertEqual(result.status, "completed")
+        self.assertIn("--replace-feature-date", run.call_args.args[0])
+
 
 if __name__ == "__main__":
     unittest.main()

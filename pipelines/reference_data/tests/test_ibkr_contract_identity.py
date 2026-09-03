@@ -6,6 +6,7 @@ from services.reference_gateway.ibkr_contract_identity import (
     company_names_compatible,
     ibkr_search_symbols,
     normalize_equity_symbol,
+    published_contract_matches,
     resolve_massive_ibkr_contract,
 )
 
@@ -16,6 +17,27 @@ class IbkrContractIdentityTests(unittest.TestCase):
         self.assertEqual(normalize_equity_symbol("BRK B"), "BRK B")
         self.assertNotEqual(normalize_equity_symbol("BRK.A"), normalize_equity_symbol("BRK.B"))
         self.assertEqual(ibkr_search_symbols("BRK.A"), ("BRK.A", "BRK A"))
+
+    def test_symbol_normalization_unifies_preferred_share_notation(self) -> None:
+        self.assertEqual(normalize_equity_symbol("ABR PRD"), "ABR PD")
+        self.assertEqual(normalize_equity_symbol("ABR-PD"), "ABR PD")
+        self.assertNotEqual(normalize_equity_symbol("ABR PRD"), normalize_equity_symbol("ABR PRC"))
+
+    def test_published_contract_validation_does_not_require_massive_row(self) -> None:
+        definition = {
+            "conid": 123,
+            "ticker": "ABR PRD",
+            "assetClass": "STK",
+            "currency": "USD",
+            "countryCode": "US",
+            "isUS": True,
+            "listingExchange": "NYSE",
+        }
+        self.assertEqual(published_contract_matches("ABR-PD", definition), (True, "exact_published_ibkr_contract"))
+        self.assertEqual(
+            published_contract_matches("ABR-PE", definition),
+            (False, "wrong_symbol_or_share_class"),
+        )
 
     def test_company_name_matching_accepts_legal_suffix_and_truncation(self) -> None:
         self.assertTrue(company_names_compatible("ABM Industries Incorporated", "ABM INDUSTRIES INC"))

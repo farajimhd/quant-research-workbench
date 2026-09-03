@@ -90,6 +90,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--execute", action="store_true", help="Execute inserts. Without this flag, the script is dry-run only.")
     parser.add_argument("--validate-only", action="store_true", help="Validate current target rows without inserting.")
     parser.add_argument("--allow-non-empty-targets", action="store_true", help="Permit appending/upserting into non-empty target tables.")
+    parser.add_argument(
+        "--replace-feature-date",
+        action="store_true",
+        help="Synchronously remove the selected date from date-keyed feature publications before rebuilding it.",
+    )
     parser.add_argument("--skip-non-empty-targets", action="store_true", help="Resume mode: execute only specs whose target table is empty.")
     parser.add_argument(
         "--retain-sec-bridge-backup",
@@ -609,8 +614,17 @@ def execute_specs(
                     build_run_id=build_run_id,
                 )
             else:
+                deleted_rows = 0
+                if args.replace_feature_date and spec.name in {"tradable_universe", "scanner_static"}:
+                    deleted_rows = replace_feature_date_rows(
+                        client,
+                        database=args.target_database,
+                        table_name=spec.target_table,
+                        spec_name=spec.name,
+                        feature_date=parse_iso_date(args.feature_date),
+                    )
                 client.execute(spec.insert_sql)
-                publication = {}
+                publication = {"replaced_feature_date_rows": deleted_rows}
             after_rows = scalar_int(client, f"SELECT count() FROM {quote_ident(args.target_database)}.{quote_ident(spec.target_table)}")
             row.update(
                 {
@@ -630,6 +644,28 @@ def execute_specs(
         write_jsonl_append(log_path, row)
         print(f"executed {index}/{len(specs)} {spec.name}: inserted_delta={row['inserted_delta']:,} seconds={row['wall_seconds']}", flush=True)
     return rows
+
+
+def replace_feature_date_rows(
+    client: ClickHouseHttpClient,
+    *,
+    database: str,
+    table_name: str,
+    spec_name: str,
+    feature_date: date,
+) -> int:
+    date_column = "universe_date" if spec_name == "tradable_universe" else "feature_date"
+    target = f"{quote_ident(database)}.{quote_ident(table_name)}"
+    literal_date = sql_string(feature_date.isoformat())
+    existing = scalar_int(client, f"SELECT count() FROM {target} FINAL WHERE {quote_ident(date_column)} = toDate({literal_date})")
+    if existing:
+        client.execute(
+            f"ALTER TABLE {target} DELETE WHERE {quote_ident(date_column)} = toDate({literal_date}) SETTINGS mutations_sync = 2"
+        )
+    remaining = scalar_int(client, f"SELECT count() FROM {target} FINAL WHERE {quote_ident(date_column)} = toDate({literal_date})")
+    if remaining:
+        raise RuntimeError(f"Failed to clear {database}.{table_name} for {feature_date}: {remaining} row(s) remain")
+    return existing
 
 
 def publish_sec_market_bridge_atomically(

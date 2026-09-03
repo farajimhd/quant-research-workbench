@@ -93,6 +93,7 @@ def _run_step_06_specs(
         str(STEP_06_SCRIPT),
         "--execute",
         "--allow-non-empty-targets",
+        "--replace-feature-date",
         "--target-database",
         config.clickhouse_write_database,
         "--feature-date",
