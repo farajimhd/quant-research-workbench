@@ -464,6 +464,11 @@ class TradeAnnotationPrimitive implements ISeriesPrimitive<Time> {
     this.state = state;
     this.requestUpdate?.();
   }
+
+  setSettings(settings: StrategyPresentationSettings) {
+    this.state = { ...this.state, settings };
+    this.requestUpdate?.();
+  }
 }
 type OscillatorThresholdSettings = {
   color: string;
@@ -759,6 +764,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const visibleSelectionRef = useRef<Set<string>>(new Set());
   const chartSettingsRef = useRef<ChartAppearanceSettings>(defaultChartAppearanceSettings);
   const legendSettingsRef = useRef<LegendSettingsMap>({});
+  const strategyPresentationSettingsRef = useRef<StrategyPresentationSettings>(defaultStrategyPresentationSettings);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const paneResizeObserverRef = useRef<ResizeObserver | null>(null);
   const initialFitTimerRef = useRef<number | null>(null);
@@ -810,6 +816,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   );
   chartSettingsRef.current = effectiveChartSettings;
   legendSettingsRef.current = legendSettings;
+  strategyPresentationSettingsRef.current = strategyPresentationSettings;
   const visibleColumnKey = visibleColumns.map((column) => column.toLowerCase()).join("|");
   const visibleSupervisionKey = visibleSupervisionGroups.map((group) => group.toLowerCase()).join("|");
   const visibleColumnLookup = new Set(visibleColumns.map((column) => column.toLowerCase()));
@@ -1097,9 +1104,10 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   }, [legendSettings]);
 
   useEffect(() => {
-    drawCurrentRegions();
-    fitTradeAnnotationPriceScale();
-  }, [strategyPresentationSettings, themeSignature]);
+    // Presentation edits own only primitive paint state. They must not replace
+    // chart data, refit the time range, or re-enable price autoscaling.
+    tradeAnnotationPrimitiveRef.current?.setSettings(strategyPresentationSettings);
+  }, [strategyPresentationSettings]);
 
   useEffect(() => {
     oscillatorPaneGroups.forEach((group) => {
@@ -1562,7 +1570,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     tradeAnnotationPrimitiveRef.current?.setState({
       candles: currentPayload.candles,
       executions: currentPayload.execution_annotations ?? [],
-      settings: strategyPresentationSettings,
+      settings: strategyPresentationSettingsRef.current,
       // Autoscale logical indexes belong to the rendered series timeline;
       // raw candles omit explicit whitespace bars and are not index-compatible.
       timeline,
@@ -6889,7 +6897,7 @@ function tradeAnnotationAutoscaleInfo(
   startLogical: number,
   endLogical: number,
 ): AutoscaleInfo | null {
-  if (!state.settings.visible || !state.timeline.length) return null;
+  if (!state.timeline.length) return null;
   const visibleStart = Math.max(0, Math.floor(Math.min(startLogical, endLogical)));
   const visibleEnd = Math.min(state.timeline.length - 1, Math.ceil(Math.max(startLogical, endLogical)));
   if (visibleStart > visibleEnd) return null;
@@ -6900,29 +6908,24 @@ function tradeAnnotationAutoscaleInfo(
       ? visibleEnd
       : Math.min(state.timeline.length - 1, lowerBoundCandleTime(state.timeline, trade.endTime ?? trade.exitTime ?? trade.entryTime));
     if (tradeEnd < visibleStart || tradeStart > visibleEnd) return;
-    if (strategyElementFamilyVisible(state.settings, "entryLine", "entryArrow", "entryLabel")) prices.push(trade.entryPrice);
-    if (strategyElementFamilyVisible(state.settings, "exitLine", "exitArrow", "exitLabel") && trade.status !== "open" && typeof trade.exitPrice === "number") prices.push(trade.exitPrice);
-    if (strategyElementFamilyVisible(state.settings, "levelLine", "levelLabel")) {
-      prices.push(...(trade.levelPrices?.slice(0, 3) ?? []));
-      if (typeof trade.triggerPrice === "number") prices.push(trade.triggerPrice);
-    }
-    if (strategyElementFamilyVisible(state.settings, "stopLine", "stopLabel") && typeof trade.stopPrice === "number") prices.push(trade.stopPrice);
-    if (strategyElementFamilyVisible(state.settings, "targetLine", "targetLabel")) prices.push(...(trade.targetPrices ?? []));
-    if (strategyElementFamilyVisible(state.settings, "adjustmentLine", "adjustmentArrow", "adjustmentLabel")) prices.push(...(trade.fills?.map((fill) => fill.price) ?? []));
+    // Autoscale evidence is data authority, not presentation state. Keeping the
+    // same evidence set when an element is styled or hidden prevents a visual
+    // configuration edit from changing the current price viewport.
+    prices.push(trade.entryPrice);
+    if (trade.status !== "open" && typeof trade.exitPrice === "number") prices.push(trade.exitPrice);
+    prices.push(...(trade.levelPrices?.slice(0, 3) ?? []));
+    if (typeof trade.triggerPrice === "number") prices.push(trade.triggerPrice);
+    if (typeof trade.stopPrice === "number") prices.push(trade.stopPrice);
+    prices.push(...(trade.targetPrices ?? []));
+    prices.push(...(trade.fills?.map((fill) => fill.price) ?? []));
   });
-  if (state.settings.elements.adjustmentArrow.visible) {
-    state.executions.forEach((fill) => {
-      const logical = lowerBoundCandleTime(state.timeline, fill.time);
-      if (logical >= visibleStart && logical <= visibleEnd) prices.push(fill.price);
-    });
-  }
+  state.executions.forEach((fill) => {
+    const logical = lowerBoundCandleTime(state.timeline, fill.time);
+    if (logical >= visibleStart && logical <= visibleEnd) prices.push(fill.price);
+  });
   const finitePrices = prices.filter((price) => Number.isFinite(price));
   if (!finitePrices.length) return null;
   return { priceRange: { minValue: Math.min(...finitePrices), maxValue: Math.max(...finitePrices) } };
-}
-
-function strategyElementFamilyVisible(settings: StrategyPresentationSettings, ...keys: StrategyVisualElementKey[]) {
-  return keys.some((key) => settings.elements[key].visible);
 }
 
 function strategyPresentationColor(value: string, fallback: string) {

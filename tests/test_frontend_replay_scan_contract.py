@@ -194,6 +194,8 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert "class TradeAnnotationPrimitive implements ISeriesPrimitive<Time>" in renderer_source
     assert "candleSeries.attachPrimitive(tradeAnnotationPrimitive)" in renderer_source
     assert "tradeAnnotationPrimitiveRef.current?.setState" in renderer_source
+    assert "tradeAnnotationPrimitiveRef.current?.setSettings(strategyPresentationSettings)" in renderer_source
+    assert "settings: strategyPresentationSettingsRef.current" in renderer_source
     assert "drawTradeAnnotationPrimitiveGeometry" in renderer_source
     assert 'const defaultStrategyPresentationSettings: StrategyPresentationSettings' in renderer_source
     assert 'entryLine: strategyPresentationStyle("", "solid", 2, 0.95' in renderer_source
@@ -244,6 +246,13 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert 'const borderColor = strategyPresentationColor(settings.borderColor, color)' in renderer_source
     assert 'context.strokeStyle = rgbaFromHex(borderColor, settings.borderOpacity)' in renderer_source
     assert 'context.fillText(text, left + paddingX' in renderer_source
+    presentation_effect = renderer_source.split("// Presentation edits own only primitive paint state.", 1)[1].split("}, [strategyPresentationSettings]);", 1)[0]
+    assert "setSettings(strategyPresentationSettings)" in presentation_effect
+    assert "drawCurrentRegions" not in presentation_effect
+    assert "fitTradeAnnotationPriceScale" not in presentation_effect
+    autoscale_source = renderer_source.split("function tradeAnnotationAutoscaleInfo", 1)[1].split("function strategyPresentationColor", 1)[0]
+    assert "state.settings" not in autoscale_source
+    assert "strategyElementFamilyVisible" not in renderer_source
     strategy_styles = styles_source.split(".strategy-presentation-menu", 1)[1].split(".app-loading-state", 1)[0]
     assert "font-family: var(--font-body);" in strategy_styles
     assert "font-weight: 600;" in strategy_styles
