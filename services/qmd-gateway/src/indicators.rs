@@ -13,7 +13,7 @@ use crate::microstructure_interval::{
 };
 use crate::scanner::ScannerPrimitiveRouter;
 use crate::structure_certification::{
-    validate_checkpoint_certification, StructureCheckpointCertification,
+    canonical_json_sha256, validate_checkpoint_certification, StructureCheckpointCertification,
 };
 use crate::timefmt::clickhouse_datetime64;
 use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Timelike, Utc};
@@ -3310,6 +3310,15 @@ impl IndicatorClickHouseWriter {
             &record.source_plan_hash,
             &record.source_revision_token,
         )?;
+        let persisted_snapshot = serde_json::from_str(&snapshot_json)
+            .map_err(|error| format!("failed to decode serialized daily checkpoint: {error}"))?;
+        let persisted_checkpoint_sha256 = canonical_json_sha256(&persisted_snapshot)?;
+        if certification.checkpoint_sha256 != persisted_checkpoint_sha256 {
+            return Err(format!(
+                "refusing to persist a checkpoint whose serialized payload hash drifted: certified={}, serialized={persisted_checkpoint_sha256}",
+                certification.checkpoint_sha256,
+            ));
+        }
         let certification_json = serde_json::to_string(certification)
             .map_err(|error| format!("failed to serialize checkpoint certification: {error}"))?;
         let mut row = json!({
