@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, Duration as ChronoDuration, NaiveDate, NaiveTime, TimeZone, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, NaiveTime, TimeZone, Utc};
 use chrono_tz::America::New_York;
 use qmd_core::config::{load_env_files, GatewayConfig};
 use qmd_core::generic_structure::GENERIC_STRUCTURE_ALGORITHM_VERSION;
@@ -6,7 +6,7 @@ use qmd_core::indicators::{DailyStructureCheckpoint, IndicatorClickHouseWriter};
 use qmd_core::metrics::SharedMetrics;
 use qmd_history_gateway::config::HistoricalGatewayConfig;
 use qmd_history_gateway::source::{
-    EventWindow, HistoricalEventSource, StructureCampaignTicker, StructureEventCountEstimateRequest,
+    EventWindow, HistoricalEventSource, StructureEventCountEstimateRequest,
 };
 use qmd_history_gateway::structure_checkpoint::{
     advance_historical_structure_snapshot, rebuild_structure_checkpoint,
@@ -15,7 +15,7 @@ use qmd_history_gateway::structure_checkpoint::{
 };
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
 use std::fs;
 use std::io::{IsTerminal, Write};
@@ -25,19 +25,17 @@ use std::time::Duration;
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinSet;
 
+const BOOTSTRAP_BUCKETS: [u32; 7] = [90, 56, 28, 14, 7, 3, 1];
+
 #[derive(Clone, Debug)]
 struct Args {
     ticker_files: Vec<PathBuf>,
-    priority_tickers: Vec<String>,
     start_date: NaiveDate,
     end_date: NaiveDate,
-    liquidity_start_date: NaiveDate,
-    liquidity_end_date: NaiveDate,
     runtime_dir: PathBuf,
     workers: usize,
-    max_retries: usize,
-    retry_delay_seconds: u64,
-    purge_existing_checkpoints: bool,
+    lookback_days: i64,
+    event_budget: u64,
     plan_only: bool,
 }
 
@@ -46,7 +44,6 @@ struct TickerPlan {
     ticker: String,
     rebuild_start: DateTime<Utc>,
     sessions: Vec<NaiveDate>,
-    estimated_events: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -57,7 +54,6 @@ struct Counts {
     failed: usize,
     finished: usize,
     queued: usize,
-    retried: usize,
     skipped: usize,
     unavailable: usize,
 }
@@ -115,7 +111,7 @@ impl ProgressWriter {
             path,
             status_notify: Notify::new(),
             inner: Mutex::new(Progress {
-                schema_version: 4,
+                schema_version: 3,
                 status: "running".to_string(),
                 started_at: Utc::now(),
                 updated_at: Utc::now(),
@@ -220,12 +216,6 @@ impl ProgressWriter {
         self.write_locked(&mut progress)
     }
 
-    async fn retry(&self) -> Result<(), String> {
-        let mut progress = self.inner.lock().await;
-        progress.counts.retried = progress.counts.retried.saturating_add(1);
-        self.write_locked(&mut progress)
-    }
-
     async fn complete(&self, force_failed: bool) -> Result<Progress, String> {
         let mut progress = self.inner.lock().await;
         progress.status = if progress.counts.failed == 0 && !force_failed {
@@ -277,8 +267,6 @@ struct DayResult {
     event_count: u64,
     advanced_event_count: u64,
     cursor: u64,
-    authority_start: DateTime<Utc>,
-    checkpoint: qmd_core::generic_structure::GenericStructureCheckpoint,
 }
 
 struct BoundaryAdvance {
@@ -302,6 +290,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         );
     }
     fs::create_dir_all(&args.runtime_dir)?;
+    let tickers = load_tickers(&args.ticker_files).map_err(io_error)?;
+    if tickers.is_empty() {
+        return Err(io_error("ticker universe is empty"));
+    }
+
     let history_config = HistoricalGatewayConfig::from_env();
     history_config.validate().map_err(io_error)?;
     let source = HistoricalEventSource::initialize(history_config.clone())
@@ -309,31 +302,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .map_err(io_error)?;
     let gateway_config = GatewayConfig::from_env();
     let writer = IndicatorClickHouseWriter::new(gateway_config, SharedMetrics::new());
-    let automatic_tickers = source
-        .structure_campaign_tickers(
-            args.start_date,
-            args.liquidity_start_date,
-            args.liquidity_end_date,
-            Utc::now(),
-        )
-        .await
-        .map_err(io_error)?;
-    let file_tickers = load_tickers(&args.ticker_files).map_err(io_error)?;
-    let tickers = merge_ticker_universe(&args.priority_tickers, &file_tickers, &automatic_tickers)
-        .map_err(io_error)?;
-    if tickers.is_empty() {
-        return Err(io_error("ticker universe is empty"));
-    }
-    writer.initialize().await.map_err(io_error)?;
-    if args.purge_existing_checkpoints {
-        let deleted = writer
-            .purge_all_daily_structure_checkpoints()
-            .await
-            .map_err(io_error)?;
-        eprintln!(
-            "Removed all {deleted} pre-existing daily structure checkpoint row(s); this campaign will rebuild cold."
-        );
-    }
     let plans = build_plans(&args, &source, &tickers)
         .await
         .map_err(io_error)?;
@@ -345,13 +313,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     )?;
     if args.plan_only {
         println!(
-            "Validated Campaign v3 plan: tickers={} units={} plan={}",
+            "Validated Campaign v2 plan: tickers={} units={} plan={}",
             plans.len(),
             plans.iter().map(|plan| plan.sessions.len()).sum::<usize>(),
             plan_path.display()
         );
         return Ok(());
     }
+    writer.initialize().await.map_err(io_error)?;
     let progress_path = args.runtime_dir.join("campaign-status.json");
     let progress = Arc::new(ProgressWriter::new(
         progress_path.clone(),
@@ -378,25 +347,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let writer = writer.clone();
         let config = history_config.clone();
         let progress = progress.clone();
-        let max_retries = args.max_retries;
-        let retry_delay_seconds = args.retry_delay_seconds;
         tasks.spawn(async move {
             let mut errors = Vec::new();
             loop {
                 let Some(plan) = queue.lock().await.pop_front() else {
                     break;
                 };
-                if let Err(error) = run_ticker(
-                    &config,
-                    &source,
-                    &writer,
-                    &progress,
-                    plan,
-                    max_retries,
-                    retry_delay_seconds,
-                )
-                .await
-                {
+                if let Err(error) = run_ticker(&config, &source, &writer, &progress, plan).await {
                     errors.push(error);
                 }
             }
@@ -554,7 +511,7 @@ fn log_snapshot(progress: &Progress, workers: usize) -> String {
     let resolved = resolved_units(progress);
     let percentage = percentage(resolved, progress.total_units);
     format!(
-        "{} status={} progress={}/{} ({:.1}%) active={}/{} queued={} completed={} current={} retried={} unavailable={} failed={} blocked={} events={} elapsed={}",
+        "{} status={} progress={}/{} ({:.1}%) active={}/{} queued={} completed={} current={} unavailable={} failed={} blocked={} events={} elapsed={}",
         Utc::now().format("%Y-%m-%dT%H:%M:%SZ"),
         progress.status,
         resolved,
@@ -565,7 +522,6 @@ fn log_snapshot(progress: &Progress, workers: usize) -> String {
         progress.counts.queued,
         progress.counts.completed,
         progress.counts.skipped,
-        progress.counts.retried,
         progress.counts.unavailable,
         progress.counts.failed,
         progress.counts.blocked,
@@ -655,7 +611,7 @@ fn dashboard_lines(
     let mut lines = if compact {
         vec![
             format!(
-                "Checkpoint Campaign v3 | {} | v{} | {} workers",
+                "Checkpoint Campaign v2 | {} | v{} | {} workers",
                 state.to_ascii_uppercase(),
                 progress.algorithm_version,
                 workers
@@ -674,10 +630,9 @@ fn dashboard_lines(
                 percentage,
             ),
             format!(
-                "Durable {} | current {} | retries {} | failed {}",
+                "Durable {} | current {} | failed {}",
                 format_count(progress.counts.completed as u64),
                 format_count(progress.counts.skipped as u64),
-                format_count(progress.counts.retried as u64),
                 format_count(progress.counts.failed as u64),
             ),
             format!(
@@ -703,7 +658,7 @@ fn dashboard_lines(
     } else {
         vec![
             format!(
-                "Structural Checkpoint Campaign v3 | {} | algorithm v{} | workers {}",
+                "Structural Checkpoint Campaign v2 | {} | algorithm v{} | workers {}",
                 state.to_ascii_uppercase(),
                 progress.algorithm_version,
                 workers
@@ -722,10 +677,9 @@ fn dashboard_lines(
                 format_count(progress.total_units as u64)
             ),
             format!(
-                "Durable {:>8} | current {:>8} | retries {:>6} | unavailable {:>6} | failed {:>4} | blocked {:>6}",
+                "Durable {:>8} | current {:>8} | unavailable {:>6} | failed {:>4} | blocked {:>6}",
                 format_count(progress.counts.completed as u64),
                 format_count(progress.counts.skipped as u64),
-                format_count(progress.counts.retried as u64),
                 format_count(progress.counts.unavailable as u64),
                 format_count(progress.counts.failed as u64),
                 format_count(progress.counts.blocked as u64),
@@ -826,76 +780,20 @@ async fn run_ticker(
     writer: &IndicatorClickHouseWriter,
     progress: &ProgressWriter,
     plan: TickerPlan,
-    max_retries: usize,
-    retry_delay_seconds: u64,
 ) -> Result<(), String> {
-    let after_last_session = plan
-        .sessions
-        .last()
-        .copied()
-        .and_then(|date| date.succ_opt())
-        .ok_or_else(|| format!("{} has no valid campaign session boundary", plan.ticker))?;
-    let seed = writer
-        .load_daily_structure_checkpoint_before(&plan.ticker, after_last_session)
-        .await?
-        .filter(|row| row.authority_start <= plan.rebuild_start);
-    let seed = if let Some(seed) = seed {
-        let seed_end = session_end(seed.session_date)?;
-        checkpoint_revision_matches(source, &seed, seed_end)
-            .await?
-            .then_some(seed)
-    } else {
-        None
-    };
-    let seed_session = seed.as_ref().map(|row| row.session_date);
-    let seed_cursor = seed
-        .as_ref()
-        .map(|row| row.last_arrival_sequence)
-        .unwrap_or_default();
-    let mut authority_start = seed
-        .as_ref()
-        .map(|row| row.authority_start)
-        .unwrap_or(plan.rebuild_start);
-    let mut checkpoint = seed.map(|row| row.checkpoint);
-
     for (index, session_date) in plan.sessions.iter().copied().enumerate() {
-        if session_is_covered_by_seed(session_date, seed_session) {
-            progress
-                .finish_unit(&plan.ticker, session_date, "skipped", 0, 0, seed_cursor)
-                .await?;
-            continue;
-        }
         progress.activate(&plan.ticker, session_date).await?;
-        let starting_checkpoint = checkpoint.clone();
-        let mut attempt = 0_usize;
-        let result = loop {
-            match build_day_from_state(
-                config,
-                source,
-                writer,
-                &plan.ticker,
-                session_date,
-                authority_start,
-                starting_checkpoint.clone(),
-            )
-            .await
-            {
-                Ok(result) => break Ok(result),
-                Err(error) if retryable_error(&error) && attempt < max_retries => {
-                    attempt += 1;
-                    progress.retry().await?;
-                    tokio::time::sleep(Duration::from_secs(
-                        retry_delay_seconds.saturating_mul(1_u64 << (attempt - 1).min(6)),
-                    ))
-                    .await;
-                }
-                Err(error) => break Err(error),
-            }
-        };
-        match result {
+        match build_day(
+            config,
+            source,
+            writer,
+            &plan.ticker,
+            session_date,
+            plan.rebuild_start,
+        )
+        .await
+        {
             Ok(result) => {
-                authority_start = result.authority_start;
-                checkpoint = Some(result.checkpoint);
                 progress
                     .finish_unit(
                         &plan.ticker,
@@ -908,7 +806,6 @@ async fn run_ticker(
                     .await?;
             }
             Err(error) if no_history_error(&error) => {
-                checkpoint = starting_checkpoint;
                 progress
                     .finish_unit(&plan.ticker, session_date, "unavailable", 0, 0, 0)
                     .await?;
@@ -922,31 +819,59 @@ async fn run_ticker(
             }
         }
     }
-    drop(checkpoint);
     Ok(())
 }
 
-fn session_is_covered_by_seed(session_date: NaiveDate, seed_session: Option<NaiveDate>) -> bool {
-    seed_session.is_some_and(|date| session_date <= date)
-}
-
-async fn build_day_from_state(
+async fn build_day(
     config: &HistoricalGatewayConfig,
     source: &HistoricalEventSource,
     writer: &IndicatorClickHouseWriter,
     ticker: &str,
     session_date: NaiveDate,
-    authority_start: DateTime<Utc>,
-    checkpoint: Option<qmd_core::generic_structure::GenericStructureCheckpoint>,
+    rebuild_start: DateTime<Utc>,
 ) -> Result<DayResult, String> {
     let authority_end = session_end(session_date)?;
     let as_of = authority_end - ChronoDuration::microseconds(1);
-    let (checkpoint, event_count, advanced_event_count) = if let Some(checkpoint) = checkpoint {
-        let advanced = advance_to_boundary(config, source, checkpoint, as_of).await?;
+    let next_date = session_date
+        .succ_opt()
+        .ok_or_else(|| "checkpoint session date overflow".to_string())?;
+    if let Some(existing) = writer
+        .load_daily_structure_checkpoint_before(ticker, next_date)
+        .await?
+        .filter(|row| row.session_date == session_date)
+        .filter(|row| row.authority_start <= rebuild_start)
+    {
+        if checkpoint_revision_matches(source, &existing, authority_end).await? {
+            return Ok(DayResult {
+                status: "skipped",
+                event_count: 0,
+                advanced_event_count: 0,
+                cursor: existing.last_arrival_sequence,
+            });
+        }
+    }
+
+    let seed = writer
+        .load_daily_structure_checkpoint_before(ticker, session_date)
+        .await?
+        .filter(|row| row.authority_start <= rebuild_start);
+    let seed = if let Some(seed) = seed {
+        let seed_end = session_end(seed.session_date)?;
+        checkpoint_revision_matches(source, &seed, seed_end)
+            .await?
+            .then_some(seed)
+    } else {
+        None
+    };
+
+    let (checkpoint, event_count, advanced_event_count, authority_start) = if let Some(seed) = seed
+    {
+        let advanced = advance_to_boundary(config, source, seed.checkpoint, as_of).await?;
         (
             advanced.checkpoint,
             advanced.event_count,
             advanced.advanced_event_count,
+            seed.authority_start,
         )
     } else {
         let rebuilt = rebuild_structure_checkpoint(
@@ -955,7 +880,7 @@ async fn build_day_from_state(
             StructureCheckpointRebuildRequest {
                 schema_version: STRUCTURE_CHECKPOINT_REBUILD_SCHEMA_VERSION,
                 ticker: ticker.to_string(),
-                start: authority_start,
+                start: rebuild_start,
                 as_of,
                 expected_source_plan_hash: None,
                 event_limit: None,
@@ -971,6 +896,7 @@ async fn build_day_from_state(
             rebuilt.checkpoint,
             rebuilt.event_count,
             rebuilt.advanced_event_count,
+            rebuild_start,
         )
     };
 
@@ -1026,8 +952,6 @@ async fn build_day_from_state(
         event_count,
         advanced_event_count,
         cursor: checkpoint.last_arrival_sequence,
-        authority_start,
-        checkpoint,
     })
 }
 
@@ -1114,7 +1038,7 @@ async fn build_plans(
     source: &HistoricalEventSource,
     tickers: &[String],
 ) -> Result<Vec<TickerPlan>, String> {
-    let planning_start = args.start_date;
+    let planning_start = args.start_date - ChronoDuration::days(args.lookback_days);
     let planning_end = args
         .end_date
         .succ_opt()
@@ -1135,17 +1059,13 @@ async fn build_plans(
     }
     let completed_sessions = source
         .completed_session_dates_between(planning_start, args.end_date, Utc::now())
-        .await?;
-    let sessions = completed_sessions
+        .await?
         .into_iter()
-        .filter(|session| *session >= args.start_date && *session <= args.end_date)
+        .collect::<BTreeSet<_>>();
+    let target_sessions = completed_sessions
+        .range(args.start_date..=args.end_date)
+        .copied()
         .collect::<Vec<_>>();
-    if sessions.is_empty() {
-        return Err(format!(
-            "no completed market sessions exist between {} and {}",
-            args.start_date, args.end_date
-        ));
-    }
     let rebuild_start = New_York
         .from_local_datetime(
             &planning_start.and_time(
@@ -1159,15 +1079,60 @@ async fn build_plans(
     Ok(tickers
         .iter()
         .map(|ticker| {
-            let (estimated_events, _) = estimates.get(ticker).copied().unwrap_or_default();
+            let (total, maximum) = estimates.get(ticker).copied().unwrap_or_default();
+            let bootstrap_days = bootstrap_days(total, maximum, args.event_budget);
+            let mut sessions = target_sessions.iter().copied().collect::<BTreeSet<_>>();
+            if bootstrap_days > 0 && planning_start < args.start_date {
+                let mut cursor = planning_start + ChronoDuration::days(bootstrap_days as i64);
+                while cursor < args.start_date {
+                    if let Some(session) =
+                        previous_session(&completed_sessions, cursor, planning_start)
+                    {
+                        sessions.insert(session);
+                    }
+                    cursor += ChronoDuration::days(bootstrap_days as i64);
+                }
+                if let Some(session) = previous_session(
+                    &completed_sessions,
+                    args.start_date - ChronoDuration::days(1),
+                    planning_start,
+                ) {
+                    sessions.insert(session);
+                }
+            }
             TickerPlan {
                 ticker: ticker.clone(),
                 rebuild_start,
-                sessions: sessions.clone(),
-                estimated_events,
+                sessions: sessions.into_iter().collect(),
             }
         })
         .collect())
+}
+
+fn bootstrap_days(total: u64, maximum_session: u64, event_budget: u64) -> u32 {
+    if total <= event_budget || maximum_session == 0 {
+        return 0;
+    }
+    let safe_sessions = (event_budget / maximum_session).max(1);
+    let safe_calendar_days = (safe_sessions * 7 / 5).max(1);
+    BOOTSTRAP_BUCKETS
+        .into_iter()
+        .find(|days| u64::from(*days) <= safe_calendar_days)
+        .unwrap_or(1)
+}
+
+fn previous_session(
+    sessions: &BTreeSet<NaiveDate>,
+    mut date: NaiveDate,
+    lower_bound: NaiveDate,
+) -> Option<NaiveDate> {
+    while date >= lower_bound {
+        if sessions.contains(&date) {
+            return Some(date);
+        }
+        date = date.pred_opt()?;
+    }
+    None
 }
 
 fn session_end(session_date: NaiveDate) -> Result<DateTime<Utc>, String> {
@@ -1187,54 +1152,28 @@ fn no_history_error(error: &str) -> bool {
     error.contains("found no canonical events")
 }
 
-fn retryable_error(error: &str) -> bool {
-    let error = error.to_ascii_lowercase();
-    [
-        "429",
-        "502",
-        "503",
-        "504",
-        "timed out",
-        "timeout",
-        "connection reset",
-        "connection aborted",
-        "unexpected eof",
-        "error decoding response body",
-        "temporarily unavailable",
-        "memory limit",
-        "too many simultaneous queries",
-    ]
-    .iter()
-    .any(|marker| error.contains(marker))
-}
-
 fn load_tickers(paths: &[PathBuf]) -> Result<Vec<String>, String> {
-    let mut tickers = Vec::new();
-    let mut seen = HashSet::new();
+    let mut tickers = BTreeSet::new();
     for path in paths {
         let text = fs::read_to_string(path)
             .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
         match serde_json::from_str::<Value>(&text) {
-            Ok(value) => collect_json_tickers(&value, &mut tickers, &mut seen)?,
+            Ok(value) => collect_json_tickers(&value, &mut tickers)?,
             Err(_) => {
                 for line in text.lines() {
-                    insert_ticker(line, &mut tickers, &mut seen)?;
+                    insert_ticker(line, &mut tickers)?;
                 }
             }
         }
     }
-    Ok(tickers)
+    Ok(tickers.into_iter().collect())
 }
 
-fn collect_json_tickers(
-    value: &Value,
-    tickers: &mut Vec<String>,
-    seen: &mut HashSet<String>,
-) -> Result<(), String> {
+fn collect_json_tickers(value: &Value, tickers: &mut BTreeSet<String>) -> Result<(), String> {
     match value {
         Value::Array(rows) => {
             for row in rows {
-                collect_json_tickers(row, tickers, seen)?;
+                collect_json_tickers(row, tickers)?;
             }
         }
         Value::Object(row) => {
@@ -1244,24 +1183,20 @@ fn collect_json_tickers(
                 .or_else(|| row.get("sym"))
                 .and_then(Value::as_str)
             {
-                insert_ticker(value, tickers, seen)?;
+                insert_ticker(value, tickers)?;
             } else if let Some(rows) = row.get("rows").or_else(|| row.get("tickers")) {
-                collect_json_tickers(rows, tickers, seen)?;
+                collect_json_tickers(rows, tickers)?;
             }
         }
         Value::String(value) => {
-            insert_ticker(value, tickers, seen)?;
+            insert_ticker(value, tickers)?;
         }
         _ => {}
     }
     Ok(())
 }
 
-fn insert_ticker(
-    value: &str,
-    tickers: &mut Vec<String>,
-    seen: &mut HashSet<String>,
-) -> Result<(), String> {
+fn insert_ticker(value: &str, tickers: &mut BTreeSet<String>) -> Result<(), String> {
     let ticker = value.trim().to_ascii_uppercase();
     if ticker.is_empty() {
         return Ok(());
@@ -1273,44 +1208,19 @@ fn insert_ticker(
     {
         return Err(format!("invalid ticker in universe: {value:?}"));
     }
-    if seen.insert(ticker.clone()) {
-        tickers.push(ticker);
-    }
+    tickers.insert(ticker);
     Ok(())
-}
-
-fn merge_ticker_universe(
-    priority_tickers: &[String],
-    file_tickers: &[String],
-    automatic_tickers: &[StructureCampaignTicker],
-) -> Result<Vec<String>, String> {
-    let mut tickers = Vec::new();
-    let mut seen = HashSet::new();
-    for ticker in priority_tickers {
-        insert_ticker(ticker, &mut tickers, &mut seen)?;
-    }
-    for row in automatic_tickers {
-        insert_ticker(&row.ticker, &mut tickers, &mut seen)?;
-    }
-    for ticker in file_tickers {
-        insert_ticker(ticker, &mut tickers, &mut seen)?;
-    }
-    Ok(tickers)
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut values = env::args().skip(1);
     let mut ticker_files = Vec::new();
-    let mut priority_tickers = Vec::new();
     let mut start_date = None;
     let mut end_date = None;
-    let mut liquidity_start_date = None;
-    let mut liquidity_end_date = None;
     let mut runtime_dir = None;
     let mut workers = 4_usize;
-    let mut max_retries = 5_usize;
-    let mut retry_delay_seconds = 2_u64;
-    let mut purge_existing_checkpoints = false;
+    let mut lookback_days = 180_i64;
+    let mut event_budget = 3_500_000_u64;
     let mut plan_only = false;
     while let Some(argument) = values.next() {
         let value = |name: &str, values: &mut std::iter::Skip<std::env::Args>| {
@@ -1320,33 +1230,24 @@ fn parse_args() -> Result<Args, String> {
         };
         match argument.as_str() {
             "--ticker-file" => ticker_files.push(PathBuf::from(value(&argument, &mut values)?)),
-            "--priority-ticker" => priority_tickers.push(value(&argument, &mut values)?),
             "--start-date" => start_date = Some(parse_date(&value(&argument, &mut values)?)?),
             "--end-date" => end_date = Some(parse_date(&value(&argument, &mut values)?)?),
-            "--liquidity-start-date" => {
-                liquidity_start_date = Some(parse_date(&value(&argument, &mut values)?)?)
-            }
-            "--liquidity-end-date" => {
-                liquidity_end_date = Some(parse_date(&value(&argument, &mut values)?)?)
-            }
             "--runtime-dir" => runtime_dir = Some(PathBuf::from(value(&argument, &mut values)?)),
             "--workers" => workers = parse_number(&argument, &value(&argument, &mut values)?)?,
-            "--max-retries" => {
-                max_retries = parse_number(&argument, &value(&argument, &mut values)?)?
+            "--lookback-days" => {
+                lookback_days = parse_number(&argument, &value(&argument, &mut values)?)?
             }
-            "--retry-delay-seconds" => {
-                retry_delay_seconds = parse_number(&argument, &value(&argument, &mut values)?)?
+            "--event-budget" => {
+                event_budget = parse_number(&argument, &value(&argument, &mut values)?)?
             }
-            "--purge-existing-checkpoints" => purge_existing_checkpoints = true,
             "--plan-only" => plan_only = true,
             "--help" | "-h" => {
-                println!("structure-checkpoint-campaign v3");
+                println!("structure-checkpoint-campaign");
+                println!("  --ticker-file PATH [--ticker-file PATH]");
                 println!("  --start-date YYYY-MM-DD --end-date YYYY-MM-DD");
-                println!("  --runtime-dir PATH [--workers 4]");
-                println!("  [--priority-ticker SUGP] [--ticker-file PATH]");
-                println!("  [--liquidity-start-date YYYY-MM-DD --liquidity-end-date YYYY-MM-DD]");
-                println!("  [--max-retries 5] [--retry-delay-seconds 2]");
-                println!("  [--purge-existing-checkpoints] [--plan-only]");
+                println!("  --runtime-dir PATH [--workers 4] [--lookback-days 180]");
+                println!("  [--event-budget 3500000]");
+                println!("  [--plan-only]");
                 std::process::exit(0);
             }
             _ => return Err(format!("unknown argument {argument:?}; use --help")),
@@ -1357,34 +1258,26 @@ fn parse_args() -> Result<Args, String> {
     if start_date > end_date {
         return Err("--start-date must be on or before --end-date".to_string());
     }
+    if ticker_files.is_empty() {
+        return Err("at least one --ticker-file is required".to_string());
+    }
     if !(1..=32).contains(&workers) {
         return Err("--workers must be between 1 and 32".to_string());
     }
-    if max_retries > 10 {
-        return Err("--max-retries must be between 0 and 10".to_string());
+    if !(2..=3650).contains(&lookback_days) {
+        return Err("--lookback-days must be between 2 and 3650".to_string());
     }
-    if !(1..=60).contains(&retry_delay_seconds) {
-        return Err("--retry-delay-seconds must be between 1 and 60".to_string());
-    }
-    let default_liquidity_start = NaiveDate::from_ymd_opt(end_date.year(), end_date.month(), 1)
-        .ok_or_else(|| "invalid default liquidity month".to_string())?;
-    let liquidity_start_date = liquidity_start_date.unwrap_or(default_liquidity_start);
-    let liquidity_end_date = liquidity_end_date.unwrap_or(end_date);
-    if liquidity_start_date > liquidity_end_date {
-        return Err("--liquidity-start-date must not be after --liquidity-end-date".to_string());
+    if event_budget == 0 {
+        return Err("--event-budget must be positive".to_string());
     }
     Ok(Args {
         ticker_files,
-        priority_tickers,
         start_date,
         end_date,
-        liquidity_start_date,
-        liquidity_end_date,
         runtime_dir: runtime_dir.ok_or_else(|| "--runtime-dir is required".to_string())?,
         workers,
-        max_retries,
-        retry_delay_seconds,
-        purge_existing_checkpoints,
+        lookback_days,
+        event_budget,
         plan_only,
     })
 }
@@ -1414,71 +1307,26 @@ fn io_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sy
 #[cfg(test)]
 mod tests {
     use super::{
-        dashboard_frame, dashboard_lines, insert_ticker, log_snapshot, merge_ticker_universe,
-        next_advance_boundary, retryable_error, session_is_covered_by_seed, Counts, Progress,
-        ProgressWriter, RecentUnit, TickerPlan, GENERIC_STRUCTURE_ALGORITHM_VERSION,
+        bootstrap_days, dashboard_frame, dashboard_lines, insert_ticker, log_snapshot,
+        next_advance_boundary, Counts, Progress, ProgressWriter, RecentUnit, TickerPlan,
     };
     use chrono::{NaiveDate, TimeZone, Utc};
-    use qmd_history_gateway::source::StructureCampaignTicker;
-    use std::collections::{BTreeMap, HashSet, VecDeque};
+    use std::collections::{BTreeMap, BTreeSet, VecDeque};
     use std::path::PathBuf;
 
     #[test]
+    fn planner_uses_bounded_bootstrap_intervals() {
+        assert_eq!(bootstrap_days(3_000_000, 200_000, 3_500_000), 0);
+        assert_eq!(bootstrap_days(10_000_000, 100_000, 3_500_000), 28);
+        assert_eq!(bootstrap_days(10_000_000, 1_000_000, 3_500_000), 3);
+    }
+
+    #[test]
     fn ticker_universe_is_normalized_and_validated() {
-        let mut tickers = Vec::new();
-        let mut seen = HashSet::new();
-        insert_ticker(" sugp ", &mut tickers, &mut seen).unwrap();
-        insert_ticker("SUGP", &mut tickers, &mut seen).unwrap();
-        assert_eq!(tickers, vec!["SUGP"]);
-    }
-
-    #[test]
-    fn explicit_priorities_precede_automatic_liquidity_order_and_file_extras() {
-        let automatic = vec![
-            StructureCampaignTicker {
-                currently_active: true,
-                priority_dollar_volume: 20_000_000.0,
-                ticker: "AAPL".to_string(),
-            },
-            StructureCampaignTicker {
-                currently_active: false,
-                priority_dollar_volume: 1_000_000.0,
-                ticker: "OLD".to_string(),
-            },
-        ];
-        let merged = merge_ticker_universe(
-            &["SUGP".to_string(), "JUNS".to_string()],
-            &["AAPL".to_string(), "EXTRA".to_string()],
-            &automatic,
-        )
-        .unwrap();
-        assert_eq!(merged, vec!["SUGP", "JUNS", "AAPL", "OLD", "EXTRA"]);
-    }
-
-    #[test]
-    fn completed_seed_skips_only_covered_sessions() {
-        let seed = NaiveDate::from_ymd_opt(2026, 8, 20).unwrap();
-        assert!(session_is_covered_by_seed(
-            NaiveDate::from_ymd_opt(2026, 8, 20).unwrap(),
-            Some(seed)
-        ));
-        assert!(!session_is_covered_by_seed(
-            NaiveDate::from_ymd_opt(2026, 8, 21).unwrap(),
-            Some(seed)
-        ));
-        assert!(!session_is_covered_by_seed(
-            NaiveDate::from_ymd_opt(2026, 8, 20).unwrap(),
-            None
-        ));
-    }
-
-    #[test]
-    fn only_transient_source_failures_are_retried() {
-        assert!(retryable_error(
-            "ClickHouse 502 error decoding response body"
-        ));
-        assert!(retryable_error("memory limit exceeded"));
-        assert!(!retryable_error("checkpoint algorithm version mismatch"));
+        let mut tickers = BTreeSet::new();
+        insert_ticker(" sugp ", &mut tickers).unwrap();
+        insert_ticker("SUGP", &mut tickers).unwrap();
+        assert_eq!(tickers.into_iter().collect::<Vec<_>>(), vec!["SUGP"]);
     }
 
     #[test]
@@ -1502,11 +1350,11 @@ mod tests {
     fn dashboard_preserves_critical_state_at_compact_width() {
         let now = Utc.with_ymd_and_hms(2026, 9, 2, 20, 0, 0).unwrap();
         let progress = Progress {
-            schema_version: 4,
+            schema_version: 3,
             status: "running".to_string(),
             started_at: now - chrono::Duration::minutes(5),
             updated_at: now,
-            algorithm_version: GENERIC_STRUCTURE_ALGORITHM_VERSION,
+            algorithm_version: 15,
             start_date: NaiveDate::from_ymd_opt(2026, 8, 21).unwrap(),
             end_date: NaiveDate::from_ymd_opt(2026, 8, 31).unwrap(),
             ticker_count: 13_888,
@@ -1515,7 +1363,6 @@ mod tests {
                 active: 2,
                 completed: 10_000,
                 queued: 190_691,
-                retried: 7,
                 skipped: 1_000,
                 failed: 1,
                 blocked: 2,
@@ -1584,7 +1431,6 @@ mod tests {
                 ticker: "SUGP".to_string(),
                 rebuild_start: Utc.with_ymd_and_hms(2026, 2, 22, 9, 0, 0).unwrap(),
                 sessions: vec![date],
-                estimated_events: 123,
             }],
         );
         writer.activate("SUGP", date).await.unwrap();

@@ -5,7 +5,7 @@ use chrono_tz::America::New_York;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
-pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 16;
+pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 15;
 pub const STRUCTURE_TIMEFRAMES: [(&str, i64); 10] = [
     ("100ms", 100),
     ("1s", 1_000),
@@ -143,6 +143,8 @@ pub struct UnifiedStructureSource {
     pub price: f64,
     pub pivot_at_ms: i64,
     pub confirmed_at_ms: i64,
+    pub strength: f64,
+    pub confidence: f64,
     pub total_volume: f64,
     #[serde(default)]
     pub buy_volume: f64,
@@ -172,6 +174,8 @@ pub struct UnifiedStructureLevel {
     pub price: f64,
     pub lower: f64,
     pub upper: f64,
+    pub salience: f64,
+    pub confidence: f64,
     pub source_count: usize,
     pub independent_pivot_count: usize,
     pub timeframes: Vec<String>,
@@ -190,6 +194,11 @@ pub struct UnifiedStructureLevel {
     /// more seller-initiated volume. It is evidence, not a return forecast.
     #[serde(default)]
     pub pressure_bias: f64,
+    /// Evidence-derived chance that the next encounter produces a meaningful
+    /// reaction at this price area. This is deliberately not a calibrated
+    /// directional forecast.
+    #[serde(default)]
+    pub reaction_probability: f64,
     /// Beta-smoothed evidence that the level holds in its current role.
     #[serde(default)]
     pub hold_probability: f64,
@@ -197,6 +206,10 @@ pub struct UnifiedStructureLevel {
     /// level failure frequency and is not a forecast of the next price move.
     #[serde(default)]
     pub break_probability: f64,
+    /// Evidence-weighted likelihood of a meaningful rejection or role flip at
+    /// the range. It is a structural reaction estimate, not direction alpha.
+    #[serde(default)]
+    pub reversal_probability: f64,
     #[serde(default)]
     pub touch_count: u32,
     #[serde(default)]
@@ -946,12 +959,9 @@ impl GenericStructureEngine {
         size: f64,
         emitted: &mut Vec<GenericStructureEvent>,
     ) {
+        let tick = price_tick(price);
         let mut pending = Vec::new();
         for level in &mut self.levels {
-            // Retest geometry belongs to the fixed level, not to the latest
-            // trade. This matters when the two prices straddle a tick regime
-            // boundary such as $1.
-            let tick = price_tick(level.price);
             let lifecycle = level.lifecycle.clone();
             match lifecycle {
                 LevelLifecycle::Active => {
@@ -1362,11 +1372,10 @@ impl GenericStructureEngine {
             ));
             level.created_at_ms = level.created_at_ms.max(1).min(ts.timestamp_millis());
             level.confirmed_at_ms = ts.timestamp_millis();
-            // The unified episode inherits the causal lifecycle evidence that
-            // made its event-native source eligible. Later candidate refreshes
-            // do not re-add these counters, so this establishes one baseline
-            // without double counting.
-            level.touch_count = level.touch_count.max(1);
+            level.touch_count = 1;
+            level.hold_count = 0;
+            level.break_count = 0;
+            level.role_flip_count = 0;
             level.last_test_at_ms = ts.timestamp_millis();
             let last_relation = if reference < level.lower {
                 -1
@@ -1427,15 +1436,8 @@ impl GenericStructureEngine {
             .collect::<Vec<_>>();
         unified_levels.sort_by(|left, right| {
             right
-                .hold_probability
-                .total_cmp(&left.hold_probability)
-                .then_with(|| {
-                    right
-                        .independent_pivot_count
-                        .cmp(&left.independent_pivot_count)
-                })
-                .then_with(|| right.role_flip_count.cmp(&left.role_flip_count))
-                .then_with(|| right.hold_count.cmp(&left.hold_count))
+                .salience
+                .total_cmp(&left.salience)
                 .then_with(|| {
                     (left.price - reference)
                         .abs()
@@ -2029,7 +2031,6 @@ fn unified_structure_levels(
     // quadratic in accumulated levels. Rank with lifecycle metadata first,
     // then perform footprint-aware clustering only for the strongest bounded
     // candidates on each side.
-    let role_tolerance = (price_tick(reference) * 2.0).max(reference * 0.0005);
     let mut book_candidates = level_book
         .iter()
         // A first cross is only a tentative breach. Keep projecting the band
@@ -2037,39 +2038,19 @@ fn unified_structure_levels(
         .filter(|level| level.is_unified_projection_visible() && level.price > 0.0)
         .collect::<Vec<_>>();
     book_candidates.sort_by(|left, right| {
-        let left_role_coherent = (left.side > 0 && reference >= left.lower - role_tolerance)
-            || (left.side < 0 && reference <= left.upper + role_tolerance);
-        let right_role_coherent = (right.side > 0 && reference >= right.lower - role_tolerance)
-            || (right.side < 0 && reference <= right.upper + role_tolerance);
         left.side
             .cmp(&right.side)
-            .then_with(|| right_role_coherent.cmp(&left_role_coherent))
-            .then_with(|| {
-                right
-                    .role_flip_count
-                    .min(3)
-                    .cmp(&left.role_flip_count.min(3))
-            })
-            .then_with(|| right.hold_count.min(5).cmp(&left.hold_count.min(5)))
-            .then_with(|| {
-                right
-                    .promotions
-                    .len()
-                    .min(8)
-                    .cmp(&left.promotions.len().min(8))
-            })
-            .then_with(|| right.touch_count.min(6).cmp(&left.touch_count.min(6)))
-            .then_with(|| {
-                left.accepted_break_count
-                    .min(3)
-                    .cmp(&right.accepted_break_count.min(3))
-            })
+            .then_with(|| right.role_flip_count.cmp(&left.role_flip_count))
+            .then_with(|| right.hold_count.cmp(&left.hold_count))
+            .then_with(|| right.touch_count.cmp(&left.touch_count))
+            .then_with(|| right.promotions.len().cmp(&left.promotions.len()))
+            .then_with(|| left.accepted_break_count.cmp(&right.accepted_break_count))
+            .then_with(|| right.last_test_at.cmp(&left.last_test_at))
             .then_with(|| {
                 (left.price - reference)
                     .abs()
                     .total_cmp(&(right.price - reference).abs())
             })
-            .then_with(|| right.last_test_at.cmp(&left.last_test_at))
             .then_with(|| left.level_id.cmp(&right.level_id))
     });
     let mut book_side_counts = HashMap::<i8, usize>::new();
@@ -2085,6 +2066,7 @@ fn unified_structure_levels(
             }
         })
         .map(|level| {
+            let (strength, confidence) = level_evidence(level);
             let (total_volume, buy_volume, sell_volume, neutral_volume, trade_count) =
                 level.footprint.values().fold(
                     (0.0, 0.0, 0.0, 0.0, 0_u64),
@@ -2106,6 +2088,8 @@ fn unified_structure_levels(
                     price: level.price,
                     pivot_at_ms: level.pivot_at.timestamp_millis(),
                     confirmed_at_ms: level.confirmed_at.timestamp_millis(),
+                    strength,
+                    confidence,
                     total_volume,
                     buy_volume,
                     sell_volume,
@@ -2142,6 +2126,8 @@ fn unified_structure_levels(
                             .confirmed_at
                             .map(|value| value.timestamp_millis())
                             .unwrap_or_default(),
+                        strength: swing.strength.clamp(0.0, 1.0),
+                        confidence: swing.confidence.clamp(0.0, 1.0),
                         total_volume: swing.total_volume.max(0.0),
                         buy_volume: 0.0,
                         sell_volume: 0.0,
@@ -2240,15 +2226,8 @@ fn unified_structure_levels(
     levels.retain(is_major_unified_level);
     levels.sort_by(|left, right| {
         right
-            .hold_probability
-            .total_cmp(&left.hold_probability)
-            .then_with(|| {
-                right
-                    .independent_pivot_count
-                    .cmp(&left.independent_pivot_count)
-            })
-            .then_with(|| right.role_flip_count.cmp(&left.role_flip_count))
-            .then_with(|| right.hold_count.cmp(&left.hold_count))
+            .salience
+            .total_cmp(&left.salience)
             .then_with(|| {
                 (left.price - reference)
                     .abs()
@@ -2276,6 +2255,7 @@ fn is_major_unified_level(level: &UnifiedStructureLevel) -> bool {
         .sources
         .iter()
         .any(|source| source.source_kind == "timeframe_swing")
+        || level.reaction_probability >= 0.55
         || level.independent_pivot_count >= 2
         || level.hold_count >= 2
         || level.role_flip_count > 0
@@ -2297,31 +2277,50 @@ fn unified_structure_level(
     let mut independent = BTreeMap::<(i64, i64), &UnifiedStructureSource>::new();
     for source in &sources {
         let identity = (price_key(source.price), source.pivot_at_ms);
-        independent.entry(identity).or_insert(source);
-    }
-    let mut independent_book_sources = BTreeMap::<(i64, i64), &UnifiedStructureSource>::new();
-    for source in sources
-        .iter()
-        .filter(|source| source.source_kind == "level_book")
-    {
-        independent_book_sources
-            .entry((price_key(source.price), source.pivot_at_ms))
+        independent
+            .entry(identity)
+            .and_modify(|current| {
+                if source.confidence > current.confidence {
+                    *current = source;
+                }
+            })
             .or_insert(source);
     }
-    let book_sources = independent_book_sources
+    let weight_total = independent
         .values()
+        .map(|source| (source.strength * source.confidence).max(0.05))
+        .sum::<f64>()
+        .max(1e-9);
+    let price = independent
+        .values()
+        .map(|source| source.price * (source.strength * source.confidence).max(0.05))
+        .sum::<f64>()
+        / weight_total;
+    let source_qualities = independent
+        .values()
+        .map(|source| (source.strength * source.confidence).clamp(0.0, 1.0))
+        .collect::<Vec<_>>();
+    let mean_quality = source_qualities.iter().sum::<f64>() / source_qualities.len().max(1) as f64;
+    let best_quality = source_qualities.iter().copied().fold(0.0_f64, f64::max);
+    let evidence_confidence = independent
+        .values()
+        .map(|source| source.confidence * (source.strength * source.confidence).max(0.05))
+        .sum::<f64>()
+        / weight_total;
+    let pivot_breadth = ((1.0 + independent.len() as f64).ln() / 9.0_f64.ln()).clamp(0.0, 1.0);
+    let mut independent_timeframes = independent
+        .values()
+        .map(|source| source.timeframe.as_str())
+        .collect::<Vec<_>>();
+    independent_timeframes.sort_unstable();
+    independent_timeframes.dedup();
+    let scale_diversity =
+        ((1.0 + independent_timeframes.len() as f64).ln() / 7.0_f64.ln()).clamp(0.0, 1.0);
+    let book_sources = independent
+        .values()
+        .filter(|source| source.source_kind == "level_book")
         .copied()
         .collect::<Vec<_>>();
-    let anchor_source = book_sources
-        .iter()
-        .copied()
-        .min_by_key(|source| (source.pivot_at_ms, source.level_id))
-        .or_else(|| {
-            sources
-                .iter()
-                .min_by_key(|source| (source.pivot_at_ms, source.level_id))
-        });
-    let price = anchor_source.map(|source| source.price).unwrap_or_default();
     let touch_count = book_sources
         .iter()
         .map(|source| source.touch_count)
@@ -2342,8 +2341,33 @@ fn unified_structure_level(
         .map(|source| source.role_flip_count)
         .max()
         .unwrap_or_default();
+    let tests = touch_count.saturating_add(break_count) as f64;
+    let persistence = 1.0 - (-tests / 4.0).exp();
+    let flip_importance = 1.0 - (-(role_flip_count as f64)).exp();
+    // Evidence channels use explicit diminishing weights instead of a noisy-OR.
+    // The previous product-of-complements made almost every multi-source level
+    // exceed 99%, destroying rank discrimination and crowding the book.
+    let salience = (0.30 * mean_quality
+        + 0.20 * best_quality
+        + 0.18 * pivot_breadth
+        + 0.14 * scale_diversity
+        + 0.12 * persistence
+        + 0.06 * flip_importance)
+        .clamp(0.0, 1.0);
+    let confidence = (0.55 * evidence_confidence
+        + 0.20 * scale_diversity
+        + 0.15 * pivot_breadth
+        + 0.10 * persistence)
+        .clamp(0.0, 1.0);
     let hold_probability = ((2.0 + hold_count as f64)
         / (4.0 + hold_count as f64 + break_count as f64))
+        .clamp(0.0, 1.0);
+    let reaction_probability = (0.28 * salience
+        + 0.22 * confidence
+        + 0.24 * hold_probability
+        + 0.14 * persistence
+        + 0.07 * flip_importance
+        + 0.05 * pivot_breadth)
         .clamp(0.0, 1.0);
     let geometry_sources = sources
         .iter()
@@ -2412,6 +2436,9 @@ fn unified_structure_level(
         0.0
     };
     let break_probability = (1.0 - hold_probability).clamp(0.0, 1.0);
+    let reversal_probability = (reaction_probability
+        * (0.65 + 0.20 * pressure_bias.abs() + 0.15 * flip_importance))
+        .clamp(0.0, 1.0);
     let last_test_at_ms = sources
         .iter()
         .map(|source| source.last_test_at_ms)
@@ -2421,8 +2448,17 @@ fn unified_structure_level(
     // membership can change as new confirmations join a cluster; allowing one
     // of those sources to become the anchor would make the same long-lived
     // level appear to be a new object.
-    let anchor_level_id = anchor_source
+    let anchor_level_id = sources
+        .iter()
+        .filter(|source| source.source_kind == "level_book")
+        .min_by_key(|source| (source.pivot_at_ms, source.level_id))
         .map(|source| source.level_id)
+        .or_else(|| {
+            sources
+                .iter()
+                .min_by_key(|source| (source.pivot_at_ms, source.level_id))
+                .map(|source| source.level_id)
+        })
         .unwrap_or_default();
     let unified_level_id = stable_hash(&format!("{sym}|unified-book|{anchor_level_id}"));
     UnifiedStructureLevel {
@@ -2431,6 +2467,8 @@ fn unified_structure_level(
         price,
         lower,
         upper,
+        salience: salience.clamp(0.0, 1.0),
+        confidence,
         source_count: sources.len(),
         independent_pivot_count: independent.len(),
         timeframes,
@@ -2442,8 +2480,10 @@ fn unified_structure_level(
         neutral_volume,
         trade_count,
         pressure_bias,
+        reaction_probability,
         hold_probability,
         break_probability,
+        reversal_probability,
         touch_count,
         hold_count,
         break_count,
@@ -2459,6 +2499,8 @@ fn merge_unified_candidate(track: &mut UnifiedLevelTrack, candidate: UnifiedStru
     // Geometry is deliberately fixed for the role episode. New nearby swings
     // reinforce the level book without rewriting its earlier causal price
     // range or producing a new chart segment.
+    track.level.salience = track.level.salience.max(candidate.salience);
+    track.level.confidence = track.level.confidence.max(candidate.confidence);
     track.level.confirmed_at_ms = track.level.confirmed_at_ms.max(candidate.confirmed_at_ms);
     track.level.last_test_at_ms = track.level.last_test_at_ms.max(candidate.last_test_at_ms);
     for timeframe in candidate.timeframes {
@@ -2497,7 +2539,9 @@ fn merge_unified_candidate(track: &mut UnifiedLevelTrack, candidate: UnifiedStru
             .role_flip_count
             .cmp(&left.role_flip_count)
             .then_with(|| right.hold_count.cmp(&left.hold_count))
-            .then_with(|| right.touch_count.cmp(&left.touch_count))
+            .then_with(|| {
+                (right.strength * right.confidence).total_cmp(&(left.strength * left.confidence))
+            })
             .then_with(|| right.last_test_at_ms.cmp(&left.last_test_at_ms))
             .then_with(|| left.level_id.cmp(&right.level_id))
     });
@@ -2510,6 +2554,11 @@ fn refresh_unified_track_evidence(track: &mut UnifiedLevelTrack) {
     for source in &track.level.sources {
         independent
             .entry((price_key(source.price), source.pivot_at_ms))
+            .and_modify(|current| {
+                if source.confidence > current.confidence {
+                    *current = source;
+                }
+            })
             .or_insert(source);
     }
     track.level.source_count = track.level.sources.len();
@@ -2517,40 +2566,70 @@ fn refresh_unified_track_evidence(track: &mut UnifiedLevelTrack) {
     if independent.is_empty() {
         return;
     }
-    let mut independent_book_sources = BTreeMap::<(i64, i64), &UnifiedStructureSource>::new();
-    for source in track
-        .level
-        .sources
-        .iter()
-        .filter(|source| source.source_kind == "level_book")
-    {
-        independent_book_sources
-            .entry((price_key(source.price), source.pivot_at_ms))
-            .or_insert(source);
-    }
-    track.level.total_volume = independent_book_sources
-        .values()
-        .map(|source| source.total_volume)
-        .sum();
-    track.level.buy_volume = independent_book_sources
-        .values()
-        .map(|source| source.buy_volume)
-        .sum();
-    track.level.sell_volume = independent_book_sources
-        .values()
-        .map(|source| source.sell_volume)
-        .sum();
-    track.level.neutral_volume = independent_book_sources
+    track.level.total_volume = independent.values().map(|source| source.total_volume).sum();
+    track.level.buy_volume = independent.values().map(|source| source.buy_volume).sum();
+    track.level.sell_volume = independent.values().map(|source| source.sell_volume).sum();
+    track.level.neutral_volume = independent
         .values()
         .map(|source| source.neutral_volume)
         .sum();
-    track.level.trade_count = independent_book_sources
+    track.level.trade_count = independent.values().fold(0_u64, |total, source| {
+        total.saturating_add(source.trade_count)
+    });
+    let weight_total = independent
         .values()
-        .fold(0_u64, |total, source| {
-            total.saturating_add(source.trade_count)
-        });
+        .map(|source| (source.strength * source.confidence).max(0.05))
+        .sum::<f64>()
+        .max(1e-9);
+    let mean_quality = independent
+        .values()
+        .map(|source| (source.strength * source.confidence).clamp(0.0, 1.0))
+        .sum::<f64>()
+        / independent.len().max(1) as f64;
+    let best_quality = independent
+        .values()
+        .map(|source| (source.strength * source.confidence).clamp(0.0, 1.0))
+        .fold(0.0_f64, f64::max);
+    let evidence_confidence = independent
+        .values()
+        .map(|source| source.confidence * (source.strength * source.confidence).max(0.05))
+        .sum::<f64>()
+        / weight_total;
+    let pivot_breadth = ((1.0 + independent.len() as f64).ln() / 9.0_f64.ln()).clamp(0.0, 1.0);
+    let mut timeframes = independent
+        .values()
+        .map(|source| source.timeframe.as_str())
+        .collect::<Vec<_>>();
+    timeframes.sort_unstable();
+    timeframes.dedup();
+    let scale_diversity = ((1.0 + timeframes.len() as f64).ln() / 7.0_f64.ln()).clamp(0.0, 1.0);
+    let tests = track
+        .level
+        .touch_count
+        .saturating_add(track.level.break_count) as f64;
+    let persistence = 1.0 - (-tests / 4.0).exp();
+    let flip_importance = 1.0 - (-(track.level.role_flip_count as f64)).exp();
+    track.level.salience = (0.30 * mean_quality
+        + 0.20 * best_quality
+        + 0.18 * pivot_breadth
+        + 0.14 * scale_diversity
+        + 0.12 * persistence
+        + 0.06 * flip_importance)
+        .clamp(0.0, 1.0);
+    track.level.confidence = (0.55 * evidence_confidence
+        + 0.20 * scale_diversity
+        + 0.15 * pivot_breadth
+        + 0.10 * persistence)
+        .clamp(0.0, 1.0);
     track.level.hold_probability = ((2.0 + track.level.hold_count as f64)
         / (4.0 + track.level.hold_count as f64 + track.level.break_count as f64))
+        .clamp(0.0, 1.0);
+    track.level.reaction_probability = (0.28 * track.level.salience
+        + 0.22 * track.level.confidence
+        + 0.24 * track.level.hold_probability
+        + 0.14 * persistence
+        + 0.07 * flip_importance
+        + 0.05 * pivot_breadth)
         .clamp(0.0, 1.0);
     track.level.break_probability = (1.0 - track.level.hold_probability).clamp(0.0, 1.0);
     let directional_volume = track.level.buy_volume + track.level.sell_volume;
@@ -2559,6 +2638,9 @@ fn refresh_unified_track_evidence(track: &mut UnifiedLevelTrack) {
     } else {
         0.0
     };
+    track.level.reversal_probability = (track.level.reaction_probability
+        * (0.65 + 0.20 * track.level.pressure_bias.abs() + 0.15 * flip_importance))
+        .clamp(0.0, 1.0);
 }
 
 fn consolidate_unified_tracks(tracks: &mut Vec<UnifiedLevelTrack>) {
@@ -2622,17 +2704,7 @@ fn prune_unified_tracks(tracks: &mut Vec<UnifiedLevelTrack>, reference: f64) {
         left_visible
             .cmp(&right_visible)
             .then_with(|| left_pending.cmp(&right_pending))
-            .then_with(|| {
-                left.level
-                    .hold_probability
-                    .total_cmp(&right.level.hold_probability)
-            })
-            .then_with(|| {
-                left.level
-                    .independent_pivot_count
-                    .cmp(&right.level.independent_pivot_count)
-            })
-            .then_with(|| left.level.role_flip_count.cmp(&right.level.role_flip_count))
+            .then_with(|| left.level.salience.total_cmp(&right.level.salience))
             .then_with(|| {
                 (right.level.price - reference)
                     .abs()
@@ -3546,6 +3618,8 @@ mod tests {
             price: (lower + upper) * 0.5,
             lower,
             upper,
+            salience: 0.8,
+            confidence: 0.75,
             source_count: 1,
             independent_pivot_count: 1,
             timeframes: vec!["1s".to_string()],
@@ -3557,8 +3631,10 @@ mod tests {
             neutral_volume: 100.0,
             trade_count: 10,
             pressure_bias: 1.0 / 3.0,
+            reaction_probability: 0.7,
             hold_probability: 0.5,
             break_probability: 0.5,
+            reversal_probability: 0.5,
             touch_count: 1,
             hold_count: 0,
             break_count: 0,
@@ -3601,6 +3677,7 @@ mod tests {
             last_relation: 1,
         };
         let mut reinforcement = unified_test_level(99, 1, 9.98, 10.02);
+        reinforcement.salience = 0.9;
         reinforcement.touch_count = 900;
         reinforcement.hold_count = 800;
         reinforcement.break_count = 700;
@@ -3613,57 +3690,7 @@ mod tests {
         assert_eq!(track.level.touch_count, original.touch_count);
         assert_eq!(track.level.hold_count, original.hold_count);
         assert_eq!(track.level.break_count, original.break_count);
-    }
-
-    #[test]
-    fn base_retest_uses_the_levels_tick_regime_across_one_dollar() {
-        let mut engine = GenericStructureEngine::new("TEST");
-        let at = Utc.timestamp_millis_opt(1_700_000_000_000).unwrap();
-        let mut level = event_native_level(7, -1, 0.9999, at.timestamp_millis());
-        level.lifecycle = LevelLifecycle::AwaitingRetest {
-            direction: 1,
-            accepted_at: at,
-        };
-        engine.levels.push(level);
-
-        engine.update_level_lifecycles(
-            at + chrono::Duration::milliseconds(1),
-            1.005,
-            100.0,
-            &mut Vec::new(),
-        );
-
-        assert!(matches!(
-            engine.levels[0].lifecycle,
-            LevelLifecycle::AwaitingRetest { .. }
-        ));
-    }
-
-    #[test]
-    fn unified_episode_inherits_event_native_hold_history_once() {
-        let start = 1_700_000_000_000;
-        let mut engine = GenericStructureEngine::new("TEST");
-        let mut level = event_native_level(77, 1, 10.0, start);
-        level.touch_count = 7;
-        level.hold_count = 6;
-        engine.levels.push(level);
-
-        engine.refresh_unified_level_tracks(Utc.timestamp_millis_opt(start + 1_000).unwrap(), 10.2);
-
-        assert_eq!(engine.unified_tracks.len(), 1);
-        assert_eq!(engine.unified_tracks[0].level.touch_count, 7);
-        assert_eq!(engine.unified_tracks[0].level.hold_count, 6);
-        assert_eq!(engine.unified_tracks[0].level.break_count, 0);
-        assert!((engine.unified_tracks[0].level.hold_probability - 0.8).abs() < 1e-12);
-        let serialized = serde_json::to_value(&engine.unified_tracks[0].level).unwrap();
-        for removed in [
-            "salience",
-            "confidence",
-            "reaction_probability",
-            "reversal_probability",
-        ] {
-            assert!(serialized.get(removed).is_none());
-        }
+        assert_eq!(track.level.salience, 0.9);
     }
 
     #[test]
@@ -3841,19 +3868,7 @@ mod tests {
             },
         ];
         assert!(unified_structure_levels("TEST", &states, &[], 10.0).is_empty());
-        let mut book_level = event_native_level(77, -1, 10.0, pivot_at_ms);
-        book_level.footprint.insert(
-            0,
-            FootprintBin {
-                total_volume: 200.0,
-                buy_volume: 120.0,
-                sell_volume: 80.0,
-                neutral_volume: 0.0,
-                trade_count: 2,
-                largest_trade: 120.0,
-            },
-        );
-        let book = vec![book_level];
+        let book = vec![event_native_level(77, -1, 10.0, pivot_at_ms)];
         let duplicated = unified_structure_levels("TEST", &states, &book, 10.0);
         let single = unified_structure_levels("TEST", &states[..1], &book, 10.0);
 
@@ -3862,47 +3877,7 @@ mod tests {
         assert_eq!(duplicated[0].independent_pivot_count, 1);
         assert_eq!(duplicated[0].timeframes, vec!["1s", "5s", "event-native"]);
         assert_eq!(duplicated[0].confirmed_at_ms, pivot_at_ms + 10_000);
-        assert_eq!(duplicated[0].total_volume, single[0].total_volume);
-        assert_eq!(duplicated[0].trade_count, single[0].trade_count);
-        let mut track = UnifiedLevelTrack {
-            level: duplicated[0].clone(),
-            lifecycle: LevelLifecycle::Active,
-            last_relation: -1,
-        };
-        refresh_unified_track_evidence(&mut track);
-        assert_eq!(track.level.total_volume, 200.0);
-        assert_eq!(track.level.buy_volume, 120.0);
-        assert_eq!(track.level.sell_volume, 80.0);
-        assert_eq!(track.level.trade_count, 2);
-    }
-
-    #[test]
-    fn role_coherent_levels_receive_candidate_capacity_before_stale_roles() {
-        let start = Utc.timestamp_millis_opt(1_700_000_000_000).unwrap();
-        let mut book = (0..MAX_UNIFIED_BOOK_CANDIDATES_PER_SIDE as u64)
-            .map(|index| {
-                let mut level = event_native_level(
-                    1_000 + index,
-                    -1,
-                    8.0 + index as f64 * 0.01,
-                    start.timestamp_millis(),
-                );
-                level.hold_count = 50;
-                level.touch_count = 50;
-                level
-            })
-            .collect::<Vec<_>>();
-        let mut current = event_native_level(77, -1, 10.5, start.timestamp_millis() + 1_000);
-        current.hold_count = 2;
-        current.touch_count = 3;
-        book.push(current);
-
-        let levels = unified_structure_levels("TEST", &[], &book, 10.0);
-
-        assert!(levels
-            .iter()
-            .flat_map(|level| &level.sources)
-            .any(|source| source.level_id == 77));
+        assert!((duplicated[0].salience - single[0].salience).abs() < 1e-12);
     }
 
     #[test]
@@ -3944,7 +3919,7 @@ mod tests {
     }
 
     #[test]
-    fn unified_level_book_preserves_observed_lifecycle_evidence_and_identity_across_role_flip() {
+    fn unified_level_book_scores_persistence_and_preserves_identity_across_role_flip() {
         let start = Utc.timestamp_millis_opt(1_700_000_000_000).unwrap();
         let mut book_level = StructureLevel {
             level_id: 77,
@@ -3972,6 +3947,8 @@ mod tests {
         assert_eq!(support[0].hold_count, 4);
         assert_eq!(support[0].break_count, 1);
         assert_eq!(support[0].role_flip_count, 1);
+        assert!(support[0].reaction_probability > 0.5);
+        assert!(support[0].salience < 0.99);
         assert!(support[0].hold_probability > 0.5);
 
         let mut crowded_book = (0..100_u64)

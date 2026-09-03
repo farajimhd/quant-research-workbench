@@ -214,10 +214,10 @@ export const CHART_INDICATORS: ChartDisplayItem[] = [
   ], "price", indicatorGuide(
     "A causal, cross-session level book that preserves major support, resistance, breaks, and confirmed role reversals.",
     "Clusters the persistent event-native level book with independent confirmed swings across 100 ms, 1 s, 5 s, 10 s, 30 s, 1 m, 5 m, and 1 h. Repeated tests, holds, accepted breaks, cross-timeframe pivots, and support/resistance flips contribute without counting the same pivot twice.",
-    "Green bands are levels currently confirmed as support. The center line shows the observed current-role hold rate; labels expose holds, accepted breaks, pivots, role flips, and executed pressure directly.",
+    "Green bands are levels currently confirmed as support. Longer center lines mean stronger evidence that the next encounter produces a meaningful reaction; repeated holds and resistance-to-support flips increase structural importance.",
     "Red bands are levels currently confirmed as resistance. The band stops at an accepted break and can resume in green only after a causal retest confirms the role reversal.",
     "The book is independent of the selected chart interval and survives session boundaries through QMD checkpoints. Changing chart timeframe changes candle display, not level identity or evidence.",
-    ["Current-role hold probability is Beta-smoothed from observed holds versus accepted breaks; it is not a return forecast or trade instruction.", "Each shaded band begins only when its evidence is causally available, ends when that role breaks, and displays on all loaded bars by default.", "Overlapping timeframe observations from the same exact pivot count once toward pivot breadth, and the published projection is bounded to major levels per side."],
+    ["Reaction probability is a deterministic evidence-derived score, not a statistically calibrated return forecast or trade instruction. Current-role hold probability is Beta-smoothed from holds versus accepted breaks.", "Each shaded band begins only when its evidence is causally available, ends when that role breaks, and displays on all loaded bars by default.", "Overlapping timeframe observations from the same exact pivot are deduplicated for scoring, and the published projection is bounded to major levels per side."],
   )),
   {
     ...displayIndicator("indicator.qmd_level_footprint", "QMD Level Volume Footprint", "price_action", [

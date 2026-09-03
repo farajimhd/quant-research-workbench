@@ -347,26 +347,25 @@ cargo test --offline --manifest-path services\qmd_history_gateway\Cargo.toml
 
 ## Standalone structural checkpoint campaign
 
-The `structure_checkpoint_campaign` binary runs Campaign v3 directly on a
-workstation. It uses the continuity index only for workload estimates, daily
-bars only to prioritize current active tickers, the canonical completed-session
-authority for scheduling, the shared v16 decoder/engine for event-native
-calculation, and the shared ClickHouse writer for immutable daily checkpoints.
-QMD HTTP services are not required on that host. One worker owns one ticker
-through the whole period, keeps its book in memory, persists every completed
-session, and releases it before taking another ticker.
+The `structure_checkpoint_campaign` binary runs the Campaign v2 computation
+directly on a workstation. It uses the continuity index for workload planning,
+the canonical completed-session authority for scheduling, the shared v15
+decoder/engine for calculation, and the shared ClickHouse writer for immutable
+daily checkpoints. QMD HTTP services are not required on that host.
+Long gaps between persisted checkpoint dates are advanced through bounded
+72-hour-or-shorter causal segments without persisting artificial boundaries.
+Empty sparse-symbol segments preserve the prior exact cursor while moving the
+certified replay boundary forward; they do not synthesize structural events.
 
 ```powershell
-$env:PYTHONDONTWRITEBYTECODE='1'
-python scripts\run_structure_checkpoint_campaign.py `
-  --priority-ticker SUGP `
-  --priority-ticker JUNS `
-  --start-date 2026-01-01 `
-  --end-date 2026-08-31 `
-  --liquidity-start-date 2026-08-01 `
-  --liquidity-end-date 2026-08-31 `
-  --runtime-dir D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v3\jan-aug `
-  --workers 4
+cargo run --release --manifest-path services\qmd_history_gateway\Cargo.toml `
+  --bin structure_checkpoint_campaign -- `
+  --ticker-file D:\TradingML\runtimes\qmd_gateway\universes\all-tickers.json `
+  --start-date 2026-08-21 `
+  --end-date 2026-08-21 `
+  --runtime-dir D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v2\aug21 `
+  --workers 4 `
+  --lookback-days 180
 ```
 
 Rerunning the identical command is the supported resume operation. Each ticker
@@ -374,12 +373,5 @@ starts from its last source- and split-compatible ClickHouse checkpoint. The
 interactive terminal shows resolved and durable progress, worker assignments,
 rates, ETA, recent work, and failures. Its fixed-row refresh does not repeatedly
 clear the screen or scroll. Redirected output remains plain text.
-Runtime status schema v4 is written atomically to `campaign-status.json`, and
+Runtime status schema v3 is written atomically to `campaign-status.json`, and
 Ctrl+C records `interrupted` before returning exit code 130.
-
-The launcher uses a prebuilt executable from
-`D:\TradingML\runtimes\bin\structure_checkpoint_campaign.exe` when Cargo is
-not installed. Use `--purge-existing-checkpoints` only for an explicitly
-authorized cold reset; it deletes every row from the structural checkpoint
-table before rebuilding. The full contract is
-[`structural_checkpoint_campaign_v3.md`](../../docs/data_contracts/structural_checkpoint_campaign_v3.md).

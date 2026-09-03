@@ -3063,40 +3063,6 @@ impl IndicatorClickHouseWriter {
         .await
     }
 
-    pub async fn count_daily_structure_checkpoints(&self) -> Result<u64, String> {
-        let text = self
-            .query(
-                "SELECT count() FROM qmd_structure_daily_checkpoint_v1 FORMAT TSV",
-                true,
-            )
-            .await?;
-        text.trim()
-            .parse::<u64>()
-            .map_err(|error| format!("invalid daily structure checkpoint count: {error}"))
-    }
-
-    /// Delete every persisted historical level-book checkpoint. This is
-    /// deliberately separate from version-aware cleanup because a cold
-    /// campaign must not silently resume from any prior book.
-    pub async fn purge_all_daily_structure_checkpoints(&self) -> Result<u64, String> {
-        let existing = self.count_daily_structure_checkpoints().await?;
-        if existing == 0 {
-            return Ok(0);
-        }
-        self.execute(
-            "TRUNCATE TABLE qmd_structure_daily_checkpoint_v1 SYNC",
-            true,
-        )
-        .await?;
-        let remaining = self.count_daily_structure_checkpoints().await?;
-        if remaining != 0 {
-            return Err(format!(
-                "daily structure checkpoint purge left {remaining} row(s)"
-            ));
-        }
-        Ok(existing)
-    }
-
     pub async fn load_daily_structure_checkpoint_before(
         &self,
         ticker: &str,

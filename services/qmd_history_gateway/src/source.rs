@@ -94,15 +94,6 @@ pub struct StructureEventCountEstimateResponse {
     pub start_date: NaiveDate,
 }
 
-/// Ordered campaign universe. `priority_dollar_volume` is used only to assign
-/// scarce worker slots; it never replaces raw events in the level calculation.
-#[derive(Clone, Debug, Serialize)]
-pub struct StructureCampaignTicker {
-    pub currently_active: bool,
-    pub priority_dollar_volume: f64,
-    pub ticker: String,
-}
-
 #[derive(Clone, Debug, Serialize)]
 pub struct EventCoverage {
     pub complete: bool,
@@ -917,50 +908,6 @@ impl HistoricalEventSource {
             source: continuity_table,
             start_date: request.start_date,
         })
-    }
-
-    pub async fn structure_campaign_tickers(
-        &self,
-        start_date: NaiveDate,
-        priority_start_date: NaiveDate,
-        priority_end_date: NaiveDate,
-        as_of: DateTime<Utc>,
-    ) -> Result<Vec<StructureCampaignTicker>, String> {
-        if priority_start_date > priority_end_date {
-            return Err("structure campaign priority range starts after it ends".to_string());
-        }
-        if as_of > Utc::now() + chrono::Duration::seconds(1) {
-            return Err("structure campaign ticker as_of cannot be in the future".to_string());
-        }
-        let sql = structure_campaign_tickers_sql(
-            &self.config.clickhouse_database,
-            &self.config.daily_session_bars_table,
-            &self.config.recent_database,
-            start_date,
-            priority_start_date,
-            priority_end_date,
-            as_of,
-        )?;
-        #[derive(Deserialize)]
-        struct Row {
-            currently_active: u8,
-            priority_dollar_volume: f64,
-            ticker: String,
-        }
-        self.query_bounded(&sql, 60)
-            .await?
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| {
-                let row = serde_json::from_str::<Row>(line)
-                    .map_err(|error| format!("invalid structure campaign ticker row: {error}"))?;
-                Ok(StructureCampaignTicker {
-                    currently_active: row.currently_active != 0,
-                    priority_dollar_volume: row.priority_dollar_volume.max(0.0),
-                    ticker: normalize_ticker(&row.ticker)?,
-                })
-            })
-            .collect()
     }
 
     pub async fn source_revision(&self, window: &EventWindow) -> Result<SourceRevision, String> {
@@ -3412,78 +3359,6 @@ fn normalize_ticker(value: &str) -> Result<String, String> {
     Ok(ticker)
 }
 
-fn structure_campaign_tickers_sql(
-    archive_database: &str,
-    daily_table: &str,
-    reference_database: &str,
-    start_date: NaiveDate,
-    priority_start_date: NaiveDate,
-    priority_end_date: NaiveDate,
-    as_of: DateTime<Utc>,
-) -> Result<String, String> {
-    for (name, value) in [
-        ("archive database", archive_database),
-        ("daily table", daily_table),
-        ("reference database", reference_database),
-    ] {
-        if value.is_empty()
-            || !value
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-        {
-            return Err(format!(
-                "structure campaign {name} is not a valid identifier"
-            ));
-        }
-    }
-    let priority_end_exclusive = priority_end_date
-        .succ_opt()
-        .ok_or_else(|| "structure campaign priority end date overflow".to_string())?;
-    Ok(format!(
-        r#"SELECT
-            universe.ticker AS ticker,
-            max(universe.currently_active) AS currently_active,
-            ifNull(max(liquidity.priority_dollar_volume), 0.0) AS priority_dollar_volume
-        FROM
-        (
-            SELECT upper(symbol.ticker) AS ticker, toUInt8(1) AS currently_active
-            FROM `{reference_database}`.`id_symbol_v1` AS symbol FINAL
-            INNER JOIN `{reference_database}`.`id_listing_v1` AS listing FINAL
-                ON listing.listing_id = symbol.listing_id
-            WHERE symbol.status = 'active'
-              AND symbol.primary_symbol_flag = 1
-              AND listing.listing_status = 'active'
-              AND listing.currency_code = 'USD'
-
-            UNION ALL
-
-            SELECT upper(ticker) AS ticker, toUInt8(0) AS currently_active
-            FROM `{archive_database}`.`events_ordinal_continuity`
-            PREWHERE source_date = toDate('{start_date}')
-            GROUP BY ticker
-            HAVING argMax(event_count, tuple(build_step, updated_at)) > 0
-        ) AS universe
-        LEFT JOIN
-        (
-            SELECT
-                upper(if(empty(ifNull(canonical_ticker, '')), source_ticker, canonical_ticker)) AS ticker,
-                sumIf(trade_close * trade_size_sum, trade_present = 1) AS priority_dollar_volume
-            FROM `{archive_database}`.`{daily_table}` FINAL
-            PREWHERE session_date >= toDate('{priority_start_date}')
-              AND session_date < toDate('{priority_end_exclusive}')
-            WHERE adjusted = 0
-              AND identity_status != 'ambiguous_source_ticker'
-              AND available_at_us <= toUInt64({available_at_us})
-            GROUP BY ticker
-        ) AS liquidity USING ticker
-        GROUP BY universe.ticker
-        HAVING match(universe.ticker, '^[A-Z0-9._-]{{1,32}}$')
-        ORDER BY currently_active DESC, priority_dollar_volume DESC, ticker
-        FORMAT JSONEachRow"#,
-        available_at_us = as_of.timestamp_micros().max(0),
-    ))
-}
-
 fn sql_literal(value: &str) -> String {
     format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
 }
@@ -3650,10 +3525,9 @@ mod tests {
         materialize_confirmed_recent_coverage, merge_coverage_intervals, merge_daily_chart_bars,
         normalize_ticker, parse_historical_tsv_row, persisted_structure_events_sql,
         recent_coverage_sql, recent_daily_trade_bars_sql, row_to_event, split_adjustment_factors,
-        structure_campaign_tickers_sql, structure_split_adjustments_sql,
-        structure_split_revision_sql, ticker_filter, CoverageInterval, EventWindow,
-        HistoricalMacroChartRow, HistoricalRow, LatestEventCoverage, MarketSourceTier,
-        RecentCoverageRow,
+        structure_split_adjustments_sql, structure_split_revision_sql, ticker_filter,
+        CoverageInterval, EventWindow, HistoricalMacroChartRow, HistoricalRow, LatestEventCoverage,
+        MarketSourceTier, RecentCoverageRow,
     };
     use crate::config::HistoricalGatewayConfig;
     use chrono::{NaiveDate, TimeZone, Utc};
@@ -3676,27 +3550,6 @@ mod tests {
         );
         assert!(sql.contains("AND source.ticker IN ('AAPL')\n        WHERE 1"));
         assert!(!sql.contains("WHERE 1 AND source.ticker IN ('AAPL')"));
-    }
-
-    #[test]
-    fn campaign_universe_prioritizes_current_listings_by_bounded_liquidity() {
-        let sql = structure_campaign_tickers_sql(
-            "market_sip_compact",
-            "daily_session_bars_by_symbol_time_v1",
-            "q_live",
-            NaiveDate::from_ymd_opt(2026, 1, 2).unwrap(),
-            NaiveDate::from_ymd_opt(2026, 8, 1).unwrap(),
-            NaiveDate::from_ymd_opt(2026, 8, 31).unwrap(),
-            Utc.with_ymd_and_hms(2026, 9, 1, 0, 0, 0).unwrap(),
-        )
-        .unwrap();
-
-        assert!(sql.contains("id_symbol_v1"));
-        assert!(sql.contains("HAVING match(universe.ticker"));
-        assert!(sql.contains("events_ordinal_continuity"));
-        assert!(sql.contains("session_date >= toDate('2026-08-01')"));
-        assert!(sql.contains("session_date < toDate('2026-09-01')"));
-        assert!(sql.contains("ORDER BY currently_active DESC, priority_dollar_volume DESC, ticker"));
     }
 
     #[test]

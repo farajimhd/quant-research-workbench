@@ -2,7 +2,7 @@
 
 ## Authority
 
-Generic Structure algorithm v16 is the single deterministic authority for a ticker's structural level book. It consumes canonical, event-time-ordered eligible trades and quotes. Live, Replay, Backtest, Debug, QMD History, and chart presentation must restore or advance the same checkpoint contract; none may recalculate a competing chart-timeframe book.
+Generic Structure algorithm v15 is the single deterministic authority for a ticker's structural level book. It consumes canonical, event-time-ordered eligible trades and quotes. Live, Replay, Backtest, Debug, QMD History, and chart presentation must restore or advance the same checkpoint contract; none may recalculate a competing chart-timeframe book.
 
 The current canonical market-event contract identifies a listing by normalized SIP ticker. A future security-master listing identifier may be added only as a versioned identity migration. Symbol changes or reuse must not be silently joined across that boundary.
 
@@ -18,13 +18,17 @@ The current canonical market-event contract identifies a listing by normalized S
 
 ## Evidence fields
 
+- `salience`: a diminishing weighted combination of mean and best source quality, logarithmic independent-pivot breadth, timeframe diversity, persistence, and role flips. It intentionally does not use a saturating noisy-OR.
+- `confidence`: quality and breadth of the evidence supporting the range.
+- `reaction_probability`: smoothed estimate that a future encounter produces a meaningful reaction. It is not directional alpha.
 - `hold_probability` and `break_probability`: beta-smoothed lifecycle frequencies in the current role.
+- `reversal_probability`: reaction evidence adjusted by observed pressure magnitude and role-flip history. It is not a calibrated return forecast.
 - `pressure_bias`: signed executed-volume imbalance around the range in `[-1, 1]`; positive is buyer-initiated pressure and negative is seller-initiated pressure.
 - `touch_count`, `hold_count`, `break_count`, `role_flip_count`: causal lifecycle counts.
 - `buy_volume`, `sell_volume`, `neutral_volume`, `trade_count`: merged executed activity associated with event-native sources. Timeframe corroboration does not duplicate volume.
 - `confirmed_at_ms`: first instant at which the episode was tradable without lookahead.
 
-Unified levels expose recorded evidence rather than synthetic importance, confidence, reaction, or reversal scores. Candidate selection and capacity ranking use explicit lifecycle state, bounded hold/touch/flip counts, independent-pivot breadth, causal recency, and distance from the current reference. These ranking facts never rewrite the earlier range geometry or confirmation time.
+Scores can strengthen when independent event-native pivots merge, a range holds, compatible timeframe structure confirms it, executed activity accumulates, or the range survives a role flip. Accepted breaks weaken the old role. Scores never rewrite the earlier range geometry or confirmation time.
 
 Chart bars use the same retrospective split basis as the checkpoint: every bar before a split boundary is multiplied by the cumulative `split_from / split_to` price factor and its share volume by the inverse factor. Daily and macro responses expose `coverage_status`, `latest_session_date`, and `split_adjusted`; stale daily authority is shown to the operator rather than silently presented as current context.
 
