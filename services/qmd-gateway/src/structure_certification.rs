@@ -175,19 +175,38 @@ pub fn validate_checkpoint_certification(
         || (!certification.predecessor_checkpoint_sha256.is_empty()
             && (!valid_sha256(&certification.predecessor_checkpoint_sha256)
                 || !valid_sha256(&certification.predecessor_chain_sha256)))
-        || certification.checkpoint_sha256 != checkpoint_sha256(checkpoint)?
-        || certification.split_sha256 != split_sha256(checkpoint)?
-        || certification.chain_sha256
-            != certification_chain_sha256(
-                certification,
-                checkpoint,
-                session_date,
-                authority_start,
-                source_plan_hash,
-                source_revision_token,
-            )?
     {
-        return Err("structure checkpoint certification hash mismatch".to_string());
+        return Err(
+            "structure checkpoint certification contains an invalid SHA-256 value".to_string(),
+        );
+    }
+    let actual_checkpoint_sha256 = checkpoint_sha256(checkpoint)?;
+    if certification.checkpoint_sha256 != actual_checkpoint_sha256 {
+        return Err(format!(
+            "structure checkpoint payload hash mismatch: certified={}, actual={actual_checkpoint_sha256}",
+            certification.checkpoint_sha256,
+        ));
+    }
+    let actual_split_sha256 = split_sha256(checkpoint)?;
+    if certification.split_sha256 != actual_split_sha256 {
+        return Err(format!(
+            "structure checkpoint split hash mismatch: certified={}, actual={actual_split_sha256}",
+            certification.split_sha256,
+        ));
+    }
+    let actual_chain_sha256 = certification_chain_sha256(
+        certification,
+        checkpoint,
+        session_date,
+        authority_start,
+        source_plan_hash,
+        source_revision_token,
+    )?;
+    if certification.chain_sha256 != actual_chain_sha256 {
+        return Err(format!(
+            "structure checkpoint chain hash mismatch: certified={}, actual={actual_chain_sha256}",
+            certification.chain_sha256,
+        ));
     }
     Ok(())
 }
