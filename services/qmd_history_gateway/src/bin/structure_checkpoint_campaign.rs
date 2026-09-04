@@ -1230,9 +1230,7 @@ async fn recover_reusable_checkpoint_prefix(
     let delayed = source
         .structure_delayed_trade_report_counts(&manifest.ticker, &manifest.sessions)
         .await?;
-    let first_affected = delayed
-        .iter()
-        .find_map(|(date, count)| (*count > 0).then_some(*date));
+    let first_affected = first_execution_clock_affected_session(manifest, &delayed)?;
     let source_rows = writer
         .load_daily_structure_checkpoint_chain_from_set(
             source_set_id,
@@ -1331,6 +1329,27 @@ async fn recover_reusable_checkpoint_prefix(
         target_predecessor_chain = certification.chain_sha256;
     }
     Ok(())
+}
+
+fn first_execution_clock_affected_session(
+    manifest: &qmd_history_gateway::source::StructureCampaignManifest,
+    delayed: &BTreeMap<NaiveDate, u64>,
+) -> Result<Option<NaiveDate>, String> {
+    for session in &manifest.sessions {
+        if session.event_count == 0 {
+            continue;
+        }
+        let count = delayed.get(&session.session_date).ok_or_else(|| {
+            format!(
+                "checkpoint recovery lacks certified execution-clock coverage for {} {}; refusing to infer zero delayed reports",
+                manifest.ticker, session.session_date
+            )
+        })?;
+        if *count > 0 {
+            return Ok(Some(session.session_date));
+        }
+    }
+    Ok(None)
 }
 
 async fn run_ticker(
@@ -1808,6 +1827,8 @@ fn campaign_fatal_error(error: &str) -> bool {
         "invalid structure continuity row",
         "invalid structure split row",
         "serialized payload hash drifted",
+        "historical execution-clock coverage incomplete",
+        "checkpoint recovery lacks certified execution-clock coverage",
     ]
     .iter()
     .any(|marker| error.contains(marker))
@@ -2171,14 +2192,18 @@ fn io_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sy
 #[cfg(test)]
 mod tests {
     use super::{
-        campaign_fatal_error, dashboard_frame, dashboard_lines, insert_ticker, log_snapshot,
-        merge_ticker_universe, next_ordinal_chunk, retryable_error, session_is_covered_by_seed,
+        campaign_fatal_error, dashboard_frame, dashboard_lines,
+        first_execution_clock_affected_session, insert_ticker, log_snapshot, merge_ticker_universe,
+        next_ordinal_chunk, retryable_error, session_is_covered_by_seed,
         validate_checkpoint_set_id, validate_worker_count, AttemptEventProgress, Counts,
         EventRateWindow, Progress, ProgressWriter, RecentUnit, TickerPlan,
         GENERIC_STRUCTURE_ALGORITHM_VERSION,
     };
     use chrono::{NaiveDate, TimeZone, Utc};
-    use qmd_history_gateway::source::StructureCampaignTicker;
+    use qmd_history_gateway::source::{
+        SourceRevision, StructureCampaignManifest, StructureCampaignSession,
+        StructureCampaignTicker,
+    };
     use std::collections::{BTreeMap, HashSet, VecDeque};
     use std::path::PathBuf;
 
@@ -2212,6 +2237,49 @@ mod tests {
         )
         .unwrap();
         assert_eq!(merged, vec!["SUGP", "JUNS", "AAPL", "OLD", "EXTRA"]);
+    }
+
+    #[test]
+    fn legacy_recovery_requires_explicit_clock_coverage_for_every_nonempty_session() {
+        let first = NaiveDate::from_ymd_opt(2026, 8, 20).unwrap();
+        let second = NaiveDate::from_ymd_opt(2026, 8, 21).unwrap();
+        let revision = SourceRevision {
+            complete_for_history: true,
+            event_count: 1,
+            live_continuation_sequence: None,
+            max_build_step: 1,
+            max_updated_at: String::new(),
+            request_complete: true,
+            source_plan_hash: "plan".to_string(),
+            source_tiers: vec!["archive".to_string()],
+            token: "execution-clock-v1:1:1:0:1:now".to_string(),
+        };
+        let session = |session_date| StructureCampaignSession {
+            event_count: 1,
+            first_ordinal: 1,
+            first_sip_timestamp_us: 1,
+            last_sip_timestamp_us: 1,
+            next_ordinal: 2,
+            session_date,
+            source_revision: revision.clone(),
+        };
+        let manifest = StructureCampaignManifest {
+            authority_start: Utc.with_ymd_and_hms(2026, 8, 20, 8, 0, 0).unwrap(),
+            sessions: vec![session(first), session(second)],
+            split_adjustments: Vec::new(),
+            ticker: "SUGP".to_string(),
+        };
+
+        let missing = BTreeMap::from([(first, 0)]);
+        assert!(first_execution_clock_affected_session(&manifest, &missing)
+            .unwrap_err()
+            .contains("refusing to infer zero delayed reports"));
+
+        let complete = BTreeMap::from([(first, 0), (second, 3)]);
+        assert_eq!(
+            first_execution_clock_affected_session(&manifest, &complete).unwrap(),
+            Some(second)
+        );
     }
 
     #[test]
@@ -2254,6 +2322,12 @@ mod tests {
         assert!(campaign_fatal_error("UNKNOWN_IDENTIFIER source_date"));
         assert!(campaign_fatal_error(
             "refusing to persist a checkpoint whose serialized payload hash drifted"
+        ));
+        assert!(campaign_fatal_error(
+            "historical execution-clock coverage incomplete: covered 6/7 ticker-days"
+        ));
+        assert!(campaign_fatal_error(
+            "checkpoint recovery lacks certified execution-clock coverage for SUGP"
         ));
         assert!(!campaign_fatal_error(
             "ordinal stream authority mismatch for SUGP 2026-08-21"

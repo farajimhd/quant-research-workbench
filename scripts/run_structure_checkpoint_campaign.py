@@ -24,6 +24,7 @@ RUNTIME_BINARY_NAME = (
     "structure_checkpoint_campaign_v6.exe" if os.name == "nt" else "structure_checkpoint_campaign_v6"
 )
 MAX_PROCESS_WORKERS = 80
+RECOVERY_PRIORITY_TICKERS = ("SUGP", "JUNS")
 HOLD_SCORE_REVISION = "beta22-wilson90-v1"
 CERTIFICATION_SCHEMA_VERSION = 2
 EXECUTION_CLOCK_AUTHORITY = "q_live.historical_event_execution_clock_v1"
@@ -82,11 +83,19 @@ def resolve_cargo(environ: dict[str, str]) -> str | None:
     return None
 
 
-def resolve_binary(explicit: str | None, build: bool, environ: dict[str, str]) -> Path:
+def resolve_binary(
+    explicit: str | None,
+    build: bool,
+    environ: dict[str, str],
+    force_rebuild: bool = False,
+) -> Path:
     candidates = binary_candidates(explicit, environ)
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate.resolve()
+    if not force_rebuild:
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate.resolve()
+    elif explicit:
+        raise RuntimeError("--rebuild cannot be combined with --binary")
     if not build:
         raise RuntimeError("campaign binary was not found; searched:\n  " + "\n  ".join(map(str, candidates)))
     cargo = resolve_cargo(environ)
@@ -101,6 +110,10 @@ def resolve_binary(explicit: str | None, build: bool, environ: dict[str, str]) -
         env=environ,
         check=True,
     )
+    target_dir = Path(environ["CARGO_TARGET_DIR"])
+    built = target_dir / "release" / BUILD_BINARY_NAME
+    if built.is_file():
+        return built.resolve()
     for candidate in candidates:
         if candidate.is_file():
             return candidate.resolve()
@@ -111,12 +124,14 @@ def parse_launcher_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--binary")
     parser.add_argument("--no-build", action="store_true")
+    parser.add_argument("--rebuild", action="store_true")
     parser.add_argument("--launcher-help", action="store_true")
     parser.add_argument("--monitor-existing", action="store_true")
     parser.add_argument("--stop-existing", choices=("graceful", "fast"))
     parser.add_argument("--supervisor-child", action="store_true")
     parser.add_argument("--foreground-supervisor", action="store_true")
     parser.add_argument("--process-workers", type=int)
+    parser.add_argument("--resume-from-runtime", "--recover-from-runtime", dest="resume_from_runtime")
     return parser.parse_known_args(argv)
 
 
@@ -151,6 +166,105 @@ def remove_options(args: list[str], valued: set[str], flags: set[str]) -> list[s
     return result
 
 
+def _required_manifest(path: Path) -> dict[str, Any]:
+    manifest = read_status(path)
+    if manifest is None:
+        raise RuntimeError(f"required campaign manifest is unavailable: {path}")
+    return manifest
+
+
+def prepare_recovery_resume(
+    campaign_args: list[str], source_runtime_value: str
+) -> tuple[list[str], Path, dict[str, Any]]:
+    """Bind a successor run to the exact immutable plan of an interrupted run."""
+    source_runtime = Path(source_runtime_value).expanduser().resolve()
+    target_runtime_value = option_value(campaign_args, "--runtime-dir")
+    target_set_id = option_value(campaign_args, "--checkpoint-set-id")
+    if not target_runtime_value or not target_set_id:
+        raise RuntimeError(
+            "recovery resume requires a new --runtime-dir and --checkpoint-set-id"
+        )
+    target_runtime = Path(target_runtime_value).expanduser().resolve()
+    if target_runtime == source_runtime:
+        raise RuntimeError(
+            "recovery resume must use a new runtime directory; the source campaign is immutable"
+        )
+    source_manifest_path = source_runtime / "campaign-manifest.json"
+    source_plan_path = source_runtime / "planner" / "campaign-plan.json"
+    source_manifest = _required_manifest(source_manifest_path)
+    if not source_plan_path.is_file():
+        raise RuntimeError(f"source campaign plan is unavailable: {source_plan_path}")
+    source_status = read_status(source_runtime / "campaign-status.json")
+    if source_status is not None and source_status.get("status") == "running":
+        raise RuntimeError("source campaign is still running; stop it before recovery")
+    source_set_id = str(source_manifest.get("checkpoint_set_id") or "").strip()
+    source_start = str(source_manifest.get("start_date") or "").strip()
+    source_end = str(source_manifest.get("end_date") or "").strip()
+    if not source_set_id or not source_start or not source_end:
+        raise RuntimeError("source campaign manifest lacks its set or date identity")
+    if source_set_id == target_set_id:
+        raise RuntimeError("recovery source and target checkpoint sets must differ")
+    result = list(campaign_args)
+    for name, source_value in (
+        ("--start-date", source_start),
+        ("--end-date", source_end),
+        ("--recovery-source-checkpoint-set-id", source_set_id),
+    ):
+        requested = option_value(result, name)
+        if requested is not None and requested != source_value:
+            raise RuntimeError(
+                f"{name}={requested!r} does not match source campaign value {source_value!r}"
+            )
+        result = replace_option(result, name, source_value)
+    existing_priorities = []
+    index = 0
+    while index < len(result):
+        if result[index] == "--priority-ticker" and index + 1 < len(result):
+            existing_priorities.append(result[index + 1].strip().upper())
+            index += 2
+        else:
+            index += 1
+    result = remove_options(result, {"--priority-ticker"}, set())
+    priorities = [
+        *RECOVERY_PRIORITY_TICKERS,
+        *(ticker for ticker in existing_priorities if ticker not in RECOVERY_PRIORITY_TICKERS),
+    ]
+    # Native planning is bypassed for recovery, but retain the priority identity
+    # in worker commands and durable supervisor evidence.
+    for ticker in reversed(priorities):
+        result = ["--priority-ticker", ticker, *result]
+    return result, source_runtime, source_manifest
+
+
+def recovery_plan(
+    source_runtime: Path, source_manifest: dict[str, Any]
+) -> list[dict[str, Any]]:
+    path = source_runtime / "planner" / "campaign-plan.json"
+    try:
+        plans = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"invalid source campaign plan {path}: {exc}") from exc
+    if not isinstance(plans, list) or not plans:
+        raise RuntimeError("source campaign plan must be a non-empty list")
+    tickers = [str(plan.get("ticker") or "").strip().upper() for plan in plans]
+    if any(not ticker for ticker in tickers) or len(set(tickers)) != len(tickers):
+        raise RuntimeError("source campaign plan has missing or duplicate tickers")
+    source_hash = hashlib.sha256(
+        "".join(f"{ticker}\n" for ticker in tickers).encode("utf-8")
+    ).hexdigest()
+    if source_hash != source_manifest.get("universe_hash"):
+        raise RuntimeError("source campaign plan does not match its immutable universe hash")
+    priorities = {ticker: index for index, ticker in enumerate(RECOVERY_PRIORITY_TICKERS)}
+    indexed = list(enumerate(plans))
+    indexed.sort(
+        key=lambda item: (
+            priorities.get(str(item[1]["ticker"]).upper(), len(priorities)),
+            item[0],
+        )
+    )
+    return [plan for _, plan in indexed]
+
+
 def prepare_shards(plans: list[dict[str, Any]], worker_count: int) -> list[list[dict[str, Any]]]:
     worker_count = min(worker_count, len(plans))
     shards: list[list[dict[str, Any]]] = [[] for _ in range(worker_count)]
@@ -164,7 +278,7 @@ def prepare_shards(plans: list[dict[str, Any]], worker_count: int) -> list[list[
     return shards
 
 
-def atomic_json(path: Path, value: dict[str, Any]) -> None:
+def atomic_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
@@ -225,6 +339,7 @@ def launch_detached_supervisor(
     campaign_args: list[str],
     workers: int,
     environ: dict[str, str],
+    recovery_source_runtime: Path | None = None,
 ) -> int:
     runtime_value = option_value(campaign_args, "--runtime-dir")
     set_id = option_value(campaign_args, "--checkpoint-set-id")
@@ -249,6 +364,11 @@ def launch_detached_supervisor(
         "--supervisor-child",
         "--process-workers",
         str(workers),
+        *(
+            ["--resume-from-runtime", str(recovery_source_runtime)]
+            if recovery_source_runtime is not None
+            else []
+        ),
         *campaign_args,
     ]
     creationflags = 0
@@ -594,6 +714,8 @@ def run_process_campaign(
     campaign_args: list[str],
     workers: int,
     environ: dict[str, str],
+    recovery_source_runtime: Path | None = None,
+    recovery_source_manifest: dict[str, Any] | None = None,
 ) -> int:
     validate_process_worker_count(workers)
     runtime_value = option_value(campaign_args, "--runtime-dir")
@@ -619,6 +741,7 @@ def run_process_campaign(
     end_date = option_value(campaign_args, "--end-date")
     if not start_date or not end_date:
         raise RuntimeError("process mode requires --start-date and --end-date")
+    existing_manifest = read_status(manifest_path)
     requested_identity = {
         "schema_version": 2,
         "checkpoint_set_id": set_id,
@@ -627,13 +750,32 @@ def run_process_campaign(
         "recovery_source_checkpoint_set_id": option_value(
             campaign_args, "--recovery-source-checkpoint-set-id"
         ),
-        "source_commit": source_commit(),
+        # The executable hash is the runnable authority. Preserve the commit
+        # already bound to an interrupted target when only the launcher source
+        # has moved forward between attempts.
+        "source_commit": (
+            existing_manifest.get("source_commit")
+            if existing_manifest is not None
+            else source_commit()
+        ),
         "executable_sha256": binary_sha256,
         "certification_schema_version": CERTIFICATION_SCHEMA_VERSION,
         "execution_clock_authority": EXECUTION_CLOCK_AUTHORITY,
         "execution_clock_coverage_authority": EXECUTION_CLOCK_COVERAGE_AUTHORITY,
     }
-    existing_manifest = read_status(manifest_path)
+    if recovery_source_runtime is not None:
+        if recovery_source_manifest is None:
+            raise RuntimeError("recovery source manifest was not loaded")
+        requested_identity.update(
+            {
+                "recovery_source_manifest_sha256": sha256_file(
+                    recovery_source_runtime / "campaign-manifest.json"
+                ),
+                "recovery_source_universe_hash": recovery_source_manifest.get(
+                    "universe_hash"
+                ),
+            }
+        )
     if existing_manifest is not None and any(
         existing_manifest.get(key) != value for key, value in requested_identity.items()
     ):
@@ -650,18 +792,26 @@ def run_process_campaign(
     if "--plan-only" not in planner_args:
         planner_args.append("--plan-only")
     if existing_manifest is None:
-        print("Planning immutable ticker universe and exact event workload...", flush=True)
-        planning = subprocess.run([str(binary), *planner_args], env=environ, check=False)
-        if planning.returncode:
-            return planning.returncode
-        if "--purge-existing-checkpoints" in planner_args:
-            atomic_json(
-                purge_marker,
-                {
-                    "checkpoint_set_id": set_id,
-                    "purged_at": datetime.now(timezone.utc).isoformat(),
-                },
+        if recovery_source_runtime is not None:
+            print(
+                "Loading the immutable source campaign plan for successor recovery...",
+                flush=True,
             )
+            plans = recovery_plan(recovery_source_runtime, recovery_source_manifest or {})
+            atomic_json(plan_path, plans)
+        else:
+            print("Planning immutable ticker universe and exact event workload...", flush=True)
+            planning = subprocess.run([str(binary), *planner_args], env=environ, check=False)
+            if planning.returncode:
+                return planning.returncode
+            if "--purge-existing-checkpoints" in planner_args:
+                atomic_json(
+                    purge_marker,
+                    {
+                        "checkpoint_set_id": set_id,
+                        "purged_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
     elif not plan_path.is_file():
         raise RuntimeError("immutable campaign manifest exists but its campaign plan is missing")
     plans = json.loads(plan_path.read_text(encoding="utf-8"))
@@ -849,15 +999,34 @@ def main(argv: list[str] | None = None) -> int:
     if launcher.launcher_help:
         print(
             "Launcher options: --binary PATH, --no-build, --monitor-existing, "
-            "--stop-existing {graceful,fast}, --foreground-supervisor, "
+            "--rebuild, --stop-existing {graceful,fast}, --foreground-supervisor, "
+            "--resume-from-runtime PATH, "
             f"--process-workers 1..{MAX_PROCESS_WORKERS}"
         )
         print("All other options are forwarded to structure-checkpoint-campaign v6.")
         return 0
     environ = dict(os.environ)
     environ["PYTHONDONTWRITEBYTECODE"] = "1"
+    runtime_root = Path(environ.get("TRADING_RUNTIME_ROOT", r"D:\TradingML\runtimes"))
+    environ.setdefault(
+        "CARGO_TARGET_DIR",
+        str(runtime_root / "cargo-target" / "quant-research-workbench"),
+    )
     try:
-        binary = resolve_binary(launcher.binary, not launcher.no_build, environ)
+        recovery_source_runtime = None
+        recovery_source_manifest = None
+        if launcher.resume_from_runtime:
+            campaign_args, recovery_source_runtime, recovery_source_manifest = (
+                prepare_recovery_resume(campaign_args, launcher.resume_from_runtime)
+            )
+        if launcher.rebuild and launcher.no_build:
+            raise RuntimeError("--rebuild and --no-build are mutually exclusive")
+        binary = resolve_binary(
+            launcher.binary,
+            not launcher.no_build,
+            environ,
+            force_rebuild=launcher.rebuild,
+        )
         binary_sha256 = sha256_file(binary)
         print(f"Campaign executable: {binary} (SHA-256 {binary_sha256})", flush=True)
         print(
@@ -884,9 +1053,22 @@ def main(argv: list[str] | None = None) -> int:
         if workers > 1 and "--plan-only" not in campaign_args:
             if not launcher.supervisor_child and not launcher.foreground_supervisor:
                 return launch_detached_supervisor(
-                    binary, binary_sha256, campaign_args, workers, environ
+                    binary,
+                    binary_sha256,
+                    campaign_args,
+                    workers,
+                    environ,
+                    recovery_source_runtime,
                 )
-            result = run_process_campaign(binary, binary_sha256, campaign_args, workers, environ)
+            result = run_process_campaign(
+                binary,
+                binary_sha256,
+                campaign_args,
+                workers,
+                environ,
+                recovery_source_runtime,
+                recovery_source_manifest,
+            )
             if launcher.supervisor_child:
                 runtime_value = option_value(campaign_args, "--runtime-dir")
                 identity_path = Path(runtime_value) / "supervisor" / "supervisor.json"

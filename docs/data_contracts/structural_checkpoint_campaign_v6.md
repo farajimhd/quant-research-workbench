@@ -38,6 +38,21 @@ never trusts a valid-looking tail across a missing or invalid predecessor.
 Campaign manifests bind the source commit, executable SHA-256, certification
 revision, execution-clock tables, and optional recovery source set.
 
+The supervisor's `--resume-from-runtime` mode is the only supported way to
+continue work from an older campaign revision. It does not mutate or append to
+the source set. It copies the source campaign's immutable ticker/session plan
+into a new target runtime, verifies the source universe hash, automatically
+binds `--recovery-source-checkpoint-set-id`, and places SUGP and JUNS first.
+The successor manifest additionally binds the SHA-256 of the source manifest
+and its universe hash. Re-running the identical successor command resumes the
+target set; it never replans from a potentially changed current universe.
+
+Recovery requires certified execution-clock coverage for every non-empty
+source session. A missing coverage row is not equivalent to zero delayed
+reports and fails closed before a legacy checkpoint can be copied. This means
+an interrupted legacy campaign remains preserved, but its work is reusable
+only where the ingestion-owned sidecar proves compatibility.
+
 The canonical sidecar repair is owned by
 `pipelines/market_sip/flatfiles/download_update_events.py
 --execution-clock-only`. It requires explicit dates and tickers, does not
@@ -102,6 +117,24 @@ The supervisor marks a controlled stop `interrupted`, not `failed`. Re-running
 the identical immutable campaign loads the latest certified daily checkpoint
 for each ticker and resumes forward. The control file is cleared only by the
 new supervisor before worker launch.
+
+Example successor recovery through the PowerShell entry point:
+
+```powershell
+.\scripts\run_structure_checkpoint_campaign.ps1 `
+  -CheckpointSetId canonical-tradable-20250101-20260831-v16-clock-v2 `
+  -RuntimeDir D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v6\canonical-tradable-20250101-20260831-v16-clock-v2 `
+  -ResumeFromRuntime D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v5\canonical-tradable-20250101-20260831-v16-cert-v1 `
+  -Workers 80 `
+  -Rebuild
+```
+
+The wrapper delegates only to the v6 process supervisor. The former v2
+planning/build wrapper is retired and can no longer accidentally enforce a
+32-worker ceiling or invoke the superseded daily HTTP builder. `-Rebuild`
+forces a workstation-local Cargo build into the managed runtime target, even
+when an older runtime executable exists; this avoids both stale binaries and
+Windows trust failures caused by copying an executable from another machine.
 
 ## Certification and sealing
 

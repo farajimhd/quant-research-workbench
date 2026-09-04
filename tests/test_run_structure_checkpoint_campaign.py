@@ -13,6 +13,8 @@ from scripts.run_structure_checkpoint_campaign import (
     binary_candidates,
     parse_launcher_args,
     prepare_shards,
+    prepare_recovery_resume,
+    recovery_plan,
     request_campaign_stop,
     sha256_file,
     status_is_fully_certified,
@@ -105,6 +107,15 @@ def test_launcher_options_are_not_forwarded_to_native_campaign() -> None:
     assert campaign == ["--start-date", "2026-01-01", "--workers", "16"]
 
 
+def test_rebuild_option_is_owned_by_launcher() -> None:
+    launcher, campaign = parse_launcher_args(
+        ["--rebuild", "--checkpoint-set-id", "successor"]
+    )
+
+    assert launcher.rebuild is True
+    assert campaign == ["--checkpoint-set-id", "successor"]
+
+
 def test_process_worker_option_is_owned_by_launcher() -> None:
     launcher, campaign = parse_launcher_args(
         ["--process-workers", "32", "--workers", "32", "--checkpoint-set-id", "canonical-v16"]
@@ -112,6 +123,15 @@ def test_process_worker_option_is_owned_by_launcher() -> None:
 
     assert launcher.process_workers == 32
     assert campaign == ["--workers", "32", "--checkpoint-set-id", "canonical-v16"]
+
+
+def test_recovery_resume_is_owned_by_launcher() -> None:
+    launcher, campaign = parse_launcher_args(
+        ["--resume-from-runtime", r"D:\old", "--checkpoint-set-id", "successor"]
+    )
+
+    assert launcher.resume_from_runtime == r"D:\old"
+    assert campaign == ["--checkpoint-set-id", "successor"]
 
 
 def test_monitor_option_is_owned_by_launcher() -> None:
@@ -207,6 +227,72 @@ def test_shards_start_priority_tickers_and_balance_estimated_events() -> None:
     assert shards[0][0]["ticker"] == "SUGP"
     assert shards[1][0]["ticker"] == "JUNS"
     assert sorted(plan["ticker"] for shard in shards for plan in shard) == ["A", "B", "C", "JUNS", "SUGP"]
+
+
+def test_recovery_resume_binds_source_identity_and_prioritizes_strategy_tickers(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    (source / "planner").mkdir(parents=True)
+    plans = [
+        {"ticker": "A", "estimated_events": 1},
+        {"ticker": "JUNS", "estimated_events": 2},
+        {"ticker": "SUGP", "estimated_events": 3},
+    ]
+    universe_hash = hashlib.sha256(b"A\nJUNS\nSUGP\n").hexdigest()
+    manifest = {
+        "checkpoint_set_id": "legacy",
+        "start_date": "2025-01-01",
+        "end_date": "2026-08-31",
+        "universe_hash": universe_hash,
+    }
+    (source / "campaign-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (source / "planner" / "campaign-plan.json").write_text(
+        json.dumps(plans), encoding="utf-8"
+    )
+    (source / "campaign-status.json").write_text(
+        json.dumps({"status": "interrupted"}), encoding="utf-8"
+    )
+
+    args, source_runtime, source_manifest = prepare_recovery_resume(
+        ["--runtime-dir", str(target), "--checkpoint-set-id", "successor"], str(source)
+    )
+
+    assert source_runtime == source.resolve()
+    assert source_manifest == manifest
+    assert args[:4] == ["--priority-ticker", "SUGP", "--priority-ticker", "JUNS"]
+    assert args[args.index("--start-date") + 1] == "2025-01-01"
+    assert args[args.index("--end-date") + 1] == "2026-08-31"
+    assert args[args.index("--recovery-source-checkpoint-set-id") + 1] == "legacy"
+    assert [plan["ticker"] for plan in recovery_plan(source_runtime, source_manifest)] == [
+        "SUGP",
+        "JUNS",
+        "A",
+    ]
+
+
+def test_recovery_resume_refuses_to_mutate_source_runtime(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "campaign-manifest.json").write_text(
+        json.dumps(
+            {
+                "checkpoint_set_id": "legacy",
+                "start_date": "2025-01-01",
+                "end_date": "2026-08-31",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (source / "planner").mkdir()
+    (source / "planner" / "campaign-plan.json").write_text("[]", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="new runtime directory"):
+        prepare_recovery_resume(
+            ["--runtime-dir", str(source), "--checkpoint-set-id", "successor"],
+            str(source),
+        )
 
 
 def test_resume_archives_stale_status_and_starts_with_clean_truthful_queue(tmp_path: Path) -> None:
