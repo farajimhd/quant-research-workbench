@@ -1,7 +1,7 @@
 use crate::cache::{
     CacheEvidence, CacheMetrics, ChartSnapshot, DerivedSnapshot, DerivedUpdate,
-    HistoricalDerivedCache, HISTORICAL_CALCULATION_REVISION, HISTORICAL_CORPORATE_ACTION_REVISION,
-    HISTORICAL_ENGINE_VERSION,
+    HistoricalDerivedCache, IndicatorWarmupArtifact, HISTORICAL_CALCULATION_REVISION,
+    HISTORICAL_CORPORATE_ACTION_REVISION, HISTORICAL_ENGINE_VERSION,
 };
 use crate::config::HistoricalGatewayConfig;
 use crate::scanner::{
@@ -75,6 +75,27 @@ struct HistoryQuery {
 #[derive(Debug, Deserialize)]
 struct LatestCoverageQuery {
     before: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TradableUniverseQuery {
+    as_of: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct IndicatorWarmupRequest {
+    required_bars: Option<usize>,
+    session_start: DateTime<Utc>,
+    ticker: String,
+    timeframe: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct TradableUniverseResponse {
+    as_of: String,
+    count: usize,
+    source: &'static str,
+    tickers: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -228,6 +249,7 @@ pub fn app(state: AppState) -> Router {
         .route("/snapshot/status", get(status_snapshot))
         .route("/coverage", get(coverage))
         .route("/coverage/latest", get(latest_coverage))
+        .route("/universe/tradable", get(tradable_universe))
         .route("/source-plan", get(source_plan))
         .route("/source-revision", get(source_revision_snapshot))
         .route("/capability-catalog", get(capability_catalog_snapshot))
@@ -258,6 +280,10 @@ pub fn app(state: AppState) -> Router {
             post(materialize_generic_structure_checkpoint).layer(DefaultBodyLimit::max(
                 structure_checkpoint_request_max_bytes,
             )),
+        )
+        .route(
+            "/materialize/indicator-warmup",
+            post(materialize_indicator_warmup),
         )
         .route(
             "/materialize/generic-structure-snapshot",
@@ -913,6 +939,53 @@ async fn latest_coverage(
     state
         .source
         .latest_coverage_before(before)
+        .await
+        .map(Json)
+        .map_err(service_error)
+}
+
+async fn tradable_universe(
+    Query(query): Query<TradableUniverseQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<TradableUniverseResponse>, ApiError> {
+    let as_of = chrono::NaiveDate::parse_from_str(&query.as_of, "%Y-%m-%d")
+        .map_err(|_| bad_request("as_of must be an ISO date"))?;
+    let tickers = state
+        .source
+        .tradable_tickers(as_of)
+        .await
+        .map_err(service_error)?;
+    Ok(Json(TradableUniverseResponse {
+        as_of: query.as_of,
+        count: tickers.len(),
+        source: "q_live.feature_tradable_universe_v1:is_tradable",
+        tickers,
+    }))
+}
+
+async fn materialize_indicator_warmup(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<IndicatorWarmupRequest>,
+) -> Result<Json<IndicatorWarmupArtifact>, ApiError> {
+    if !is_loopback_bind(&state.config.bind) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "Indicator warm-up materialization is available only on loopback",
+                "error_code": "indicator_warmup_not_local",
+                "retryable": false,
+                "source": "qmd_history_gateway",
+            })),
+        ));
+    }
+    state
+        .cache
+        .prepare_indicator_warmup(
+            &request.ticker,
+            request.timeframe.as_deref().unwrap_or("1s"),
+            request.session_start,
+            request.required_bars.unwrap_or(200),
+        )
         .await
         .map(Json)
         .map_err(service_error)

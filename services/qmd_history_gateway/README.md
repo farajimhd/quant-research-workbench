@@ -441,3 +441,31 @@ At every v16 checkpoint load, the shared engine recomputes derived hold score
 fields from raw causal hold and accepted-break counts before applying another
 event. This repairs old checkpoint presentations and strategy evidence without
 purging or replaying otherwise valid checkpoint history.
+
+## Persisted one-second indicator warm-up
+
+Backtest and chart calculations use one revision-bound seed of 200 completed,
+non-empty one-second closes at the 04:00 ET session boundary. QMD History first
+uses a certified `q_live.events` tail when it contains execution timestamps. If
+that tail is unavailable or insufficient, it reads newest-first physical
+`(ticker, ordinal)` ranges from `market_sip_compact.events_YYYY`, planned from
+`events_ordinal_continuity`, and joins the immutable archive to its certified
+execution-clock sidecar. It never reads SIP flatfiles and never substitutes
+the SIP arrival clock for a missing execution clock.
+
+Artifacts are written atomically below
+`QMD_HISTORY_PREPARED_BAR_CACHE_ROOT/indicator-warmups/<date>/1s`. They include
+the exact closes, source revision, corporate-action revision, authority start,
+and fetched range counts. The Backtest setup materializes the selected ticker
+before enabling Run. To prepare the complete point-in-time tradable universe:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python scripts\warm_indicator_history.py --session-date 2026-08-21 --workers 8
+```
+
+The campaign uses a stable Rich display, bounded worker count, atomic progress
+manifest, automatic retries, and explicit ready, insufficient-history, and
+failed counts. `q_live.events` has no ticker-ordinal summary table; its certified
+coverage ledger and physical `(ticker, sip_timestamp_us, ...)` order are used.
+The historical compact archive uses its ingestion-owned ordinal summaries.

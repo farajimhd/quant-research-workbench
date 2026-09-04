@@ -65,6 +65,16 @@ type BacktestComparison = {
 
 type BacktestPeriodPreset = "premarket" | "regular" | "extended" | "custom";
 
+type IndicatorWarmup = {
+  bars: Array<{ bar_start: string; close: number }>;
+  cache_hit: boolean;
+  fetched_events: number;
+  fetched_ordinal_ranges: number;
+  required_bars: number;
+  status: "ready" | "insufficient_history";
+  ticker: string;
+};
+
 export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [sessionDate, setSessionDate] = useState(previousWeekdayIsoDate);
   const [initialCash, setInitialCash] = useState(10_000);
@@ -85,6 +95,8 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [controlBusy, setControlBusy] = useState("");
   const [runPlanId, setRunPlanId] = useState("");
   const [candidateId, setCandidateId] = useState("");
+  const [indicatorWarmup, setIndicatorWarmup] = useState<IndicatorWarmup | null>(null);
+  const [warmingIndicators, setWarmingIndicators] = useState(false);
   const normalizedTicker = ticker.trim().toUpperCase();
   const tickerReady = /^[A-Z][A-Z0-9.\-]{0,15}$/.test(normalizedTicker);
   const periodReady = startTime >= "04:00:00" && endTime <= "20:00:00" && startTime < endTime;
@@ -103,7 +115,28 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   }, []);
 
   useEffect(() => {
-    if (!candidateId || !tickerReady) {
+    if (!tickerReady) {
+      setIndicatorWarmup(null);
+      setWarmingIndicators(false);
+      return;
+    }
+    let cancelled = false;
+    setWarmingIndicators(true);
+    setIndicatorWarmup(null);
+    setError("");
+    api<IndicatorWarmup>("/api/trading/backtest/indicator-warmup", {
+      body: JSON.stringify({ session_date: sessionDate, ticker: normalizedTicker, timeframe: "1s", required_bars: 200 }),
+      method: "POST",
+      timeoutMs: 240_000,
+    })
+      .then((payload) => { if (!cancelled) setIndicatorWarmup(payload); })
+      .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); })
+      .finally(() => { if (!cancelled) setWarmingIndicators(false); });
+    return () => { cancelled = true; };
+  }, [normalizedTicker, refreshKey, sessionDate, tickerReady]);
+
+  useEffect(() => {
+    if (!candidateId || !tickerReady || indicatorWarmup?.status !== "ready") {
       setChecking(false);
       setPreflight(null);
       return;
@@ -146,7 +179,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [anchorDate, candidateId, endTime, mode, normalizedTicker, refreshKey, runPlanId, startTime, tickerReady]);
+  }, [anchorDate, candidateId, endTime, indicatorWarmup?.status, mode, normalizedTicker, refreshKey, runPlanId, startTime, tickerReady]);
 
   usePollingTask({
     enabled: Boolean(run && !["completed", "stopped", "failed"].includes(run.status)),
@@ -262,20 +295,37 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     />;
   }
 
+  const warmupCheck: HistoricalCheck = {
+    id: "indicator_warmup",
+    label: "1-second indicator warm-up",
+    required: true,
+    status: indicatorWarmup?.status === "ready" ? "ready" : indicatorWarmup?.status === "insufficient_history" ? "blocked" : "blocked",
+    summary: indicatorWarmup?.status === "ready"
+      ? `${indicatorWarmup.bars.length} canonical closes are persisted${indicatorWarmup.cache_hit ? " (cache hit)" : ""}.`
+      : indicatorWarmup?.status === "insufficient_history"
+        ? `Only ${indicatorWarmup.bars.length} of ${indicatorWarmup.required_bars} required closes are available.`
+        : warmingIndicators ? "Building a bounded warm-up from imported event ordinals…" : "Enter a ticker to prepare its indicator history.",
+    evidence: indicatorWarmup?.status === "ready"
+      ? `${indicatorWarmup.fetched_ordinal_ranges} ordinal range(s) · ${new Intl.NumberFormat("en-US").format(indicatorWarmup.fetched_events)} eligible trades`
+      : "market_sip_compact/q_live imported events only",
+  };
+  const launchChecks = [warmupCheck, ...(preflight?.checks ?? [])];
+  const launchReady = Boolean(preflight?.strategy_run_ready && indicatorWarmup?.status === "ready" && tickerReady && periodReady && resolvedSessionMatches);
+
   return (
     <TradingModeLaunch
       actionLabel="Run Backtest"
-      actionSummary={preflight?.strategy_run_ready && tickerReady && periodReady && resolvedSessionMatches ? <><strong>{normalizedTicker}</strong> will run on <strong>{sessionDate}</strong> from <strong>{startTime.slice(0, 5)}–{endTime.slice(0, 5)} ET</strong> using strategy revision <strong>{preflight.configuration_revision}</strong>.</> : !tickerReady ? "Enter one valid ticker before starting." : !periodReady ? "Choose a valid period inside 04:00–20:00 ET." : preflight && !resolvedSessionMatches ? "The selected date is not an exchange session. Choose a trading day." : "Resolve each required readiness item before starting."}
+      actionSummary={launchReady ? <><strong>{normalizedTicker}</strong> will run on <strong>{sessionDate}</strong> from <strong>{startTime.slice(0, 5)}–{endTime.slice(0, 5)} ET</strong> using strategy revision <strong>{preflight?.configuration_revision}</strong>.</> : !tickerReady ? "Enter one valid ticker before starting." : warmingIndicators ? "Preparing the persisted 1-second indicator warm-up." : !periodReady ? "Choose a valid period inside 04:00–20:00 ET." : preflight && !resolvedSessionMatches ? "The selected date is not an exchange session. Choose a trading day." : "Resolve each required readiness item before starting."}
       busy={creating}
-      checking={checking}
-      checks={preflight?.checks ?? []}
+      checking={checking || warmingIndicators}
+      checks={launchChecks}
       description="Evaluate an immutable Test Candidate across a bounded historical window using the same strategy, Portfolio, OMS, and journal contracts as Paper and Live."
       error={error}
       eyebrow="Backtest"
       icon={Gauge}
       onAction={createRun}
       onRefresh={() => setRefreshKey((value) => value + 1)}
-      ready={Boolean(preflight?.strategy_run_ready && tickerReady && periodReady && resolvedSessionMatches)}
+      ready={launchReady}
       secondary={results ? <HistoricalResults comparison={comparison} comparisonError={comparisonError} results={results} /> : null}
       title="Evaluate a strategy"
     >

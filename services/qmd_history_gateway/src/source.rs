@@ -121,6 +121,24 @@ pub struct StructureCampaignSession {
     pub source_revision: SourceRevision,
 }
 
+/// Immutable archive range used to seed a bounded indicator history. These
+/// ranges are read from the ingestion-owned continuity index; consumers never
+/// discover raw files or scan the archive by date.
+#[derive(Clone, Debug, Serialize)]
+pub struct IndicatorWarmupOrdinalSession {
+    pub event_count: u64,
+    pub first_ordinal: u64,
+    pub next_ordinal: u64,
+    pub session_date: NaiveDate,
+}
+
+#[derive(Clone, Debug)]
+pub struct RecentIndicatorTail {
+    pub authority_start: DateTime<Utc>,
+    pub events: Vec<LiveCompactEvent>,
+    pub source_revision: SourceRevision,
+}
+
 #[derive(Clone, Debug)]
 pub struct StructureCampaignManifest {
     pub authority_start: DateTime<Utc>,
@@ -200,7 +218,7 @@ pub struct LatestEventCoverage {
     pub ticker_count: u64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SourceRevision {
     pub complete_for_history: bool,
     pub event_count: u64,
@@ -594,20 +612,7 @@ impl HistoricalEventSource {
         );
         let sql = recent_coverage_sql(&table, window);
         let text = self.query(&sql).await?;
-        let rows = text
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| {
-                let row = serde_json::from_str::<CoverageIntervalRow>(line)
-                    .map_err(|error| format!("invalid recent coverage row: {error}"))?;
-                Ok(RecentCoverageRow {
-                    coverage_id: row.coverage_id,
-                    end: parse_clickhouse_datetime(&row.coverage_end_text)?,
-                    start: parse_clickhouse_datetime(&row.coverage_start_text)?,
-                    status: row.status,
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
+        let rows = parse_recent_coverage_rows(&text)?;
         Ok(materialize_confirmed_recent_coverage(&rows))
     }
 
@@ -1066,6 +1071,213 @@ impl HistoricalEventSource {
                 })
             })
             .collect()
+    }
+
+    /// Return the point-in-time tradable universe for a historical session.
+    /// The reference snapshot is the only universe authority; archive
+    /// presence alone does not make a symbol tradable.
+    pub async fn tradable_tickers(&self, as_of_date: NaiveDate) -> Result<Vec<String>, String> {
+        let sql = tradable_tickers_sql(&self.config.recent_database, as_of_date)?;
+        self.query_bounded(&sql, 60)
+            .await?
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(normalize_ticker)
+            .collect()
+    }
+
+    /// Resolve newest-first physical archive ranges before a session. The
+    /// continuity table is tiny relative to the event archive and lets the
+    /// caller request only the ordinal ranges needed to form its warm-up bars.
+    pub async fn indicator_warmup_ordinal_sessions(
+        &self,
+        ticker: &str,
+        before_date: NaiveDate,
+        max_sessions: usize,
+    ) -> Result<Vec<IndicatorWarmupOrdinalSession>, String> {
+        let ticker = normalize_ticker(ticker)?;
+        let sql = indicator_warmup_ordinal_sessions_sql(
+            &self.config.clickhouse_database,
+            &ticker,
+            before_date,
+            max_sessions.clamp(1, 512),
+        )?;
+        #[derive(Deserialize)]
+        struct Row {
+            event_count: u64,
+            first_ordinal: u64,
+            next_ordinal: u64,
+            session_date: String,
+        }
+        self.query_bounded(&sql, 30)
+            .await?
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let row = serde_json::from_str::<Row>(line)
+                    .map_err(|error| format!("invalid indicator warm-up ordinal row: {error}"))?;
+                let session_date = NaiveDate::parse_from_str(&row.session_date, "%Y-%m-%d")
+                    .map_err(|error| format!("invalid indicator warm-up session date: {error}"))?;
+                if row.event_count == 0
+                    || row.first_ordinal >= row.next_ordinal
+                    || row.next_ordinal - row.first_ordinal != row.event_count
+                {
+                    return Err(format!(
+                        "indicator warm-up ordinal range is not closed for {ticker} {session_date}"
+                    ));
+                }
+                Ok(IndicatorWarmupOrdinalSession {
+                    event_count: row.event_count,
+                    first_ordinal: row.first_ordinal,
+                    next_ordinal: row.next_ordinal,
+                    session_date,
+                })
+            })
+            .collect()
+    }
+
+    /// Read a certified recent-event tail directly from q_live. q_live is
+    /// physically ordered by ticker and SIP time rather than ticker ordinal,
+    /// so its ingestion coverage ledger—not a fabricated ordinal index—is the
+    /// restart and completeness authority.
+    pub async fn recent_indicator_tail(
+        &self,
+        ticker: &str,
+        before: DateTime<Utc>,
+        event_limit: usize,
+    ) -> Result<Option<RecentIndicatorTail>, String> {
+        let ticker = normalize_ticker(ticker)?;
+        let coverage_window = EventWindow {
+            start: before - chrono::Duration::days(14),
+            end: before,
+            tickers: vec![ticker.clone()],
+        };
+        let coverage_sql = recent_coverage_sql(
+            &format!(
+                "{}.{}",
+                self.config.recent_database, self.config.recent_event_coverage_table
+            ),
+            &coverage_window,
+        );
+        let coverage_text = self.query_bounded(&coverage_sql, 30).await?;
+        let rows = parse_recent_coverage_rows(&coverage_text)?;
+        let intervals = materialize_confirmed_recent_coverage(&rows);
+        let Some(interval) = intervals
+            .into_iter()
+            .filter(|interval| interval.end <= before)
+            .max_by_key(|interval| interval.end)
+        else {
+            return Ok(None);
+        };
+        // A prior-session tail may end at 20:00 ET before the closed overnight
+        // interval. Anything older than 16 hours is not a valid immediate seed.
+        if before - interval.end > chrono::Duration::hours(16) {
+            return Ok(None);
+        }
+        let ticker_filter = format!(" AND source.ticker IN ({})", sql_literal(&ticker));
+        let select = event_select(
+            &format!(
+                "{}.{}",
+                self.config.recent_database, self.config.recent_event_table
+            ),
+            true,
+            None,
+            interval.start,
+            interval.end,
+            &format!("{ticker_filter} AND bitAnd(source.event_meta, 1) = toUInt8(1)"),
+            None,
+        );
+        let limit = event_limit.clamp(1, self.config.max_events_per_request.min(250_000));
+        let sql = format!(
+            "SELECT * FROM ({select}) ORDER BY sip_timestamp_us DESC, ticker DESC, ordinal DESC LIMIT {limit} FORMAT JSONEachRow"
+        );
+        let text = self.query_bounded(&sql, 60).await?;
+        let mut events = text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                serde_json::from_str::<HistoricalRow>(line)
+                    .map(row_to_event)
+                    .map_err(|error| format!("invalid recent indicator event: {error}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        events.sort_by_key(|event| {
+            (
+                event.sip_timestamp_us,
+                event.ticker.clone(),
+                event.arrival_sequence,
+            )
+        });
+        let mut hasher = Sha256::new();
+        for row in &rows {
+            hasher.update(row.coverage_id.as_bytes());
+            hasher.update(row.status.as_bytes());
+            hasher.update(row.start.timestamp_micros().to_le_bytes());
+            hasher.update(row.end.timestamp_micros().to_le_bytes());
+        }
+        let coverage_token = format!("q-live-coverage-sha256:{:x}", hasher.finalize());
+        Ok(Some(RecentIndicatorTail {
+            authority_start: interval.start,
+            source_revision: SourceRevision {
+                complete_for_history: true,
+                event_count: events.len() as u64,
+                live_continuation_sequence: events.last().map(|event| event.arrival_sequence),
+                max_build_step: 0,
+                max_updated_at: interval.end.to_rfc3339(),
+                request_complete: true,
+                source_plan_hash: coverage_token.clone(),
+                source_tiers: vec!["recent".to_string()],
+                token: coverage_token,
+            },
+            events,
+        }))
+    }
+
+    /// Stream a bounded trade-only archive range in causal ordinal order.
+    /// Quote rows are deliberately excluded because EMA/MACD warm-up consumes
+    /// only canonical trade closes; entry-time VWAP is seeded separately from
+    /// the current session and still consumes the complete event stream.
+    pub fn stream_indicator_ordinal_range(
+        &self,
+        session_date: NaiveDate,
+        ticker: &str,
+        first_ordinal: u64,
+        next_ordinal: u64,
+        batch_size: usize,
+    ) -> Result<mpsc::Receiver<Result<Vec<LiveCompactEvent>, String>>, String> {
+        let ticker = normalize_ticker(ticker)?;
+        if first_ordinal >= next_ordinal {
+            return Err("indicator warm-up ordinal range must be non-empty".to_string());
+        }
+        let batch_size = batch_size.clamp(1, 100_000);
+        let (sender, receiver) = mpsc::channel(2);
+        let source = self.clone();
+        tokio::spawn(async move {
+            let select = ordinal_event_select_filtered(
+                &format!(
+                    "{}.{}{}",
+                    source.config.clickhouse_database,
+                    source.config.table_prefix,
+                    session_date.year()
+                ),
+                &format!(
+                    "{}.{}",
+                    source.config.execution_clock_database, source.config.execution_clock_table
+                ),
+                &ticker,
+                first_ordinal,
+                next_ordinal,
+                Some(1),
+            );
+            let sql = format!("SELECT * FROM ({select}) ORDER BY ordinal FORMAT TabSeparated");
+            if let Err(error) = source
+                .stream_query_rows(sql, batch_size, sender.clone())
+                .await
+            {
+                let _ = sender.send(Err(error)).await;
+            }
+        });
+        Ok(receiver)
     }
 
     /// Pin every piece of archive authority needed by one ticker before its
@@ -3482,6 +3694,21 @@ fn ordinal_event_select(
     first: u64,
     next: u64,
 ) -> String {
+    ordinal_event_select_filtered(table, execution_clock_table, ticker, first, next, None)
+}
+
+fn ordinal_event_select_filtered(
+    table: &str,
+    execution_clock_table: &str,
+    ticker: &str,
+    first: u64,
+    next: u64,
+    event_type: Option<u8>,
+) -> String {
+    let event_filter = event_type
+        .filter(|value| *value <= 1)
+        .map(|value| format!(" AND bitAnd(source.event_meta, 1) = toUInt8({value})"))
+        .unwrap_or_default();
     format!(
         r#"SELECT
             upper(source.ticker) AS ticker,
@@ -3514,9 +3741,63 @@ fn ordinal_event_select(
           ON execution_clock.ticker = source.ticker AND execution_clock.ordinal = source.ordinal
         PREWHERE source.ticker = {ticker}
           AND source.ordinal >= {first}
-          AND source.ordinal < {next}"#,
+          AND source.ordinal < {next}{event_filter}"#,
         ticker = sql_literal(ticker),
     )
+}
+
+fn tradable_tickers_sql(reference_database: &str, as_of_date: NaiveDate) -> Result<String, String> {
+    if !reference_database
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return Err("tradable universe database is not a valid identifier".to_string());
+    }
+    Ok(format!(
+        r#"SELECT upper(ticker) AS ticker
+           FROM `{reference_database}`.`feature_tradable_universe_v1` FINAL
+           WHERE universe_date = (
+               SELECT max(universe_date)
+               FROM `{reference_database}`.`feature_tradable_universe_v1` FINAL
+               WHERE universe_date <= toDate('{as_of_date}')
+           )
+             AND is_tradable = 1
+             AND match(upper(ticker), '^[A-Z0-9._-]{{1,32}}$')
+           GROUP BY ticker
+           ORDER BY ticker
+           FORMAT TSV"#,
+    ))
+}
+
+fn indicator_warmup_ordinal_sessions_sql(
+    archive_database: &str,
+    ticker: &str,
+    before_date: NaiveDate,
+    max_sessions: usize,
+) -> Result<String, String> {
+    if !archive_database
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return Err("indicator warm-up archive database is not a valid identifier".to_string());
+    }
+    Ok(format!(
+        r#"SELECT
+               toString(source.source_date) AS session_date,
+               argMax(source.event_count, tuple(source.build_step, source.updated_at)) AS event_count,
+               argMax(source.next_ordinal, tuple(source.build_step, source.updated_at))
+                   - argMax(source.event_count, tuple(source.build_step, source.updated_at)) AS first_ordinal,
+               argMax(source.next_ordinal, tuple(source.build_step, source.updated_at)) AS next_ordinal
+           FROM `{archive_database}`.`events_ordinal_continuity` AS source
+           PREWHERE source.ticker = {ticker}
+             AND source.source_date < toDate('{before_date}')
+           GROUP BY source.source_date
+           HAVING event_count > 0
+           ORDER BY source_date DESC
+           LIMIT {max_sessions}
+           FORMAT JSONEachRow"#,
+        ticker = sql_literal(ticker),
+    ))
 }
 
 fn ticker_filter(tickers: &[String]) -> Result<String, String> {
@@ -3575,6 +3856,22 @@ fn coverage_run_id(coverage_id: &str, prefix: &str) -> String {
         .next()
         .unwrap_or_default()
         .to_string()
+}
+
+fn parse_recent_coverage_rows(text: &str) -> Result<Vec<RecentCoverageRow>, String> {
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let row = serde_json::from_str::<CoverageIntervalRow>(line)
+                .map_err(|error| format!("invalid recent coverage row: {error}"))?;
+            Ok(RecentCoverageRow {
+                coverage_id: row.coverage_id,
+                end: parse_clickhouse_datetime(&row.coverage_end_text)?,
+                start: parse_clickhouse_datetime(&row.coverage_start_text)?,
+                status: row.status,
+            })
+        })
+        .collect()
 }
 
 fn materialize_confirmed_recent_coverage(rows: &[RecentCoverageRow]) -> Vec<CoverageInterval> {
@@ -4445,9 +4742,10 @@ mod tests {
     use super::{
         adaptive_structure_chunk_minutes, append_scheduled_gap_segments, archive_session_end_utc,
         build_source_plan, completed_session_dates_between_sql, coverage_precedes, event_select,
-        first_json_difference_path, latest_coverage_summary_sql, latest_coverage_target_date_sql,
-        macro_bar_is_closed, materialize_confirmed_recent_coverage, merge_coverage_intervals,
-        merge_daily_chart_bars, normalize_ticker, ordinal_event_select, parse_historical_tsv_row,
+        first_json_difference_path, indicator_warmup_ordinal_sessions_sql,
+        latest_coverage_summary_sql, latest_coverage_target_date_sql, macro_bar_is_closed,
+        materialize_confirmed_recent_coverage, merge_coverage_intervals, merge_daily_chart_bars,
+        normalize_ticker, ordinal_event_select, parse_historical_tsv_row,
         persisted_structure_events_sql, recent_coverage_sql, recent_daily_trade_bars_sql,
         row_to_event, split_adjustment_factors, structure_campaign_continuity_sql,
         structure_campaign_tickers_sql, structure_split_adjustments_sql,
@@ -4478,6 +4776,22 @@ mod tests {
         assert!(sql.contains("AND source.ticker IN ('AAPL')\n        WHERE 1"));
         assert!(sql.contains("source.execution_timestamp_us AS execution_timestamp_us"));
         assert!(!sql.contains("WHERE 1 AND source.ticker IN ('AAPL')"));
+    }
+
+    #[test]
+    fn indicator_warmup_uses_reverse_ticker_ordinal_ranges() {
+        let sql = indicator_warmup_ordinal_sessions_sql(
+            "market_sip_compact",
+            "SUGP",
+            NaiveDate::from_ymd_opt(2026, 8, 21).unwrap(),
+            260,
+        )
+        .unwrap();
+        assert!(sql.contains("events_ordinal_continuity"));
+        assert!(sql.contains("PREWHERE source.ticker = 'SUGP'"));
+        assert!(sql.contains("source.source_date < toDate('2026-08-21')"));
+        assert!(sql.contains("ORDER BY source_date DESC"));
+        assert!(sql.contains("LIMIT 260"));
     }
 
     #[test]

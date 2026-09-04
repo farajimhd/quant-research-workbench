@@ -22,6 +22,7 @@ from src.backend.qmd_gateway_client import (
     qmd_history_base_url,
     qmd_history_get_json,
     qmd_historical_source_revision,
+    qmd_materialize_indicator_warmup,
     qmd_materialize_historical_watchlist_timeline,
     qmd_materialize_historical_watchlist_timelines,
     qmd_validate_historical_watchlist_plan,
@@ -49,6 +50,23 @@ from src.request_context import begin_request_context, current_request_identity,
 
 
 class QmdGatewayClientTests(unittest.TestCase):
+    @patch("src.backend.qmd_gateway_client.qmd_history_post_json")
+    def test_indicator_warmup_is_typed_and_ticker_bound(self, post_json) -> None:
+        post_json.return_value = {
+            "ticker": "SUGP",
+            "timeframe": "1s",
+            "status": "ready",
+            "bars": [{"bar_start": "2026-08-20T23:59:59Z", "close": 3.4}],
+        }
+
+        payload = qmd_materialize_indicator_warmup(
+            ticker="sugp", session_start="2026-08-21T08:00:00Z"
+        )
+
+        self.assertEqual(payload["ticker"], "SUGP")
+        self.assertEqual(post_json.call_args.args[0], "/materialize/indicator-warmup")
+        self.assertEqual(post_json.call_args.args[1]["required_bars"], 200)
+
     def test_unified_structure_columns_request_generic_structure_capability(self) -> None:
         self.assertIn(
             "qmd_generic_structure",

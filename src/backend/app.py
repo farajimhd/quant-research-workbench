@@ -162,6 +162,7 @@ from src.backend.qmd_gateway_client import (
     qmd_historical_scanner_snapshot,
     qmd_live_market_state,
     qmd_market_signals,
+    qmd_materialize_indicator_warmup,
     qmd_service_status,
     qmd_status,
     qmd_websocket_url,
@@ -954,6 +955,13 @@ class HistoricalPreflightRequest(BaseModel):
     start_time: str = "04:00:00"
     end_time: str = "20:00:00"
     tickers: list[str] = Field(default_factory=list, max_length=100)
+
+
+class IndicatorWarmupSubmit(BaseModel):
+    session_date: date
+    ticker: str = Field(min_length=1, max_length=32)
+    timeframe: str = Field(default="1s", pattern="^1s$")
+    required_bars: int = Field(default=200, ge=1, le=10_000)
 
 
 class HistoricalBarChunkRequest(BaseModel):
@@ -5233,6 +5241,25 @@ def trading_historical_window(payload: HistoricalWindowPreviewRequest) -> dict[s
 @app.post("/api/trading/historical-preflight")
 async def trading_historical_preflight(payload: HistoricalPreflightRequest) -> dict[str, Any]:
     return await asyncio.to_thread(_trading_historical_preflight_payload, payload)
+
+
+@app.post("/api/trading/backtest/indicator-warmup")
+async def trading_backtest_indicator_warmup(payload: IndicatorWarmupSubmit) -> dict[str, Any]:
+    session_start = datetime.combine(
+        payload.session_date,
+        datetime.min.time().replace(hour=4),
+        tzinfo=ZoneInfo("America/New_York"),
+    ).astimezone(UTC)
+    try:
+        return await asyncio.to_thread(
+            qmd_materialize_indicator_warmup,
+            ticker=payload.ticker,
+            session_start=session_start.isoformat(),
+            timeframe=payload.timeframe,
+            required_bars=payload.required_bars,
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 def _trading_historical_preflight_payload(

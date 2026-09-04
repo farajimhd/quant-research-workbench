@@ -708,6 +708,30 @@ def qmd_historical_source_revision(
     return payload
 
 
+def qmd_materialize_indicator_warmup(
+    *, ticker: str, session_start: str, timeframe: str = "1s", required_bars: int = 200
+) -> dict[str, Any]:
+    payload = qmd_history_post_json(
+        "/materialize/indicator-warmup",
+        {
+            "ticker": str(ticker).strip().upper(),
+            "timeframe": timeframe,
+            "session_start": session_start,
+            "required_bars": required_bars,
+        },
+        timeout=180,
+    )
+    if not isinstance(payload, dict):
+        raise RuntimeError("QMD History returned an invalid indicator warm-up artifact")
+    if str(payload.get("ticker") or "").upper() != str(ticker).strip().upper():
+        raise RuntimeError("QMD History returned another ticker's indicator warm-up")
+    if str(payload.get("timeframe") or "") != timeframe:
+        raise RuntimeError("QMD History returned another indicator warm-up timeframe")
+    if str(payload.get("status") or "") not in {"ready", "insufficient_history"}:
+        raise RuntimeError("QMD History returned an invalid indicator warm-up status")
+    return payload
+
+
 def qmd_materialize_historical_watchlist_timeline(
     plan: dict[str, Any],
     *,

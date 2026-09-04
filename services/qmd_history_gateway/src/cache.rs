@@ -1,7 +1,7 @@
 use crate::config::HistoricalGatewayConfig;
 use crate::source::{
-    EventWindow, HistoricalCursor, HistoricalEventSource, PersistedStructureCheckpointSeed,
-    SessionVwapSeed, SourceRevision,
+    split_adjustment_factors, EventWindow, HistoricalCursor, HistoricalEventSource,
+    PersistedStructureCheckpointSeed, SessionVwapSeed, SourceRevision,
 };
 use crate::structure_checkpoint::{
     persisted_structure_book_seed, rebuild_trade_structure_checkpoint,
@@ -40,11 +40,14 @@ use std::sync::Mutex as StdMutex;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, OnceCell, Semaphore};
 
 pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v35";
-pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v55";
+pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v56";
 pub const HISTORICAL_CORPORATE_ACTION_REVISION: &str = "retrospective-split-adjusted-v2";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
 const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 11;
 const PREPARED_STRUCTURE_SEED_CACHE_SCHEMA_VERSION: u16 = 3;
+const INDICATOR_WARMUP_CACHE_SCHEMA_VERSION: u16 = 1;
+const INDICATOR_WARMUP_MAX_SESSIONS: usize = 260;
+const INDICATOR_WARMUP_ORDINALS_PER_QUERY: u64 = 50_000;
 // Prepared structure books have their own algorithm authority. Bar-indicator
 // changes (for example MACD or VWAP warm-up fixes) must not invalidate and
 // cold-rebuild the complete 180-day level book. v43 is the last legacy shared
@@ -193,6 +196,30 @@ struct PreparedStructureSeedCacheArtifact {
 struct IndicatorPageWarmup {
     ema_closes: Vec<f64>,
     session_vwap_seed: SessionVwapSeed,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct IndicatorWarmupBar {
+    pub bar_start: DateTime<Utc>,
+    pub close: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct IndicatorWarmupArtifact {
+    pub schema_version: u16,
+    pub calculation_revision: String,
+    pub corporate_action_revision: String,
+    pub ticker: String,
+    pub timeframe: String,
+    pub session_start: DateTime<Utc>,
+    pub authority_start: DateTime<Utc>,
+    pub required_bars: usize,
+    pub bars: Vec<IndicatorWarmupBar>,
+    pub fetched_events: u64,
+    pub fetched_ordinal_ranges: u64,
+    pub source_revision: SourceRevision,
+    pub status: String,
+    pub cache_hit: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -635,6 +662,292 @@ impl HistoricalDerivedCache {
         }
     }
 
+    /// Materialize one durable, revision-bound EMA/MACD seed before a
+    /// historical session. The archive is read newest-first by physical
+    /// `(ticker, ordinal)` ranges and only enough history to obtain the
+    /// requested number of complete non-empty bars is retained.
+    pub async fn prepare_indicator_warmup(
+        &self,
+        ticker: &str,
+        timeframe: &str,
+        session_start: DateTime<Utc>,
+        required_bars: usize,
+    ) -> Result<IndicatorWarmupArtifact, String> {
+        let ticker = ticker.trim().to_ascii_uppercase();
+        if ticker.is_empty() {
+            return Err("indicator warm-up requires a ticker".to_string());
+        }
+        let resolution_us = parse_resolution_us(timeframe)
+            .ok_or_else(|| format!("unsupported indicator warm-up timeframe {timeframe}"))?;
+        if timeframe != "1s" {
+            return Err("indicator warm-up currently requires the canonical 1s timeframe".into());
+        }
+        let required_bars = required_bars.clamp(1, 10_000);
+        let path = indicator_warmup_cache_path(
+            &self.config.prepared_bar_cache_root,
+            &ticker,
+            timeframe,
+            session_start,
+        );
+        if let Some(mut artifact) =
+            read_indicator_warmup_cache(&path, &ticker, timeframe, session_start)?
+        {
+            let revision = if artifact.source_revision.source_tiers == ["recent"] {
+                self.source
+                    .recent_indicator_tail(&ticker, session_start, 1)
+                    .await?
+                    .map(|tail| tail.source_revision)
+                    .ok_or_else(|| {
+                        "persisted recent indicator authority is no longer covered".to_string()
+                    })?
+            } else {
+                self.source
+                    .source_revision(&EventWindow {
+                        start: artifact.authority_start,
+                        end: session_start,
+                        tickers: vec![ticker.clone()],
+                    })
+                    .await?
+            };
+            if revision.token == artifact.source_revision.token
+                && artifact.required_bars == required_bars
+                && artifact.calculation_revision == HISTORICAL_CALCULATION_REVISION
+                && artifact.corporate_action_revision == HISTORICAL_CORPORATE_ACTION_REVISION
+            {
+                artifact.cache_hit = true;
+                return Ok(artifact);
+            }
+        }
+
+        let _permit = self
+            .fetch_permits
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| "indicator warm-up fetch capacity closed".to_string())?;
+
+        for recent_limit in [10_000, 50_000, 250_000] {
+            let Some(recent) = self
+                .source
+                .recent_indicator_tail(&ticker, session_start, recent_limit)
+                .await?
+            else {
+                break;
+            };
+            let mut recent_bars = self
+                .indicator_warmup_bars(timeframe, session_start, &recent.events)
+                .await?;
+            // A LIMIT-sized tail can begin inside a one-second bucket. If the
+            // query returned fewer rows than requested, it covered the full
+            // certified interval and its first bucket is complete.
+            if recent.events.len() == recent_limit && !recent_bars.is_empty() {
+                recent_bars.remove(0);
+            }
+            if recent_bars.len() >= required_bars {
+                if recent_bars.len() > required_bars {
+                    recent_bars.drain(..recent_bars.len() - required_bars);
+                }
+                let adjustments = self
+                    .source
+                    .structure_split_adjustments(&ticker, recent.authority_start, session_start)
+                    .await?;
+                for bar in &mut recent_bars {
+                    let (price_factor, _) = split_adjustment_factors(bar.bar_start, &adjustments);
+                    bar.close *= price_factor;
+                }
+                let artifact = IndicatorWarmupArtifact {
+                    schema_version: INDICATOR_WARMUP_CACHE_SCHEMA_VERSION,
+                    calculation_revision: HISTORICAL_CALCULATION_REVISION.to_string(),
+                    corporate_action_revision: HISTORICAL_CORPORATE_ACTION_REVISION.to_string(),
+                    ticker,
+                    timeframe: timeframe.to_string(),
+                    session_start,
+                    authority_start: recent.authority_start,
+                    required_bars,
+                    bars: recent_bars,
+                    fetched_events: recent.events.len() as u64,
+                    fetched_ordinal_ranges: 0,
+                    source_revision: recent.source_revision,
+                    status: "ready".to_string(),
+                    cache_hit: false,
+                };
+                write_indicator_warmup_cache(&path, &artifact)?;
+                return Ok(artifact);
+            }
+            if recent.events.len() < recent_limit {
+                break;
+            }
+        }
+        let session_date = session_start.with_timezone(&New_York).date_naive();
+        let sessions = self
+            .source
+            .indicator_warmup_ordinal_sessions(&ticker, session_date, INDICATOR_WARMUP_MAX_SESSIONS)
+            .await?;
+        let mut events = Vec::new();
+        let mut fetched_events = 0_u64;
+        let mut fetched_ordinal_ranges = 0_u64;
+        let mut authority_start = session_start;
+        let mut oldest_range_starts_at_session_boundary = false;
+        let mut bars = Vec::new();
+        'sessions: for session in sessions {
+            let mut next = session.next_ordinal;
+            while next > session.first_ordinal {
+                let first = next
+                    .saturating_sub(INDICATOR_WARMUP_ORDINALS_PER_QUERY)
+                    .max(session.first_ordinal);
+                let mut receiver = self.source.stream_indicator_ordinal_range(
+                    session.session_date,
+                    &ticker,
+                    first,
+                    next,
+                    self.config.batch_size.max(25_000),
+                )?;
+                while let Some(batch) = receiver.recv().await {
+                    let batch = batch?;
+                    fetched_events = fetched_events.saturating_add(batch.len() as u64);
+                    events.extend(batch);
+                }
+                fetched_ordinal_ranges = fetched_ordinal_ranges.saturating_add(1);
+                authority_start = New_York
+                    .with_ymd_and_hms(
+                        session.session_date.year(),
+                        session.session_date.month(),
+                        session.session_date.day(),
+                        4,
+                        0,
+                        0,
+                    )
+                    .single()
+                    .ok_or_else(|| "invalid indicator warm-up session boundary".to_string())?
+                    .with_timezone(&Utc);
+                oldest_range_starts_at_session_boundary = first == session.first_ordinal;
+
+                let candidate_seconds = events
+                    .iter()
+                    .filter_map(|event| {
+                        (event.execution_timestamp_us > 0)
+                            .then_some(event.execution_timestamp_us / resolution_us)
+                    })
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len();
+                if candidate_seconds >= required_bars.saturating_add(1) {
+                    bars = self
+                        .indicator_warmup_bars(timeframe, session_start, &events)
+                        .await?;
+                    let complete_count = bars.len().saturating_sub(usize::from(
+                        !oldest_range_starts_at_session_boundary && !bars.is_empty(),
+                    ));
+                    if complete_count >= required_bars {
+                        break 'sessions;
+                    }
+                }
+                next = first;
+            }
+        }
+        if bars.is_empty() && !events.is_empty() {
+            bars = self
+                .indicator_warmup_bars(timeframe, session_start, &events)
+                .await?;
+        }
+        if !oldest_range_starts_at_session_boundary && !bars.is_empty() {
+            bars.remove(0);
+        }
+        if bars.len() > required_bars {
+            bars.drain(..bars.len() - required_bars);
+        }
+        let adjustments = self
+            .source
+            .structure_split_adjustments(&ticker, authority_start, session_start)
+            .await?;
+        for bar in &mut bars {
+            let (price_factor, _) = split_adjustment_factors(bar.bar_start, &adjustments);
+            bar.close *= price_factor;
+        }
+        let source_revision = self
+            .source
+            .source_revision(&EventWindow {
+                start: authority_start,
+                end: session_start,
+                tickers: vec![ticker.clone()],
+            })
+            .await?;
+        let status = if bars.len() == required_bars {
+            "ready"
+        } else {
+            "insufficient_history"
+        };
+        let artifact = IndicatorWarmupArtifact {
+            schema_version: INDICATOR_WARMUP_CACHE_SCHEMA_VERSION,
+            calculation_revision: HISTORICAL_CALCULATION_REVISION.to_string(),
+            corporate_action_revision: HISTORICAL_CORPORATE_ACTION_REVISION.to_string(),
+            ticker,
+            timeframe: timeframe.to_string(),
+            session_start,
+            authority_start,
+            required_bars,
+            bars,
+            fetched_events,
+            fetched_ordinal_ranges,
+            source_revision,
+            status: status.to_string(),
+            cache_hit: false,
+        };
+        write_indicator_warmup_cache(&path, &artifact)?;
+        Ok(artifact)
+    }
+
+    async fn indicator_warmup_bars(
+        &self,
+        timeframe: &str,
+        session_start: DateTime<Utc>,
+        events: &[LiveCompactEvent],
+    ) -> Result<Vec<IndicatorWarmupBar>, String> {
+        let store = SharedBarStore::new_without_structure(
+            vec![timeframe.to_string()],
+            self.config.cache_max_bars_per_entry,
+            1,
+            self.source.trade_aggregation_rules(),
+        );
+        let shard = store.shard(0);
+        let mut ordered = events.iter().collect::<Vec<_>>();
+        ordered.sort_by_key(|event| {
+            (
+                event.sip_timestamp_us,
+                event.ticker.as_str(),
+                event.arrival_sequence,
+            )
+        });
+        let mut rows = Vec::new();
+        for compact in ordered {
+            let event = self.source.market_event(compact);
+            for bar in shard.apply_event(&event).await {
+                if bar.timeframe.eq_ignore_ascii_case(timeframe)
+                    && bar.bar_end <= session_start
+                    && valid_price_bar(&bar)
+                {
+                    rows.push(IndicatorWarmupBar {
+                        bar_start: bar.bar_start,
+                        close: bar.close,
+                    });
+                }
+            }
+        }
+        for bar in shard.finalize_due(session_start).await {
+            if bar.timeframe.eq_ignore_ascii_case(timeframe)
+                && bar.bar_end <= session_start
+                && valid_price_bar(&bar)
+            {
+                rows.push(IndicatorWarmupBar {
+                    bar_start: bar.bar_start,
+                    close: bar.close,
+                });
+            }
+        }
+        rows.sort_by_key(|bar| bar.bar_start);
+        rows.dedup_by_key(|bar| bar.bar_start);
+        Ok(rows)
+    }
+
     async fn indicator_page_warmup(
         &self,
         window: &EventWindow,
@@ -642,55 +955,19 @@ impl HistoricalDerivedCache {
         timeframe: &str,
         live_continuation_sequence: Option<u64>,
     ) -> Result<IndicatorPageWarmup, String> {
-        // Every bounded page must inherit the same EMA/MACD authority as a
-        // calculation that began at the 04:00 ET session anchor. Seeding from
-        // only the last N bars before each page silently changes the EMA and
-        // MACD state as the page start advances. Start with the fixed
-        // pre-session warm-up, then causally advance it through persisted bars
-        // from the session anchor to this page. If the historical bar table has
-        // no rows, reconstruct from canonical history; this path must not make
-        // a backtest depend on QMD Live availability.
+        // Every bounded page inherits one durable seed at the 04:00 ET session
+        // anchor. The seed is built from bounded physical ordinal ranges and
+        // pinned to its source revision, so pages and backtests cannot drift
+        // according to where their requested window begins.
         let session_start = session_anchor(window.start)?;
-        let warmup_start = indicator_warmup_start(session_start)?;
-        let warmup_window = EventWindow {
-            start: warmup_start,
-            end: session_start,
-            tickers: vec![ticker.to_ascii_uppercase()],
-        };
-        let mut ema_closes: Vec<f64> = self
-            .source
-            .persisted_intraday_chart_bars(
-                &warmup_window,
-                ticker,
-                timeframe,
-                INDICATOR_EMA_WARMUP_BARS,
-                session_start,
-                None,
-                false,
-            )
-            .await?
-            .map(|snapshot| {
-                snapshot
-                    .bars
-                    .into_iter()
-                    .filter_map(|bar| {
-                        (bar.close.is_finite() && bar.close > 0.0).then_some(bar.close)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        if ema_closes.is_empty() {
-            ema_closes.extend(
-                self.exact_indicator_prefix(
-                    warmup_window,
-                    timeframe,
-                    live_continuation_sequence,
-                    Some(INDICATOR_EMA_WARMUP_BARS),
-                )
-                .await?
-                .closes,
-            );
-        }
+        let artifact = self
+            .prepare_indicator_warmup(ticker, timeframe, session_start, INDICATOR_EMA_WARMUP_BARS)
+            .await?;
+        let mut ema_closes = artifact
+            .bars
+            .into_iter()
+            .map(|bar| bar.close)
+            .collect::<Vec<_>>();
         if window.start > session_start {
             // Same-session EMA state must be advanced with the identical raw
             // trade authority and bar aggregation used by the requested page.
@@ -2960,6 +3237,86 @@ fn prepared_structure_seed_cache_path(root: &Path, key: &str) -> PathBuf {
     ))
 }
 
+fn indicator_warmup_cache_path(
+    root: &Path,
+    ticker: &str,
+    timeframe: &str,
+    session_start: DateTime<Utc>,
+) -> PathBuf {
+    let session_date = session_start.with_timezone(&New_York).date_naive();
+    root.join("indicator-warmups")
+        .join(session_date.to_string())
+        .join(timeframe)
+        .join(format!(
+            "v{INDICATOR_WARMUP_CACHE_SCHEMA_VERSION}-{ticker}.json"
+        ))
+}
+
+fn read_indicator_warmup_cache(
+    path: &Path,
+    expected_ticker: &str,
+    expected_timeframe: &str,
+    expected_session_start: DateTime<Utc>,
+) -> Result<Option<IndicatorWarmupArtifact>, String> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("failed to read {}: {error}", path.display())),
+    };
+    let artifact = serde_json::from_slice::<IndicatorWarmupArtifact>(&bytes)
+        .map_err(|error| format!("failed to decode {}: {error}", path.display()))?;
+    if artifact.schema_version != INDICATOR_WARMUP_CACHE_SCHEMA_VERSION
+        || !artifact.ticker.eq_ignore_ascii_case(expected_ticker)
+        || !artifact.timeframe.eq_ignore_ascii_case(expected_timeframe)
+        || artifact.session_start != expected_session_start
+        || artifact
+            .bars
+            .windows(2)
+            .any(|pair| pair[0].bar_start >= pair[1].bar_start)
+        || artifact.bars.iter().any(|bar| {
+            !bar.close.is_finite() || bar.close <= 0.0 || bar.bar_start >= expected_session_start
+        })
+    {
+        return Err(format!(
+            "{} contains an incompatible indicator warm-up",
+            path.display()
+        ));
+    }
+    Ok(Some(artifact))
+}
+
+fn write_indicator_warmup_cache(
+    path: &Path,
+    artifact: &IndicatorWarmupArtifact,
+) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("indicator warm-up path has no parent: {}", path.display()))?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
+    let bytes = serde_json::to_vec(artifact)
+        .map_err(|error| format!("failed to serialize indicator warm-up: {error}"))?;
+    let temporary = parent.join(format!(
+        ".{}.{}.tmp",
+        path.file_name().unwrap_or_default().to_string_lossy(),
+        std::process::id(),
+    ));
+    fs::write(&temporary, bytes)
+        .map_err(|error| format!("failed to write {}: {error}", temporary.display()))?;
+    if path.exists() {
+        fs::remove_file(path)
+            .map_err(|error| format!("failed to replace {}: {error}", path.display()))?;
+    }
+    fs::rename(&temporary, path).map_err(|error| {
+        let _ = fs::remove_file(&temporary);
+        format!(
+            "failed to promote {} to {}: {error}",
+            temporary.display(),
+            path.display()
+        )
+    })
+}
+
 fn read_prepared_structure_seed_cache(
     path: &Path,
     expected_key: &str,
@@ -3325,12 +3682,14 @@ mod tests {
     use super::{
         apply_structure_projection_row, bounded_encountered_structure_levels,
         cache_event_type_filter, cache_key, encountered_structure_levels_for_session,
-        ensure_monotonic_bar_start, historical_requirement, prepared_bar_cache_path,
-        prepared_indicator_projection, prepared_structure_seed_cache_path, read_prepared_bar_cache,
-        read_prepared_structure_seed_cache, revision_window, session_anchor, split_event_window,
-        stable_hash_hex, structure_events_overlapping, structure_seed_cache_key,
-        structure_seed_cache_key_for_revision, write_prepared_bar_cache,
-        write_prepared_structure_seed_cache, CacheEntry, CacheProfile, ChartBarRow, EntryState,
+        ensure_monotonic_bar_start, historical_requirement, indicator_warmup_cache_path,
+        prepared_bar_cache_path, prepared_indicator_projection, prepared_structure_seed_cache_path,
+        read_indicator_warmup_cache, read_prepared_bar_cache, read_prepared_structure_seed_cache,
+        revision_window, session_anchor, split_event_window, stable_hash_hex,
+        structure_events_overlapping, structure_seed_cache_key,
+        structure_seed_cache_key_for_revision, write_indicator_warmup_cache,
+        write_prepared_bar_cache, write_prepared_structure_seed_cache, CacheEntry, CacheProfile,
+        ChartBarRow, EntryState, IndicatorWarmupArtifact, IndicatorWarmupBar,
         PreparedBarCacheArtifact, PreparedStructureSeedCacheArtifact, SourceRevision,
         StructureProjectionBuilder, GENERIC_STRUCTURE_ALGORITHM_VERSION,
         HISTORICAL_CALCULATION_REVISION, HISTORICAL_CORPORATE_ACTION_REVISION,
@@ -3436,6 +3795,60 @@ mod tests {
             "qmd-structure-v{GENERIC_STRUCTURE_ALGORITHM_VERSION}-{STRUCTURE_HOLD_SCORE_REVISION}"
         )));
         assert!(legacy.contains(LEGACY_STRUCTURE_CALCULATION_REVISION));
+    }
+
+    #[test]
+    fn indicator_warmup_artifact_is_persistent_and_identity_checked() {
+        let root = std::env::temp_dir().join(format!(
+            "qmd-indicator-warmup-test-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let session_start = Utc.with_ymd_and_hms(2026, 8, 21, 8, 0, 0).unwrap();
+        let path = indicator_warmup_cache_path(&root, "SUGP", "1s", session_start);
+        let artifact = IndicatorWarmupArtifact {
+            schema_version: 1,
+            calculation_revision: HISTORICAL_CALCULATION_REVISION.to_string(),
+            corporate_action_revision: HISTORICAL_CORPORATE_ACTION_REVISION.to_string(),
+            ticker: "SUGP".to_string(),
+            timeframe: "1s".to_string(),
+            session_start,
+            authority_start: session_start - Duration::days(1),
+            required_bars: 2,
+            bars: vec![
+                IndicatorWarmupBar {
+                    bar_start: session_start - Duration::seconds(2),
+                    close: 3.40,
+                },
+                IndicatorWarmupBar {
+                    bar_start: session_start - Duration::seconds(1),
+                    close: 3.41,
+                },
+            ],
+            fetched_events: 20,
+            fetched_ordinal_ranges: 1,
+            source_revision: SourceRevision {
+                complete_for_history: true,
+                event_count: 20,
+                live_continuation_sequence: None,
+                max_build_step: 1,
+                max_updated_at: "2026-08-21T00:00:00Z".to_string(),
+                request_complete: true,
+                source_plan_hash: "test-plan".to_string(),
+                source_tiers: vec!["archive".to_string()],
+                token: "test-revision".to_string(),
+            },
+            status: "ready".to_string(),
+            cache_hit: false,
+        };
+        write_indicator_warmup_cache(&path, &artifact).unwrap();
+        let restored = read_indicator_warmup_cache(&path, "SUGP", "1s", session_start)
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.bars.len(), 2);
+        assert_eq!(restored.source_revision.token, "test-revision");
+        assert!(read_indicator_warmup_cache(&path, "JUNS", "1s", session_start).is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
