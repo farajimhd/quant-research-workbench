@@ -488,6 +488,80 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
         )
         return manager, journal
 
+    async def test_live_premarket_urgent_exit_stays_limit_and_follows_bid(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            broker = RecordingBroker()
+            manager, journal = await self._manager(
+                directory,
+                broker,
+                policy=BrokerCommunicationPolicy(),
+            )
+            real_planner = IbkrStrategyOrderPlanner()
+            instrument = InstrumentContract("TEST", 123, "TEST", "STK", "USD")
+            manager.planner = lambda strategy_intent, account_id, _event: real_planner.plan(
+                account_id=account_id,
+                instrument=instrument,
+                intent=strategy_intent,
+                strategy_id="strategy-1",
+                strategy_revision=1,
+            )
+            broker._positions["DU1"][123] = _Position(
+                conid=123,
+                ticker="TEST",
+                quantity=100.0,
+                avg_cost=9.50,
+            )
+            request = replace(
+                intent(action="exit", urgency="urgent", quantity=100),
+                intent_id="premarket-incomplete-target-exit",
+                outside_rth=True,
+                execution_policy=ExecutionPolicy(
+                    policy_id="premarket-bid-follow",
+                    name=ExecutionPolicyName.ADAPTIVE_URGENT,
+                    envelope=ExecutionEnvelope(
+                        deadline_ms=5_000,
+                        maximum_reprices=4,
+                        minimum_reprice_interval_ms=10_000,
+                    ),
+                ),
+                metadata={
+                    **intent(action="exit").metadata,
+                    "position_quantity": 100.0,
+                    "position_side": "long",
+                    "reason_code": "profit_target_incomplete",
+                },
+            )
+            try:
+                submitted = await manager.submit_intent(
+                    portfolio_approved(journal, request),
+                    account_id="DU1",
+                    event=None,
+                )
+                group = manager._groups[submitted.group_id]
+                self.assertIsNotNone(group.reprice_task)
+                self.assertEqual(group.orders[0].orderType, "LMT")
+                self.assertTrue(group.orders[0].outsideRTH)
+                self.assertEqual(group.current_limit_price, 10.0)
+
+                next_quote_at = datetime.now(timezone.utc)
+                manager.on_market_snapshot(
+                    ExecutionMarketSnapshot(
+                        "TEST", 9.95, 9.97, 0.01, next_quote_at, "qmd"
+                    )
+                )
+                modified = await manager._attempt_reprice(
+                    group,
+                    record_time=next_quote_at,
+                )
+
+                self.assertTrue(modified)
+                self.assertEqual(group.current_limit_price, 9.95)
+                self.assertEqual(broker.modifications[-1][1].orderType, "LMT")
+                self.assertTrue(broker.modifications[-1][1].outsideRTH)
+            finally:
+                await manager.close()
+                journal.close()
+
     async def test_reconcile_does_not_reproject_unchanged_terminal_orders(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             broker = SimulatedBrokerAdapter(["DU1"], mode=TradingMode.PAPER)

@@ -1574,10 +1574,11 @@ class OrderManagementEngine:
             not self.causal_execution_clock
             and group.tactic
             and group.broker_order_ids
-            and str(group.intent.action)
-            in {"enter_long", "enter_short", "add_long", "add_short"}
             and group.intent.resolved_execution_policy().envelope.maximum_reprices > 0
         ):
+            # Adaptive execution is an intent-level contract, not an entry-only
+            # facility. In particular, an extended-hours exit must remain a
+            # limit order at the latest bid while its remainder is working.
             group.reprice_task = asyncio.create_task(self._run_repricing(group))
 
     async def _replace_existing_profit_targets(
@@ -1994,7 +1995,10 @@ class OrderManagementEngine:
                 },
             )
             self._transition(group, OrderManagementState.ACKNOWLEDGED, {"event": "protected_exit_acknowledged"})
-            if tactic and len(tactic.steps) > 1:
+            if (
+                tactic
+                and intent.resolved_execution_policy().envelope.maximum_reprices > 0
+            ):
                 group.reprice_task = asyncio.create_task(self._run_repricing(group))
             return group.snapshot(self.policy.version)
         return None
