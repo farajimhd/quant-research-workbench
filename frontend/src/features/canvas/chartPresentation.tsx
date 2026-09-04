@@ -416,6 +416,13 @@ export function supportsPositionPresentation(timeframe: CanvasChartTimeframe): b
 
 export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | undefined, symbol: string): NonNullable<ChartPayload["trade_annotations"]> {
   const executionsById = new Map((trading?.executions ?? []).map((row) => [String(row.execution_id || ""), row]));
+  const ordersById = new Map<string, PreviewRow>();
+  (trading?.orders ?? []).forEach((order) => {
+    [order.broker_order_id, order.client_order_id]
+      .filter((value) => value !== undefined && value !== null && String(value) !== "")
+      .map(String)
+      .forEach((orderId) => ordersById.set(orderId, order));
+  });
   const normalizedSymbol = symbol.toUpperCase();
   const asOfTime = parsedTime(trading?.as_of) ?? Date.now() / 1_000;
   const activity = (trading?.strategy_chart_activity ?? trading?.strategy_activity ?? [])
@@ -433,12 +440,15 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
     const actions = positionExecutionActions(executionIds.flatMap((executionId) => {
       const execution = executionsById.get(executionId);
       return execution ? [execution] : [];
-    }), side);
-    const entryAction = actions[0];
-    const exitAction = status === "closed" && actions.length > 1 ? actions.at(-1) : undefined;
+    }), side, ordersById);
+    const openingSide = side === "SHORT" ? "SELL" : "BUY";
+    const openingActions = actions.filter((action) => action.side === openingSide);
+    const closingActions = actions.filter((action) => action.side !== openingSide);
+    const entryAction = openingActions[0];
+    const exitAction = status === "closed" ? closingActions.at(-1) : undefined;
     const entryPrice = Number(row.entry_price ?? entryAction?.price ?? 0);
     const exitPrice = status === "closed" ? Number(row.exit_price ?? exitAction?.price ?? 0) : undefined;
-    const entryTime = entryAction?.time ?? Date.parse(String(row.opened_at || "")) / 1000;
+    const entryTime = entryAction?.firstTime ?? Date.parse(String(row.opened_at || "")) / 1000;
     const exitTime = status === "closed" ? exitAction?.time ?? parsedTime(row.closed_at) : undefined;
     const endTime = exitTime ?? asOfTime;
     if (!Number.isFinite(entryPrice) || entryPrice <= 0 || !Number.isFinite(entryTime) || !Number.isFinite(endTime)) return [];
@@ -453,6 +463,8 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
       && time > previousCloseTime
       && time <= entryTime,
     );
+    const entryIntentTime = entryDecision?.time ?? parsedTime(row.requested_at) ?? entryTime;
+    const entryIntentPrice = decisionReferencePrice(entryDecision?.row) ?? entryPrice;
     const gateSnapshot = (entryDecision?.row.chart_plan as PreviewRow | undefined)
       ?? (entryDecision?.row.gate_snapshot as PreviewRow | undefined)
       ?? {};
@@ -484,25 +496,10 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
         : selectedTargets,
     ).slice(0, 3);
     const plannedStopPrice = positiveNumber(decisionValues.initial_stop ?? decisionValues.invalidation_price);
-    const planStartTime = entryDecision?.time ?? entryTime;
+    const planStartTime = entryIntentTime;
     const quantity = Math.abs(Number(row.quantity || 0));
     const pnl = Number(row.net_pnl || row.gross_pnl || 0);
-    const openingSide = side === "SHORT" ? "SELL" : "BUY";
-    const lifecycleActions = status === "closed" ? actions.slice(1, -1) : actions.slice(1);
-    const fills: NonNullable<NonNullable<ChartPayload["trade_annotations"]>[number]["fills"]> = lifecycleActions.map((action) => {
-      const kind = action.side === openingSide
-        ? "add" as const
-        : normalizedExecutionRole(action.executionRole, action.price, entryPrice, side);
-      const label = positionActionLabel(kind, action.quantity, action.price);
-      return {
-        kind,
-        label,
-        price: action.price,
-        quantity: action.quantity,
-        side: action.side,
-        time: action.time,
-      };
-    });
+    const fills: NonNullable<NonNullable<ChartPayload["trade_annotations"]>[number]["fills"]> = [];
     let activeStop = plannedStopPrice;
     let activeTarget = plannedTargetPrices[0];
     activity.forEach(({ row: event, time }) => {
@@ -561,35 +558,64 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
     if (brokerStops.length) activeStop = side === "SHORT" ? Math.min(...brokerStops) : Math.max(...brokerStops);
     const targetPrices = brokerTargets.length ? brokerTargets : activeTarget !== undefined ? [activeTarget] : plannedTargetPrices;
     fills.sort((left, right) => left.time - right.time);
-    const entryQuantity = entryAction?.quantity ?? quantity;
-    const exitQuantity = exitAction?.quantity || quantity;
-    const exitKind = status === "closed" && exitAction
-      ? normalizedExecutionRole(exitAction.executionRole, exitAction.price, entryPrice, side)
-      : "position_exit";
-    const exitLabel = positionExitLabel(String(row.exit_reason || ""), exitKind);
+    const finalFillAnnotation = (action: PositionExecutionAction, fillSide: "entry" | "exit") => {
+      const partial = action.completion === "partial";
+      const quantityText = partial && action.totalQuantity && action.totalQuantity > action.quantity
+        ? `${formatQuantity(action.quantity)}/${formatQuantity(action.totalQuantity)}`
+        : formatQuantity(action.quantity);
+      const statusText = partial ? "Partial" : "Filled";
+      const priceTone = fillSide === "entry"
+        ? side === "SHORT" ? "priceShort" as const : "priceLong" as const
+        : side === "SHORT" ? "exitPriceShort" as const : "exitPriceLong" as const;
+      return {
+        kind: fillSide === "entry" ? "entry_fill" as const : "exit_fill" as const,
+        label: `${quantityText} ${statusText} @ ${compactPrice(action.price)}`,
+        labelParts: [
+          { text: quantityText, tone: "size" as const },
+          { text: statusText, tone: "reason" as const },
+          { text: "@", tone: "separator" as const },
+          { text: compactPrice(action.price), tone: priceTone },
+        ],
+        orderId: action.orderId,
+        price: action.price,
+        quantity: action.quantity,
+        side: action.side,
+        time: action.time,
+      };
+    };
+    const entryFills = openingActions.filter((action) => action.completion !== "unknown").map((action) => finalFillAnnotation(action, "entry"));
+    const exitFills = closingActions.filter((action) => action.completion !== "unknown").map((action) => finalFillAnnotation(action, "exit"));
+    const exitIntentActions = side === "SHORT" ? new Set(["reduce_short", "cover", "exit"]) : new Set(["reduce_long", "take_profit", "exit"]);
+    const exitIntents = activity
+      .filter(({ row: event, time }) => String(event.event_type || "") === "decision" && exitIntentActions.has(String(event.action || "")) && time >= entryTime && time <= endTime)
+      .map(({ row: event, time }) => {
+        const label = exitIntentLabel(String(event.action || ""), String(event.reason || row.exit_reason || ""), side);
+        return {
+          kind: "exit_intent" as const,
+          label: `${label} issued`,
+          labelParts: [{ text: label, tone: side === "SHORT" ? "exitShort" as const : "exitLong" as const }, { text: "issued", tone: "label" as const }],
+          price: decisionReferencePrice(event) ?? Number(exitPrice ?? entryPrice),
+          side: openingSide === "BUY" ? "SELL" as const : "BUY" as const,
+          time,
+        };
+      });
     return [{
       color: pnl >= 0 ? "var(--success)" : "var(--danger)",
       entryColor: side === "SHORT" ? "#dc2626" : "#16a34a",
-      entryLabel: `${side === "SHORT" ? "Short" : "Long"} ${formatQuantity(entryQuantity)} @ ${entryPrice.toFixed(2)}`,
+      entryFills,
+      entryIntentPrice,
+      entryIntentTime,
+      entryLabel: `${side === "SHORT" ? "Short" : "Long"} issued`,
       entryLabelParts: [
         { text: side === "SHORT" ? "Short" : "Long", tone: side === "SHORT" ? "short" : "long" },
-        { text: formatQuantity(entryQuantity), tone: "size" },
-        { text: "@", tone: "separator" },
-        { text: entryPrice.toFixed(2), tone: side === "SHORT" ? "priceShort" : "priceLong" },
+        { text: "issued", tone: "label" },
       ],
       entryPrice,
       entryTime,
       endTime,
       exitColor: status === "closed" ? side === "SHORT" ? "#16a34a" : "#dc2626" : undefined,
-      exitLabel: status === "closed" ? `${exitLabel} ${formatQuantity(exitQuantity)} @ ${Number(exitPrice).toFixed(2)} · ${signedMoneyShort(pnl)}` : undefined,
-      exitLabelParts: status === "closed" ? [
-        { text: exitLabel, tone: side === "SHORT" ? "exitShort" : "exitLong" },
-        { text: formatQuantity(exitQuantity), tone: "size" },
-        { text: "@", tone: "separator" },
-        { text: Number(exitPrice).toFixed(2), tone: side === "SHORT" ? "exitPriceShort" : "exitPriceLong" },
-        { text: "·", tone: "separator" },
-        { text: signedMoneyShort(pnl), tone: pnl >= 0 ? "pnlWin" : "pnlLoss" },
-      ] : undefined,
+      exitFills,
+      exitIntents,
       exitLabelColor: status === "closed" ? pnl > 0 ? "#16A34A" : pnl < 0 ? "#DC2626" : "#C2410C" : undefined,
       exitPrice,
       exitTime,
@@ -608,6 +634,13 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
 function parsedTime(value: unknown): number | undefined {
   const time = Date.parse(String(value || "")) / 1_000;
   return Number.isFinite(time) ? time : undefined;
+}
+
+function decisionReferencePrice(event: PreviewRow | undefined): number | undefined {
+  if (!event) return undefined;
+  const chartPlan = (event.chart_plan as PreviewRow | undefined) ?? (event.gate_snapshot as PreviewRow | undefined) ?? {};
+  const decisionValues = (chartPlan.decision_values as PreviewRow | undefined) ?? {};
+  return positiveNumber(event.reference_price ?? decisionValues.reference_price ?? decisionValues.trigger_price);
 }
 
 function orderRole(order: PreviewRow): string {
@@ -664,9 +697,9 @@ function positionExitLabel(exitReason: string, fallbackKind: string): string {
 }
 
 type PositionExecutionRole = "entry" | "managed_exit" | "profit_target" | "protective_stop" | "trailing_stop" | "protective_exit" | "";
-type PositionExecutionAction = { executionRole: PositionExecutionRole; orderId: string; price: number; quantity: number; side: "BUY" | "SELL"; time: number };
+type PositionExecutionAction = { completion: "filled" | "partial" | "unknown"; executionRole: PositionExecutionRole; firstTime: number; orderId: string; price: number; quantity: number; side: "BUY" | "SELL"; time: number; totalQuantity?: number };
 
-function positionExecutionActions(executions: PreviewRow[], positionSide: string): PositionExecutionAction[] {
+function positionExecutionActions(executions: PreviewRow[], positionSide: string, ordersById: Map<string, PreviewRow>): PositionExecutionAction[] {
   type Aggregate = PositionExecutionAction & { notional: number };
   const byOrderAndSide = new Map<string, Aggregate>();
   executions.forEach((row, index) => {
@@ -681,30 +714,35 @@ function positionExecutionActions(executions: PreviewRow[], positionSide: string
     const executionRole: PositionExecutionRole = persistedRole || (clientOrderId.includes("-entry") ? "entry" : "");
     const orderId = String(row.broker_order_id || clientOrderId || row.execution_id || `fill:${index}`);
     const key = `${orderId}:${side}`;
-    const current = byOrderAndSide.get(key) ?? { executionRole, orderId, time, notional: 0, price: 0, quantity: 0, side };
-    current.time = Math.min(current.time, time);
+    const order = ordersById.get(orderId) ?? ordersById.get(clientOrderId);
+    const orderRoleValue = String(nestedValue(order ?? {}, "raw", "canonical_metadata", "execution_role") || "") as PositionExecutionRole;
+    const totalQuantity = positiveNumber(order?.total_quantity);
+    const orderStatus = String(order?.lifecycle_state ?? order?.status ?? "").toLowerCase();
+    const terminal = Boolean(order?.terminal) || ["filled", "cancelled", "rejected", "expired", "inactive"].includes(orderStatus);
+    const filledQuantity = positiveNumber(order?.filled_quantity);
+    const completion = orderStatus === "filled" || (totalQuantity !== undefined && filledQuantity !== undefined && filledQuantity >= totalQuantity)
+      ? "filled" as const
+      : terminal ? "partial" as const : "unknown" as const;
+    const current = byOrderAndSide.get(key) ?? { completion, executionRole: orderRoleValue || executionRole, firstTime: time, orderId, time, totalQuantity, notional: 0, price: 0, quantity: 0, side };
+    current.firstTime = Math.min(current.firstTime, time);
+    current.time = Math.max(current.time, time);
     current.notional += quantity * price;
     current.quantity += quantity;
     current.price = current.notional / current.quantity;
     byOrderAndSide.set(key, current);
   });
   const openingSide = positionSide === "SHORT" ? "SELL" : "BUY";
-  const byLevel = new Map<string, Aggregate>();
-  [...byOrderAndSide.values()].forEach((action) => {
-    const second = Math.floor(action.time);
-    const priceTick = action.price.toFixed(2);
-    const role = action.executionRole || (action.side === openingSide ? "entry" : "");
-    const key = `${role}:${action.side}:${second}:${priceTick}`;
-    const current = byLevel.get(key) ?? { ...action, executionRole: role as PositionExecutionRole, notional: 0, quantity: 0 };
-    current.time = Math.min(current.time, action.time);
-    current.notional += action.notional;
-    current.quantity += action.quantity;
-    current.price = current.notional / current.quantity;
-    byLevel.set(key, current);
-  });
-  return [...byLevel.values()]
-    .sort((left, right) => left.time - right.time || Number(right.side === openingSide) - Number(left.side === openingSide))
+  return [...byOrderAndSide.values()]
+    .sort((left, right) => left.firstTime - right.firstTime || Number(right.side === openingSide) - Number(left.side === openingSide))
     .map(({ notional: _notional, ...action }) => action);
+}
+
+function exitIntentLabel(action: string, reason: string, positionSide: string): string {
+  if (action === "take_profit") return "Take profit";
+  if (action === "reduce_long" || action === "reduce_short") return "Reduce";
+  if (action === "cover") return "Cover";
+  if (reason.trim().toLowerCase().includes("target")) return "Target exit";
+  return positionExitLabel(reason, positionSide === "SHORT" ? "protective_exit" : "position_exit");
 }
 
 function normalizedExecutionRole(

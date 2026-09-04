@@ -81,9 +81,10 @@ type Region = { start: number; end: number; color: string; label: string };
 type TradeLabelPart = { text: string; tone?: "exitLong" | "exitPriceLong" | "exitPriceShort" | "exitShort" | "label" | "long" | "pnlLoss" | "pnlWin" | "price" | "priceLong" | "priceShort" | "reason" | "separator" | "short" | "size" };
 type TradeLabelPartSettings = Partial<Record<NonNullable<TradeLabelPart["tone"]>, StrategyPresentationStyleSettings>>;
 type TradeFillAnnotation = {
-  kind?: "add" | "profit_target" | "protective_stop" | "trailing_stop" | "position_exit" | "stop_change" | "target_change" | "protection_repair" | "entry_freeze";
+  kind?: "add" | "entry_fill" | "exit_fill" | "exit_intent" | "profit_target" | "protective_stop" | "trailing_stop" | "position_exit" | "stop_change" | "target_change" | "protection_repair" | "entry_freeze";
   label?: string;
   labelParts?: TradeLabelPart[];
+  orderId?: string;
   price: number;
   quantity?: number;
   side: "BUY" | "SELL";
@@ -95,6 +96,9 @@ type TradeAnnotation = {
   entryLabel?: string;
   entryLabelParts?: TradeLabelPart[];
   entryLabelSide?: "left" | "right";
+  entryFills?: TradeFillAnnotation[];
+  entryIntentPrice?: number;
+  entryIntentTime?: number;
   entryPrice: number;
   entryTime: number;
   exitLabel?: string;
@@ -102,6 +106,8 @@ type TradeAnnotation = {
   exitLabelParts?: TradeLabelPart[];
   exitLabelSide?: "left" | "right";
   exitColor?: string;
+  exitFills?: TradeFillAnnotation[];
+  exitIntents?: TradeFillAnnotation[];
   endTime?: number;
   exitPrice?: number;
   exitTime?: number;
@@ -138,8 +144,10 @@ type StrategyPresentationStyleSettings = {
 type StrategyVisualElementKey =
   | "entryLine" | "entryArrow" | "entryLabel"
   | "entryDirectionPart" | "entryShortDirectionPart" | "entrySizePart" | "entrySeparatorPart" | "entryPricePart" | "entryShortPricePart"
+  | "entryFillArrow" | "entryFillLabel" | "entryFillSizePart" | "entryFillStatusPart" | "entryFillSeparatorPart" | "entryFillPricePart" | "entryFillShortPricePart"
   | "exitLine" | "exitArrow" | "exitLabel"
   | "exitReasonPart" | "exitShortReasonPart" | "exitSizePart" | "exitSeparatorPart" | "exitPricePart" | "exitShortPricePart" | "exitPnlPart" | "exitPnlLossPart"
+  | "exitFillArrow" | "exitFillLabel" | "exitFillSizePart" | "exitFillStatusPart" | "exitFillSeparatorPart" | "exitFillPricePart" | "exitFillShortPricePart"
   | "levelLine" | "levelLabel"
   | "stopLine" | "stopLabel"
   | "targetLine" | "targetLabel"
@@ -701,6 +709,13 @@ const defaultStrategyPresentationSettings: StrategyPresentationSettings = {
     entrySeparatorPart: { ...strategyPresentationStyle("", "solid", 1, 1, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 2, labelPaddingY: 2, visible: false },
     entryPricePart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#007DFF", labelPaddingX: 4, labelPaddingY: 2 },
     entryShortPricePart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#FF1744", labelPaddingX: 4, labelPaddingY: 2 },
+    entryFillArrow: strategyPresentationStyle("#007DFF", "solid", 2, 1, 10, 5, 1),
+    entryFillLabel: { ...strategyPresentationStyle("#64748B", "solid", 1, 1, 10, 7, 1), borderColor: "#007DFF", borderOpacity: 0.7, fillColor: "#FFFFFF", labelPaddingX: 5, labelPaddingY: 2 },
+    entryFillSizePart: { ...strategyPresentationStyle("#000000", "solid", 1, 1, 11, 7, 0), fontWeight: 600, labelPaddingX: 4, labelPaddingY: 2 },
+    entryFillStatusPart: { ...strategyPresentationStyle("#007DFF", "solid", 1, 1, 10, 7, 0), labelPaddingX: 3, labelPaddingY: 2 },
+    entryFillSeparatorPart: { ...strategyPresentationStyle("#64748B", "solid", 1, 1, 10, 7, 0), labelPaddingX: 2, labelPaddingY: 2 },
+    entryFillPricePart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#007DFF", labelPaddingX: 4, labelPaddingY: 2 },
+    entryFillShortPricePart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#FF1744", labelPaddingX: 4, labelPaddingY: 2 },
     exitLine: strategyPresentationStyle("#FF3D47", "solid", 2, 0.9),
     exitArrow: strategyPresentationStyle("#FF4D55", "solid", 2, 1, 10, 5, 1),
     exitLabel: { ...strategyPresentationStyle("#64748B", "solid", 1, 1, 10, 7, 0.45), borderColor: "#F75555", borderOpacity: 0.7, labelPaddingX: 8, labelPaddingY: 2 },
@@ -712,6 +727,13 @@ const defaultStrategyPresentationSettings: StrategyPresentationSettings = {
     exitShortPricePart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#FF1744", labelPaddingX: 4, labelPaddingY: 2 },
     exitPnlPart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#00A846", fontWeight: 600, labelPaddingX: 5, labelPaddingY: 2 },
     exitPnlLossPart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#FF1744", fontWeight: 600, labelPaddingX: 5, labelPaddingY: 2 },
+    exitFillArrow: strategyPresentationStyle("#FF4D55", "solid", 2, 1, 10, 5, 1),
+    exitFillLabel: { ...strategyPresentationStyle("#64748B", "solid", 1, 1, 10, 7, 1), borderColor: "#F75555", borderOpacity: 0.7, fillColor: "#FFFFFF", labelPaddingX: 5, labelPaddingY: 2 },
+    exitFillSizePart: { ...strategyPresentationStyle("#000000", "solid", 1, 1, 11, 7, 0), fontWeight: 600, labelPaddingX: 4, labelPaddingY: 2 },
+    exitFillStatusPart: { ...strategyPresentationStyle("#DC2626", "solid", 1, 1, 10, 7, 0), labelPaddingX: 3, labelPaddingY: 2 },
+    exitFillSeparatorPart: { ...strategyPresentationStyle("#64748B", "solid", 1, 1, 10, 7, 0), labelPaddingX: 2, labelPaddingY: 2 },
+    exitFillPricePart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#DC2626", labelPaddingX: 4, labelPaddingY: 2 },
+    exitFillShortPricePart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#007DFF", labelPaddingX: 4, labelPaddingY: 2 },
     levelLine: strategyPresentationStyle("", "dashed", 1, 0.9),
     levelLabel: { ...strategyPresentationStyle("", "solid", 1, 1, 8, 7, 1), borderWidth: 0, labelPaddingX: 2, labelPaddingY: 1 },
     stopLine: strategyPresentationStyle("", "dashed", 1, 0.95),
@@ -3107,11 +3129,15 @@ type StrategyVisualElementDefinition = { help: string; key: StrategyVisualElemen
 
 const strategyVisualElementDefinitions: StrategyVisualElementDefinition[] = [
   { key: "entryLine", kind: "line", title: "Entry price line", help: "Position entry price across the lifecycle." },
-  { key: "entryArrow", kind: "marker", title: "Entry arrow", help: "Exact entry time and execution price." },
-  { key: "entryLabel", kind: "label", title: "Entry label", help: "One label with independently styled direction, size, separator, and price." },
+  { key: "entryArrow", kind: "marker", title: "Entry intent arrow", help: "Strategy intent time and decision reference price on the containing candle." },
+  { key: "entryLabel", kind: "label", title: "Entry intent label", help: "Long or short issued by the durable strategy decision." },
+  { key: "entryFillArrow", kind: "marker", title: "Entry final-fill arrow", help: "Last immutable execution completing each entry order." },
+  { key: "entryFillLabel", kind: "label", title: "Entry final-fill label", help: "Cumulative quantity, truthful fill state, and execution VWAP." },
   { key: "exitLine", kind: "line", title: "Exit price line", help: "Final exit price across the lifecycle." },
-  { key: "exitArrow", kind: "marker", title: "Exit arrow", help: "Exact exit time and execution price." },
-  { key: "exitLabel", kind: "label", title: "Exit label", help: "One label with independently styled action, size, price, and realized result." },
+  { key: "exitArrow", kind: "marker", title: "Exit intent arrow", help: "Each durable reduce, take-profit, cover, or exit decision." },
+  { key: "exitLabel", kind: "label", title: "Exit intent label", help: "The strategy-issued exit action at its decision reference price." },
+  { key: "exitFillArrow", kind: "marker", title: "Exit final-fill arrow", help: "Last immutable execution completing each exit order." },
+  { key: "exitFillLabel", kind: "label", title: "Exit final-fill label", help: "Cumulative quantity, truthful fill state, and execution VWAP." },
   { key: "levelLine", kind: "line", title: "Structural level lines", help: "Entry-frozen resistance or support evidence." },
   { key: "levelLabel", kind: "label", title: "Structural level labels", help: "L1–L3 and trigger identifiers." },
   { key: "stopLine", kind: "line", title: "Protective stop line", help: "Current or immutable entry-plan protection." },
@@ -3124,27 +3150,31 @@ const strategyVisualElementDefinitions: StrategyVisualElementDefinition[] = [
   { key: "connector", kind: "connector", title: "Distant-marker connector", help: "Dashed link from a distant event marker to its candle." },
 ];
 
-type StrategyCompositeLabelKey = "entryLabel" | "exitLabel";
+type StrategyCompositeLabelKey = "entryLabel" | "entryFillLabel" | "exitLabel" | "exitFillLabel";
 type StrategyLabelPartDefinition = { help: string; key: StrategyVisualElementKey; title: string };
 
 const strategyLabelPartDefinitions: Record<StrategyCompositeLabelKey, StrategyLabelPartDefinition[]> = {
   entryLabel: [
-    { key: "entryDirectionPart", title: "Long", help: "Long-direction text and soft background." },
-    { key: "entryShortDirectionPart", title: "Short", help: "Short-direction text and soft background." },
-    { key: "entrySizePart", title: "Size", help: "Position quantity, emphasized independently." },
-    { key: "entrySeparatorPart", title: "@", help: "Separator between size and execution price." },
-    { key: "entryPricePart", title: "Long price", help: "Entry price for a long position." },
-    { key: "entryShortPricePart", title: "Short price", help: "Entry price for a short position." },
+    { key: "entryDirectionPart", title: "Long issued", help: "Long entry intent text." },
+    { key: "entryShortDirectionPart", title: "Short issued", help: "Short entry intent text." },
+  ],
+  entryFillLabel: [
+    { key: "entryFillSizePart", title: "Quantity", help: "Cumulative filled quantity or filled/requested quantity for terminal partials." },
+    { key: "entryFillStatusPart", title: "Status", help: "Filled or Partial, derived from canonical order state." },
+    { key: "entryFillSeparatorPart", title: "@", help: "Separator before the execution VWAP." },
+    { key: "entryFillPricePart", title: "Long-entry price", help: "Execution VWAP for a long entry order." },
+    { key: "entryFillShortPricePart", title: "Short-entry price", help: "Execution VWAP for a short entry order." },
   ],
   exitLabel: [
-    { key: "exitReasonPart", title: "Close long", help: "Exit action for a long position." },
-    { key: "exitShortReasonPart", title: "Cover short", help: "Exit action for a short position." },
-    { key: "exitSizePart", title: "Size", help: "Final exit quantity, emphasized independently." },
-    { key: "exitSeparatorPart", title: "Separators", help: "The @ and realized-result separators." },
-    { key: "exitPricePart", title: "Long-exit price", help: "Execution price when closing a long." },
-    { key: "exitShortPricePart", title: "Short-exit price", help: "Execution price when covering a short." },
-    { key: "exitPnlPart", title: "Profit", help: "Positive realized result." },
-    { key: "exitPnlLossPart", title: "Loss", help: "Negative realized result." },
+    { key: "exitReasonPart", title: "Close long", help: "Long-position exit intent text." },
+    { key: "exitShortReasonPart", title: "Cover short", help: "Short-position exit intent text." },
+  ],
+  exitFillLabel: [
+    { key: "exitFillSizePart", title: "Quantity", help: "Cumulative filled quantity or filled/requested quantity for terminal partials." },
+    { key: "exitFillStatusPart", title: "Status", help: "Filled or Partial, derived from canonical order state." },
+    { key: "exitFillSeparatorPart", title: "@", help: "Separator before the execution VWAP." },
+    { key: "exitFillPricePart", title: "Long-exit price", help: "Execution VWAP when reducing or closing a long." },
+    { key: "exitFillShortPricePart", title: "Short-exit price", help: "Execution VWAP when reducing or covering a short." },
   ],
 };
 
@@ -3167,7 +3197,7 @@ function StrategyPresentationStylePage({
   onReset: () => void;
   settings: StrategyPresentationStyleSettings;
 }) {
-  const compositeKey = definition.key === "entryLabel" || definition.key === "exitLabel" ? definition.key : null;
+  const compositeKey = definition.key in strategyLabelPartDefinitions ? definition.key as StrategyCompositeLabelKey : null;
   if (compositeKey) return <StrategyCompositeLabelStylePage
     definition={definition}
     elements={elements}
@@ -3307,11 +3337,17 @@ function StrategyCompositeLabelStylePage({
 function StrategyCompositeLabelPreview({ elements, labelKey, settings }: { elements: Record<StrategyVisualElementKey, StrategyPresentationStyleSettings>; labelKey: StrategyCompositeLabelKey; settings: StrategyPresentationStyleSettings }) {
   const palette = readChartPalette();
   const rows: Array<Array<{ key: StrategyVisualElementKey; text: string }>> = labelKey === "entryLabel" ? [
-    [{ key: "entryDirectionPart", text: "Long" }, { key: "entrySizePart", text: "2,543" }, { key: "entrySeparatorPart", text: "@" }, { key: "entryPricePart", text: "4.40" }],
-    [{ key: "entryShortDirectionPart", text: "Short" }, { key: "entrySizePart", text: "2,543" }, { key: "entrySeparatorPart", text: "@" }, { key: "entryShortPricePart", text: "4.40" }],
+    [{ key: "entryDirectionPart", text: "Long issued" }],
+    [{ key: "entryShortDirectionPart", text: "Short issued" }],
+  ] : labelKey === "entryFillLabel" ? [
+    [{ key: "entryFillSizePart", text: "200" }, { key: "entryFillStatusPart", text: "Filled" }, { key: "entryFillSeparatorPart", text: "@" }, { key: "entryFillPricePart", text: "2.30" }],
+    [{ key: "entryFillSizePart", text: "120/200" }, { key: "entryFillStatusPart", text: "Partial" }, { key: "entryFillSeparatorPart", text: "@" }, { key: "entryFillShortPricePart", text: "2.30" }],
+  ] : labelKey === "exitLabel" ? [
+    [{ key: "exitReasonPart", text: "Exit issued" }],
+    [{ key: "exitShortReasonPart", text: "Cover issued" }],
   ] : [
-    [{ key: "exitReasonPart", text: "Exit" }, { key: "exitSizePart", text: "2,518" }, { key: "exitSeparatorPart", text: "@" }, { key: "exitPricePart", text: "4.42" }, { key: "exitSeparatorPart", text: "·" }, { key: "exitPnlPart", text: "+$23.39" }],
-    [{ key: "exitShortReasonPart", text: "Cover" }, { key: "exitSizePart", text: "2,518" }, { key: "exitSeparatorPart", text: "@" }, { key: "exitShortPricePart", text: "4.42" }, { key: "exitSeparatorPart", text: "·" }, { key: "exitPnlLossPart", text: "−$18.20" }],
+    [{ key: "exitFillSizePart", text: "200" }, { key: "exitFillStatusPart", text: "Filled" }, { key: "exitFillSeparatorPart", text: "@" }, { key: "exitFillPricePart", text: "2.42" }],
+    [{ key: "exitFillSizePart", text: "120/200" }, { key: "exitFillStatusPart", text: "Partial" }, { key: "exitFillSeparatorPart", text: "@" }, { key: "exitFillShortPricePart", text: "2.42" }],
   ];
   const borderColor = strategyPresentationColor(settings.borderColor, settings.color || palette.text);
   const containerStyle: CSSProperties = {
@@ -3320,7 +3356,7 @@ function StrategyCompositeLabelPreview({ elements, labelKey, settings }: { eleme
     borderStyle: settings.borderStyle,
     borderWidth: settings.borderWidth,
   };
-  return <div className="strategy-presentation-label-preview" aria-label={`${labelKey === "entryLabel" ? "Entry" : "Exit"} label preview`}>
+  return <div className="strategy-presentation-label-preview" aria-label={`${labelKey.startsWith("entry") ? "Entry" : "Exit"} label preview`}>
     <span>Preview</span>
     <div>
       {rows.map((row, rowIndex) => <div className="strategy-presentation-label-preview-box" key={rowIndex} style={containerStyle}>
@@ -3389,9 +3425,8 @@ function strategyVisualElementSwatch(key: StrategyVisualElementKey, settings: St
 }
 
 function strategyVisualStyleSummary(key: StrategyVisualElementKey, settings: StrategyPresentationStyleSettings, kind: StrategyVisualElementDefinition["kind"]) {
-  const semantic = !settings.color && (key === "exitLabel" || key.startsWith("adjustment") || key === "connector") ? "Semantic · " : "";
-  if (key === "entryLabel") return `6 parts · ${settings.borderWidth}px ${settings.borderStyle} edge`;
-  if (key === "exitLabel") return `8 parts · ${settings.borderWidth}px ${settings.borderStyle} edge`;
+  const semantic = !settings.color && (key === "exitLabel" || key === "exitFillLabel" || key.startsWith("adjustment") || key === "connector") ? "Semantic · " : "";
+  if (key in strategyLabelPartDefinitions) return `${strategyLabelPartDefinitions[key as StrategyCompositeLabelKey].length} parts · ${settings.borderWidth}px ${settings.borderStyle} edge`;
   if (kind === "label") return `${semantic}${settings.labelSize}px/${settings.fontWeight} · ${settings.labelPaddingX}×${settings.labelPaddingY}px box`;
   if (kind === "marker") return `${semantic}${settings.markerSize}px marker · ${Math.round(settings.opacity * 100)}%`;
   return `${semantic}${settings.lineWidth}px ${settings.lineStyle} · ${Math.round(settings.opacity * 100)}%`;
@@ -4356,8 +4391,12 @@ function normalizeStrategyPresentationSettings(settings: Partial<StrategyPresent
   const legacyByElement: Record<StrategyVisualElementKey, Partial<StrategyPresentationStyleSettings> | undefined> = {
     entryLine: legacy.entry, entryArrow: legacy.entry, entryLabel: legacy.entry,
     entryDirectionPart: undefined, entryShortDirectionPart: undefined, entrySizePart: undefined, entrySeparatorPart: undefined, entryPricePart: undefined, entryShortPricePart: undefined,
+    entryFillArrow: legacy.entry, entryFillLabel: legacy.entry,
+    entryFillSizePart: undefined, entryFillStatusPart: undefined, entryFillSeparatorPart: undefined, entryFillPricePart: undefined, entryFillShortPricePart: undefined,
     exitLine: legacy.exit, exitArrow: legacy.exit, exitLabel: legacy.exit ? { ...legacy.exit, color: "" } : undefined,
     exitReasonPart: undefined, exitShortReasonPart: undefined, exitSizePart: undefined, exitSeparatorPart: undefined, exitPricePart: undefined, exitShortPricePart: undefined, exitPnlPart: undefined, exitPnlLossPart: undefined,
+    exitFillArrow: legacy.exit, exitFillLabel: legacy.exit ? { ...legacy.exit, color: "" } : undefined,
+    exitFillSizePart: undefined, exitFillStatusPart: undefined, exitFillSeparatorPart: undefined, exitFillPricePart: undefined, exitFillShortPricePart: undefined,
     levelLine: legacy.levels, levelLabel: legacy.levels,
     stopLine: legacy.stop, stopLabel: legacy.stop,
     targetLine: legacy.targets, targetLabel: legacy.targets,
@@ -7032,26 +7071,64 @@ function drawTradeAnnotationPrimitiveGeometry(
       separator: elements.exitSeparatorPart,
       size: elements.exitSizePart,
     };
+    const entryFillLabelPartSettings: TradeLabelPartSettings = {
+      priceLong: elements.entryFillPricePart,
+      priceShort: elements.entryFillShortPricePart,
+      reason: elements.entryFillStatusPart,
+      separator: elements.entryFillSeparatorPart,
+      size: elements.entryFillSizePart,
+    };
+    const exitFillLabelPartSettings: TradeLabelPartSettings = {
+      exitPriceLong: elements.exitFillPricePart,
+      exitPriceShort: elements.exitFillShortPricePart,
+      reason: elements.exitFillStatusPart,
+      separator: elements.exitFillSeparatorPart,
+      size: elements.exitFillSizePart,
+    };
     if (elements.entryLine.visible) {
       drawCanvasTradeLine(context, span.left, span.right, entryY, entryLineColor, annotation.selected ? Math.min(5, elements.entryLine.lineWidth + 1) : elements.entryLine.lineWidth, elements.entryLine.lineStyle, elements.entryLine.opacity);
     }
     if (elements.exitLine.visible && annotation.status !== "open" && exitY !== null) {
       drawCanvasTradeLine(context, span.left, span.right, exitY, exitLineColor, annotation.selected ? Math.min(5, elements.exitLine.lineWidth + 1) : elements.exitLine.lineWidth, elements.exitLine.lineStyle, elements.exitLine.opacity);
     }
-    if (elements.entryArrow.visible) {
-      if (elements.connector.visible) drawCanvasCandleConnector(context, priceSeries, candles, annotation.entryTime, entryX, entryY, entryArrowColor, elements.connector, settings.connectorThreshold);
-      drawCanvasTradeArrow(context, entryX, entryY, entryArrowColor, "entry", annotation.selected === true, elements.entryArrow);
-    }
-    if (elements.entryLabel.visible) {
-      drawCanvasTradeLabel(context, compactTradeLabel(annotation.entryLabelParts, annotation.entryLabel, "Entry"), entryX, entryY + elements.entryArrow.markerSize + 7, entryLabelColor, chartBackground, annotation.entryLabelSide ?? "left", width, height, elements.entryLabel, labelLayout, elements.connector, annotation.entryLabelParts, entryLabelPartSettings);
-    }
-    if (annotation.status !== "open" && exitY !== null) {
-      if (elements.exitArrow.visible) {
-        if (elements.connector.visible) drawCanvasCandleConnector(context, priceSeries, candles, annotation.exitTime ?? endTime, exitX, exitY, exitArrowColor, elements.connector, settings.connectorThreshold);
-        drawCanvasTradeArrow(context, exitX, exitY, exitArrowColor, "exit", annotation.selected === true, elements.exitArrow);
+    const entryIntentTime = annotation.entryIntentTime ?? annotation.entryTime;
+    const entryIntentPrice = annotation.entryIntentPrice ?? annotation.entryPrice;
+    const entryIntentX = xForAnnotationTime(chart, entryIntentTime, timeline);
+    const entryIntentY = priceSeries.priceToCoordinate(entryIntentPrice);
+    if (entryIntentX !== null && entryIntentY !== null) {
+      if (elements.entryArrow.visible) {
+        if (elements.connector.visible) drawCanvasCandleConnector(context, priceSeries, candles, entryIntentTime, entryIntentX, entryIntentY, entryArrowColor, elements.connector, settings.connectorThreshold);
+        drawCanvasTradeArrow(context, entryIntentX, entryIntentY, entryArrowColor, "entry", annotation.selected === true, elements.entryArrow);
       }
-      if (elements.exitLabel.visible) drawCanvasTradeLabel(context, compactTradeLabel(annotation.exitLabelParts, annotation.exitLabel, "Exit"), exitX, exitY - elements.exitLabel.labelSize - elements.exitArrow.markerSize - 8, exitLabelColor, chartBackground, annotation.exitLabelSide ?? "right", width, height, elements.exitLabel, labelLayout, elements.connector, annotation.exitLabelParts, exitLabelPartSettings);
+      if (elements.entryLabel.visible) drawCanvasTradeLabel(context, compactTradeLabel(annotation.entryLabelParts, annotation.entryLabel, "Entry issued"), entryIntentX, entryIntentY + elements.entryArrow.markerSize + 7, entryLabelColor, chartBackground, annotation.entryLabelSide ?? "left", width, height, elements.entryLabel, labelLayout, elements.connector, annotation.entryLabelParts, entryLabelPartSettings);
     }
+    annotation.exitIntents?.forEach((intent) => {
+      const intentX = xForAnnotationTime(chart, intent.time, timeline);
+      const intentY = priceSeries.priceToCoordinate(intent.price);
+      if (intentX === null || intentY === null) return;
+      if (elements.exitArrow.visible) {
+        if (elements.connector.visible) drawCanvasCandleConnector(context, priceSeries, candles, intent.time, intentX, intentY, exitArrowColor, elements.connector, settings.connectorThreshold);
+        drawCanvasTradeArrow(context, intentX, intentY, exitArrowColor, "exit", annotation.selected === true, elements.exitArrow);
+      }
+      if (elements.exitLabel.visible) drawCanvasTradeLabel(context, compactTradeLabel(intent.labelParts, intent.label, "Exit issued"), intentX, intentY - elements.exitLabel.labelSize - elements.exitArrow.markerSize - 8, exitLabelColor, chartBackground, "right", width, height, elements.exitLabel, labelLayout, elements.connector, intent.labelParts, exitLabelPartSettings);
+    });
+    const drawFinalFill = (fill: TradeFillAnnotation, fillKind: "entry" | "exit") => {
+      const x = xForAnnotationTime(chart, fill.time, timeline);
+      const y = priceSeries.priceToCoordinate(fill.price);
+      if (x === null || y === null || x < -70 || x > width + 70) return;
+      const arrowSettings = fillKind === "entry" ? elements.entryFillArrow : elements.exitFillArrow;
+      const labelSettings = fillKind === "entry" ? elements.entryFillLabel : elements.exitFillLabel;
+      const semanticColor = fillKind === "entry" ? infoColor : exitFallbackColor;
+      const arrowColor = strategyPresentationColor(arrowSettings.color, semanticColor);
+      const labelColor = strategyPresentationColor(labelSettings.color, semanticColor);
+      if (arrowSettings.visible) {
+        if (elements.connector.visible) drawCanvasCandleConnector(context, priceSeries, candles, fill.time, x, y, arrowColor, elements.connector, settings.connectorThreshold);
+        drawCanvasTradeArrow(context, x, y, arrowColor, fillKind, false, arrowSettings);
+      }
+      if (labelSettings.visible) drawCanvasTradeLabel(context, compactTradeLabel(fill.labelParts, fill.label, "Filled"), x, fillKind === "entry" ? y + arrowSettings.markerSize + 7 : y - labelSettings.labelSize - arrowSettings.markerSize - 8, labelColor, chartBackground, fillKind === "entry" ? "left" : "right", width, height, labelSettings, labelLayout, elements.connector, fill.labelParts, fillKind === "entry" ? entryFillLabelPartSettings : exitFillLabelPartSettings);
+    };
+    annotation.entryFills?.forEach((fill) => drawFinalFill(fill, "entry"));
+    annotation.exitFills?.forEach((fill) => drawFinalFill(fill, "exit"));
     // Protection evidence is decision-critical. Paint it after lifecycle
     // labels so dense, fast entry/exit clusters cannot hide every SL/TP line.
     if ((elements.stopLine.visible || elements.stopLabel.visible) && typeof annotation.stopPrice === "number" && Number.isFinite(annotation.stopPrice)) {
@@ -7196,6 +7273,9 @@ function drawCanvasPositionAdjustment(
     context,
     compactTradeLabel(fill.labelParts, fill.label, {
       add: "Add",
+      entry_fill: "Filled",
+      exit_fill: "Filled",
+      exit_intent: "Exit issued",
       profit_target: "Target",
       protective_stop: "Stop",
       trailing_stop: "Trail",

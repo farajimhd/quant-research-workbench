@@ -154,7 +154,7 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert "lowerBoundCandleTime(state.timeline" in renderer_source
     assert "tradeAutoscaleViewportRef.current !== viewportIdentity" in renderer_source
     assert "candleRef.current?.priceScale().applyOptions({ autoScale: true })" in renderer_source
-    assert renderer_source.index('compactTradeLabel(annotation.exitLabelParts') < renderer_source.index('drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, stopColor')
+    assert renderer_source.index('annotation.exitIntents?.forEach') < renderer_source.index('drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, stopColor')
     assert "trading?.strategy_chart_activity ?? trading?.strategy_activity" in chart_source
     assert "entryDecision?.row.chart_plan" in chart_source
     assert "guideStartTime: planStartTime" in chart_source
@@ -172,24 +172,42 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert '"NO STRATEGY PLAN"' in chart_source
     assert 'label: `SL@${compactPrice(nextStop)}`' in chart_source
     assert 'label: `TP@${compactPrice(nextTarget)}`' in chart_source
-    assert 'return `${name}${formatQuantity(quantity)}@${compactPrice(price)}`' in chart_source
     assert 'settings?.lineStyle === "dashed"' in renderer_source
     assert "execution_annotations: []" in chart_source
     assert "positionExecutionActions" in chart_source
     assert '"Long" : "Short"' not in chart_source
     assert '"Short" : "Long"' in chart_source
-    assert "actions.slice(1, -1)" in chart_source
-    assert 'profit_target: "TP"' in chart_source
+    assert 'const entryIntentTime = entryDecision?.time ?? parsedTime(row.requested_at) ?? entryTime' in chart_source
+    assert 'const entryIntentPrice = decisionReferencePrice(entryDecision?.row) ?? entryPrice' in chart_source
+    assert 'current.firstTime = Math.min(current.firstTime, time)' in chart_source
+    assert 'current.time = Math.max(current.time, time)' in chart_source
+    assert 'const key = `${orderId}:${side}`' in chart_source
+    assert '`${role}:${action.side}:${second}:${priceTick}`' not in chart_source
+    assert 'action.completion !== "unknown"' in chart_source
+    assert 'const statusText = partial ? "Partial" : "Filled"' in chart_source
+    assert 'label: `${quantityText} ${statusText} @ ${compactPrice(action.price)}`' in chart_source
+    assert 'kind: fillSide === "entry" ? "entry_fill" as const : "exit_fill" as const' in chart_source
+    assert 'exitIntentActions.has(String(event.action || ""))' in chart_source
+    assert 'if (reason.trim().toLowerCase().includes("target")) return "Target exit"' in chart_source
+    assert 'entryIntentTime,' in chart_source
+    assert 'entryFills,' in chart_source
+    assert 'exitFills,' in chart_source
+    assert 'exitIntents,' in chart_source
     assert 'if (reason.includes("macd")) return "MACD exit"' in chart_source
     assert 'if (reason.includes("stop")) return "Stop exit"' in chart_source
     assert 'if (reason.includes("target") || fallbackKind === "profit_target") return "Target filled"' in chart_source
-    assert 'String(row.exit_reason || "")' in chart_source
+    assert 'String(event.reason || row.exit_reason || "")' in chart_source
     assert '"Targets complete"' not in chart_source
     assert '"Trim"' not in chart_source
     assert 'execution_role' in chart_source
-    assert '`${role}:${action.side}:${second}:${priceTick}`' in chart_source
-    assert "const exitQuantity = exitAction?.quantity || quantity" in chart_source
-    assert "current.time = Math.min(current.time, time)" in chart_source
+    assert 'annotation.entryIntentTime ?? annotation.entryTime' in renderer_source
+    assert 'annotation.exitIntents?.forEach' in renderer_source
+    assert 'annotation.entryFills?.forEach' in renderer_source
+    assert 'annotation.exitFills?.forEach' in renderer_source
+    assert 'entryFillLabelPartSettings' in renderer_source
+    assert 'exitFillLabelPartSettings' in renderer_source
+    assert 'title: "Entry final-fill label"' in renderer_source
+    assert 'title: "Exit final-fill label"' in renderer_source
     assert "closedTradeAnnotations" not in chart_source
     assert "class TradeAnnotationPrimitive implements ISeriesPrimitive<Time>" in renderer_source
     assert "candleSeries.attachPrimitive(tradeAnnotationPrimitive)" in renderer_source
@@ -210,10 +228,10 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert 'entryShortDirectionPart: { ...strategyPresentationStyle("#FF1744", "solid", 1, 1, 10, 7, 1)' in renderer_source
     assert 'entryPricePart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#007DFF"' in renderer_source
     assert 'entryShortPricePart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#FF1744"' in renderer_source
-    assert 'title: "Long"' in renderer_source
-    assert 'title: "Short"' in renderer_source
-    assert 'title: "Long price"' in renderer_source
-    assert 'title: "Short price"' in renderer_source
+    assert 'title: "Long issued"' in renderer_source
+    assert 'title: "Short issued"' in renderer_source
+    assert 'title: "Long-entry price"' in renderer_source
+    assert 'title: "Short-entry price"' in renderer_source
     assert 'exitLine: strategyPresentationStyle("#FF3D47"' in renderer_source
     assert 'exitLabel: { ...strategyPresentationStyle("#64748B", "solid", 1, 1, 10, 7, 0.45), borderColor: "#F75555"' in renderer_source
     assert 'exitReasonPart:' in renderer_source
@@ -233,8 +251,8 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert "migrateUntouchedShortStyle ? undefined : configured" in renderer_source
     assert 'title: "Close long"' in renderer_source
     assert 'title: "Cover short"' in renderer_source
-    assert 'title: "Profit"' in renderer_source
-    assert 'title: "Loss"' in renderer_source
+    assert 'title: "Long-exit price"' in renderer_source
+    assert 'title: "Short-exit price"' in renderer_source
     assert 'levelLabel: { ...strategyPresentationStyle("", "solid", 1, 1, 8, 7, 1), borderWidth: 0, labelPaddingX: 2, labelPaddingY: 1 }' in renderer_source
     assert 'stopLine: strategyPresentationStyle("", "dashed", 1, 0.95' in renderer_source
     assert 'targetLine: strategyPresentationStyle("#008539", "dashed", 1, 1' in renderer_source
@@ -295,18 +313,16 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert "context.setLineDash(canvasLineDash(settings.lineStyle, settings.lineWidth))" in renderer_source
     assert 'context.fillRect(renderedLeft - capRadius' in renderer_source
     assert 'entryLabelParts: [' in chart_source
-    assert '{ text: formatQuantity(entryQuantity), tone: "size" }' in chart_source
-    assert '{ text: "@", tone: "separator" }' in chart_source
-    assert '{ text: entryPrice.toFixed(2), tone: side === "SHORT" ? "priceShort" : "priceLong" }' in chart_source
-    assert 'exitLabelParts: status === "closed" ? [' in chart_source
-    assert '{ text: exitLabel, tone: side === "SHORT" ? "exitShort" : "exitLong" }' in chart_source
-    assert '{ text: formatQuantity(exitQuantity), tone: "size" }' in chart_source
-    assert '{ text: Number(exitPrice).toFixed(2), tone: side === "SHORT" ? "exitPriceShort" : "exitPriceLong" }' in chart_source
-    assert '{ text: signedMoneyShort(pnl), tone: pnl >= 0 ? "pnlWin" : "pnlLoss" }' in chart_source
+    assert '{ text: "issued", tone: "label" }' in chart_source
+    assert '{ text: quantityText, tone: "size" as const }' in chart_source
+    assert '{ text: statusText, tone: "reason" as const }' in chart_source
+    assert '{ text: "@", tone: "separator" as const }' in chart_source
+    assert '{ text: compactPrice(action.price), tone: priceTone }' in chart_source
     assert 'const entryLabelPartSettings: TradeLabelPartSettings' in renderer_source
     assert 'const exitLabelPartSettings: TradeLabelPartSettings' in renderer_source
-    assert 'pnlLoss: elements.exitPnlLossPart' in renderer_source
-    assert 'annotation.exitLabelParts, exitLabelPartSettings' in renderer_source
+    assert 'reason: elements.entryFillStatusPart' in renderer_source
+    assert 'reason: elements.exitFillStatusPart' in renderer_source
+    assert 'fillKind === "entry" ? entryFillLabelPartSettings : exitFillLabelPartSettings' in renderer_source
     assert 'parts.map((part)' in renderer_source
     assert 'partSettings?.[part.tone ?? "label"]' in renderer_source
     assert 'context.font = `${segment.settings.fontWeight} ${segment.settings.labelSize}px ${canvasInterfaceFont()}`' in renderer_source
@@ -329,7 +345,7 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert "font-weight: 650;" not in strategy_styles
     assert "font-weight: 700;" not in strategy_styles
     assert renderer_source.index('drawCanvasTradeLine(context, span.left, span.right, entryY') < renderer_source.index('annotation.levelPrices?.slice(0, 3)')
-    assert renderer_source.index('drawCanvasTradeArrow(context, entryX, entryY') < renderer_source.index('annotation.levelPrices?.slice(0, 3)')
+    assert renderer_source.index('drawCanvasTradeArrow(context, entryIntentX, entryIntentY') < renderer_source.index('annotation.levelPrices?.slice(0, 3)')
     assert "const horizontalCandidates = [preferredLeft, preferredLeft - labelWidth / 2, preferredLeft + labelWidth / 2]" in renderer_source
     assert "const verticalOffsets = Array.from({ length: 33 }" in renderer_source
     assert "const candidateTop = top + offset" in renderer_source
