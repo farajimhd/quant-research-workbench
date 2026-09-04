@@ -188,6 +188,10 @@ type PriceZone = {
   holdEvidenceReliability?: number;
   holdObservationCount?: number;
   holdQualityScore?: number;
+  tickerRelativeQualityDistributionHash?: string;
+  tickerRelativeQualityPopulationSize?: number;
+  tickerRelativeQualityReferenceSession?: string;
+  tickerRelativeQualityRevision?: string;
   tickerRelativeQualityScore?: number;
   tickerRelativeQualityStatus?: string;
   label: string;
@@ -2253,6 +2257,18 @@ type LegendItem = {
   supportsHistoryWindow?: boolean;
   supportsStroke?: boolean;
   supportsUnifiedFilters?: boolean;
+  unifiedRelativeQualitySummary?: {
+    availableCount: number;
+    distributionHash: string;
+    maximumScore?: number;
+    minimumScore?: number;
+    populationLabel: string;
+    provisionalCount: number;
+    referenceSession: string;
+    revision: string;
+    totalCount: number;
+    unavailableCount: number;
+  };
   supportsPreset?: boolean;
   value: string;
   visible: boolean;
@@ -2590,6 +2606,9 @@ function LegendEditor({
             value={item.minimumTickerRelativeQualityScore ?? 0}
             onChange={(minimumTickerRelativeQualityScore) => onUpdate({ minimumTickerRelativeQualityScore })}
           />
+          {item.unifiedRelativeQualitySummary ? (
+            <RelativeQualitySummary summary={item.unifiedRelativeQualitySummary} />
+          ) : null}
           <CountThresholdControl
             description="Minimum number of observed hold or break outcomes."
             label="hold_observation_count"
@@ -2615,7 +2634,7 @@ function LegendEditor({
             onChange={(minimumPressureMagnitude) => onUpdate({ minimumPressureMagnitude })}
           />
           <p className="legend-filter-note">
-            Same-session provisional levels are not removed by the ticker-relative filter. Changes apply immediately to loaded chart data.
+            The ticker-relative threshold applies only to inherited levels marked available. A level first created today remains visible until a later 04:00 ET session baseline can evaluate it. Presentation changes redraw the chart data already loaded.
           </p>
           <span className="legend-filter-subtitle">Visible roles and states</span>
           <span className="legend-filter-grid">
@@ -2764,6 +2783,29 @@ function CountThresholdControl({ description, label, onChange, value }: { descri
         />
       </span>
     </label>
+  );
+}
+
+function RelativeQualitySummary({ summary }: { summary: NonNullable<LegendItem["unifiedRelativeQualitySummary"]> }) {
+  const scoreRange = summary.minimumScore == null || summary.maximumScore == null
+    ? "Unavailable"
+    : `${Math.round(summary.minimumScore * 100)}–${Math.round(summary.maximumScore * 100)}%`;
+  return (
+    <section className="legend-relative-quality-summary" aria-label="Loaded ticker-relative quality evidence">
+      <div className="legend-relative-quality-summary-header">
+        <span>Loaded normalized evidence</span>
+        <strong>{summary.availableCount.toLocaleString("en-US")} / {summary.totalCount.toLocaleString("en-US")} available</strong>
+      </div>
+      <dl>
+        <div><dt>Score range</dt><dd>{scoreRange}</dd></div>
+        <div><dt>Reference session</dt><dd>{summary.referenceSession}</dd></div>
+        <div><dt>Reference population</dt><dd>{summary.populationLabel}</dd></div>
+        <div><dt>Current-session provisional</dt><dd>{summary.provisionalCount.toLocaleString("en-US")}</dd></div>
+        <div><dt>Unavailable</dt><dd>{summary.unavailableCount.toLocaleString("en-US")}</dd></div>
+        <div><dt>Revision</dt><dd title={summary.revision}>{summary.revision}</dd></div>
+        <div className="legend-relative-quality-summary-hash"><dt>Distribution</dt><dd title={summary.distributionHash}>{summary.distributionHash}</dd></div>
+      </dl>
+    </section>
   );
 }
 
@@ -4071,6 +4113,9 @@ function buildPriceZoneLegendItems(
     const presetZoneCount = itemZones.filter((zone) => !zone.preset || zone.preset === settings.preset).length;
     const episodeIds = new Set(selectedZones.filter((zone) => zone.episodeId !== undefined).map((zone) => `${zone.preset}:${zone.episodeId}`));
     const supportsUnifiedFilters = itemZones.some((zone) => zone.annotationKind === "unified-structure-level");
+    const unifiedRelativeQualitySummary = supportsUnifiedFilters
+      ? summarizeTickerRelativeQuality(itemZones)
+      : undefined;
     return {
       color: settings.color,
       configurable: true,
@@ -4119,6 +4164,7 @@ function buildPriceZoneLegendItems(
         || zone.annotationKind === "swing-footprint"),
       supportsPreset: Boolean(displayItem?.presetOptions?.length),
       supportsUnifiedFilters,
+      unifiedRelativeQualitySummary,
       value: itemZones.some((zone) => zone.annotationKind === "signal-episode-range")
         ? `${episodeIds.size} episode${episodeIds.size === 1 ? "" : "s"}`
         : selectedZones.length === presetZoneCount
@@ -4127,6 +4173,33 @@ function buildPriceZoneLegendItems(
       visible: settings.visible,
     };
   });
+}
+
+function summarizeTickerRelativeQuality(zones: PriceZone[]): NonNullable<LegendItem["unifiedRelativeQualitySummary"]> {
+  const normalizedZones = zones.filter((zone) => zone.annotationKind === "unified-structure-level");
+  const availableScores = normalizedZones
+    .filter((zone) => zone.tickerRelativeQualityStatus === "available" && Number.isFinite(zone.tickerRelativeQualityScore))
+    .map((zone) => clampNumber(zone.tickerRelativeQualityScore, 0, 1, 0));
+  const populations = normalizedZones
+    .map((zone) => Math.max(0, Math.round(Number(zone.tickerRelativeQualityPopulationSize) || 0)))
+    .filter((value) => value > 0);
+  const references = Array.from(new Set(normalizedZones.map((zone) => zone.tickerRelativeQualityReferenceSession).filter(Boolean)));
+  const revisions = Array.from(new Set(normalizedZones.map((zone) => zone.tickerRelativeQualityRevision).filter(Boolean)));
+  const hashes = Array.from(new Set(normalizedZones.map((zone) => zone.tickerRelativeQualityDistributionHash).filter(Boolean)));
+  const populationMinimum = populations.length ? Math.min(...populations) : 0;
+  const populationMaximum = populations.length ? Math.max(...populations) : 0;
+  return {
+    availableCount: availableScores.length,
+    distributionHash: hashes.length === 0 ? "Unavailable" : hashes.length === 1 ? hashes[0]! : `${hashes.length} loaded baselines`,
+    maximumScore: availableScores.length ? Math.max(...availableScores) : undefined,
+    minimumScore: availableScores.length ? Math.min(...availableScores) : undefined,
+    populationLabel: populationMaximum === 0 ? "Unavailable" : populationMinimum === populationMaximum ? populationMaximum.toLocaleString("en-US") : `${populationMinimum.toLocaleString("en-US")}–${populationMaximum.toLocaleString("en-US")}`,
+    provisionalCount: normalizedZones.filter((zone) => zone.tickerRelativeQualityStatus === "same_session_provisional").length,
+    referenceSession: references.length === 0 ? "Unavailable" : references.length === 1 ? references[0]! : `${references.length} sessions loaded`,
+    revision: revisions.length === 0 ? "Unavailable" : revisions.length === 1 ? revisions[0]! : `${revisions.length} revisions loaded`,
+    totalCount: normalizedZones.length,
+    unavailableCount: normalizedZones.filter((zone) => !["available", "same_session_provisional"].includes(String(zone.tickerRelativeQualityStatus))).length,
+  };
 }
 
 function latestSeriesValue(data: Array<{ value: number }>) {

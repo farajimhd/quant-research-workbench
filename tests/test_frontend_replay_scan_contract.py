@@ -589,13 +589,18 @@ def test_unified_structure_scores_can_filter_loaded_levels_without_a_history_req
     assert 'label="ticker_relative_quality_score"' in renderer_source
     assert 'badge="Ticker-normalized"' in renderer_source
     assert "Same-role percentile against this ticker's distribution frozen at 04:00 ET." in renderer_source
+    assert "Loaded normalized evidence" in renderer_source
+    assert "Current-session provisional" in renderer_source
+    assert "summarizeTickerRelativeQuality(itemZones)" in renderer_source
+    assert "tickerRelativeQualityDistributionHash: level.ticker_relative_quality_distribution_hash" in chart_source
+    assert "The ticker-relative threshold applies only to inherited levels marked available." in renderer_source
     assert 'label="hold_observation_count"' in renderer_source
     assert 'label="hold_evidence_reliability"' in renderer_source
     assert 'label="break_probability maximum"' in renderer_source
     assert 'label="|pressure_bias|"' in renderer_source
     assert 'label="Minimum hold"' not in renderer_source
     assert 'label="Hold probability"' not in renderer_source
-    assert "Changes apply immediately to loaded chart data" in renderer_source
+    assert "Presentation changes redraw the chart data already loaded." in renderer_source
     assert "showUnifiedSupport" in renderer_source
     assert "showUnifiedResistance" in renderer_source
     assert "showUnifiedActive" in renderer_source
@@ -631,6 +636,7 @@ def test_unified_structure_scores_can_filter_loaded_levels_without_a_history_req
     assert ".chart-legend-editor.unified-structure-editor" in styles_source
     assert "width: min(430px, calc(var(--app-zoomed-viewport-width, 100vw) - 16px));" in styles_source
     assert ".legend-filter-control-copy code" in styles_source
+    assert ".legend-relative-quality-summary" in styles_source
 
 
 def test_debug_page_can_open_a_durable_completed_backtest_review() -> None:
