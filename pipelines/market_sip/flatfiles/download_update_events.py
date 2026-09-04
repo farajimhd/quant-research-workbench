@@ -1813,15 +1813,18 @@ def execution_clock_rows_match_archive(client: ClickHouseHttpClient, args: argpa
             f"""
 SELECT
     argMax(source.next_ordinal - source.event_count, tuple(source.build_step, source.updated_at)),
-    argMax(source.next_ordinal, tuple(source.build_step, source.updated_at))
+    argMax(source.next_ordinal, tuple(source.build_step, source.updated_at)),
+    argMax(source.event_count, tuple(source.build_step, source.updated_at))
 FROM {quote_ident(args.database)}.{quote_ident(args.continuity_table)} AS source
 WHERE source.source_date = toDate({sql_string(day.source_date)})
   AND source.ticker = {sql_string(ticker)}
 """,
         )
-        if not bounds or len(bounds) != 2:
+        if not bounds or len(bounds) != 3:
             return False
-        first_ordinal, next_ordinal = (int(float(value or 0)) for value in bounds)
+        first_ordinal, next_ordinal, event_count = (int(float(value or 0)) for value in bounds)
+        if event_count == 0:
+            continue
         row = first_tsv_row(
             client,
             f"""
@@ -1839,7 +1842,7 @@ SELECT
         if not row or len(row) != 2:
             return False
         clock_rows, trade_rows = (int(float(value or 0)) for value in row)
-        if clock_rows <= 0 or clock_rows != trade_rows:
+        if clock_rows != trade_rows:
             return False
     return True
 

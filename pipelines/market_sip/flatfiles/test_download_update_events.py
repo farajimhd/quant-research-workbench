@@ -22,6 +22,7 @@ from pipelines.market_sip.flatfiles.download_update_events import (
     clickhouse_price_int,
     confirm_auto_update,
     execution_clock_existing_source_days,
+    execution_clock_rows_match_archive,
     format_auto_update_summary,
     insert_execution_clock_day_sql,
     insert_execution_clock_coverage_day_sql,
@@ -167,6 +168,21 @@ class EventEncodingTests(unittest.TestCase):
             self.assertIn("delayed_trade_report_count", coverage_sql)
             self.assertIn("intDiv(x.execution_timestamp_us, 1000000)", coverage_sql)
             self.assertIn("intDiv(e.sip_timestamp_us, 1000000)", coverage_sql)
+
+    def test_existing_sidecar_accepts_exact_zero_trade_ticker_day(self) -> None:
+        client = mock.Mock()
+        client.query_tsv.side_effect = ["10\t20\t10\n", "0\t0\n"]
+        args = argparse.Namespace(
+            database="market_sip_compact",
+            continuity_table="events_ordinal_continuity",
+            events_table="events_2026",
+            execution_clock_database="q_live",
+            execution_clock_table="historical_event_execution_clock_v1",
+            tickers="SUGP",
+        )
+        day = _day(Path("unused"), "2026-08-21")
+
+        self.assertTrue(execution_clock_rows_match_archive(client, args, day))
 
 
 class AutoUpdatePlanningTests(unittest.TestCase):
