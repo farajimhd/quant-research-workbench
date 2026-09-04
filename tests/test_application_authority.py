@@ -18,6 +18,15 @@ from src.backend.application_authority import (
 
 
 class ApplicationAuthorityTests(unittest.TestCase):
+    def test_canvas_chart_single_flight_wait_covers_cold_history_contract(self) -> None:
+        # Full-session history permits 180 seconds in QMD History and performs
+        # bounded coverage reads before and after it.  A coalesced caller must
+        # not fail before the owner request can complete successfully.
+        self.assertGreaterEqual(
+            backend_app._CANVAS_CHART_HISTORY_CACHE.wait_timeout_seconds,
+            210.0,
+        )
+
     def test_computation_summary_is_shared_across_management_consumers(self) -> None:
         cache = BoundedSingleFlightTtlCache[str, dict](
             max_entries=1,

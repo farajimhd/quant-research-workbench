@@ -373,8 +373,13 @@ _CANVAS_CHART_HISTORY_CACHE = BoundedSingleFlightTtlCache[
 ](
     max_entries=256,
     ttl_seconds=120.0,
-    contract_revision="canvas-chart-history.v1",
-    wait_timeout_seconds=95.0,
+    contract_revision="canvas-chart-history.v2",
+    # A cold completed-session projection may spend up to 180 seconds in QMD
+    # History plus two bounded 15-second coverage reads.  Identical Canvas
+    # requests must remain coalesced for that entire authoritative load; a
+    # shorter waiter deadline turns a healthy first load into a false 502 for
+    # the second React consumer even though the owner subsequently succeeds.
+    wait_timeout_seconds=225.0,
 )
 _TICKER_CHANGE_CACHE = BoundedSingleFlightTtlCache[
     tuple[str, str], dict[str, Any]
