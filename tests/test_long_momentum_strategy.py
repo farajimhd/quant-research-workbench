@@ -119,6 +119,16 @@ def confirmed_observation(**overrides) -> StrategyObservation:
         "evaluation_events": ("indicator_update", "bar_close"),
     }
     payload.update(overrides)
+    for field in ("structural_support_levels", "structural_resistance_levels"):
+        enriched_levels = []
+        for raw_level in payload.get(field) or ():
+            level = dict(raw_level)
+            if "hold_quality_score" not in level:
+                level["hold_quality_score"] = level.get("hold_probability", 1.0)
+                level.setdefault("hold_observation_count", 1)
+            enriched_levels.append(level)
+        if field in payload:
+            payload[field] = tuple(enriched_levels)
     if "price" in overrides and "bar_open" not in overrides:
         payload["bar_open"] = float(overrides["price"]) - 0.01
     if "vwap" in overrides and "execution_vwap" not in overrides:
@@ -136,6 +146,145 @@ def confirmed_observation(**overrides) -> StrategyObservation:
 
 
 class LongMomentumStrategyTests(unittest.TestCase):
+    def test_conservative_quality_threshold_is_inclusive_and_fails_closed(self) -> None:
+        policy = {
+            "minimum_hold_probability": 0.0,
+            "minimum_hold_quality_score": 0.70,
+            "minimum_hold_observations": 1,
+        }
+        base = {
+            "hold_probability": 0.99,
+            "hold_observation_count": 1,
+        }
+
+        self.assertTrue(
+            _level_is_entry_quality(
+                {**base, "hold_quality_score": 0.70}, policy, observed_at=NOW
+            )
+        )
+        self.assertFalse(
+            _level_is_entry_quality(
+                {**base, "hold_quality_score": 0.6999}, policy, observed_at=NOW
+            )
+        )
+        self.assertFalse(_level_is_entry_quality(base, policy, observed_at=NOW))
+
+    def test_top_three_starts_with_level_covering_session_high(self) -> None:
+        policy = {
+            "selection_mode": "prior_completed_frame_top_n_below_session_high",
+            "maximum_entry_levels": 3,
+            "minimum_hold_quality_score": 0.70,
+            "minimum_hold_observations": 1,
+            "maximum_break_probability": 1.0,
+        }
+        levels = (
+            {"unified_level_id": "above", "side": -1, "price": 10.4, "lower": 10.3, "upper": 10.5, "hold_quality_score": 0.9, "hold_observation_count": 1},
+            {"unified_level_id": "top", "side": -1, "price": 9.98, "lower": 9.95, "upper": 10.02, "hold_quality_score": 0.7, "hold_observation_count": 1},
+            {"unified_level_id": "second", "side": -1, "price": 9.8, "hold_quality_score": 0.8, "hold_observation_count": 1},
+            {"unified_level_id": "third", "side": -1, "price": 9.6, "hold_quality_score": 0.9, "hold_observation_count": 1},
+        )
+        state: dict = {}
+
+        _prior_completed_frame_resistance_trigger(
+            confirmed_observation(
+                price=9.5,
+                structural_session_high=10.0,
+                structural_resistance_levels=levels,
+                source_timeframe="1s",
+            ),
+            policy,
+            state,
+        )
+
+        snapshot = state["qualified_entry_resistance_snapshot"]
+        self.assertEqual(snapshot["top_selection"], "qualified_level_covering_session_high")
+        self.assertEqual(
+            [row["unified_level_id"] for row in snapshot["levels"]],
+            ["top", "second", "third"],
+        )
+
+    def test_top_three_starts_below_session_high_when_high_is_a_long_wick(self) -> None:
+        policy = {
+            "selection_mode": "prior_completed_frame_top_n_below_session_high",
+            "maximum_entry_levels": 3,
+            "minimum_hold_quality_score": 0.70,
+            "minimum_hold_observations": 1,
+            "maximum_break_probability": 1.0,
+        }
+        levels = tuple(
+            {
+                "unified_level_id": f"r-{price}",
+                "side": -1,
+                "price": price,
+                "hold_quality_score": 0.8,
+                "hold_observation_count": 1,
+            }
+            for price in (10.0, 9.8, 9.6, 9.4)
+        )
+        state: dict = {}
+
+        _prior_completed_frame_resistance_trigger(
+            confirmed_observation(
+                price=9.5,
+                structural_session_high=10.5,
+                structural_resistance_levels=levels,
+                source_timeframe="1s",
+            ),
+            policy,
+            state,
+        )
+
+        snapshot = state["qualified_entry_resistance_snapshot"]
+        self.assertEqual(snapshot["top_selection"], "highest_qualified_levels_below_session_high")
+        self.assertEqual([row["price"] for row in snapshot["levels"]], [10.0, 9.8, 9.6])
+
+    def test_stop_support_uses_only_levels_meeting_conservative_quality(self) -> None:
+        levels = (
+            {"unified_level_id": "missing", "side": 1, "price": 99.0, "hold_quality_score": None, "hold_observation_count": 1},
+            {"unified_level_id": "threshold", "side": 1, "price": 98.0, "hold_quality_score": 0.70, "hold_observation_count": 1},
+            {"unified_level_id": "second", "side": 1, "price": 97.0, "hold_quality_score": 0.80, "hold_observation_count": 1},
+        )
+
+        result = LongMomentumStrategyEngine().evaluate(
+            assignment(),
+            confirmed_observation(
+                price=100.0,
+                swing_high=99.0,
+                vwap=98.0,
+                structural_support_levels=levels,
+            ),
+        )
+
+        evidence = result.evaluation.signals[0].metadata["protective_stop_selection"]
+        self.assertEqual(result.evaluation.intents[0].invalidation_price, 97.0)
+        self.assertEqual(evidence["selected_support_level"]["unified_level_id"], "second")
+        self.assertEqual(evidence["qualified_level_count"], 2)
+
+    def test_profit_targets_use_inclusive_conservative_quality_and_fail_closed(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["protection"]["profit_ladder"].update({
+            "minimum_level_strength": 0.0,
+            "minimum_level_confidence": 0.0,
+        })
+        observation = confirmed_observation(
+            price=100.0,
+            structural_resistance_levels=(
+                {"unified_level_id": "missing", "side": -1, "price": 101.0, "hold_quality_score": None, "hold_observation_count": 1},
+                {"unified_level_id": "below", "side": -1, "price": 101.5, "hold_quality_score": 0.6999, "hold_observation_count": 1},
+                {"unified_level_id": "threshold", "side": -1, "price": 102.0, "hold_quality_score": 0.70, "hold_observation_count": 1},
+            ),
+        )
+
+        targets = _structural_profit_targets(
+            observation,
+            parameters,
+            stop=99.0,
+            side="long",
+            luld_target=None,
+        )
+
+        self.assertEqual(targets, [102.0])
+
     def test_prior_frame_top_three_uses_resistance_at_or_below_live_session_high(self) -> None:
         policy = {
             "selection_mode": "prior_completed_frame_top_n_below_session_high",
@@ -613,6 +762,15 @@ class LongMomentumStrategyTests(unittest.TestCase):
                 structural_resistance_lower=4.27,
                 structural_resistance_strength=0.9,
                 structural_resistance_confidence=0.9,
+                structural_resistance_levels=({
+                    "unified_level_id": "target-4.27",
+                    "side": -1,
+                    "price": 4.27,
+                    "strength": 0.90,
+                    "confidence": 0.90,
+                    "hold_quality_score": 0.90,
+                    "hold_observation_count": 1,
+                },),
                 vwap=3.45,
                 volatility=0.05,
                 upper_luld_price=None,

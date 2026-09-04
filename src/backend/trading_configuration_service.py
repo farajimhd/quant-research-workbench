@@ -4148,10 +4148,10 @@ def _default_draft() -> dict[str, Any]:
         "minimum_salience": 0.0,
         "minimum_confidence": 0.0,
         "minimum_reaction_probability": 0.0,
-        # Rank the ticker's causal levels by the shared conservative score.
-        # No cross-ticker absolute probability threshold is implied.
+        # Require the shared conservative score; raw hold probability remains
+        # compatibility evidence and is not a qualification substitute.
         "minimum_hold_probability": 0.0,
-        "minimum_hold_quality_score": 0.0,
+        "minimum_hold_quality_score": 0.70,
         "minimum_hold_observations": 1,
         "maximum_break_count": 100,
         "maximum_break_probability": 1.0,
@@ -4237,7 +4237,7 @@ def _default_draft() -> dict[str, Any]:
         "minimum_reaction_probability": 0.0,
         "minimum_reversal_probability": 0.0,
         "minimum_hold_probability": 0.0,
-        "minimum_hold_quality_score": 0.0,
+        "minimum_hold_quality_score": 0.70,
         "minimum_hold_observations": 1,
         "maximum_break_count": 100,
         "maximum_break_probability": 1.0,
@@ -4259,7 +4259,7 @@ def _default_draft() -> dict[str, Any]:
         "volatility_multiple": 1.25,
         "maximum_risk_pct": 15.0,
         "minimum_hold_probability": 0.0,
-        "minimum_hold_quality_score": 0.0,
+        "minimum_hold_quality_score": 0.70,
         "minimum_hold_observations": 1,
         "support_level_ordinal": 2,
         "prefer_closer_hybrid": True,
@@ -5904,18 +5904,26 @@ def merged_assignment_parameters(configuration: dict[str, Any], assignment: dict
     })
     protection = dict(oms.get("protection") or {})
     stop = base.setdefault("protection", {}).setdefault("stop", {})
-    stop.update({
-        "method": protection["stop_method"],
-        "structure_buffer_bps": float(protection.get("structure_buffer_bps") or 0),
-        "volatility_multiple": float(protection.get("volatility_multiple") or 0),
-        "maximum_risk_pct": float(protection.get("maximum_risk_pct") or 0),
-    })
-    trailing = base["protection"].setdefault("trailing", {})
-    # OMS may forbid trailing protection, but it must not re-enable a trailing
-    # strategy exit that the selected Strategy profile explicitly disabled.
-    trailing["enabled"] = bool(trailing.get("enabled", True)) and bool(
-        protection.get("trailing_enabled", True)
+    # Strategy-defined protection is the decision authority. OMS settings are
+    # defaults only for strategies that do not define the corresponding field;
+    # silently replacing a structural stop changes the strategy being tested.
+    stop.setdefault("method", protection["stop_method"])
+    stop.setdefault(
+        "structure_buffer_bps",
+        float(protection.get("structure_buffer_bps") or 0),
     )
+    stop.setdefault(
+        "volatility_multiple",
+        float(protection.get("volatility_multiple") or 0),
+    )
+    stop.setdefault(
+        "maximum_risk_pct",
+        float(protection.get("maximum_risk_pct") or 0),
+    )
+    trailing = base["protection"].setdefault("trailing", {})
+    # The same ownership rule applies to trailing protection: OMS provides a
+    # default only when the selected Strategy profile is silent.
+    trailing.setdefault("enabled", bool(protection.get("trailing_enabled", True)))
     identity = dict(configuration.get("strategy") or {})
     return strategy_executor(
         str(identity.get("strategy_id") or assignment.get("strategy_id") or ""),

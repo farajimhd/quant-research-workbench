@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, time as clock_time, timedelta, timezone
 from enum import StrEnum
-from math import floor
+from math import floor, isfinite
 from typing import Any, Mapping
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -34,8 +34,8 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 29
-HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28)
+STRATEGY_REVISION = 30
+HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29)
 
 SOURCE_MAXIMUM_AGE_MS = {
     "100ms": 500,
@@ -456,6 +456,9 @@ def default_long_momentum_parameters() -> dict[str, Any]:
                 "minimum_salience": 0.45,
                 "minimum_confidence": 0.50,
                 "minimum_reaction_probability": 0.50,
+                "minimum_hold_probability": 0.0,
+                "minimum_hold_quality_score": 0.70,
+                "minimum_hold_observations": 1,
                 "acceptance_buffer_bps": 0.0,
                 "acceptance_hold_ms": 15_000,
             },
@@ -503,7 +506,7 @@ def default_long_momentum_parameters() -> dict[str, Any]:
                 "volatility_multiple": 1.25,
                 "maximum_risk_pct": 15.0,
                 "minimum_hold_probability": 0.0,
-                "minimum_hold_quality_score": 0.0,
+                "minimum_hold_quality_score": 0.70,
                 "minimum_hold_observations": 1,
                 "support_level_ordinal": 2,
                 "prefer_closer_hybrid": True,
@@ -523,6 +526,9 @@ def default_long_momentum_parameters() -> dict[str, Any]:
                 "minimum_level_confidence": 0.50,
                 "minimum_reaction_probability": 0.0,
                 "minimum_reversal_probability": 0.0,
+                "minimum_hold_probability": 0.0,
+                "minimum_hold_quality_score": 0.70,
+                "minimum_hold_observations": 1,
                 "minimum_composite_score": 0.0,
                 "minimum_entry_target_gap_bps": 0.0,
                 "premarket_maximum_gain_pct": 200.0,
@@ -709,6 +715,18 @@ def resolve_long_momentum_parameters(overrides: dict[str, Any] | None = None) ->
             raise ValueError("Protective support observation count cannot be negative")
         if int(stop.get("support_level_ordinal") or 0) < 1:
             raise ValueError("Protective support level ordinal must be positive")
+    quality_policies = (
+        ("Structural entry", dict(parameters.get("structural_entry") or {})),
+        (
+            "Structural profit target",
+            dict(parameters.get("protection", {}).get("profit_ladder") or {}),
+        ),
+    )
+    for label, policy in quality_policies:
+        if not 0 <= float(policy.get("minimum_hold_quality_score") or 0) <= 1:
+            raise ValueError(f"{label} quality score must be in [0, 1]")
+        if int(policy.get("minimum_hold_observations") or 0) < 0:
+            raise ValueError(f"{label} observation count cannot be negative")
     sizing = parameters["sizing"]
     if sizing["request_mode"] not in {
         "fixed_quantity",
@@ -1286,6 +1304,22 @@ def _level_metric(row: dict[str, Any], *names: str) -> float:
     return 0.0
 
 
+def _level_has_minimum_hold_quality(
+    row: Mapping[str, Any],
+    minimum_quality: float,
+) -> bool:
+    """Require the canonical conservative score whenever a threshold is active."""
+
+    if minimum_quality <= 0:
+        return True
+    raw = row.get("hold_quality_score")
+    try:
+        quality = float(raw)
+    except (TypeError, ValueError):
+        return False
+    return isfinite(quality) and quality >= minimum_quality
+
+
 def _compact_structural_level_reference(row: Mapping[str, Any] | None) -> dict[str, Any]:
     """Persist only the stable identity and frontier facts needed by the strategy."""
 
@@ -1352,7 +1386,8 @@ def _level_is_entry_quality(
         else 0.0
     )
     hold_probability = _level_metric(row, "hold_probability")
-    hold_quality = _level_metric(row, "hold_quality_score", "hold_probability")
+    minimum_hold_probability = float(policy.get("minimum_hold_probability") or 0)
+    minimum_hold_quality = float(policy.get("minimum_hold_quality_score") or 0)
     hold_observations = _level_metric(row, "hold_observation_count")
     if "hold_observation_count" not in row:
         hold_observations = (
@@ -1372,9 +1407,11 @@ def _level_is_entry_quality(
         >= float(policy.get("minimum_confidence") or 0)
         and _level_metric(row, "reaction_probability")
         >= float(policy.get("minimum_reaction_probability") or 0)
-        and hold_probability
-        >= float(policy.get("minimum_hold_probability") or 0)
-        and hold_quality >= float(policy.get("minimum_hold_quality_score") or 0)
+        and (
+            minimum_hold_probability <= 0
+            or hold_probability >= minimum_hold_probability
+        )
+        and _level_has_minimum_hold_quality(row, minimum_hold_quality)
         and hold_observations >= float(policy.get("minimum_hold_observations") or 0)
         and break_probability
         <= float(policy.get("maximum_break_probability", 1.0))
@@ -1892,9 +1929,13 @@ def _prior_completed_frame_resistance_trigger(
             if int(row.get("side") or 0) >= 0:
                 continue
             price = _level_metric(row, "price", "upper", "lower")
+            lower = _level_metric(row, "lower") or price
+            upper = _level_metric(row, "upper") or price
+            if upper < lower:
+                lower, upper = upper, lower
             if (
                 price <= 0
-                or price > session_high
+                or lower > session_high
                 or not _level_is_entry_quality(
                     row, policy, observed_at=observation.observed_at
                 )
@@ -1906,6 +1947,7 @@ def _prior_completed_frame_resistance_trigger(
                 "price": price,
                 "entry_boundary": price,
                 "hold_probability": _level_metric(row, "hold_probability"),
+                "top_of_day_covering": lower <= session_high <= upper,
             })
     qualified.sort(
         key=lambda row: (
@@ -1913,12 +1955,28 @@ def _prior_completed_frame_resistance_trigger(
             str(row.get("unified_level_id") or ""),
         )
     )
-    current_levels = qualified[:maximum_levels]
+    covering_levels = [row for row in qualified if row["top_of_day_covering"]]
+    if covering_levels:
+        top_level = covering_levels[0]
+        lower_levels = [
+            row
+            for row in qualified
+            if row is not top_level
+            and float(row["entry_boundary"]) < float(top_level["entry_boundary"])
+        ]
+        current_levels = [top_level, *lower_levels[: maximum_levels - 1]]
+        top_selection = "qualified_level_covering_session_high"
+    else:
+        current_levels = qualified[:maximum_levels]
+        top_selection = "highest_qualified_levels_below_session_high"
+    for row in current_levels:
+        row.pop("top_of_day_covering", None)
     state["qualified_entry_resistance_snapshot"] = {
         "selected_at": observed_at,
         "session_high": session_high,
         "reference_close": observation.price,
         "maximum_entry_levels": maximum_levels,
+        "top_selection": top_selection,
         "levels": current_levels,
     }
     result["current_snapshot"] = dict(state["qualified_entry_resistance_snapshot"])
@@ -5907,8 +5965,8 @@ def _initial_stop(
         1 + direction * maximum_risk_pct / 100
     )
     if method == "ordinal_qualified_support":
-        minimum_hold = float(stop.get("minimum_hold_probability", 0.85))
-        minimum_quality = float(stop.get("minimum_hold_quality_score") or 0.0)
+        minimum_hold = float(stop.get("minimum_hold_probability") or 0.0)
+        minimum_quality = float(stop.get("minimum_hold_quality_score", 0.70))
         minimum_observations = float(stop.get("minimum_hold_observations") or 0.0)
         ordinal = max(1, int(stop.get("support_level_ordinal") or 2))
         rows = _consolidated_structure_levels(
@@ -5925,8 +5983,6 @@ def _initial_stop(
                 if side == "long"
                 else candidate > observation.price
             )
-            # The requested threshold is strict: a level at exactly 85% does
-            # not satisfy a contract expressed as hold_probability > 85%.
             observations = _level_metric(row, "hold_observation_count")
             if "hold_observation_count" not in row:
                 observations = (
@@ -5936,8 +5992,11 @@ def _initial_stop(
                 )
             if (
                 on_protective_side
-                and _level_metric(row, "hold_probability") > minimum_hold
-                and _level_metric(row, "hold_quality_score", "hold_probability") >= minimum_quality
+                and (
+                    minimum_hold <= 0
+                    or _level_metric(row, "hold_probability") > minimum_hold
+                )
+                and _level_has_minimum_hold_quality(row, minimum_quality)
                 and observations >= minimum_observations
             ):
                 qualified.append((candidate, row))
@@ -6164,7 +6223,8 @@ def _structural_profit_targets(
         reaction = _level_metric(dict(row), "reaction_probability")
         reversal = _level_metric(dict(row), "reversal_probability")
         hold = _level_metric(dict(row), "hold_probability")
-        hold_quality = _level_metric(dict(row), "hold_quality_score", "hold_probability")
+        minimum_hold_probability = float(policy.get("minimum_hold_probability") or 0.0)
+        minimum_hold_quality = float(policy.get("minimum_hold_quality_score") or 0.0)
         hold_observations = _level_metric(dict(row), "hold_observation_count")
         if "hold_observation_count" not in row:
             hold_observations = (
@@ -6187,8 +6247,11 @@ def _structural_profit_targets(
             and confidence >= float(policy.get("minimum_level_confidence") or 0.0)
             and reaction >= float(policy.get("minimum_reaction_probability") or 0.0)
             and reversal >= float(policy.get("minimum_reversal_probability") or 0.0)
-            and hold >= float(policy.get("minimum_hold_probability") or 0.0)
-            and hold_quality >= float(policy.get("minimum_hold_quality_score") or 0.0)
+            and (
+                minimum_hold_probability <= 0
+                or hold >= minimum_hold_probability
+            )
+            and _level_has_minimum_hold_quality(row, minimum_hold_quality)
             and hold_observations >= float(policy.get("minimum_hold_observations") or 0.0)
             and break_probability
             <= float(policy.get("maximum_break_probability", 1.0))
@@ -6211,10 +6274,11 @@ def _structural_profit_targets(
     # The scalar nearest-level fields do not carry the Unified Level Book's
     # hold/break lifecycle evidence.  They may remain a compatibility fallback
     # only when the configured strategy does not require that evidence; using
-    # them under an 85% hold gate would silently bypass the agreed contract.
+    # them under an active quality gate would silently bypass the agreed contract.
     if (
         not ranked_candidates
         and float(policy.get("minimum_hold_probability") or 0.0) <= 0.0
+        and float(policy.get("minimum_hold_quality_score") or 0.0) <= 0.0
     ):
         nearest_price = (
             observation.structural_resistance_lower

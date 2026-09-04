@@ -38,6 +38,7 @@ from src.backend.trading_configuration_service import (
     market_discovery_runtime_configuration,
     market_discovery_presentation_configuration,
     materialize_market_discovery,
+    merged_assignment_parameters,
     publish_configuration,
     public_configuration_revision,
     replay_configuration_snapshot,
@@ -49,6 +50,49 @@ from src.trading_runtime.strategy_engine import long_momentum_strategy_definitio
 
 
 class TradingConfigurationServiceTests(unittest.TestCase):
+    def test_strategy_protection_is_not_overridden_by_oms_defaults(self) -> None:
+        configuration = {
+            "strategy": {
+                "strategy_id": "long-momentum-campaign",
+                "revision": 30,
+                "parameters": {
+                    "protection": {
+                        "stop": {
+                            "method": "ordinal_qualified_support",
+                            "maximum_risk_pct": 15.0,
+                            "minimum_hold_quality_score": 0.70,
+                        },
+                        "trailing": {"enabled": True},
+                    }
+                },
+            },
+            "campaign_policy": {},
+            "oms": {
+                "settings": {
+                    "entry_urgency": "urgent",
+                    "exit_urgency": "urgent",
+                    "limit_offset_bps": 0.0,
+                    "tick_size": 0.01,
+                    "protection": {
+                        "stop_method": "hybrid",
+                        "structure_buffer_bps": 10.0,
+                        "volatility_multiple": 1.0,
+                        "maximum_risk_pct": 6.0,
+                        "trailing_enabled": False,
+                    },
+                },
+                "execution_policies": [],
+                "protection_profiles": [],
+            },
+        }
+
+        resolved = merged_assignment_parameters(configuration, {"parameters": {}})
+
+        self.assertEqual(resolved["protection"]["stop"]["method"], "ordinal_qualified_support")
+        self.assertEqual(resolved["protection"]["stop"]["maximum_risk_pct"], 15.0)
+        self.assertEqual(resolved["protection"]["stop"]["minimum_hold_quality_score"], 0.70)
+        self.assertTrue(resolved["protection"]["trailing"]["enabled"])
+
     def test_schema_v42_migrates_protected_stop_trail_and_removes_bearish_choch(self) -> None:
         with patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
@@ -80,7 +124,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated_profile = migrated["strategy"]["profiles"][0]
         migrated_stop = migrated_profile["parameters"]["protection"]["stop"]
-        self.assertEqual(migrated_profile["definition_revision"], 29)
+        self.assertEqual(migrated_profile["definition_revision"], 30)
         self.assertEqual(migrated_stop["method"], "ordinal_qualified_support")
         self.assertEqual(migrated_stop["maximum_risk_pct"], 15.0)
         self.assertEqual(migrated_stop["support_level_ordinal"], 2)
@@ -1478,7 +1522,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
                 "volatility_multiple": 1.25,
                 "maximum_risk_pct": 15.0,
                 "minimum_hold_probability": 0.0,
-                "minimum_hold_quality_score": 0.0,
+                "minimum_hold_quality_score": 0.70,
                 "minimum_hold_observations": 1,
                 "support_level_ordinal": 2,
                 "prefer_closer_hybrid": True,
@@ -1520,11 +1564,19 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertEqual(
             default_profile["parameters"]["protection"]["profit_ladder"]["minimum_hold_probability"],
-            0.85,
+            0.0,
+        )
+        self.assertEqual(
+            default_profile["parameters"]["protection"]["profit_ladder"]["minimum_hold_quality_score"],
+            0.70,
         )
         self.assertEqual(
             default_profile["parameters"]["structural_entry"]["minimum_hold_probability"],
-            0.80,
+            0.0,
+        )
+        self.assertEqual(
+            default_profile["parameters"]["structural_entry"]["minimum_hold_quality_score"],
+            0.70,
         )
         self.assertEqual(
             default_profile["parameters"]["structural_entry"]["maximum_break_count"],
@@ -1823,7 +1875,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertEqual(
             profile["parameters"]["structural_entry"]["minimum_hold_quality_score"],
-            0.0,
+            0.70,
         )
         self.assertEqual(
             profile["parameters"]["structural_entry"]["minimum_hold_observations"],
@@ -2054,6 +2106,13 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(resolved["phase_policy"]["manage"]["mode"], "manual")
         self.assertEqual(resolved["phase_policy"]["reentry"]["mode"], "manual")
         self.assertFalse(resolved["reentry"]["enabled"])
+        self.assertEqual(resolved["protection"]["stop"]["method"], "ordinal_qualified_support")
+        self.assertEqual(resolved["protection"]["stop"]["maximum_risk_pct"], 15.0)
+        self.assertEqual(
+            resolved["protection"]["stop"]["minimum_hold_quality_score"],
+            0.70,
+        )
+        self.assertTrue(resolved["protection"]["trailing"]["enabled"])
 
     def test_paper_release_requires_exact_broker_binding_and_mode_deployment(self) -> None:
         draft = self._draft()
