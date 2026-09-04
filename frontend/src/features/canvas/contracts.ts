@@ -86,6 +86,12 @@ export type QmdUnifiedStructureLevel = {
   hold_evidence_reliability?: number;
   hold_quality_score?: number;
   hold_score_revision?: string;
+  ticker_relative_quality_score?: number;
+  ticker_relative_quality_status?: "available" | "same_session_provisional" | "insufficient_population" | "insufficient_level_evidence" | string;
+  ticker_relative_quality_population_size?: number;
+  ticker_relative_quality_reference_session?: string;
+  ticker_relative_quality_revision?: string;
+  ticker_relative_quality_distribution_hash?: string;
   touch_count: number;
   hold_count: number;
   break_count: number;

@@ -187,7 +187,9 @@ type PriceZone = {
   historyTimeframeSeconds?: number;
   holdEvidenceReliability?: number;
   holdObservationCount?: number;
-  holdProbability?: number;
+  holdQualityScore?: number;
+  tickerRelativeQualityScore?: number;
+  tickerRelativeQualityStatus?: string;
   label: string;
   latest?: boolean;
   legendLabel?: string;
@@ -320,6 +322,7 @@ type LegendSeriesSettings = {
   /** Legacy persisted key. Its value already represented conservative quality. */
   minimumHoldProbability?: number;
   minimumPressureMagnitude?: number;
+  minimumTickerRelativeQualityScore?: number;
   opacity?: number;
   preset?: ChartPreset;
   showConnectors?: boolean;
@@ -2223,6 +2226,7 @@ type LegendItem = {
   minimumHoldObservations?: number;
   minimumHoldQualityScore?: number;
   minimumPressureMagnitude?: number;
+  minimumTickerRelativeQualityScore?: number;
   opacity: number;
   preset?: ChartPreset;
   presetOptions?: Array<{ description?: string; label: string; value: ChartPreset }>;
@@ -2564,12 +2568,13 @@ function LegendEditor({
       {item.itemKind === "zone" && item.supportsUnifiedFilters ? (
         <fieldset className="legend-unified-filters">
           <legend>Evidence-quality filters</legend>
-          <ScoreThresholdControl label="Minimum conservative quality" value={item.minimumHoldQualityScore ?? 0} onChange={(minimumHoldQualityScore) => onUpdate({ minimumHoldQualityScore })} />
-          <CountThresholdControl label="Minimum observations" value={item.minimumHoldObservations ?? 0} onChange={(minimumHoldObservations) => onUpdate({ minimumHoldObservations })} />
-          <ScoreThresholdControl label="Minimum evidence depth" value={item.minimumHoldEvidenceReliability ?? 0} onChange={(minimumHoldEvidenceReliability) => onUpdate({ minimumHoldEvidenceReliability })} />
-          <ScoreThresholdControl label="Maximum smoothed break" value={item.maximumBreakProbability ?? 1} onChange={(maximumBreakProbability) => onUpdate({ maximumBreakProbability })} />
-          <ScoreThresholdControl label="Minimum pressure magnitude" value={item.minimumPressureMagnitude ?? 0} onChange={(minimumPressureMagnitude) => onUpdate({ minimumPressureMagnitude })} />
-          <small>Quality is the conservative Wilson lower bound. Observations and evidence depth expose sample support; break and pressure remain separate diagnostics. Changes apply immediately to loaded chart data.</small>
+          <ScoreThresholdControl label="hold_quality_score" value={item.minimumHoldQualityScore ?? 0} onChange={(minimumHoldQualityScore) => onUpdate({ minimumHoldQualityScore })} />
+          <ScoreThresholdControl label="ticker_relative_quality_score" value={item.minimumTickerRelativeQualityScore ?? 0} onChange={(minimumTickerRelativeQualityScore) => onUpdate({ minimumTickerRelativeQualityScore })} />
+          <CountThresholdControl label="hold_observation_count" value={item.minimumHoldObservations ?? 0} onChange={(minimumHoldObservations) => onUpdate({ minimumHoldObservations })} />
+          <ScoreThresholdControl label="hold_evidence_reliability" value={item.minimumHoldEvidenceReliability ?? 0} onChange={(minimumHoldEvidenceReliability) => onUpdate({ minimumHoldEvidenceReliability })} />
+          <ScoreThresholdControl label="break_probability maximum" value={item.maximumBreakProbability ?? 1} onChange={(maximumBreakProbability) => onUpdate({ maximumBreakProbability })} />
+          <ScoreThresholdControl label="|pressure_bias|" value={item.minimumPressureMagnitude ?? 0} onChange={(minimumPressureMagnitude) => onUpdate({ minimumPressureMagnitude })} />
+          <small>`ticker_relative_quality_score` compares cumulative `hold_quality_score` with the same-role distribution frozen at 04:00 ET. Same-session provisional levels fail open. Changes apply immediately to loaded chart data.</small>
           <span className="legend-filter-subtitle">Visible roles and states</span>
           <span className="legend-filter-grid">
             <UnifiedVisibilityToggle checked={item.showUnifiedSupport !== false} label="Support" onChange={(showUnifiedSupport) => onUpdate({ showUnifiedSupport })} />
@@ -4024,6 +4029,7 @@ function buildPriceZoneLegendItems(
       minimumHoldObservations: settings.minimumHoldObservations,
       minimumHoldQualityScore: settings.minimumHoldQualityScore,
       minimumPressureMagnitude: settings.minimumPressureMagnitude,
+      minimumTickerRelativeQualityScore: settings.minimumTickerRelativeQualityScore,
       opacity: settings.opacity,
       preset: settings.preset,
       presetOptions: displayItem?.presetOptions,
@@ -4595,6 +4601,7 @@ function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettin
     minimumHoldQualityScore: 0,
     minimumHoldProbability: 0,
     minimumPressureMagnitude: 0,
+    minimumTickerRelativeQualityScore: 0,
     opacity: 1,
     preset: "micro",
     showConnectors: true,
@@ -4631,6 +4638,7 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
     minimumHoldQualityScore: clampNumber(stored.minimumHoldQualityScore ?? stored.minimumHoldProbability, 0, 1, defaults.minimumHoldQualityScore),
     minimumHoldProbability: defaults.minimumHoldProbability,
     minimumPressureMagnitude: clampNumber(stored.minimumPressureMagnitude, 0, 1, defaults.minimumPressureMagnitude),
+    minimumTickerRelativeQualityScore: clampNumber(stored.minimumTickerRelativeQualityScore, 0, 1, defaults.minimumTickerRelativeQualityScore),
     opacity: clampNumber(stored.opacity ?? defaults.opacity, 0, 1, 1),
     preset: stored.preset === "tactical" || stored.preset === "context" ? stored.preset : defaults.preset,
     showConnectors: stored.showConnectors ?? defaults.showConnectors,
@@ -4663,6 +4671,7 @@ type ResolvedPriceZoneLegendSettings = {
   minimumHoldObservations: number;
   minimumHoldQualityScore: number;
   minimumPressureMagnitude: number;
+  minimumTickerRelativeQualityScore: number;
   opacity: number;
   preset: ChartPreset;
   showConnectors: boolean;
@@ -4693,6 +4702,7 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
     minimumHoldObservations: Math.max(0, Math.round(stored.minimumHoldObservations ?? 0)),
     minimumHoldQualityScore: clampNumber(stored.minimumHoldQualityScore ?? stored.minimumHoldProbability, 0, 1, 0),
     minimumPressureMagnitude: clampNumber(stored.minimumPressureMagnitude, 0, 1, 0),
+    minimumTickerRelativeQualityScore: clampNumber(stored.minimumTickerRelativeQualityScore, 0, 1, 0),
     opacity: clampNumber(stored.opacity ?? zone?.opacityDefault ?? 1, 0, 1, 1),
     preset: stored.preset === "tactical"
       || stored.preset === "context"
@@ -4720,7 +4730,10 @@ function priceZoneMeetsUnifiedFilters(zone: PriceZone, settings: ResolvedPriceZo
   const stateVisible = zone.latest ? settings.showUnifiedActive : settings.showUnifiedBroken;
   const flipVisible = !(Number(zone.roleFlipCount) > 0) || settings.showUnifiedRoleFlipped;
   return roleVisible && stateVisible && flipVisible
-    && clampNumber(zone.holdProbability, 0, 1, 0) >= settings.minimumHoldQualityScore
+    && clampNumber(zone.holdQualityScore, 0, 1, 0) >= settings.minimumHoldQualityScore
+    && (zone.tickerRelativeQualityStatus !== "available"
+      || (Number.isFinite(zone.tickerRelativeQualityScore)
+        && clampNumber(zone.tickerRelativeQualityScore, 0, 1, 0) >= settings.minimumTickerRelativeQualityScore))
     && Math.max(0, Number(zone.holdObservationCount) || 0) >= settings.minimumHoldObservations
     && clampNumber(zone.holdEvidenceReliability, 0, 1, 0) >= settings.minimumHoldEvidenceReliability
     && Math.abs(clampNumber(zone.pressureBias, -1, 1, 0)) >= settings.minimumPressureMagnitude
@@ -6219,11 +6232,11 @@ function drawPriceZonePrimitiveLabels(
         zone.annotationKind === "unified-structure-level"
         && zone.latest
         && settings.showUnifiedQualityLabel
-        && Number.isFinite(zone.holdProbability)
+        && Number.isFinite(zone.holdQualityScore)
       ) {
         drawUnifiedQualityLabel(
           context,
-          `Q${Math.round(clampNumber(zone.holdProbability, 0, 1, 0) * 100)}%`,
+          `Q${Math.round(clampNumber(zone.holdQualityScore, 0, 1, 0) * 100)}%`,
           span,
           center,
           borderColor,

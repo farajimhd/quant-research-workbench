@@ -579,15 +579,18 @@ def test_unified_structure_scores_can_filter_loaded_levels_without_a_history_req
     assert "minimumHoldObservations" in renderer_source
     assert "minimumHoldEvidenceReliability" in renderer_source
     assert "minimumPressureMagnitude" in renderer_source
+    assert "minimumTickerRelativeQualityScore" in renderer_source
     assert "maximumBreakProbability" in renderer_source
     assert "minimumSalience" not in renderer_source
     assert "minimumReactionProbability" not in renderer_source
     assert "minimumReversalProbability" not in renderer_source
     assert "Evidence-quality filters" in renderer_source
-    assert "Minimum conservative quality" in renderer_source
-    assert "Minimum observations" in renderer_source
-    assert "Minimum evidence depth" in renderer_source
-    assert "Maximum smoothed break" in renderer_source
+    assert 'label="hold_quality_score"' in renderer_source
+    assert 'label="ticker_relative_quality_score"' in renderer_source
+    assert 'label="hold_observation_count"' in renderer_source
+    assert 'label="hold_evidence_reliability"' in renderer_source
+    assert 'label="break_probability maximum"' in renderer_source
+    assert 'label="|pressure_bias|"' in renderer_source
     assert 'label="Minimum hold"' not in renderer_source
     assert 'label="Hold probability"' not in renderer_source
     assert "Changes apply immediately to loaded chart data" in renderer_source
@@ -601,6 +604,8 @@ def test_unified_structure_scores_can_filter_loaded_levels_without_a_history_req
     assert "const holdProbability = boundedUnit(level.hold_probability)" in chart_source
     assert "holdEvidenceReliability: holdReliability" in chart_source
     assert "holdObservationCount: holdObservations" in chart_source
+    assert "tickerRelativeQualityScore: tickerRelativeQuality ?? undefined" in chart_source
+    assert 'zone.tickerRelativeQualityStatus !== "available"' in renderer_source
     assert "roleFlipCount: Number(level.role_flip_count ?? 0)" in chart_source
     assert 'className="legend-configure-button"' in renderer_source
     assert 'className="legend-label" title={item.label}' in renderer_source

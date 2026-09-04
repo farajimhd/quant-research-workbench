@@ -2941,6 +2941,13 @@ mod tests {
                 "upper": 10.02,
                 "price": 10.0,
                 "hold_probability": hold,
+                "hold_quality_score": hold,
+                "ticker_relative_quality_score": 0.625,
+                "ticker_relative_quality_status": "available",
+                "ticker_relative_quality_population_size": 16,
+                "ticker_relative_quality_reference_session": "2026-08-20",
+                "ticker_relative_quality_revision": "frozen-prior-session-role-ecdf-midrank-v1",
+                "ticker_relative_quality_distribution_hash": "abc123",
                 "touch_count": 3,
                 "hold_count": 2,
                 "break_count": 0,
@@ -2961,6 +2968,10 @@ mod tests {
         compact_projected_unified_structure_history(&mut indicators);
 
         assert!(indicators[0].get("qmd_structure_unified_levels").is_some());
+        assert_eq!(
+            indicators[0]["qmd_structure_unified_levels"][0]["ticker_relative_quality_score"],
+            json!(0.625)
+        );
         assert!(indicators[1].get("qmd_structure_unified_levels").is_none());
         assert!(indicators[1]
             .get("qmd_structure_unified_level_delta")
@@ -2971,6 +2982,11 @@ mod tests {
                 .as_array()
                 .map(Vec::len),
             Some(1)
+        );
+        assert_eq!(
+            indicators[2]["qmd_structure_unified_level_delta"]["upserts"][0]
+                ["ticker_relative_quality_revision"],
+            json!("frozen-prior-session-role-ecdf-midrank-v1")
         );
         assert!(indicators[3].get("qmd_structure_unified_levels").is_some());
         assert!(indicators.iter().all(|row| {

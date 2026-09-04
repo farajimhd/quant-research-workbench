@@ -144,6 +144,12 @@ fn remove_recomputable_hold_projections(value: &mut Value) {
                 "hold_evidence_reliability",
                 "hold_quality_score",
                 "hold_score_revision",
+                "ticker_relative_quality_score",
+                "ticker_relative_quality_status",
+                "ticker_relative_quality_population_size",
+                "ticker_relative_quality_reference_session",
+                "ticker_relative_quality_revision",
+                "ticker_relative_quality_distribution_hash",
             ] {
                 values.remove(field);
             }

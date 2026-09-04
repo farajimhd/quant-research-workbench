@@ -22,6 +22,8 @@ The current canonical market-event contract identifies a listing by normalized S
 - `hold_rate`: unsmoothed observed hold frequency; zero before the first outcome.
 - `hold_probability` and `break_probability`: Beta(2, 2)-smoothed lifecycle frequencies retained for compatibility.
 - `hold_quality_score`: one-sided 90% Wilson lower bound over the Beta pseudo-observations, used for comparable conservative ranking rather than as a calibrated forecast.
+- `ticker_relative_quality_score`: mid-rank empirical percentile of the current cumulative `hold_quality_score` against the ticker's same-role distribution frozen at the current session's 04:00 New York boundary. The reference population contains inherited levels with at least one hold/break observation. It is a deterministic projection, not persisted level state and not a return forecast.
+- `ticker_relative_quality_status`, population size, reference session, score revision, and distribution hash expose whether the percentile is available, provisional for a same-session level, or unavailable because evidence is insufficient. A provisional or unavailable relative score must fail open; it cannot suppress a current-session level.
 - `hold_observation_count`, `hold_evidence_reliability`, and `hold_score_revision`: evidence depth and exact derived-score contract needed for audit and presentation.
 - `pressure_bias`: signed executed-volume imbalance around the range in `[-1, 1]`; positive is buyer-initiated pressure and negative is seller-initiated pressure.
 - `touch_count`, `hold_count`, `break_count`, `role_flip_count`: causal lifecycle counts.
@@ -33,6 +35,17 @@ Unified levels expose recorded evidence rather than synthetic importance, confid
 Every checkpoint load recomputes the derived hold fields from raw counts before
 advancement. This repairs older v16 rows non-destructively; no valid checkpoint
 needs event replay solely because a derived-score field was missing or stale.
+
+At each 04:00 New York boundary, the shared engine freezes separate support and
+resistance `hold_quality_score` distributions from the inherited book. The
+frozen baseline, its effective/reference sessions, revision, and hash are
+carried in checkpoint state for exact Live/Replay/Backtest restart equivalence.
+Current cumulative level evidence is projected against that fixed baseline.
+Levels created during the ongoing session are marked
+`same_session_provisional`: an informational percentile may be shown when the
+reference population is sufficient, but relative-score filters must retain the
+level. Surviving levels join the reference population at a later session
+boundary. The baseline population never changes intraday.
 
 Chart bars use the same retrospective split basis as the checkpoint: every bar before a split boundary is multiplied by the cumulative `split_from / split_to` price factor and its share volume by the inverse factor. Daily and macro responses expose `coverage_status`, `latest_session_date`, and `split_adjusted`; stale daily authority is shown to the operator rather than silently presented as current context.
 

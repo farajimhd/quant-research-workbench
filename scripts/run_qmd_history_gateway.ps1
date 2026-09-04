@@ -151,7 +151,7 @@ $expectedCheckpointSet = if ($env:QMD_STRUCTURE_CHECKPOINT_SET_ID) {
 } else {
     "strategy-dev-sugp-juns-20260814-20260821-v16-clock-v2"
 }
-$expectedCalculationRevision = "qmd-derived-v55"
+$expectedCalculationRevision = "qmd-derived-v57"
 
 if (-not $BuildOnly -and (Test-ExistingHistoryGateway -Endpoint $endpoint -ExpectedCalculationRevision $expectedCalculationRevision -ExpectedCheckpointTable $expectedCheckpointTable -ExpectedCheckpointSet $expectedCheckpointSet)) {
     return

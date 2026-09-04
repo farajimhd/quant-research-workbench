@@ -842,6 +842,10 @@ function pushUnifiedStructureLevels(
     const holdProbability = boundedUnit(level.hold_probability);
     const holdRate = boundedUnit(level.hold_rate ?? level.hold_probability);
     const holdQuality = boundedUnit(level.hold_quality_score ?? level.hold_probability);
+    const tickerRelativeQuality = level.ticker_relative_quality_score == null
+      ? null
+      : boundedUnit(level.ticker_relative_quality_score);
+    const tickerRelativeQualityStatus = String(level.ticker_relative_quality_status || "insufficient_population");
     const holdObservations = Math.max(0, Number(level.hold_observation_count ?? (level.hold_count + level.break_count)) || 0);
     const holdReliability = boundedUnit(level.hold_evidence_reliability ?? 0);
     const breakProbability = boundedUnit(level.break_probability ?? (1 - level.hold_probability));
@@ -854,7 +858,7 @@ function pushUnifiedStructureLevels(
       borderStyle: "solid",
       borderWidth: 0,
       color,
-      compactLabel: `${low ? "S" : "R"} Q${Math.round(holdQuality * 100)} · n${holdObservations}`,
+      compactLabel: `${low ? "S" : "R"} Q${Math.round(holdQuality * 100)}${tickerRelativeQuality == null ? "" : ` · TQ${Math.round(tickerRelativeQuality * 100)}`} · n${holdObservations}`,
       breakProbability,
       defaultVisible: true,
       displayItemId: "indicator.qmd_unified_structure",
@@ -866,8 +870,10 @@ function pushUnifiedStructureLevels(
       historyBarsDefault: 0,
       holdEvidenceReliability: holdReliability,
       holdObservationCount: holdObservations,
-      holdProbability: holdQuality,
-      label: `${low ? "Support" : "Resistance"} · ${String(level.lifecycle || "active").replaceAll("_", " ")} · ${percentLabel(holdQuality)} conservative quality · ${percentLabel(holdProbability)} smoothed hold · ${percentLabel(holdRate)} raw hold · n=${holdObservations} · ${percentLabel(holdReliability)} evidence depth · ${percentLabel(breakProbability)} smoothed break · ${pressureBias >= 0 ? "+" : ""}${Math.round(pressureBias * 100)} executed pressure · ${level.touch_count} tests · ${level.role_flip_count} flips · ${level.independent_pivot_count} pivots (${timeframes}) · ${level.hold_score_revision || "legacy score"}`,
+      holdQualityScore: holdQuality,
+      tickerRelativeQualityScore: tickerRelativeQuality ?? undefined,
+      tickerRelativeQualityStatus,
+      label: `${low ? "Support" : "Resistance"} · ${String(level.lifecycle || "active").replaceAll("_", " ")} · hold_quality_score=${percentLabel(holdQuality)} · ticker_relative_quality_score=${tickerRelativeQuality == null ? "unavailable" : percentLabel(tickerRelativeQuality)} (${tickerRelativeQualityStatus}, population=${Math.max(0, Number(level.ticker_relative_quality_population_size) || 0)}, reference=${level.ticker_relative_quality_reference_session || "unavailable"}) · hold_probability=${percentLabel(holdProbability)} · hold_rate=${percentLabel(holdRate)} · hold_observation_count=${holdObservations} · hold_evidence_reliability=${percentLabel(holdReliability)} · break_probability=${percentLabel(breakProbability)} · pressure_bias=${pressureBias >= 0 ? "+" : ""}${Math.round(pressureBias * 100)}% · ${level.touch_count} tests · ${level.role_flip_count} flips · ${level.independent_pivot_count} pivots (${timeframes}) · ${level.hold_score_revision || "legacy score"} · ${level.ticker_relative_quality_revision || "relative score unavailable"}`,
       latest,
       legendLabel: "Unified structural level book",
       lower: level.lower,

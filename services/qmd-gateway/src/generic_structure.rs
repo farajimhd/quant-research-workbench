@@ -7,8 +7,11 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 
 pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 16;
 pub const STRUCTURE_HOLD_SCORE_REVISION: &str = "beta22-wilson90-v1";
+pub const TICKER_RELATIVE_QUALITY_SCORE_REVISION: &str =
+    "frozen-prior-session-role-ecdf-midrank-v1";
 const HOLD_SCORE_Z: f64 = 1.281_551_565_544_600_4;
 const HOLD_RELIABILITY_HALF_LIFE: f64 = 8.0;
+const TICKER_RELATIVE_QUALITY_MIN_POPULATION: usize = 10;
 pub const STRUCTURE_TIMEFRAMES: [(&str, i64); 10] = [
     ("100ms", 100),
     ("1s", 1_000),
@@ -219,6 +222,24 @@ pub struct UnifiedStructureLevel {
     /// Exact deterministic scoring contract used for the derived fields.
     #[serde(default)]
     pub hold_score_revision: String,
+    /// Mid-rank empirical percentile of `hold_quality_score` against the
+    /// ticker's same-role level distribution frozen at the current 04:00 New
+    /// York session boundary. This is a projection, never structural state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticker_relative_quality_score: Option<f64>,
+    /// `available`, `same_session_provisional`, `insufficient_population`, or
+    /// `insufficient_level_evidence`. Missing/provisional values must fail open
+    /// in presentation and strategy filters.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ticker_relative_quality_status: String,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub ticker_relative_quality_population_size: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticker_relative_quality_reference_session: Option<NaiveDate>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ticker_relative_quality_revision: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ticker_relative_quality_distribution_hash: String,
     #[serde(default)]
     pub touch_count: u32,
     #[serde(default)]
@@ -546,6 +567,18 @@ struct UnifiedLevelTrack {
     last_relation: i8,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct TickerRelativeQualityBaseline {
+    effective_session: NaiveDate,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reference_session: Option<NaiveDate>,
+    session_start_ms: i64,
+    support_quality: Vec<f64>,
+    resistance_quality: Vec<f64>,
+    revision: String,
+    distribution_hash: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct GenericStructureEngine {
     sym: String,
@@ -566,6 +599,7 @@ pub struct GenericStructureEngine {
     candidate_low_at: Option<DateTime<Utc>>,
     levels: Vec<StructureLevel>,
     unified_tracks: Vec<UnifiedLevelTrack>,
+    relative_quality_baseline: Option<TickerRelativeQualityBaseline>,
     timeframe_states: Vec<TimeframeState>,
     session_anchor: Option<NaiveDate>,
     session_high: f64,
@@ -605,6 +639,8 @@ pub struct GenericStructureCheckpoint {
     levels: Vec<StructureLevel>,
     #[serde(default)]
     unified_tracks: Vec<UnifiedLevelTrack>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    relative_quality_baseline: Option<TickerRelativeQualityBaseline>,
     timeframe_states: Vec<TimeframeState>,
     session_anchor: Option<NaiveDate>,
     session_high: f64,
@@ -639,6 +675,7 @@ impl GenericStructureEngine {
             candidate_low_at: None,
             levels: Vec::new(),
             unified_tracks: Vec::new(),
+            relative_quality_baseline: None,
             timeframe_states: STRUCTURE_TIMEFRAMES
                 .iter()
                 .map(|(timeframe, horizon_ms)| TimeframeState::new(timeframe, *horizon_ms))
@@ -1173,6 +1210,7 @@ impl GenericStructureEngine {
         if self.session_anchor == Some(anchor) {
             return;
         }
+        self.relative_quality_baseline = Some(self.freeze_relative_quality_baseline(anchor));
         self.session_anchor = Some(anchor);
         self.session_high = 0.0;
         self.session_low = 0.0;
@@ -1180,6 +1218,62 @@ impl GenericStructureEngine {
         self.opening_range_low = 0.0;
         self.session_volume_by_price.clear();
         self.trade_volume_poc = 0.0;
+    }
+
+    fn freeze_relative_quality_baseline(
+        &self,
+        effective_session: NaiveDate,
+    ) -> TickerRelativeQualityBaseline {
+        let mut support_quality = self
+            .unified_tracks
+            .iter()
+            .filter(|track| {
+                track.lifecycle.visible()
+                    && track.level.side > 0
+                    && track.level.hold_observation_count > 0
+                    && track.level.hold_quality_score.is_finite()
+            })
+            .map(|track| track.level.hold_quality_score.clamp(0.0, 1.0))
+            .collect::<Vec<_>>();
+        let mut resistance_quality = self
+            .unified_tracks
+            .iter()
+            .filter(|track| {
+                track.lifecycle.visible()
+                    && track.level.side < 0
+                    && track.level.hold_observation_count > 0
+                    && track.level.hold_quality_score.is_finite()
+            })
+            .map(|track| track.level.hold_quality_score.clamp(0.0, 1.0))
+            .collect::<Vec<_>>();
+        support_quality.sort_by(f64::total_cmp);
+        resistance_quality.sort_by(f64::total_cmp);
+        let session_start_ms = New_York
+            .from_local_datetime(
+                &effective_session
+                    .and_hms_opt(4, 0, 0)
+                    .expect("04:00 is a valid session boundary"),
+            )
+            .single()
+            .expect("04:00 New York is unambiguous")
+            .with_timezone(&Utc)
+            .timestamp_millis();
+        let reference_session = self.session_anchor;
+        let distribution_hash = relative_quality_distribution_hash(
+            effective_session,
+            reference_session,
+            &support_quality,
+            &resistance_quality,
+        );
+        TickerRelativeQualityBaseline {
+            effective_session,
+            reference_session,
+            session_start_ms,
+            support_quality,
+            resistance_quality,
+            revision: TICKER_RELATIVE_QUALITY_SCORE_REVISION.to_string(),
+            distribution_hash,
+        }
     }
 
     fn prune_levels(&mut self) {
@@ -1447,6 +1541,12 @@ impl GenericStructureEngine {
             .filter(|track| track.lifecycle.visible())
             .map(|track| track.level.clone())
             .collect::<Vec<_>>();
+        for level in &mut unified_levels {
+            apply_ticker_relative_quality_projection(
+                level,
+                self.relative_quality_baseline.as_ref(),
+            );
+        }
         unified_levels.sort_by(|left, right| {
             right
                 .hold_probability
@@ -1796,6 +1896,7 @@ impl GenericStructureEngine {
             candidate_low_at: self.candidate_low_at,
             levels: self.levels.clone(),
             unified_tracks: self.unified_tracks.clone(),
+            relative_quality_baseline: self.relative_quality_baseline.clone(),
             timeframe_states: self.timeframe_states.clone(),
             session_anchor: self.session_anchor,
             session_high: self.session_high,
@@ -1834,6 +1935,7 @@ impl GenericStructureEngine {
         for track in &mut self.unified_tracks {
             refresh_unified_hold_evidence(&mut track.level);
         }
+        self.relative_quality_baseline = checkpoint.relative_quality_baseline.clone();
         self.timeframe_states = checkpoint.timeframe_states.clone();
         self.session_anchor = checkpoint.session_anchor;
         self.session_high = checkpoint.session_high;
@@ -2470,6 +2572,12 @@ fn unified_structure_level(
         hold_evidence_reliability: 0.0,
         hold_quality_score: 0.0,
         hold_score_revision: String::new(),
+        ticker_relative_quality_score: None,
+        ticker_relative_quality_status: String::new(),
+        ticker_relative_quality_population_size: 0,
+        ticker_relative_quality_reference_session: None,
+        ticker_relative_quality_revision: String::new(),
+        ticker_relative_quality_distribution_hash: String::new(),
         touch_count,
         hold_count,
         break_count,
@@ -2615,6 +2723,105 @@ fn refresh_unified_hold_evidence(level: &mut UnifiedStructureLevel) {
     if level.hold_score_revision != STRUCTURE_HOLD_SCORE_REVISION {
         level.hold_score_revision = STRUCTURE_HOLD_SCORE_REVISION.to_string();
     }
+}
+
+fn apply_ticker_relative_quality_projection(
+    level: &mut UnifiedStructureLevel,
+    baseline: Option<&TickerRelativeQualityBaseline>,
+) {
+    level.ticker_relative_quality_score = None;
+    level.ticker_relative_quality_status.clear();
+    level.ticker_relative_quality_population_size = 0;
+    level.ticker_relative_quality_reference_session = None;
+    level.ticker_relative_quality_revision.clear();
+    level.ticker_relative_quality_distribution_hash.clear();
+
+    let Some(baseline) = baseline else {
+        level.ticker_relative_quality_status = "insufficient_population".to_string();
+        return;
+    };
+    let distribution = if level.side > 0 {
+        &baseline.support_quality
+    } else if level.side < 0 {
+        &baseline.resistance_quality
+    } else {
+        level.ticker_relative_quality_status = "insufficient_population".to_string();
+        return;
+    };
+    level.ticker_relative_quality_population_size =
+        u32::try_from(distribution.len()).unwrap_or(u32::MAX);
+    level.ticker_relative_quality_reference_session = baseline.reference_session;
+    level.ticker_relative_quality_revision = baseline.revision.clone();
+    level.ticker_relative_quality_distribution_hash = baseline.distribution_hash.clone();
+
+    let same_session = level.created_at_ms >= baseline.session_start_ms;
+    if distribution.len() < TICKER_RELATIVE_QUALITY_MIN_POPULATION {
+        level.ticker_relative_quality_status = if same_session {
+            "same_session_provisional"
+        } else {
+            "insufficient_population"
+        }
+        .to_string();
+        return;
+    }
+    if level.hold_observation_count == 0 || !level.hold_quality_score.is_finite() {
+        level.ticker_relative_quality_status = if same_session {
+            "same_session_provisional"
+        } else {
+            "insufficient_level_evidence"
+        }
+        .to_string();
+        return;
+    }
+
+    let score = level.hold_quality_score.clamp(0.0, 1.0);
+    let below = distribution
+        .iter()
+        .take_while(|candidate| candidate.total_cmp(&score).is_lt())
+        .count();
+    let equal = distribution
+        .iter()
+        .skip(below)
+        .take_while(|candidate| candidate.total_cmp(&score).is_eq())
+        .count();
+    level.ticker_relative_quality_score =
+        Some(((below as f64 + equal as f64 * 0.5) / distribution.len() as f64).clamp(0.0, 1.0));
+    level.ticker_relative_quality_status = if same_session {
+        "same_session_provisional"
+    } else {
+        "available"
+    }
+    .to_string();
+}
+
+fn relative_quality_distribution_hash(
+    effective_session: NaiveDate,
+    reference_session: Option<NaiveDate>,
+    support_quality: &[f64],
+    resistance_quality: &[f64],
+) -> String {
+    let mut identity = format!(
+        "{}|{}|{}|support",
+        TICKER_RELATIVE_QUALITY_SCORE_REVISION,
+        effective_session,
+        reference_session
+            .map(|value| value.to_string())
+            .unwrap_or_default()
+    );
+    for value in support_quality {
+        identity.push('|');
+        identity.push_str(&format!("{:016x}", value.to_bits()));
+    }
+    identity.push_str("|resistance");
+    for value in resistance_quality {
+        identity.push('|');
+        identity.push_str(&format!("{:016x}", value.to_bits()));
+    }
+    format!("fnv1a64:{:016x}", stable_hash(&identity))
+}
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
 }
 
 fn consolidate_unified_tracks(tracks: &mut Vec<UnifiedLevelTrack>) {
@@ -3620,6 +3827,12 @@ mod tests {
             hold_evidence_reliability: 0.0,
             hold_quality_score: 0.0,
             hold_score_revision: String::new(),
+            ticker_relative_quality_score: None,
+            ticker_relative_quality_status: String::new(),
+            ticker_relative_quality_population_size: 0,
+            ticker_relative_quality_reference_session: None,
+            ticker_relative_quality_revision: String::new(),
+            ticker_relative_quality_distribution_hash: String::new(),
             touch_count: 1,
             hold_count: 0,
             break_count: 0,
@@ -4707,6 +4920,134 @@ mod tests {
         assert!((checkpoint.last_trade_price - 3.46).abs() < 1e-9);
         assert_eq!(checkpoint.last_arrival_sequence, 18);
         assert_eq!(checkpoint.updated_at, Some(delayed.ts()));
+    }
+
+    #[test]
+    fn ticker_relative_quality_uses_a_frozen_prior_session_role_distribution() {
+        let mut engine = GenericStructureEngine::new("TEST");
+        let prior_session = NaiveDate::from_ymd_opt(2026, 8, 20).unwrap();
+        engine.session_anchor = Some(prior_session);
+        for index in 0..10_u64 {
+            let mut level = unified_test_level(
+                index + 1,
+                -1,
+                3.0 + index as f64 * 0.05,
+                3.01 + index as f64 * 0.05,
+            );
+            level.created_at_ms = new_york_ms(2026, 8, 20, 10, 0, 0) + index as i64;
+            level.hold_count = (index + 1) as u32;
+            level.break_count = 1;
+            refresh_unified_hold_evidence(&mut level);
+            engine.unified_tracks.push(UnifiedLevelTrack {
+                level,
+                lifecycle: LevelLifecycle::Active,
+                last_relation: -1,
+            });
+        }
+
+        let current_at = Utc
+            .timestamp_millis_opt(new_york_ms(2026, 8, 21, 4, 0, 0))
+            .unwrap();
+        engine.reset_session_if_needed(current_at);
+        let before = engine.relative_quality_baseline.clone().unwrap();
+        let snapshot = engine.snapshot(current_at);
+        let inherited = snapshot
+            .unified_levels
+            .iter()
+            .find(|level| level.unified_level_id == 10)
+            .unwrap();
+        assert_eq!(inherited.ticker_relative_quality_status, "available");
+        assert_eq!(inherited.ticker_relative_quality_population_size, 10);
+        assert_eq!(
+            inherited.ticker_relative_quality_reference_session,
+            Some(prior_session)
+        );
+        assert!(inherited.ticker_relative_quality_score.unwrap() > 0.9);
+
+        engine.unified_tracks[0].level.hold_count += 100;
+        refresh_unified_hold_evidence(&mut engine.unified_tracks[0].level);
+        assert_eq!(
+            engine
+                .relative_quality_baseline
+                .as_ref()
+                .unwrap()
+                .distribution_hash,
+            before.distribution_hash
+        );
+        assert_eq!(
+            engine
+                .relative_quality_baseline
+                .as_ref()
+                .unwrap()
+                .resistance_quality,
+            before.resistance_quality
+        );
+    }
+
+    #[test]
+    fn same_session_levels_are_provisional_and_baseline_survives_checkpoint_restore() {
+        let mut engine = GenericStructureEngine::new("TEST");
+        engine.session_anchor = Some(NaiveDate::from_ymd_opt(2026, 8, 20).unwrap());
+        for index in 0..10_u64 {
+            let mut level = unified_test_level(
+                index + 1,
+                1,
+                2.0 + index as f64 * 0.05,
+                2.01 + index as f64 * 0.05,
+            );
+            level.created_at_ms = new_york_ms(2026, 8, 20, 10, 0, 0) + index as i64;
+            level.hold_count = (index + 2) as u32;
+            level.break_count = 1;
+            refresh_unified_hold_evidence(&mut level);
+            engine.unified_tracks.push(UnifiedLevelTrack {
+                level,
+                lifecycle: LevelLifecycle::Active,
+                last_relation: 1,
+            });
+        }
+        let current_at = Utc
+            .timestamp_millis_opt(new_york_ms(2026, 8, 21, 4, 0, 0))
+            .unwrap();
+        engine.reset_session_if_needed(current_at);
+
+        let mut current = unified_test_level(99, 1, 2.75, 2.76);
+        current.created_at_ms = current_at.timestamp_millis() + 1_000;
+        current.hold_count = 3;
+        current.break_count = 1;
+        refresh_unified_hold_evidence(&mut current);
+        engine.unified_tracks.push(UnifiedLevelTrack {
+            level: current,
+            lifecycle: LevelLifecycle::Active,
+            last_relation: 1,
+        });
+
+        let checkpoint = engine.checkpoint();
+        let mut restored = GenericStructureEngine::new("TEST");
+        restored.seed_checkpoint(&checkpoint);
+        let projected = restored
+            .snapshot(current_at)
+            .unified_levels
+            .into_iter()
+            .find(|level| level.unified_level_id == 99)
+            .unwrap();
+        assert_eq!(
+            projected.ticker_relative_quality_status,
+            "same_session_provisional"
+        );
+        assert_eq!(projected.ticker_relative_quality_population_size, 10);
+        assert!(projected.ticker_relative_quality_score.is_some());
+        assert_eq!(
+            restored
+                .relative_quality_baseline
+                .as_ref()
+                .unwrap()
+                .distribution_hash,
+            engine
+                .relative_quality_baseline
+                .as_ref()
+                .unwrap()
+                .distribution_hash
+        );
     }
 
     #[test]

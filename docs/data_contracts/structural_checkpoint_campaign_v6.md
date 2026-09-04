@@ -96,6 +96,17 @@ probability across tickers. Any explicitly configured legacy
 `minimum_hold_probability` remains a compatibility gate; new canonical
 profiles use relative top-N selection with at least one observed outcome.
 
+Campaign v6 also carries the shared engine's frozen per-session ticker-relative
+quality baseline. At 04:00 New York, the engine snapshots separate inherited
+support and resistance `hold_quality_score` distributions. QMD History, charts,
+Replay, Backtest, and Live derive `ticker_relative_quality_score` as the
+mid-rank empirical percentile of the level's current cumulative quality against
+that immutable session baseline. Same-session levels are explicitly
+`same_session_provisional` and fail open under relative-score filters. The
+baseline revision and hash are checkpointed for exact restart equivalence;
+per-level relative scores remain recomputable projections and are excluded from
+checkpoint certification hashes.
+
 ## Process and terminal ownership
 
 For multi-process runs the Python launcher starts a detached supervisor. The
