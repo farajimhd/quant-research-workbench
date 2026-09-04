@@ -731,6 +731,21 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(policy.envelope.deadline_ms, 5_000)
         self.assertAlmostEqual(policy.envelope.maximum_buy_price, 101.05)
 
+    def test_persistent_very_urgent_entry_follows_current_executable_liquidity(self) -> None:
+        policy = _execution_policy_from_phase(
+            {
+                "execution_policy": "adaptive_very_urgent",
+                "deadline_ms": 300,
+                "persist_until_cancelled": True,
+            },
+            observation=confirmed_observation(),
+            action="enter_long",
+            parameters=default_long_momentum_parameters(),
+        )
+
+        self.assertTrue(policy.envelope.persist_until_cancelled)
+        self.assertIsNone(policy.envelope.maximum_buy_price)
+
     def test_latched_rule_removal_prunes_compiled_expression_reference(self) -> None:
         stage = {
             "operator": "all",
@@ -2991,6 +3006,11 @@ class LongMomentumStrategyTests(unittest.TestCase):
                 "entry_at": NOW.isoformat(),
                 "high_water_price": 101.0,
                 "structural_profit_targets": [103.0],
+                "structural_profit_target_frontier": [
+                    {"price": 102.0, "lower": 101.9, "upper": 102.0},
+                    {"price": 103.0, "lower": 102.9, "upper": 103.0},
+                    {"price": 104.0, "lower": 103.9, "upper": 104.0},
+                ],
             },
         )
         levels = tuple(
@@ -3040,6 +3060,47 @@ class LongMomentumStrategyTests(unittest.TestCase):
         )
         self.assertEqual(intrasecond.evaluation.signals[0].action, "hold")
         self.assertEqual(intrasecond.state["structural_profit_targets"], [103.0])
+
+    def test_target_does_not_advance_on_a_close_inside_nearest_resistance_zone(self) -> None:
+        parameters = default_long_momentum_parameters()
+        managed = assignment(
+            parameters=parameters,
+            status=AssignmentStatus.MANAGING,
+            state={
+                "active_stop": 99.0,
+                "initial_stop": 99.0,
+                "entry_reference_price": 101.0,
+                "entry_at": NOW.isoformat(),
+                "high_water_price": 102.05,
+                "structural_profit_targets": [104.0],
+                "structural_profit_target_frontier": [
+                    {"price": 102.0, "lower": 101.9, "upper": 102.1},
+                    {"price": 103.0, "lower": 102.9, "upper": 103.1},
+                    {"price": 104.0, "lower": 103.9, "upper": 104.1},
+                ],
+            },
+        )
+        levels = tuple(
+            {"side": -1, "price": price, "lower": price - 0.1, "upper": price + 0.1}
+            for price in (102.0, 103.0, 104.0, 105.0)
+        )
+        result = LongMomentumStrategyEngine().evaluate(
+            managed,
+            confirmed_observation(
+                price=102.05,
+                position_quantity=100,
+                average_price=101.0,
+                structural_resistance_levels=levels,
+                source_values={
+                    "indicator.macd.line@1s": {"value": 0.4},
+                    "indicator.macd.signal@1s": {"value": 0.2},
+                },
+                evaluation_events=("indicator_update", "bar_close"),
+            ),
+        )
+
+        self.assertEqual(result.evaluation.signals[0].action, "hold")
+        self.assertEqual(result.state["structural_profit_targets"], [104.0])
 
     def test_highest_capped_target_does_not_ratchet_through_intermediate_levels(self) -> None:
         parameters = default_long_momentum_parameters()

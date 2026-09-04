@@ -185,7 +185,7 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert '`${role}:${action.side}:${second}:${priceTick}`' not in chart_source
     assert 'action.completion !== "unknown"' in chart_source
     assert 'const statusText = partial ? "Partial" : "Filled"' in chart_source
-    assert 'label: `${quantityText} ${statusText} @ ${compactPrice(action.price)}`' in chart_source
+    assert 'label: `${quantityText} ${statusText} @ ${compactPrice(action.price)}${pnlText ? ` · ${pnlText}` : ""}`' in chart_source
     assert 'kind: fillSide === "entry" ? "entry_fill" as const : "exit_fill" as const' in chart_source
     assert 'exitIntentActions.has(String(event.action || ""))' in chart_source
     assert 'if (reason.trim().toLowerCase().includes("target")) return "Target exit"' in chart_source
@@ -291,7 +291,12 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert 'settingsStorageKey}.strategy-presentation' in renderer_source
     assert '>Strategy Presentation</span>' in renderer_source
     assert 'drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, stopColor, "SL"' in renderer_source
-    assert 'annotation.levelPrices?.slice(0, 3)' in renderer_source
+    assert 'annotation.supportPrices?.slice(0, 3)' in renderer_source
+    assert 'annotation.resistancePrices?.slice(0, 3)' in renderer_source
+    assert '`S${index + 1}`' in renderer_source
+    assert '`R${index + 1}`' in renderer_source
+    assert "Liquidity ${admissionFailed === 0 && executionFailed === 0 ? \"passed\" : \"failed\"}" in chart_source
+    assert "signedMoneyShort(realizedPnl)" in chart_source
     assert 'annotation.targetPrices?.forEach' in renderer_source
     assert "const exitLabelFallback = Number(annotation.pnl) > 0 ? successColor" in renderer_source
     assert '"--chart-strategy-entry": tokens.chartStrategyEntry' in theme_source
@@ -344,8 +349,8 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert "font-weight: 500;" in strategy_styles
     assert "font-weight: 650;" not in strategy_styles
     assert "font-weight: 700;" not in strategy_styles
-    assert renderer_source.index('drawCanvasTradeLine(context, span.left, span.right, entryY') < renderer_source.index('annotation.levelPrices?.slice(0, 3)')
-    assert renderer_source.index('drawCanvasTradeArrow(context, entryIntentX, entryIntentY') < renderer_source.index('annotation.levelPrices?.slice(0, 3)')
+    assert renderer_source.index('drawCanvasTradeLine(context, span.left, span.right, entryY') < renderer_source.index('annotation.supportPrices?.slice(0, 3)')
+    assert renderer_source.index('drawCanvasTradeArrow(context, entryIntentX, entryIntentY') < renderer_source.index('annotation.supportPrices?.slice(0, 3)')
     assert "const horizontalCandidates = [preferredLeft, preferredLeft - labelWidth / 2, preferredLeft + labelWidth / 2]" in renderer_source
     assert "const verticalOffsets = Array.from({ length: 33 }" in renderer_source
     assert "const candidateTop = top + offset" in renderer_source

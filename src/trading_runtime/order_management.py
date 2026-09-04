@@ -424,6 +424,8 @@ class OrderManagementEngine:
             ):
                 continue
             deadline_ms = group.intent.resolved_execution_policy().envelope.deadline_ms
+            if group.intent.resolved_execution_policy().envelope.persist_until_cancelled:
+                continue
             if deadline_ms <= 0:
                 continue
             deadline = group.intent.event_time.astimezone(timezone.utc) + timedelta(
@@ -475,7 +477,8 @@ class OrderManagementEngine:
                 continue
             execution_policy = group.intent.resolved_execution_policy()
             envelope = execution_policy.envelope
-            if group.reprice_count >= envelope.maximum_reprices:
+            persistent = envelope.persist_until_cancelled
+            if not persistent and group.reprice_count >= envelope.maximum_reprices:
                 continue
             elapsed_ms = (
                 at - group.intent.event_time.astimezone(timezone.utc)
@@ -490,7 +493,11 @@ class OrderManagementEngine:
                 at - last_reprice_at.astimezone(timezone.utc)
             ).total_seconds() * 1_000 < reprice_interval_ms:
                 continue
-            if envelope.deadline_ms > 0 and elapsed_ms >= envelope.deadline_ms:
+            if (
+                not persistent
+                and envelope.deadline_ms > 0
+                and elapsed_ms >= envelope.deadline_ms
+            ):
                 continue
             if await self._attempt_reprice(group, record_time=at):
                 advanced.append(group)
@@ -2061,13 +2068,31 @@ class OrderManagementEngine:
             if envelope.minimum_reprice_interval_ms > 0
             else _adaptive_interval_ms(execution_policy.name)
         )
-        while group.reprice_count < envelope.maximum_reprices:
-            elapsed_ms = (perf_counter() - started) * 1_000
-            if elapsed_ms >= envelope.deadline_ms:
+        persistent = envelope.persist_until_cancelled
+        while persistent or group.reprice_count < envelope.maximum_reprices:
+            if (
+                group.state in TERMINAL_MANAGEMENT_STATES
+                or group.state == OrderManagementState.CANCEL_PENDING
+                or group.filled_quantity >= float(group.intent.quantity)
+                or not _open_adaptive_roots(group)
+            ):
                 break
-            timeout = min(interval_ms, max(0.0, envelope.deadline_ms - elapsed_ms)) / 1_000
+            elapsed_ms = (perf_counter() - started) * 1_000
+            if (
+                not persistent
+                and envelope.deadline_ms > 0
+                and elapsed_ms >= envelope.deadline_ms
+            ):
+                break
+            timeout_ms = (
+                interval_ms
+                if persistent or envelope.deadline_ms <= 0
+                else min(interval_ms, max(0.0, envelope.deadline_ms - elapsed_ms))
+            )
             try:
-                await asyncio.wait_for(group.reprice_event.wait(), timeout=timeout)
+                await asyncio.wait_for(
+                    group.reprice_event.wait(), timeout=timeout_ms / 1_000
+                )
             except TimeoutError:
                 pass
             group.reprice_event.clear()

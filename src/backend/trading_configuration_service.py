@@ -70,7 +70,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 48
+CONFIGURATION_SCHEMA_VERSION = 49
 MARKET_DISCOVERY_MATERIALIZATION_RUN_ID = "market-discovery:materialized-configuration"
 _CONFIGURATION_BASE_CACHE_LOCK = threading.RLock()
 _CONFIGURATION_BASE_CACHE: tuple[str, float, dict[str, Any] | None] = ("", 0.0, None)
@@ -4056,14 +4056,17 @@ def _default_draft() -> dict[str, Any]:
     squeeze_lifecycle["initial_entry"]["order_intent"][
         "protection_profile"
     ] = "structural-single-target"
-    # A small-cap squeeze can leave the displayed offer before another quote
-    # update arrives. Follow the executable touch only inside the tested
-    # very-urgent window, then cancel any remainder instead of chasing stale
-    # liquidity for five seconds.
+    # A partially filled campaign remains an active acquisition until the
+    # strategy exits or invalidates it. The OMS keeps following current
+    # executable liquidity, while its existing cancel-before-exit ordering
+    # prevents a late entry fill from reopening risk behind an exit.
     squeeze_lifecycle["initial_entry"]["order_intent"][
         "execution_policy"
     ] = "adaptive_very_urgent"
     squeeze_lifecycle["initial_entry"]["order_intent"]["deadline_ms"] = 300
+    squeeze_lifecycle["initial_entry"]["order_intent"][
+        "persist_until_cancelled"
+    ] = True
     squeeze_lifecycle["reentry"]["order_intent"][
         "protection_profile"
     ] = "structural-single-target"
@@ -4071,6 +4074,9 @@ def _default_draft() -> dict[str, Any]:
         "execution_policy"
     ] = "adaptive_very_urgent"
     squeeze_lifecycle["reentry"]["order_intent"]["deadline_ms"] = 300
+    squeeze_lifecycle["reentry"]["order_intent"][
+        "persist_until_cancelled"
+    ] = True
     squeeze_lifecycle["reentry"]["cooldown_ms"] = 0
     # Early Squeeze admits the ticker once for the whole campaign. Re-entry is
     # driven by the live structural/MACD state; it must not wait for every
@@ -4247,6 +4253,10 @@ def _default_draft() -> dict[str, Any]:
         # MACD remains positive/open, the same rule advances the live target.
         "selection_mode": "ordinal_qualified_level",
         "target_level_ordinal": 3,
+        # A target ladder advances only after a completed one-second close has
+        # cleared the nearest prior resistance zone. Touching or closing
+        # inside the zone cannot move the resting target.
+        "ratchet_acceptance_buffer_bps": 0.0,
         "minimum_level_strength": 0.0,
         "minimum_level_confidence": 0.0,
         "minimum_reaction_probability": 0.0,
@@ -7567,6 +7577,11 @@ def _validate_order_intent(intent: dict[str, Any], label: str) -> None:
         raise ValueError(f"{label} partial-fill policy is unsupported")
     if int(intent.get("deadline_ms") or 0) < 0:
         raise ValueError(f"{label} execution deadline cannot be negative")
+    if (
+        "persist_until_cancelled" in intent
+        and not isinstance(intent["persist_until_cancelled"], bool)
+    ):
+        raise ValueError(f"{label} persist-until-cancelled must be a boolean")
 
 
 def _normalize_entry_rule_sources(entry_rules: dict[str, Any]) -> None:

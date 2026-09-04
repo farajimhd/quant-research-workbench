@@ -34,8 +34,8 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 35
-HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33, 34)
+STRATEGY_REVISION = 36
+HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33, 34, 35)
 
 _COMPLETED_FRAME_TOP_N_ENTRY_MODE = "prior_completed_frame_top_n_below_session_high"
 _EVENT_PRICE_TOP_N_ENTRY_MODE = "event_price_top_n_below_session_high"
@@ -1496,6 +1496,57 @@ def _compact_structural_level_reference(row: Mapping[str, Any] | None) -> dict[s
             for level_id in dict.fromkeys(component_ids)
         ]
     return compact
+
+
+def _decision_structural_level_snapshot(
+    observation: StrategyObservation,
+    parameters: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Capture the nearest physical supports and resistances at a decision."""
+
+    quality_policy = dict(parameters.get("structural_entry") or {})
+    rows = _consolidated_structure_levels(
+        [
+            dict(row)
+            for row in (
+                *observation.structural_support_levels,
+                *observation.structural_resistance_levels,
+            )
+            if isinstance(row, Mapping)
+        ],
+        side="long",
+    )
+    qualified = [
+        row
+        for row in rows
+        if _level_passes_configured_quality(row, quality_policy)
+    ]
+    supports = sorted(
+        (
+            row
+            for row in qualified
+            if _level_metric(row, "price", "lower", "upper") < observation.price
+        ),
+        key=lambda row: _level_metric(row, "price", "lower", "upper"),
+        reverse=True,
+    )[:3]
+    resistances = sorted(
+        (
+            row
+            for row in qualified
+            if _level_metric(row, "price", "lower", "upper") > observation.price
+        ),
+        key=lambda row: _level_metric(row, "price", "lower", "upper"),
+    )[:3]
+    return {
+        "observed_at": observation.observed_at.isoformat(),
+        "reference_price": observation.price,
+        "session_high": observation.structural_session_high,
+        "supports": [_compact_structural_level_reference(row) for row in supports],
+        "resistances": [
+            _compact_structural_level_reference(row) for row in resistances
+        ],
+    }
 
 
 def _level_is_entry_quality(
@@ -3042,6 +3093,9 @@ class LongMomentumStrategyEngine:
                 "previous_post_entry_swing_low": None,
                 "higher_low_confirmed": False,
                 "structural_profit_targets": profit_targets,
+                "structural_profit_target_frontier": _target_frontier_from_selection(
+                    profit_target_selection
+                ),
                 "last_entry_resistance": _compact_structural_level_reference(
                     (unified_trigger or {}).get("level")
                 ),
@@ -3100,6 +3154,9 @@ class LongMomentumStrategyEngine:
                 "minimum_entry_target_gap_bps": minimum_entry_target_gap_bps,
                 "unified_structural_trigger": unified_trigger,
                 "execution_quality": execution_detail,
+                "liquidity_admission": dict(
+                    state.get("liquidity_admission_evidence") or {}
+                ),
                 "entry_momentum_confirmation": momentum_detail,
                 **(
                     {
@@ -3866,6 +3923,22 @@ class LongMomentumStrategyEngine:
         if not existing:
             return None
         current_target = existing[0]
+        prior_frontier = [
+            dict(row)
+            for row in state.get("structural_profit_target_frontier") or ()
+            if isinstance(row, Mapping)
+        ]
+        acceptance = _target_ratchet_acceptance(
+            prior_frontier,
+            close=observation.price,
+            side=side,
+            buffer_bps=max(
+                0.0,
+                float(policy.get("ratchet_acceptance_buffer_bps") or 0.0),
+            ),
+        )
+        if not acceptance["passed"]:
+            return None
         profit_target_selection: dict[str, Any] = {}
         candidate_targets = _structural_profit_targets(
             observation,
@@ -3886,6 +3959,9 @@ class LongMomentumStrategyEngine:
         if not advances:
             return None
         state["structural_profit_targets"] = [candidate]
+        state["structural_profit_target_frontier"] = (
+            _target_frontier_from_selection(profit_target_selection)
+        )
         state["last_profit_target_replaced_at"] = observation.observed_at.isoformat()
         return self._result(
             assignment,
@@ -3900,8 +3976,10 @@ class LongMomentumStrategyEngine:
             profit_target_price=candidate,
             metadata={
                 "previous_profit_target": current_target,
+                "previous_profit_target_frontier": prior_frontier,
                 "profit_target": candidate,
                 "profit_target_selection": profit_target_selection,
+                "ratchet_acceptance": acceptance,
                 "macd": macd_evidence,
                 "ratchet_clock": "completed_1s_bar",
             },
@@ -4111,6 +4189,25 @@ class LongMomentumStrategyEngine:
     ) -> StrategyEngineResult:
         event_id = str(uuid4())
         resolved_metadata = dict(metadata or {})
+        if action in {
+            "enter_long",
+            "enter_short",
+            "add_long",
+            "add_short",
+            "reduce_long",
+            "reduce_short",
+            "take_profit",
+            "exit",
+            "cover",
+            "replace_profit_target",
+        }:
+            resolved_metadata.setdefault(
+                "structural_level_snapshot",
+                _decision_structural_level_snapshot(
+                    observation,
+                    assignment.parameters,
+                ),
+            )
         reason_detail = _decision_reason_detail(
             action,
             reason,
@@ -4357,6 +4454,10 @@ def _execution_policy_from_phase(
         envelope = dict(configured.get("envelope") or {})
         if int(payload.get("deadline_ms") or 0) > 0:
             envelope["deadline_ms"] = int(payload["deadline_ms"])
+        if payload.get("persist_until_cancelled") is not None:
+            envelope["persist_until_cancelled"] = bool(
+                payload["persist_until_cancelled"]
+            )
         if buying and name == ExecutionPolicyName.IMMEDIATE_WITH_LIMIT and envelope.get("maximum_buy_price") is None:
             envelope["maximum_buy_price"] = observation.price
         if not buying and name == ExecutionPolicyName.IMMEDIATE_WITH_LIMIT and envelope.get("minimum_sell_price") is None:
@@ -4378,7 +4479,11 @@ def _execution_policy_from_phase(
             tick_size = float(
                 dict(parameters.get("execution") or {}).get("tick_size") or 0.01
             )
-            if buying and policy.envelope.maximum_buy_price is None:
+            if (
+                buying
+                and policy.envelope.maximum_buy_price is None
+                and not policy.envelope.persist_until_cancelled
+            ):
                 touch = max(float(observation.price), float(observation.ask or 0))
                 policy = replace(
                     policy,
@@ -4405,6 +4510,9 @@ def _execution_policy_from_phase(
             maximum_buy_price=observation.price if buying and name == ExecutionPolicyName.IMMEDIATE_WITH_LIMIT else None,
             minimum_sell_price=observation.price if not buying and name == ExecutionPolicyName.IMMEDIATE_WITH_LIMIT else None,
             deadline_ms=int(payload.get("deadline_ms") or 750),
+            persist_until_cancelled=bool(
+                payload.get("persist_until_cancelled", False)
+            ),
         ),
         partial_fill_policy=PartialFillPolicy(str(payload.get("partial_fill_policy") or "complete_remainder")),
         quote_source="qmd",
@@ -4785,6 +4893,15 @@ class AssignedLongMomentumStrategy:
                 previous = float(intent.metadata.get("previous_profit_target") or 0)
                 if previous > 0:
                     state["structural_profit_targets"] = [previous]
+                previous_frontier = intent.metadata.get(
+                    "previous_profit_target_frontier"
+                )
+                if isinstance(previous_frontier, (list, tuple)):
+                    state["structural_profit_target_frontier"] = [
+                        dict(row)
+                        for row in previous_frontier
+                        if isinstance(row, Mapping)
+                    ]
                 state["last_intent_rejection"] = {
                     "intent_id": intent.intent_id,
                     "reasons": list(reasons),
@@ -4845,6 +4962,7 @@ class AssignedLongMomentumStrategy:
                 "high_water_price",
                 "low_water_price",
                 "structural_profit_targets",
+                "structural_profit_target_frontier",
             ):
                 state.pop(field_name, None)
             state["entries"] = max(0, int(state.get("entries") or 0) - 1)
@@ -4985,6 +5103,7 @@ class AssignedLongMomentumStrategy:
                         "high_water_price",
                         "low_water_price",
                         "structural_profit_targets",
+                        "structural_profit_target_frontier",
                     ):
                         state.pop(field_name, None)
                     state["entries"] = max(0, int(state.get("entries") or 0) - 1)
@@ -6702,6 +6821,68 @@ def _profit_level_score(
     if "minimum_ticker_relative_quality_score" in (policy or {}):
         return _level_metric(row, "ticker_relative_quality_score")
     return _level_metric(row, "hold_quality_score", "hold_probability")
+
+
+def _target_frontier_from_selection(
+    selection: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Retain the bounded, ordered level ladder used by target management."""
+
+    if not isinstance(selection, Mapping):
+        return []
+    return [
+        _compact_structural_level_reference(row)
+        | {
+            "target_price": _level_metric(dict(row), "target_price", "price"),
+            "ordinal_above_reference": int(row.get("ordinal_above_reference") or index + 1),
+        }
+        for index, row in enumerate(selection.get("qualified_levels") or ())
+        if isinstance(row, Mapping)
+    ][:3]
+
+
+def _target_ratchet_acceptance(
+    frontier: list[dict[str, Any]],
+    *,
+    close: float,
+    side: str,
+    buffer_bps: float,
+) -> dict[str, Any]:
+    """Require a completed close beyond the nearest prior target zone."""
+
+    if not frontier:
+        return {
+            "passed": False,
+            "reason": "prior_target_frontier_unavailable",
+            "close": close,
+        }
+    nearest = frontier[0]
+    center = _level_metric(nearest, "target_price", "price")
+    zone_boundary = (
+        _level_metric(nearest, "upper", "target_price", "price")
+        if side == "long"
+        else _level_metric(nearest, "lower", "target_price", "price")
+    )
+    threshold = zone_boundary * (
+        1.0 + buffer_bps / 10_000.0
+        if side == "long"
+        else 1.0 - buffer_bps / 10_000.0
+    )
+    passed = close > threshold if side == "long" else close < threshold
+    return {
+        "passed": passed,
+        "reason": (
+            "completed_close_beyond_nearest_target_zone"
+            if passed
+            else "completed_close_not_beyond_nearest_target_zone"
+        ),
+        "close": close,
+        "level": nearest,
+        "level_price": center,
+        "zone_boundary": zone_boundary,
+        "threshold_price": threshold,
+        "buffer_bps": buffer_bps,
+    }
 
 
 def _structural_profit_targets(

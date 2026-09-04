@@ -1911,6 +1911,9 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             profile["lifecycle"]["initial_entry"]["order_intent"]["execution_policy"],
             "adaptive_very_urgent",
         )
+        self.assertTrue(
+            profile["lifecycle"]["initial_entry"]["order_intent"]["persist_until_cancelled"]
+        )
         self.assertEqual(
             profile["lifecycle"]["reentry"]["order_intent"]["deadline_ms"],
             300,
@@ -1918,6 +1921,9 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(
             profile["lifecycle"]["reentry"]["order_intent"]["execution_policy"],
             "adaptive_very_urgent",
+        )
+        self.assertTrue(
+            profile["lifecycle"]["reentry"]["order_intent"]["persist_until_cancelled"]
         )
         self.assertEqual(
             very_urgent_execution["maximum_price_discretion_ticks"],
@@ -2644,6 +2650,8 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertEqual(migrated_profile["lifecycle"]["initial_entry"]["order_intent"]["deadline_ms"], 300)
         self.assertEqual(migrated_profile["lifecycle"]["reentry"]["order_intent"]["deadline_ms"], 300)
+        self.assertTrue(migrated_profile["lifecycle"]["initial_entry"]["order_intent"]["persist_until_cancelled"])
+        self.assertTrue(migrated_profile["lifecycle"]["reentry"]["order_intent"]["persist_until_cancelled"])
 
     def _draft(self) -> dict:
         with patch(

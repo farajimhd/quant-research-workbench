@@ -1705,29 +1705,37 @@ impl HistoricalEventSource {
     }
 
     pub async fn source_revision(&self, window: &EventWindow) -> Result<SourceRevision, String> {
-        self.source_revision_for_policy(window, true).await
+        self.source_revision_for_policy(window, true, false).await
     }
 
-    /// Revision authority for the structural level book. Completed archive
-    /// rows intentionally use SIP availability order plus canonical condition
-    /// eligibility and do not require a reconstructed participant clock.
-    /// Recent q_live rows retain their native participant clock, matching the
-    /// live continuation policy.
+    /// Revision authority for the structural level book. Structure remains
+    /// ordered by causal SIP availability, but archive trades also require the
+    /// certified execution-clock sidecar so delayed reports can be audited
+    /// without revising the current book. Conditions alone cannot distinguish
+    /// a legitimate extended-hours Form-T trade from the same trade reported
+    /// after its execution bucket closed.
     pub async fn structure_source_revision(
         &self,
         window: &EventWindow,
     ) -> Result<SourceRevision, String> {
-        self.source_revision_for_policy(window, false).await
+        self.source_revision_for_policy(window, true, true).await
     }
 
     async fn source_revision_for_policy(
         &self,
         window: &EventWindow,
         require_archive_execution_clock: bool,
+        structure_policy: bool,
     ) -> Result<SourceRevision, String> {
         validate_window(window)?;
         let plan = self.source_plan(window).await?;
-        let input_policy_revision = if require_archive_execution_clock {
+        let input_policy_revision = if require_archive_execution_clock && structure_policy {
+            format!(
+                "structure-input-v1:archive-sip-condition:archive-participant-aware:{}:{}",
+                self.archive_execution_clock_revision(window, &plan).await?,
+                self.structure_condition_revision,
+            )
+        } else if require_archive_execution_clock {
             self.archive_execution_clock_revision(window, &plan).await?
         } else {
             format!(
@@ -2037,7 +2045,7 @@ impl HistoricalEventSource {
             live_continuation_sequence,
             event_type_filter,
             chunk_minutes,
-            false,
+            true,
         )
     }
 

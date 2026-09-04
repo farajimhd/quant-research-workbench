@@ -470,6 +470,11 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
       ?? {};
     const decisionValues = (gateSnapshot.decision_values as PreviewRow | undefined) ?? {};
     const structuralTrigger = (gateSnapshot.unified_structural_trigger as PreviewRow | undefined) ?? {};
+    const structuralSnapshot = (gateSnapshot.structural_level_snapshot as PreviewRow | undefined) ?? {};
+    const executionQuality = (gateSnapshot.execution_quality as PreviewRow | undefined) ?? {};
+    const liquidityAdmission = (gateSnapshot.liquidity_admission as PreviewRow | undefined) ?? {};
+    const macdEvidence = (gateSnapshot.macd as PreviewRow | undefined) ?? {};
+    const gateEvidenceText = entryGateEvidenceLabel(liquidityAdmission, executionQuality, macdEvidence);
     const priorLevels = Array.isArray(structuralTrigger.prior_snapshot_levels)
       ? structuralTrigger.prior_snapshot_levels as PreviewRow[]
       : structuralTrigger.level ? [structuralTrigger.level as PreviewRow] : [];
@@ -495,6 +500,12 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
         ? decisionValues.profit_targets
         : selectedTargets,
     ).slice(0, 3);
+    const supportPrices = structuralLevelPrices(structuralSnapshot.supports).slice(0, 3);
+    const resistancePrices = uniquePositivePrices([
+      ...structuralLevelPrices(structuralSnapshot.resistances),
+      ...plannedTargetPrices,
+      ...levelPrices,
+    ]).slice(0, 3);
     const plannedStopPrice = positiveNumber(decisionValues.initial_stop ?? decisionValues.invalidation_price);
     const planStartTime = entryIntentTime;
     const quantity = Math.abs(Number(row.quantity || 0));
@@ -528,7 +539,7 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
         const repairedTarget = positiveNumber(managementAction.target_price);
         if (repairedStop !== undefined) fills.push({
           kind: "protection_repair",
-          label: `RECON ${protectedQuantity ? formatQuantity(protectedQuantity) + " · " : ""}SL@${compactPrice(repairedStop)}`,
+          label: `Protection repaired · ${protectedQuantity ? formatQuantity(protectedQuantity) + " · " : ""}SL ${compactPrice(repairedStop)}`,
           price: repairedStop,
           quantity: protectedQuantity,
           side: "SELL",
@@ -536,7 +547,7 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
         });
         if (repairedTarget !== undefined) fills.push({
           kind: "protection_repair",
-          label: `RECON ${protectedQuantity ? formatQuantity(protectedQuantity) + " · " : ""}TP@${compactPrice(repairedTarget)}`,
+          label: `Protection repaired · ${protectedQuantity ? formatQuantity(protectedQuantity) + " · " : ""}TP ${compactPrice(repairedTarget)}`,
           price: repairedTarget,
           quantity: protectedQuantity,
           side: "SELL",
@@ -558,7 +569,7 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
     if (brokerStops.length) activeStop = side === "SHORT" ? Math.min(...brokerStops) : Math.max(...brokerStops);
     const targetPrices = brokerTargets.length ? brokerTargets : activeTarget !== undefined ? [activeTarget] : plannedTargetPrices;
     fills.sort((left, right) => left.time - right.time);
-    const finalFillAnnotation = (action: PositionExecutionAction, fillSide: "entry" | "exit") => {
+    const finalFillAnnotation = (action: PositionExecutionAction, fillSide: "entry" | "exit", realizedPnl?: number) => {
       const partial = action.completion === "partial";
       const quantityText = partial && action.totalQuantity && action.totalQuantity > action.quantity
         ? `${formatQuantity(action.quantity)}/${formatQuantity(action.totalQuantity)}`
@@ -567,14 +578,16 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
       const priceTone = fillSide === "entry"
         ? side === "SHORT" ? "priceShort" as const : "priceLong" as const
         : side === "SHORT" ? "exitPriceShort" as const : "exitPriceLong" as const;
+      const pnlText = realizedPnl === undefined ? "" : signedMoneyShort(realizedPnl);
       return {
         kind: fillSide === "entry" ? "entry_fill" as const : "exit_fill" as const,
-        label: `${quantityText} ${statusText} @ ${compactPrice(action.price)}`,
+        label: `${quantityText} ${statusText} @ ${compactPrice(action.price)}${pnlText ? ` · ${pnlText}` : ""}`,
         labelParts: [
           { text: quantityText, tone: "size" as const },
           { text: statusText, tone: "reason" as const },
           { text: "@", tone: "separator" as const },
           { text: compactPrice(action.price), tone: priceTone },
+          ...(pnlText ? [{ text: "·", tone: "separator" as const }, { text: pnlText, tone: realizedPnl! >= 0 ? "pnlWin" as const : "pnlLoss" as const }] : []),
         ],
         orderId: action.orderId,
         price: action.price,
@@ -584,12 +597,19 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
       };
     };
     const entryFills = openingActions.filter((action) => action.completion !== "unknown").map((action) => finalFillAnnotation(action, "entry"));
-    const exitFills = closingActions.filter((action) => action.completion !== "unknown").map((action) => finalFillAnnotation(action, "exit"));
+    const completedExitActions = closingActions.filter((action) => action.completion !== "unknown");
+    const exitFills = completedExitActions.map((action, index) => finalFillAnnotation(
+      action,
+      "exit",
+      status === "closed" && index === completedExitActions.length - 1 ? pnl : undefined,
+    ));
     const exitIntentActions = side === "SHORT" ? new Set(["reduce_short", "cover", "exit"]) : new Set(["reduce_long", "take_profit", "exit"]);
     const exitIntents = activity
       .filter(({ row: event, time }) => String(event.event_type || "") === "decision" && exitIntentActions.has(String(event.action || "")) && time >= entryTime && time <= endTime)
       .map(({ row: event, time }) => {
         const label = exitIntentLabel(String(event.action || ""), String(event.reason || row.exit_reason || ""), side);
+        const exitPlan = (event.chart_plan as PreviewRow | undefined) ?? (event.gate_snapshot as PreviewRow | undefined) ?? {};
+        const exitStructure = (exitPlan.structural_level_snapshot as PreviewRow | undefined) ?? {};
         return {
           kind: "exit_intent" as const,
           label: `${label} issued`,
@@ -597,6 +617,8 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
           price: decisionReferencePrice(event) ?? Number(exitPrice ?? entryPrice),
           side: openingSide === "BUY" ? "SELL" as const : "BUY" as const,
           time,
+          supportPrices: structuralLevelPrices(exitStructure.supports).slice(0, 3),
+          resistancePrices: structuralLevelPrices(exitStructure.resistances).slice(0, 3),
         };
       });
     return [{
@@ -605,10 +627,11 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
       entryFills,
       entryIntentPrice,
       entryIntentTime,
-      entryLabel: `${side === "SHORT" ? "Short" : "Long"} issued`,
+      entryLabel: `${side === "SHORT" ? "Short" : "Long"} issued${gateEvidenceText ? ` · ${gateEvidenceText}` : ""}`,
       entryLabelParts: [
         { text: side === "SHORT" ? "Short" : "Long", tone: side === "SHORT" ? "short" : "long" },
         { text: "issued", tone: "label" },
+        ...(gateEvidenceText ? [{ text: gateEvidenceText, tone: "label" as const }] : []),
       ],
       entryPrice,
       entryTime,
@@ -623,7 +646,10 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
       guideStartTime: planStartTime,
       id: String(row.lifecycle_id || `${normalizedSymbol}:${entryTime}:${endTime}`),
       levelPrices,
+      supportPrices,
+      resistancePrices,
       pnl,
+      positionSide: side === "SHORT" ? "SHORT" : "LONG",
       status,
       stopPrice: activeStop,
       targetPrices,
@@ -680,6 +706,27 @@ function positiveNumber(value: unknown): number | undefined {
 
 function uniquePositivePrices(values: unknown[]): number[] {
   return [...new Set(values.map(positiveNumber).filter((value): value is number => value !== undefined))];
+}
+
+function structuralLevelPrices(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  return uniquePositivePrices((value as PreviewRow[]).map((level) => level.price ?? level.lower ?? level.upper));
+}
+
+function entryGateEvidenceLabel(admission: PreviewRow, execution: PreviewRow, macd: PreviewRow): string {
+  const admissionFailed = Array.isArray(admission.failed) ? admission.failed.length : undefined;
+  const executionFailed = Array.isArray(execution.failed) ? execution.failed.length : undefined;
+  const executionFacts = (execution.facts as PreviewRow | undefined) ?? {};
+  const spread = Number(executionFacts.spread_bps);
+  const rate10 = Number(executionFacts.trade_rate_10s);
+  const rate60 = Number(executionFacts.trade_rate_60s);
+  const macdGap = Number(macd.open_gap_bps);
+  const parts: string[] = [];
+  if (admissionFailed !== undefined && executionFailed !== undefined) parts.push(`Liquidity ${admissionFailed === 0 && executionFailed === 0 ? "passed" : "failed"}`);
+  if (Number.isFinite(spread)) parts.push(`${spread.toFixed(1)}bp`);
+  if (Number.isFinite(rate10) && Number.isFinite(rate60)) parts.push(`${rate10.toFixed(1)}/${rate60.toFixed(1)}tps`);
+  if (Number.isFinite(macdGap)) parts.push(`MACD ${macdGap >= 0 ? "+" : ""}${macdGap.toFixed(2)}bp`);
+  return parts.join(" · ");
 }
 
 function compactPrice(value: number): string {

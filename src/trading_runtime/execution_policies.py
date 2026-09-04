@@ -84,6 +84,7 @@ class ExecutionEnvelope:
     deadline_ms: int = 750
     maximum_reprices: int = 4
     minimum_reprice_interval_ms: int = 50
+    persist_until_cancelled: bool = False
 
     def __post_init__(self) -> None:
         if self.maximum_buy_price is not None and self.maximum_buy_price <= 0:

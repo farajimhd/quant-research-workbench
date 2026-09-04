@@ -8604,6 +8604,11 @@ def _compact_strategy_chart_plan(value: Any) -> dict[str, Any]:
         "unified_structural_trigger",
         "profit_target_selection",
         "decision_values",
+        "structural_level_snapshot",
+        "execution_quality",
+        "liquidity_admission",
+        "macd",
+        "ratchet_acceptance",
     ):
         item = value.get(key)
         if isinstance(item, Mapping):

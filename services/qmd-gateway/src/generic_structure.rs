@@ -5,7 +5,7 @@ use chrono_tz::America::New_York;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
-pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 16;
+pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 17;
 pub const STRUCTURE_HOLD_SCORE_REVISION: &str = "beta22-wilson90-v1";
 pub const TICKER_RELATIVE_QUALITY_SCORE_REVISION: &str =
     "frozen-prior-session-role-ecdf-midrank-v1";

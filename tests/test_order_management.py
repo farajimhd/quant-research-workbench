@@ -733,6 +733,63 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                 await manager.close()
                 journal.close()
 
+    async def test_persistent_entry_survives_deadline_and_reprices_until_cancelled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            broker = SimulatedBrokerAdapter(["DU1"], mode=TradingMode.BACKTEST)
+            manager, journal = await self._manager(
+                directory,
+                broker,
+                policy=BrokerCommunicationPolicy(),
+                causal_execution_clock=True,
+            )
+            try:
+                request = replace(
+                    intent(side_quote=(10.00, 10.02), quantity=100),
+                    reference_price=10.01,
+                    execution_policy=ExecutionPolicy(
+                        policy_id="test-persistent-entry",
+                        name=ExecutionPolicyName.ADAPTIVE_VERY_URGENT,
+                        envelope=ExecutionEnvelope(
+                            deadline_ms=300,
+                            maximum_reprices=1,
+                            minimum_reprice_interval_ms=25,
+                            persist_until_cancelled=True,
+                        ),
+                    ),
+                )
+                await manager.submit_intent(
+                    portfolio_approved(journal, request),
+                    account_id="DU1",
+                    event=None,
+                )
+                after_deadline = NOW + timedelta(seconds=2)
+                self.assertEqual(
+                    await manager.expire_entry_deadlines(after_deadline),
+                    (),
+                )
+                manager.on_market_snapshot(
+                    ExecutionMarketSnapshot(
+                        "TEST", 10.04, 10.06, 0.01, after_deadline, "qmd-history"
+                    )
+                )
+                first = await manager.advance_adaptive_execution(after_deadline)
+                self.assertEqual(len(first), 1)
+                later = after_deadline + timedelta(milliseconds=50)
+                manager.on_market_snapshot(
+                    ExecutionMarketSnapshot(
+                        "TEST", 10.08, 10.10, 0.01, later, "qmd-history"
+                    )
+                )
+                second = await manager.advance_adaptive_execution(later)
+                self.assertEqual(len(second), 1)
+                self.assertGreater(
+                    float(second[0].current_limit_price or 0),
+                    float(first[0].current_limit_price or 0),
+                )
+            finally:
+                await manager.close()
+                journal.close()
+
     async def test_historical_marketable_entry_fills_from_latest_causal_quote(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             event_time = datetime(2026, 8, 21, 14, 0, tzinfo=timezone.utc)

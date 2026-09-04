@@ -89,6 +89,8 @@ type TradeFillAnnotation = {
   quantity?: number;
   side: "BUY" | "SELL";
   time: number;
+  supportPrices?: number[];
+  resistancePrices?: number[];
 };
 type TradeAnnotation = {
   color: string;
@@ -115,7 +117,10 @@ type TradeAnnotation = {
   guideStartTime?: number;
   id: string;
   levelPrices?: number[];
+  supportPrices?: number[];
+  resistancePrices?: number[];
   pnl?: number;
+  positionSide?: "LONG" | "SHORT";
   selected?: boolean;
   status?: "open" | "closed";
   stopPrice?: number;
@@ -3137,9 +3142,9 @@ const strategyVisualElementDefinitions: StrategyVisualElementDefinition[] = [
   { key: "exitArrow", kind: "marker", title: "Exit intent arrow", help: "Each durable reduce, take-profit, cover, or exit decision." },
   { key: "exitLabel", kind: "label", title: "Exit intent label", help: "The strategy-issued exit action at its decision reference price." },
   { key: "exitFillArrow", kind: "marker", title: "Exit final-fill arrow", help: "Last immutable execution completing each exit order." },
-  { key: "exitFillLabel", kind: "label", title: "Exit final-fill label", help: "Cumulative quantity, truthful fill state, and execution VWAP." },
+  { key: "exitFillLabel", kind: "label", title: "Exit final-fill label", help: "Cumulative quantity, truthful fill state, execution VWAP, and final realized P&L." },
   { key: "levelLine", kind: "line", title: "Structural level lines", help: "Entry-frozen resistance or support evidence." },
-  { key: "levelLabel", kind: "label", title: "Structural level labels", help: "L1–L3 and trigger identifiers." },
+  { key: "levelLabel", kind: "label", title: "Structural level labels", help: "Point-in-time S1–S3, R1–R3, and trigger identifiers." },
   { key: "stopLine", kind: "line", title: "Protective stop line", help: "Current or immutable entry-plan protection." },
   { key: "stopLabel", kind: "label", title: "Protective stop label", help: "Compact SL identifier attached to protection." },
   { key: "targetLine", kind: "line", title: "Profit target lines", help: "Current or immutable entry-plan targets." },
@@ -3175,6 +3180,8 @@ const strategyLabelPartDefinitions: Record<StrategyCompositeLabelKey, StrategyLa
     { key: "exitFillSeparatorPart", title: "@", help: "Separator before the execution VWAP." },
     { key: "exitFillPricePart", title: "Long-exit price", help: "Execution VWAP when reducing or closing a long." },
     { key: "exitFillShortPricePart", title: "Short-exit price", help: "Execution VWAP when reducing or covering a short." },
+    { key: "exitPnlPart", title: "Profit", help: "Positive realized lifecycle P&L on the final closing fill." },
+    { key: "exitPnlLossPart", title: "Loss", help: "Negative realized lifecycle P&L on the final closing fill." },
   ],
 };
 
@@ -3346,8 +3353,8 @@ function StrategyCompositeLabelPreview({ elements, labelKey, settings }: { eleme
     [{ key: "exitReasonPart", text: "Exit issued" }],
     [{ key: "exitShortReasonPart", text: "Cover issued" }],
   ] : [
-    [{ key: "exitFillSizePart", text: "200" }, { key: "exitFillStatusPart", text: "Filled" }, { key: "exitFillSeparatorPart", text: "@" }, { key: "exitFillPricePart", text: "2.42" }],
-    [{ key: "exitFillSizePart", text: "120/200" }, { key: "exitFillStatusPart", text: "Partial" }, { key: "exitFillSeparatorPart", text: "@" }, { key: "exitFillShortPricePart", text: "2.42" }],
+    [{ key: "exitFillSizePart", text: "200" }, { key: "exitFillStatusPart", text: "Filled" }, { key: "exitFillSeparatorPart", text: "@" }, { key: "exitFillPricePart", text: "2.42" }, { key: "exitPnlPart", text: "+$24.00" }],
+    [{ key: "exitFillSizePart", text: "120/200" }, { key: "exitFillStatusPart", text: "Partial" }, { key: "exitFillSeparatorPart", text: "@" }, { key: "exitFillShortPricePart", text: "2.42" }, { key: "exitPnlLossPart", text: "−$9.50" }],
   ];
   const borderColor = strategyPresentationColor(settings.borderColor, settings.color || palette.text);
   const containerStyle: CSSProperties = {
@@ -7017,7 +7024,6 @@ function drawTradeAnnotationPrimitiveGeometry(
   if (!settings.visible || !timeline.length || width < 1 || height < 1 || (!annotations.length && !executions.length)) return;
   const elements = settings.elements;
   const chartBackground = validHexColor(readChartPalette().background, "#ffffff");
-  const neutralColor = chartSemanticColor("--foreground", "#111827");
   const successColor = chartSemanticColor("--chart-strategy-target", "#00B84F");
   const dangerColor = chartSemanticColor("--danger", "#DC2626");
   const stopColor = chartSemanticColor("--chart-strategy-stop", "#FF1744");
@@ -7053,6 +7059,8 @@ function drawTradeAnnotationPrimitiveGeometry(
     const exitArrowColor = strategyPresentationColor(elements.exitArrow.color, exitFallbackColor);
     const exitLabelFallback = Number(annotation.pnl) > 0 ? successColor : Number(annotation.pnl) < 0 ? dangerColor : validHexColor(annotation.exitLabelColor, exitFallbackColor);
     const exitLabelColor = strategyPresentationColor(elements.exitLabel.color, exitLabelFallback);
+    const supportColor = annotation.positionSide === "SHORT" ? successColor : stopColor;
+    const resistanceColor = annotation.positionSide === "SHORT" ? stopColor : successColor;
     const entryLabelPartSettings: TradeLabelPartSettings = {
       long: elements.entryDirectionPart,
       priceLong: elements.entryPricePart,
@@ -7084,6 +7092,8 @@ function drawTradeAnnotationPrimitiveGeometry(
       reason: elements.exitFillStatusPart,
       separator: elements.exitFillSeparatorPart,
       size: elements.exitFillSizePart,
+      pnlLoss: elements.exitPnlLossPart,
+      pnlWin: elements.exitPnlPart,
     };
     if (elements.entryLine.visible) {
       drawCanvasTradeLine(context, span.left, span.right, entryY, entryLineColor, annotation.selected ? Math.min(5, elements.entryLine.lineWidth + 1) : elements.entryLine.lineWidth, elements.entryLine.lineStyle, elements.entryLine.opacity);
@@ -7111,6 +7121,17 @@ function drawTradeAnnotationPrimitiveGeometry(
         drawCanvasTradeArrow(context, intentX, intentY, exitArrowColor, "exit", annotation.selected === true, elements.exitArrow);
       }
       if (elements.exitLabel.visible) drawCanvasTradeLabel(context, compactTradeLabel(intent.labelParts, intent.label, "Exit issued"), intentX, intentY - elements.exitLabel.labelSize - elements.exitArrow.markerSize - 8, exitLabelColor, chartBackground, "right", width, height, elements.exitLabel, labelLayout, elements.connector, intent.labelParts, exitLabelPartSettings);
+      const exitGuideSpan = clippedTradeSpan(intentX, exitX, width) ?? span;
+      if (elements.levelLine.visible || elements.levelLabel.visible) {
+        intent.supportPrices?.slice(0, 3).forEach((price, index) => {
+          const y = priceSeries.priceToCoordinate(price);
+          if (y !== null) drawCanvasTradeGuide(context, exitGuideSpan.left, exitGuideSpan.right, y, supportColor, `Exit S${index + 1}`, chartBackground, width, height, elements.levelLine, elements.levelLabel, labelLayout, elements.connector);
+        });
+        intent.resistancePrices?.slice(0, 3).forEach((price, index) => {
+          const y = priceSeries.priceToCoordinate(price);
+          if (y !== null) drawCanvasTradeGuide(context, exitGuideSpan.left, exitGuideSpan.right, y, resistanceColor, `Exit R${index + 1}`, chartBackground, width, height, elements.levelLine, elements.levelLabel, labelLayout, elements.connector);
+        });
+      }
     });
     const drawFinalFill = (fill: TradeFillAnnotation, fillKind: "entry" | "exit") => {
       const x = xForAnnotationTime(chart, fill.time, timeline);
@@ -7135,10 +7156,16 @@ function drawTradeAnnotationPrimitiveGeometry(
       const y = priceSeries.priceToCoordinate(annotation.stopPrice);
       if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, stopColor, "SL", chartBackground, width, height, elements.stopLine, elements.stopLabel, labelLayout, elements.connector);
     }
-    if (elements.levelLine.visible || elements.levelLabel.visible) annotation.levelPrices?.slice(0, 3).forEach((price, index) => {
-      const y = priceSeries.priceToCoordinate(price);
-      if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, neutralColor, `L${index + 1}`, chartBackground, width, height, elements.levelLine, elements.levelLabel, labelLayout, elements.connector);
-    });
+    if (elements.levelLine.visible || elements.levelLabel.visible) {
+      annotation.supportPrices?.slice(0, 3).forEach((price, index) => {
+        const y = priceSeries.priceToCoordinate(price);
+        if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, supportColor, `S${index + 1}`, chartBackground, width, height, elements.levelLine, elements.levelLabel, labelLayout, elements.connector);
+      });
+      annotation.resistancePrices?.slice(0, 3).forEach((price, index) => {
+        const y = priceSeries.priceToCoordinate(price);
+        if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, resistanceColor, `R${index + 1}`, chartBackground, width, height, elements.levelLine, elements.levelLabel, labelLayout, elements.connector);
+      });
+    }
     if (elements.targetLine.visible || elements.targetLabel.visible) annotation.targetPrices?.forEach((price, index) => {
       const y = priceSeries.priceToCoordinate(price);
       if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, successColor, annotation.targetPrices?.length === 1 ? "TP" : `TP${index + 1}`, chartBackground, width, height, elements.targetLine, elements.targetLabel, labelLayout, elements.connector);
@@ -7515,10 +7542,16 @@ function tradeAnnotationAutoscaleInfo(
     prices.push(trade.entryPrice);
     if (trade.status !== "open" && typeof trade.exitPrice === "number") prices.push(trade.exitPrice);
     prices.push(...(trade.levelPrices?.slice(0, 3) ?? []));
+    prices.push(...(trade.supportPrices?.slice(0, 3) ?? []));
+    prices.push(...(trade.resistancePrices?.slice(0, 3) ?? []));
     if (typeof trade.triggerPrice === "number") prices.push(trade.triggerPrice);
     if (typeof trade.stopPrice === "number") prices.push(trade.stopPrice);
     prices.push(...(trade.targetPrices ?? []));
     prices.push(...(trade.fills?.map((fill) => fill.price) ?? []));
+    trade.exitIntents?.forEach((intent) => {
+      prices.push(...(intent.supportPrices?.slice(0, 3) ?? []));
+      prices.push(...(intent.resistancePrices?.slice(0, 3) ?? []));
+    });
   });
   state.executions.forEach((fill) => {
     const logical = lowerBoundCandleTime(state.timeline, fill.time);
