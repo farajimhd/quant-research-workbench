@@ -303,7 +303,7 @@ export function BacktestDebugPage() {
       modeControls={<div className="historical-canvas-run-state">
         <button aria-label="Return to completed Backtest selection" className="button secondary compact" onClick={() => setReviewRun(null)} type="button"><ArrowLeft size={14} /> Backtests</button>
         <strong>Completed Backtest review</strong>
-        <span>{reviewRun.strategy_name || reviewRun.configuration_label || "Strategy"}{reviewRun.strategy_revision ? ` r${reviewRun.strategy_revision}` : ""} · completed {formatBacktestCompletionTime(reviewRun.completed_at || reviewRun.updated_at)} · {formatFillCount(reviewRun.fill_count)} · P&amp;L {formatBacktestPnl(reviewRun.net_pnl)} · {new Intl.NumberFormat("en-US", { notation: "compact" }).format(reviewRun.processed_events || 0)} events</span>
+        <span>{formatBacktestTickers(reviewRun.tickers)} · {formatBacktestPeriod(reviewRun)} · completed {formatBacktestCompletionTime(reviewRun.completed_at || reviewRun.updated_at)} · {formatFillCount(reviewRun.fill_count)} · P&amp;L {formatBacktestPnl(reviewRun.net_pnl)} · {new Intl.NumberFormat("en-US", { notation: "compact" }).format(reviewRun.processed_events || 0)} events</span>
       </div>}
       replayRun={reviewRun}
       runtimeWorkspaceId="completed-review"
@@ -341,7 +341,7 @@ export function BacktestDebugPage() {
     title={workflow === "review" ? "Review a completed strategy" : "Inspect an exact scenario"}
   >
             <TradingModeSelectField help="Review uses immutable real Backtest evidence. A test scenario uses a small manually supplied fixture to isolate one rule." label="Debug workflow" onChange={(value) => setWorkflow(value as "review" | "fixture")} options={[{ label: "Completed Backtest review", value: "review" }, { label: "Deterministic test scenario", value: "fixture" }]} value={workflow} />
-            {workflow === "review" ? <TradingModeSelectField help={selectedCompletedRun ? <>Completed {formatBacktestCompletionTime(selectedCompletedRun.completed_at || selectedCompletedRun.updated_at)} · {formatFillCount(selectedCompletedRun.fill_count)} · P&amp;L {formatBacktestPnl(selectedCompletedRun.net_pnl)}</> : "The run is loaded read-only from its durable terminal checkpoint; no strategy or broker action is executed again."} label="Completed Backtest" onChange={setSelectedCompletedRunId} options={completedRuns.length ? completedRuns.map((row) => ({ description: `${formatBacktestCompletionTime(row.completed_at || row.updated_at)} · ${formatFillCount(row.fill_count)} · P&L ${formatBacktestPnl(row.net_pnl)} · config ${row.configuration_revision ?? "—"} · ${row.run_id.slice(0, 8)}`, label: `${row.session_date} · ${row.strategy_name || row.configuration_label || "Strategy"}${row.strategy_revision ? ` r${row.strategy_revision}` : ""}`, value: row.run_id })) : [{ disabled: true, label: "No completed Backtest available", value: "" }]} presentation="catalog" searchable value={selectedCompletedRunId} /> : <>
+            {workflow === "review" ? <TradingModeSelectField help={selectedCompletedRun ? <>{formatBacktestTickers(selectedCompletedRun.tickers)} · {formatBacktestPeriod(selectedCompletedRun)} · completed {formatBacktestCompletionTime(selectedCompletedRun.completed_at || selectedCompletedRun.updated_at)} · {formatFillCount(selectedCompletedRun.fill_count)} · P&amp;L {formatBacktestPnl(selectedCompletedRun.net_pnl)}</> : "The run is loaded read-only from its durable terminal checkpoint; no strategy or broker action is executed again."} label="Completed Backtest" onChange={setSelectedCompletedRunId} options={completedRuns.length ? completedRuns.map((row) => ({ description: `${formatBacktestPeriod(row)} · ${formatBacktestCompletionTime(row.completed_at || row.updated_at)} · ${formatFillCount(row.fill_count)} · P&L ${formatBacktestPnl(row.net_pnl)} · config ${row.configuration_revision ?? "—"} · ${row.run_id.slice(0, 8)}`, label: `${row.session_date} · ${formatBacktestTickers(row.tickers)} · ${row.strategy_name || row.configuration_label || "Strategy"}${row.strategy_revision ? ` r${row.strategy_revision}` : ""}`, value: row.run_id })) : [{ disabled: true, label: "No completed Backtest available", value: "" }]} presentation="catalog" searchable value={selectedCompletedRunId} /> : <>
             <TradingModeSelectField help="The exact immutable configuration exercised by this deterministic scenario." label="Test Candidate" onChange={setCandidateId} options={[{ label: "Latest available candidate", value: "" }, ...candidates.map((candidate) => ({ label: `t${candidate.candidate_revision} · ${candidate.label} · ${candidate.content_hash.slice(0, 8)}`, value: candidate.candidate_id }))]} value={candidateId} />
             <TradingModeSelectField help="The test scenario runs through this exact Strategy Studio profile and installed executor." label="Strategy Run Plan" onChange={setRunPlanId} options={(preflight?.available_run_plans ?? []).map((plan) => ({ label: `${plan.name} · ${plan.strategy_id} r${plan.strategy_revision}`, value: plan.run_plan_id }))} value={runPlanId} />
             <TradingModeSelectField ariaLabel="Test Scenario library" help="Stored in this browser; exact submitted records are persisted with the backend run." label="Test Scenario library" onChange={loadFixture} options={[{ label: "Unsaved scenario", value: "" }, ...library.map((row) => ({ label: row.fixtureId, value: row.fixtureId }))]} value={selectedFixture} />
@@ -424,6 +424,23 @@ export function formatBacktestCompletionTime(value: string | undefined) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(timestamp);
+}
+
+export function formatBacktestTickers(tickers: string[] | undefined) {
+  return tickers?.length ? tickers.join(", ") : "Ticker unavailable";
+}
+
+export function formatBacktestPeriod(run: Pick<CompletedBacktestRun, "requested_start" | "session_end">) {
+  const start = new Date(run.requested_start);
+  const end = new Date(run.session_end);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return "period unavailable";
+  const clock = new Intl.DateTimeFormat("en-US", {
+    hour: "2-digit",
+    hour12: false,
+    minute: "2-digit",
+    timeZone: "America/New_York",
+  });
+  return `${clock.format(start)}–${clock.format(end)} ET`;
 }
 
 export function formatFillCount(value: number | undefined) {

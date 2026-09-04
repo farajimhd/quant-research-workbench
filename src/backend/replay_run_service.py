@@ -5918,6 +5918,7 @@ def _replay_run_list_projection(
         "checkpoint",
         "mode",
         "execution_mode",
+        "tickers",
         "configuration_revision",
         "configuration_revision_id",
         "processed_events",
@@ -5951,8 +5952,16 @@ def _completed_backtest_selection_projection(
 ) -> dict[str, Any]:
     """Attach bounded, terminal metrics from the durable simulated broker checkpoint."""
 
-    result = {**row, "completed_at": row.get("updated_at")}
-    if "fill_count" in row and "net_pnl" in row:
+    result = {
+        **row,
+        "completed_at": row.get("updated_at"),
+        "tickers": (
+            list(row.get("tickers") or [])
+            if "tickers" in row
+            else _durable_backtest_tickers(run_dir)
+        ),
+    }
+    if "fill_count" in row and "net_pnl" in row and "tickers" in row:
         return result
     journal_path = run_dir / "journal.sqlite3"
     if not journal_path.is_file():
@@ -6024,6 +6033,23 @@ def _completed_backtest_selection_projection(
     finally:
         if connection is not None:
             connection.close()
+
+
+def _durable_backtest_tickers(run_dir: Path) -> list[str]:
+    """Recover the immutable run-definition ticker list without loading a large manifest."""
+
+    manifest_path = run_dir / "manifest.json"
+    if not manifest_path.is_file():
+        return []
+    try:
+        with manifest_path.open("rb") as handle:
+            head = handle.read(262_144).decode("utf-8", errors="ignore")
+        definition_offset = head.index('"definition":')
+        match = re.search(r'"tickers"\s*:\s*(\[[^\]]*\])', head[definition_offset:])
+        values = json.loads(match.group(1)) if match else []
+        return sorted({_ticker(str(value)) for value in values if str(value).strip()})
+    except (IndexError, OSError, TypeError, ValueError, json.JSONDecodeError):
+        return []
 
 
 def _load_completed_review_materials(

@@ -1728,6 +1728,10 @@ class CompletedBacktestSelectionTests(unittest.TestCase):
             run_id = "00000000-0000-0000-0000-000000000123"
             run_dir = Path(directory) / run_id
             run_dir.mkdir()
+            (run_dir / "manifest.json").write_text(
+                json.dumps({"definition": {"tickers": ["sugp"]}, "run": {}}),
+                encoding="utf-8",
+            )
             journal = TradingJournal(run_dir / "journal.sqlite3")
             state = {
                 "broker": {
@@ -1754,6 +1758,7 @@ class CompletedBacktestSelectionTests(unittest.TestCase):
             self.assertEqual(projected["completed_at"], "2026-09-04T00:24:43+00:00")
             self.assertEqual(projected["fill_count"], 2)
             self.assertEqual(projected["net_pnl"], "33")
+            self.assertEqual(projected["tickers"], ["SUGP"])
 
 
 class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):

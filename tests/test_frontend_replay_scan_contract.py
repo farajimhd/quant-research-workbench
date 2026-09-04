@@ -663,6 +663,8 @@ def test_debug_page_can_open_a_durable_completed_backtest_review() -> None:
     assert "/review`" in source
     assert 'runtimeWorkspaceId="completed-review"' in source
     assert "formatBacktestCompletionTime" in source
+    assert "formatBacktestTickers" in source
+    assert "formatBacktestPeriod" in source
     assert "formatFillCount" in source
     assert "formatBacktestPnl" in source
     assert 'presentation="catalog" searchable' in source
