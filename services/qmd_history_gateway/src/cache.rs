@@ -2161,17 +2161,19 @@ impl HistoricalDerivedCache {
                     if event.is_delayed_trade_report() {
                         continue;
                     }
-                    // Unified Structural Levels are driven only by eligible prints.
-                    // Quotes do not alter their price-level book, while replaying
-                    // every quote dominates cold historical preparation time.
-                    if structure_only && !matches!(&event, MarketEvent::Trade(_)) {
-                        continue;
-                    }
                     if let Some(builder) = structure_projection.as_mut() {
-                        let MarketEvent::Trade(trade) = &event else {
-                            continue;
+                        // Quotes do not create structural levels, but they are
+                        // causal inputs to the prevailing NBBO used to classify
+                        // trade pressure.  The presentation projection must feed
+                        // the same complete ordered event stream to function F as
+                        // direct checkpoint materialization; filtering to trades
+                        // changes volume attribution, lifecycle transitions, and
+                        // derived scores.
+                        let conditions = match &event {
+                            MarketEvent::Trade(event) => event.conditions.as_slice(),
+                            MarketEvent::Quote(event) => event.conditions.as_slice(),
                         };
-                        let trade_rule = trade_rules.resolve(&trade.conditions, trade.ts);
+                        let trade_rule = trade_rules.resolve(conditions, event.ts());
                         builder.apply_event(&event, trade_rule)?;
                         continue;
                     }
@@ -2574,9 +2576,10 @@ impl HistoricalDerivedCache {
         let (sender, receiver) = mpsc::channel(2);
         let source = self.source.clone();
         let permits = self.fetch_permits.clone();
-        // A structure-only source query already excludes the much larger quote
-        // family. Fetch its remaining eligible prints in fewer bounded pages so
-        // ClickHouse cursor round trips do not dominate cold chart preparation.
+        // A caller may use a selective event-family query only when that
+        // projection's authority does not depend on the omitted family.  The
+        // structural profile deliberately passes no filter because its
+        // prevailing-NBBO pressure evidence depends on quotes.
         let batch_size = if event_type_filter.is_some() {
             self.config.batch_size.max(100_000)
         } else {
@@ -3705,12 +3708,12 @@ fn structure_seed_identity(seed: &PersistedStructureCheckpointSeed) -> Result<St
     )))
 }
 
-fn cache_event_type_filter(profile: &CacheProfile) -> Option<u8> {
-    // Structural checkpoints need eligible prints only. Bar/derived products
-    // must retain both quotes and trades: execution VWAP is defined from
-    // volume-eligible trades inside the causal prevailing NBBO, so a
-    // trade-only optimization silently collapses that authority to zero.
-    matches!(profile, CacheProfile::Structure(_)).then_some(1)
+fn cache_event_type_filter(_profile: &CacheProfile) -> Option<u8> {
+    // Bars, derived products, and structural projections all require quotes.
+    // Execution VWAP and structural pressure are defined from eligible trades
+    // inside the causal prevailing NBBO, so a trade-only source optimization
+    // changes both authorities rather than merely reducing transport volume.
+    None
 }
 
 fn indicator_warmup_start(timestamp: DateTime<Utc>) -> Result<DateTime<Utc>, String> {
@@ -3867,7 +3870,7 @@ mod tests {
     use tokio::sync::{broadcast, Mutex, Notify};
 
     #[test]
-    fn bars_and_derived_fetch_quotes_required_by_execution_vwap() {
+    fn all_causal_cache_profiles_fetch_quotes_required_by_their_authorities() {
         assert_eq!(
             cache_event_type_filter(&CacheProfile::Bars("1s".to_string())),
             None
@@ -3878,7 +3881,7 @@ mod tests {
         );
         assert_eq!(
             cache_event_type_filter(&CacheProfile::Structure("1s".to_string())),
-            Some(1),
+            None,
         );
     }
 

@@ -149,7 +149,7 @@ $expectedCheckpointTable = if ($env:QMD_HISTORY_STRUCTURE_DAILY_CHECKPOINT_TABLE
 $expectedCheckpointSet = if ($env:QMD_STRUCTURE_CHECKPOINT_SET_ID) {
     $env:QMD_STRUCTURE_CHECKPOINT_SET_ID.Trim()
 } else {
-    "strategy-dev-sugp-juns-20260814-20260821-v16-clock-v2"
+    "canonical-tradable-20250101-20260831-v18-sip-condition-v1"
 }
 $expectedCalculationRevision = "qmd-derived-v57"
 

@@ -147,11 +147,11 @@ Defaults:
 - generic-structure database/table: `q_live.qmd_structure_events_v2`
 - certified daily-checkpoint authority:
   `q_live.qmd_structure_daily_checkpoint_v2` set
-  `strategy-dev-sugp-juns-20260814-20260821-v16-clock-v2`; checkpoint payload,
+  `canonical-tradable-20250101-20260831-v18-sip-condition-v1`; checkpoint payload,
   split lineage, source revision, and certification chain are validated before
-  a seed can be used. This bounded authority is intentionally limited to SUGP
-  and JUNS for strategy development until the full historical successor is
-  rebuilt and explicitly promoted
+  a seed can be used. SUGP and JUNS are complete and certified in this successor
+  set for strategy development. The remaining universe is campaign-built and
+  must not be described as complete until final set certification
 - batch size: `25000`
 - maximum events in one derived calculation: `10000000`
 - revision-aware derived cache entries: `256`
