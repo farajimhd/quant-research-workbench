@@ -25,6 +25,19 @@ from scripts.run_structure_checkpoint_campaign import (
 )
 
 
+def test_powershell_launcher_resolves_python_from_the_active_host() -> None:
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "run_structure_checkpoint_campaign.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "C:\\Users\\g835l" not in source
+    assert "Resolve-PythonExecutable" in source
+    assert "$env:CONDA_PREFIX" in source
+    assert "& $resolvedPython @launcherArguments" in source
+
+
 class _RunningProcess:
     def poll(self):
         return None

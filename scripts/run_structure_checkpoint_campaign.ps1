@@ -19,7 +19,7 @@ param(
     [switch]$MonitorExisting,
     [ValidateSet('graceful', 'fast')]
     [string]$StopExisting,
-    [string]$PythonExe = 'C:\Users\g835l\miniconda3\envs\ml4t\python.exe',
+    [string]$PythonExe = '',
     [Parameter(ValueFromRemainingArguments)]
     [string[]]$CampaignArguments
 )
@@ -27,9 +27,35 @@ param(
 $ErrorActionPreference = 'Stop'
 $env:PYTHONDONTWRITEBYTECODE = '1'
 
-if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) {
-    throw "Python executable is unavailable: $PythonExe"
+function Resolve-PythonExecutable {
+    param([string]$Requested)
+
+    if ($Requested.Trim()) {
+        $requestedCommand = Get-Command $Requested.Trim() -ErrorAction SilentlyContinue
+        if ($requestedCommand) {
+            return $requestedCommand.Source
+        }
+        if (Test-Path -LiteralPath $Requested.Trim() -PathType Leaf) {
+            return (Resolve-Path -LiteralPath $Requested.Trim()).Path
+        }
+        throw "The requested Python executable does not exist: $Requested"
+    }
+
+    if ($env:CONDA_PREFIX) {
+        $activeCondaPython = Join-Path $env:CONDA_PREFIX 'python.exe'
+        if (Test-Path -LiteralPath $activeCondaPython -PathType Leaf) {
+            return $activeCondaPython
+        }
+    }
+
+    $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
+    if ($pythonCommand) {
+        return $pythonCommand.Source
+    }
+
+    throw 'Python was not found. Activate the intended environment or pass -PythonExe <path-to-python.exe>.'
 }
+$resolvedPython = Resolve-PythonExecutable -Requested $PythonExe
 if ($StartDate.HasValue -xor $EndDate.HasValue) {
     throw '-StartDate and -EndDate must be supplied together.'
 }
@@ -76,5 +102,5 @@ if ($ResumeFromRuntime) {
     Write-Host "Recovery source remains immutable: $ResumeFromRuntime" -ForegroundColor DarkGray
     Write-Host "Successor target: $CheckpointSetId" -ForegroundColor Cyan
 }
-& $PythonExe @launcherArguments
+& $resolvedPython @launcherArguments
 exit $LASTEXITCODE
