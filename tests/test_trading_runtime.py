@@ -2142,6 +2142,94 @@ class _SignalAwareStrategy(_NoopStrategy):
 
 
 class RuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_entry_refreshes_canonical_broker_cash_before_portfolio_approval(self) -> None:
+        call_order: list[str] = []
+
+        class RejectedDecision:
+            reasons = ("insufficient_capacity",)
+
+            @staticmethod
+            def payload() -> dict[str, object]:
+                return {"status": "rejected", "reasons": ["insufficient_capacity"]}
+
+        class RecordingPortfolio:
+            async def synchronize(self, broker: object) -> None:
+                call_order.append("direct_synchronize")
+
+            def synchronize_canonical(
+                self,
+                snapshot: object,
+                *,
+                persist: bool,
+            ) -> None:
+                call_order.append("synchronize_canonical")
+
+            async def approve(
+                self,
+                intent: StrategyIntent,
+                *,
+                account_id: str,
+            ) -> tuple[RejectedDecision, None]:
+                call_order.append("approve")
+                return RejectedDecision(), None
+
+        class Projector:
+            @staticmethod
+            def snapshot() -> object:
+                return object()
+
+        class CanonicalSession:
+            projector = Projector()
+
+            async def reconcile(self) -> None:
+                call_order.append("reconcile")
+
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            try:
+                runtime = TradingRuntime.__new__(TradingRuntime)
+                runtime.config = RunConfig(
+                    RunMode.PAPER,
+                    "noop",
+                    1,
+                    ("DU123",),
+                    date(2026, 7, 14),
+                    run_id="00000000-0000-0000-0000-000000000098",
+                )
+                runtime.run_id = runtime.config.run_id
+                runtime.journal = journal
+                runtime.broker = object()
+                runtime.strategy = _NoopStrategy()
+                runtime.intent_planner = object()
+                runtime.order_manager = object()
+                runtime.portfolio = RecordingPortfolio()
+                runtime._canonical_session = CanonicalSession()
+                runtime._portfolio_sync_lock = asyncio.Lock()
+                runtime._review_only = False
+                entry = StrategyIntent(
+                    intent_id="fresh-cash-entry",
+                    ticker="AAPL",
+                    event_time=TS,
+                    action="enter_long",
+                    quantity=100,
+                    reference_price=100,
+                    invalidation_price=98,
+                )
+
+                results = await runtime._execute_intents(
+                    StrategyEvaluation(intents=(entry,)),
+                    "DU123",
+                    None,
+                )
+
+                self.assertEqual(
+                    call_order,
+                    ["reconcile", "synchronize_canonical", "approve"],
+                )
+                self.assertEqual(results[0]["decision"]["status"], "rejected")
+            finally:
+                journal.close()
+
     async def test_runtime_journals_wait_reason_transitions_not_duplicate_market_refreshes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             journal = TradingJournal(Path(directory) / "journal.sqlite3")

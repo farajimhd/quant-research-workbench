@@ -70,7 +70,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 44
+CONFIGURATION_SCHEMA_VERSION = 45
 MARKET_DISCOVERY_MATERIALIZATION_RUN_ID = "market-discovery:materialized-configuration"
 _CONFIGURATION_BASE_CACHE_LOCK = threading.RLock()
 _CONFIGURATION_BASE_CACHE: tuple[str, float, dict[str, Any] | None] = ("", 0.0, None)
@@ -4039,15 +4039,15 @@ def _default_draft() -> dict[str, Any]:
     }
     squeeze_lifecycle["initial_entry"]["add_steps"] = []
     squeeze_lifecycle["initial_entry"]["capital_request"] = {
-        "mode": "mandate_fraction",
-        "value": 1.0 / 3.0,
-        "maximum_quantity": 5_000,
+        "mode": "all_available",
+        "value": 1.0,
+        "maximum_quantity": 10_000,
         "allow_replacement": False,
     }
     squeeze_lifecycle["reentry"]["capital_request"] = {
-        "mode": "mandate_fraction",
-        "value": 1.0 / 3.0,
-        "maximum_quantity": 5_000,
+        "mode": "all_available",
+        "value": 1.0,
+        "maximum_quantity": 10_000,
         "allow_replacement": False,
     }
     squeeze_lifecycle["reentry"]["maximum_attempts"] = 0
@@ -4141,10 +4141,9 @@ def _default_draft() -> dict[str, Any]:
         "enabled": True,
         "selection_mode": "prior_completed_frame_top_n_below_session_high",
         "maximum_entry_levels": 3,
-        # Each of the selected levels owns one independently confirmed third of
-        # the position mandate. A fresh cross while already long can therefore
-        # add the next tranche instead of being discarded as merely a chart
-        # event after the first level consumed all available capital.
+        # Each selected level remains an independently confirmed entry. Sizing
+        # is not divided here; Portfolio recomputes every order from the latest
+        # broker cash snapshot, support-stop risk, and account constraints.
         "entry_tranche_count": 3,
         # Structural admission is ticker-independent and owned exclusively by
         # the causal Unified Structural Level Book. Other level scores remain
@@ -4377,8 +4376,8 @@ def _default_draft() -> dict[str, Any]:
         # same topology that Strategy and OMS publish; otherwise a valid entry
         # is rejected before any order reaches the broker.
         "maximum_protection_slices": 5,
-        "maximum_planned_risk_fraction": 0.06,
-        "maximum_open_risk_fraction": 0.06,
+        "maximum_planned_risk_fraction": 0.08,
+        "maximum_open_risk_fraction": 0.08,
         "maximum_open_positions": 3,
         "allow_outside_rth": True,
         "allow_overnight": False,
@@ -4390,8 +4389,10 @@ def _default_draft() -> dict[str, Any]:
         "eligible_equity_fraction": 0.80,
         "maximum_position_fraction": 0.80,
         "maximum_ticker_fraction": 0.80,
-        "maximum_planned_risk_fraction": 0.0025,
-        "maximum_open_risk_fraction": 0.0075,
+        # Account policy permits the squeeze mandate's requested ceiling. Each
+        # run-plan mandate can still narrow its own per-order risk below this.
+        "maximum_planned_risk_fraction": 0.08,
+        "maximum_open_risk_fraction": 0.08,
     })
     bindings = [
         {
@@ -4418,7 +4419,7 @@ def _default_draft() -> dict[str, Any]:
             "account_key": binding["account_key"],
             "enabled": True,
             "maximum_cash_fraction": 1.0,
-            "maximum_planned_risk_fraction": 0.06,
+            "maximum_planned_risk_fraction": 0.08,
             "maximum_positions": 3,
             "assignment_mode": "single",
             "allocation_weight": 1.0,
@@ -4436,7 +4437,7 @@ def _default_draft() -> dict[str, Any]:
             "account_key": binding["account_key"],
             "enabled": True,
             "maximum_cash_fraction": 0.80,
-            "maximum_planned_risk_fraction": 0.0025,
+            "maximum_planned_risk_fraction": 0.08,
             "maximum_positions": 3,
             "assignment_mode": "single",
             "allocation_weight": 1.0,
@@ -4453,6 +4454,7 @@ def _default_draft() -> dict[str, Any]:
             **deepcopy(mandate),
             "mandate_id": str(mandate["mandate_id"]).replace("long-momentum-squeeze", "long-momentum-news"),
             "run_plan_id": str(mandate["run_plan_id"]).replace("long-momentum-squeeze", "long-momentum-news"),
+            "maximum_planned_risk_fraction": 0.0025,
         }
         for mandate in live_mandates
     ]
@@ -6829,6 +6831,42 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             plans_by_profile.setdefault(str(row.get("profile_id") or ""), row)
         portfolio = result.setdefault("portfolio", deepcopy(defaults["portfolio"]))
         mandates = portfolio.setdefault("mandates", [])
+        if source_schema_version < CONFIGURATION_SCHEMA_VERSION:
+            default_policies = {
+                str(row.get("policy_id") or ""): row
+                for row in defaults["portfolio"]["policies"]
+            }
+            for saved_policy in portfolio.setdefault("policies", []):
+                default_policy = default_policies.get(
+                    str(saved_policy.get("policy_id") or "")
+                )
+                if default_policy is None:
+                    continue
+                if str(saved_policy.get("policy_id") or "") in {
+                    "default",
+                    "long-momentum-real-80",
+                }:
+                    saved_policy["maximum_planned_risk_fraction"] = deepcopy(
+                        default_policy["maximum_planned_risk_fraction"]
+                    )
+                    saved_policy["maximum_open_risk_fraction"] = deepcopy(
+                        default_policy["maximum_open_risk_fraction"]
+                    )
+            default_mandates = {
+                str(row.get("mandate_id") or ""): row
+                for row in defaults["portfolio"]["mandates"]
+            }
+            for saved_mandate in mandates:
+                mandate_id = str(saved_mandate.get("mandate_id") or "")
+                default_mandate = default_mandates.get(mandate_id)
+                if default_mandate is None:
+                    continue
+                if mandate_id.startswith("balanced-") or mandate_id.startswith(
+                    "long-momentum-squeeze-"
+                ):
+                    saved_mandate["maximum_planned_risk_fraction"] = deepcopy(
+                        default_mandate["maximum_planned_risk_fraction"]
+                    )
         for profile in result["strategy"].get("profiles") or []:
             profile_id = str(profile.get("profile_id") or "")
             legacy = legacy_compositions.get(profile_id, {})

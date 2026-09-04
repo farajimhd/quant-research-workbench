@@ -511,7 +511,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
             [10.3, 10.2, 10.1],
         )
 
-    def test_fresh_second_level_cross_adds_one_protected_mandate_tranche(self) -> None:
+    def test_fresh_second_level_cross_adds_one_independent_portfolio_sized_entry(self) -> None:
         parameters = default_long_momentum_parameters()
         parameters["structural_entry"].update({
             "enabled": True,
@@ -522,9 +522,9 @@ class LongMomentumStrategyTests(unittest.TestCase):
         parameters["phase_policy"] = {
             "initial_entry": {
                 "capital_request": {
-                    "mode": "mandate_fraction",
-                    "value": 1.0 / 3.0,
-                    "maximum_quantity": 5_000,
+                    "mode": "all_available",
+                    "value": 1.0,
+                    "maximum_quantity": 10_000,
                     "allow_replacement": False,
                 },
                 "order_intent": {},
@@ -579,8 +579,9 @@ class LongMomentumStrategyTests(unittest.TestCase):
         assert result is not None
         intent = result.evaluation.intents[0]
         self.assertEqual(intent.action, "add_long")
-        self.assertEqual(intent.capital_request.mode, "mandate_fraction")
-        self.assertAlmostEqual(intent.capital_request.value, 1.0 / 3.0)
+        self.assertEqual(intent.capital_request.mode, "all_available")
+        self.assertEqual(intent.capital_request.value, 1.0)
+        self.assertEqual(intent.capital_request.maximum_quantity, 10_000)
         self.assertEqual(intent.invalidation_price, 98.0)
         self.assertEqual(result.state["position_entry_level_ids"], ["level-1", "level-2"])
         self.assertEqual(result.state["position_entry_tranches"], 2)
@@ -594,14 +595,14 @@ class LongMomentumStrategyTests(unittest.TestCase):
         )
         self.assertIsNone(duplicate)
 
-    def test_relative_phase_capital_request_preserves_hard_share_cap(self) -> None:
+    def test_phase_capital_request_preserves_hard_share_cap(self) -> None:
         request = _capital_request_from_payload({
             "mode": "all_available",
             "value": 1.0,
-            "maximum_quantity": 5_000,
+            "maximum_quantity": 10_000,
         })
 
-        self.assertEqual(request.maximum_quantity, 5_000)
+        self.assertEqual(request.maximum_quantity, 10_000)
 
     def test_default_spread_contract_separates_admission_from_execution(self) -> None:
         liquidity = default_long_momentum_parameters()["liquidity_admission"]

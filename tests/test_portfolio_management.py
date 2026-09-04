@@ -797,7 +797,7 @@ class PortfolioManagementTests(unittest.IsolatedAsyncioTestCase):
                 **request.payload(),
                 "capital_request": CapitalRequest(
                     mode="all_available",
-                    maximum_quantity=5_000,
+                    maximum_quantity=10_000,
                 ),
                 "metadata": {**request.metadata, "ask": 100.0, "bid": 99.99},
             }
@@ -808,7 +808,120 @@ class PortfolioManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decision.status, PortfolioDecisionStatus.APPROVED)
         self.assertIsNotNone(approved)
         assert approved is not None
-        self.assertEqual(approved.quantity, 5_000)
+        self.assertEqual(approved.quantity, 10_000)
+
+    async def test_planned_risk_uses_latest_broker_cash_and_realized_cash_growth(self) -> None:
+        policy = PortfolioPolicy(
+            policy_id="broker-cash-risk",
+            maximum_position_fraction=1,
+            maximum_ticker_fraction=1,
+            maximum_planned_risk_fraction=0.08,
+            maximum_open_risk_fraction=0.08,
+        )
+        profile = PortfolioAccountProfile(
+            "primary",
+            "C1",
+            "replay",
+            "simulated",
+            policy,
+            strategy_allocations={"strategy-a": 1.0},
+            strategy_mandates={
+                "strategy-a": {"maximum_planned_risk_fraction": 0.08}
+            },
+        )
+        engine = self.engine([profile])
+
+        def sized_request(intent_id: str) -> StrategyIntent:
+            request = intent(intent_id, quantity=1, price=10.0, invalidation=8.0)
+            return StrategyIntent(
+                **{
+                    **request.payload(),
+                    "capital_request": CapitalRequest(
+                        mode="all_available",
+                        maximum_quantity=10_000,
+                    ),
+                }
+            )
+
+        engine.synchronize_snapshot(
+            "C1",
+            summary=summary("C1", equity=100_000, available=10_000),
+            ledger=ledger("C1", cash=10_000),
+            positions=[],
+        )
+        first_decision, first_approved = await engine.approve(
+            sized_request("broker-cash-before-gain"),
+            account_id="C1",
+        )
+
+        self.assertEqual(first_decision.status, PortfolioDecisionStatus.RESIZED)
+        self.assertIsNotNone(first_approved)
+        assert first_approved is not None
+        self.assertEqual(first_approved.quantity, 400)
+        engine.release_intent(
+            first_approved.intent_id,
+            reason="test_realized_cash_refresh",
+        )
+
+        engine.synchronize_snapshot(
+            "C1",
+            summary=summary("C1", equity=102_000, available=12_000),
+            ledger=ledger("C1", cash=12_000),
+            positions=[],
+        )
+        second_decision, second_approved = await engine.approve(
+            sized_request("broker-cash-after-gain"),
+            account_id="C1",
+        )
+
+        self.assertEqual(second_decision.status, PortfolioDecisionStatus.RESIZED)
+        self.assertIsNotNone(second_approved)
+        assert second_approved is not None
+        self.assertEqual(second_approved.quantity, 480)
+
+    async def test_strategy_mandate_can_narrow_account_risk_ceiling(self) -> None:
+        policy = PortfolioPolicy(
+            policy_id="account-risk-ceiling",
+            maximum_position_fraction=1,
+            maximum_ticker_fraction=1,
+            maximum_planned_risk_fraction=0.08,
+            maximum_open_risk_fraction=0.08,
+        )
+        profile = PortfolioAccountProfile(
+            "primary",
+            "C1",
+            "replay",
+            "simulated",
+            policy,
+            strategy_allocations={"strategy-a": 1.0},
+            strategy_mandates={
+                "strategy-a": {"maximum_planned_risk_fraction": 0.01}
+            },
+        )
+        engine = self.engine([profile])
+        engine.synchronize_snapshot(
+            "C1",
+            summary=summary("C1", equity=100_000, available=10_000),
+            ledger=ledger("C1", cash=10_000),
+            positions=[],
+        )
+        request = intent("narrower-mandate", quantity=1, price=10.0, invalidation=8.0)
+        request = StrategyIntent(
+            **{
+                **request.payload(),
+                "capital_request": CapitalRequest(
+                    mode="all_available",
+                    maximum_quantity=10_000,
+                ),
+            }
+        )
+
+        decision, approved = await engine.approve(request, account_id="C1")
+
+        self.assertEqual(decision.status, PortfolioDecisionStatus.RESIZED)
+        self.assertIsNotNone(approved)
+        assert approved is not None
+        self.assertEqual(approved.quantity, 50)
 
     async def test_capacity_rejection_can_create_explicit_rebalance_proposal(self) -> None:
         policy = PortfolioPolicy(

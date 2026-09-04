@@ -1218,20 +1218,34 @@ class PortfolioManagementEngine:
             price = _worst_entry_price(intent)
             if summary is None or price <= 0:
                 return 0.0
+            broker_cash_capacity = self._broker_cash_capacity(state)
             if request.mode == "mandate_fraction":
-                requested = float(summary.availablefunds) * request.value / price
+                requested = broker_cash_capacity * request.value / price
             elif request.mode == "risk_fraction":
                 risk_per_share = _risk_per_share(intent, max(float(intent.quantity), 1.0))
                 requested = (
-                    float(summary.netliquidation) * request.value / risk_per_share
+                    broker_cash_capacity * request.value / risk_per_share
                     if risk_per_share > 0
                     else 0.0
                 )
             else:
-                requested = float(summary.availablefunds) / price
+                requested = broker_cash_capacity / price
         if request.maximum_quantity is not None:
             requested = min(requested, request.maximum_quantity)
         return max(request.minimum_quantity, requested)
+
+    def _broker_cash_capacity(self, state: PortfolioAccountState) -> float:
+        summary = state.summary
+        if summary is None:
+            return 0.0
+        policy = self._policy(state)
+        broker_cash_capacity = float(summary.availablefunds)
+        if not policy.allow_margin and not policy.allow_unsettled_cash and state.ledger is not None:
+            broker_cash_capacity = min(
+                broker_cash_capacity,
+                float(state.ledger.settledcash),
+            )
+        return max(0.0, broker_cash_capacity)
 
     def _propose_rebalance(
         self,
@@ -1327,6 +1341,12 @@ class PortfolioManagementEngine:
         summary = state.summary
         assert summary is not None
         eligible_equity = max(0.0, float(summary.netliquidation) * policy.eligible_equity_fraction)
+        broker_cash_capacity = self._broker_cash_capacity(state)
+        # Entry risk is based on the current broker-reported cash authority,
+        # not a campaign baseline or an internally compounded balance. This
+        # makes realized gains available to later entries while preserving a
+        # fail-closed settled-cash boundary for cash accounts.
+        risk_capital = max(0.0, broker_cash_capacity - policy.minimum_cash_reserve)
         current_position = state.positions.get(intent.ticker.upper())
         current_value = abs(float(current_position.mktValue)) if current_position else 0.0
         reserved_notional = sum(
@@ -1363,9 +1383,6 @@ class PortfolioManagementEngine:
             if row.account_id == state.profile.account_id
             and row.strategy_id in {self.strategy_id, self.allocation_identity}
         )
-        broker_cash_capacity = float(summary.availablefunds)
-        if not policy.allow_margin and not policy.allow_unsettled_cash and state.ledger is not None:
-            broker_cash_capacity = min(broker_cash_capacity, float(state.ledger.settledcash))
         available_cash = max(
             0.0,
             broker_cash_capacity * policy.maximum_buying_power_utilization
@@ -1387,13 +1404,27 @@ class PortfolioManagementEngine:
             capacities["net_exposure"] = max(0.0, policy.maximum_net_short_exposure - max(0.0, -net) - reserved_notional) / base_price
         risk_per_share = _risk_per_share(intent, requested) * float(intent.metadata.get("fx_to_base") or 1.0)
         if risk_per_share > 0:
+            mandate = dict(
+                state.profile.strategy_mandates.get(self.allocation_identity)
+                or state.profile.strategy_mandates.get(self.strategy_id)
+                or {}
+            )
+            mandate_risk_fraction = float(
+                mandate.get("maximum_planned_risk_fraction")
+                if mandate.get("maximum_planned_risk_fraction") is not None
+                else policy.maximum_planned_risk_fraction
+            )
+            planned_risk_fraction = min(
+                policy.maximum_planned_risk_fraction,
+                max(0.0, mandate_risk_fraction),
+            )
             capacities["planned_risk"] = max(
                 0.0,
-                eligible_equity * policy.maximum_planned_risk_fraction,
+                risk_capital * planned_risk_fraction,
             ) / risk_per_share
             capacities["open_risk"] = max(
                 0.0,
-                eligible_equity * policy.maximum_open_risk_fraction
+                risk_capital * policy.maximum_open_risk_fraction
                 - allocated_risk
                 - reserved_risk,
             ) / risk_per_share

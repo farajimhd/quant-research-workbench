@@ -18,7 +18,7 @@ from src.trading_runtime.execution_policies import (
     ExecutionMarketSnapshot,
 )
 from src.trading_runtime.order_management import OrderManagementEngine, OrderManagementState
-from src.trading_runtime.portfolio import PortfolioManagementEngine
+from src.trading_runtime.portfolio import ENTRY_ACTIONS, PortfolioManagementEngine
 from src.trading_runtime.portfolio_config import configured_portfolio_profiles_for_runtime
 from src.trading_runtime.risk import RiskAuthority
 from src.trading_runtime.risk_supervisor import ContinuousRiskSupervisor, RiskEvaluation
@@ -252,6 +252,7 @@ class TradingRuntime:
         self._broker_stream_task: asyncio.Task[None] | None = None
         self._risk_refresh_task: asyncio.Task[None] | None = None
         self._canonical_session: CanonicalBrokerSession | None = None
+        self._portfolio_sync_lock = asyncio.Lock()
         self._review_only = review_only
 
     async def initialize(
@@ -575,6 +576,12 @@ class TradingRuntime:
                     "strategy_revision": self.config.strategy_revision,
                 },
             )
+            if str(intent.action) in ENTRY_ACTIONS:
+                # Portfolio sizing must see the latest broker account state at
+                # the admission boundary. Periodic synchronization remains a
+                # health/reconciliation mechanism, not sizing authority for a
+                # new exposure-increasing order.
+                await self._refresh_portfolio_from_broker()
             decision, approved_intent = await self.portfolio.approve(intent, account_id=account_id)
             if approved_intent is None:
                 await self._record_intent_rejection(intent, account_id, decision)
@@ -882,6 +889,17 @@ class TradingRuntime:
             return replace(snapshot, as_of=as_of) if as_of is not None else snapshot
         raise RuntimeError("The configured broker does not expose canonical Replay state")
 
+    async def _refresh_portfolio_from_broker(self) -> None:
+        async with self._portfolio_sync_lock:
+            if self._canonical_session is not None:
+                await self._canonical_session.reconcile()
+                self.portfolio.synchronize_canonical(
+                    self._canonical_session.projector.snapshot(),
+                    persist=not self._review_only,
+                )
+            else:
+                await self.portfolio.synchronize(self.broker)
+
     async def finish(self, status: str = "completed") -> None:
         if (
             self.last_event_time is not None
@@ -947,13 +965,7 @@ class TradingRuntime:
                 await self.risk.prime(self.broker, self.config.account_ids)
                 for account_id in self.config.account_ids:
                     await self._consume_operational_commands(account_id)
-                if self._canonical_session is not None:
-                    await self._canonical_session.reconcile()
-                    self.portfolio.synchronize_canonical(
-                        self._canonical_session.projector.snapshot()
-                    )
-                else:
-                    await self.portfolio.synchronize(self.broker)
+                await self._refresh_portfolio_from_broker()
                 for account_id in self.config.account_ids:
                     await self.risk_supervisor.evaluate(
                         account_id,

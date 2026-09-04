@@ -34,8 +34,8 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 31
-HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30)
+STRATEGY_REVISION = 32
+HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31)
 
 SOURCE_MAXIMUM_AGE_MS = {
     "100ms": 500,
@@ -2615,16 +2615,6 @@ class LongMomentumStrategyEngine:
                 or 1
             ),
         )
-        if (
-            str(structural_entry_policy.get("selection_mode") or "").lower()
-            == "prior_completed_frame_top_n_below_session_high"
-            and entry_level_ids
-        ):
-            capital_request = _structural_entry_tranche_request(
-                capital_request,
-                tranche_count=entry_tranche_count,
-                requested_tranches=min(entry_tranche_count, len(entry_level_ids)),
-            )
         quantity = (
             capital_request.value
             if capital_request.mode == "fixed_quantity"
@@ -3473,11 +3463,6 @@ class LongMomentumStrategyEngine:
             "initial_entry",
             fallback_quantity=float(parameters["sizing"]["initial_quantity"]),
         )
-        capital_request = _structural_entry_tranche_request(
-            capital_request,
-            tranche_count=tranche_count,
-            requested_tranches=len(new_ids),
-        )
         quantity = capital_request.value if capital_request.mode == "fixed_quantity" else 0.0
         targets = [
             float(value)
@@ -4098,27 +4083,6 @@ def _structural_entry_level_ids(
         if level_id:
             return [level_id]
     return []
-
-
-def _structural_entry_tranche_request(
-    request: CapitalRequest,
-    *,
-    tranche_count: int,
-    requested_tranches: int,
-) -> CapitalRequest:
-    if tranche_count <= 1 or requested_tranches <= 0:
-        return request
-    fraction = min(1.0, requested_tranches / tranche_count)
-    if request.mode == "mandate_fraction":
-        return replace(request, value=fraction)
-    if request.mode == "all_available":
-        # A protected top-N profile historically requested the entire mandate
-        # at its first crossed level. Translate that legacy authority into an
-        # explicit fraction so each selected entry level retains capital.
-        return replace(request, mode="mandate_fraction", value=fraction)
-    if request.mode == "fixed_quantity":
-        return replace(request, value=request.value * fraction)
-    return replace(request, value=request.value * fraction)
 
 
 def _execution_policy_from_phase(

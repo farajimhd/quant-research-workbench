@@ -144,7 +144,11 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertEqual(
             migrated_profile["lifecycle"]["initial_entry"]["capital_request"]["mode"],
-            "mandate_fraction",
+            "all_available",
+        )
+        self.assertEqual(
+            migrated_profile["lifecycle"]["initial_entry"]["capital_request"]["maximum_quantity"],
+            10_000,
         )
         self.assertEqual(
             migrated_profile["parameters"]["protection"]["profit_ladder"][
@@ -160,6 +164,28 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(
             migrated_protection["slices"][0]["trailing"]["rule_type"],
             "broker_amount",
+        )
+        migrated_policies = {
+            row["policy_id"]: row for row in migrated["portfolio"]["policies"]
+        }
+        self.assertEqual(
+            migrated_policies["default"]["maximum_planned_risk_fraction"],
+            0.08,
+        )
+        self.assertEqual(
+            migrated_policies["long-momentum-real-80"]["maximum_open_risk_fraction"],
+            0.08,
+        )
+        migrated_mandates = {
+            row["mandate_id"]: row for row in migrated["portfolio"]["mandates"]
+        }
+        self.assertTrue(
+            all(
+                row["maximum_planned_risk_fraction"] == 0.08
+                for mandate_id, row in migrated_mandates.items()
+                if mandate_id.startswith("balanced-")
+                or mandate_id.startswith("long-momentum-squeeze-")
+            )
         )
         _validate_draft(migrated, require_runtime_ready=False)
 
@@ -1795,6 +1821,9 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         real = policies["long-momentum-real-80"]
         plan = next(row for row in draft["run_plans"]["plans"] if row["run_plan_id"] == "balanced-replay")
         profile = next(row for row in draft["strategy"]["profiles"] if row["profile_id"] == "long-momentum-balanced")
+        mandates = {
+            row["mandate_id"]: row for row in draft["portfolio"]["mandates"]
+        }
         very_urgent_execution = next(
             row
             for row in draft["oms"]["execution_policies"]
@@ -1809,11 +1838,26 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(real["maximum_position_fraction"], 0.8)
         self.assertEqual(real["maximum_ticker_fraction"], 0.8)
         self.assertEqual(real["maximum_protection_slices"], 5)
-        self.assertEqual(replay["maximum_planned_risk_fraction"], 0.06)
-        self.assertEqual(replay["maximum_open_risk_fraction"], 0.06)
+        self.assertEqual(replay["maximum_planned_risk_fraction"], 0.08)
+        self.assertEqual(replay["maximum_open_risk_fraction"], 0.08)
         self.assertEqual(replay["maximum_buying_power_utilization"], 0.995)
-        self.assertEqual(real["maximum_planned_risk_fraction"], 0.0025)
-        self.assertEqual(real["maximum_open_risk_fraction"], 0.0075)
+        self.assertEqual(real["maximum_planned_risk_fraction"], 0.08)
+        self.assertEqual(real["maximum_open_risk_fraction"], 0.08)
+        self.assertTrue(
+            all(
+                row["maximum_planned_risk_fraction"] == 0.08
+                for mandate_id, row in mandates.items()
+                if mandate_id.startswith("balanced-")
+                or mandate_id.startswith("long-momentum-squeeze-")
+            )
+        )
+        self.assertTrue(
+            all(
+                row["maximum_planned_risk_fraction"] == 0.0025
+                for mandate_id, row in mandates.items()
+                if mandate_id.startswith("long-momentum-news-")
+            )
+        )
         self.assertEqual(replay["maximum_open_positions"], 3)
         self.assertEqual(plan["watchlist_ids"], ["squeeze-tradable-candidates"])
         self.assertEqual(plan["universe_id"], "configured-watch-universe")
@@ -1857,9 +1901,9 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(profile["lifecycle"]["trading_behavior"]["entry_cutoff_time"], "09:29:59")
         self.assertEqual(profile["lifecycle"]["trading_behavior"]["flatten_time"], "09:29:59")
         self.assertEqual(profile["lifecycle"]["initial_entry"]["capital_request"], {
-            "mode": "mandate_fraction",
-            "value": 1.0 / 3.0,
-            "maximum_quantity": 5_000,
+            "mode": "all_available",
+            "value": 1.0,
+            "maximum_quantity": 10_000,
             "allow_replacement": False,
         })
         self.assertEqual(
