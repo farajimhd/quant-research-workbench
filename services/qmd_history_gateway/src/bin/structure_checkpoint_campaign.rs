@@ -1623,19 +1623,12 @@ async fn process_ordinal_session(
         ));
     }
     let revision = &session.source_revision;
-    if !revision.complete_for_history
-        || !revision.request_complete
-        || revision.source_plan_hash.trim().is_empty()
-        || revision.token.trim().is_empty()
-    {
-        return Err("daily checkpoint authority is incomplete".to_string());
-    }
-    if !revision.token.contains(":execution-clock-v1:") {
-        return Err(
-            "daily checkpoint authority predates execution-clock-v1; refusing to certify structural state that may include delayed reports"
-                .to_string(),
-        );
-    }
+    validate_daily_structure_source_revision(
+        revision.complete_for_history,
+        revision.request_complete,
+        &revision.source_plan_hash,
+        &revision.token,
+    )?;
     let event_evidence = event_auditor.finish();
     if event_evidence.event_count != event_count
         || (event_count > 0
@@ -1811,11 +1804,31 @@ fn campaign_fatal_error(error: &str) -> bool {
         "invalid structure continuity row",
         "invalid structure split row",
         "serialized payload hash drifted",
-        "historical execution-clock coverage incomplete",
-        "checkpoint recovery lacks certified execution-clock coverage",
+        "daily checkpoint source revision is not historical-sip-condition-v1",
     ]
     .iter()
     .any(|marker| error.contains(marker))
+}
+
+fn validate_daily_structure_source_revision(
+    complete_for_history: bool,
+    request_complete: bool,
+    source_plan_hash: &str,
+    token: &str,
+) -> Result<(), String> {
+    if !complete_for_history
+        || !request_complete
+        || source_plan_hash.trim().is_empty()
+        || token.trim().is_empty()
+    {
+        return Err("daily checkpoint authority is incomplete".to_string());
+    }
+    if !token.contains(":structure-input-v1:archive-sip-condition:") {
+        return Err(
+            "daily checkpoint source revision is not historical-sip-condition-v1".to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn load_tickers(paths: &[PathBuf]) -> Result<Vec<String>, String> {
@@ -2178,9 +2191,9 @@ mod tests {
     use super::{
         campaign_fatal_error, dashboard_frame, dashboard_lines, insert_ticker, log_snapshot,
         merge_ticker_universe, next_ordinal_chunk, retryable_error, session_is_covered_by_seed,
-        validate_checkpoint_set_id, validate_worker_count, AttemptEventProgress, Counts,
-        EventRateWindow, Progress, ProgressWriter, RecentUnit, TickerPlan,
-        GENERIC_STRUCTURE_ALGORITHM_VERSION,
+        validate_checkpoint_set_id, validate_daily_structure_source_revision,
+        validate_worker_count, AttemptEventProgress, Counts, EventRateWindow, Progress,
+        ProgressWriter, RecentUnit, TickerPlan, GENERIC_STRUCTURE_ALGORITHM_VERSION,
     };
     use chrono::{NaiveDate, TimeZone, Utc};
     use qmd_history_gateway::source::StructureCampaignTicker;
@@ -2261,14 +2274,42 @@ mod tests {
             "refusing to persist a checkpoint whose serialized payload hash drifted"
         ));
         assert!(campaign_fatal_error(
-            "historical execution-clock coverage incomplete: covered 6/7 ticker-days"
-        ));
-        assert!(campaign_fatal_error(
-            "checkpoint recovery lacks certified execution-clock coverage for SUGP"
+            "daily checkpoint source revision is not historical-sip-condition-v1"
         ));
         assert!(!campaign_fatal_error(
             "ordinal stream authority mismatch for SUGP 2026-08-21"
         ));
+    }
+
+    #[test]
+    fn daily_structure_certification_accepts_only_the_historical_sip_condition_policy() {
+        assert!(validate_daily_structure_source_revision(
+            true,
+            true,
+            "plan-sha256:abc",
+            "1:2:0:updated:Archive:1:2:split-sha256:abc:structure-input-v1:archive-sip-condition:trade-condition-sha256:def",
+        )
+        .is_ok());
+        assert_eq!(
+            validate_daily_structure_source_revision(
+                true,
+                true,
+                "plan-sha256:abc",
+                "1:2:0:updated:Archive:1:2:split-sha256:abc:execution-clock-v1:5:99:0:updated",
+            )
+            .unwrap_err(),
+            "daily checkpoint source revision is not historical-sip-condition-v1"
+        );
+        assert_eq!(
+            validate_daily_structure_source_revision(
+                false,
+                true,
+                "plan-sha256:abc",
+                "structure-input-v1:archive-sip-condition:trade-condition-sha256:def",
+            )
+            .unwrap_err(),
+            "daily checkpoint authority is incomplete"
+        );
     }
 
     #[test]
