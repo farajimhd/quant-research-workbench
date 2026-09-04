@@ -224,11 +224,11 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert 'exitShortPricePart:' in renderer_source
     assert 'exitPnlPart:' in renderer_source
     assert 'exitPnlLossPart:' in renderer_source
-    assert 'exitShortReasonPart: { ...strategyPresentationStyle("#00A846", "solid", 1, 1, 10, 7, 0.18), fillBlur: 2, fillColor: "#FFFFFF"' in renderer_source
+    assert 'exitShortReasonPart: { ...strategyPresentationStyle("#007DFA", "solid", 1, 1, 10, 7, 0.18), fillBlur: 2, fillColor: "#FFFFFF"' in renderer_source
     assert 'exitPricePart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#007DFF"' in renderer_source
     assert 'exitShortPricePart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#FF1744"' in renderer_source
     assert 'exitPnlPart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#00A846"' in renderer_source
-    assert 'exitPnlLossPart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#FF1744"' in renderer_source
+    assert 'exitPnlLossPart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#FF1744", fontWeight: 600, labelPaddingX: 5, labelPaddingY: 2 },' in renderer_source
     assert "legacyShortLabelStyleDefaults" in renderer_source
     assert "migrateUntouchedShortStyle ? undefined : configured" in renderer_source
     assert 'title: "Close long"' in renderer_source
