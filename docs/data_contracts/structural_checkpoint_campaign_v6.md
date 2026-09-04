@@ -12,6 +12,40 @@ The checkpoint stores causal state and raw counts. Strategy-facing scores are
 deterministic projections of that state, not independent persisted truth and
 not calibrated return forecasts.
 
+## Execution-clock recovery
+
+Historical structure consumes `market_sip_compact.events_YYYY` in SIP-arrival
+order and joins the ingestion-owned
+`q_live.historical_event_execution_clock_v1` sidecar. A completed coverage row
+records exact event, trade, clock, and delayed-report counts for each
+ticker/session. The delayed count is computed once by the canonical importer;
+the campaign reads that compact audit and does not rescan raw events merely to
+decide whether a checkpoint is reusable.
+
+Recovery always writes a new checkpoint-set ID and preserves the source set.
+For each ticker, it validates the complete predecessor chain from the campaign
+start. A legacy checkpoint can be copied only while every preceding session is
+valid and the sidecar proves zero delayed reports for that session. The new
+schema-2 recovery certification binds the original set, original payload and
+chain hashes, current execution-clock revision, and zero-delayed proof. The
+first session containing a delayed report and every successor session are
+replayed through function F. Already-correct execution-clock-v1 rows retain
+their exact replay evidence but receive a successor-set chain binding.
+
+Resume discovers the longest contiguous target chain whose source plan,
+execution-clock token, checkpoint hash, and predecessor hashes all match. It
+never trusts a valid-looking tail across a missing or invalid predecessor.
+Campaign manifests bind the source commit, executable SHA-256, certification
+revision, execution-clock tables, and optional recovery source set.
+
+The canonical sidecar repair is owned by
+`pipelines/market_sip/flatfiles/download_update_events.py
+--execution-clock-only`. It requires explicit dates and tickers, does not
+modify compact events, continuity, indexes, or bars, and is the only recovery
+mode allowed to reopen the retained source files. Downstream QMD, campaign,
+chart, indicator, strategy, Replay, and Backtest paths remain prohibited from
+reading flatfiles.
+
 ## Hold-evidence migration
 
 Every unified level exposes:

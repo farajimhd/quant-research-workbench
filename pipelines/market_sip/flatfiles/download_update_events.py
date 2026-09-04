@@ -138,6 +138,7 @@ DEFAULT_SOURCE_DAY_STATS_TABLE = "events_source_day_stats"
 DEFAULT_EXECUTION_CLOCK_DATABASE = "q_live"
 DEFAULT_EXECUTION_CLOCK_TABLE = "historical_event_execution_clock_v1"
 DEFAULT_EXECUTION_CLOCK_COVERAGE_TABLE = "historical_event_execution_clock_coverage_v1"
+EXECUTION_CLOCK_COVERAGE_REVISION = "execution_clock_v1|delayed_audit_v1"
 DEFAULT_DIRECT_MACRO_BAR_TIMEFRAMES = ("1d",)
 SOURCE_DAY_STATS_VERSION = 1
 
@@ -217,6 +218,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--execution-clock-database", default=DEFAULT_EXECUTION_CLOCK_DATABASE)
     parser.add_argument("--execution-clock-table", default=DEFAULT_EXECUTION_CLOCK_TABLE)
     parser.add_argument("--execution-clock-coverage-table", default=DEFAULT_EXECUTION_CLOCK_COVERAGE_TABLE)
+    parser.add_argument(
+        "--tickers",
+        default="",
+        help="Optional comma-separated ticker scope. Required by --execution-clock-only.",
+    )
+    parser.add_argument(
+        "--execution-clock-only",
+        action="store_true",
+        help=(
+            "Canonical ingestion-owned repair of the execution-clock sidecar only. "
+            "Existing compact events, continuity, indexes, and bars are never modified."
+        ),
+    )
     parser.add_argument("--refresh-source-day-stats", action="store_true")
     parser.add_argument("--no-source-day-stats-cache", action="store_true")
     parser.add_argument("--macro-bars-table", default=DEFAULT_MACRO_BARS_TABLE)
@@ -1579,6 +1593,7 @@ CREATE TABLE IF NOT EXISTS {quote_ident(args.execution_clock_database)}.{quote_i
     event_count UInt64,
     trade_count UInt64,
     clock_count UInt64,
+    delayed_trade_report_count UInt64,
     first_ordinal UInt64,
     next_ordinal UInt64,
     build_step UInt32,
@@ -1692,17 +1707,22 @@ def insert_execution_clock_coverage_day_sql(args: argparse.Namespace, day: DayFi
     )"""
     return f"""
 INSERT INTO {clock_db}.{coverage}
-(source_date, ticker, event_count, trade_count, clock_count, first_ordinal, next_ordinal, build_step, source_filter_key)
+(source_date, ticker, event_count, trade_count, clock_count, delayed_trade_report_count, first_ordinal, next_ordinal, build_step, source_filter_key)
 SELECT
     toDate({sql_string(day.source_date)}) AS source_date,
     c.ticker,
     c.latest_event_count,
     countIf(bitAnd(e.event_meta, 1) = 1) AS trade_count,
     countIf(bitAnd(e.event_meta, 1) = 1 AND x.execution_timestamp_us > 0) AS clock_count,
+    countIf(
+        bitAnd(e.event_meta, 1) = 1
+        AND x.execution_timestamp_us > 0
+        AND intDiv(x.execution_timestamp_us, 1000000) < intDiv(e.sip_timestamp_us, 1000000)
+    ) AS delayed_trade_report_count,
     c.ordinal_begin,
     c.ordinal_end,
     toUInt32({int(build_step)}) AS build_step,
-    {sql_string(source_filter_key(args) + '|execution_clock_v1')} AS source_filter_key
+    {sql_string(source_filter_key(args) + '|' + EXECUTION_CLOCK_COVERAGE_REVISION)} AS source_filter_key
 FROM
 (
     SELECT
@@ -1728,14 +1748,15 @@ def execution_clock_day_is_complete(client: ClickHouseHttpClient, args: argparse
     row = first_tsv_row(
         client,
         f"""
-SELECT countIf(event_count > 0 AND trade_count = clock_count), count()
+SELECT countIf(event_count > 0 AND trade_count = clock_count AND endsWith(source_filter_key, '|delayed_audit_v1')), count()
 FROM
 (
     SELECT
         ticker,
         argMax(event_count, updated_at) AS event_count,
         argMax(trade_count, updated_at) AS trade_count,
-        argMax(clock_count, updated_at) AS clock_count
+        argMax(clock_count, updated_at) AS clock_count,
+        argMax(source_filter_key, updated_at) AS source_filter_key
     FROM {quote_ident(args.execution_clock_database)}.{quote_ident(args.execution_clock_coverage_table)}
     WHERE source_date = toDate({sql_string(day.source_date)}){execution_clock_ticker_predicate(args)}
     GROUP BY ticker
@@ -2202,6 +2223,10 @@ def ensure_tables(client: ClickHouseHttpClient, args: argparse.Namespace, days: 
     client.execute(f"CREATE DATABASE IF NOT EXISTS {quote_ident(args.execution_clock_database)}")
     client.execute(create_execution_clock_table_sql(args))
     client.execute(create_execution_clock_coverage_table_sql(args))
+    client.execute(
+        f"ALTER TABLE {quote_ident(args.execution_clock_database)}.{quote_ident(args.execution_clock_coverage_table)} "
+        "ADD COLUMN IF NOT EXISTS delayed_trade_report_count UInt64 DEFAULT 0 AFTER clock_count"
+    )
     validate_ticker_day_index_table_schema(client, args)
 
 
@@ -3931,6 +3956,10 @@ def main() -> None:
     auto_update = manual_start is None and manual_end is None
     if auto_update and args.test_mode:
         raise ValueError("--test-mode requires an explicit --start-date and --end-date range.")
+    if args.execution_clock_only and (auto_update or not execution_clock_tickers(args)):
+        raise ValueError("--execution-clock-only requires explicit dates and at least one --tickers value.")
+    if args.execution_clock_only and args.test_mode:
+        raise ValueError("--execution-clock-only cannot be combined with --test-mode.")
     if auto_update and int(args.day_offset) > 0:
         raise ValueError("--day-offset is unsafe in auto-update mode because it would skip the next ordinal-dependent source day.")
 
@@ -3971,7 +4000,8 @@ def main() -> None:
         days = list(plan.days)
     else:
         days = select_source_days(inventory, args)
-        validate_manual_append_selection(client, args, inventory, days, database_frontier)
+        if not args.execution_clock_only:
+            validate_manual_append_selection(client, args, inventory, days, database_frontier)
         if not days:
             print("No complete quote/trade day pairs discovered for the requested manual range.", flush=True)
             return
@@ -4027,6 +4057,11 @@ def main() -> None:
             f"ticker_day_index={args.ticker_day_index_table} source_day_stats={args.source_day_stats_table} "
             f"bars={format_bar_tables(bar_tables)} test_mode={args.test_mode}"
         )
+        if args.execution_clock_only:
+            reporter.notice(
+                "Execution-clock-only repair is active; compact events, continuity, indexes, and bars are read-only.",
+                style="bold cyan",
+            )
         if events_table_uses_year_suffix(str(args.events_table)):
             reporter.log("events_table_routing=yearly (source day YYYY -> events_YYYY)")
         if args.test_mode:
@@ -4065,6 +4100,17 @@ def main() -> None:
                 break
             completed += 1
             reporter.handle_day_start(day.source_date, completed)
+            if args.execution_clock_only:
+                reporter.set_stage("execution-clock repair")
+                rebuild_execution_clock_day(
+                    client,
+                    event_args_for_day(args, day),
+                    day,
+                    build_step_for_date(day.source_date),
+                    reporter=reporter,
+                )
+                reporter.handle_day_done(day.source_date, "execution_clock_certified")
+                continue
             is_new_append = not args.test_mode and (
                 not database_frontier or date.fromisoformat(day.source_date) > date.fromisoformat(database_frontier)
             )

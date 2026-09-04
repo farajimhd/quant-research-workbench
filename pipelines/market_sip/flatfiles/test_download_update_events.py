@@ -23,6 +23,7 @@ from pipelines.market_sip.flatfiles.download_update_events import (
     confirm_auto_update,
     format_auto_update_summary,
     insert_execution_clock_day_sql,
+    insert_execution_clock_coverage_day_sql,
     parse_args,
     raw_event_union_sql,
     trade_raw_row_to_event,
@@ -145,6 +146,7 @@ class EventEncodingTests(unittest.TestCase):
                 events_table="events_2026",
                 execution_clock_database="q_live",
                 execution_clock_table="historical_event_execution_clock_v1",
+                execution_clock_coverage_table="historical_event_execution_clock_coverage_v1",
                 flatfiles_root_ch="/mnt/d/market-data",
                 flatfiles_root_win=str(root),
                 max_memory_usage="64G",
@@ -159,6 +161,11 @@ class EventEncodingTests(unittest.TestCase):
             self.assertIn("row_number() OVER (PARTITION BY e.ticker ORDER BY e.sip_timestamp_us, e.sequence_number", sql)
             self.assertIn("WHERE bitAnd(ordered.event_meta, 1) = 1", sql)
             self.assertIn("`q_live`.`historical_event_execution_clock_v1`", sql)
+
+            coverage_sql = insert_execution_clock_coverage_day_sql(args, day, 20260821)
+            self.assertIn("delayed_trade_report_count", coverage_sql)
+            self.assertIn("intDiv(x.execution_timestamp_us, 1000000)", coverage_sql)
+            self.assertIn("intDiv(e.sip_timestamp_us, 1000000)", coverage_sql)
 
 
 class AutoUpdatePlanningTests(unittest.TestCase):
@@ -232,6 +239,25 @@ class AutoUpdatePlanningTests(unittest.TestCase):
 
         self.assertIsNone(args.start_date)
         self.assertIsNone(args.end_date)
+
+    def test_execution_clock_repair_accepts_explicit_ticker_scope(self) -> None:
+        with mock.patch(
+            "sys.argv",
+            [
+                "download_update_events.py",
+                "--start-date",
+                "2026-08-20",
+                "--end-date",
+                "2026-08-21",
+                "--tickers",
+                "SUGP,JUNS",
+                "--execution-clock-only",
+            ],
+        ):
+            args = parse_args()
+
+        self.assertTrue(args.execution_clock_only)
+        self.assertEqual(args.tickers, "SUGP,JUNS")
 
 
 if __name__ == "__main__":

@@ -25,6 +25,9 @@ RUNTIME_BINARY_NAME = (
 )
 MAX_PROCESS_WORKERS = 80
 HOLD_SCORE_REVISION = "beta22-wilson90-v1"
+CERTIFICATION_SCHEMA_VERSION = 2
+EXECUTION_CLOCK_AUTHORITY = "q_live.historical_event_execution_clock_v1"
+EXECUTION_CLOCK_COVERAGE_AUTHORITY = "q_live.historical_event_execution_clock_coverage_v1"
 
 
 def sha256_file(path: Path) -> str:
@@ -33,6 +36,12 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest().upper()
+
+
+def source_commit() -> str:
+    return subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True
+    ).strip()
 
 
 def worker_process_creationflags(platform_name: str = os.name) -> int:
@@ -611,10 +620,18 @@ def run_process_campaign(
     if not start_date or not end_date:
         raise RuntimeError("process mode requires --start-date and --end-date")
     requested_identity = {
-        "schema_version": 1,
+        "schema_version": 2,
         "checkpoint_set_id": set_id,
         "start_date": start_date,
         "end_date": end_date,
+        "recovery_source_checkpoint_set_id": option_value(
+            campaign_args, "--recovery-source-checkpoint-set-id"
+        ),
+        "source_commit": source_commit(),
+        "executable_sha256": binary_sha256,
+        "certification_schema_version": CERTIFICATION_SCHEMA_VERSION,
+        "execution_clock_authority": EXECUTION_CLOCK_AUTHORITY,
+        "execution_clock_coverage_authority": EXECUTION_CLOCK_COVERAGE_AUTHORITY,
     }
     existing_manifest = read_status(manifest_path)
     if existing_manifest is not None and any(

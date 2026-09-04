@@ -384,6 +384,7 @@ struct ExecutionClockCoverageRevisionRow {
     expected_ticker_days: u64,
     covered_ticker_days: u64,
     clock_rows: u64,
+    delayed_trade_reports: u64,
     max_build_step: u64,
     max_updated_at: String,
 }
@@ -1495,6 +1496,58 @@ impl HistoricalEventSource {
         })
     }
 
+    /// Count causally stale trade reports for each requested campaign session.
+    /// The query is ticker/ordinal bounded and uses only the immutable compact
+    /// archive plus its ingestion-owned execution-clock sidecar.
+    pub async fn structure_delayed_trade_report_counts(
+        &self,
+        ticker: &str,
+        sessions: &[StructureCampaignSession],
+    ) -> Result<BTreeMap<NaiveDate, u64>, String> {
+        let ticker = normalize_ticker(ticker)?;
+        let Some(first) = sessions.first() else {
+            return Ok(BTreeMap::new());
+        };
+        let last = sessions.last().expect("non-empty sessions");
+        let sql = format!(
+            r#"SELECT
+                toString(source_date) AS session_date,
+                argMax(delayed_trade_report_count, updated_at) AS delayed_count
+            FROM {}.{} FINAL
+            WHERE ticker = {}
+              AND source_date >= toDate('{}')
+              AND source_date <= toDate('{}')
+            GROUP BY source_date
+            ORDER BY source_date
+            FORMAT JSONEachRow"#,
+            self.config.execution_clock_database,
+            self.config.execution_clock_coverage_table,
+            sql_literal(&ticker),
+            first.session_date,
+            last.session_date,
+        );
+        let text = self.query_bounded(&sql, 300).await?;
+        let mut result = BTreeMap::new();
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            let row: Value = serde_json::from_str(line)
+                .map_err(|error| format!("invalid delayed-report audit row: {error}"))?;
+            let date = row
+                .get("session_date")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "delayed-report audit row has no session_date".to_string())?;
+            let count = row
+                .get("delayed_count")
+                .and_then(|value| value.as_u64().or_else(|| value.as_str()?.parse().ok()))
+                .ok_or_else(|| "delayed-report audit row has no delayed_count".to_string())?;
+            result.insert(
+                NaiveDate::parse_from_str(date, "%Y-%m-%d")
+                    .map_err(|error| format!("invalid delayed-report audit date: {error}"))?,
+                count,
+            );
+        }
+        Ok(result)
+    }
+
     /// Stream one archive session by its physical `(ticker, ordinal)` key.
     /// Requests are split into bounded ordinal ranges while the response body
     /// remains incrementally decoded into bounded event batches.
@@ -1638,8 +1691,9 @@ impl HistoricalEventSource {
         let sql = format!(
             r#"SELECT
                 count() AS expected_ticker_days,
-                countIf(c.event_count = h.event_count AND h.trade_count = h.clock_count AND endsWith(h.source_filter_key, '|execution_clock_v1')) AS covered_ticker_days,
+                countIf(c.event_count = h.event_count AND h.trade_count = h.clock_count AND position(h.source_filter_key, '|execution_clock_v1|') > 0 AND endsWith(h.source_filter_key, '|delayed_audit_v1')) AS covered_ticker_days,
                 sum(ifNull(h.clock_count, 0)) AS clock_rows,
+                sum(ifNull(h.delayed_trade_report_count, 0)) AS delayed_trade_reports,
                 max(ifNull(h.build_step, 0)) AS max_build_step,
                 toString(max(ifNull(h.latest_clock_updated_at, toDateTime64(0, 3, 'UTC')))) AS max_updated_at
             FROM
@@ -1661,6 +1715,7 @@ impl HistoricalEventSource {
                     argMax(source.event_count, source.updated_at) AS event_count,
                     argMax(source.trade_count, source.updated_at) AS trade_count,
                     argMax(source.clock_count, source.updated_at) AS clock_count,
+                    argMax(source.delayed_trade_report_count, source.updated_at) AS delayed_trade_report_count,
                     argMax(source.build_step, source.updated_at) AS build_step,
                     argMax(source.source_filter_key, source.updated_at) AS source_filter_key,
                     max(source.updated_at) AS latest_clock_updated_at
@@ -1695,8 +1750,12 @@ impl HistoricalEventSource {
             ));
         }
         Ok(format!(
-            "execution-clock-v1:{}:{}:{}:{}",
-            row.covered_ticker_days, row.clock_rows, row.max_build_step, row.max_updated_at
+            "execution-clock-v1:{}:{}:{}:{}:{}",
+            row.covered_ticker_days,
+            row.clock_rows,
+            row.delayed_trade_reports,
+            row.max_build_step,
+            row.max_updated_at
         ))
     }
 
@@ -3814,7 +3873,8 @@ fn indicator_warmup_ordinal_sessions_sql(
                toUInt8(
                    continuity.event_count = ifNull(clock.event_count, 0)
                    AND ifNull(clock.trade_count, 0) = ifNull(clock.clock_count, 0)
-                   AND endsWith(ifNull(clock.source_filter_key, ''), '|execution_clock_v1')
+                   AND position(ifNull(clock.source_filter_key, ''), '|execution_clock_v1|') > 0
+                   AND endsWith(ifNull(clock.source_filter_key, ''), '|delayed_audit_v1')
                ) AS execution_clock_complete,
                concat(
                    'execution-clock-v1:',

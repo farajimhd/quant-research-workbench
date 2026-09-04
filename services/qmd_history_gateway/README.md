@@ -144,7 +144,7 @@ Defaults:
 - generic-structure database/table: `q_live.qmd_structure_events_v2`
 - certified daily-checkpoint authority:
   `q_live.qmd_structure_daily_checkpoint_v2` set
-  `canonical-tradable-20250101-20260831-v16-cert-v1`; checkpoint payload,
+  `canonical-tradable-20250101-20260831-v16-clock-v2`; checkpoint payload,
   split lineage, source revision, and certification chain are validated before
   a seed can be used
 - batch size: `25000`
@@ -371,17 +371,41 @@ split authority once, streams bounded `(ticker, ordinal)` ranges, keeps its book
 in memory, persists every completed session including empty ticker-days, and
 releases it before taking another ticker.
 
+For the bounded first recovery, repair the ingestion-owned coverage audit and
+then certify SUGP and JUNS into the successor set before starting the full
+universe. `--execution-clock-only` never modifies historical compact events:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python pipelines\market_sip\flatfiles\download_update_events.py `
+  --start-date 2025-01-01 --end-date 2026-08-31 `
+  --tickers SUGP,JUNS --execution-clock-only --skip-bars
+
+python scripts\run_structure_checkpoint_campaign.py `
+  --checkpoint-set-id canonical-tradable-20250101-20260831-v16-clock-v2 `
+  --recovery-source-checkpoint-set-id canonical-tradable-20250101-20260831-v16-cert-v1 `
+  --priority-ticker SUGP --priority-ticker JUNS --explicit-universe-only `
+  --start-date 2025-01-01 --end-date 2026-08-31 `
+  --runtime-dir D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v6\priority-sugp-juns-clock-v2 `
+  --process-workers 2
+```
+
+The later full-universe command uses the same successor set ID and a different
+runtime directory. Its contiguous-chain resume immediately validates and skips
+the already recovered priority tickers.
+
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'
 python scripts\run_structure_checkpoint_campaign.py `
-  --checkpoint-set-id canonical-tradable-20250101-20260831-v16-cert-v1 `
+  --checkpoint-set-id canonical-tradable-20250101-20260831-v16-clock-v2 `
+  --recovery-source-checkpoint-set-id canonical-tradable-20250101-20260831-v16-cert-v1 `
   --priority-ticker SUGP `
   --priority-ticker JUNS `
   --start-date 2025-01-01 `
   --end-date 2026-08-31 `
   --liquidity-start-date 2026-08-01 `
   --liquidity-end-date 2026-08-31 `
-  --runtime-dir D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v6\canonical-2025-2026 `
+  --runtime-dir D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v6\canonical-tradable-20250101-20260831-v16-clock-v2 `
   --process-workers 80
 ```
 

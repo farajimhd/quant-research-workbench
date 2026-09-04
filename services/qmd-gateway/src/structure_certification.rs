@@ -5,7 +5,18 @@ use ring::digest::{Context, SHA256};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const STRUCTURE_CERTIFICATION_SCHEMA_VERSION: u16 = 1;
+pub const STRUCTURE_CERTIFICATION_SCHEMA_VERSION: u16 = 2;
+pub const STRUCTURE_CERTIFICATION_REPLAY_SCHEMA_VERSION: u16 = 1;
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct StructureCheckpointRecoveryAttestation {
+    pub recovery_revision: String,
+    pub source_checkpoint_set_id: String,
+    pub source_checkpoint_sha256: String,
+    pub source_chain_sha256: String,
+    pub execution_clock_revision: String,
+    pub delayed_trade_report_count: u64,
+}
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct StructureReplayEvidence {
@@ -27,6 +38,8 @@ pub struct StructureCheckpointCertification {
     pub predecessor_checkpoint_sha256: String,
     pub predecessor_chain_sha256: String,
     pub chain_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_attestation: Option<StructureCheckpointRecoveryAttestation>,
 }
 
 pub struct StructureEventAuditor {
@@ -185,13 +198,65 @@ pub fn build_checkpoint_certification(
     let checkpoint_hash = checkpoint_sha256(checkpoint)?;
     let split_hash = split_sha256(checkpoint)?;
     let mut certification = StructureCheckpointCertification {
-        schema_version: STRUCTURE_CERTIFICATION_SCHEMA_VERSION,
+        schema_version: STRUCTURE_CERTIFICATION_REPLAY_SCHEMA_VERSION,
         event_evidence,
         split_sha256: split_hash,
         checkpoint_sha256: checkpoint_hash,
         predecessor_checkpoint_sha256,
         predecessor_chain_sha256,
         chain_sha256: String::new(),
+        recovery_attestation: None,
+    };
+    certification.chain_sha256 = certification_chain_sha256(
+        &certification,
+        checkpoint,
+        session_date,
+        authority_start,
+        source_plan_hash,
+        source_revision_token,
+    )?;
+    Ok(certification)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_recovered_checkpoint_certification(
+    checkpoint: &GenericStructureCheckpoint,
+    event_evidence: StructureReplayEvidence,
+    session_date: NaiveDate,
+    authority_start: DateTime<Utc>,
+    source_plan_hash: &str,
+    source_revision_token: &str,
+    predecessor_checkpoint_sha256: String,
+    predecessor_chain_sha256: String,
+    recovery_attestation: StructureCheckpointRecoveryAttestation,
+) -> Result<StructureCheckpointCertification, String> {
+    if recovery_attestation.recovery_revision != "execution-clock-zero-delayed-v1"
+        || recovery_attestation.delayed_trade_report_count != 0
+        || recovery_attestation
+            .source_checkpoint_set_id
+            .trim()
+            .is_empty()
+        || !valid_sha256(&recovery_attestation.source_checkpoint_sha256)
+        || !valid_sha256(&recovery_attestation.source_chain_sha256)
+        || !recovery_attestation
+            .execution_clock_revision
+            .contains("execution-clock-v1:")
+    {
+        return Err("invalid structure checkpoint recovery attestation".to_string());
+    }
+    let checkpoint_hash = checkpoint_sha256(checkpoint)?;
+    if recovery_attestation.source_checkpoint_sha256 != checkpoint_hash {
+        return Err("recovery attestation does not bind the checkpoint payload".to_string());
+    }
+    let mut certification = StructureCheckpointCertification {
+        schema_version: STRUCTURE_CERTIFICATION_SCHEMA_VERSION,
+        event_evidence,
+        split_sha256: split_sha256(checkpoint)?,
+        checkpoint_sha256: checkpoint_hash,
+        predecessor_checkpoint_sha256,
+        predecessor_chain_sha256,
+        chain_sha256: String::new(),
+        recovery_attestation: Some(recovery_attestation),
     };
     certification.chain_sha256 = certification_chain_sha256(
         &certification,
@@ -212,8 +277,28 @@ pub fn validate_checkpoint_certification(
     source_plan_hash: &str,
     source_revision_token: &str,
 ) -> Result<(), String> {
-    if certification.schema_version != STRUCTURE_CERTIFICATION_SCHEMA_VERSION {
+    if !matches!(
+        certification.schema_version,
+        STRUCTURE_CERTIFICATION_REPLAY_SCHEMA_VERSION | STRUCTURE_CERTIFICATION_SCHEMA_VERSION
+    ) {
         return Err("unsupported structure checkpoint certification schema".to_string());
+    }
+    match (
+        certification.schema_version,
+        &certification.recovery_attestation,
+    ) {
+        (STRUCTURE_CERTIFICATION_REPLAY_SCHEMA_VERSION, None) => {}
+        (STRUCTURE_CERTIFICATION_SCHEMA_VERSION, Some(attestation))
+            if attestation.recovery_revision == "execution-clock-zero-delayed-v1"
+                && attestation.delayed_trade_report_count == 0
+                && !attestation.source_checkpoint_set_id.trim().is_empty()
+                && valid_sha256(&attestation.source_checkpoint_sha256)
+                && valid_sha256(&attestation.source_chain_sha256)
+                && attestation
+                    .execution_clock_revision
+                    .contains("execution-clock-v1:")
+                && attestation.source_checkpoint_sha256 == certification.checkpoint_sha256 => {}
+        _ => return Err("invalid structure checkpoint recovery certification".to_string()),
     }
     if certification.predecessor_checkpoint_sha256.is_empty()
         != certification.predecessor_chain_sha256.is_empty()
@@ -288,6 +373,7 @@ fn certification_chain_sha256(
         "source_plan_hash": source_plan_hash,
         "source_revision_token": source_revision_token,
         "split_sha256": certification.split_sha256,
+        "recovery_attestation": certification.recovery_attestation,
         "sym": checkpoint.sym.to_ascii_uppercase(),
         "algorithm_version": checkpoint.algorithm_version,
     });
@@ -526,6 +612,59 @@ mod tests {
         )
         .unwrap_err()
         .contains("chain is incomplete"));
+    }
+
+    #[test]
+    fn recovered_certification_requires_zero_delayed_clock_proof() {
+        let checkpoint = crate::generic_structure::GenericStructureEngine::new("SUGP").checkpoint();
+        let authority_start = Utc.with_ymd_and_hms(2026, 1, 2, 9, 0, 0).unwrap();
+        let session_date = NaiveDate::from_ymd_opt(2026, 1, 2).unwrap();
+        let checkpoint_hash = checkpoint_sha256(&checkpoint).unwrap();
+        let attestation = StructureCheckpointRecoveryAttestation {
+            recovery_revision: "execution-clock-zero-delayed-v1".to_string(),
+            source_checkpoint_set_id: "legacy-v1".to_string(),
+            source_checkpoint_sha256: checkpoint_hash,
+            source_chain_sha256: format!("sha256:{}", "1".repeat(64)),
+            execution_clock_revision: "execution-clock-v1:1:10:0:1:now".to_string(),
+            delayed_trade_report_count: 0,
+        };
+        let certification = build_recovered_checkpoint_certification(
+            &checkpoint,
+            StructureEventAuditor::new(true).finish(),
+            session_date,
+            authority_start,
+            "plan",
+            "revision:execution-clock-v1:1:10:0:1:now",
+            String::new(),
+            String::new(),
+            attestation.clone(),
+        )
+        .unwrap();
+        validate_checkpoint_certification(
+            &certification,
+            &checkpoint,
+            session_date,
+            authority_start,
+            "plan",
+            "revision:execution-clock-v1:1:10:0:1:now",
+        )
+        .unwrap();
+
+        let mut delayed = attestation;
+        delayed.delayed_trade_report_count = 1;
+        assert!(build_recovered_checkpoint_certification(
+            &checkpoint,
+            StructureEventAuditor::new(true).finish(),
+            session_date,
+            authority_start,
+            "plan",
+            "revision:execution-clock-v1:1:10:1:1:now",
+            String::new(),
+            String::new(),
+            delayed,
+        )
+        .unwrap_err()
+        .contains("invalid structure checkpoint recovery attestation"));
     }
 
     #[test]

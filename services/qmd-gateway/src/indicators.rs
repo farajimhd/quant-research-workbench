@@ -209,6 +209,38 @@ fn daily_structure_checkpoint_before_sql(
     )
 }
 
+fn daily_structure_checkpoint_chain_sql(
+    checkpoint_set_id: &str,
+    sym: &str,
+    first_session: NaiveDate,
+    last_session: NaiveDate,
+) -> String {
+    format!(
+        r#"SELECT
+            checkpoint_set_id, session_date, algorithm_version, sym,
+            toUnixTimestamp64Milli(authority_start) AS authority_start_ms,
+            toUnixTimestamp64Milli(checkpoint_at) AS checkpoint_at_ms,
+            last_arrival_sequence, source_plan_hash, source_revision_token,
+            source_complete, toUnixTimestamp64Milli(built_at) AS built_at_ms,
+            snapshot_json, certification_json
+        FROM qmd_structure_daily_checkpoint_v2 FINAL
+        WHERE checkpoint_set_id = '{}'
+          AND sym = '{}'
+          AND session_date >= '{}'
+          AND session_date <= '{}'
+          AND algorithm_version = {}
+          AND source_complete = 1
+        ORDER BY session_date, built_at DESC
+        LIMIT 1 BY session_date
+        FORMAT JSONEachRow"#,
+        checkpoint_set_id.replace('\'', "''"),
+        sym.replace('\'', "''"),
+        first_session,
+        last_session,
+        crate::generic_structure::GENERIC_STRUCTURE_ALGORITHM_VERSION,
+    )
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DailyStructureCheckpoint {
     pub checkpoint_set_id: String,
@@ -225,6 +257,64 @@ pub struct DailyStructureCheckpoint {
     pub checkpoint: GenericStructureCheckpoint,
     #[serde(default)]
     pub certification: Option<StructureCheckpointCertification>,
+}
+
+fn parse_daily_structure_checkpoint_row(
+    line: &str,
+    expected_sym: &str,
+) -> Result<DailyStructureCheckpoint, String> {
+    let value = serde_json::from_str::<serde_json::Value>(line)
+        .map_err(|error| format!("invalid daily structure checkpoint row: {error}"))?;
+    let string = |field: &str| {
+        value
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let u64_value = |field: &str| {
+        value
+            .get(field)
+            .and_then(|item| {
+                item.as_u64()
+                    .or_else(|| item.as_str().and_then(|text| text.parse::<u64>().ok()))
+            })
+            .unwrap_or_default()
+    };
+    let sym = string("sym").to_ascii_uppercase();
+    if sym != expected_sym {
+        return Err(format!(
+            "daily structure checkpoint symbol mismatch: expected {expected_sym}, received {sym}"
+        ));
+    }
+    let checkpoint =
+        serde_json::from_str::<GenericStructureCheckpoint>(&string("snapshot_json"))
+            .map_err(|error| format!("invalid daily structure checkpoint for {sym}: {error}"))?;
+    let certification_json = string("certification_json");
+    let certification = (!certification_json.trim().is_empty())
+        .then(|| serde_json::from_str::<StructureCheckpointCertification>(&certification_json))
+        .transpose()
+        .map_err(|error| format!("invalid daily structure checkpoint certification: {error}"))?;
+    let timestamp = |field: &str| {
+        DateTime::from_timestamp_millis(u64_value(field) as i64)
+            .ok_or_else(|| format!("invalid daily structure checkpoint {field}"))
+    };
+    Ok(DailyStructureCheckpoint {
+        checkpoint_set_id: string("checkpoint_set_id"),
+        session_date: NaiveDate::parse_from_str(&string("session_date"), "%Y-%m-%d")
+            .map_err(|error| format!("invalid daily structure checkpoint date: {error}"))?,
+        algorithm_version: u64_value("algorithm_version") as u16,
+        sym,
+        authority_start: timestamp("authority_start_ms")?,
+        checkpoint_at: timestamp("checkpoint_at_ms")?,
+        last_arrival_sequence: u64_value("last_arrival_sequence"),
+        source_plan_hash: string("source_plan_hash"),
+        source_revision_token: string("source_revision_token"),
+        source_complete: u64_value("source_complete") == 1,
+        built_at: timestamp("built_at_ms")?,
+        checkpoint,
+        certification,
+    })
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -3596,6 +3686,42 @@ impl IndicatorClickHouseWriter {
         }))
     }
 
+    pub async fn load_daily_structure_checkpoint_chain_from_set(
+        &self,
+        checkpoint_set_id: &str,
+        ticker: &str,
+        first_session: NaiveDate,
+        last_session: NaiveDate,
+    ) -> Result<Vec<DailyStructureCheckpoint>, String> {
+        if !valid_checkpoint_set_id(checkpoint_set_id) || first_session > last_session {
+            return Err("invalid daily structure checkpoint chain request".to_string());
+        }
+        let sym = ticker.trim().to_ascii_uppercase();
+        if sym.is_empty()
+            || sym.len() > 32
+            || !sym
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+        {
+            return Err("invalid daily structure checkpoint ticker".to_string());
+        }
+        let text = self
+            .query(
+                &daily_structure_checkpoint_chain_sql(
+                    checkpoint_set_id,
+                    &sym,
+                    first_session,
+                    last_session,
+                ),
+                true,
+            )
+            .await?;
+        text.lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| parse_daily_structure_checkpoint_row(line, &sym))
+            .collect()
+    }
+
     pub async fn structure_split_adjustments(
         &self,
         ticker: &str,
@@ -4233,8 +4359,8 @@ mod tests {
     use super::{
         anchored_flow_relationship, anchored_market_session_date,
         calculate_flow_structure_composite, daily_structure_checkpoint_before_sql,
-        daily_structure_checkpoint_deduplication_token, durable_indicator_insert_row,
-        indicator_insert_row, market_structure_reference_sql,
+        daily_structure_checkpoint_chain_sql, daily_structure_checkpoint_deduplication_token,
+        durable_indicator_insert_row, indicator_insert_row, market_structure_reference_sql,
         parse_market_structure_reference_rows, retryable_clickhouse_write_status,
         send_idempotent_clickhouse_request, serialized_structure_checkpoint_sha256,
         structure_checkpoint_source_contract_is_compatible, summarize_canonical_composites,
@@ -4293,6 +4419,21 @@ mod tests {
         );
         assert!(live_sql.contains("FROM qmd_structure_daily_checkpoint_v1"));
         assert!(!live_sql.contains("WHERE checkpoint_set_id"));
+    }
+
+    #[test]
+    fn recovery_chain_query_loads_every_daily_predecessor() {
+        let sql = daily_structure_checkpoint_chain_sql(
+            "successor-v2",
+            "SUGP",
+            NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 8, 21).unwrap(),
+        );
+        assert!(sql.contains("checkpoint_set_id = 'successor-v2'"));
+        assert!(sql.contains("session_date >= '2026-01-01'"));
+        assert!(sql.contains("session_date <= '2026-08-21'"));
+        assert!(sql.contains("ORDER BY session_date, built_at DESC"));
+        assert!(sql.contains("LIMIT 1 BY session_date"));
     }
 
     #[test]
