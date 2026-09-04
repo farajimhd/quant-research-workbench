@@ -587,7 +587,6 @@ fn evaluate_bar(
                 },
             ));
         }
-
     }
 
     candidates
