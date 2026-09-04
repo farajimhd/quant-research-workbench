@@ -17,6 +17,7 @@
 - Never store logs, screenshots, plots, caches, checkpoints, metrics, manifests, prepared data, downloaded dependencies, or other generated output in the repository.
 - Set `PYTHONDONTWRITEBYTECODE=1` for every repository Python invocation; Python launchers must set it themselves so `__pycache__` never appears in source.
 - If the required runtime root is unavailable, stop and request access; do not write to an alternate location.
+- After a SIP source day is imported and certified, `market_sip_compact.events_YYYY` is the exclusive historical market-event read authority. Raw SIP flatfiles may be opened only by the canonical download/import updater while acquiring, validating, and importing a new source day. QMD, charts, indicators, strategies, Replay, Backtest, research, structural checkpoint campaigns, and repair/backfill utilities must never read flatfiles directly or use ClickHouse `file()` as a historical fallback. If the imported authority lacks a required field or provenance, fail closed and implement an explicit versioned canonical migration or an ingestion-owned sidecar; never recover it by reopening retained flatfiles.
 
 ## Change discipline
 

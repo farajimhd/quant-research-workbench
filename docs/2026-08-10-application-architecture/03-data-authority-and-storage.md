@@ -53,6 +53,22 @@ Historical and training-oriented authority:
 
 It is read-only to normal application requests. Owner pipelines update it.
 
+### Historical SIP read boundary
+
+After a source day passes canonical import and certification,
+`market_sip_compact.events_YYYY` is the sole historical market-event read
+authority. Retained SIP flatfiles are ingestion evidence, not an alternate
+query tier. Only the canonical download/import updater may open them, and only
+while acquiring, validating, and importing a new source day.
+
+QMD Live, QMD History, charts, indicators, Replay, Backtest, strategies,
+research jobs, structural checkpoint campaigns, and repair/backfill tools must
+not read raw flatfiles or use ClickHouse `file()` as a fallback. If a required
+clock, field, or provenance value was not preserved by the certified import,
+the consumer fails closed. The correction is a versioned canonical migration
+or an ingestion-owned, coverage-certified sidecar populated during canonical
+import—not retrospective recovery from retained flatfiles.
+
 ### Runtime filesystem
 
 Generated logs, manifests, repair plans, audit packets, caches, checkpoints, and

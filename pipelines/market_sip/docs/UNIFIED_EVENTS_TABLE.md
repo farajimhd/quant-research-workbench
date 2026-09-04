@@ -476,18 +476,23 @@ requires new versioned tables and an explicit cutover; it must not mutate an
 existing `events_YYYY` table in place.
 
 The participant clock remains outside the immutable 16-column archive, but it
-is required for derived historical market state. The canonical updater
-persists an exact, versioned sidecar in
+is required for derived historical market state. The canonical updater must
+persist an exact, versioned sidecar during the original source-day import in
 `q_live.historical_event_execution_clock_v1`, keyed by `(ticker, ordinal)`, and
 certifies each `(source_date, ticker)` in
 `q_live.historical_event_execution_clock_coverage_v1`. Historical readers must
 join that clock and fail closed when coverage is incomplete. They use SIP time
 for causal availability and participant time for retrospective chart buckets;
 late reports never revise current bars, indicators, or structural evidence.
-For a bounded repair without rebuilding archive rows, run the
-`backfill_execution_clock.py` utility with a ticker and source date. The normal
-daily updater creates the same sidecar and coverage
-automatically for every newly inserted source day.
+
+Once that source day is certified, no historical consumer or repair utility
+may reopen the retained SIP flatfiles or use ClickHouse `file()` to reconstruct
+missing values. `market_sip_compact.events_YYYY` and ingestion-owned certified
+sidecars are the complete downstream authority. Incomplete participant-clock
+coverage is therefore a fail-closed import defect requiring an explicit
+versioned canonical migration or re-import design. The former
+`backfill_execution_clock.py` flatfile-recovery path is noncompliant with this
+boundary and must not be used.
 
 ## Filtering And Sanitization Rules
 
