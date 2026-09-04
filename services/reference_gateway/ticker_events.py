@@ -78,6 +78,7 @@ class TickerEventSyncResult:
     shard_count: int
     inventory_entities: int
     selected_entities: int
+    integrity_repair_entities: int
     completed_entities: int
     covered_empty_entities: int
     failed_entities: int
@@ -364,6 +365,7 @@ def sync_ticker_events(
         publish_ticker_event_corrections(client, database=database, corrections=corrections, run_id=run_id)
     inventory = load_ticker_event_inventory(client, database=database)
     coverage = load_ticker_event_coverage(client, database=database)
+    integrity_repair_keys = load_integrity_repair_entity_keys(client, database=database)
     selected = select_entities(
         inventory,
         coverage,
@@ -373,8 +375,15 @@ def sync_ticker_events(
         only_identifiers=only_identifiers,
         shard_index=shard_index,
         shard_count=shard_count,
+        priority_entity_keys=integrity_repair_keys,
     )
     bindings = load_canonical_bindings(client, database=read_database or database, entities=selected)
+    ticker_bindings = load_ticker_bindings(
+        client,
+        database=read_database or database,
+        entities=selected,
+        entity_bindings=bindings,
+    )
     existing_events = load_existing_rows(client, database, TICKER_EVENT_TABLE, "ticker_event_id", selected)
     existing_intervals = load_existing_rows(client, database, SYMBOL_INTERVAL_TABLE, "symbol_interval_id", selected)
     completed = covered_empty = failed = unmapped = ambiguous = source_conflicts = 0
@@ -411,8 +420,14 @@ def sync_ticker_events(
                 run_id=run_id,
                 observed_at=datetime.now(UTC),
                 correction=correction,
+                ticker_bindings=ticker_bindings.get(entity.provider_entity_key, {}),
             )
-            desired_event_ids = {str(row["ticker_event_id"]) for row in normalized_events}
+            inactive_not_found = not entity.active and response.status.strip().upper() == "NOT_FOUND"
+            preserved_events = existing_events.get(entity.provider_entity_key, []) if inactive_not_found else []
+            desired_event_ids = {
+                str(row["ticker_event_id"])
+                for row in (preserved_events if inactive_not_found else normalized_events)
+            }
             desired_interval_ids = {str(row["symbol_interval_id"]) for row in intervals}
             stale_event_rows = tombstone_rows(
                 existing_events.get(entity.provider_entity_key, []),
@@ -425,20 +440,22 @@ def sync_ticker_events(
                 desired_interval_ids,
                 id_column="symbol_interval_id",
                 run_id=run_id,
+                desired_rows=intervals,
+                identity_columns=("security_id", "listing_id", "valid_from_date", "ticker_normalized"),
             )
             if execute:
                 events_written += insert_json_rows(client, database, TICKER_EVENT_TABLE, normalized_events)
                 event_tombstones += insert_json_rows(client, database, TICKER_EVENT_TABLE, stale_event_rows)
                 intervals_written += insert_json_rows(client, database, SYMBOL_INTERVAL_TABLE, intervals)
                 interval_tombstones += insert_json_rows(client, database, SYMBOL_INTERVAL_TABLE, stale_interval_rows)
-            source_status = "completed" if normalized_events else "covered_empty"
+            source_status = "inactive_not_found" if inactive_not_found else "completed" if normalized_events else "covered_empty"
             completed += int(source_status == "completed")
-            covered_empty += int(source_status == "covered_empty")
+            covered_empty += int(source_status in {"covered_empty", "inactive_not_found"})
             finished = datetime.now(UTC)
             coverage_row = successful_coverage_row(
                 entity,
                 binding,
-                normalized_events,
+                preserved_events if inactive_not_found else normalized_events,
                 source_status=source_status,
                 response_sha=response_sha,
                 run_id=run_id,
@@ -485,6 +502,7 @@ def sync_ticker_events(
         shard_count=shard_count,
         inventory_entities=len(inventory),
         selected_entities=len(selected),
+        integrity_repair_entities=sum(entity.provider_entity_key in integrity_repair_keys for entity in selected),
         completed_entities=completed,
         covered_empty_entities=covered_empty,
         failed_entities=failed,
@@ -549,6 +567,7 @@ def normalize_ticker_event_response(
     run_id: str,
     observed_at: datetime,
     correction: TickerEventCorrection | None = None,
+    ticker_bindings: dict[str, CanonicalBinding] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
     stable_response = {"status": response.status, "name": response.name, "events": response.events}
     response_sha = sha256_text(canonical_json(stable_response))
@@ -612,6 +631,7 @@ def normalize_ticker_event_response(
         run_id=run_id,
         observed_at=observed_at,
         source_system=interval_source,
+        ticker_bindings=ticker_bindings,
     )
     return rows, intervals, response_sha
 
@@ -623,6 +643,13 @@ def reconcile_source_binding(
     *,
     correction: TickerEventCorrection | None = None,
 ) -> CanonicalBinding:
+    if not entity.active:
+        return CanonicalBinding(
+            "inactive",
+            security_id=binding.security_id,
+            listing_id=binding.listing_id,
+            reason="inactive_inventory_entity",
+        )
     if binding.status != "mapped" or not response.events:
         return binding
     if correction is not None:
@@ -676,6 +703,7 @@ def build_symbol_intervals(
     run_id: str,
     observed_at: datetime,
     source_system: str = "massive",
+    ticker_bindings: dict[str, CanonicalBinding] | None = None,
 ) -> list[dict[str, Any]]:
     if binding.status != "mapped":
         return []
@@ -690,6 +718,15 @@ def build_symbol_intervals(
     for index, (valid_from, ticker, event_id) in enumerate(ordered):
         if not ticker:
             continue
+        if ticker_bindings is not None and ticker != entity.current_ticker.strip().upper() and ticker not in ticker_bindings:
+            continue
+        interval_binding = (
+            ticker_bindings.get(ticker, binding)
+            if ticker_bindings is not None and ticker == entity.current_ticker.strip().upper()
+            else ticker_bindings[ticker]
+            if ticker_bindings is not None
+            else binding
+        )
         valid_to = ordered[index + 1][0] if index + 1 < len(ordered) else None
         interval_id = stable_id("symbol_interval", f"{entity.provider_entity_key}|{valid_from.isoformat()}|{ticker}")
         digest = sha256_text(f"{entity.provider_entity_key}|{ticker}|{valid_from.isoformat()}|{valid_to or ''}|{event_id}")
@@ -699,8 +736,8 @@ def build_symbol_intervals(
                 "provider_entity_key": entity.provider_entity_key,
                 "provider_identifier_kind": entity.provider_identifier_kind,
                 "provider_identifier": entity.provider_identifier,
-                "security_id": binding.security_id,
-                "listing_id": binding.listing_id,
+                "security_id": interval_binding.security_id,
+                "listing_id": interval_binding.listing_id,
                 "ticker": ticker,
                 "ticker_normalized": ticker,
                 "valid_from_date": valid_from.isoformat(),
@@ -805,6 +842,7 @@ def select_entities(
     only_identifiers: Iterable[str],
     shard_index: int = 0,
     shard_count: int = 1,
+    priority_entity_keys: Iterable[str] = (),
 ) -> list[TickerEventEntity]:
     if shard_count < 1:
         raise ValueError("shard_count must be at least 1")
@@ -813,6 +851,7 @@ def select_entities(
     if shard_count > 1:
         inventory = [entity for entity in inventory if entity_shard(entity.provider_entity_key, shard_count) == shard_index]
     requested = {str(value).strip().upper() for value in only_identifiers if str(value).strip()}
+    priority_keys = {str(value).strip() for value in priority_entity_keys if str(value).strip()}
     if requested:
         inventory = [
             entity
@@ -823,6 +862,8 @@ def select_entities(
     stale_before = now - timedelta(days=max(1, int(stale_after_days)))
 
     def priority(entity: TickerEventEntity) -> tuple[int, datetime, str]:
+        if entity.provider_entity_key in priority_keys:
+            return (-1, datetime.min.replace(tzinfo=UTC), entity.provider_entity_key)
         row = coverage.get(entity.provider_entity_key)
         if row is None:
             return (1, datetime.min.replace(tzinfo=UTC), entity.provider_entity_key)
@@ -873,10 +914,61 @@ def select_entities(
             )
             if due:
                 selected.append(entity)
+    selected_keys = {entity.provider_entity_key for entity in selected}
+    selected.extend(
+        entity
+        for entity in inventory
+        if entity.provider_entity_key in priority_keys and entity.provider_entity_key not in selected_keys
+    )
     selected.sort(key=priority)
+    selected_priority_count = sum(entity.provider_entity_key in priority_keys for entity in selected)
+    if max_entities > 0 and selected_priority_count > max_entities:
+        raise RuntimeError(
+            "ticker-event integrity repair backlog exceeds the configured batch size: "
+            f"repairs={selected_priority_count} batch_size={max_entities}"
+        )
     if max_entities > 0:
         selected = selected[:max_entities]
     return selected
+
+
+def load_integrity_repair_entity_keys(client: ClickHouseHttpClient, *, database: str) -> set[str]:
+    """Return entities whose canonical intervals violate current inventory state.
+
+    Active ticker mismatches and inactive entities with an open interval are
+    repair work, not ordinary freshness work, so they must bypass rolling
+    backlog ordering.
+    """
+    rows = query_json_each_row(
+        client,
+        f"""
+        SELECT provider_entity_key
+        FROM
+        (
+            SELECT DISTINCT i.provider_entity_key AS provider_entity_key
+            FROM {table(database, SYMBOL_INTERVAL_TABLE)} i FINAL
+            INNER JOIN {table(database, TICKER_EVENT_ENTITY_TABLE)} e FINAL USING provider_entity_key
+            WHERE i.is_deleted = 0
+              AND e.is_deleted = 0
+              AND i.is_current = 1
+              AND (e.active = 0 OR upper(i.ticker) != upper(e.current_ticker))
+            UNION DISTINCT
+            SELECT e.provider_entity_key AS provider_entity_key
+            FROM {table(database, TICKER_EVENT_ENTITY_TABLE)} e FINAL
+            INNER JOIN {table(database, TICKER_EVENT_COVERAGE_TABLE)} c FINAL USING provider_entity_key
+            LEFT JOIN {table(database, SYMBOL_INTERVAL_TABLE)} i FINAL
+              ON i.provider_entity_key = e.provider_entity_key
+             AND i.is_deleted = 0
+             AND i.is_current = 1
+            WHERE e.is_deleted = 0
+              AND e.active = 1
+              AND c.source_status = 'completed'
+              AND c.mapping_status = 'mapped'
+              AND i.provider_entity_key = ''
+        )
+        """,
+    )
+    return {str(row.get("provider_entity_key") or "") for row in rows if str(row.get("provider_entity_key") or "")}
 
 
 def entity_shard(provider_entity_key: str, shard_count: int) -> int:
@@ -967,6 +1059,65 @@ def load_canonical_bindings(
     return output
 
 
+def load_ticker_bindings(
+    client: ClickHouseHttpClient,
+    *,
+    database: str,
+    entities: list[TickerEventEntity],
+    entity_bindings: dict[str, CanonicalBinding],
+) -> dict[str, dict[str, CanonicalBinding]]:
+    security_ids = sorted(
+        {
+            binding.security_id
+            for binding in entity_bindings.values()
+            if binding.security_id
+        }
+    )
+    rows: list[dict[str, Any]] = []
+    for security_batch in batches(security_ids, CLICKHOUSE_KEY_BATCH_SIZE):
+        literals = ",".join(sql_string(value) for value in security_batch)
+        rows.extend(
+            query_json_each_row(
+                client,
+                f"""
+                SELECT l.security_id AS security_id, l.listing_id AS listing_id, upper(sym.ticker) AS ticker
+                FROM {table(database, 'id_listing_v1')} l FINAL
+                INNER JOIN {table(database, 'id_symbol_v1')} sym FINAL ON sym.listing_id = l.listing_id
+                INNER JOIN {table(database, 'ref_exchange_v1')} ex FINAL ON ex.exchange_code = l.exchange_code
+                WHERE l.security_id IN ({literals})
+                  AND l.listing_status = 'active'
+                  AND l.currency_code = 'USD'
+                  AND upper(ex.iso_country_code) = 'US'
+                  AND sym.ticker != ''
+                """,
+            )
+        )
+    listings_by_security_ticker: dict[tuple[str, str], set[str]] = {}
+    for row in rows:
+        key = (str(row.get("security_id") or ""), str(row.get("ticker") or "").upper())
+        listing_id = str(row.get("listing_id") or "")
+        if key[0] and key[1] and listing_id:
+            listings_by_security_ticker.setdefault(key, set()).add(listing_id)
+    output: dict[str, dict[str, CanonicalBinding]] = {}
+    for entity in entities:
+        binding = entity_bindings.get(entity.provider_entity_key)
+        if binding is None or not binding.security_id:
+            continue
+        ticker_map: dict[str, CanonicalBinding] = {}
+        for (security_id, ticker), listing_ids in listings_by_security_ticker.items():
+            if security_id == binding.security_id and len(listing_ids) == 1:
+                ticker_map[ticker] = CanonicalBinding(
+                    "mapped",
+                    security_id=security_id,
+                    listing_id=next(iter(listing_ids)),
+                    reason="exact_security_ticker_history",
+                )
+        if binding.status == "mapped":
+            ticker_map[entity.current_ticker.strip().upper()] = binding
+        output[entity.provider_entity_key] = ticker_map
+    return output
+
+
 def load_existing_rows(
     client: ClickHouseHttpClient,
     database: str,
@@ -1009,12 +1160,25 @@ def tombstone_rows(
     *,
     id_column: str,
     run_id: str,
+    desired_rows: list[dict[str, Any]] | None = None,
+    identity_columns: tuple[str, ...] = (),
 ) -> list[dict[str, Any]]:
     now = datetime.now(UTC)
     output: list[dict[str, Any]] = []
+    desired_by_id = {
+        str(row.get(id_column) or ""): row
+        for row in (desired_rows or [])
+        if str(row.get(id_column) or "")
+    }
     for row in existing_rows:
-        if str(row.get(id_column) or "") in desired_ids:
-            continue
+        row_id = str(row.get(id_column) or "")
+        if row_id in desired_ids:
+            desired = desired_by_id.get(row_id)
+            if desired is None or not identity_columns or all(
+                str(row.get(column) or "") == str(desired.get(column) or "")
+                for column in identity_columns
+            ):
+                continue
         tombstone = dict(row)
         tombstone["is_deleted"] = 1
         tombstone["observed_at_utc"] = dt64(now)
@@ -1167,7 +1331,19 @@ def ticker_event_audit(
         ),
         (
             "current_ticker_mismatch",
-            f"SELECT count() FROM {table(database, SYMBOL_INTERVAL_TABLE)} i FINAL INNER JOIN {table(database, TICKER_EVENT_ENTITY_TABLE)} e FINAL USING provider_entity_key WHERE i.is_deleted = 0 AND e.is_deleted = 0 AND i.is_current = 1 AND upper(i.ticker) != upper(e.current_ticker)",
+            f"SELECT count() FROM {table(database, SYMBOL_INTERVAL_TABLE)} i FINAL INNER JOIN {table(database, TICKER_EVENT_ENTITY_TABLE)} e FINAL USING provider_entity_key WHERE i.is_deleted = 0 AND e.is_deleted = 0 AND e.active = 1 AND i.is_current = 1 AND upper(i.ticker) != upper(e.current_ticker)",
+        ),
+        (
+            "active_entity_missing_current_interval",
+            f"SELECT count() FROM {table(database, TICKER_EVENT_ENTITY_TABLE)} e FINAL INNER JOIN {table(database, TICKER_EVENT_COVERAGE_TABLE)} c FINAL USING provider_entity_key LEFT JOIN {table(database, SYMBOL_INTERVAL_TABLE)} i FINAL ON i.provider_entity_key = e.provider_entity_key AND i.is_deleted = 0 AND i.is_current = 1 WHERE e.is_deleted = 0 AND e.active = 1 AND c.source_status = 'completed' AND c.mapping_status = 'mapped' AND i.provider_entity_key = ''",
+        ),
+        (
+            "inactive_current_intervals",
+            f"SELECT count() FROM {table(database, SYMBOL_INTERVAL_TABLE)} i FINAL INNER JOIN {table(database, TICKER_EVENT_ENTITY_TABLE)} e FINAL USING provider_entity_key WHERE i.is_deleted = 0 AND e.is_deleted = 0 AND e.active = 0 AND i.is_current = 1",
+        ),
+        (
+            "unresolved_historical_ticker_bindings",
+            f"SELECT count() FROM {table(database, TICKER_EVENT_TABLE)} e FINAL LEFT JOIN {table(database, SYMBOL_INTERVAL_TABLE)} i FINAL ON i.provider_entity_key = e.provider_entity_key AND i.valid_from_date = e.event_date AND upper(i.ticker) = upper(e.ticker) AND i.is_deleted = 0 WHERE e.is_deleted = 0 AND e.event_type = 'ticker_change' AND ifNull(e.ticker, '') != '' AND i.symbol_interval_id = ''",
         ),
         (
             "unapplied_active_corrections",
@@ -1189,7 +1365,12 @@ def ticker_event_audit(
         ),
     ]
     output: list[dict[str, Any]] = []
-    warning_checks = {"ambiguous_entities", "source_conflict_entities"}
+    warning_checks = {
+        "ambiguous_entities",
+        "source_conflict_entities",
+        "inactive_current_intervals",
+        "unresolved_historical_ticker_bindings",
+    }
     for name, sql in checks:
         count = scalar_int(client, sql)
         status = "ok" if count == 0 else "warning" if name in warning_checks else "failed"

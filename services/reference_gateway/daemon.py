@@ -270,10 +270,12 @@ def run_reference_daemon(config: ReferenceGatewayConfig, base_args: list[str]) -
                     flush=True,
                 )
             if cycle.returncode != 0:
-                logger.event("daemon_stopped", reason="child_cycle_failed", returncode=cycle.returncode)
-                if terminal is not None:
-                    terminal.stop()
-                raise SystemExit(cycle.returncode)
+                logger.event(
+                    "daemon_cycle_retry_scheduled",
+                    reason="child_cycle_failed",
+                    returncode=cycle.returncode,
+                    retry_seconds=cycle.interval_seconds,
+                )
             sleep_for_next_cycle(cycle.interval_seconds, state=state, logger=logger, terminal=terminal)
     except KeyboardInterrupt:
         state.touch("stopping", "keyboard_interrupt", "Ctrl+C received; reference gateway daemon is stopping.")

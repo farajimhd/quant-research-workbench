@@ -583,7 +583,13 @@ def check_ticker_event_identity(
     read_database: str | None = None,
 ) -> list[AuditCheck]:
     rows = ticker_event_audit(client, database=database, read_database=read_database)
-    error_checks = {"schema", "orphan_intervals", "overlapping_intervals", "current_ticker_mismatch"}
+    error_checks = {
+        "schema",
+        "orphan_intervals",
+        "overlapping_intervals",
+        "current_ticker_mismatch",
+        "active_entity_missing_current_interval",
+    }
     output: list[AuditCheck] = []
     for row in rows:
         name = str(row.get("check") or "ticker_event_identity")

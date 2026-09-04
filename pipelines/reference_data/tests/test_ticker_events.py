@@ -246,6 +246,54 @@ class TickerEventTests(unittest.TestCase):
         self.assertEqual(rows[0]["is_deleted"], 1)
         self.assertEqual(rows[0]["source_run_id"], "repair")
 
+    def test_interval_binding_is_point_in_time_and_wrong_listing_is_tombstoned(self) -> None:
+        entity = meta_entity()
+        changes = [
+            (datetime(2012, 5, 18, tzinfo=UTC).date(), "FB", "event:fb"),
+            (datetime(2022, 6, 9, tzinfo=UTC).date(), "META", "event:meta"),
+        ]
+        intervals = build_symbol_intervals(
+            entity,
+            CanonicalBinding("mapped", "security:meta", "listing:meta"),
+            changes,
+            run_id="repair",
+            observed_at=datetime(2026, 9, 3, tzinfo=UTC),
+            ticker_bindings={
+                "FB": CanonicalBinding("mapped", "security:meta", "listing:fb"),
+                "META": CanonicalBinding("mapped", "security:meta", "listing:meta"),
+            },
+        )
+        prior_wrong = {**intervals[0], "listing_id": "listing:meta", "is_current": 1, "valid_to_date_exclusive": None}
+
+        tombstones = tombstone_rows(
+            [prior_wrong],
+            {intervals[0]["symbol_interval_id"]},
+            id_column="symbol_interval_id",
+            run_id="repair",
+            desired_rows=intervals,
+            identity_columns=("security_id", "listing_id", "valid_from_date", "ticker_normalized"),
+        )
+
+        self.assertEqual(intervals[0]["listing_id"], "listing:fb")
+        self.assertEqual(intervals[1]["listing_id"], "listing:meta")
+        self.assertEqual(len(tombstones), 1)
+        self.assertEqual(tombstones[0]["is_deleted"], 1)
+
+    def test_unresolved_historical_binding_does_not_block_certified_current_interval(self) -> None:
+        intervals = build_symbol_intervals(
+            meta_entity(),
+            CanonicalBinding("mapped", "security:meta", "listing:meta"),
+            [
+                (datetime(2012, 5, 18, tzinfo=UTC).date(), "FB", "event:fb"),
+                (datetime(2022, 6, 9, tzinfo=UTC).date(), "META", "event:meta"),
+            ],
+            run_id="repair",
+            observed_at=datetime(2026, 9, 3, tzinfo=UTC),
+            ticker_bindings={"META": CanonicalBinding("mapped", "security:meta", "listing:meta")},
+        )
+
+        self.assertEqual([(row["ticker"], row["is_current"]) for row in intervals], [("META", 1)])
+
     def test_rolling_selection_prioritizes_missing_failed_and_oldest(self) -> None:
         first = meta_entity()
         second = replace(first, provider_entity_key="massive:composite_figi:SECOND", provider_identifier="SECOND", current_ticker="ZZZ")
@@ -276,6 +324,80 @@ class TickerEventTests(unittest.TestCase):
         )
 
         self.assertEqual(selected, [entity])
+
+    def test_integrity_repair_preempts_capped_rolling_backlog(self) -> None:
+        repair = meta_entity()
+        backlog = [
+            replace(
+                repair,
+                provider_entity_key=f"massive:composite_figi:FAILED{index:04d}",
+                provider_identifier=f"FAILED{index:04d}",
+            )
+            for index in range(1_001)
+        ]
+        coverage = {
+            entity.provider_entity_key: {"source_status": "failed", "mapping_status": "mapped"}
+            for entity in backlog
+        }
+        coverage[repair.provider_entity_key] = {
+            "source_status": "completed",
+            "mapping_status": "mapped",
+            "last_success_at_utc": "2099-08-02 00:00:00.000",
+        }
+
+        selected = select_entities(
+            backlog + [repair],
+            coverage,
+            mode="rolling",
+            max_entities=1_000,
+            stale_after_days=7,
+            only_identifiers=(),
+            priority_entity_keys={repair.provider_entity_key},
+        )
+
+        self.assertEqual(selected[0], repair)
+        self.assertEqual(len(selected), 1_000)
+
+    def test_integrity_repair_overflow_fails_explicitly(self) -> None:
+        entities = [replace(meta_entity(), provider_entity_key=f"entity:{index}") for index in range(2)]
+
+        with self.assertRaisesRegex(RuntimeError, "integrity repair backlog exceeds"):
+            select_entities(
+                entities,
+                {},
+                mode="rolling",
+                max_entities=1,
+                stale_after_days=7,
+                only_identifiers=(),
+                priority_entity_keys={entity.provider_entity_key for entity in entities},
+            )
+
+    def test_inactive_entity_never_publishes_current_interval(self) -> None:
+        entity = replace(meta_entity(), active=False, current_ticker="TWOW")
+        response = MassiveTickerEventsResult(
+            identifier=entity.provider_identifier,
+            name=entity.entity_name,
+            status="OK",
+            request_id="request-inactive",
+            events=[{"date": "2022-11-02", "ticker_change": {"ticker": "TWO"}, "type": "ticker_change"}],
+        )
+
+        binding = reconcile_source_binding(
+            entity,
+            response,
+            CanonicalBinding("mapped", "security:two", "listing:two"),
+        )
+        events, intervals, _ = normalize_ticker_event_response(
+            entity,
+            response,
+            binding,
+            run_id="test",
+            observed_at=datetime(2026, 9, 3, tzinfo=UTC),
+        )
+
+        self.assertEqual(binding.status, "inactive")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(intervals, [])
 
     def test_historical_selection_retries_failure_before_missing(self) -> None:
         failed = meta_entity()

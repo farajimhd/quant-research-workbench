@@ -9,7 +9,12 @@ from pipelines.reference_data.migration.step_02c_report_weak_reference_candidate
 from pipelines.reference_data.migration.step_06_build_q_live_bridge_features import build_specs
 from services.reference_gateway.active_tickers import MissingTickerCandidate, run_active_ticker_plan
 from services.reference_gateway.audit import active_stock_base_query
-from services.reference_gateway.canonical_graph_writer import ExistingGraph, build_candidate_rows, stable_key
+from services.reference_gateway.canonical_graph_writer import (
+    ExistingGraph,
+    build_candidate_rows,
+    redundant_massive_symbol_retirements,
+    stable_key,
+)
 from services.reference_gateway.tradability import is_otc_venue, otc_venue_predicate_sql
 
 
@@ -141,6 +146,54 @@ class ReferenceGatewayScopeTests(unittest.TestCase):
         self.assertEqual(len(rows["id_listing_v1"]), 1)
         self.assertEqual(rows["id_listing_v1"][0]["listing_id"], "listing:existing")
         self.assertEqual(rows["id_listing_v1"][0]["ibkr_conid"], "123456789")
+
+    def test_graph_writer_reuses_existing_symbol_for_same_listing_and_ticker(self) -> None:
+        candidate = complete_candidate()
+        graph = complete_graph()
+        security_id = "security:figi:" + stable_key("BBG000TEST02")
+        listing_id = "listing:existing"
+        graph.security_by_figi["BBG000TEST02"] = security_id
+        graph.listing_by_key[(security_id, "NASDAQ", "USD")] = {
+            "listing_id": listing_id,
+            "security_id": security_id,
+            "exchange_code": "NASDAQ",
+            "currency_code": "USD",
+            "ibkr_conid": "123456789",
+        }
+        graph.symbols_by_listing_ticker[(listing_id, "ZZZT")] = [
+            {"symbol_id": "symbol:existing", "listing_id": listing_id, "ticker": "ZZZT", "source_system": "ibkr"}
+        ]
+
+        rows, issues = build_candidate_rows(candidate, graph, "test", datetime(2026, 9, 3, tzinfo=UTC))
+
+        self.assertEqual(issues, [])
+        self.assertEqual(rows["id_symbol_v1"], [])
+        self.assertEqual(rows["id_source_mapping_v1"][0]["mapped_entity_id"], "symbol:existing")
+
+    def test_redundant_massive_symbol_is_retired_when_exact_symbol_exists(self) -> None:
+        graph = complete_graph()
+        graph.symbols_by_listing_ticker[("listing:1", "TEST")] = [
+            {"symbol_id": "symbol:existing", "listing_id": "listing:1", "ticker": "TEST", "source_system": "ibkr"},
+            {
+                "symbol_id": "symbol:massive:TEST",
+                "listing_id": "listing:1",
+                "ticker": "TEST",
+                "source_system": "massive",
+                "status": "active",
+                "primary_symbol_flag": 1,
+            },
+        ]
+
+        rows = redundant_massive_symbol_retirements(
+            graph,
+            run_id="repair",
+            now=datetime(2026, 9, 3, tzinfo=UTC),
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["symbol_id"], "symbol:massive:TEST")
+        self.assertEqual(rows[0]["status"], "inactive")
+        self.assertEqual(rows[0]["primary_symbol_flag"], 0)
 
 
 def complete_candidate() -> MissingTickerCandidate:

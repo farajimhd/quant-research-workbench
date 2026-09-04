@@ -74,27 +74,18 @@ class ExistingGraph:
     duplicate_figis: set[str]
     listing_by_key: dict[tuple[str, str, str], dict[str, Any]]
     massive_listing_ids_by_ticker: dict[str, set[str]]
+    symbols_by_listing_ticker: dict[tuple[str, str], list[dict[str, Any]]] = field(default_factory=dict)
 
 
 def write_canonical_graph_candidates(config: ReferenceGatewayConfig, plan: ActiveTickerPlan) -> GraphWriteResult:
     ready = [candidate for candidate in plan.candidates if candidate.proposed_action == "candidate_ready_for_dry_run_graph_resolution"]
-    if not ready:
-        return GraphWriteResult(
-            attempted=0,
-            inserted_rows=0,
-            accepted_candidates=0,
-            issue_candidates=0,
-            table_counts={table: 0 for table in IDENTITY_TABLES},
-            accepted_tickers=[],
-            issues=[],
-            reason="no_ready_candidates",
-        )
     client = ClickHouseHttpClient(config.clickhouse_url, config.clickhouse_user, default_clickhouse_password())
     ensure_identity_tables_available(client, config)
     existing = load_existing_graph(client, config.clickhouse_read_database)
     now = datetime.now(UTC)
     run_id = "reference_gateway_graph_writer_" + now.strftime("%Y%m%d_%H%M%S")
     rows_by_table: dict[str, list[dict[str, Any]]] = {table: [] for table in IDENTITY_TABLES}
+    rows_by_table["id_symbol_v1"].extend(redundant_massive_symbol_retirements(existing, run_id=run_id, now=now))
     issues: list[GraphWriteIssue] = []
     accepted = 0
     accepted_tickers: list[str] = []
@@ -186,7 +177,20 @@ def build_candidate_rows(
             )
         )
         return {table: [] for table in IDENTITY_TABLES}, issues
-    symbol_id = f"symbol:massive:{ticker}"
+    matching_symbols = existing.symbols_by_listing_ticker.get((listing_id, ticker), [])
+    non_massive_symbols = [row for row in matching_symbols if str(row.get("source_system") or "").lower() != "massive"]
+    if len(non_massive_symbols) > 1:
+        issues.append(
+            issue(
+                candidate,
+                "duplicate_primary_symbols_for_listing",
+                "Multiple non-Massive primary symbols already represent the same ticker and listing.",
+                {**evidence, "listing_id": listing_id, "symbol_ids": sorted(str(row.get("symbol_id") or "") for row in non_massive_symbols)},
+            )
+        )
+        return {table: [] for table in IDENTITY_TABLES}, issues
+    existing_symbol = non_massive_symbols[0] if non_massive_symbols else matching_symbols[0] if matching_symbols else None
+    symbol_id = str(existing_symbol.get("symbol_id")) if existing_symbol else f"symbol:massive:{ticker}"
     ticker_type_id = existing.ticker_type_id_by_provider_code.get(candidate.ticker_type, "")
     inserted_at = dt64(now)
     first_seen = inserted_at
@@ -313,29 +317,30 @@ def build_candidate_rows(
             }
         )
         rows["id_listing_v1"].append(replacement)
-    rows["id_symbol_v1"].append(
-        {
-            "symbol_id": symbol_id,
-            "listing_id": listing_id,
-            "source_system": "massive",
-            "ticker": ticker,
-            "ticker_normalized": ticker,
-            "display_name": ticker,
-            "ticker_root": ticker_root(ticker),
-            "ticker_suffix": ticker_suffix(ticker),
-            "ticker_type_id": ticker_type_id or None,
-            "asset_type": "stocks",
-            "instrument_type": "stock",
-            "security_type": "common_stock" if candidate.ticker_type in {"CS", ""} else candidate.ticker_type,
-            "status": "active",
-            "primary_symbol_flag": 1,
-            "first_seen_at_utc": first_seen,
-            "last_seen_at_utc": first_seen,
-            "source_run_id": run_id,
-            "source_content_sha256": digest,
-            "inserted_at": inserted_at,
-        }
-    )
+    if existing_symbol is None:
+        rows["id_symbol_v1"].append(
+            {
+                "symbol_id": symbol_id,
+                "listing_id": listing_id,
+                "source_system": "massive",
+                "ticker": ticker,
+                "ticker_normalized": ticker,
+                "display_name": ticker,
+                "ticker_root": ticker_root(ticker),
+                "ticker_suffix": ticker_suffix(ticker),
+                "ticker_type_id": ticker_type_id or None,
+                "asset_type": "stocks",
+                "instrument_type": "stock",
+                "security_type": "common_stock" if candidate.ticker_type in {"CS", ""} else candidate.ticker_type,
+                "status": "active",
+                "primary_symbol_flag": 1,
+                "first_seen_at_utc": first_seen,
+                "last_seen_at_utc": first_seen,
+                "source_run_id": run_id,
+                "source_content_sha256": digest,
+                "inserted_at": inserted_at,
+            }
+        )
     rows["id_source_mapping_v1"].extend(
         [
             source_mapping_row("massive", "ticker", ticker, "market_symbol", symbol_id, 0.95, evidence_json, digest, run_id, inserted_at),
@@ -401,16 +406,22 @@ def load_existing_graph(client: ClickHouseHttpClient, database: str) -> Existing
         (str(row["security_id"]), str(row["exchange_code"]).upper(), str(row["currency_code"]).upper()): row
         for row in listing_rows
     }
-    massive_listing_ids_by_ticker: dict[str, set[str]] = {}
-    for row in query_json_each_row(
+    symbol_rows = query_json_each_row(
         client,
         f"""
-        SELECT ticker, listing_id
+        SELECT *
         FROM {table(database, 'id_symbol_v1')} FINAL
-        WHERE source_system = 'massive' AND status = 'active' AND primary_symbol_flag = 1
+        WHERE status = 'active' AND primary_symbol_flag = 1
         """,
-    ):
-        massive_listing_ids_by_ticker.setdefault(str(row["ticker"]).upper(), set()).add(str(row["listing_id"]))
+    )
+    massive_listing_ids_by_ticker: dict[str, set[str]] = {}
+    symbols_by_listing_ticker: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in symbol_rows:
+        ticker = str(row.get("ticker") or "").upper()
+        listing_id = str(row.get("listing_id") or "")
+        symbols_by_listing_ticker.setdefault((listing_id, ticker), []).append(row)
+        if str(row.get("source_system") or "").lower() == "massive":
+            massive_listing_ids_by_ticker.setdefault(ticker, set()).add(listing_id)
     return ExistingGraph(
         exchanges,
         ticker_types,
@@ -420,6 +431,7 @@ def load_existing_graph(client: ClickHouseHttpClient, database: str) -> Existing
         duplicate_figis,
         listing_by_key,
         massive_listing_ids_by_ticker,
+        symbols_by_listing_ticker,
     )
 
 
@@ -434,8 +446,47 @@ def update_existing_graph(existing: ExistingGraph, rows_by_table: dict[str, list
         key = (str(row["security_id"]), str(row["exchange_code"]).upper(), str(row["currency_code"]).upper())
         existing.listing_by_key[key] = row
     for row in rows_by_table.get("id_symbol_v1", []):
-        if str(row.get("source_system") or "").lower() == "massive":
+        key = (str(row.get("listing_id") or ""), str(row.get("ticker") or "").upper())
+        if str(row.get("status") or "").lower() == "active" and int(row.get("primary_symbol_flag") or 0) == 1:
+            existing.symbols_by_listing_ticker.setdefault(key, []).append(row)
+        if (
+            str(row.get("source_system") or "").lower() == "massive"
+            and str(row.get("status") or "").lower() == "active"
+            and int(row.get("primary_symbol_flag") or 0) == 1
+        ):
             existing.massive_listing_ids_by_ticker.setdefault(str(row["ticker"]).upper(), set()).add(str(row["listing_id"]))
+
+
+def redundant_massive_symbol_retirements(
+    existing: ExistingGraph,
+    *,
+    run_id: str,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    """Retire Massive aliases when an exact primary symbol already owns the listing."""
+    timestamp = dt64(now)
+    rows: list[dict[str, Any]] = []
+    for (listing_id, ticker), symbols in sorted(existing.symbols_by_listing_ticker.items()):
+        non_massive = [row for row in symbols if str(row.get("source_system") or "").lower() != "massive"]
+        massive = [row for row in symbols if str(row.get("source_system") or "").lower() == "massive"]
+        if len(non_massive) != 1 or not massive:
+            continue
+        for row in massive:
+            replacement = dict(row)
+            replacement.update(
+                {
+                    "status": "inactive",
+                    "primary_symbol_flag": 0,
+                    "last_seen_at_utc": timestamp,
+                    "source_run_id": run_id,
+                    "source_content_sha256": sha256_text(
+                        f"retire_redundant_massive_symbol|{listing_id}|{ticker}|{row.get('symbol_id')}"
+                    ),
+                    "inserted_at": timestamp,
+                }
+            )
+            rows.append(replacement)
+    return rows
 
 
 def ensure_identity_tables_available(client: ClickHouseHttpClient, config: ReferenceGatewayConfig) -> None:
