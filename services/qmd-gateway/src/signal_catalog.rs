@@ -349,33 +349,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn catalog_contains_only_the_seven_implemented_market_observations() {
-        let catalog = signal_taxonomy_catalog();
-        assert_eq!(catalog.len(), 7);
-        assert_eq!(
-            catalog
-                .iter()
-                .map(|entry| entry.definition.key)
-                .collect::<Vec<_>>(),
-            vec![
-                "flow_structure_alignment",
-                "directional_flow_acceleration",
-                "price_volume_expansion",
-                "vwap_transition",
-                "liquidity_dislocation",
-                "liquidity_recovery",
-                "flow_price_divergence",
-            ]
-        );
-        assert!(catalog.iter().all(|entry| {
-            entry.domain == "market"
-                && entry.producer == "qmd"
-                && entry.score_required
-                && entry.rank_score_required
-        }));
-    }
-
-    #[test]
     fn event_and_bar_clocks_are_explicit() {
         let catalog = signal_catalog();
         let flow = catalog

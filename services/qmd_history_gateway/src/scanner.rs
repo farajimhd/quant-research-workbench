@@ -2331,13 +2331,33 @@ mod tests {
     use crate::watchlist_timeline::WatchlistEvaluationWindow;
     use chrono::{TimeZone, Utc};
     use qmd_core::bars::{TradeAggregationRules, TradeUpdateRule};
-    use qmd_core::event::{MarketEvent, TradeEvent};
+    use qmd_core::event::{MarketEvent, QuoteEvent, TradeEvent};
     use qmd_core::indicators::MarketStructureReferenceLevels;
     use serde_json::json;
     use std::collections::{BTreeSet, HashMap};
 
     fn trade(ticker: &str, millis: i64, price: f64) -> MarketEvent {
         trade_with_size(ticker, millis, price, 100.0)
+    }
+
+    fn quote(ticker: &str, millis: i64, bid: f64, ask: f64) -> MarketEvent {
+        let ts = Utc.timestamp_millis_opt(millis).single().unwrap();
+        MarketEvent::Quote(QuoteEvent {
+            ask_exchange: 12,
+            ask_price: ask,
+            ask_size: 100,
+            bid_exchange: 11,
+            bid_price: bid,
+            bid_size: 100,
+            conditions: Vec::new(),
+            indicators: Vec::new(),
+            ingest_ts: ts,
+            raw: json!({}),
+            sequence: millis as u64,
+            tape: 1,
+            ticker: ticker.to_string(),
+            ts,
+        })
     }
 
     fn trade_with_size(ticker: &str, millis: i64, price: f64, size: f64) -> MarketEvent {
@@ -2378,11 +2398,23 @@ mod tests {
             .single()
             .unwrap();
         engine
+            .apply_event(quote("AAPL", start.timestamp_millis() - 1, 199.99, 200.01))
+            .await
+            .unwrap();
+        engine
             .apply_event(trade("AAPL", start.timestamp_millis(), 200.0))
             .await
             .unwrap();
         engine
+            .apply_event(quote("MSFT", start.timestamp_millis() + 9, 499.99, 500.01))
+            .await
+            .unwrap();
+        engine
             .apply_event(trade("MSFT", start.timestamp_millis() + 10, 500.0))
+            .await
+            .unwrap();
+        engine
+            .apply_event(quote("AAPL", start.timestamp_millis() + 19, 200.99, 201.01))
             .await
             .unwrap();
         engine

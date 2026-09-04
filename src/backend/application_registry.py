@@ -1860,6 +1860,36 @@ def _fields() -> tuple[FieldDefinition, ...]:
             status="implemented",
         ))
 
+    # QMD publishes this as an intrinsic output of every completed Core Bars
+    # interval. Keep the typed output contract in the application registry so
+    # saved/default Rule Sets remain valid when the live QMD catalog endpoint
+    # is temporarily unavailable; QMD remains the calculation authority.
+    rows.append(_field(
+        "price_change_1_bar_pct",
+        "qmd_core_bars",
+        "qmd_gateway",
+        "service://qmd/core-bars",
+        "qmd.scanner.snapshot.v1",
+        value_type="number",
+        unit="percent",
+        entity_grain="security_interval",
+        source_columns=("price_change_1_bar_pct",),
+        event_at="bar close timestamp",
+        available_at="QMD bar publication timestamp",
+        ttl_seconds=60,
+        publication_cadence="bar_close",
+        historical_support="point_in_time",
+        provenance="derived",
+        coverage_query_plan="qmd.scanner.snapshot.v1",
+        timeframes=("100ms", "1s", "10s", "30s", "1m", "5m", "1h", "1d", "1w", "1mo"),
+        interval_semantics="bar_timeframe",
+        intrinsic_aggregation="last",
+        calculation_summary=(
+            "QMD computes the percentage change from the preceding completed "
+            "Core Bars interval close to the selected interval close."
+        ),
+    ))
+
     # Decoded compact SIP event members are first-class source observations.
     # Numeric members with an exact BarRow equivalent may be instantiated in a
     # Rule Set as a window plus aggregation. Other members remain discoverable
@@ -2209,6 +2239,7 @@ DISCOVERY_FIELD_PRESENTATIONS = (
     DiscoveryFieldPresentation("market.halt_direction", "market.halt_direction", "halt_direction", "Halt direction", "Up, Down, or Flat label derived from the registered five-minute price change at the halt occurrence.", "market_data", False, False, True, ("equals", "not_equals"), ("event",)),
     DiscoveryFieldPresentation("market.trade_rate_10s", "market.trade_rate_10s", "trade_rate_10s", "Trades / sec (10s)", "Eligible trade-event rate over the latest ten seconds.", "market_data", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("10s",)),
     DiscoveryFieldPresentation("market.trade_rate_60s", "market.trade_rate_60s", "trade_rate_60s", "Trades / sec (60s)", "Eligible trade-event rate over the latest sixty seconds.", "market_data", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("1m",)),
+    DiscoveryFieldPresentation("price_change_1_bar_pct", "price_change_1_bar_pct", "", "Previous-bar change %", "QMD percentage change from the preceding completed Core Bars interval close to the selected interval close.", "indicator", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("100ms", "1s", "10s", "30s", "1m", "5m", "1h", "1d", "1w", "1mo")),
     DiscoveryFieldPresentation("market.liquidity_score", "market.liquidity_score", "liquidity_score", "Relative liquidity score", "QMD score from 0 to 100. A value of 50 or higher additionally certifies the absolute session-dollar-volume, recent-trade-rate, spread, and freshness gates.", "indicator", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("scanner_clock",)),
     DiscoveryFieldPresentation("signal.squeeze_move_pct", "signal.squeeze_move_pct", "squeeze_move_pct", "Move from anchor", "Live percentage move from the event-time price immediately before the early squeeze trigger.", "signal", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
     DiscoveryFieldPresentation("signal.squeeze_anchor_price", "signal.squeeze_anchor_price", "squeeze_anchor_price", "Move anchor", "Frozen eligible trade price immediately before the early squeeze trigger.", "signal", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),

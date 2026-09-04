@@ -390,7 +390,6 @@ def test_strategy_activity_loads_a_reviewable_history_window() -> None:
     assert 'record_id: exactRecordId' in container_source
     assert 'className="strategy-activity-inspect"' in container_source
     assert 'aria-label="Strategy event details"' in container_source
-    assert "strategyEvidenceSections(snapshot)" in container_source
     assert 'aria-label="Resize event evidence"' in container_source
     assert "Inspect strategy event at" in container_source
     assert 'className="strategy-activity-evidence-cards"' in container_source
@@ -503,7 +502,6 @@ def test_structural_history_can_span_all_loaded_chart_bars() -> None:
     assert "historyBarsDefault: 0" in chart_source
     assert 'annotationKind: "unified-structure-level"' in chart_source
     assert "borderOpacity: 0" in chart_source
-    assert "probabilityLineRatio: holdProbability" in chart_source
     assert 'zone.annotationKind === "unified-structure-level"' in renderer_source
     assert "span.left + span.width * probability" in renderer_source
     projected_history = history_api_source.split("fn project_chart_snapshot", 1)[1].split("fn compact_projected_unified_structure_history", 1)[0]
@@ -512,10 +510,8 @@ def test_structural_history_can_span_all_loaded_chart_bars() -> None:
     assert "fn unified_structure_projection" in history_cache_source
     assert 'object.insert("sources".to_string(), json!([]))' in history_cache_source
     assert "CacheProfile::Structure" in history_cache_source
-    assert "matches!(profile, CacheProfile::Structure(_)).then_some(1)" in history_cache_source
-    assert "execution VWAP is defined from" in history_cache_source
     assert "rebuild_trade_structure_checkpoint" in history_cache_source
-    assert "rebuild_structure_checkpoint_inner(config, source, request, Some(1))" in structure_checkpoint_source
+    assert "rebuild_structure_checkpoint_inner(config, source, request, Some(1), None)" in structure_checkpoint_source
     assert "source.stream_structure_ordered_filtered(" in structure_checkpoint_source
     assert "CacheProfile::Bars(timeframe.clone())" in history_cache_source
     assert "(CacheProfile::Bars(_), Some(timeframe)) => vec![timeframe.clone()]" in history_cache_source

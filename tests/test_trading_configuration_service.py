@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import src.backend.trading_configuration_service as configuration_service
 
+from src.backend.data_field_contracts import data_field_output_index
 from src.backend.trading_configuration_service import (
     CONFIGURATION_SCHEMA_VERSION,
     _default_draft,
@@ -503,6 +504,33 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(row["warm_up_bars"], 50)
         self.assertEqual(row["persistence_policy"], "if_signal_uses")
         self.assertEqual(row["consumers"], ["watchlist", "strategy_run", "request", "offline"])
+
+    @patch(
+        "src.backend.trading_configuration_service.qmd_catalogs",
+        side_effect=ConnectionError("QMD unavailable"),
+    )
+    def test_price_change_bar_output_contract_survives_qmd_catalog_outage(
+        self, _catalogs
+    ) -> None:
+        with patch(
+            "src.backend.trading_configuration_service._QMD_RUNTIME_CATALOG_CACHE",
+            (0.0, []),
+        ):
+            discovery = configuration_service._default_market_discovery([], [])
+
+        field = next(
+            row
+            for row in discovery["field_catalog"]
+            if row["source_id"] == "price_change_1_bar_pct"
+        )
+        output = data_field_output_index(discovery["data_fields"])[
+            "price_change_1_bar_pct"
+        ]
+        self.assertTrue(field["market_discovery_supported"])
+        self.assertEqual(field["interval_semantics"], "bar_timeframe")
+        self.assertEqual(output["unit"], "percent")
+        self.assertIn("100ms", output["available_intervals"])
+        self.assertIn("1s", output["available_intervals"])
 
     @patch(
         "src.backend.trading_configuration_service.get_strategy_definition",
@@ -1246,6 +1274,15 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(fields["market.last_price"]["column_id"], "last_price")
         self.assertTrue(fields["market.last_price"]["filterable"])
         self.assertEqual(fields["market.last_price"]["presentation_value_type"], "price")
+        self.assertEqual(fields["price_change_1_bar_pct"]["source"], "qmd_gateway")
+        self.assertEqual(
+            fields["price_change_1_bar_pct"]["interval_semantics"],
+            "bar_timeframe",
+        )
+        price_change_output = data_field_output_index(discovery["data_fields"])[
+            "price_change_1_bar_pct"
+        ]
+        self.assertEqual(price_change_output["unit"], "percent")
         self.assertIn(
             "greater_or_equal", fields["market.last_price"]["filter_operators"]
         )
