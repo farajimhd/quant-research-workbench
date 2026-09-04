@@ -788,6 +788,40 @@ impl HistoricalDerivedCache {
             .source
             .indicator_warmup_ordinal_sessions(&ticker, session_date, INDICATOR_WARMUP_MAX_SESSIONS)
             .await?;
+        if sessions.is_empty() {
+            let revision_key = format!("{ticker}:{session_date}:no-prior-event-history");
+            let artifact = IndicatorWarmupArtifact {
+                schema_version: INDICATOR_WARMUP_CACHE_SCHEMA_VERSION,
+                calculation_revision: HISTORICAL_CALCULATION_REVISION.to_string(),
+                corporate_action_revision: HISTORICAL_CORPORATE_ACTION_REVISION.to_string(),
+                ticker,
+                timeframe: timeframe.to_string(),
+                session_start,
+                authority_start: session_start,
+                required_bars,
+                bars: Vec::new(),
+                fetched_events: 0,
+                fetched_ordinal_ranges: 0,
+                source_revision: SourceRevision {
+                    complete_for_history: false,
+                    event_count: 0,
+                    live_continuation_sequence: None,
+                    max_build_step: 0,
+                    max_updated_at: String::new(),
+                    request_complete: true,
+                    source_plan_hash: stable_hash_hex(&revision_key),
+                    source_tiers: vec!["archive-no-prior-history".to_string()],
+                    token: format!(
+                        "indicator-warmup-no-history:{}",
+                        stable_hash_hex(&revision_key)
+                    ),
+                },
+                status: "insufficient_history".to_string(),
+                cache_hit: false,
+            };
+            write_indicator_warmup_cache(&path, &artifact)?;
+            return Ok(artifact);
+        }
         let mut events = Vec::new();
         let mut fetched_events = 0_u64;
         let mut fetched_ordinal_ranges = 0_u64;
