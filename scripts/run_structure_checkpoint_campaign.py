@@ -280,6 +280,59 @@ def recovery_plan(
     return [plan for _, plan in indexed]
 
 
+def run_execution_clock_preflight(
+    binary: Path,
+    campaign_args: list[str],
+    plans: list[dict[str, Any]],
+    planner_dir: Path,
+    environ: dict[str, str],
+) -> int:
+    """Validate the whole immutable universe before any shard worker starts."""
+    planner_dir.mkdir(parents=True, exist_ok=True)
+    ticker_file = planner_dir / "execution-clock-preflight-tickers.txt"
+    ticker_file.write_text(
+        "".join(f"{str(plan['ticker']).strip().upper()}\n" for plan in plans),
+        encoding="utf-8",
+    )
+    args = remove_options(
+        campaign_args,
+        {
+            "--workers",
+            "--runtime-dir",
+            "--ticker-file",
+            "--priority-ticker",
+            "--core-index",
+            "--campaign-control-path",
+        },
+        {
+            "--purge-existing-checkpoints",
+            "--plan-only",
+            "--explicit-universe-only",
+            "--shard-worker",
+            "--validate-execution-clock-only",
+        },
+    )
+    preflight_dir = planner_dir / "execution-clock-preflight"
+    preflight_dir.mkdir(parents=True, exist_ok=True)
+    command = [
+        str(binary),
+        *args,
+        "--ticker-file",
+        str(ticker_file),
+        "--explicit-universe-only",
+        "--runtime-dir",
+        str(preflight_dir),
+        "--workers",
+        "1",
+        "--validate-execution-clock-only",
+    ]
+    print(
+        "Validating execution-clock coverage for the complete immutable universe...",
+        flush=True,
+    )
+    return subprocess.run(command, env=environ, check=False).returncode
+
+
 def prepare_shards(plans: list[dict[str, Any]], worker_count: int) -> list[list[dict[str, Any]]]:
     worker_count = min(worker_count, len(plans))
     shards: list[list[dict[str, Any]]] = [[] for _ in range(worker_count)]
@@ -839,6 +892,13 @@ def run_process_campaign(
     plans = json.loads(plan_path.read_text(encoding="utf-8"))
     if not plans:
         raise RuntimeError("campaign planner returned an empty universe")
+    if run_execution_clock_preflight(binary, campaign_args, plans, planner_dir, environ):
+        print(
+            "Execution-clock preflight failed; no campaign workers were started and the source campaign remains unchanged.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 2
     shards = prepare_shards(plans, workers)
     universe_hash = hashlib.sha256(
         "".join(f"{plan['ticker']}\n" for plan in plans).encode("utf-8")

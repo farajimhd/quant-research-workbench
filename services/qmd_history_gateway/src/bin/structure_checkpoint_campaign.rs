@@ -11,7 +11,7 @@ use qmd_core::structure_certification::{
 };
 use qmd_history_gateway::config::HistoricalGatewayConfig;
 use qmd_history_gateway::source::{
-    HistoricalEventSource, StructureCampaignTicker, StructureEventCountEstimateRequest,
+    EventWindow, HistoricalEventSource, StructureCampaignTicker, StructureEventCountEstimateRequest,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -61,6 +61,7 @@ struct Args {
     retry_delay_seconds: u64,
     purge_existing_checkpoints: bool,
     plan_only: bool,
+    validate_execution_clock_only: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -553,6 +554,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .map_err(io_error)?;
     if tickers.is_empty() {
         return Err(io_error("ticker universe is empty"));
+    }
+    if args.validate_execution_clock_only {
+        let start = New_York
+            .from_local_datetime(
+                &args.start_date.and_time(
+                    NaiveTime::from_hms_opt(4, 0, 0)
+                        .ok_or_else(|| io_error("invalid campaign start time"))?,
+                ),
+            )
+            .single()
+            .ok_or_else(|| io_error("invalid New York campaign start"))?
+            .with_timezone(&Utc);
+        let end = session_end(args.end_date).map_err(io_error)?;
+        let revision = source
+            .source_revision(&EventWindow {
+                start,
+                end,
+                tickers,
+            })
+            .await
+            .map_err(io_error)?;
+        println!(
+            "Certified execution-clock preflight passed: {}",
+            revision.token
+        );
+        return Ok(());
     }
     if args.purge_existing_checkpoints {
         let deleted = writer
@@ -2012,6 +2039,7 @@ fn parse_args() -> Result<Args, String> {
     let mut retry_delay_seconds = 2_u64;
     let mut purge_existing_checkpoints = false;
     let mut plan_only = false;
+    let mut validate_execution_clock_only = false;
     let mut checkpoint_set_id = None;
     let mut recovery_source_checkpoint_set_id = None;
     let mut core_index = None;
@@ -2069,6 +2097,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--purge-existing-checkpoints" => purge_existing_checkpoints = true,
             "--plan-only" => plan_only = true,
+            "--validate-execution-clock-only" => validate_execution_clock_only = true,
             "--help" | "-h" => {
                 println!("structure-checkpoint-campaign v6");
                 println!("  --start-date YYYY-MM-DD --end-date YYYY-MM-DD");
@@ -2079,6 +2108,7 @@ fn parse_args() -> Result<Args, String> {
                 println!("  [--liquidity-start-date YYYY-MM-DD --liquidity-end-date YYYY-MM-DD]");
                 println!("  [--max-retries 5] [--retry-delay-seconds 2]");
                 println!("  [--purge-existing-checkpoints] [--plan-only]");
+                println!("  [--validate-execution-clock-only]  # read-only source preflight");
                 println!("  [--explicit-universe-only] [--core-index N]");
                 println!("  [--campaign-control-path PATH]  # supervisor-owned stop control");
                 std::process::exit(0);
@@ -2145,6 +2175,7 @@ fn parse_args() -> Result<Args, String> {
         retry_delay_seconds,
         purge_existing_checkpoints,
         plan_only,
+        validate_execution_clock_only,
     })
 }
 

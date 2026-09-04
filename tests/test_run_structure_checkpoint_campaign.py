@@ -16,6 +16,7 @@ from scripts.run_structure_checkpoint_campaign import (
     prepare_recovery_resume,
     recovery_plan,
     request_campaign_stop,
+    run_execution_clock_preflight,
     sha256_file,
     source_commit,
     status_is_fully_certified,
@@ -311,6 +312,45 @@ def test_recovery_resume_refuses_to_mutate_source_runtime(tmp_path: Path) -> Non
             ["--runtime-dir", str(source), "--checkpoint-set-id", "successor"],
             str(source),
         )
+
+
+def test_execution_clock_preflight_covers_full_plan_before_workers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed = {}
+
+    class _Result:
+        returncode = 0
+
+    def fake_run(command, **kwargs):
+        observed["command"] = command
+        observed["kwargs"] = kwargs
+        return _Result()
+
+    monkeypatch.setattr("scripts.run_structure_checkpoint_campaign.subprocess.run", fake_run)
+    code = run_execution_clock_preflight(
+        tmp_path / "campaign.exe",
+        [
+            "--start-date",
+            "2025-01-01",
+            "--end-date",
+            "2026-08-31",
+            "--checkpoint-set-id",
+            "successor",
+            "--workers",
+            "80",
+        ],
+        [{"ticker": "SUGP"}, {"ticker": "JUNS"}, {"ticker": "A"}],
+        tmp_path / "planner",
+        {"PYTHONDONTWRITEBYTECODE": "1"},
+    )
+
+    assert code == 0
+    command = observed["command"]
+    assert "--validate-execution-clock-only" in command
+    assert command[command.index("--workers") + 1] == "1"
+    ticker_path = Path(command[command.index("--ticker-file") + 1])
+    assert ticker_path.read_text(encoding="utf-8").splitlines() == ["SUGP", "JUNS", "A"]
 
 
 def test_resume_archives_stale_status_and_starts_with_clean_truthful_queue(tmp_path: Path) -> None:

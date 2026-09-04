@@ -53,6 +53,12 @@ reports and fails closed before a legacy checkpoint can be copied. This means
 an interrupted legacy campaign remains preserved, but its work is reusable
 only where the ingestion-owned sidecar proves compatibility.
 
+Before launching any process shard, the supervisor runs one read-only
+execution-clock preflight over the complete immutable ticker plan. If coverage
+is incomplete, it exits before opening worker processes or changing the source
+checkpoint set. Coverage failure is campaign-fatal inside a worker as a second
+line of defense, so 80 shards cannot cascade the same authority error.
+
 The canonical sidecar repair is owned by
 `pipelines/market_sip/flatfiles/download_update_events.py
 --execution-clock-only`. It requires explicit dates and tickers, does not
