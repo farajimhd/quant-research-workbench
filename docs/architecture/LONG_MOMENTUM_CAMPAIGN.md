@@ -2,7 +2,7 @@
 
 ## Boundary
 
-`long-momentum-campaign@10` is the current post-refactor automatic strategy. It is
+`long-momentum-campaign@34` is the current post-refactor automatic strategy. It is
 long only and deterministic. It consumes normalized causal observations; it
 does not calculate a second copy of QMD, Generic Structure, VWAP, MACD, news,
 or market signals.
@@ -21,14 +21,16 @@ owns IBKR-shaped order placement/modification and broker-command recovery. QMD o
 reusable market observations. Canvas owns presentation and semantic assignment
 commands, never trading decisions or broker commands.
 
-Earlier revisions remain immutable historical evidence. Revision 10 requires an
+Earlier revisions remain immutable historical evidence. Revision 34 requires an
 Early Squeeze Move campaign, absolute liquidity and volume attraction, price
-above VWAP, a causal 1-second swing-high break, and a positive/open 1-second
-MACD: line above signal, line above zero, signal above zero, and positive
-histogram. It also separates below-entry loss handling from profitable-position
-management and keeps reentry eligible for the lifetime of the active Early
-Squeeze campaign after the prior episode is flat. Older assignments are never
-silently reinterpreted as revision 10.
+above executable VWAP, and a causal trade-price crossing of one of the three
+highest qualified Unified resistance levels at or below the live session high.
+The forming 1-second MACD is evaluated at that same trade event and must have
+line above signal and line above zero; entry does not wait for candle close.
+Entry, stop, and target qualification use `ticker_relative_quality_score >=
+0.20` when the frozen ticker baseline is available, with the shared provisional
+and unavailable statuses failing open. Older assignments are never silently
+reinterpreted as revision 34.
 
 ## Runtime objects
 
@@ -56,7 +58,7 @@ weight, and optional score/confidence threshold. The initial definition uses:
 - scored price/volume expansion, VWAP transition, divergence, dislocation, and
   company-news events.
 
-The strategy may evaluate on indicator updates, signal events, bar closes,
+The strategy may evaluate on trade-price updates, indicator updates, signal events, bar closes,
 manual commands, position events, and order events. A deployed revision stores
 one resolved value for each parameter. Lists of candidate values belong only
 to its parameter space and are never passed unresolved to live execution.

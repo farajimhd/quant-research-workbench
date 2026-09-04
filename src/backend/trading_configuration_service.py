@@ -70,7 +70,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 46
+CONFIGURATION_SCHEMA_VERSION = 47
 MARKET_DISCOVERY_MATERIALIZATION_RUN_ID = "market-discovery:materialized-configuration"
 _CONFIGURATION_BASE_CACHE_LOCK = threading.RLock()
 _CONFIGURATION_BASE_CACHE: tuple[str, float, dict[str, Any] | None] = ("", 0.0, None)
@@ -3999,7 +3999,8 @@ def _default_draft() -> dict[str, Any]:
     system_profiles[0]["description"] = (
         "Extended-hours long momentum strategy activated by the Early Squeeze Move "
         "episode start, admitted once by sustained executable liquidity, and entered "
-        "through QMD's persistent Unified Structural Level Book while one-second MACD is positive and open."
+        "on event-price crossings of QMD's persistent Unified Structural Level Book "
+        "while the forming one-second MACD is positive and open at that event."
     )
     squeeze_lifecycle = system_profiles[0]["lifecycle"]
     squeeze_lifecycle["trading_behavior"]["eligible_sessions"] = [
@@ -4056,20 +4057,20 @@ def _default_draft() -> dict[str, Any]:
         "protection_profile"
     ] = "structural-single-target"
     # A small-cap squeeze can leave the displayed offer before another quote
-    # update arrives. Follow the executable touch by bounded ticks during the
-    # causal entry deadline instead of leaving a whole-account order stranded
-    # at its first ask after one partial fill.
+    # update arrives. Follow the executable touch only inside the tested
+    # very-urgent window, then cancel any remainder instead of chasing stale
+    # liquidity for five seconds.
     squeeze_lifecycle["initial_entry"]["order_intent"][
         "execution_policy"
     ] = "adaptive_very_urgent"
-    squeeze_lifecycle["initial_entry"]["order_intent"]["deadline_ms"] = 5_000
+    squeeze_lifecycle["initial_entry"]["order_intent"]["deadline_ms"] = 300
     squeeze_lifecycle["reentry"]["order_intent"][
         "protection_profile"
     ] = "structural-single-target"
     squeeze_lifecycle["reentry"]["order_intent"][
         "execution_policy"
     ] = "adaptive_very_urgent"
-    squeeze_lifecycle["reentry"]["order_intent"]["deadline_ms"] = 5_000
+    squeeze_lifecycle["reentry"]["order_intent"]["deadline_ms"] = 300
     squeeze_lifecycle["reentry"]["cooldown_ms"] = 0
     # Early Squeeze admits the ticker once for the whole campaign. Re-entry is
     # driven by the live structural/MACD state; it must not wait for every
@@ -4139,7 +4140,7 @@ def _default_draft() -> dict[str, Any]:
     }
     system_profiles[0]["parameters"]["structural_entry"] = {
         "enabled": True,
-        "selection_mode": "prior_completed_frame_top_n_below_session_high",
+        "selection_mode": "event_price_top_n_below_session_high",
         "maximum_entry_levels": 3,
         # Each selected level remains an independently confirmed entry. Sizing
         # is not divided here; Portfolio recomputes every order from the latest
@@ -4152,10 +4153,10 @@ def _default_draft() -> dict[str, Any]:
         "minimum_salience": 0.0,
         "minimum_confidence": 0.0,
         "minimum_reaction_probability": 0.0,
-        # Require the shared conservative score; raw hold probability remains
-        # compatibility evidence and is not a qualification substitute.
-        "minimum_hold_probability": 0.0,
-        "minimum_hold_quality_score": 0.70,
+        # Require the ticker-normalized score when a frozen baseline exists.
+        # The shared level-book contract keeps same-session provisional and
+        # unavailable scores fail-open.
+        "minimum_ticker_relative_quality_score": 0.20,
         "minimum_hold_observations": 1,
         "maximum_break_count": 100,
         "maximum_break_probability": 1.0,
@@ -4163,10 +4164,10 @@ def _default_draft() -> dict[str, Any]:
         "minimum_level_age_ms": 0,
         "acceptance_buffer_bps": 0.0,
         "acceptance_hold_ms": 15_000,
-        # Entry acceptance is an exact transition from the prior completed
-        # one-second frame. It is never retained until later gates catch up.
+        # Entry acceptance is an exact causal trade-price transition. It is
+        # never retained until later gates catch up.
         "acceptance_expires": True,
-        # Bound only a single completed-frame leap over the selected
+        # Bound only a single event-price leap over the selected
         # structural boundary. This is distinct from (and must not recreate)
         # a maximum distance-from-VWAP entry gate.
         "maximum_breakout_extension_bps": 500.0,
@@ -4218,6 +4219,16 @@ def _default_draft() -> dict[str, Any]:
         "minimum_histogram_increase": 0.0,
         "minimum_histogram_increase_bps": 0.25,
     }
+    system_profiles[0]["parameters"]["entry_candle_confirmation"] = {
+        # Entry decisions are event-native. MACD is previewed from the forming
+        # one-second candle at the triggering trade; no bar-close or candle-
+        # color confirmation may defer a valid structural crossing.
+        "enabled": False,
+        "timeframe": "1s",
+        "require_closed_bar": False,
+        "reject_bearish_close": False,
+        "minimum_macd_open_gap_bps": 0.5,
+    }
     squeeze_lifecycle["reentry"]["target_replenishment"] = {
         # The single structural target is a whole-campaign exit, not a partial
         # profit pocket. Re-entry is therefore owned by the ordinary flat
@@ -4240,8 +4251,7 @@ def _default_draft() -> dict[str, Any]:
         "minimum_level_confidence": 0.0,
         "minimum_reaction_probability": 0.0,
         "minimum_reversal_probability": 0.0,
-        "minimum_hold_probability": 0.0,
-        "minimum_hold_quality_score": 0.70,
+        "minimum_ticker_relative_quality_score": 0.20,
         "minimum_hold_observations": 1,
         "maximum_break_count": 100,
         "maximum_break_probability": 1.0,
@@ -4271,8 +4281,7 @@ def _default_draft() -> dict[str, Any]:
         "structure_buffer_bps": 0.0,
         "volatility_multiple": 1.25,
         "maximum_risk_pct": 15.0,
-        "minimum_hold_probability": 0.0,
-        "minimum_hold_quality_score": 0.70,
+        "minimum_ticker_relative_quality_score": 0.20,
         "minimum_hold_observations": 1,
         "support_level_ordinal": 2,
         "prefer_closer_hybrid": True,
@@ -6799,6 +6808,9 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 profile["parameters"]["structural_entry"] = deepcopy(
                     default_profile["parameters"]["structural_entry"]
                 )
+                profile["parameters"]["entry_candle_confirmation"] = deepcopy(
+                    default_profile["parameters"]["entry_candle_confirmation"]
+                )
                 lifecycle = dict(profile.get("lifecycle") or {})
                 default_lifecycle = dict(default_profile["lifecycle"])
                 lifecycle.setdefault("trading_behavior", {}).update(
@@ -6812,9 +6824,15 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 initial_entry["capital_request"] = deepcopy(
                     default_initial["capital_request"]
                 )
+                initial_entry["order_intent"] = deepcopy(
+                    default_initial["order_intent"]
+                )
                 reentry = lifecycle.setdefault("reentry", {})
                 reentry["capital_request"] = deepcopy(
                     dict(default_lifecycle["reentry"])["capital_request"]
+                )
+                reentry["order_intent"] = deepcopy(
+                    dict(default_lifecycle["reentry"])["order_intent"]
                 )
                 profile["lifecycle"] = lifecycle
         for template in result["strategy"]["profile_templates"]:

@@ -34,8 +34,15 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 33
-HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32)
+STRATEGY_REVISION = 34
+HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33)
+
+_COMPLETED_FRAME_TOP_N_ENTRY_MODE = "prior_completed_frame_top_n_below_session_high"
+_EVENT_PRICE_TOP_N_ENTRY_MODE = "event_price_top_n_below_session_high"
+_TOP_N_SESSION_HIGH_ENTRY_MODES = {
+    _COMPLETED_FRAME_TOP_N_ENTRY_MODE,
+    _EVENT_PRICE_TOP_N_ENTRY_MODE,
+}
 
 SOURCE_MAXIMUM_AGE_MS = {
     "100ms": 500,
@@ -431,7 +438,7 @@ def long_momentum_strategy_definition(
                     {"key": "company_news", "producer": "news_gateway", "role": "trigger", "required": False, "maximum_age_ms": 60000, "minimum_score": 0.7},
                     {"key": "sec_filing", "producer": "sec_gateway", "role": "trigger", "required": False, "maximum_age_ms": 60000},
                 ],
-                "allow_developing_inputs": False,
+                "allow_developing_inputs": revision >= 34,
                 "presentation": {
                     "label": "Long campaign",
                     "show_entries": True,
@@ -468,8 +475,14 @@ def default_long_momentum_parameters(
                 "minimum_salience": 0.45,
                 "minimum_confidence": 0.50,
                 "minimum_reaction_probability": 0.50,
-                "minimum_hold_probability": 0.0,
-                "minimum_hold_quality_score": 0.70,
+                **(
+                    {"minimum_ticker_relative_quality_score": 0.20}
+                    if revision >= 34
+                    else {
+                        "minimum_hold_probability": 0.0,
+                        "minimum_hold_quality_score": 0.70,
+                    }
+                ),
                 "minimum_hold_observations": 1,
                 "acceptance_buffer_bps": 0.0,
                 "acceptance_hold_ms": 15_000,
@@ -499,10 +512,10 @@ def default_long_momentum_parameters(
             "minimum_histogram_increase_bps": 0.0,
         },
         "entry_candle_confirmation": {
-            "enabled": True,
+            "enabled": revision <= 33,
             "timeframe": "1s",
-            "require_closed_bar": True,
-            "reject_bearish_close": True,
+            "require_closed_bar": revision <= 33,
+            "reject_bearish_close": revision <= 33,
             "minimum_macd_open_gap_bps": 0.5,
         },
         "sizing": {
@@ -517,8 +530,14 @@ def default_long_momentum_parameters(
                 "structure_buffer_bps": 0.0,
                 "volatility_multiple": 1.25,
                 "maximum_risk_pct": 15.0,
-                "minimum_hold_probability": 0.0,
-                "minimum_hold_quality_score": 0.70,
+                **(
+                    {"minimum_ticker_relative_quality_score": 0.20}
+                    if revision >= 34
+                    else {
+                        "minimum_hold_probability": 0.0,
+                        "minimum_hold_quality_score": 0.70,
+                    }
+                ),
                 "minimum_hold_observations": 1,
                 "support_level_ordinal": 2,
                 "prefer_closer_hybrid": True,
@@ -538,8 +557,14 @@ def default_long_momentum_parameters(
                 "minimum_level_confidence": 0.50,
                 "minimum_reaction_probability": 0.0,
                 "minimum_reversal_probability": 0.0,
-                "minimum_hold_probability": 0.0,
-                "minimum_hold_quality_score": 0.70,
+                **(
+                    {"minimum_ticker_relative_quality_score": 0.20}
+                    if revision >= 34
+                    else {
+                        "minimum_hold_probability": 0.0,
+                        "minimum_hold_quality_score": 0.70,
+                    }
+                ),
                 "minimum_hold_observations": 1,
                 "minimum_composite_score": 0.0,
                 "minimum_entry_target_gap_bps": 0.0,
@@ -732,10 +757,14 @@ def resolve_long_momentum_parameters(
     if not 0 < float(stop.get("maximum_risk_pct") or 0) < 100:
         raise ValueError("Protective stop maximum risk must be between zero and 100 percent")
     if str(stop.get("method") or "") == "ordinal_qualified_support":
-        if not 0 <= float(stop.get("minimum_hold_probability") or 0) < 1:
-            raise ValueError("Protective support hold threshold must be in [0, 1)")
-        if not 0 <= float(stop.get("minimum_hold_quality_score") or 0) <= 1:
-            raise ValueError("Protective support quality score must be in [0, 1]")
+        if "minimum_ticker_relative_quality_score" in stop:
+            if not 0 <= float(stop["minimum_ticker_relative_quality_score"]) <= 1:
+                raise ValueError("Protective support ticker-relative quality score must be in [0, 1]")
+        else:
+            if not 0 <= float(stop.get("minimum_hold_probability") or 0) < 1:
+                raise ValueError("Protective support hold threshold must be in [0, 1)")
+            if not 0 <= float(stop.get("minimum_hold_quality_score") or 0) <= 1:
+                raise ValueError("Protective support quality score must be in [0, 1]")
         if int(stop.get("minimum_hold_observations") or 0) < 0:
             raise ValueError("Protective support observation count cannot be negative")
         if int(stop.get("support_level_ordinal") or 0) < 1:
@@ -748,7 +777,12 @@ def resolve_long_momentum_parameters(
         ),
     )
     for label, policy in quality_policies:
-        if not 0 <= float(policy.get("minimum_hold_quality_score") or 0) <= 1:
+        quality_key = (
+            "minimum_ticker_relative_quality_score"
+            if "minimum_ticker_relative_quality_score" in policy
+            else "minimum_hold_quality_score"
+        )
+        if not 0 <= float(policy.get(quality_key) or 0) <= 1:
             raise ValueError(f"{label} quality score must be in [0, 1]")
         if int(policy.get("minimum_hold_observations") or 0) < 0:
             raise ValueError(f"{label} observation count cannot be negative")
@@ -1345,6 +1379,55 @@ def _level_has_minimum_hold_quality(
     return isfinite(quality) and quality >= minimum_quality
 
 
+def _level_has_minimum_ticker_relative_quality(
+    row: Mapping[str, Any],
+    minimum_quality: float,
+) -> bool:
+    """Apply the frozen ticker-relative filter without rejecting provisional levels."""
+
+    if minimum_quality <= 0:
+        return True
+    status = str(row.get("ticker_relative_quality_status") or "").strip().lower()
+    if status != "available":
+        # The Unified Level Book contract makes current-session provisional and
+        # insufficient-reference scores informational. They cannot suppress a
+        # level before a frozen same-role baseline exists.
+        return status in {
+            "same_session_provisional",
+            "insufficient_population",
+            "insufficient_level_evidence",
+            "unavailable",
+        }
+    raw = row.get("ticker_relative_quality_score")
+    try:
+        quality = float(raw)
+    except (TypeError, ValueError):
+        return False
+    return isfinite(quality) and quality >= minimum_quality
+
+
+def _level_passes_configured_quality(
+    row: Mapping[str, Any], policy: Mapping[str, Any]
+) -> bool:
+    if "minimum_ticker_relative_quality_score" in policy:
+        return _level_has_minimum_ticker_relative_quality(
+            row,
+            float(policy.get("minimum_ticker_relative_quality_score") or 0.0),
+        )
+    minimum_hold_probability = float(policy.get("minimum_hold_probability") or 0.0)
+    return bool(
+        (
+            minimum_hold_probability <= 0
+            or _level_metric(dict(row), "hold_probability")
+            >= minimum_hold_probability
+        )
+        and _level_has_minimum_hold_quality(
+            row,
+            float(policy.get("minimum_hold_quality_score") or 0.0),
+        )
+    )
+
+
 def _compact_structural_level_reference(row: Mapping[str, Any] | None) -> dict[str, Any]:
     """Persist only the stable identity and frontier facts needed by the strategy."""
 
@@ -1365,6 +1448,12 @@ def _compact_structural_level_reference(row: Mapping[str, Any] | None) -> dict[s
         "hold_evidence_reliability",
         "hold_quality_score",
         "hold_score_revision",
+        "ticker_relative_quality_score",
+        "ticker_relative_quality_status",
+        "ticker_relative_quality_population_size",
+        "ticker_relative_quality_reference_session",
+        "ticker_relative_quality_revision",
+        "ticker_relative_quality_distribution_hash",
         "reversal_probability",
         "independent_pivot_count",
         "source_count",
@@ -1411,8 +1500,6 @@ def _level_is_entry_quality(
         else 0.0
     )
     hold_probability = _level_metric(row, "hold_probability")
-    minimum_hold_probability = float(policy.get("minimum_hold_probability") or 0)
-    minimum_hold_quality = float(policy.get("minimum_hold_quality_score") or 0)
     hold_observations = _level_metric(row, "hold_observation_count")
     if "hold_observation_count" not in row:
         hold_observations = (
@@ -1432,11 +1519,7 @@ def _level_is_entry_quality(
         >= float(policy.get("minimum_confidence") or 0)
         and _level_metric(row, "reaction_probability")
         >= float(policy.get("minimum_reaction_probability") or 0)
-        and (
-            minimum_hold_probability <= 0
-            or hold_probability >= minimum_hold_probability
-        )
-        and _level_has_minimum_hold_quality(row, minimum_hold_quality)
+        and _level_passes_configured_quality(row, policy)
         and hold_observations >= float(policy.get("minimum_hold_observations") or 0)
         and break_probability
         <= float(policy.get("maximum_break_probability", 1.0))
@@ -1480,7 +1563,12 @@ def _consolidated_structure_levels(
         representative = max(
             components,
             key=lambda item: (
-                _level_metric(item, "hold_quality_score", "hold_probability"),
+                _level_metric(
+                    item,
+                    "ticker_relative_quality_score",
+                    "hold_quality_score",
+                    "hold_probability",
+                ),
                 _level_metric(item, "hold_observation_count"),
                 _level_metric(item, "role_flip_count"),
                 _level_metric(item, "independent_pivot_count"),
@@ -1503,11 +1591,15 @@ def _unified_entry_trigger(
     state: dict[str, Any],
 ) -> dict[str, Any]:
     policy = dict(parameters.get("structural_entry") or {})
-    if (
-        str(policy.get("selection_mode") or "").lower()
-        == "prior_completed_frame_top_n_below_session_high"
-    ):
+    selection_mode = str(policy.get("selection_mode") or "").lower()
+    if selection_mode == _COMPLETED_FRAME_TOP_N_ENTRY_MODE:
         return _prior_completed_frame_resistance_trigger(
+            observation,
+            policy,
+            state,
+        )
+    if selection_mode == _EVENT_PRICE_TOP_N_ENTRY_MODE:
+        return _event_price_top_n_resistance_trigger(
             observation,
             policy,
             state,
@@ -1995,6 +2087,105 @@ def _prior_completed_frame_resistance_trigger(
     return result
 
 
+def _event_price_top_n_resistance_trigger(
+    observation: StrategyObservation,
+    policy: dict[str, Any],
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    """Cross the live top-N qualified resistance set on each causal trade event."""
+
+    observed_at = observation.observed_at.isoformat()
+    state.pop("accepted_entry_resistance", None)
+    state.pop("pending_entry_resistance", None)
+    session_high = observation.structural_session_high
+    maximum_levels = max(1, int(policy.get("maximum_entry_levels") or 3))
+    qualified: list[dict[str, Any]] = []
+    if session_high is not None and session_high > 0:
+        for raw in observation.structural_resistance_levels:
+            if not isinstance(raw, Mapping):
+                continue
+            row = dict(raw)
+            if int(row.get("side") or 0) >= 0:
+                continue
+            price = _level_metric(row, "price", "upper", "lower")
+            if (
+                price <= 0
+                or price > session_high
+                or not _level_is_entry_quality(
+                    row, policy, observed_at=observation.observed_at
+                )
+            ):
+                continue
+            qualified.append({
+                **_compact_structural_level_reference(row),
+                "side": int(row.get("side") or -1),
+                "price": price,
+                "entry_boundary": price,
+            })
+    qualified.sort(
+        key=lambda row: (
+            -float(row["entry_boundary"]),
+            str(row.get("unified_level_id") or ""),
+        )
+    )
+    current_levels = qualified[:maximum_levels]
+    previous_price = state.get("previous_observed_price")
+    buffer_bps = float(policy.get("acceptance_buffer_bps") or 0.0)
+    is_trade_event = "market_data_update" in observation.evaluation_events
+    crossed: list[dict[str, Any]] = []
+    if is_trade_event and previous_price is not None:
+        for level in current_levels:
+            boundary = float(level["entry_boundary"])
+            threshold = boundary * (1.0 + buffer_bps / 10_000.0)
+            if float(previous_price) <= threshold and observation.price > threshold:
+                crossed.append({**level, "threshold_price": threshold})
+    selected_cross = (
+        max(crossed, key=lambda row: float(row["entry_boundary"]))
+        if crossed
+        else None
+    )
+    snapshot = {
+        "selected_at": observed_at,
+        "session_high": session_high,
+        "reference_price": observation.price,
+        "maximum_entry_levels": maximum_levels,
+        "top_selection": "highest_qualified_levels_below_session_high",
+        "levels": current_levels,
+    }
+    state["qualified_entry_resistance_snapshot"] = snapshot
+    result: dict[str, Any] = {
+        "passed": selected_cross is not None,
+        "event_native": True,
+        "reason": (
+            "event_price_top_resistance_crossed"
+            if selected_cross is not None
+            else "waiting_for_event_price_top_resistance_cross"
+            if current_levels
+            else "waiting_for_event_price_top_resistance_snapshot"
+        ),
+        "level": dict(selected_cross or {}) or None,
+        "reference_price": (
+            float(selected_cross["entry_boundary"])
+            if selected_cross is not None
+            else None
+        ),
+        "threshold_price": (
+            float(selected_cross["threshold_price"])
+            if selected_cross is not None
+            else None
+        ),
+        "previous_price": previous_price,
+        "observed_price": observation.price,
+        "observed_at": observed_at,
+        "current_snapshot": snapshot,
+        "crossed_level_ids": [
+            str(row.get("unified_level_id") or "") for row in crossed
+        ],
+    }
+    state["latest_structural_entry_trigger"] = result
+    return result
+
+
 def _entry_rule_result_with_unified_trigger(
     rule_result: dict[str, Any],
     unified_trigger: Mapping[str, Any],
@@ -2093,13 +2284,23 @@ class LongMomentumStrategyEngine:
         if (
             bool(structural_policy.get("enabled", False))
             and str(structural_policy.get("selection_mode") or "").lower()
-            == "prior_completed_frame_top_n_below_session_high"
+            in _TOP_N_SESSION_HIGH_ENTRY_MODES
         ):
-            _prior_completed_frame_resistance_trigger(
-                observation,
-                structural_policy,
-                state,
-            )
+            if (
+                str(structural_policy.get("selection_mode") or "").lower()
+                == _COMPLETED_FRAME_TOP_N_ENTRY_MODE
+            ):
+                _prior_completed_frame_resistance_trigger(
+                    observation,
+                    structural_policy,
+                    state,
+                )
+            else:
+                _event_price_top_n_resistance_trigger(
+                    observation,
+                    structural_policy,
+                    state,
+                )
         if observation.position_quantity > 0:
             return self._evaluate_position(assignment, observation, parameters, state)
         return self._evaluate_flat(assignment, observation, parameters, state)
@@ -2230,8 +2431,7 @@ class LongMomentumStrategyEngine:
         ).lower()
         if (
             reentries
-            and structural_selection_mode
-            != "prior_completed_frame_top_n_below_session_high"
+            and structural_selection_mode not in _TOP_N_SESSION_HIGH_ENTRY_MODES
         ):
             pullback_result = self._regular_reentry_pullback_result(
                 assignment,
@@ -3363,7 +3563,7 @@ class LongMomentumStrategyEngine:
         if (
             not bool(policy.get("enabled", False))
             or str(policy.get("selection_mode") or "").lower()
-            != "prior_completed_frame_top_n_below_session_high"
+            not in _TOP_N_SESSION_HIGH_ENTRY_MODES
         ):
             return None
         tranche_count = max(
@@ -6244,8 +6444,9 @@ def _initial_stop(
         1 + direction * maximum_risk_pct / 100
     )
     if method == "ordinal_qualified_support":
-        minimum_hold = float(stop.get("minimum_hold_probability") or 0.0)
-        minimum_quality = float(stop.get("minimum_hold_quality_score", 0.70))
+        relative_threshold = float(
+            stop.get("minimum_ticker_relative_quality_score") or 0.0
+        )
         minimum_observations = float(stop.get("minimum_hold_observations") or 0.0)
         ordinal = max(1, int(stop.get("support_level_ordinal") or 2))
         rows = _consolidated_structure_levels(
@@ -6271,11 +6472,7 @@ def _initial_stop(
                 )
             if (
                 on_protective_side
-                and (
-                    minimum_hold <= 0
-                    or _level_metric(row, "hold_probability") > minimum_hold
-                )
-                and _level_has_minimum_hold_quality(row, minimum_quality)
+                and _level_passes_configured_quality(row, stop)
                 and observations >= minimum_observations
             ):
                 qualified.append((candidate, row))
@@ -6303,13 +6500,27 @@ def _initial_stop(
         selected = round(selected, 4)
         if selection_evidence is not None:
             audit_rows = qualified[: max(3, ordinal + 1)]
+            quality_threshold_evidence = (
+                {
+                    "minimum_ticker_relative_quality_score": relative_threshold,
+                    "ticker_relative_unavailable_policy": "fail_open",
+                }
+                if "minimum_ticker_relative_quality_score" in stop
+                else {
+                    "minimum_hold_probability_exclusive": float(
+                        stop.get("minimum_hold_probability") or 0.0
+                    ),
+                    "minimum_hold_quality_score": float(
+                        stop.get("minimum_hold_quality_score") or 0.0
+                    ),
+                }
+            )
             selection_evidence.update({
                 "selection_mode": method,
                 "reference_price": observation.price,
                 "maximum_risk_pct": maximum_risk_pct,
                 "maximum_risk_stop": round(maximum_risk, 4),
-                "minimum_hold_probability_exclusive": minimum_hold,
-                "minimum_hold_quality_score": minimum_quality,
+                **quality_threshold_evidence,
                 "minimum_hold_observations": minimum_observations,
                 "support_level_ordinal": ordinal,
                 "qualified_level_count": len(qualified),
@@ -6459,9 +6670,13 @@ def _luld_target(
     return round(target, 4) if target > observation.price else None
 
 
-def _profit_level_score(row: dict[str, Any]) -> float:
-    """Rank levels by the backend-owned conservative hold-evidence score."""
+def _profit_level_score(
+    row: dict[str, Any], policy: Mapping[str, Any] | None = None
+) -> float:
+    """Rank by the quality authority selected by the revisioned policy."""
 
+    if "minimum_ticker_relative_quality_score" in (policy or {}):
+        return _level_metric(row, "ticker_relative_quality_score")
     return _level_metric(row, "hold_quality_score", "hold_probability")
 
 
@@ -6502,8 +6717,6 @@ def _structural_profit_targets(
         reaction = _level_metric(dict(row), "reaction_probability")
         reversal = _level_metric(dict(row), "reversal_probability")
         hold = _level_metric(dict(row), "hold_probability")
-        minimum_hold_probability = float(policy.get("minimum_hold_probability") or 0.0)
-        minimum_hold_quality = float(policy.get("minimum_hold_quality_score") or 0.0)
         hold_observations = _level_metric(dict(row), "hold_observation_count")
         if "hold_observation_count" not in row:
             hold_observations = (
@@ -6516,7 +6729,7 @@ def _structural_profit_targets(
             break_probability = max(0.0, 1.0 - hold)
         break_count = _level_metric(dict(row), "break_count")
         maximum_break_count = policy.get("maximum_break_count")
-        score = _profit_level_score(dict(row))
+        score = _profit_level_score(dict(row), policy)
         candidate = row.get("price")
         if candidate is None:
             candidate = row.get("lower") if side == "long" else row.get("upper")
@@ -6526,11 +6739,7 @@ def _structural_profit_targets(
             and confidence >= float(policy.get("minimum_level_confidence") or 0.0)
             and reaction >= float(policy.get("minimum_reaction_probability") or 0.0)
             and reversal >= float(policy.get("minimum_reversal_probability") or 0.0)
-            and (
-                minimum_hold_probability <= 0
-                or hold >= minimum_hold_probability
-            )
-            and _level_has_minimum_hold_quality(row, minimum_hold_quality)
+            and _level_passes_configured_quality(row, policy)
             and hold_observations >= float(policy.get("minimum_hold_observations") or 0.0)
             and break_probability
             <= float(policy.get("maximum_break_probability", 1.0))
@@ -6556,6 +6765,7 @@ def _structural_profit_targets(
     # them under an active quality gate would silently bypass the agreed contract.
     if (
         not ranked_candidates
+        and float(policy.get("minimum_ticker_relative_quality_score") or 0.0) <= 0.0
         and float(policy.get("minimum_hold_probability") or 0.0) <= 0.0
         and float(policy.get("minimum_hold_quality_score") or 0.0) <= 0.0
     ):
@@ -6580,7 +6790,7 @@ def _structural_profit_targets(
             "reaction_probability": nearest_strength,
             "reversal_probability": nearest_strength,
         }
-        nearest_score = _profit_level_score(nearest_row)
+        nearest_score = _profit_level_score(nearest_row, policy)
         if (
             nearest_price is not None
             and nearest_strength >= float(policy.get("minimum_level_strength") or 0.0)

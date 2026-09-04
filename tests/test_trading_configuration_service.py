@@ -1564,8 +1564,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
                 "structure_buffer_bps": 0.0,
                 "volatility_multiple": 1.25,
                 "maximum_risk_pct": 15.0,
-                "minimum_hold_probability": 0.0,
-                "minimum_hold_quality_score": 0.70,
+                "minimum_ticker_relative_quality_score": 0.20,
                 "minimum_hold_observations": 1,
                 "support_level_ordinal": 2,
                 "prefer_closer_hybrid": True,
@@ -1606,21 +1605,15 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             3,
         )
         self.assertEqual(
-            default_profile["parameters"]["protection"]["profit_ladder"]["minimum_hold_probability"],
-            0.0,
+            default_profile["parameters"]["protection"]["profit_ladder"]["minimum_ticker_relative_quality_score"],
+            0.20,
         )
         self.assertEqual(
-            default_profile["parameters"]["protection"]["profit_ladder"]["minimum_hold_quality_score"],
-            0.70,
+            default_profile["parameters"]["structural_entry"]["minimum_ticker_relative_quality_score"],
+            0.20,
         )
-        self.assertEqual(
-            default_profile["parameters"]["structural_entry"]["minimum_hold_probability"],
-            0.0,
-        )
-        self.assertEqual(
-            default_profile["parameters"]["structural_entry"]["minimum_hold_quality_score"],
-            0.70,
-        )
+        self.assertNotIn("minimum_hold_probability", default_profile["parameters"]["structural_entry"])
+        self.assertNotIn("minimum_hold_quality_score", default_profile["parameters"]["structural_entry"])
         self.assertEqual(
             default_profile["parameters"]["structural_entry"]["maximum_break_count"],
             100,
@@ -1912,7 +1905,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertEqual(
             profile["lifecycle"]["initial_entry"]["order_intent"]["deadline_ms"],
-            5_000,
+            300,
         )
         self.assertEqual(
             profile["lifecycle"]["initial_entry"]["order_intent"]["execution_policy"],
@@ -1920,7 +1913,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertEqual(
             profile["lifecycle"]["reentry"]["order_intent"]["deadline_ms"],
-            5_000,
+            300,
         )
         self.assertEqual(
             profile["lifecycle"]["reentry"]["order_intent"]["execution_policy"],
@@ -1935,12 +1928,8 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             0,
         )
         self.assertEqual(
-            profile["parameters"]["structural_entry"]["minimum_hold_probability"],
-            0.0,
-        )
-        self.assertEqual(
-            profile["parameters"]["structural_entry"]["minimum_hold_quality_score"],
-            0.70,
+            profile["parameters"]["structural_entry"]["minimum_ticker_relative_quality_score"],
+            0.20,
         )
         self.assertEqual(
             profile["parameters"]["structural_entry"]["minimum_hold_observations"],
@@ -1948,7 +1937,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertEqual(
             profile["parameters"]["structural_entry"]["selection_mode"],
-            "prior_completed_frame_top_n_below_session_high",
+            "event_price_top_n_below_session_high",
         )
         self.assertEqual(
             profile["parameters"]["structural_entry"]["maximum_entry_levels"],
@@ -2184,8 +2173,8 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(resolved["protection"]["stop"]["method"], "ordinal_qualified_support")
         self.assertEqual(resolved["protection"]["stop"]["maximum_risk_pct"], 15.0)
         self.assertEqual(
-            resolved["protection"]["stop"]["minimum_hold_quality_score"],
-            0.70,
+            resolved["protection"]["stop"]["minimum_ticker_relative_quality_score"],
+            0.20,
         )
         self.assertTrue(resolved["protection"]["trailing"]["enabled"])
 
@@ -2611,12 +2600,15 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertFalse(migrated_profile["parameters"]["profit_pocket"]["enabled"])
         self.assertNotIn("capabilities", migrated_profile)
 
-    def test_schema_v45_removes_stale_profit_pocket_from_protected_strategy(self) -> None:
+    def test_schema_v46_migrates_event_native_entry_and_relative_quality(self) -> None:
         legacy = self._draft()
-        legacy["schema_version"] = 45
+        legacy["schema_version"] = 46
         profile = legacy["strategy"]["profiles"][0]
         profile["action_policy_ids"] = ["profit-pocket"]
         profile["parameters"]["profit_pocket"]["enabled"] = True
+        profile["parameters"]["entry_candle_confirmation"]["enabled"] = True
+        profile["lifecycle"]["initial_entry"]["order_intent"]["deadline_ms"] = 5_000
+        profile["lifecycle"]["reentry"]["order_intent"]["deadline_ms"] = 5_000
 
         migrated = _migrate_draft(legacy)
 
@@ -2624,6 +2616,25 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(migrated_profile["definition_revision"], STRATEGY_REVISION)
         self.assertEqual(migrated_profile["action_policy_ids"], [])
         self.assertFalse(migrated_profile["parameters"]["profit_pocket"]["enabled"])
+        self.assertFalse(migrated_profile["parameters"]["entry_candle_confirmation"]["enabled"])
+        self.assertEqual(
+            migrated_profile["parameters"]["structural_entry"]["selection_mode"],
+            "event_price_top_n_below_session_high",
+        )
+        self.assertEqual(
+            migrated_profile["parameters"]["structural_entry"]["minimum_ticker_relative_quality_score"],
+            0.20,
+        )
+        self.assertEqual(
+            migrated_profile["parameters"]["protection"]["stop"]["minimum_ticker_relative_quality_score"],
+            0.20,
+        )
+        self.assertEqual(
+            migrated_profile["parameters"]["protection"]["profit_ladder"]["minimum_ticker_relative_quality_score"],
+            0.20,
+        )
+        self.assertEqual(migrated_profile["lifecycle"]["initial_entry"]["order_intent"]["deadline_ms"], 300)
+        self.assertEqual(migrated_profile["lifecycle"]["reentry"]["order_intent"]["deadline_ms"], 300)
 
     def _draft(self) -> dict:
         with patch(

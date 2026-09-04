@@ -85,10 +85,10 @@ This is a reference-data normalization, not a price signal. A missing, invalid, 
 
 After Early Squeeze Move and liquidity admission, the long-momentum strategy may use the book as follows:
 
-- Qualify entry, target, and protective-support levels with `hold_quality_score >= 0.70`. Missing or malformed conservative quality fails qualification; `hold_probability` remains compatibility and audit evidence rather than a substitute.
-- Build the three-level entry frontier from the prior completed 1-second book. When a qualified range covers the session high, include that range and the next two qualified ranges below it. When the high is an uncovered long wick, begin with the highest qualified range below it and take the next two. The raw session-high price is never synthesized into a level.
-- Enter only after VWAP and 1-second MACD confirmation plus causal acceptance above one of those selected resistance ranges.
-- Place protection at the strategy-selected qualified support or flipped resistance, subject to the strategy risk cap. OMS may supply missing protection defaults but cannot replace protection explicitly defined by the strategy.
+- Qualify entry, target, and protective-support levels with `ticker_relative_quality_score >= 0.20` when the frozen same-role ticker baseline is available. `same_session_provisional`, `insufficient_population`, and `insufficient_level_evidence` remain fail-open exactly as defined by the shared book; raw hold probability and absolute hold quality are audit evidence, not active qualification gates.
+- Build the three-level entry frontier from the latest causal book by taking the three highest qualified resistance prices at or below the current session high. The raw session-high price is never synthesized into a level; a long wick simply leaves the highest book level as the first selection.
+- Enter on the exact causal trade event that moves from at-or-below to above one of those selected ranges, after the event-time VWAP, liquidity/volume, spread, and forming 1-second MACD checks pass. Entry never waits for the 1-second candle to close.
+- Place protection only from strategy-selected qualified support, subject to the strategy risk cap. Resistance cannot be selected as a protective stop. OMS may supply missing protection defaults but cannot replace protection explicitly defined by the strategy.
 - Allocate integer-share profit tranches across reachable resistance ranges. Orders are OCA siblings within the position lifecycle; fills resize remaining protection rather than creating independent positions.
 - Continue or reenter only after acceptance above a broken range and a successful support retest.
 - Exit remaining quantity on rejected breakout, accepted loss of flipped support, strong reversal evidence, inability to progress to the next structural range, or the late MACD fallback.

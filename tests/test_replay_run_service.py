@@ -561,9 +561,9 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                     "kind": "trade",
                     "ticker": "AAPL",
                     # The marketable entry is submitted by the 09:45:01
-                    # strategy frame with a 750 ms causal execution deadline.
+                    # strategy frame inside the 300 ms very-urgent deadline.
                     # Keep the representative fill inside that contract.
-                    "ts": "2026-07-28T09:45:01.500-04:00",
+                    "ts": "2026-07-28T09:45:01.250-04:00",
                     "sequence": 2,
                     "price": 101.0,
                     "size": 1_000,
@@ -606,9 +606,17 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                 },
                 {
                     "ticker": "AAPL",
+                    "timeframe": "100ms",
+                    "as_of": "2026-07-28T09:45:00.900-04:00",
+                    "sequence": 3,
+                    "bar": {"close": 101.0},
+                    "indicator": entry,
+                },
+                {
+                    "ticker": "AAPL",
                     "timeframe": "1s",
                     "as_of": "2026-07-28T09:45:01-04:00",
-                    "sequence": 3,
+                    "sequence": 4,
                     "bar": {"open": 100.9, "close": 101.0},
                     "indicator": entry,
                 },
@@ -616,7 +624,7 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                     "ticker": "AAPL",
                     "timeframe": "1s",
                     "as_of": "2026-07-28T09:45:04-04:00",
-                    "sequence": 4,
+                    "sequence": 5,
                     "bar": {"open": 100.5, "close": 100.0},
                     "indicator": strategic_exit,
                 },
@@ -806,7 +814,11 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIs(controller._canvas_state_cache, terminal_cache)
 
                 self.assertEqual(controller.processed_events, 4)
-                self.assertGreaterEqual(len(trading["executions"]), 2)
+                self.assertGreaterEqual(
+                    len(trading["executions"]),
+                    2,
+                    trading["strategy_activity"],
+                )
                 self.assertEqual(payload["fills"], [])
                 self.assertEqual(payload["orders"], [])
                 self.assertFalse(
@@ -3224,7 +3236,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_flat_completed_frame_entry_skips_intrabar_evaluation(self) -> None:
         now = datetime(2026, 8, 21, 4, 2, 57, tzinfo=NEW_YORK)
-        parameters = default_long_momentum_parameters()
+        parameters = default_long_momentum_parameters(revision=33)
         parameters["structural_entry"]["selection_mode"] = (
             "prior_completed_frame_top_n_below_session_high"
         )
@@ -3242,7 +3254,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         assigned = StrategyAssignment(
             assignment_id="sugp-flat-event-clock",
             strategy_id=STRATEGY_ID,
-            strategy_revision=STRATEGY_REVISION,
+            strategy_revision=33,
             account_id="DU123456",
             ticker="SUGP",
             conid=1,
@@ -3280,6 +3292,96 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(processed)
         runtime.process_account_strategy_observation.assert_not_awaited()
+
+    async def test_flat_event_price_entry_evaluates_forming_macd_on_triggering_trade(self) -> None:
+        now = datetime(2026, 8, 21, 4, 2, 52, tzinfo=NEW_YORK)
+        parameters = default_long_momentum_parameters()
+        parameters["structural_entry"].update({
+            "enabled": True,
+            "selection_mode": "event_price_top_n_below_session_high",
+        })
+        controller = ReplayRunController(
+            ReplayRunDefinition(
+                session_date=date(2026, 8, 21),
+                start_time=time(4, 0),
+                end_time=time(4, 12),
+                tickers=("SUGP",),
+                configuration_revision=approved_configuration(),
+                mode=RunMode.BACKTEST,
+            ),
+            runtime_root=Path(tempfile.gettempdir()),
+        )
+        assigned = StrategyAssignment(
+            assignment_id="sugp-event-native-entry",
+            strategy_id=STRATEGY_ID,
+            strategy_revision=STRATEGY_REVISION,
+            account_id="DU123456",
+            ticker="SUGP",
+            conid=1,
+            status=AssignmentStatus.WATCHING,
+            permissions=StrategyPermissions(observe=True, enter=True),
+            parameters=parameters,
+            state={"liquidity_admitted_at": now.isoformat()},
+            created_at=now,
+            updated_at=now,
+        )
+        strategy = MagicMock()
+        strategy.assignments.return_value = (assigned,)
+        runtime = MagicMock()
+        runtime.broker.positions = AsyncMock(return_value=[])
+        runtime.process_account_strategy_observation = AsyncMock()
+        controller._strategy = strategy
+        controller._runtime = runtime
+        controller._strategy_engaged_tickers.add("SUGP")
+        controller._active_historical_watchlist_tickers.add("SUGP")
+        controller._latest_strategy_observations["SUGP"] = StrategyObservation(
+            ticker="SUGP",
+            observed_at=now,
+            price=3.39,
+            bid=3.38,
+            ask=3.40,
+            macd_line=0.02,
+            macd_signal=0.01,
+            source_timeframe="1s",
+            structural_session_high=3.50,
+            structural_resistance_levels=({
+                "unified_level_id": "L3",
+                "side": -1,
+                "price": 3.40,
+                "hold_observation_count": 1,
+                "ticker_relative_quality_status": "available",
+                "ticker_relative_quality_score": 0.20,
+            },),
+            source_values={
+                "indicator.macd.line@1s": {"observed_at": now.isoformat(), "value": 0.02},
+                "indicator.macd.signal@1s": {"observed_at": now.isoformat(), "value": 0.01},
+            },
+        )
+        controller._provisional_macd_states["SUGP"] = _ProvisionalMacdState(
+            ema_fast=3.38,
+            ema_slow=3.37,
+            signal=0.009,
+            committed_at=now,
+            sample_count=26,
+        )
+        event = _debug_market_events(({
+            "kind": "trade",
+            "ticker": "SUGP",
+            "ts": "2026-08-21T04:02:52.250-04:00",
+            "sequence": 90,
+            "price": 3.41,
+            "size": 100,
+        },))[0]
+
+        processed = await controller._process_strategy_market_event(event)
+
+        self.assertTrue(processed)
+        observation = runtime.process_account_strategy_observation.await_args.args[0]
+        self.assertEqual(observation.observed_at, event.ts)
+        self.assertEqual(observation.price, 3.41)
+        self.assertEqual(observation.evaluation_events, ("market_data_update",))
+        self.assertNotIn("bar_close", observation.evaluation_events)
+        self.assertIn("indicator.macd.line@1s", observation.changed_source_ids)
 
     async def test_managed_position_market_event_evaluates_latest_indicators_without_claiming_bar_close(self) -> None:
         now = datetime(2026, 8, 21, 4, 2, 57, tzinfo=NEW_YORK)

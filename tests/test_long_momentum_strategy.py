@@ -46,27 +46,34 @@ from src.backend import trading_runtime_service
 NOW = datetime(2026, 7, 24, 14, 0, tzinfo=timezone.utc)
 
 
-def test_structural_quality_uses_backend_score_and_preserves_audit_evidence() -> None:
+def test_structural_quality_uses_ticker_relative_score_and_preserves_audit_evidence() -> None:
     level = {
         "unified_level_id": 7,
         "price": 3.45,
         "created_at_ms": int(NOW.timestamp() * 1_000) - 1_000,
         "hold_probability": 0.90,
         "hold_quality_score": 0.42,
+        "ticker_relative_quality_score": 0.19,
+        "ticker_relative_quality_status": "available",
+        "ticker_relative_quality_population_size": 12,
+        "ticker_relative_quality_reference_session": "2026-07-23",
+        "ticker_relative_quality_revision": "frozen-prior-session-role-ecdf-midrank-v1",
+        "ticker_relative_quality_distribution_hash": "abc123",
         "hold_rate": 1.0,
         "hold_observation_count": 2,
         "hold_evidence_reliability": 0.2,
         "hold_score_revision": "beta22-wilson90-v1",
     }
     policy = {
-        "minimum_hold_probability": 0.0,
-        "minimum_hold_quality_score": 0.50,
+        "minimum_ticker_relative_quality_score": 0.20,
         "minimum_hold_observations": 2,
     }
 
     assert not _level_is_entry_quality(level, policy, observed_at=NOW)
     reference = _compact_structural_level_reference(level)
     assert reference["hold_quality_score"] == 0.42
+    assert reference["ticker_relative_quality_score"] == 0.19
+    assert reference["ticker_relative_quality_status"] == "available"
     assert reference["hold_observation_count"] == 2
     assert reference["hold_score_revision"] == "beta22-wilson90-v1"
 
@@ -128,6 +135,10 @@ def confirmed_observation(**overrides) -> StrategyObservation:
             if "hold_quality_score" not in level:
                 level["hold_quality_score"] = level.get("hold_probability", 1.0)
                 level.setdefault("hold_observation_count", 1)
+            level.setdefault(
+                "ticker_relative_quality_status",
+                "same_session_provisional",
+            )
             enriched_levels.append(level)
         if field in payload:
             payload[field] = tuple(enriched_levels)
@@ -148,6 +159,18 @@ def confirmed_observation(**overrides) -> StrategyObservation:
 
 
 class LongMomentumStrategyTests(unittest.TestCase):
+    def test_ticker_relative_quality_threshold_is_inclusive_and_unavailable_fails_open(self) -> None:
+        policy = {
+            "minimum_ticker_relative_quality_score": 0.20,
+            "minimum_hold_observations": 1,
+        }
+        base = {"hold_observation_count": 1}
+
+        self.assertTrue(_level_is_entry_quality({**base, "ticker_relative_quality_status": "available", "ticker_relative_quality_score": 0.20}, policy, observed_at=NOW))
+        self.assertFalse(_level_is_entry_quality({**base, "ticker_relative_quality_status": "available", "ticker_relative_quality_score": 0.1999}, policy, observed_at=NOW))
+        self.assertTrue(_level_is_entry_quality({**base, "ticker_relative_quality_status": "same_session_provisional", "ticker_relative_quality_score": 0.01}, policy, observed_at=NOW))
+        self.assertTrue(_level_is_entry_quality({**base, "ticker_relative_quality_status": "insufficient_population"}, policy, observed_at=NOW))
+
     def test_conservative_quality_threshold_is_inclusive_and_fails_closed(self) -> None:
         policy = {
             "minimum_hold_probability": 0.0,
@@ -240,11 +263,11 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(snapshot["top_selection"], "highest_qualified_levels_below_session_high")
         self.assertEqual([row["price"] for row in snapshot["levels"]], [10.0, 9.8, 9.6])
 
-    def test_stop_support_uses_only_levels_meeting_conservative_quality(self) -> None:
+    def test_stop_support_uses_only_levels_meeting_ticker_relative_quality(self) -> None:
         levels = (
-            {"unified_level_id": "missing", "side": 1, "price": 99.0, "hold_quality_score": None, "hold_observation_count": 1},
-            {"unified_level_id": "threshold", "side": 1, "price": 98.0, "hold_quality_score": 0.70, "hold_observation_count": 1},
-            {"unified_level_id": "second", "side": 1, "price": 97.0, "hold_quality_score": 0.80, "hold_observation_count": 1},
+            {"unified_level_id": "below", "side": 1, "price": 99.0, "ticker_relative_quality_status": "available", "ticker_relative_quality_score": 0.19, "hold_observation_count": 1},
+            {"unified_level_id": "threshold", "side": 1, "price": 98.0, "ticker_relative_quality_status": "available", "ticker_relative_quality_score": 0.20, "hold_observation_count": 1},
+            {"unified_level_id": "second", "side": 1, "price": 97.0, "ticker_relative_quality_status": "available", "ticker_relative_quality_score": 0.80, "hold_observation_count": 1},
         )
 
         result = LongMomentumStrategyEngine().evaluate(
@@ -262,7 +285,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(evidence["selected_support_level"]["unified_level_id"], "second")
         self.assertEqual(evidence["qualified_level_count"], 2)
 
-    def test_profit_targets_use_inclusive_conservative_quality_and_fail_closed(self) -> None:
+    def test_profit_targets_use_inclusive_ticker_relative_quality(self) -> None:
         parameters = default_long_momentum_parameters()
         parameters["protection"]["profit_ladder"].update({
             "minimum_level_strength": 0.0,
@@ -271,9 +294,9 @@ class LongMomentumStrategyTests(unittest.TestCase):
         observation = confirmed_observation(
             price=100.0,
             structural_resistance_levels=(
-                {"unified_level_id": "missing", "side": -1, "price": 101.0, "hold_quality_score": None, "hold_observation_count": 1},
-                {"unified_level_id": "below", "side": -1, "price": 101.5, "hold_quality_score": 0.6999, "hold_observation_count": 1},
-                {"unified_level_id": "threshold", "side": -1, "price": 102.0, "hold_quality_score": 0.70, "hold_observation_count": 1},
+                {"unified_level_id": "missing", "side": -1, "price": 101.0, "ticker_relative_quality_status": "available", "ticker_relative_quality_score": None, "hold_observation_count": 1},
+                {"unified_level_id": "below", "side": -1, "price": 101.5, "ticker_relative_quality_status": "available", "ticker_relative_quality_score": 0.1999, "hold_observation_count": 1},
+                {"unified_level_id": "threshold", "side": -1, "price": 102.0, "ticker_relative_quality_status": "available", "ticker_relative_quality_score": 0.20, "hold_observation_count": 1},
             ),
         )
 
@@ -763,11 +786,11 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(signal.metadata["macd"]["macd_signal"], 0.20)
 
     def test_entry_waits_for_completed_one_second_macd_frame(self) -> None:
-        parameters = default_long_momentum_parameters()
+        parameters = default_long_momentum_parameters(revision=33)
         parameters["structural_entry"]["enabled"] = False
 
-        result = LongMomentumStrategyEngine().evaluate(
-            assignment(parameters=parameters),
+        result = LongMomentumStrategyEngine(revision=33).evaluate(
+            assignment(parameters=parameters, strategy_revision=33),
             confirmed_observation(
                 price=100.75,
                 bar_open=100.80,
@@ -781,11 +804,11 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(signal.metadata["entry_frame"]["required_timeframe"], "1s")
 
     def test_entry_rejects_bearish_completed_one_second_candle(self) -> None:
-        parameters = default_long_momentum_parameters()
+        parameters = default_long_momentum_parameters(revision=33)
         parameters["structural_entry"]["enabled"] = False
 
-        result = LongMomentumStrategyEngine().evaluate(
-            assignment(parameters=parameters),
+        result = LongMomentumStrategyEngine(revision=33).evaluate(
+            assignment(parameters=parameters, strategy_revision=33),
             confirmed_observation(price=100.75, bar_open=100.80),
         )
 
@@ -1421,7 +1444,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(entered.state["breakout_level"], 100.7)
 
     def test_unified_entry_waits_for_closed_frame_after_intrasecond_break(self) -> None:
-        parameters = default_long_momentum_parameters()
+        parameters = default_long_momentum_parameters(revision=33)
         parameters["structural_entry"]["enabled"] = True
         levels = ({
             "unified_level_id": 23,
@@ -1432,9 +1455,9 @@ class LongMomentumStrategyTests(unittest.TestCase):
             "confidence": 0.9,
             "reaction_probability": 0.9,
         },)
-        engine = LongMomentumStrategyEngine()
+        engine = LongMomentumStrategyEngine(revision=33)
         armed = engine.evaluate(
-            assignment(parameters=parameters),
+            assignment(parameters=parameters, strategy_revision=33),
             confirmed_observation(
                 price=100.45,
                 structural_resistance_levels=levels,
@@ -1442,7 +1465,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
         )
 
         entered = engine.evaluate(
-            assignment(parameters=parameters, state=dict(armed.state)),
+            assignment(parameters=parameters, strategy_revision=33, state=dict(armed.state)),
             confirmed_observation(
                 observed_at=NOW + timedelta(milliseconds=275),
                 price=100.51,
@@ -1471,7 +1494,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
         )
 
         completed = engine.evaluate(
-            assignment(parameters=parameters, state=dict(entered.state)),
+            assignment(parameters=parameters, strategy_revision=33, state=dict(entered.state)),
             confirmed_observation(
                 observed_at=NOW + timedelta(seconds=1),
                 price=100.51,
@@ -1481,6 +1504,67 @@ class LongMomentumStrategyTests(unittest.TestCase):
             ),
         )
         self.assertEqual(completed.evaluation.signals[0].action, "enter_long")
+
+    def test_event_native_top_three_enters_on_cross_without_waiting_for_bar_close(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["structural_entry"].update({
+            "enabled": True,
+            "selection_mode": "event_price_top_n_below_session_high",
+            "maximum_entry_levels": 3,
+            "minimum_salience": 0.0,
+            "minimum_confidence": 0.0,
+            "minimum_reaction_probability": 0.0,
+            "minimum_ticker_relative_quality_score": 0.20,
+            "minimum_hold_observations": 1,
+            "maximum_break_probability": 1.0,
+        })
+        levels = ({
+            "unified_level_id": "L3",
+            "side": -1,
+            "price": 3.40,
+            "hold_observation_count": 1,
+            "ticker_relative_quality_status": "available",
+            "ticker_relative_quality_score": 0.20,
+        },)
+        engine = LongMomentumStrategyEngine()
+        prepared = engine.evaluate(
+            assignment(parameters=parameters),
+            confirmed_observation(
+                price=3.39,
+                structural_session_high=3.50,
+                structural_resistance_levels=levels,
+                source_timeframe="1s",
+            ),
+        )
+
+        entered = engine.evaluate(
+            assignment(parameters=parameters, state=dict(prepared.state)),
+            confirmed_observation(
+                observed_at=NOW + timedelta(milliseconds=250),
+                price=3.41,
+                bar_open=3.42,
+                structural_session_high=3.50,
+                structural_resistance_levels=levels,
+                source_timeframe="",
+                evaluation_events=("market_data_update",),
+                changed_source_ids=(
+                    "market.last_price",
+                    "indicator.macd.line@1s",
+                    "indicator.macd.signal@1s",
+                ),
+                source_values={
+                    "indicator.macd.line@1s": {"value": 0.04},
+                    "indicator.macd.signal@1s": {"value": 0.02},
+                },
+            ),
+        )
+
+        signal = entered.evaluation.signals[0]
+        self.assertEqual(signal.action, "enter_long")
+        self.assertEqual(entered.evaluation.intents[0].event_time, NOW + timedelta(milliseconds=250))
+        self.assertEqual(signal.metadata["unified_structural_trigger"]["level"]["unified_level_id"], "L3")
+        self.assertEqual(signal.metadata["unified_structural_trigger"]["previous_price"], 3.39)
+        self.assertNotIn("bar_close", signal.metadata.get("entry_frame", {}))
 
     def test_unified_entry_does_not_chase_a_higher_level_after_arming(self) -> None:
         parameters = default_long_momentum_parameters()
@@ -1550,11 +1634,11 @@ class LongMomentumStrategyTests(unittest.TestCase):
             result.state["pending_entry_resistance"]["boundary"], 100.50
         )
 
-    def test_unified_entry_requires_established_high_hold_level_evidence(self) -> None:
+    def test_unified_entry_requires_established_ticker_relative_level_evidence(self) -> None:
         parameters = default_long_momentum_parameters()
         parameters["structural_entry"].update({
             "enabled": True,
-            "minimum_hold_probability": 0.75,
+            "minimum_ticker_relative_quality_score": 0.20,
             "minimum_independent_pivot_count": 2,
             "minimum_level_age_ms": 120_000,
         })
@@ -1574,7 +1658,8 @@ class LongMomentumStrategyTests(unittest.TestCase):
                 price=100.60,
                 structural_resistance_levels=({
                     **common,
-                    "hold_probability": 0.9,
+                    "ticker_relative_quality_status": "available",
+                    "ticker_relative_quality_score": 0.90,
                     "created_at_ms": int(
                         (NOW - timedelta(seconds=30)).timestamp() * 1_000
                     ),
@@ -1587,7 +1672,8 @@ class LongMomentumStrategyTests(unittest.TestCase):
                 price=100.60,
                 structural_resistance_levels=({
                     **common,
-                    "hold_probability": 0.70,
+                    "ticker_relative_quality_status": "available",
+                    "ticker_relative_quality_score": 0.19,
                     "created_at_ms": int(
                         (NOW - timedelta(minutes=3)).timestamp() * 1_000
                     ),
@@ -1600,7 +1686,8 @@ class LongMomentumStrategyTests(unittest.TestCase):
                 price=100.60,
                 structural_resistance_levels=({
                     **common,
-                    "hold_probability": 0.90,
+                    "ticker_relative_quality_status": "available",
+                    "ticker_relative_quality_score": 0.20,
                     "created_at_ms": int(
                         (NOW - timedelta(minutes=3)).timestamp() * 1_000
                     ),
@@ -1618,14 +1705,14 @@ class LongMomentumStrategyTests(unittest.TestCase):
         )
         self.assertEqual(mature.evaluation.signals[0].action, "enter_long")
 
-    def test_entry_uses_only_level_book_boundaries_at_or_above_hold_threshold(self) -> None:
+    def test_entry_uses_only_level_book_boundaries_at_or_above_relative_threshold(self) -> None:
         parameters = default_long_momentum_parameters()
         parameters["structural_entry"].update({
             "enabled": True,
             "minimum_salience": 0.0,
             "minimum_confidence": 0.0,
             "minimum_reaction_probability": 0.0,
-            "minimum_hold_probability": 0.80,
+            "minimum_ticker_relative_quality_score": 0.20,
             "maximum_break_probability": 1.0,
             "minimum_independent_pivot_count": 0,
             "minimum_level_age_ms": 0,
@@ -1633,8 +1720,8 @@ class LongMomentumStrategyTests(unittest.TestCase):
             "require_active_resistance_frontier": False,
         })
         levels = (
-            {"unified_level_id": "weak", "side": -1, "upper": 100.50, "hold_probability": 0.79},
-            {"unified_level_id": "qualified", "side": -1, "upper": 101.00, "hold_probability": 0.80},
+            {"unified_level_id": "weak", "side": -1, "upper": 100.50, "ticker_relative_quality_status": "available", "ticker_relative_quality_score": 0.19},
+            {"unified_level_id": "qualified", "side": -1, "upper": 101.00, "ticker_relative_quality_status": "available", "ticker_relative_quality_score": 0.20},
         )
         engine = LongMomentumStrategyEngine()
         waiting = engine.evaluate(
@@ -2462,6 +2549,8 @@ class LongMomentumStrategyTests(unittest.TestCase):
             "reaction_probability": 0.90,
             "reversal_probability": 0.90,
             "hold_probability": 0.80,
+            "ticker_relative_quality_status": "available",
+            "ticker_relative_quality_score": 0.80,
             "independent_pivot_count": 4,
             "role_flip_count": 2,
             "pressure_bias": -0.8,
@@ -2581,7 +2670,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
         )
         self.assertEqual(result.evaluation.signals[0].metadata["profit_targets"], [3.95])
 
-    def test_second_next_target_filters_level_book_by_hold_probability(self) -> None:
+    def test_second_next_target_filters_level_book_by_ticker_relative_quality(self) -> None:
         parameters = default_long_momentum_parameters()
         parameters["protection"]["profit_ladder"].update({
             "maximum_targets": 1,
@@ -2591,7 +2680,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
             "minimum_level_confidence": 0.0,
             "minimum_reaction_probability": 0.0,
             "minimum_reversal_probability": 0.0,
-            "minimum_hold_probability": 0.85,
+            "minimum_ticker_relative_quality_score": 0.20,
             "maximum_break_probability": 1.0,
             "minimum_composite_score": 0.0,
         })
@@ -2600,10 +2689,10 @@ class LongMomentumStrategyTests(unittest.TestCase):
             confirmed_observation(
                 price=101.0,
                 structural_resistance_levels=(
-                    {"side": -1, "price": 101.5, "hold_probability": 0.84},
-                    {"side": -1, "price": 102.0, "hold_probability": 0.85},
-                    {"side": -1, "price": 103.0, "hold_probability": 0.90},
-                    {"side": -1, "price": 104.0, "hold_probability": 0.95},
+                    {"side": -1, "price": 101.5, "ticker_relative_quality_status": "available", "ticker_relative_quality_score": 0.19},
+                    {"side": -1, "price": 102.0, "ticker_relative_quality_status": "available", "ticker_relative_quality_score": 0.20},
+                    {"side": -1, "price": 103.0, "ticker_relative_quality_status": "available", "ticker_relative_quality_score": 0.90},
+                    {"side": -1, "price": 104.0, "ticker_relative_quality_status": "available", "ticker_relative_quality_score": 0.95},
                 ),
             ),
         )
@@ -2961,6 +3050,12 @@ class LongMomentumStrategyTests(unittest.TestCase):
             "any",
         )
         self.assertEqual(config["taxonomy"]["indicators"][0]["timeframe"], "100ms")
+        self.assertTrue(config["taxonomy"]["allow_developing_inputs"])
+        self.assertFalse(
+            long_momentum_strategy_definition(revision=33)["config"]["taxonomy"][
+                "allow_developing_inputs"
+            ]
+        )
         self.assertNotIn("evaluation_triggers", config["taxonomy"])
         self.assertNotIn("signal.vwap_transition.score", {
             row["source_id"] for row in config["input_catalog"]
