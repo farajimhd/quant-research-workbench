@@ -2,6 +2,22 @@
 
 ## 2026
 
+### [2026-09-03 14:51 PDT - Repair long-strategy execution, backtest review, and historical structure authority](docs/codex/chat-summaries/2026/CHAT-20260903-1451-long-strategy-execution-backtest-uat.md)
+
+- Chat/task ID: `01a06941-c1c8-7dd2-a1ad-3208abed64e8`
+- Related tasks: `TASK-0014`, `TASK-0051`, `TASK-0206`
+- Summary written: 2026-09-04 16:04 PDT
+
+Repaired broker-cash risk sizing, event-native top-three structural entries,
+support-only protection, working partial fills, qualified target movement, and
+strategy intent/fill/P&L chart evidence without ticker-specific rules. Added
+multi-ticker Backtest launches and completed-run time, fill, P&L, ticker, and
+period metadata. Disabled incompatible profit pocketing. A mistaken historical
+execution-clock requirement caused a 6/126-day 502; commit `d44d09a0` restored
+the certified SIP-condition approximation, and the stale gateway was restarted
+ready on algorithm 16 and the v18 checkpoint set. Fresh strategy acceptance and
+short-policy evaluation remain open.
+
 ### [2026-09-01 19:59 PDT - Repair SUGP strategy UAT, historical review, and structural checkpoint authority](docs/codex/chat-summaries/2026/CHAT-20260901-1959-structural-checkpoint-campaign-strategy-debug-uat.md)
 
 - Chat/task ID: `01a0600e-5ddf-78f3-a6fc-0984902f8208`
