@@ -584,9 +584,11 @@ def test_unified_structure_scores_can_filter_loaded_levels_without_a_history_req
     assert "minimumSalience" not in renderer_source
     assert "minimumReactionProbability" not in renderer_source
     assert "minimumReversalProbability" not in renderer_source
-    assert "Evidence-quality filters" in renderer_source
+    assert "Evidence quality" in renderer_source
     assert 'label="hold_quality_score"' in renderer_source
     assert 'label="ticker_relative_quality_score"' in renderer_source
+    assert 'badge="Ticker-normalized"' in renderer_source
+    assert "Same-role percentile against this ticker's distribution frozen at 04:00 ET." in renderer_source
     assert 'label="hold_observation_count"' in renderer_source
     assert 'label="hold_evidence_reliability"' in renderer_source
     assert 'label="break_probability maximum"' in renderer_source
@@ -626,6 +628,9 @@ def test_unified_structure_scores_can_filter_loaded_levels_without_a_history_req
     assert ".legend-row-actions {\n  display: inline-flex;\n  flex: 0 0 auto;" in styles_source
     assert "margin-left: 0;" in styles_source
     assert ".chart-legend-editor .legend-history-control legend" in styles_source
+    assert ".chart-legend-editor.unified-structure-editor" in styles_source
+    assert "width: min(430px, calc(var(--app-zoomed-viewport-width, 100vw) - 16px));" in styles_source
+    assert ".legend-filter-control-copy code" in styles_source
 
 
 def test_debug_page_can_open_a_durable_completed_backtest_review() -> None:

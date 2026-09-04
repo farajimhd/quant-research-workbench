@@ -2442,10 +2442,16 @@ function LegendEditor({
 
   if (!anchor) return null;
   return createPortal(
-    <div className="chart-legend-editor" ref={editorRef} role="dialog" aria-label={`${item.label} indicator settings`} style={position}>
+    <div
+      className={item.supportsUnifiedFilters ? "chart-legend-editor unified-structure-editor" : "chart-legend-editor"}
+      ref={editorRef}
+      role="dialog"
+      aria-label={`${item.label} presentation settings`}
+      style={position}
+    >
       <div className="chart-legend-editor-header">
         <span>{item.label}</span>
-        <button aria-label="Close indicator settings" onClick={onClose} title="Close" type="button">
+        <button aria-label="Close presentation settings" onClick={onClose} title="Close" type="button">
           <X size={13} />
         </button>
       </div>
@@ -2567,14 +2573,50 @@ function LegendEditor({
       ) : null}
       {item.itemKind === "zone" && item.supportsUnifiedFilters ? (
         <fieldset className="legend-unified-filters">
-          <legend>Evidence-quality filters</legend>
-          <ScoreThresholdControl label="hold_quality_score" value={item.minimumHoldQualityScore ?? 0} onChange={(minimumHoldQualityScore) => onUpdate({ minimumHoldQualityScore })} />
-          <ScoreThresholdControl label="ticker_relative_quality_score" value={item.minimumTickerRelativeQualityScore ?? 0} onChange={(minimumTickerRelativeQualityScore) => onUpdate({ minimumTickerRelativeQualityScore })} />
-          <CountThresholdControl label="hold_observation_count" value={item.minimumHoldObservations ?? 0} onChange={(minimumHoldObservations) => onUpdate({ minimumHoldObservations })} />
-          <ScoreThresholdControl label="hold_evidence_reliability" value={item.minimumHoldEvidenceReliability ?? 0} onChange={(minimumHoldEvidenceReliability) => onUpdate({ minimumHoldEvidenceReliability })} />
-          <ScoreThresholdControl label="break_probability maximum" value={item.maximumBreakProbability ?? 1} onChange={(maximumBreakProbability) => onUpdate({ maximumBreakProbability })} />
-          <ScoreThresholdControl label="|pressure_bias|" value={item.minimumPressureMagnitude ?? 0} onChange={(minimumPressureMagnitude) => onUpdate({ minimumPressureMagnitude })} />
-          <small>`ticker_relative_quality_score` compares cumulative `hold_quality_score` with the same-role distribution frozen at 04:00 ET. Same-session provisional levels fail open. Changes apply immediately to loaded chart data.</small>
+          <legend>
+            <span>Evidence quality</span>
+            <small>Show levels that meet every enabled threshold.</small>
+          </legend>
+          <ScoreThresholdControl
+            description="Conservative 90% Wilson lower bound for this level."
+            label="hold_quality_score"
+            value={item.minimumHoldQualityScore ?? 0}
+            onChange={(minimumHoldQualityScore) => onUpdate({ minimumHoldQualityScore })}
+          />
+          <ScoreThresholdControl
+            badge="Ticker-normalized"
+            description="Same-role percentile against this ticker's distribution frozen at 04:00 ET."
+            label="ticker_relative_quality_score"
+            value={item.minimumTickerRelativeQualityScore ?? 0}
+            onChange={(minimumTickerRelativeQualityScore) => onUpdate({ minimumTickerRelativeQualityScore })}
+          />
+          <CountThresholdControl
+            description="Minimum number of observed hold or break outcomes."
+            label="hold_observation_count"
+            value={item.minimumHoldObservations ?? 0}
+            onChange={(minimumHoldObservations) => onUpdate({ minimumHoldObservations })}
+          />
+          <ScoreThresholdControl
+            description="Evidence coverage and observation-depth reliability."
+            label="hold_evidence_reliability"
+            value={item.minimumHoldEvidenceReliability ?? 0}
+            onChange={(minimumHoldEvidenceReliability) => onUpdate({ minimumHoldEvidenceReliability })}
+          />
+          <ScoreThresholdControl
+            description="Highest accepted estimated probability of a break."
+            label="break_probability maximum"
+            value={item.maximumBreakProbability ?? 1}
+            onChange={(maximumBreakProbability) => onUpdate({ maximumBreakProbability })}
+          />
+          <ScoreThresholdControl
+            description="Minimum absolute executed-pressure imbalance."
+            label="|pressure_bias|"
+            value={item.minimumPressureMagnitude ?? 0}
+            onChange={(minimumPressureMagnitude) => onUpdate({ minimumPressureMagnitude })}
+          />
+          <p className="legend-filter-note">
+            Same-session provisional levels are not removed by the ticker-relative filter. Changes apply immediately to loaded chart data.
+          </p>
           <span className="legend-filter-subtitle">Visible roles and states</span>
           <span className="legend-filter-grid">
             <UnifiedVisibilityToggle checked={item.showUnifiedSupport !== false} label="Support" onChange={(showUnifiedSupport) => onUpdate({ showUnifiedSupport })} />
@@ -2667,11 +2709,26 @@ function LegendEditor({
   );
 }
 
-function ScoreThresholdControl({ label, onChange, value }: { label: string; onChange: (value: number) => void; value: number }) {
+function ScoreThresholdControl({
+  badge,
+  description,
+  label,
+  onChange,
+  value
+}: {
+  badge?: string;
+  description: string;
+  label: string;
+  onChange: (value: number) => void;
+  value: number;
+}) {
   const percent = Math.round(clampNumber(value, 0, 1, 0) * 100);
   return (
-    <label>
-      {label}
+    <label className="legend-filter-control">
+      <span className="legend-filter-control-copy">
+        <span><code>{label}</code>{badge ? <em>{badge}</em> : null}</span>
+        <small>{description}</small>
+      </span>
       <span className="legend-range-control">
         <input
           aria-label={label}
@@ -2688,11 +2745,14 @@ function ScoreThresholdControl({ label, onChange, value }: { label: string; onCh
   );
 }
 
-function CountThresholdControl({ label, onChange, value }: { label: string; onChange: (value: number) => void; value: number }) {
+function CountThresholdControl({ description, label, onChange, value }: { description: string; label: string; onChange: (value: number) => void; value: number }) {
   const count = Math.max(0, Math.round(value));
   return (
-    <label>
-      {label}
+    <label className="legend-filter-control">
+      <span className="legend-filter-control-copy">
+        <span><code>{label}</code></span>
+        <small>{description}</small>
+      </span>
       <span className="legend-range-control">
         <input
           aria-label={label}
