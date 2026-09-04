@@ -35,6 +35,8 @@ def test_powershell_launcher_resolves_python_from_the_active_host() -> None:
     assert "C:\\Users\\g835l" not in source
     assert "Resolve-PythonExecutable" in source
     assert "$env:CONDA_PREFIX" in source
+    assert "if (-not $env:DOTENV_PATHS)" in source
+    assert "'secrets\\.env'" in source
     assert "& $resolvedPython @launcherArguments" in source
 
 

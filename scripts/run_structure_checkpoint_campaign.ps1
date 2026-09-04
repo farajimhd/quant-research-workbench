@@ -26,6 +26,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $env:PYTHONDONTWRITEBYTECODE = '1'
+$repoRoot = Split-Path -Parent $PSScriptRoot
+
+if (-not $env:DOTENV_PATHS) {
+    $repoParent = Split-Path -Parent $repoRoot
+    $tradingRoot = Split-Path -Parent $repoParent
+    $canonicalSecretEnv = Join-Path $tradingRoot 'secrets\.env'
+    if (Test-Path -LiteralPath $canonicalSecretEnv -PathType Leaf) {
+        $env:DOTENV_PATHS = $canonicalSecretEnv
+    }
+}
 
 function Resolve-PythonExecutable {
     param([string]$Requested)
