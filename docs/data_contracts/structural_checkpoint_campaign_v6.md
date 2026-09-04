@@ -107,6 +107,15 @@ baseline revision and hash are checkpointed for exact restart equivalence;
 per-level relative scores remain recomputable projections and are excluded from
 checkpoint certification hashes.
 
+Successor recovery does not copy a reusable historical checkpoint byte for
+byte. It walks the certified prefix chronologically, recomputes absolute score
+fields from that day's raw counts, rebuilds each day's frozen relative baseline
+from the preceding migrated terminal checkpoint, and then writes a new
+certification hash and predecessor chain. This metadata-only migration does not
+replay market events or alter function-F state. The first authority day has no
+earlier in-scope reference population and therefore remains explicitly
+unavailable unless its source checkpoint already carries the same revision.
+
 ## Process and terminal ownership
 
 For multi-process runs the Python launcher starts a detached supervisor. The

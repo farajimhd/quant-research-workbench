@@ -1224,56 +1224,63 @@ impl GenericStructureEngine {
         &self,
         effective_session: NaiveDate,
     ) -> TickerRelativeQualityBaseline {
-        let mut support_quality = self
-            .unified_tracks
-            .iter()
-            .filter(|track| {
-                track.lifecycle.visible()
-                    && track.level.side > 0
-                    && track.level.hold_observation_count > 0
-                    && track.level.hold_quality_score.is_finite()
-            })
-            .map(|track| track.level.hold_quality_score.clamp(0.0, 1.0))
-            .collect::<Vec<_>>();
-        let mut resistance_quality = self
-            .unified_tracks
-            .iter()
-            .filter(|track| {
-                track.lifecycle.visible()
-                    && track.level.side < 0
-                    && track.level.hold_observation_count > 0
-                    && track.level.hold_quality_score.is_finite()
-            })
-            .map(|track| track.level.hold_quality_score.clamp(0.0, 1.0))
-            .collect::<Vec<_>>();
-        support_quality.sort_by(f64::total_cmp);
-        resistance_quality.sort_by(f64::total_cmp);
-        let session_start_ms = New_York
-            .from_local_datetime(
-                &effective_session
-                    .and_hms_opt(4, 0, 0)
-                    .expect("04:00 is a valid session boundary"),
-            )
-            .single()
-            .expect("04:00 New York is unambiguous")
-            .with_timezone(&Utc)
-            .timestamp_millis();
-        let reference_session = self.session_anchor;
-        let distribution_hash = relative_quality_distribution_hash(
+        build_ticker_relative_quality_baseline(
+            &self.unified_tracks,
             effective_session,
-            reference_session,
-            &support_quality,
-            &resistance_quality,
-        );
-        TickerRelativeQualityBaseline {
-            effective_session,
-            reference_session,
-            session_start_ms,
-            support_quality,
-            resistance_quality,
-            revision: TICKER_RELATIVE_QUALITY_SCORE_REVISION.to_string(),
-            distribution_hash,
+            self.session_anchor,
+        )
+    }
+
+    /// Rebuilds deterministic score projections while copying an already
+    /// certified event-state checkpoint into a successor checkpoint set.
+    /// This never replays or changes function-F transitions.
+    pub fn migrate_checkpoint_derived_projections(
+        checkpoint: &GenericStructureCheckpoint,
+        prior_checkpoint: Option<&GenericStructureCheckpoint>,
+        effective_session: NaiveDate,
+    ) -> Result<GenericStructureCheckpoint, String> {
+        if checkpoint.algorithm_version != GENERIC_STRUCTURE_ALGORITHM_VERSION {
+            return Err(format!(
+                "checkpoint algorithm v{} cannot be migrated by v{}",
+                checkpoint.algorithm_version, GENERIC_STRUCTURE_ALGORITHM_VERSION
+            ));
         }
+        let mut migrated = checkpoint.clone();
+        for track in &mut migrated.unified_tracks {
+            refresh_unified_hold_evidence(&mut track.level);
+            clear_ticker_relative_quality_projection(&mut track.level);
+        }
+        let existing_baseline = migrated.relative_quality_baseline.clone();
+        migrated.relative_quality_baseline = match prior_checkpoint {
+            Some(prior) => {
+                if prior.algorithm_version != GENERIC_STRUCTURE_ALGORITHM_VERSION {
+                    return Err(format!(
+                        "prior checkpoint algorithm v{} cannot seed v{} projections",
+                        prior.algorithm_version, GENERIC_STRUCTURE_ALGORITHM_VERSION
+                    ));
+                }
+                if !prior.sym.eq_ignore_ascii_case(&checkpoint.sym) {
+                    return Err(format!(
+                        "prior checkpoint ticker {} does not match {}",
+                        prior.sym, checkpoint.sym
+                    ));
+                }
+                let mut tracks = prior.unified_tracks.clone();
+                for track in &mut tracks {
+                    refresh_unified_hold_evidence(&mut track.level);
+                }
+                Some(build_ticker_relative_quality_baseline(
+                    &tracks,
+                    effective_session,
+                    prior.session_anchor,
+                ))
+            }
+            None => existing_baseline.filter(|baseline| {
+                baseline.effective_session == effective_session
+                    && baseline.revision == TICKER_RELATIVE_QUALITY_SCORE_REVISION
+            }),
+        };
+        Ok(migrated)
     }
 
     fn prune_levels(&mut self) {
@@ -2725,16 +2732,74 @@ fn refresh_unified_hold_evidence(level: &mut UnifiedStructureLevel) {
     }
 }
 
-fn apply_ticker_relative_quality_projection(
-    level: &mut UnifiedStructureLevel,
-    baseline: Option<&TickerRelativeQualityBaseline>,
-) {
+fn build_ticker_relative_quality_baseline(
+    tracks: &[UnifiedLevelTrack],
+    effective_session: NaiveDate,
+    reference_session: Option<NaiveDate>,
+) -> TickerRelativeQualityBaseline {
+    let mut support_quality = tracks
+        .iter()
+        .filter(|track| {
+            track.lifecycle.visible()
+                && track.level.side > 0
+                && track.level.hold_observation_count > 0
+                && track.level.hold_quality_score.is_finite()
+        })
+        .map(|track| track.level.hold_quality_score.clamp(0.0, 1.0))
+        .collect::<Vec<_>>();
+    let mut resistance_quality = tracks
+        .iter()
+        .filter(|track| {
+            track.lifecycle.visible()
+                && track.level.side < 0
+                && track.level.hold_observation_count > 0
+                && track.level.hold_quality_score.is_finite()
+        })
+        .map(|track| track.level.hold_quality_score.clamp(0.0, 1.0))
+        .collect::<Vec<_>>();
+    support_quality.sort_by(f64::total_cmp);
+    resistance_quality.sort_by(f64::total_cmp);
+    let session_start_ms = New_York
+        .from_local_datetime(
+            &effective_session
+                .and_hms_opt(4, 0, 0)
+                .expect("04:00 is a valid session boundary"),
+        )
+        .single()
+        .expect("04:00 New York is unambiguous")
+        .with_timezone(&Utc)
+        .timestamp_millis();
+    let distribution_hash = relative_quality_distribution_hash(
+        effective_session,
+        reference_session,
+        &support_quality,
+        &resistance_quality,
+    );
+    TickerRelativeQualityBaseline {
+        effective_session,
+        reference_session,
+        session_start_ms,
+        support_quality,
+        resistance_quality,
+        revision: TICKER_RELATIVE_QUALITY_SCORE_REVISION.to_string(),
+        distribution_hash,
+    }
+}
+
+fn clear_ticker_relative_quality_projection(level: &mut UnifiedStructureLevel) {
     level.ticker_relative_quality_score = None;
     level.ticker_relative_quality_status.clear();
     level.ticker_relative_quality_population_size = 0;
     level.ticker_relative_quality_reference_session = None;
     level.ticker_relative_quality_revision.clear();
     level.ticker_relative_quality_distribution_hash.clear();
+}
+
+fn apply_ticker_relative_quality_projection(
+    level: &mut UnifiedStructureLevel,
+    baseline: Option<&TickerRelativeQualityBaseline>,
+) {
+    clear_ticker_relative_quality_projection(level);
 
     let Some(baseline) = baseline else {
         level.ticker_relative_quality_status = "insufficient_population".to_string();
@@ -5048,6 +5113,67 @@ mod tests {
                 .unwrap()
                 .distribution_hash
         );
+    }
+
+    #[test]
+    fn checkpoint_projection_migration_rewrites_every_reused_daily_row() {
+        let prior_session = NaiveDate::from_ymd_opt(2026, 8, 20).unwrap();
+        let current_session = NaiveDate::from_ymd_opt(2026, 8, 21).unwrap();
+        let mut prior_engine = GenericStructureEngine::new("TEST");
+        prior_engine.session_anchor = Some(prior_session);
+        for index in 0..10_u64 {
+            let mut level = unified_test_level(
+                index + 1,
+                -1,
+                3.0 + index as f64 * 0.05,
+                3.01 + index as f64 * 0.05,
+            );
+            level.created_at_ms = new_york_ms(2026, 8, 20, 10, 0, 0) + index as i64;
+            level.hold_count = (index + 1) as u32;
+            level.break_count = 1;
+            refresh_unified_hold_evidence(&mut level);
+            prior_engine.unified_tracks.push(UnifiedLevelTrack {
+                level,
+                lifecycle: LevelLifecycle::Active,
+                last_relation: -1,
+            });
+        }
+        let prior = prior_engine.checkpoint();
+        let mut current = prior.clone();
+        current.session_anchor = Some(current_session);
+        current.unified_tracks[9].level.hold_count = 50;
+        current.unified_tracks[9].level.hold_quality_score = 0.0;
+        current.unified_tracks[9].level.hold_score_revision.clear();
+
+        let migrated = GenericStructureEngine::migrate_checkpoint_derived_projections(
+            &current,
+            Some(&prior),
+            current_session,
+        )
+        .unwrap();
+        assert!(migrated.unified_tracks[9].level.hold_quality_score > 0.8);
+        assert_eq!(
+            migrated
+                .relative_quality_baseline
+                .as_ref()
+                .unwrap()
+                .reference_session,
+            Some(prior_session)
+        );
+
+        let mut restored = GenericStructureEngine::new("TEST");
+        restored.seed_checkpoint(&migrated);
+        let projected = restored
+            .snapshot(
+                Utc.timestamp_millis_opt(new_york_ms(2026, 8, 21, 20, 0, 0))
+                    .unwrap(),
+            )
+            .unified_levels
+            .into_iter()
+            .find(|level| level.unified_level_id == 10)
+            .unwrap();
+        assert_eq!(projected.ticker_relative_quality_status, "available");
+        assert_eq!(projected.ticker_relative_quality_population_size, 10);
     }
 
     #[test]

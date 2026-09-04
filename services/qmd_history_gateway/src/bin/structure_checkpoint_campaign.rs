@@ -1273,6 +1273,7 @@ async fn recover_reusable_checkpoint_prefix(
     let mut source_predecessor_chain = String::new();
     let mut target_predecessor_checkpoint = String::new();
     let mut target_predecessor_chain = String::new();
+    let mut prior_migrated_checkpoint = None;
     for session in &manifest.sessions {
         if first_affected.is_some_and(|affected| session.session_date >= affected) {
             break;
@@ -1304,9 +1305,15 @@ async fn recover_reusable_checkpoint_prefix(
         source_predecessor_checkpoint = source_certification.checkpoint_sha256.clone();
         source_predecessor_chain = source_certification.chain_sha256.clone();
 
+        let migrated_checkpoint = GenericStructureEngine::migrate_checkpoint_derived_projections(
+            &row.checkpoint,
+            prior_migrated_checkpoint.as_ref(),
+            row.session_date,
+        )?;
+
         let certification = if row.source_revision_token.contains("execution-clock-v1:") {
             build_checkpoint_certification(
-                &row.checkpoint,
+                &migrated_checkpoint,
                 source_certification.event_evidence.clone(),
                 row.session_date,
                 row.authority_start,
@@ -1317,7 +1324,7 @@ async fn recover_reusable_checkpoint_prefix(
             )?
         } else {
             build_recovered_checkpoint_certification(
-                &row.checkpoint,
+                &migrated_checkpoint,
                 source_certification.event_evidence.clone(),
                 row.session_date,
                 row.authority_start,
@@ -1348,12 +1355,13 @@ async fn recover_reusable_checkpoint_prefix(
                 source_revision_token: session.source_revision.token.clone(),
                 source_complete: true,
                 built_at: Utc::now(),
-                checkpoint: row.checkpoint.clone(),
+                checkpoint: migrated_checkpoint.clone(),
                 certification: Some(certification.clone()),
             })
             .await?;
         target_predecessor_checkpoint = certification.checkpoint_sha256;
         target_predecessor_chain = certification.chain_sha256;
+        prior_migrated_checkpoint = Some(migrated_checkpoint);
     }
     Ok(())
 }

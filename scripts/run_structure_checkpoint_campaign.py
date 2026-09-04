@@ -27,6 +27,7 @@ RUNTIME_BINARY_NAME = (
 MAX_PROCESS_WORKERS = 80
 RECOVERY_PRIORITY_TICKERS = ("SUGP", "JUNS")
 HOLD_SCORE_REVISION = "beta22-wilson90-v1"
+RELATIVE_SCORE_REVISION = "frozen-prior-session-role-ecdf-midrank-v1"
 CERTIFICATION_SCHEMA_VERSION = 2
 EXECUTION_CLOCK_AUTHORITY = "q_live.historical_event_execution_clock_v1"
 EXECUTION_CLOCK_COVERAGE_AUTHORITY = "q_live.historical_event_execution_clock_coverage_v1"
@@ -634,6 +635,10 @@ def render_rich(status: dict[str, Any], set_id: str):
         f"{HOLD_SCORE_REVISION} | repaired from raw counts on load",
     )
     summary.add_row(
+        "Relative quality",
+        f"{RELATIVE_SCORE_REVISION} | migrated across reused daily checkpoints",
+    )
+    summary.add_row(
         "Executable",
         f"{Path(status.get('executable_path', '?')).name} | "
         f"{status.get('executable_sha256', 'unknown')[:16]}",
@@ -1118,7 +1123,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Campaign executable: {binary} (SHA-256 {binary_sha256})", flush=True)
         print(
             f"Checkpoint migration: {HOLD_SCORE_REVISION} derived evidence is "
-            "repaired from raw counts on load; no purge required.",
+            f"repaired from raw counts and {RELATIVE_SCORE_REVISION} baselines are "
+            "rebuilt across reused daily checkpoints; no purge required.",
             flush=True,
         )
         if launcher.stop_existing:
