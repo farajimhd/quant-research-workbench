@@ -1809,6 +1809,8 @@ impl HistoricalEventSource {
         sender: mpsc::Sender<Result<Vec<LiveCompactEvent>, String>>,
     ) -> Result<(), String> {
         let plan = self.source_plan(&window).await?;
+        self.archive_execution_clock_revision(&window, &plan)
+            .await?;
         let mut ticker_filter = ticker_filter(&window.tickers)?;
         if let Some(event_type) = event_type_filter.filter(|value| *value <= 1) {
             ticker_filter.push_str(&format!(
@@ -2012,6 +2014,7 @@ impl HistoricalEventSource {
     ) -> Result<(Vec<LiveCompactEvent>, Option<HistoricalCursor>), String> {
         validate_window(window)?;
         let plan = self.source_plan(window).await?;
+        self.archive_execution_clock_revision(window, &plan).await?;
         let limit = limit.clamp(1, 100_000);
         let mut ticker_filter = ticker_filter(&window.tickers)?;
         if let Some(event_type) = event_type_filter.filter(|value| *value <= 1) {
@@ -2252,6 +2255,7 @@ impl HistoricalEventSource {
     pub async fn coverage(&self, window: &EventWindow) -> Result<EventCoverage, String> {
         validate_window(window)?;
         let plan = self.source_plan(window).await?;
+        self.archive_execution_clock_revision(window, &plan).await?;
         let ticker_filter = ticker_filter(&window.tickers)?;
         let mut selects = Vec::new();
         let mut source_tables = Vec::new();
