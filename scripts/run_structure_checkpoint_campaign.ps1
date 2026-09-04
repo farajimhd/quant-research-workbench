@@ -11,6 +11,8 @@ param(
     [ValidateRange(1, 80)]
     [int]$Workers = 80,
     [string]$Binary,
+    [ValidatePattern('^[0-9a-fA-F]{40}$')]
+    [string]$SourceCommit,
     [switch]$NoBuild,
     [switch]$Rebuild,
     [switch]$ForegroundSupervisor,
@@ -61,6 +63,7 @@ if ($StartDate.HasValue) {
 if ($Binary) {
     $launcherArguments += @('--binary', [IO.Path]::GetFullPath($Binary))
 }
+if ($SourceCommit) { $launcherArguments += @('--source-commit', $SourceCommit.ToLowerInvariant()) }
 if ($NoBuild) { $launcherArguments += '--no-build' }
 if ($Rebuild) { $launcherArguments += '--rebuild' }
 if ($ForegroundSupervisor) { $launcherArguments += '--foreground-supervisor' }

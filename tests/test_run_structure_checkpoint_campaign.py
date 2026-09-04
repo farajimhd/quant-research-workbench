@@ -17,6 +17,7 @@ from scripts.run_structure_checkpoint_campaign import (
     recovery_plan,
     request_campaign_stop,
     sha256_file,
+    source_commit,
     status_is_fully_certified,
     validate_process_worker_count,
     worker_process_creationflags,
@@ -113,6 +114,23 @@ def test_rebuild_option_is_owned_by_launcher() -> None:
     )
 
     assert launcher.rebuild is True
+    assert campaign == ["--checkpoint-set-id", "successor"]
+
+
+def test_explicit_source_commit_is_validated_without_git() -> None:
+    revision = "9" * 40
+    assert source_commit(revision) == revision
+    with pytest.raises(RuntimeError, match="40-character"):
+        source_commit("933e3335")
+
+
+def test_source_commit_option_is_owned_by_launcher() -> None:
+    revision = "9" * 40
+    launcher, campaign = parse_launcher_args(
+        ["--source-commit", revision, "--checkpoint-set-id", "successor"]
+    )
+
+    assert launcher.source_commit == revision
     assert campaign == ["--checkpoint-set-id", "successor"]
 
 

@@ -125,6 +125,7 @@ Example successor recovery through the PowerShell entry point:
   -CheckpointSetId canonical-tradable-20250101-20260831-v16-clock-v2 `
   -RuntimeDir D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v6\canonical-tradable-20250101-20260831-v16-clock-v2 `
   -ResumeFromRuntime D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v5\canonical-tradable-20250101-20260831-v16-cert-v1 `
+  -SourceCommit $env:QMD_STRUCTURE_CAMPAIGN_SOURCE_COMMIT `
   -Workers 80 `
   -Rebuild
 ```
@@ -135,6 +136,9 @@ planning/build wrapper is retired and can no longer accidentally enforce a
 forces a workstation-local Cargo build into the managed runtime target, even
 when an older runtime executable exists; this avoids both stale binaries and
 Windows trust failures caused by copying an executable from another machine.
+Gitless workstation mirrors must pass `-SourceCommit` as the full committed
+laptop revision; the value is propagated unchanged into the detached
+supervisor and immutable campaign manifest.
 
 ## Certification and sealing
 

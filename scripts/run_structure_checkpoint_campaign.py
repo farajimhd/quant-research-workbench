@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -39,10 +40,23 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest().upper()
 
 
-def source_commit() -> str:
-    return subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True
-    ).strip()
+def source_commit(explicit: str | None = None) -> str:
+    if explicit:
+        value = explicit.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{40}", value):
+            raise RuntimeError("--source-commit must be a full 40-character Git commit")
+        return value
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=REPO_ROOT,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(
+            "the deployed source mirror has no Git metadata; pass --source-commit with the committed laptop revision"
+        ) from exc
 
 
 def worker_process_creationflags(platform_name: str = os.name) -> int:
@@ -131,6 +145,7 @@ def parse_launcher_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]
     parser.add_argument("--supervisor-child", action="store_true")
     parser.add_argument("--foreground-supervisor", action="store_true")
     parser.add_argument("--process-workers", type=int)
+    parser.add_argument("--source-commit")
     parser.add_argument("--resume-from-runtime", "--recover-from-runtime", dest="resume_from_runtime")
     return parser.parse_known_args(argv)
 
@@ -340,6 +355,7 @@ def launch_detached_supervisor(
     workers: int,
     environ: dict[str, str],
     recovery_source_runtime: Path | None = None,
+    campaign_source_commit: str | None = None,
 ) -> int:
     runtime_value = option_value(campaign_args, "--runtime-dir")
     set_id = option_value(campaign_args, "--checkpoint-set-id")
@@ -364,6 +380,11 @@ def launch_detached_supervisor(
         "--supervisor-child",
         "--process-workers",
         str(workers),
+        *(
+            ["--source-commit", campaign_source_commit]
+            if campaign_source_commit is not None
+            else []
+        ),
         *(
             ["--resume-from-runtime", str(recovery_source_runtime)]
             if recovery_source_runtime is not None
@@ -716,6 +737,7 @@ def run_process_campaign(
     environ: dict[str, str],
     recovery_source_runtime: Path | None = None,
     recovery_source_manifest: dict[str, Any] | None = None,
+    campaign_source_commit: str | None = None,
 ) -> int:
     validate_process_worker_count(workers)
     runtime_value = option_value(campaign_args, "--runtime-dir")
@@ -756,7 +778,7 @@ def run_process_campaign(
         "source_commit": (
             existing_manifest.get("source_commit")
             if existing_manifest is not None
-            else source_commit()
+            else source_commit(campaign_source_commit)
         ),
         "executable_sha256": binary_sha256,
         "certification_schema_version": CERTIFICATION_SCHEMA_VERSION,
@@ -1000,7 +1022,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "Launcher options: --binary PATH, --no-build, --monitor-existing, "
             "--rebuild, --stop-existing {graceful,fast}, --foreground-supervisor, "
-            "--resume-from-runtime PATH, "
+            "--resume-from-runtime PATH, --source-commit COMMIT, "
             f"--process-workers 1..{MAX_PROCESS_WORKERS}"
         )
         print("All other options are forwarded to structure-checkpoint-campaign v6.")
@@ -1021,6 +1043,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         if launcher.rebuild and launcher.no_build:
             raise RuntimeError("--rebuild and --no-build are mutually exclusive")
+        campaign_source_commit = (
+            source_commit(launcher.source_commit)
+            if not launcher.monitor_existing and not launcher.stop_existing
+            else launcher.source_commit
+        )
         binary = resolve_binary(
             launcher.binary,
             not launcher.no_build,
@@ -1059,6 +1086,7 @@ def main(argv: list[str] | None = None) -> int:
                     workers,
                     environ,
                     recovery_source_runtime,
+                    campaign_source_commit,
                 )
             result = run_process_campaign(
                 binary,
@@ -1068,6 +1096,7 @@ def main(argv: list[str] | None = None) -> int:
                 environ,
                 recovery_source_runtime,
                 recovery_source_manifest,
+                campaign_source_commit,
             )
             if launcher.supervisor_child:
                 runtime_value = option_value(campaign_args, "--runtime-dir")
