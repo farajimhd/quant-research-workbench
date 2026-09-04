@@ -1,5 +1,11 @@
 # Long Momentum Campaign
 
+> **Current intended behavior:** See [Long Momentum Strategy: Intended Behavior
+> and System Repair Plan](LONG_MOMENTUM_STRATEGY_CONTRACT.md). The September 4
+> user corrections supersede conflicting behavior below, including structural
+> tranches/adds and candle-driven target advancement. This page retains older
+> implementation context; it is not the current strategy specification.
+
 ## Boundary
 
 `long-momentum-campaign@34` is the current post-refactor automatic strategy. It is

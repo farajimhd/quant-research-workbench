@@ -1,0 +1,448 @@
+# Long Momentum Strategy: Intended Behavior and System Repair Plan
+
+Last updated: 2026-09-04
+
+Related task: TASK-0014
+
+Status: Behavioral reference; implementation acceptance remains open.
+
+## 1. Authority and purpose
+
+This document records the user's intended long momentum strategy, including
+the corrections supplied during the September 4 code and backtest review.
+It is a reference for implementation and acceptance, not a claim that the
+current code implements every rule or that the strategy is profitable.
+
+The user's latest corrections supersede conflicting descriptions in
+[Long Momentum Campaign](LONG_MOMENTUM_CAMPAIGN.md), older chat summaries, and
+existing implementation behavior. Earlier immutable strategy revisions and
+completed runs retain their original meaning; this document does not migrate
+them. Unresolved mechanics are identified explicitly in section 10 rather
+than filled in with new trading rules.
+
+The intended policy is a long momentum breakout strategy over a continuously
+updated structural level book. It requests entry when a qualified resistance
+is crossed with valid momentum and execution evidence. Portfolio allocates
+capital and quantity. OMS completes that allocation, protects actual exposure,
+and maintains resting profit targets intended to catch long wicks and sudden
+upward moves.
+
+## 2. Ownership across the system
+
+| Concern | Authority | Required boundary |
+|---|---|---|
+| Eligible market events, quotes, VWAP, MACD, and structural levels | Shared market-data/QMD producers | Strategy consumes causal observations; it must not invent a second indicator or structural book. |
+| Admission, entry, stop policy, target policy, exit, and re-entry | Strategy | Emits semantic requests and their evidence, not broker commands or independently sized account orders. |
+| Account selection, allocation, quantity, and reservations | Portfolio | Applies account settings, competing requests, working orders, existing positions, cash, risk, and other constraints. |
+| Placement, amendment, cancellation, fill reconciliation, and protection execution | OMS | Executes each approved account allocation and manages its unfilled remainder. |
+| Accepted orders, fills, cash, and positions | Broker; simulated broker in backtest | An intent or local acknowledgement is not a fill. |
+| Chart and activity presentation | Shared journal projections | Shows what the decision and broker actually knew at each event; does not drive execution. |
+
+One strategy opportunity may result in approved allocations on multiple
+accounts. Each allocation has its own quantity, reservation, broker orders,
+fills, protection, and outcome. A rejected or delayed allocation on one account
+must not be presented as the result for every account.
+
+The strategy's request is not an instruction to invest all money in one
+account. Portfolio may approve, resize, defer, or reject allocations according
+to its configured policy. The inspected configuration's 8% planned/open-risk
+ceilings and 10,000-share cap are versioned configuration values, not a reason
+to hardcode sizing into Strategy or OMS. The 8% risk ceiling is distinct from
+the distance between entry and a protective stop.
+
+## 3. Admission and continuous structural monitoring
+
+An Early Squeeze Move admits a ticker into the campaign. Admission includes
+the configured price, session volume, dollar volume, activity, and liquidity
+requirements. Once admitted, the ticker remains monitored according to the
+campaign lifecycle; every subsequent trade need not create another admission.
+
+Admission does not waive order-time requirements. At a potential entry, the
+strategy still requires the configured current spread, trade activity, VWAP,
+MACD, veto, and freshness checks.
+
+The structural book must incorporate current-day events and recent qualified
+levels as they become causally available. New levels, role changes, qualified
+level updates, and the changing session high must reach Strategy before the
+corresponding decision. Refreshing trade price while retaining an older book
+is insufficient. This requirement does not discard valid historical levels
+or authorize a current-day-only filter that the user has not specified.
+
+Entry, stop, and target levels use the agreed
+`ticker_relative_quality_score >= 0.20` gate. Missing, non-finite, or
+below-threshold scores do not qualify. Current-day level eligibility must be
+reconciled with the producer's frozen-reference normalization contract; it
+must not be achieved by silently bypassing quality qualification.
+
+Every decision needs the exact book revision/as-of time, source-event identity,
+level IDs, level roles, prices/zones, qualification evidence, and session high.
+Old values must retain their source timestamps when reused; a new decision
+timestamp does not make an old structural or indicator value fresh.
+
+## 4. Entry rule
+
+### 4.1 Candidate resistance set
+
+At the current causal event:
+
+1. Take the current qualified resistance records from the shared level book.
+2. Restrict entry candidates to prices at or below the current session high.
+3. Select the three highest such resistance prices, or the available qualified
+   subset when fewer than three exist.
+4. Evaluate an actual upward trade-price crossing of a selected resistance.
+
+This set must follow changes in the current-day book and high of day. A wick
+does not create a synthetic resistance at the high of day. The set is not a
+fixed snapshot from campaign admission or the last entry.
+
+Entry candidates are different from the profit-target ladder. The former are
+the highest resistances at/below high of day; the latter are ordered qualified
+resistances above the relevant position/target reference. Evidence and chart
+labels must identify which set is being shown.
+
+### 4.2 Confirmation at the crossing
+
+The trade crossing is evaluated without waiting for a completed one-second
+candle. At that same causal evaluation, the agreed momentum conditions are:
+
+- One-second MACD line is above its signal line.
+- MACD line is above zero; the signal line need not be above zero.
+- Price is above executable VWAP.
+- Configured liquidity, activity, volume, veto, and freshness gates pass.
+
+Forming one-second MACD is evaluated from information available at the event.
+A later candle's favorable value cannot retroactively validate a failed
+crossing. The configured gates and observed values must be recorded so an
+entry or missed entry can be explained without reconstructing it from a later
+chart image.
+
+### 4.3 One entry request
+
+A valid opportunity creates one logical entry request. Portfolio determines
+the approved allocation for each account. Further fills of that allocation
+are completion of the same entry, not new Strategy adds.
+
+Crossing another candidate resistance while the entry is being acquired must
+not generate structural-tranche `add_long` requests. The rejected one-third
+tranche design and its residual add machinery are not part of this strategy.
+Repeated market events, acknowledgements, retries, or reconnects must not
+duplicate the logical entry request or its allocation.
+
+## 5. Portfolio allocation and OMS entry completion
+
+Portfolio evaluates the opportunity against the latest authoritative account
+state, competing entry requests, working allocations, existing positions,
+reservations, and configured constraints. Account allocations must be
+identified separately and reserved without spending the same funds twice.
+
+For each approved allocation, OMS owns this lifecycle:
+
+1. Submit the authorized entry order and record broker acknowledgement.
+2. Reconcile actual fills, including fills received during an amendment or
+   cancellation race.
+3. Compute the remaining approved quantity from cumulative fills and any
+   explicit Portfolio amendment.
+4. While the entry remains authorized and incomplete, update the remaining buy
+   limit to the fresh current bid as requested by the user.
+5. Continue the bounded execution loop until filled, an actual Strategy exit
+   or authorized cancellation occurs, or an explicit allocation/broker
+   constraint requires resolution.
+
+For an unchanged allocation:
+
+`remaining quantity = approved total quantity - cumulative confirmed entry fills`
+
+When the broker modification API expects total quantity, OMS must retain that
+API convention while separately tracking the remainder. Sending the remainder
+as a new total must not accidentally cancel approved shares or fall below
+already-filled quantity.
+
+Buying at the bid is passive: prompt amendments do not guarantee immediate
+fills or permit fabricated fills. Initial-order pricing must be specified
+separately from the user's explicit bid-following remainder rule.
+
+OMS must not interpret a partial fill as permission to stop working the rest,
+nor use a new Strategy entry/add to recover the missing quantity. A cash or
+risk limit cannot be ignored in order to complete the order. If a new price
+requires more funding than authorized, OMS and Portfolio must reconcile the
+remaining allocation/reservation and record the resulting decision. OMS must
+not silently resize the mandate or loop indefinitely on the same rejection.
+
+Bound request frequency and in-flight amendments, deduplicate unchanged prices,
+and reconcile ambiguous broker outcomes before resubmitting. The exact retry
+cadence is an execution parameter, not an artificial Strategy holding delay.
+
+Actual partial exposure must remain protected while acquisition continues.
+When an exit becomes authoritative, stop further acquisition, reconcile
+late fills, and liquidate the actual remaining position. No late buy may
+silently reopen a completed lifecycle.
+
+## 6. Support-based trailing protection
+
+The user confirmed that protection is both **support-based and trailing**.
+Trailing protection itself is not a defect and must not be removed on that
+premise.
+
+The retained initial selection rule is the second nearest qualified support
+below entry. A resistance record must not be substituted for long support,
+and OMS must preserve Strategy's valid protection selection rather than
+replacing it with a generic hybrid/ATR stop.
+
+The protective policy must specify how support determines the trailing
+protection and how subsequent changes are authorized. Its exact formula needs
+the resolution recorded in section 10. In particular, an initially
+support-derived fixed trailing distance and a stop that advances only with
+new qualified supports are different policies. The user's latest short
+clarification does not justify silently choosing between them.
+
+The intended support-based contract must not be claimed as satisfied by an
+unexplained percentage fallback. The existing 15% cap/fallback and behavior
+when fewer than two supports qualify require explicit reconciliation with
+this contract. Portfolio may constrain an allocation for excessive risk;
+that does not automatically authorize OMS to invent a different stop.
+
+Initial and subsequent protection evidence must retain the selected support,
+support qualification, anchor/distance calculation, active stop, actual
+broker protection, and causal reason/time for every modification. Broker-native
+orders are suitable only if their behavior matches the resolved policy.
+
+## 7. Resting structural profit target
+
+### 7.1 Purpose and initial placement
+
+The profit target is intended to be hit by a long wick or sudden upward move.
+It must already be working at the broker when that move occurs. Reaching the
+target price is not the time to begin synthesizing the target order.
+
+For a long position, order qualified resistances above the relevant entry
+reference from nearest to farthest: R1, R2, R3, R4, and so on. Place the initial
+profit-taking limit at R3. Retain the actual level IDs, prices, qualification,
+and ordering used for that selection.
+
+### 7.2 Advancement on the first resistance hit
+
+The user's rule is: **when the first resistance is hit, move the target one
+resistance up**. It does not require the current profit target to be crossed
+and does not require a later candle close.
+
+Illustrative prices only:
+
+| Event | Active ladder/reference | Target |
+|---|---|---|
+| Entry below qualified levels 4.10, 4.20, 4.30, 4.40 | R1=4.10, R2=4.20, R3=4.30 | Resting at 4.30 |
+| Actual hit of the first resistance, 4.10 | Advance one level through the causal ladder | Amend target to 4.40 |
+| Another event remains above 4.10 without a new first-level hit | Same consumed hit | No additional advancement |
+| No first-resistance hit occurs | No advancement authority | Keep existing target |
+
+This example defines the one-step rule, not fixed prices or a frozen live
+ladder. Current qualified resistance updates still matter, and the handling
+of ladder changes during an outstanding target is an explicit design item.
+
+The implementation needs a distinct resistance-hit event tied to the active
+ladder and level identity, consumed once for advancement. Merely finding
+`current close > stored boundary` is not proof that the required hit occurred
+at that decision. The 04:10:51 ET move called out by the user must be audited
+against this rule, not defended solely by that inequality.
+
+The event must be evaluated against the level that existed before the hit,
+while respecting causal book updates. A same-event role flip must not erase
+the resistance just hit; a newly published level must not manufacture a
+crossing that occurred before the level was known.
+
+### 7.3 Fill and replacement races
+
+OMS must reconcile fills of the existing target before considering its
+replacement acknowledged. A wick may fill the existing target while an
+advancement request is in flight. A local intent to move the target cannot
+erase that fill, create additional sell capacity, or assume the new price was
+already working.
+
+Target quantities and protective coverage follow actual remaining exposure.
+The previously agreed incomplete-target liquidation behavior remains a
+separate full-exit authority: reconcile the partial target fill and liquidate
+the outstanding position without overselling. This is not discretionary
+profit pocketing, which remains disabled for this strategy.
+
+## 8. Exit, re-entry, and session behavior
+
+The earlier accepted exit authorities remain in scope unless explicitly
+changed: support-based trailing protection; forming one-second MACD closure;
+loss of executable VWAP under its configured downside rule; incomplete-target
+liquidation; and configured session/operator controls. Bearish CHOCH and
+discretionary profit-pocket adds/reductions are not restored by this document.
+
+Forming MACD can change within a second. A later completed candle is not proof
+that an earlier event-time exit was invalid. Conversely, a recorded exit
+reason is not proof of correctness without the contemporaneous operands,
+source timestamps, position, and policy.
+
+Premarket liquidation uses limit orders at fresh executable bids. Regular
+session liquidation may use market orders where the configured policy allows.
+These sell-side semantics are separate from the requested buy-at-bid remainder
+policy for entry completion.
+
+Re-entry is a new opportunity only after the prior applicable account lifecycle
+is confirmed flat and outstanding acquisition/exit work is reconciled. It
+requires another valid current crossing and applicable gates. It is not the
+remaining shares from the previous entry. Do not add an arbitrary re-entry cap
+or ticker-specific suppression to improve a particular backtest result.
+
+## 9. Backtest, live, and chart consistency
+
+Use shared Strategy, Portfolio, and OMS contracts across modes. Historical and
+live execution use their respective market-event providers and isolated
+resources, not separate strategy implementations.
+
+Historical market events come exclusively from certified
+`market_sip_compact.events_YYYY`. Historical structure retains the approved
+SIP-availability plus canonical-condition approximation. This repair plan
+does not authorize reopening raw flatfiles or introducing a full-horizon
+execution-clock prerequisite. Live native execution clocks may refine live
+data when available under its declared contract.
+
+The event flow must let Strategy see a causally coherent structural snapshot,
+session high, trade, and indicator state. Correct event-native Strategy code
+cannot compensate for a book supplied only after the relevant crossing.
+
+Simulation must preserve causal order submission, quote availability, bounded
+liquidity participation, partial fills, amendments, and fill/cancel races.
+Do not make fills instantaneous to conceal order-management defects. The
+25% participation setting remains an explicit model assumption, not a proof
+that every observed delay is legitimate.
+
+Charts must distinguish Strategy intent, Portfolio approval/rejection, OMS
+submission/amendment, partial/final fill, protection movement, and exit.
+Display entry candidates separately from target resistances, with original
+snapshots available. Show account/allocation identity, fill quantities and
+prices, remaining quantity, and flat-to-flat P&L including fees. Never redraw
+an earlier decision using a later structural book.
+
+## 10. Details to resolve before implementing dependent changes
+
+The following are genuinely different behaviors; they are not permission to
+silently change the confirmed rules above:
+
+| Detail | Required resolution |
+|---|---|
+| Support-based trailing formula | Whether the selected support defines a fixed native trailing distance, an evolving support anchor, or another explicitly specified calculation; include activation and tightening rules. |
+| Insufficient/distant support | Reconcile the old 15% cap/fallback with support-based protection; specify reject/defer versus an explicitly approved fallback. |
+| Meaning of resistance hit | Exact eligible event and comparison against a level price or zone edge; distinguish a touch from an upward cross. Do not substitute a completed-bar close. |
+| Ladder mutation and gaps | Preserve level identities, define multiple hits in one event, and define target handling when levels appear, disappear, merge, or change role; prevent duplicate advancement. |
+| Fewer than three target resistances | Specify whether to defer entry or another explicit target policy; do not fabricate a target. |
+| Initial entry execution price | The user explicitly specified fresh-bid repricing for the remainder; initial placement must have its own declared policy. |
+| Affordability during execution | Define Portfolio amendment/defer/cancellation policy when the authorized remainder cannot be funded at the new price, including fees and competing allocations. |
+
+These details do not block documenting the contract or diagnosing confirmed
+mismatches. They do block claiming a complete behavioral implementation before
+the corresponding choices are settled.
+
+## 11. Verified baseline and current implementation gaps
+
+The reviewed completed run was `29e5e0a9-903c-4fa8-9e90-a3c077532bd4`,
+SUGP on 2026-08-21 from 04:00 to 04:30 ET, strategy revision 36,
+configuration revision 62. Its immutable artifacts are under
+`D:\TradingML\runtimes\trading\backtest\29e5e0a9-903c-4fa8-9e90-a3c077532bd4`.
+
+Journal reconstruction yielded 14 flat-to-flat positions, 456 fills,
+$301.095 commissions, -$551.227 net P&L, and a flat ending position. This is
+observed behavior, not acceptance of the intended contract.
+
+| Finding | Evidence and interpretation |
+|---|---|
+| Repricing cannot complete some allocations | 2,409 cash-rejected reprices across four entry groups. The unfilled quantity at higher prices plus fees exceeded available cash; OMS repeatedly retried. This is not the old double-counting of filled quantity. |
+| Trade-event observation retains structural inputs | `ReplayRunService._process_strategy_market_event` updates price, quotes, and forming MACD while inheriting structural levels/session high from its base observation. Structural population occurs on the frame path. This is a concrete source of timing mismatch; exact missed entries need event-level attribution. |
+| Residual structural adds remain | `LongMomentumStrategyEngine._structural_entry_tranche_add_result` emits separate `add_long` requests. The run had nine add intents; eight were rejected and one approved for three shares. These are not OMS remainder retries. |
+| Target advancement has the wrong trigger | `_structural_target_replacement_result` requires a completed 1s bar; `_target_ratchet_acceptance` tests a close against a stored boundary, not a newly consumed resistance hit. It recalculates the third target from current price. |
+| Protection interpretation remains unresolved | Initial stops in all 14 inspected entries selected support. Subsequent stop ratcheting uses high-water price minus a trailing amount; missing/distant-support probes also exposed percentage fallback. Neither finding alone resolves the user's intended trailing formula. |
+| Existing descriptions conflict | The old architecture page mixes obsolete revisions, tranche behavior, and exit rules. This document supplies the current intended reference without rewriting historical runs. |
+
+## 12. Fundamental repair sequence
+
+This is a proposed system repair plan. Creating this reference does not
+implement or validate these changes.
+
+### A. Publish one versioned behavioral contract
+
+Resolve section 10, then encode the strategy, execution policy, Portfolio
+constraints, and structural event semantics as explicit versioned contracts.
+Remove residual tranche/add behavior from this strategy's new revision.
+Keep old candidates reproducible; require the effective run configuration to
+match the intended revision rather than silently merging old defaults.
+
+### B. Deliver causal structure before evaluating the opportunity
+
+Connect the shared structural producer's event advancement/publication to the
+decision sequence. Refresh session high and qualified recent levels, retain
+the pre-event identities needed to recognize a crossing, and supply the
+coherent post-event state. Preserve existing historical data authority and
+avoid a second Strategy-owned structural calculation.
+
+Primary seam: [replay_run_service.py](../../src/backend/replay_run_service.py)
+and its shared structural producer/observation contracts. Verify the analogous
+live path rather than assuming a backtest-only fix establishes parity.
+
+### C. Make entry acquisition one durable allocation lifecycle
+
+Strategy requests the opportunity once. Portfolio creates and reserves each
+account allocation under competing demand. OMS owns bid-following completion,
+fill accounting, idempotent amendments, and constraint feedback to Portfolio.
+Remove fresh Strategy add requests from the completion path. Make cash/fee
+affordability and allocation amendment explicit so rejections cannot become
+unbounded no-progress loops.
+
+Primary seams: [strategy_engine.py](../../src/trading_runtime/strategy_engine.py),
+[portfolio.py](../../src/trading_runtime/portfolio.py),
+[order_management.py](../../src/trading_runtime/order_management.py), and
+[simulated_broker.py](../../src/trading_runtime/simulated_broker.py).
+
+### D. Replace candle-driven target recalculation with level-hit state
+
+Track the active qualified resistance ladder, first unconsumed resistance,
+resting R3 target, and exact hit event. Advance exactly as the resolved one-step
+rule prescribes, without a candle delay or repeated above-boundary triggers.
+Reconcile broker target fills/amendments against actual exposure, including
+wick/gap events and partial fills.
+
+### E. Implement the resolved support-based trailing contract end to end
+
+Make Strategy's protection evidence sufficient to reproduce every stop.
+Portfolio sizes using that risk. OMS preserves the policy and keeps partial
+exposure protected; native trailing orders are used only where their semantics
+match. Eliminate undocumented fallback or overwrite behavior.
+
+### F. Validate decisions, account allocations, and broker effects together
+
+Focused regression scenarios must cover:
+
+- A recent resistance or new session high arriving between completed frames;
+  crossing is recognized causally, without waiting for a later recross.
+- A failed entry gate at crossing; a later favorable indicator does not
+  retroactively validate it.
+- One opportunity allocated across two accounts while other tickers compete
+  for funds; no duplicate reservation or cross-account fill attribution.
+- Many partial fills and changing bids; no new Strategy adds, quantity
+  duplication, unsupported cash use, or silent abandonment of the remainder.
+- A fill during modify/cancel, reconnect replay, and an exit during acquisition;
+  no oversell, unprotected quantity, duplicate order, or unintended reopening.
+- A first-resistance hit moving R3 one level, no hit leaving it unchanged,
+  duplicate events doing nothing, and a wick filling the previously working
+  target while an amendment is in flight.
+- New support, missing support, and excessive stop distance under the resolved
+  trailing policy; broker and Strategy protection agree.
+
+After focused checks, repeat the same bounded SUGP window with a new immutable
+candidate and compare every entry, allocation, fill, stop, target change, exit,
+and net lifecycle P&L against the original journal. Explain all rejected and
+deferred actions. Do not expand the ticker/session scope or infer profitability
+from a passing engine test. Multi-account correctness can first be exercised
+with deterministic fixtures before separately approved broader market runs.
+
+## 13. Supporting context
+
+- [September 3-4 execution UAT summary](../codex/chat-summaries/2026/CHAT-20260903-1451-long-strategy-execution-backtest-uat.md)
+- [Earlier freshness and trailing repair](../codex/chat-summaries/2026/CHAT-20260902-UNKNOWN-strategy-freshness-structural-trailing-repair.md)
+- [Structural checkpoint and strategy UAT context](../codex/chat-summaries/2026/CHAT-20260901-1959-structural-checkpoint-campaign-strategy-debug-uat.md)
+- [Task ledger](../../TASK_HISTORY.csv), TASK-0014; history remains unchanged by this documentation task.
+
+The September 4 user corrections in the review conversation take precedence
+over these older summaries wherever their rules differ.
