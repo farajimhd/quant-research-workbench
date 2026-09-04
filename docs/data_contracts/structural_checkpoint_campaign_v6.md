@@ -41,10 +41,12 @@ revision, execution-clock tables, and optional recovery source set.
 The canonical sidecar repair is owned by
 `pipelines/market_sip/flatfiles/download_update_events.py
 --execution-clock-only`. It requires explicit dates and tickers, does not
-modify compact events, continuity, indexes, or bars, and is the only recovery
-mode allowed to reopen the retained source files. Downstream QMD, campaign,
-chart, indicator, strategy, Replay, and Backtest paths remain prohibited from
-reading flatfiles.
+download or reopen flatfiles, and does not modify compact events, continuity,
+indexes, or bars. It recomputes the coverage audit only when the already
+persisted sidecar exactly matches archive trade counts; otherwise it fails
+closed and requires the canonical importer to restore that source day.
+Downstream QMD, campaign, chart, indicator, strategy, Replay, and Backtest paths
+remain prohibited from reading flatfiles.
 
 ## Hold-evidence migration
 

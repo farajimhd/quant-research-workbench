@@ -417,6 +417,27 @@ def source_days(args: argparse.Namespace, config: DownloadConfig) -> list[DayFil
     return select_source_days(inventory, args)
 
 
+def execution_clock_existing_source_days(
+    client: ClickHouseHttpClient, args: argparse.Namespace
+) -> list[DayFiles]:
+    rows = client.query_tsv(
+        f"""
+SELECT toString(source_date)
+FROM {quote_ident(args.database)}.{quote_ident(args.continuity_table)} FINAL
+WHERE source_date >= toDate({sql_string(args.start_date)})
+  AND source_date <= toDate({sql_string(args.end_date)})
+  {execution_clock_ticker_predicate(args)}
+GROUP BY source_date
+ORDER BY source_date
+"""
+    )
+    result = []
+    for source_date in (line.strip() for line in rows.splitlines() if line.strip()):
+        placeholder = DownloadJob("quotes", source_date, "", "", 0)
+        result.append(DayFiles(source_date, placeholder, placeholder))
+    return result
+
+
 def normalize_download_job_destination(job: DownloadJob, flatfiles_root: Path) -> DownloadJob:
     key_parts = Path(job.key).parts
     root_name = flatfiles_root.name.replace("\\", "/").rstrip("/")
@@ -1829,10 +1850,16 @@ def rebuild_execution_clock_day(
     day: DayFiles,
     build_step: int,
     reporter: UpdateProgressReporter | None = None,
+    allow_raw_rebuild: bool = True,
 ) -> None:
     if execution_clock_day_is_complete(client, args, day):
         return
     if not execution_clock_rows_match_archive(client, args, day):
+        if not allow_raw_rebuild:
+            raise RuntimeError(
+                f"execution-clock sidecar rows are incomplete for {day.source_date}; "
+                "existing-only coverage repair refuses to download or reopen raw files"
+            )
         _run_profiled_with_reporter(client, f"delete_execution_clock_{day.source_date}", delete_execution_clock_day_sql(args, day), reporter, day=day.source_date, stage="execution-clock", detail="stale clock rows")
         _run_profiled_with_reporter(client, f"insert_execution_clock_{day.source_date}", insert_execution_clock_day_sql(args, day, build_step), reporter, day=day.source_date, stage="execution-clock", detail="raw participant clock")
     _run_profiled_with_reporter(client, f"delete_execution_clock_coverage_{day.source_date}", delete_execution_clock_coverage_day_sql(args, day), reporter, day=day.source_date, stage="execution-clock", detail="stale coverage rows")
@@ -3979,7 +4006,9 @@ def main() -> None:
             if args.start_date > next_after_frontier:
                 discovery_start = next_after_frontier
 
-    if date.fromisoformat(discovery_start) <= date.fromisoformat(args.end_date):
+    if args.execution_clock_only:
+        inventory = RemoteDayInventory(complete_days=(), incomplete_days=())
+    elif date.fromisoformat(discovery_start) <= date.fromisoformat(args.end_date):
         inventory = discover_remote_day_inventory(
             Path(args.flatfiles_root_win),
             discovery_start,
@@ -3999,7 +4028,11 @@ def main() -> None:
             return
         days = list(plan.days)
     else:
-        days = select_source_days(inventory, args)
+        days = (
+            execution_clock_existing_source_days(client, args)
+            if args.execution_clock_only
+            else select_source_days(inventory, args)
+        )
         if not args.execution_clock_only:
             validate_manual_append_selection(client, args, inventory, days, database_frontier)
         if not days:
@@ -4072,16 +4105,19 @@ def main() -> None:
         reporter.notice("Ensuring event, manifest, source stats, continuity, ticker/day index, and macro bar tables exist.", style="cyan")
         ensure_tables(client, args, days)
 
-        progress_queue: mp.Queue = mp.Queue()
-        reporter.set_stage("download flatfiles")
-        download_results = run_download_phase(
-            days=days,
-            config=config,
-            args=args,
-            reporter=reporter,
-            report_path=report_path,
-            progress_queue=progress_queue,
-        )
+        if args.execution_clock_only:
+            download_results = {day.source_date: {"ok": True} for day in days}
+        else:
+            progress_queue: mp.Queue = mp.Queue()
+            reporter.set_stage("download flatfiles")
+            download_results = run_download_phase(
+                days=days,
+                config=config,
+                args=args,
+                reporter=reporter,
+                report_path=report_path,
+                progress_queue=progress_queue,
+            )
 
         reporter.set_stage("insert events")
         completed = 0
@@ -4108,6 +4144,7 @@ def main() -> None:
                     day,
                     build_step_for_date(day.source_date),
                     reporter=reporter,
+                    allow_raw_rebuild=False,
                 )
                 reporter.handle_day_done(day.source_date, "execution_clock_certified")
                 continue

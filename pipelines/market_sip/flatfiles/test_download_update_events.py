@@ -21,6 +21,7 @@ from pipelines.market_sip.flatfiles.download_update_events import (
     build_auto_update_plan,
     clickhouse_price_int,
     confirm_auto_update,
+    execution_clock_existing_source_days,
     format_auto_update_summary,
     insert_execution_clock_day_sql,
     insert_execution_clock_coverage_day_sql,
@@ -169,6 +170,23 @@ class EventEncodingTests(unittest.TestCase):
 
 
 class AutoUpdatePlanningTests(unittest.TestCase):
+    def test_execution_clock_existing_days_come_from_continuity_without_remote_discovery(self) -> None:
+        client = mock.Mock()
+        client.query_tsv.return_value = "2026-08-20\n2026-08-21\n"
+        args = argparse.Namespace(
+            database="market_sip_compact",
+            continuity_table="events_ordinal_continuity",
+            start_date="2026-08-20",
+            end_date="2026-08-21",
+            tickers="SUGP,JUNS",
+        )
+
+        days = execution_clock_existing_source_days(client, args)
+
+        self.assertEqual([day.source_date for day in days], ["2026-08-20", "2026-08-21"])
+        sql = client.query_tsv.call_args.args[0]
+        self.assertIn("ticker IN ('JUNS', 'SUGP')", sql)
+
     def test_plan_keeps_cached_files_and_counts_only_missing_download_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
