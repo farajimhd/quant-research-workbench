@@ -1,5 +1,5 @@
-import { ArrowLeft, CheckCircle2, CircleStop, Gauge, Pause, Play, RefreshCcw, Square, TriangleAlert, Zap } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ArrowLeft, CheckCircle2, CircleStop, Gauge, Pause, Play, RefreshCcw, Square, TriangleAlert, X, Zap } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
 import "./HistoricalWorkspace.css";
@@ -75,6 +75,15 @@ type IndicatorWarmup = {
   ticker: string;
 };
 
+type IndicatorWarmupBatch = {
+  items: IndicatorWarmup[];
+  ready_count: number;
+  required_bars: number;
+  status: "ready" | "insufficient_history";
+  ticker_count: number;
+  tickers: string[];
+};
+
 export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [sessionDate, setSessionDate] = useState(previousWeekdayIsoDate);
   const [initialCash, setInitialCash] = useState(10_000);
@@ -82,7 +91,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [periodPreset, setPeriodPreset] = useState<BacktestPeriodPreset>("premarket");
   const [startTime, setStartTime] = useState("04:00:00");
   const [endTime, setEndTime] = useState("09:30:00");
-  const [ticker, setTicker] = useState("");
+  const [tickerInput, setTickerInput] = useState("");
   const [preflight, setPreflight] = useState<HistoricalPreflight | null>(null);
   const [checking, setChecking] = useState(true);
   const [error, setError] = useState("");
@@ -95,10 +104,11 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [controlBusy, setControlBusy] = useState("");
   const [runPlanId, setRunPlanId] = useState("");
   const [candidateId, setCandidateId] = useState("");
-  const [indicatorWarmup, setIndicatorWarmup] = useState<IndicatorWarmup | null>(null);
+  const [indicatorWarmup, setIndicatorWarmup] = useState<IndicatorWarmupBatch | null>(null);
   const [warmingIndicators, setWarmingIndicators] = useState(false);
-  const normalizedTicker = ticker.trim().toUpperCase();
-  const tickerReady = /^[A-Z][A-Z0-9.\-]{0,15}$/.test(normalizedTicker);
+  const parsedTickers = useMemo(() => parseBacktestTickers(tickerInput), [tickerInput]);
+  const normalizedTickers = parsedTickers.tickers;
+  const tickerReady = normalizedTickers.length > 0 && normalizedTickers.length <= 100 && parsedTickers.invalid.length === 0;
   const periodReady = startTime >= "04:00:00" && endTime <= "20:00:00" && startTime < endTime;
   const anchorDate = nextIsoDate(sessionDate);
   const resolvedSessionMatches = preflight?.window.sessions.length === 1 && preflight.window.sessions[0] === sessionDate;
@@ -124,16 +134,18 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     setWarmingIndicators(true);
     setIndicatorWarmup(null);
     setError("");
-    api<IndicatorWarmup>("/api/trading/backtest/indicator-warmup", {
-      body: JSON.stringify({ session_date: sessionDate, ticker: normalizedTicker, timeframe: "1s", required_bars: 200 }),
-      method: "POST",
-      timeoutMs: 240_000,
-    })
-      .then((payload) => { if (!cancelled) setIndicatorWarmup(payload); })
-      .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); })
-      .finally(() => { if (!cancelled) setWarmingIndicators(false); });
-    return () => { cancelled = true; };
-  }, [normalizedTicker, refreshKey, sessionDate, tickerReady]);
+    const timer = window.setTimeout(() => {
+      api<IndicatorWarmupBatch>("/api/trading/backtest/indicator-warmup", {
+        body: JSON.stringify({ session_date: sessionDate, tickers: normalizedTickers, timeframe: "1s", required_bars: 200 }),
+        method: "POST",
+        timeoutMs: 240_000,
+      })
+        .then((payload) => { if (!cancelled) setIndicatorWarmup(payload); })
+        .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); })
+        .finally(() => { if (!cancelled) setWarmingIndicators(false); });
+    }, 450);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [normalizedTickers, refreshKey, sessionDate, tickerReady]);
 
   useEffect(() => {
     if (!candidateId || !tickerReady || indicatorWarmup?.status !== "ready") {
@@ -154,7 +166,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
           session_count: 1,
           start_time: startTime,
           end_time: endTime,
-          tickers: normalizedTicker ? [normalizedTicker] : [],
+          tickers: normalizedTickers,
         }),
         method: "POST",
         timeoutMs: 60_000,
@@ -179,7 +191,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [anchorDate, candidateId, endTime, indicatorWarmup?.status, mode, normalizedTicker, refreshKey, runPlanId, startTime, tickerReady]);
+  }, [anchorDate, candidateId, endTime, indicatorWarmup?.status, mode, normalizedTickers, refreshKey, runPlanId, startTime, tickerReady]);
 
   usePollingTask({
     enabled: Boolean(run && !["completed", "stopped", "failed"].includes(run.status)),
@@ -221,7 +233,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
           simulation_profile: simulationProfile,
           start_time: startTime,
           end_time: endTime,
-          tickers: [normalizedTicker],
+          tickers: normalizedTickers,
         }),
         method: "POST",
         timeoutMs: 60_000,
@@ -301,12 +313,12 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     required: true,
     status: indicatorWarmup?.status === "ready" ? "ready" : indicatorWarmup?.status === "insufficient_history" ? "blocked" : "blocked",
     summary: indicatorWarmup?.status === "ready"
-      ? `${indicatorWarmup.bars.length} canonical closes are persisted${indicatorWarmup.cache_hit ? " (cache hit)" : ""}.`
+      ? `${indicatorWarmup.ready_count}/${indicatorWarmup.ticker_count} ticker warm-ups are ready from canonical closes.`
       : indicatorWarmup?.status === "insufficient_history"
-        ? `Only ${indicatorWarmup.bars.length} of ${indicatorWarmup.required_bars} required closes are available.`
-        : warmingIndicators ? "Building a bounded warm-up from imported event ordinals…" : "Enter a ticker to prepare its indicator history.",
+        ? `${indicatorWarmup.ready_count}/${indicatorWarmup.ticker_count} ticker warm-ups are ready; ${indicatorWarmup.items.filter((item) => item.status !== "ready").map((item) => item.ticker).join(", ")} lack the required history.`
+        : warmingIndicators ? "Building bounded warm-ups from imported event ordinals…" : "Enter one or more tickers to prepare indicator history.",
     evidence: indicatorWarmup?.status === "ready"
-      ? `${indicatorWarmup.fetched_ordinal_ranges} ordinal range(s) · ${new Intl.NumberFormat("en-US").format(indicatorWarmup.fetched_events)} eligible trades`
+      ? `${indicatorWarmup.items.reduce((total, item) => total + item.fetched_ordinal_ranges, 0)} ordinal range(s) · ${new Intl.NumberFormat("en-US").format(indicatorWarmup.items.reduce((total, item) => total + item.fetched_events, 0))} eligible trades`
       : "market_sip_compact/q_live imported events only",
   };
   const launchChecks = [warmupCheck, ...(preflight?.checks ?? [])];
@@ -315,7 +327,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   return (
     <TradingModeLaunch
       actionLabel="Run Backtest"
-      actionSummary={launchReady ? <><strong>{normalizedTicker}</strong> will run on <strong>{sessionDate}</strong> from <strong>{startTime.slice(0, 5)}–{endTime.slice(0, 5)} ET</strong> using strategy revision <strong>{preflight?.configuration_revision}</strong>.</> : !tickerReady ? "Enter one valid ticker before starting." : warmingIndicators ? "Preparing the persisted 1-second indicator warm-up." : !periodReady ? "Choose a valid period inside 04:00–20:00 ET." : preflight && !resolvedSessionMatches ? "The selected date is not an exchange session. Choose a trading day." : "Resolve each required readiness item before starting."}
+      actionSummary={launchReady ? <><strong>{normalizedTickers.join(", ")}</strong> will run together on <strong>{sessionDate}</strong> from <strong>{startTime.slice(0, 5)}–{endTime.slice(0, 5)} ET</strong> using one shared simulated portfolio and strategy revision <strong>{preflight?.configuration_revision}</strong>.</> : !tickerReady ? parsedTickers.invalid.length ? `Remove invalid ticker${parsedTickers.invalid.length === 1 ? "" : "s"}: ${parsedTickers.invalid.join(", ")}.` : "Enter at least one valid ticker before starting." : warmingIndicators ? "Preparing persisted 1-second indicator warm-ups." : !periodReady ? "Choose a valid period inside 04:00–20:00 ET." : preflight && !resolvedSessionMatches ? "The selected date is not an exchange session. Choose a trading day." : "Resolve each required readiness item before starting."}
       busy={creating}
       checking={checking || warmingIndicators}
       checks={launchChecks}
@@ -329,7 +341,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       secondary={results ? <HistoricalResults comparison={comparison} comparisonError={comparisonError} results={results} /> : null}
       title="Evaluate a strategy"
     >
-              <label className="configuration-field"><span>Ticker</span><input aria-invalid={!tickerReady && Boolean(ticker)} autoCapitalize="characters" onChange={(event) => setTicker(event.target.value.toUpperCase())} placeholder="Enter ticker" spellCheck={false} value={ticker} /><small>Only this ticker is loaded, evaluated, and rendered on the results chart.</small></label>
+              <label className="configuration-field mode-launch-ticker-field"><span>Tickers</span><textarea aria-invalid={!tickerReady && Boolean(tickerInput)} autoCapitalize="characters" onChange={(event) => setTickerInput(event.target.value.toUpperCase())} placeholder="SUGP, AAPL" rows={2} spellCheck={false} value={tickerInput} />{normalizedTickers.length ? <span aria-label="Selected tickers" className="mode-launch-ticker-chips">{normalizedTickers.map((ticker) => <span key={ticker}>{ticker}<button aria-label={`Remove ${ticker}`} onClick={(event) => { event.preventDefault(); setTickerInput(normalizedTickers.filter((value) => value !== ticker).join(", ")); }} type="button"><X aria-hidden="true" size={11} /></button></span>)}</span> : null}<small>Separate up to 100 symbols with commas, spaces, or new lines. They run together in one chronological event stream and share the simulated portfolio.</small></label>
               <label className="configuration-field"><span>Trading date</span><input onChange={(event) => setSessionDate(event.target.value)} type="date" value={sessionDate} /><small>Must be an exchange trading session; weekends and holidays fail closed.</small></label>
               <TradingModeSelectField help="Presets bound the decision window while retaining causal warm-up evidence." label="Time period" onChange={(value) => applyPeriodPreset(value as BacktestPeriodPreset, setPeriodPreset, setStartTime, setEndTime)} options={[{ label: "Premarket · 04:00–09:30 ET", value: "premarket" }, { label: "Regular session · 09:30–16:00 ET", value: "regular" }, { label: "Whole extended session · 04:00–20:00 ET", value: "extended" }, { label: "Custom period", value: "custom" }]} value={periodPreset} />
               <label className="configuration-field"><span>Start time · ET</span><input aria-label="Start time" max="19:59:59" min="04:00:00" onChange={(event) => { setPeriodPreset("custom"); setStartTime(normalizeClockInput(event.target.value)); }} step="1" type="time" value={startTime} /><small>No new strategy actions are admitted before this time.</small></label>
@@ -359,6 +371,15 @@ function HistoricalResults({ comparison, comparisonError, results }: { compariso
 
 function EvidenceCheck({ check }: { check: HistoricalCheck }) {
   return <article data-status={check.status}><div className="historical-evidence-icon">{check.status === "ready" ? <CheckCircle2 size={20} /> : <TriangleAlert size={20} />}</div><div><header><strong>{check.label}</strong></header><p>{check.summary}</p><small>{check.evidence}</small>{check.action?.hash ? <button className="button secondary compact" onClick={() => { window.location.hash = check.action?.hash || "#revision-configuration"; }} type="button">{check.action.label || "Resolve"}</button> : null}</div></article>;
+}
+
+function parseBacktestTickers(value: string): { invalid: string[]; tickers: string[] } {
+  const tokens = value.toUpperCase().split(/[\s,;]+/).map((token) => token.trim()).filter(Boolean);
+  const unique = Array.from(new Set(tokens));
+  return {
+    invalid: unique.filter((ticker) => !/^[A-Z][A-Z0-9.\-]{0,9}$/.test(ticker)),
+    tickers: unique.filter((ticker) => /^[A-Z][A-Z0-9.\-]{0,9}$/.test(ticker)),
+  };
 }
 
 function ResultMetric({ label, value }: { label: string; value: string }) {

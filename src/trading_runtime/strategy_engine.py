@@ -34,8 +34,8 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 34
-HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33)
+STRATEGY_REVISION = 35
+HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33, 34)
 
 _COMPLETED_FRAME_TOP_N_ENTRY_MODE = "prior_completed_frame_top_n_below_session_high"
 _EVENT_PRICE_TOP_N_ENTRY_MODE = "event_price_top_n_below_session_high"
@@ -476,7 +476,10 @@ def default_long_momentum_parameters(
                 "minimum_confidence": 0.50,
                 "minimum_reaction_probability": 0.50,
                 **(
-                    {"minimum_ticker_relative_quality_score": 0.20}
+                    {
+                        "minimum_ticker_relative_quality_score": 0.20,
+                        "strict_ticker_relative_quality_gate": revision >= 35,
+                    }
                     if revision >= 34
                     else {
                         "minimum_hold_probability": 0.0,
@@ -531,7 +534,10 @@ def default_long_momentum_parameters(
                 "volatility_multiple": 1.25,
                 "maximum_risk_pct": 15.0,
                 **(
-                    {"minimum_ticker_relative_quality_score": 0.20}
+                    {
+                        "minimum_ticker_relative_quality_score": 0.20,
+                        "strict_ticker_relative_quality_gate": revision >= 35,
+                    }
                     if revision >= 34
                     else {
                         "minimum_hold_probability": 0.0,
@@ -558,7 +564,10 @@ def default_long_momentum_parameters(
                 "minimum_reaction_probability": 0.0,
                 "minimum_reversal_probability": 0.0,
                 **(
-                    {"minimum_ticker_relative_quality_score": 0.20}
+                    {
+                        "minimum_ticker_relative_quality_score": 0.20,
+                        "strict_ticker_relative_quality_gate": revision >= 35,
+                    }
                     if revision >= 34
                     else {
                         "minimum_hold_probability": 0.0,
@@ -1382,16 +1391,17 @@ def _level_has_minimum_hold_quality(
 def _level_has_minimum_ticker_relative_quality(
     row: Mapping[str, Any],
     minimum_quality: float,
+    *,
+    strict: bool,
 ) -> bool:
-    """Apply the frozen ticker-relative filter without rejecting provisional levels."""
+    """Apply a configured ticker-relative threshold as a strict gate."""
 
     if minimum_quality <= 0:
         return True
     status = str(row.get("ticker_relative_quality_status") or "").strip().lower()
-    if status != "available":
-        # The Unified Level Book contract makes current-session provisional and
-        # insufficient-reference scores informational. They cannot suppress a
-        # level before a frozen same-role baseline exists.
+    if not strict and status != "available":
+        # Revision 34 followed the shared book's informational-status contract.
+        # Preserve that behavior only for immutable historical replays.
         return status in {
             "same_session_provisional",
             "insufficient_population",
@@ -1413,6 +1423,7 @@ def _level_passes_configured_quality(
         return _level_has_minimum_ticker_relative_quality(
             row,
             float(policy.get("minimum_ticker_relative_quality_score") or 0.0),
+            strict=bool(policy.get("strict_ticker_relative_quality_gate", False)),
         )
     minimum_hold_probability = float(policy.get("minimum_hold_probability") or 0.0)
     return bool(
@@ -3090,16 +3101,29 @@ class LongMomentumStrategyEngine:
                 "unified_structural_trigger": unified_trigger,
                 "execution_quality": execution_detail,
                 "entry_momentum_confirmation": momentum_detail,
-                "completed_candle": {
-                    "timeframe": entry_timeframe,
-                    "side": side,
-                    "open": observation.bar_open,
-                    "close": observation.price,
-                    "required": (
-                        "close >= open" if side == "long" else "close <= open"
-                    ),
-                    "passed": True,
-                },
+                **(
+                    {
+                        "completed_candle": {
+                            "timeframe": entry_timeframe,
+                            "side": side,
+                            "open": observation.bar_open,
+                            "close": observation.price,
+                            "required": (
+                                "close >= open"
+                                if side == "long"
+                                else "close <= open"
+                            ),
+                            "passed": True,
+                        }
+                    }
+                    if bool(candle_policy.get("enabled", True))
+                    else {
+                        "entry_evaluation": {
+                            "mode": "event_native",
+                            "candle_confirmation_required": False,
+                        }
+                    }
+                ),
                 "macd": {
                     **entry_macd_evidence,
                     "open_gap_bps": macd_gap_bps,

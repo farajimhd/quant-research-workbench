@@ -70,7 +70,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 47
+CONFIGURATION_SCHEMA_VERSION = 48
 MARKET_DISCOVERY_MATERIALIZATION_RUN_ID = "market-discovery:materialized-configuration"
 _CONFIGURATION_BASE_CACHE_LOCK = threading.RLock()
 _CONFIGURATION_BASE_CACHE: tuple[str, float, dict[str, Any] | None] = ("", 0.0, None)
@@ -4153,10 +4153,10 @@ def _default_draft() -> dict[str, Any]:
         "minimum_salience": 0.0,
         "minimum_confidence": 0.0,
         "minimum_reaction_probability": 0.0,
-        # Require the ticker-normalized score when a frozen baseline exists.
-        # The shared level-book contract keeps same-session provisional and
-        # unavailable scores fail-open.
+        # Revision 35 makes the configured ticker-normalized threshold strict.
+        # Status remains audit evidence and cannot bypass the numeric gate.
         "minimum_ticker_relative_quality_score": 0.20,
+        "strict_ticker_relative_quality_gate": True,
         "minimum_hold_observations": 1,
         "maximum_break_count": 100,
         "maximum_break_probability": 1.0,
@@ -4252,6 +4252,7 @@ def _default_draft() -> dict[str, Any]:
         "minimum_reaction_probability": 0.0,
         "minimum_reversal_probability": 0.0,
         "minimum_ticker_relative_quality_score": 0.20,
+        "strict_ticker_relative_quality_gate": True,
         "minimum_hold_observations": 1,
         "maximum_break_count": 100,
         "maximum_break_probability": 1.0,
@@ -4282,6 +4283,7 @@ def _default_draft() -> dict[str, Any]:
         "volatility_multiple": 1.25,
         "maximum_risk_pct": 15.0,
         "minimum_ticker_relative_quality_score": 0.20,
+        "strict_ticker_relative_quality_gate": True,
         "minimum_hold_observations": 1,
         "support_level_ordinal": 2,
         "prefer_closer_hybrid": True,

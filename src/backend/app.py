@@ -959,7 +959,8 @@ class HistoricalPreflightRequest(BaseModel):
 
 class IndicatorWarmupSubmit(BaseModel):
     session_date: date
-    ticker: str = Field(min_length=1, max_length=32)
+    ticker: str = Field(default="", max_length=32)
+    tickers: list[str] = Field(default_factory=list, max_length=100)
     timeframe: str = Field(default="1s", pattern="^1s$")
     required_bars: int = Field(default=200, ge=1, le=10_000)
 
@@ -5250,16 +5251,48 @@ async def trading_backtest_indicator_warmup(payload: IndicatorWarmupSubmit) -> d
         datetime.min.time().replace(hour=4),
         tzinfo=ZoneInfo("America/New_York"),
     ).astimezone(UTC)
+    requested = [payload.ticker, *payload.tickers]
+    tickers: list[str] = []
+    for value in requested:
+        ticker = str(value or "").strip().upper()
+        if not ticker:
+            continue
+        if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker):
+            raise HTTPException(status_code=400, detail=f"Invalid Backtest ticker: {value}")
+        if ticker not in tickers:
+            tickers.append(ticker)
+    if not tickers:
+        raise HTTPException(status_code=400, detail="At least one Backtest ticker is required")
+    if len(tickers) > 100:
+        raise HTTPException(status_code=400, detail="Backtest supports at most 100 tickers")
+
+    semaphore = asyncio.Semaphore(4)
+
+    async def materialize(ticker: str) -> dict[str, Any]:
+        async with semaphore:
+            return await asyncio.to_thread(
+                qmd_materialize_indicator_warmup,
+                ticker=ticker,
+                session_start=session_start.isoformat(),
+                timeframe=payload.timeframe,
+                required_bars=payload.required_bars,
+            )
+
     try:
-        return await asyncio.to_thread(
-            qmd_materialize_indicator_warmup,
-            ticker=payload.ticker,
-            session_start=session_start.isoformat(),
-            timeframe=payload.timeframe,
-            required_bars=payload.required_bars,
-        )
+        results = await asyncio.gather(*(materialize(ticker) for ticker in tickers))
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if not payload.tickers:
+        return results[0]
+    ready_count = sum(result.get("status") == "ready" for result in results)
+    return {
+        "status": "ready" if ready_count == len(results) else "insufficient_history",
+        "ticker_count": len(results),
+        "ready_count": ready_count,
+        "required_bars": payload.required_bars,
+        "tickers": tickers,
+        "items": results,
+    }
 
 
 def _trading_historical_preflight_payload(

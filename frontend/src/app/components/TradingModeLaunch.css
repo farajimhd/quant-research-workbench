@@ -130,6 +130,7 @@
 }
 
 .mode-launch-fields input,
+.mode-launch-fields textarea,
 .mode-launch-fields select {
   background: var(--surface-alt);
   border: 1px solid var(--border);
@@ -142,10 +143,50 @@
 }
 
 .mode-launch-fields input:hover,
+.mode-launch-fields textarea:hover,
 .mode-launch-fields select:hover { border-color: color-mix(in oklab, var(--foreground) 24%, var(--border)); }
 
 .mode-launch-fields input:focus,
+.mode-launch-fields textarea:focus,
 .mode-launch-fields select:focus { border-color: var(--primary); outline: 2px solid color-mix(in srgb, var(--primary) 18%, transparent); }
+
+.mode-launch-ticker-field { grid-column: 1 / -1; }
+
+.mode-launch-ticker-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.mode-launch-ticker-chips > span {
+  align-items: center;
+  background: color-mix(in oklab, var(--primary) 8%, var(--surface-alt));
+  border: 1px solid color-mix(in oklab, var(--primary) 28%, var(--border));
+  border-radius: 6px;
+  color: var(--foreground);
+  display: inline-flex;
+  font-size: 10px;
+  font-weight: 700;
+  gap: 4px;
+  min-height: 23px;
+  padding: 2px 3px 2px 7px;
+}
+
+.mode-launch-ticker-chips button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  display: inline-flex;
+  height: 17px;
+  justify-content: center;
+  padding: 0;
+  width: 17px;
+}
+
+.mode-launch-ticker-chips button:hover { background: var(--surface); color: var(--foreground); }
 
 .mode-launch-fields label > small,
 .mode-launch-fields > .configuration-field > small,
@@ -159,6 +200,13 @@
   background: var(--surface-alt);
   min-height: 34px;
   width: 100%;
+}
+
+.mode-launch-fields textarea {
+  line-height: 1.45;
+  min-height: 58px;
+  padding: 8px 9px;
+  resize: vertical;
 }
 
 .mode-launch-state-icon {

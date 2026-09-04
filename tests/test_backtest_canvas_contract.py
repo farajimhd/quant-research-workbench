@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from src.backend.app import (
     BacktestDebugRunCreateRequest,
     BacktestRunCreateRequest,
+    IndicatorWarmupSubmit,
     ReplayRunCommandRequest,
     trading_backtest_debug_run_command,
     trading_backtest_debug_run_canvas,
@@ -16,12 +17,39 @@ from src.backend.app import (
     trading_backtest_run_create,
     trading_backtest_run_canvas,
     trading_backtest_run_command,
+    trading_backtest_indicator_warmup,
     trading_strategy_activity,
 )
 from src.trading_runtime.runtime import RunMode
 
 
 class BacktestCanvasContractTests(unittest.IsolatedAsyncioTestCase):
+    async def test_indicator_warmup_accepts_and_reports_multiple_tickers(self) -> None:
+        request = IndicatorWarmupSubmit(
+            session_date=date(2026, 7, 28),
+            tickers=[" aapl ", "MSFT", "AAPL"],
+        )
+
+        def warmup(*, ticker: str, **_: object) -> dict[str, object]:
+            return {
+                "bars": [{"bar_start": "2026-07-28T08:00:00Z", "close": 1.0}],
+                "cache_hit": False,
+                "fetched_events": 10,
+                "fetched_ordinal_ranges": 1,
+                "required_bars": 200,
+                "status": "ready" if ticker == "AAPL" else "insufficient_history",
+                "ticker": ticker,
+            }
+
+        with patch("src.backend.app.qmd_materialize_indicator_warmup", side_effect=warmup):
+            payload = await trading_backtest_indicator_warmup(request)
+
+        self.assertEqual(payload["tickers"], ["AAPL", "MSFT"])
+        self.assertEqual(payload["ticker_count"], 2)
+        self.assertEqual(payload["ready_count"], 1)
+        self.assertEqual(payload["status"], "insufficient_history")
+        self.assertEqual([item["ticker"] for item in payload["items"]], ["AAPL", "MSFT"])
+
     def test_symbol_scoped_chart_activity_uses_consequential_run_evidence(self) -> None:
         controller = MagicMock()
         controller.strategy_activity_snapshot.return_value = {
@@ -129,6 +157,7 @@ class BacktestCanvasContractTests(unittest.IsolatedAsyncioTestCase):
             configuration_revision_id="approved-backtest",
             start_time="09:30:00",
             end_time="10:15:00",
+            tickers=["AAPL", "MSFT"],
         )
         with (
             patch(
@@ -157,6 +186,7 @@ class BacktestCanvasContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(definition.configuration_revision, approved)
         self.assertEqual(definition.start_time, time(9, 30))
         self.assertEqual(definition.end_time, time(10, 15))
+        self.assertEqual(definition.tickers, ("AAPL", "MSFT"))
         self.assertEqual(payload["mode"], "backtest")
 
     async def test_debug_canvas_uses_debug_service_and_preserves_runtime_mode(self) -> None:

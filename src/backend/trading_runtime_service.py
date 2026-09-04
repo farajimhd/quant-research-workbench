@@ -859,6 +859,11 @@ def _compact_strategy_gate_snapshot(
                     "confidence",
                     "salience",
                     "reaction_probability",
+                    "ticker_relative_quality_score",
+                    "ticker_relative_quality_status",
+                    "ticker_relative_quality_population_size",
+                    "ticker_relative_quality_reference_session",
+                    "ticker_relative_quality_revision",
                 )
                 if level.get(key) is not None
             }
@@ -878,6 +883,8 @@ def _compact_strategy_gate_snapshot(
                         "hold_probability",
                         "confidence",
                         "salience",
+                        "ticker_relative_quality_score",
+                        "ticker_relative_quality_status",
                     )
                     if row.get(key) is not None
                 }
@@ -888,6 +895,37 @@ def _compact_strategy_gate_snapshot(
             compact_trigger["prior_snapshot_selected_at"] = trigger[
                 "prior_snapshot_selected_at"
             ]
+        current_snapshot = trigger.get("current_snapshot")
+        if isinstance(current_snapshot, dict):
+            compact_trigger["current_snapshot"] = {
+                key: current_snapshot[key]
+                for key in (
+                    "selected_at",
+                    "session_high",
+                    "reference_price",
+                    "maximum_entry_levels",
+                    "top_selection",
+                )
+                if current_snapshot.get(key) is not None
+            }
+            current_levels = current_snapshot.get("levels")
+            if isinstance(current_levels, (list, tuple)):
+                compact_trigger["current_snapshot"]["levels"] = [
+                    {
+                        key: row[key]
+                        for key in (
+                            "unified_level_id",
+                            "side",
+                            "price",
+                            "entry_boundary",
+                            "ticker_relative_quality_score",
+                            "ticker_relative_quality_status",
+                        )
+                        if row.get(key) is not None
+                    }
+                    for row in current_levels[:3]
+                    if isinstance(row, dict)
+                ]
         result["unified_structural_trigger"] = compact_trigger
     return result
 
@@ -922,7 +960,16 @@ def _strategy_gate_summary(gate_snapshot: dict[str, Any]) -> str:
             labels.append(f"{label}:{'pass' if gate_passed(gate) else 'fail'}")
     macd = dict(gate_snapshot.get("macd") or {})
     if macd:
-        labels.append(f"macd:{'open' if bool(macd.get('open')) else 'closed'}")
+        if "open" in macd:
+            macd_open = bool(macd.get("open"))
+        else:
+            try:
+                line = float(macd.get("macd_line"))
+                signal = float(macd.get("macd_signal"))
+                macd_open = math.isfinite(line) and math.isfinite(signal) and line > signal and line > 0
+            except (TypeError, ValueError):
+                macd_open = False
+        labels.append(f"macd:{'open' if macd_open else 'closed'}")
     target = dict(gate_snapshot.get("profit_target_selection") or {})
     if target:
         price = target.get("target_price") or target.get("selected_price")

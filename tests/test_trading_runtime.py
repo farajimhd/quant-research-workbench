@@ -1272,6 +1272,8 @@ class JournalTests(unittest.TestCase):
                             "level": {
                                 "unified_level_id": "selected",
                                 "hold_probability": 0.9,
+                                "ticker_relative_quality_score": 0.73,
+                                "ticker_relative_quality_status": "available",
                                 "break_count": 4,
                                 "component_levels": [{"unified_level_id": index} for index in range(100)],
                             },
@@ -1285,6 +1287,18 @@ class JournalTests(unittest.TestCase):
                                 }
                                 for index in range(8)
                             ],
+                            "current_snapshot": {
+                                "selected_at": TS.isoformat(),
+                                "session_high": 11.5,
+                                "levels": [
+                                    {
+                                        "unified_level_id": "selected",
+                                        "price": 11.0,
+                                        "ticker_relative_quality_score": 0.73,
+                                        "ticker_relative_quality_status": "available",
+                                    }
+                                ],
+                            },
                         },
                     },
                 },
@@ -1308,6 +1322,14 @@ class JournalTests(unittest.TestCase):
                 "selected",
             )
             self.assertEqual(
+                gates["unified_structural_trigger"]["level"]["ticker_relative_quality_score"],
+                0.73,
+            )
+            self.assertEqual(
+                gates["unified_structural_trigger"]["current_snapshot"]["levels"][0]["ticker_relative_quality_status"],
+                "available",
+            )
+            self.assertEqual(
                 [
                     row["unified_level_id"]
                     for row in gates["unified_structural_trigger"]["prior_snapshot_levels"]
@@ -1322,6 +1344,28 @@ class JournalTests(unittest.TestCase):
                 gates["unified_structural_trigger"]["prior_snapshot_selected_at"],
                 TS.isoformat(),
             )
+            journal.close()
+
+    def test_strategy_activity_derives_macd_open_from_exact_entry_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            journal.append(
+                run_id="run-a",
+                category="strategy_decision",
+                entity_type="signal",
+                entity_id="signal-macd",
+                event_time=TS,
+                payload={
+                    "strategy_id": "momentum",
+                    "ticker": "AAPL",
+                    "action": "enter_long",
+                    "metadata": {"macd": {"macd_line": 0.03, "macd_signal": 0.01}},
+                },
+            )
+
+            activity = strategy_activity_payload(journal=journal, run_id="run-a")
+
+            self.assertIn("macd:open", activity["rows"][0]["gates"])
             journal.close()
 
     def test_strategy_activity_summarizes_routine_wait_evidence_without_string_duplication(self) -> None:

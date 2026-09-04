@@ -404,6 +404,10 @@ class ReplayRunDefinition:
     )
 
     def __post_init__(self) -> None:
+        normalized_tickers = tuple(dict.fromkeys(
+            _ticker(value) for value in self.tickers if str(value).strip()
+        ))
+        object.__setattr__(self, "tickers", normalized_tickers)
         if self.mode not in {RunMode.REPLAY, RunMode.BACKTEST, RunMode.BACKTEST_DEBUG}:
             raise ValueError("Historical controller mode must be replay, backtest, or backtest_debug")
         if self.execution_mode not in {"manual", "strategy"}:

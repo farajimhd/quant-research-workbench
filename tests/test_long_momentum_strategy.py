@@ -26,6 +26,7 @@ from src.trading_runtime.strategy_engine import (
     _execution_policy_from_phase,
     _capital_request_from_payload,
     _compact_structural_level_reference,
+    _event_price_top_n_resistance_trigger,
     _level_is_entry_quality,
     _prior_completed_frame_resistance_trigger,
     _structural_profit_targets,
@@ -139,6 +140,10 @@ def confirmed_observation(**overrides) -> StrategyObservation:
                 "ticker_relative_quality_status",
                 "same_session_provisional",
             )
+            level.setdefault(
+                "ticker_relative_quality_score",
+                level.get("hold_quality_score", level.get("hold_probability", 1.0)),
+            )
             enriched_levels.append(level)
         if field in payload:
             payload[field] = tuple(enriched_levels)
@@ -159,17 +164,31 @@ def confirmed_observation(**overrides) -> StrategyObservation:
 
 
 class LongMomentumStrategyTests(unittest.TestCase):
-    def test_ticker_relative_quality_threshold_is_inclusive_and_unavailable_fails_open(self) -> None:
+    def test_revision_35_strict_quality_gate_preserves_revision_34_replay(self) -> None:
+        self.assertFalse(
+            default_long_momentum_parameters(revision=34)["structural_entry"][
+                "strict_ticker_relative_quality_gate"
+            ]
+        )
+        self.assertTrue(
+            default_long_momentum_parameters()["structural_entry"][
+                "strict_ticker_relative_quality_gate"
+            ]
+        )
+
+    def test_ticker_relative_quality_threshold_is_inclusive_and_missing_fails_closed(self) -> None:
         policy = {
             "minimum_ticker_relative_quality_score": 0.20,
+            "strict_ticker_relative_quality_gate": True,
             "minimum_hold_observations": 1,
         }
         base = {"hold_observation_count": 1}
 
         self.assertTrue(_level_is_entry_quality({**base, "ticker_relative_quality_status": "available", "ticker_relative_quality_score": 0.20}, policy, observed_at=NOW))
         self.assertFalse(_level_is_entry_quality({**base, "ticker_relative_quality_status": "available", "ticker_relative_quality_score": 0.1999}, policy, observed_at=NOW))
-        self.assertTrue(_level_is_entry_quality({**base, "ticker_relative_quality_status": "same_session_provisional", "ticker_relative_quality_score": 0.01}, policy, observed_at=NOW))
-        self.assertTrue(_level_is_entry_quality({**base, "ticker_relative_quality_status": "insufficient_population"}, policy, observed_at=NOW))
+        self.assertFalse(_level_is_entry_quality({**base, "ticker_relative_quality_status": "same_session_provisional", "ticker_relative_quality_score": 0.01}, policy, observed_at=NOW))
+        self.assertTrue(_level_is_entry_quality({**base, "ticker_relative_quality_status": "same_session_provisional", "ticker_relative_quality_score": 0.20}, policy, observed_at=NOW))
+        self.assertFalse(_level_is_entry_quality({**base, "ticker_relative_quality_status": "insufficient_population"}, policy, observed_at=NOW))
 
     def test_conservative_quality_threshold_is_inclusive_and_fails_closed(self) -> None:
         policy = {
@@ -226,6 +245,51 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(
             [row["unified_level_id"] for row in snapshot["levels"]],
             ["top", "second", "third"],
+        )
+
+    def test_top_three_excludes_below_threshold_provisional_level(self) -> None:
+        policy = {
+            "selection_mode": "event_price_top_n_below_session_high",
+            "maximum_entry_levels": 3,
+            "minimum_ticker_relative_quality_score": 0.20,
+            "strict_ticker_relative_quality_gate": True,
+            "minimum_hold_observations": 1,
+        }
+        levels = (
+            {
+                "unified_level_id": "logged-defect",
+                "side": -1,
+                "price": 4.40,
+                "ticker_relative_quality_status": "same_session_provisional",
+                "ticker_relative_quality_score": 0.07339449541284404,
+                "hold_observation_count": 1,
+            },
+            {
+                "unified_level_id": "qualified",
+                "side": -1,
+                "price": 4.35,
+                "ticker_relative_quality_status": "available",
+                "ticker_relative_quality_score": 0.20,
+                "hold_observation_count": 1,
+            },
+        )
+        state = {"last_price": 4.39, "previous_observed_price": 4.39}
+
+        result = _event_price_top_n_resistance_trigger(
+            confirmed_observation(
+                price=4.41,
+                structural_session_high=4.50,
+                structural_resistance_levels=levels,
+                evaluation_events=("market_data_update",),
+            ),
+            policy,
+            state,
+        )
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(
+            [row["unified_level_id"] for row in result["current_snapshot"]["levels"]],
+            ["qualified"],
         )
 
     def test_top_three_starts_below_session_high_when_high_is_a_long_wick(self) -> None:
@@ -1978,15 +2042,11 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(trigger["reference_price"], 3.56)
         self.assertEqual(trigger["acceptance_previous_price"], 3.53)
         self.assertEqual(trigger["acceptance_observed_price"], 3.57)
-        completed_candle = advanced.evaluation.signals[0].metadata[
-            "completed_candle"
+        entry_evaluation = advanced.evaluation.signals[0].metadata[
+            "entry_evaluation"
         ]
-        self.assertEqual(completed_candle["timeframe"], "1s")
-        self.assertEqual(completed_candle["side"], "long")
-        self.assertAlmostEqual(completed_candle["open"], 3.63)
-        self.assertEqual(completed_candle["close"], 3.64)
-        self.assertEqual(completed_candle["required"], "close >= open")
-        self.assertTrue(completed_candle["passed"])
+        self.assertEqual(entry_evaluation["mode"], "event_native")
+        self.assertFalse(entry_evaluation["candle_confirmation_required"])
 
     def test_unified_entry_accepts_highest_qualified_level_already_cleared_on_admission(self) -> None:
         parameters = default_long_momentum_parameters()

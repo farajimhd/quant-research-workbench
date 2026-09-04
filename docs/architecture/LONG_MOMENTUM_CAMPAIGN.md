@@ -21,16 +21,17 @@ owns IBKR-shaped order placement/modification and broker-command recovery. QMD o
 reusable market observations. Canvas owns presentation and semantic assignment
 commands, never trading decisions or broker commands.
 
-Earlier revisions remain immutable historical evidence. Revision 34 requires an
+Earlier revisions remain immutable historical evidence. Revision 35 requires an
 Early Squeeze Move campaign, absolute liquidity and volume attraction, price
 above executable VWAP, and a causal trade-price crossing of one of the three
 highest qualified Unified resistance levels at or below the live session high.
 The forming 1-second MACD is evaluated at that same trade event and must have
 line above signal and line above zero; entry does not wait for candle close.
 Entry, stop, and target qualification use `ticker_relative_quality_score >=
-0.20` when the frozen ticker baseline is available, with the shared provisional
-and unavailable statuses failing open. Older assignments are never silently
-reinterpreted as revision 34.
+0.20` as a strict gate: below-threshold, missing, and non-finite scores fail
+closed regardless of status. Revision 34 retains its former provisional-status
+behavior only for immutable historical replay; older assignments are never
+silently reinterpreted as revision 35.
 
 ## Runtime objects
 

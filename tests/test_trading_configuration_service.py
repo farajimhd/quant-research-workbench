@@ -2633,6 +2633,15 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             migrated_profile["parameters"]["protection"]["profit_ladder"]["minimum_ticker_relative_quality_score"],
             0.20,
         )
+        self.assertTrue(
+            migrated_profile["parameters"]["structural_entry"]["strict_ticker_relative_quality_gate"]
+        )
+        self.assertTrue(
+            migrated_profile["parameters"]["protection"]["stop"]["strict_ticker_relative_quality_gate"]
+        )
+        self.assertTrue(
+            migrated_profile["parameters"]["protection"]["profit_ladder"]["strict_ticker_relative_quality_gate"]
+        )
         self.assertEqual(migrated_profile["lifecycle"]["initial_entry"]["order_intent"]["deadline_ms"], 300)
         self.assertEqual(migrated_profile["lifecycle"]["reentry"]["order_intent"]["deadline_ms"], 300)
 
