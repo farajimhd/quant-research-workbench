@@ -2,6 +2,22 @@
 
 ## 2026
 
+### [2026-09-01 19:59 PDT - Repair SUGP strategy UAT, historical review, and structural checkpoint authority](docs/codex/chat-summaries/2026/CHAT-20260901-1959-structural-checkpoint-campaign-strategy-debug-uat.md)
+
+- Chat/task ID: `01a0600e-5ddf-78f3-a6fc-0984902f8208`
+- Related tasks: `TASK-0014`, `TASK-0051`, `TASK-0206`
+- Summary written: 2026-09-04 09:09 PDT
+
+Repaired completed-run Debug, Backtest controls, Strategy Activity evidence,
+Canvas persistence, one-second chart authority, and configurable strategy and
+structural presentation. The long-momentum rules now use live top-three
+qualified resistance crossings, completed MACD line above zero, executable
+VWAP, and a 5,000-share cap. A restart-safe ticker/ordinal workstation campaign
+now carries split-aware cumulative books across sessions, certifies daily
+checkpoints, derives absolute and ticker-relative scores from raw counts, and
+keeps historical SIP tables immutable. The workstation campaign and fresh
+post-fix SUGP lifecycle/visual acceptance remain unfinished.
+
 ### [2026-08-28 time unavailable - Rebuild Replay, structural levels, and SUGP strategy UAT](docs/codex/chat-summaries/2026/CHAT-20260828-UNKNOWN-sugp-replay-structural-strategy-uat.md)
 
 - Chat/task ID: unavailable
