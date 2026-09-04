@@ -34,8 +34,8 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 30
-HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29)
+STRATEGY_REVISION = 31
+HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30)
 
 SOURCE_MAXIMUM_AGE_MS = {
     "100ms": 500,
@@ -1929,13 +1929,9 @@ def _prior_completed_frame_resistance_trigger(
             if int(row.get("side") or 0) >= 0:
                 continue
             price = _level_metric(row, "price", "upper", "lower")
-            lower = _level_metric(row, "lower") or price
-            upper = _level_metric(row, "upper") or price
-            if upper < lower:
-                lower, upper = upper, lower
             if (
                 price <= 0
-                or lower > session_high
+                or price > session_high
                 or not _level_is_entry_quality(
                     row, policy, observed_at=observation.observed_at
                 )
@@ -1947,7 +1943,6 @@ def _prior_completed_frame_resistance_trigger(
                 "price": price,
                 "entry_boundary": price,
                 "hold_probability": _level_metric(row, "hold_probability"),
-                "top_of_day_covering": lower <= session_high <= upper,
             })
     qualified.sort(
         key=lambda row: (
@@ -1955,22 +1950,13 @@ def _prior_completed_frame_resistance_trigger(
             str(row.get("unified_level_id") or ""),
         )
     )
-    covering_levels = [row for row in qualified if row["top_of_day_covering"]]
-    if covering_levels:
-        top_level = covering_levels[0]
-        lower_levels = [
-            row
-            for row in qualified
-            if row is not top_level
-            and float(row["entry_boundary"]) < float(top_level["entry_boundary"])
-        ]
-        current_levels = [top_level, *lower_levels[: maximum_levels - 1]]
-        top_selection = "qualified_level_covering_session_high"
-    else:
-        current_levels = qualified[:maximum_levels]
-        top_selection = "highest_qualified_levels_below_session_high"
-    for row in current_levels:
-        row.pop("top_of_day_covering", None)
+    # The entry set is always the highest N qualified resistance records whose
+    # level price is not above the live session high.  Session-high band
+    # containment is deliberately not a separate authority: it previously
+    # changed which records were selected and made a visual "near the high"
+    # interpretation affect an otherwise exact level-book ordering contract.
+    current_levels = qualified[:maximum_levels]
+    top_selection = "highest_qualified_levels_below_session_high"
     state["qualified_entry_resistance_snapshot"] = {
         "selected_at": observed_at,
         "session_high": session_high,
@@ -2619,6 +2605,26 @@ class LongMomentumStrategyEngine:
             phase_name,
             fallback_quantity=float(parameters["sizing"]["initial_quantity"]),
         )
+        structural_entry_policy = dict(parameters.get("structural_entry") or {})
+        entry_level_ids = _structural_entry_level_ids(unified_trigger)
+        entry_tranche_count = max(
+            1,
+            int(
+                structural_entry_policy.get("entry_tranche_count")
+                or structural_entry_policy.get("maximum_entry_levels")
+                or 1
+            ),
+        )
+        if (
+            str(structural_entry_policy.get("selection_mode") or "").lower()
+            == "prior_completed_frame_top_n_below_session_high"
+            and entry_level_ids
+        ):
+            capital_request = _structural_entry_tranche_request(
+                capital_request,
+                tranche_count=entry_tranche_count,
+                requested_tranches=min(entry_tranche_count, len(entry_level_ids)),
+            )
         quantity = (
             capital_request.value
             if capital_request.mode == "fixed_quantity"
@@ -2810,6 +2816,11 @@ class LongMomentumStrategyEngine:
                 "last_entry_resistance": _compact_structural_level_reference(
                     (unified_trigger or {}).get("level")
                 ),
+                "position_entry_level_ids": entry_level_ids,
+                "position_entry_tranches": min(
+                    entry_tranche_count,
+                    len(entry_level_ids),
+                ) if entry_level_ids else 1,
             }
         )
         state.pop("entry_target_room_retest", None)
@@ -2942,6 +2953,13 @@ class LongMomentumStrategyEngine:
             state.pop("profit_target_liquidation_required", False)
         )
         if target_liquidation_required:
+            incomplete_target_policy = dict(
+                dict(parameters.get("protection") or {})
+                .get("profit_ladder", {})
+                .get("incomplete_target_exit", {})
+                or {}
+            )
+            outside_regular_hours = _outside_regular_hours(observation.observed_at)
             exit_route = {
                 "route_id": "profit-target-incomplete",
                 "name": "Profit target touched but not fully filled",
@@ -2949,6 +2967,27 @@ class LongMomentumStrategyEngine:
                 "position_fraction": 1.0,
                 "priority": 110,
                 "evidence": dict(state.get("last_profit_target_fill") or {}),
+                "order_intent": {
+                    "execution_policy": str(
+                        incomplete_target_policy.get(
+                            "extended_hours_execution_policy"
+                            if outside_regular_hours
+                            else "regular_hours_execution_policy"
+                        )
+                        or (
+                            ExecutionPolicyName.ADAPTIVE_URGENT
+                            if outside_regular_hours
+                            else ExecutionPolicyName.ADAPTIVE_VERY_URGENT
+                        )
+                    ),
+                    "partial_fill_policy": str(
+                        incomplete_target_policy.get("partial_fill_policy")
+                        or PartialFillPolicy.COMPLETE_REMAINDER
+                    ),
+                    "deadline_ms": int(
+                        incomplete_target_policy.get("deadline_ms") or 5_000
+                    ),
+                },
             }
         elif _at_or_after_session_time(observation.observed_at, flatten_time):
             state["disable_after_exit"] = True
@@ -3107,6 +3146,16 @@ class LongMomentumStrategyEngine:
                 invalidation_price=stop,
                 trailing_amount=_trailing_amount(observation, parameters),
             )
+
+        structural_add = self._structural_entry_tranche_add_result(
+            assignment,
+            observation,
+            parameters,
+            state,
+            side=side,
+        )
+        if structural_add is not None:
+            return structural_add
 
         target_replacement = self._structural_target_replacement_result(
             assignment,
@@ -3281,6 +3330,202 @@ class LongMomentumStrategyEngine:
             observation.qmd_score, _confirmation_confidence(observation),
             state, AssignmentStatus.MANAGING, invalidation_price=stop,
             metadata={"confirmation": confirmation, "gain_pct": gain_pct},
+        )
+
+    def _structural_entry_tranche_add_result(
+        self,
+        assignment: StrategyAssignment,
+        observation: StrategyObservation,
+        parameters: dict[str, Any],
+        state: dict[str, Any],
+        *,
+        side: str,
+    ) -> StrategyEngineResult | None:
+        policy = dict(parameters.get("structural_entry") or {})
+        if (
+            not bool(policy.get("enabled", False))
+            or str(policy.get("selection_mode") or "").lower()
+            != "prior_completed_frame_top_n_below_session_high"
+        ):
+            return None
+        tranche_count = max(
+            1,
+            int(policy.get("entry_tranche_count") or policy.get("maximum_entry_levels") or 1),
+        )
+        if tranche_count <= 1 or not assignment.permissions.add:
+            return None
+        trigger = state.get("latest_structural_entry_trigger")
+        if not isinstance(trigger, Mapping) or not bool(trigger.get("passed")):
+            return None
+        consumed = list(dict.fromkeys(
+            str(value)
+            for value in state.get("position_entry_level_ids") or ()
+            if str(value)
+        ))
+        used_tranches = max(
+            int(state.get("position_entry_tranches") or len(consumed) or 1),
+            len(consumed),
+        )
+        remaining_tranches = max(0, tranche_count - used_tranches)
+        crossed_ids = _structural_entry_level_ids(trigger)
+        new_ids = [value for value in crossed_ids if value not in consumed][
+            :remaining_tranches
+        ]
+        if not new_ids:
+            return None
+
+        liquidity_policy = dict(parameters.get("liquidity_admission") or {})
+        execution_ready, execution_detail = _current_execution_quality_result(
+            observation,
+            liquidity_policy,
+            reentry=True,
+        )
+        phase_policy = dict(parameters.get("phase_policy") or {})
+        reentry_phase = dict(phase_policy.get("reentry") or {})
+        phase_rules = dict(reentry_phase.get("rules") or parameters.get("entry_rules") or {})
+        if state.get("liquidity_admitted_at"):
+            phase_rules = {
+                **phase_rules,
+                "confirmation": entry_stage_without_rule_set(
+                    dict(phase_rules.get("confirmation") or {}),
+                    "strategy-squeeze-volume-spread-quality",
+                ),
+            }
+        rule_result = evaluate_entry_decision_rules(phase_rules, observation)
+        rule_result = _entry_rule_result_with_unified_trigger(
+            rule_result,
+            trigger,
+            observation,
+        )
+        macd_open, macd_evidence = _exact_positive_open_macd(
+            observation,
+            "1s",
+            require_positive_signal=self.revision == 26,
+        )
+        candle_policy = dict(parameters.get("entry_candle_confirmation") or {})
+        bar_open = observation.bar_open
+        candle_passed = bool(
+            bar_open is not None
+            and bar_open > 0
+            and (
+                observation.price >= bar_open
+                if side == "long"
+                else observation.price <= bar_open
+            )
+        )
+        minimum_macd_gap_bps = max(
+            0.0,
+            float(candle_policy.get("minimum_macd_open_gap_bps") or 0.0),
+        )
+        macd_gap_bps = (
+            max(
+                0.0,
+                float(observation.macd_line or 0)
+                - float(observation.macd_signal or 0),
+            )
+            / observation.price
+            * 10_000.0
+        )
+        passed = bool(
+            state.get("liquidity_admitted_at")
+            and execution_ready
+            and rule_result["confirmation"]["passed"]
+            and not rule_result["veto"]["matched_groups"]
+            and macd_open
+            and macd_gap_bps >= minimum_macd_gap_bps
+            and (
+                not bool(candle_policy.get("reject_bearish_close", True))
+                or candle_passed
+            )
+        )
+        state["last_structural_add_evaluation"] = {
+            "observed_at": observation.observed_at.isoformat(),
+            "crossed_level_ids": crossed_ids,
+            "eligible_level_ids": new_ids,
+            "passed": passed,
+            "execution_quality": execution_detail,
+            "entry_rules": rule_result,
+            "macd": {
+                **macd_evidence,
+                "open_gap_bps": macd_gap_bps,
+                "minimum_open_gap_bps": minimum_macd_gap_bps,
+            },
+            "completed_candle": {
+                "open": bar_open,
+                "close": observation.price,
+                "passed": candle_passed,
+            },
+        }
+        if not passed:
+            return None
+
+        protective_stop_selection: dict[str, Any] = {}
+        stop = _initial_stop(
+            observation,
+            parameters,
+            trigger.get("reference_price"),
+            side=side,
+            selection_evidence=protective_stop_selection,
+        )
+        initial_phase = dict(phase_policy.get("initial_entry") or {})
+        capital_request = _phase_capital_request(
+            parameters,
+            "initial_entry",
+            fallback_quantity=float(parameters["sizing"]["initial_quantity"]),
+        )
+        capital_request = _structural_entry_tranche_request(
+            capital_request,
+            tranche_count=tranche_count,
+            requested_tranches=len(new_ids),
+        )
+        quantity = capital_request.value if capital_request.mode == "fixed_quantity" else 0.0
+        targets = [
+            float(value)
+            for value in state.get("structural_profit_targets") or ()
+            if isinstance(value, (int, float)) and float(value) > observation.price
+        ]
+        if not targets:
+            targets = _structural_profit_targets(
+                observation,
+                parameters,
+                stop=stop,
+                side=side,
+                luld_target=_luld_target(observation, parameters, side=side),
+            )
+        state["position_entry_level_ids"] = [*consumed, *new_ids]
+        state["position_entry_tranches"] = used_tranches + len(new_ids)
+        state["adds"] = int(state.get("adds") or 0) + len(new_ids)
+        state["last_entry_resistance"] = _compact_structural_level_reference(
+            trigger.get("level")
+        )
+        return self._result(
+            assignment,
+            observation,
+            "add_long" if side == "long" else "add_short",
+            "structural_entry_tranche_confirmed",
+            float(rule_result["confirmation"]["score"]),
+            _confirmation_confidence(observation),
+            state,
+            AssignmentStatus.MANAGING,
+            quantity=quantity,
+            invalidation_price=stop,
+            profit_target_price=targets[0] if targets else None,
+            trailing_amount=_trailing_amount(observation, parameters, stop=stop),
+            capital_request=capital_request,
+            order_intent=dict(initial_phase.get("order_intent") or {}),
+            metadata={
+                "execution_role": "structural_entry_tranche",
+                "crossed_level_ids": crossed_ids,
+                "entry_level_ids": new_ids,
+                "entry_tranche_count": tranche_count,
+                "position_entry_tranches": state["position_entry_tranches"],
+                "unified_structural_trigger": dict(trigger),
+                "entry_rules": rule_result,
+                "execution_quality": execution_detail,
+                "macd": macd_evidence,
+                "protective_stop_selection": protective_stop_selection,
+                "profit_targets": targets,
+            },
         )
 
     def _regular_reentry_pullback_result(
@@ -3833,6 +4078,47 @@ def _phase_capital_request(
     if payload:
         return _capital_request_from_payload(payload)
     return CapitalRequest(mode="fixed_quantity", value=fallback_quantity)
+
+
+def _structural_entry_level_ids(
+    unified_trigger: Mapping[str, Any] | None,
+) -> list[str]:
+    if not isinstance(unified_trigger, Mapping):
+        return []
+    crossed = [
+        str(value)
+        for value in unified_trigger.get("crossed_level_ids") or ()
+        if str(value)
+    ]
+    if crossed:
+        return list(dict.fromkeys(crossed))
+    level = unified_trigger.get("level")
+    if isinstance(level, Mapping):
+        level_id = str(level.get("unified_level_id") or "")
+        if level_id:
+            return [level_id]
+    return []
+
+
+def _structural_entry_tranche_request(
+    request: CapitalRequest,
+    *,
+    tranche_count: int,
+    requested_tranches: int,
+) -> CapitalRequest:
+    if tranche_count <= 1 or requested_tranches <= 0:
+        return request
+    fraction = min(1.0, requested_tranches / tranche_count)
+    if request.mode == "mandate_fraction":
+        return replace(request, value=fraction)
+    if request.mode == "all_available":
+        # A protected top-N profile historically requested the entire mandate
+        # at its first crossed level. Translate that legacy authority into an
+        # explicit fraction so each selected entry level retains capital.
+        return replace(request, mode="mandate_fraction", value=fraction)
+    if request.mode == "fixed_quantity":
+        return replace(request, value=request.value * fraction)
+    return replace(request, value=request.value * fraction)
 
 
 def _execution_policy_from_phase(
@@ -5011,6 +5297,7 @@ def _decision_reason_detail(
     labels = {
         "entry_confirmed": "Enter: latched liquidity, executable spread/activity, VWAP, positive/open one-second MACD (line > signal and line > 0), and Unified resistance acceptance all passed.",
         "reentry_confirmed": "Re-enter: executable spread/activity, VWAP, positive/open one-second MACD (line > signal and line > 0), and a fresh Unified resistance recovery all passed.",
+        "structural_entry_tranche_confirmed": "Add: another selected top-three Unified resistance crossed on the completed one-second bar while current liquidity, VWAP, and positive/open MACD all passed.",
         "target_profit_replenishment": "Profit-target replenishment: a target filled, price made a causal pullback, Unified support held, and VWAP plus positive/open one-second MACD remained valid.",
         "structural_profit_target_advanced": "Target update: a completed one-second candle held above another qualifying level while MACD remained positive and open; the live profit target advanced to the configured ordinal qualifying level.",
         "failure_to_extend_partial": "Profit reduction: price stopped extending while QMD flow deteriorated; sell half and keep the protected remainder.",

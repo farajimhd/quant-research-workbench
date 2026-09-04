@@ -46,7 +46,10 @@ from src.backend.trading_configuration_service import (
     resolve_runtime_configurations,
 )
 from src.trading_runtime.journal import TradingJournal
-from src.trading_runtime.strategy_engine import long_momentum_strategy_definition
+from src.trading_runtime.strategy_engine import (
+    STRATEGY_REVISION,
+    long_momentum_strategy_definition,
+)
 
 
 class TradingConfigurationServiceTests(unittest.TestCase):
@@ -93,7 +96,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(resolved["protection"]["stop"]["minimum_hold_quality_score"], 0.70)
         self.assertTrue(resolved["protection"]["trailing"]["enabled"])
 
-    def test_schema_v42_migrates_protected_stop_trail_and_removes_bearish_choch(self) -> None:
+    def test_schema_v42_migrates_current_protected_squeeze_contract(self) -> None:
         with patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
             return_value=long_momentum_strategy_definition(),
@@ -124,7 +127,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated_profile = migrated["strategy"]["profiles"][0]
         migrated_stop = migrated_profile["parameters"]["protection"]["stop"]
-        self.assertEqual(migrated_profile["definition_revision"], 30)
+        self.assertEqual(migrated_profile["definition_revision"], STRATEGY_REVISION)
         self.assertEqual(migrated_stop["method"], "ordinal_qualified_support")
         self.assertEqual(migrated_stop["maximum_risk_pct"], 15.0)
         self.assertEqual(migrated_stop["support_level_ordinal"], 2)
@@ -134,6 +137,20 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertNotIn(
             "bearish_choch",
             migrated_profile["parameters"]["momentum_management"]["downside_loss_guard"],
+        )
+        self.assertEqual(
+            migrated_profile["parameters"]["structural_entry"]["entry_tranche_count"],
+            3,
+        )
+        self.assertEqual(
+            migrated_profile["lifecycle"]["initial_entry"]["capital_request"]["mode"],
+            "mandate_fraction",
+        )
+        self.assertEqual(
+            migrated_profile["parameters"]["protection"]["profit_ladder"][
+                "incomplete_target_exit"
+            ]["extended_hours_execution_policy"],
+            "adaptive_urgent",
         )
         migrated_protection = next(
             row
@@ -1434,7 +1451,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertNotIn("routes", lifecycle["exit"])
         self.assertEqual(
             lifecycle["initial_entry"]["capital_request"]["mode"],
-            "all_available",
+            "mandate_fraction",
         )
         self.assertEqual(lifecycle["initial_entry"]["add_steps"], [])
         self.assertEqual(lifecycle["initial_entry"]["action_id"], "position.enter_long")
@@ -1840,11 +1857,15 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(profile["lifecycle"]["trading_behavior"]["entry_cutoff_time"], "09:29:59")
         self.assertEqual(profile["lifecycle"]["trading_behavior"]["flatten_time"], "09:29:59")
         self.assertEqual(profile["lifecycle"]["initial_entry"]["capital_request"], {
-            "mode": "all_available",
-            "value": 1.0,
+            "mode": "mandate_fraction",
+            "value": 1.0 / 3.0,
             "maximum_quantity": 5_000,
             "allow_replacement": False,
         })
+        self.assertEqual(
+            profile["lifecycle"]["reentry"]["capital_request"],
+            profile["lifecycle"]["initial_entry"]["capital_request"],
+        )
         self.assertEqual(
             profile["lifecycle"]["initial_entry"]["order_intent"]["deadline_ms"],
             5_000,
@@ -1888,6 +1909,16 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(
             profile["parameters"]["structural_entry"]["maximum_entry_levels"],
             3,
+        )
+        self.assertEqual(
+            profile["parameters"]["structural_entry"]["entry_tranche_count"],
+            3,
+        )
+        self.assertEqual(
+            profile["parameters"]["protection"]["profit_ladder"][
+                "incomplete_target_exit"
+            ]["extended_hours_execution_policy"],
+            "adaptive_urgent",
         )
         self.assertEqual(
             profile["parameters"]["structural_entry"]["maximum_break_probability"],

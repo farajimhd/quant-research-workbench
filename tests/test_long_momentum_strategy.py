@@ -169,7 +169,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
         )
         self.assertFalse(_level_is_entry_quality(base, policy, observed_at=NOW))
 
-    def test_top_three_starts_with_level_covering_session_high(self) -> None:
+    def test_top_three_uses_level_prices_at_or_below_session_high(self) -> None:
         policy = {
             "selection_mode": "prior_completed_frame_top_n_below_session_high",
             "maximum_entry_levels": 3,
@@ -178,7 +178,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
             "maximum_break_probability": 1.0,
         }
         levels = (
-            {"unified_level_id": "above", "side": -1, "price": 10.4, "lower": 10.3, "upper": 10.5, "hold_quality_score": 0.9, "hold_observation_count": 1},
+            {"unified_level_id": "above", "side": -1, "price": 10.04, "lower": 9.99, "upper": 10.05, "hold_quality_score": 0.9, "hold_observation_count": 1},
             {"unified_level_id": "top", "side": -1, "price": 9.98, "lower": 9.95, "upper": 10.02, "hold_quality_score": 0.7, "hold_observation_count": 1},
             {"unified_level_id": "second", "side": -1, "price": 9.8, "hold_quality_score": 0.8, "hold_observation_count": 1},
             {"unified_level_id": "third", "side": -1, "price": 9.6, "hold_quality_score": 0.9, "hold_observation_count": 1},
@@ -197,7 +197,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
         )
 
         snapshot = state["qualified_entry_resistance_snapshot"]
-        self.assertEqual(snapshot["top_selection"], "qualified_level_covering_session_high")
+        self.assertEqual(snapshot["top_selection"], "highest_qualified_levels_below_session_high")
         self.assertEqual(
             [row["unified_level_id"] for row in snapshot["levels"]],
             ["top", "second", "third"],
@@ -510,6 +510,89 @@ class LongMomentumStrategyTests(unittest.TestCase):
             ],
             [10.3, 10.2, 10.1],
         )
+
+    def test_fresh_second_level_cross_adds_one_protected_mandate_tranche(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["structural_entry"].update({
+            "enabled": True,
+            "selection_mode": "prior_completed_frame_top_n_below_session_high",
+            "maximum_entry_levels": 3,
+            "entry_tranche_count": 3,
+        })
+        parameters["phase_policy"] = {
+            "initial_entry": {
+                "capital_request": {
+                    "mode": "mandate_fraction",
+                    "value": 1.0 / 3.0,
+                    "maximum_quantity": 5_000,
+                    "allow_replacement": False,
+                },
+                "order_intent": {},
+            },
+            "reentry": {"rules": deepcopy(parameters["entry_rules"])},
+        }
+        trigger = {
+            "passed": True,
+            "observed_at": NOW.isoformat(),
+            "reference_price": 101.0,
+            "crossed_level_ids": ["level-2"],
+            "level": {
+                "unified_level_id": "level-2",
+                "side": -1,
+                "price": 101.0,
+            },
+        }
+        state = {
+            "liquidity_admitted_at": (NOW - timedelta(minutes=1)).isoformat(),
+            "latest_structural_entry_trigger": trigger,
+            "position_entry_level_ids": ["level-1"],
+            "position_entry_tranches": 1,
+            "structural_profit_targets": [105.0],
+            "entry_reference_price": 100.0,
+            "initial_stop": 98.0,
+            "active_stop": 98.0,
+            "high_water_price": 101.0,
+            "low_water_price": 100.0,
+        }
+        observation = confirmed_observation(
+            position_quantity=100,
+            average_price=100.0,
+            source_values=self._liquidity_values(
+                trade_rate_10s=10.0,
+                trade_rate_60s=10.0,
+            ),
+            structural_support_levels=(
+                {"unified_level_id": "support-1", "side": 1, "price": 99.0, "hold_quality_score": 0.8, "hold_observation_count": 1},
+                {"unified_level_id": "support-2", "side": 1, "price": 98.0, "hold_quality_score": 0.8, "hold_observation_count": 1},
+            ),
+        )
+
+        result = LongMomentumStrategyEngine()._structural_entry_tranche_add_result(
+            assignment(parameters=parameters, status=AssignmentStatus.MANAGING, state=state),
+            observation,
+            parameters,
+            state,
+            side="long",
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        intent = result.evaluation.intents[0]
+        self.assertEqual(intent.action, "add_long")
+        self.assertEqual(intent.capital_request.mode, "mandate_fraction")
+        self.assertAlmostEqual(intent.capital_request.value, 1.0 / 3.0)
+        self.assertEqual(intent.invalidation_price, 98.0)
+        self.assertEqual(result.state["position_entry_level_ids"], ["level-1", "level-2"])
+        self.assertEqual(result.state["position_entry_tranches"], 2)
+
+        duplicate = LongMomentumStrategyEngine()._structural_entry_tranche_add_result(
+            assignment(parameters=parameters, status=AssignmentStatus.MANAGING, state=result.state),
+            observation,
+            parameters,
+            result.state,
+            side="long",
+        )
+        self.assertIsNone(duplicate)
 
     def test_relative_phase_capital_request_preserves_hard_share_cap(self) -> None:
         request = _capital_request_from_payload({
@@ -4791,7 +4874,14 @@ class LongMomentumRuntimeTests(unittest.IsolatedAsyncioTestCase):
             journal.close()
 
     async def test_partial_profit_target_fill_liquidates_exact_remainder(self) -> None:
+        premarket = NOW - timedelta(hours=2)
         parameters = default_long_momentum_parameters()
+        parameters["protection"]["profit_ladder"]["incomplete_target_exit"] = {
+            "extended_hours_execution_policy": "adaptive_urgent",
+            "regular_hours_execution_policy": "adaptive_very_urgent",
+            "partial_fill_policy": "complete_remainder",
+            "deadline_ms": 5_000,
+        }
         parameters["reentry"]["target_replenishment"]["enabled"] = True
         parameters["liquidity_admission"]["enabled"] = True
         assigned = assignment(
@@ -4802,10 +4892,10 @@ class LongMomentumRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "initial_stop": 99.0,
                 "breakout_level": 100.5,
                 "entry_reference_price": 101.0,
-                "entry_at": (NOW - timedelta(seconds=10)).isoformat(),
+                "entry_at": (premarket - timedelta(seconds=10)).isoformat(),
                 "high_water_price": 102.0,
                 "structural_profit_targets": [102.0],
-                "liquidity_admitted_at": (NOW - timedelta(seconds=20)).isoformat(),
+                "liquidity_admitted_at": (premarket - timedelta(seconds=20)).isoformat(),
             },
         )
         strategy = AssignedLongMomentumStrategy([assigned])
@@ -4820,7 +4910,7 @@ class LongMomentumRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 # remains partial; this exact runtime state must still create
                 # the replenishment entitlement.
                 state="partially_filled",
-                updated_at=NOW,
+                updated_at=premarket,
             ),
             aggregate_position_quantity=80,
         )
@@ -4832,7 +4922,7 @@ class LongMomentumRuntimeTests(unittest.IsolatedAsyncioTestCase):
         result = LongMomentumStrategyEngine().evaluate(
             armed,
             confirmed_observation(
-                observed_at=NOW + timedelta(seconds=1),
+                observed_at=premarket + timedelta(seconds=1),
                 price=101.5,
                 position_quantity=80,
                 average_price=101.0,
@@ -4843,7 +4933,10 @@ class LongMomentumRuntimeTests(unittest.IsolatedAsyncioTestCase):
         signal = result.evaluation.signals[0]
         self.assertEqual(signal.action, "exit")
         self.assertEqual(signal.reason, "profit_target_incomplete")
-        self.assertEqual(result.evaluation.intents[0].quantity, 80)
+        intent = result.evaluation.intents[0]
+        self.assertEqual(intent.quantity, 80)
+        self.assertEqual(intent.execution_policy.name.value, "adaptive_urgent")
+        self.assertTrue(intent.outside_rth)
 
     async def test_small_target_replenishment_caps_structural_slices_to_whole_shares(self) -> None:
         parameters = default_long_momentum_parameters()

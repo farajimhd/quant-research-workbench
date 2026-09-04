@@ -70,7 +70,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 43
+CONFIGURATION_SCHEMA_VERSION = 44
 MARKET_DISCOVERY_MATERIALIZATION_RUN_ID = "market-discovery:materialized-configuration"
 _CONFIGURATION_BASE_CACHE_LOCK = threading.RLock()
 _CONFIGURATION_BASE_CACHE: tuple[str, float, dict[str, Any] | None] = ("", 0.0, None)
@@ -4039,14 +4039,14 @@ def _default_draft() -> dict[str, Any]:
     }
     squeeze_lifecycle["initial_entry"]["add_steps"] = []
     squeeze_lifecycle["initial_entry"]["capital_request"] = {
-        "mode": "all_available",
-        "value": 1.0,
+        "mode": "mandate_fraction",
+        "value": 1.0 / 3.0,
         "maximum_quantity": 5_000,
         "allow_replacement": False,
     }
     squeeze_lifecycle["reentry"]["capital_request"] = {
-        "mode": "all_available",
-        "value": 1.0,
+        "mode": "mandate_fraction",
+        "value": 1.0 / 3.0,
         "maximum_quantity": 5_000,
         "allow_replacement": False,
     }
@@ -4141,6 +4141,11 @@ def _default_draft() -> dict[str, Any]:
         "enabled": True,
         "selection_mode": "prior_completed_frame_top_n_below_session_high",
         "maximum_entry_levels": 3,
+        # Each of the selected levels owns one independently confirmed third of
+        # the position mandate. A fresh cross while already long can therefore
+        # add the next tranche instead of being discarded as merely a chart
+        # event after the first level consumed all available capital.
+        "entry_tranche_count": 3,
         # Structural admission is ticker-independent and owned exclusively by
         # the causal Unified Structural Level Book. Other level scores remain
         # observable, but they do not silently veto a level that satisfies the
@@ -4246,6 +4251,15 @@ def _default_draft() -> dict[str, Any]:
         # resting target can still be advanced as higher levels are accepted.
         "minimum_entry_target_gap_bps": 0.0,
         "premarket_maximum_gain_pct": 200.0,
+        "incomplete_target_exit": {
+            # Extended-hours liquidation remains a marketable limit at the
+            # current bid and follows later bids; MKT is never emitted outside
+            # regular hours. Regular hours retain the bounded very-urgent path.
+            "extended_hours_execution_policy": "adaptive_urgent",
+            "regular_hours_execution_policy": "adaptive_very_urgent",
+            "partial_fill_policy": "complete_remainder",
+            "deadline_ms": 5_000,
+        },
     })
     system_profiles[0]["parameters"]["protection"]["luld_profit_target"].update({
         "buffer_bps": 25.0,
@@ -6772,6 +6786,9 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 profile["parameters"]["momentum_management"] = deepcopy(
                     default_profile["parameters"]["momentum_management"]
                 )
+                profile["parameters"]["structural_entry"] = deepcopy(
+                    default_profile["parameters"]["structural_entry"]
+                )
                 lifecycle = dict(profile.get("lifecycle") or {})
                 default_lifecycle = dict(default_profile["lifecycle"])
                 lifecycle.setdefault("trading_behavior", {}).update(
@@ -6782,6 +6799,13 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 initial_entry["opportunity"] = deepcopy(default_initial["opportunity"])
                 initial_entry["confirmation"] = deepcopy(default_initial["confirmation"])
                 initial_entry["add_steps"] = []
+                initial_entry["capital_request"] = deepcopy(
+                    default_initial["capital_request"]
+                )
+                reentry = lifecycle.setdefault("reentry", {})
+                reentry["capital_request"] = deepcopy(
+                    dict(default_lifecycle["reentry"])["capital_request"]
+                )
                 profile["lifecycle"] = lifecycle
         for template in result["strategy"]["profile_templates"]:
             template["publication_status"] = "template"
