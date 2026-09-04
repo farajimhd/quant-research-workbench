@@ -3088,6 +3088,11 @@ impl HistoricalEventSource {
         };
         let row = serde_json::from_str::<PersistedStructureCheckpointRow>(line)
             .map_err(|error| format!("invalid persisted structure checkpoint row: {error}"))?;
+        if !source_revision_uses_execution_clock_v1(&row.source_revision_token) {
+            return Err(format!(
+                "persisted structure checkpoint for {ticker} predates the required execution-clock-v1 source contract; rebuild it from certified execution-clock history before using it for charts, indicators, or strategies"
+            ));
+        }
         let authority_start = DateTime::parse_from_rfc3339(&row.authority_start)
             .map_err(|error| format!("invalid structure checkpoint authority start: {error}"))?
             .with_timezone(&Utc);
@@ -3360,6 +3365,10 @@ impl HistoricalEventSource {
         }
         Ok(text)
     }
+}
+
+fn source_revision_uses_execution_clock_v1(token: &str) -> bool {
+    token.contains(":execution-clock-v1:")
 }
 
 fn adaptive_structure_chunk_minutes(
@@ -4800,11 +4809,11 @@ mod tests {
         materialize_confirmed_recent_coverage, merge_coverage_intervals, merge_daily_chart_bars,
         normalize_ticker, ordinal_event_select, parse_historical_tsv_row,
         persisted_structure_events_sql, recent_coverage_sql, recent_daily_trade_bars_sql,
-        row_to_event, split_adjustment_factors, structure_campaign_continuity_sql,
-        structure_campaign_tickers_sql, structure_split_adjustments_sql,
-        structure_split_revision_sql, ticker_filter, CoverageInterval, EventWindow,
-        HistoricalMacroChartRow, HistoricalRow, LatestEventCoverage, MarketSourceTier,
-        RecentCoverageRow,
+        row_to_event, source_revision_uses_execution_clock_v1, split_adjustment_factors,
+        structure_campaign_continuity_sql, structure_campaign_tickers_sql,
+        structure_split_adjustments_sql, structure_split_revision_sql, ticker_filter,
+        CoverageInterval, EventWindow, HistoricalMacroChartRow, HistoricalRow, LatestEventCoverage,
+        MarketSourceTier, RecentCoverageRow,
     };
     use crate::config::HistoricalGatewayConfig;
     use chrono::{NaiveDate, TimeZone, Utc};
@@ -4812,6 +4821,19 @@ mod tests {
     use qmd_core::compact_event::{CompactEventDecoder, LIVE_COMPACT_EVENT_SCHEMA_VERSION};
     use qmd_core::event::MarketEvent;
     use qmd_core::generic_structure::StructureSplitAdjustment;
+
+    #[test]
+    fn persisted_structure_source_revision_requires_execution_clock_contract() {
+        assert!(source_revision_uses_execution_clock_v1(
+            "1:2:0:updated:Archive:1:2:split-sha256:abc:execution-clock-v1:5:99:7:updated"
+        ));
+        assert!(!source_revision_uses_execution_clock_v1(
+            "1:2:0:updated:Archive:1:2:split-sha256:abc"
+        ));
+        assert!(!source_revision_uses_execution_clock_v1(
+            "execution-clock:not-applicable"
+        ));
+    }
 
     #[test]
     fn event_fetch_ticker_filter_targets_the_raw_sort_key() {

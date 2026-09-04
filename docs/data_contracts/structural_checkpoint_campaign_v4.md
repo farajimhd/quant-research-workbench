@@ -51,10 +51,22 @@ Campaign progress counts recovered persistence retries as well as full-session
 retries, and terminal error records retain the complete transport cause chain.
 
 All `market_sip_compact.events_YYYY` reads use the immutable common historical
-schema. Function F orders and timestamps causal state exclusively by
-`sip_timestamp_us`; it neither requires nor probes an execution-time column.
-The adapter supplies `0` for the optional live-wire execution clock. Campaign
-code must never alter an archive table to satisfy a reader schema.
+schema. Function F orders causal availability by `sip_timestamp_us`, while the
+ingestion-owned `q_live.historical_event_execution_clock_v1` sidecar supplies
+the exchange clock needed to identify delayed reports. Delayed reports advance
+the audit cursor but cannot revise levels, extrema, pivots, volume evidence, or
+strategy gates. Every event-bearing ticker-day in the campaign horizon must
+have matching certified execution-clock coverage. The campaign and checkpoint
+writer reject historical source-revision tokens that do not bind
+`execution-clock-v1`; old checkpoints cannot be relabeled or silently reused.
+Campaign code must never alter an archive table or reopen retained flatfiles to
+satisfy this contract.
+
+QMD History validates the checkpoint payload and certification chain before
+use, then revalidates only the post-checkpoint event interval. It does not
+rescan the immutable pre-checkpoint authority horizon on each chart or strategy
+request. If the latest checkpoint predates `execution-clock-v1`, the request
+fails with a rebuild instruction instead of presenting stale structural levels.
 
 ## Resume, purge, and progress
 

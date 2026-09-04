@@ -1460,6 +1460,12 @@ async fn process_ordinal_session(
     {
         return Err("daily checkpoint authority is incomplete".to_string());
     }
+    if !revision.token.contains(":execution-clock-v1:") {
+        return Err(
+            "daily checkpoint authority predates execution-clock-v1; refusing to certify structural state that may include delayed reports"
+                .to_string(),
+        );
+    }
     let event_evidence = event_auditor.finish();
     if event_evidence.event_count != event_count
         || (event_count > 0

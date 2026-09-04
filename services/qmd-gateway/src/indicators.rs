@@ -48,6 +48,13 @@ fn valid_checkpoint_set_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
 }
 
+fn structure_checkpoint_source_contract_is_compatible(
+    checkpoint_set_id: &str,
+    source_revision_token: &str,
+) -> bool {
+    checkpoint_set_id == "live" || source_revision_token.contains(":execution-clock-v1:")
+}
+
 fn daily_structure_checkpoint_deduplication_token(
     checkpoint_set_id: &str,
     session_date: NaiveDate,
@@ -3293,6 +3300,15 @@ impl IndicatorClickHouseWriter {
         if !record.source_complete {
             return Err("refusing to persist an incomplete daily structure checkpoint".to_string());
         }
+        if !structure_checkpoint_source_contract_is_compatible(
+            &record.checkpoint_set_id,
+            &record.source_revision_token,
+        ) {
+            return Err(
+                "refusing to persist a historical structure checkpoint without the execution-clock-v1 source contract"
+                    .to_string(),
+            );
+        }
         if record.algorithm_version != record.checkpoint.algorithm_version
             || record.sym.to_ascii_uppercase() != record.checkpoint.sym.to_ascii_uppercase()
             || record.last_arrival_sequence != record.checkpoint.last_arrival_sequence
@@ -4221,9 +4237,10 @@ mod tests {
         indicator_insert_row, market_structure_reference_sql,
         parse_market_structure_reference_rows, retryable_clickhouse_write_status,
         send_idempotent_clickhouse_request, serialized_structure_checkpoint_sha256,
-        summarize_canonical_composites, BarIndicatorCalculator, IndicatorKey,
-        MicrostructureCumulativeFlow, MicrostructureSampleAggregate, SessionVwapState,
-        SharedIndicatorStore, TickState, INDICATOR_SCHEMA_VERSION,
+        structure_checkpoint_source_contract_is_compatible, summarize_canonical_composites,
+        BarIndicatorCalculator, IndicatorKey, MicrostructureCumulativeFlow,
+        MicrostructureSampleAggregate, SessionVwapState, SharedIndicatorStore, TickState,
+        INDICATOR_SCHEMA_VERSION,
     };
     use crate::bars::{TradeAggregationRules, TradeUpdateRule};
     use crate::capability_catalog::ExecutionScope;
@@ -4239,6 +4256,22 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex as StdMutex,
     };
+
+    #[test]
+    fn historical_checkpoint_persistence_requires_execution_clock_contract() {
+        assert!(structure_checkpoint_source_contract_is_compatible(
+            "live",
+            "live-source-revision"
+        ));
+        assert!(structure_checkpoint_source_contract_is_compatible(
+            "canonical-v16",
+            "archive:split-sha256:abc:execution-clock-v1:5:99:7:updated"
+        ));
+        assert!(!structure_checkpoint_source_contract_is_compatible(
+            "canonical-v16",
+            "archive:split-sha256:abc"
+        ));
+    }
 
     #[test]
     fn daily_checkpoint_seed_is_scoped_to_one_exact_set() {

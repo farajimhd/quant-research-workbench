@@ -1330,7 +1330,13 @@ async fn chart_bar_snapshot(
             structure_only,
         )
         .await
-        .map_err(service_error)?;
+        .map_err(|error| {
+            if structure_only {
+                structure_checkpoint_advancement_error(error)
+            } else {
+                service_error(error)
+            }
+        })?;
     if !bars_only && !structure_only && qmd_core::bars::is_supported_timeframe(&timeframe) {
         // A full chart composes two explicit clocks: retrospective OHLCV uses
         // execution time, while MACD and strategy evidence stay causal in SIP
@@ -2528,6 +2534,7 @@ fn structure_checkpoint_advancement_error(message: String) -> ApiError {
     let (status, error_code, retryable, retry_action) = if normalized.contains("archive")
         || normalized.contains("gap")
         || normalized.contains("source plan changed")
+        || normalized.contains("predates the required execution-clock-v1")
     {
         (
             StatusCode::CONFLICT,
@@ -2723,7 +2730,8 @@ mod tests {
         compact_projected_unified_structure_history, event_revision_changed,
         expected_event_revision, is_loopback_bind, parse_chart_mode, parse_chart_stage,
         parse_indicator_projection, parse_timestamp, product_resolution, stream_gap_frame,
-        validate_timeframe, watchlist_materialization_error, EventRevisionPolicy, ProductQuery,
+        structure_checkpoint_advancement_error, validate_timeframe,
+        watchlist_materialization_error, EventRevisionPolicy, ProductQuery,
     };
     use crate::source::SourceRevision;
     use axum::http::StatusCode;
@@ -2772,6 +2780,24 @@ mod tests {
         assert_eq!(frame["retry_action"], "reconnect_with_original_window");
         assert_eq!(frame["terminal"], true);
         assert_eq!(frame["skipped"], 9);
+    }
+
+    #[test]
+    fn legacy_structure_checkpoint_is_a_non_retryable_source_conflict() {
+        let error = structure_checkpoint_advancement_error(
+            "persisted structure checkpoint for SUGP predates the required execution-clock-v1 source contract"
+                .to_string(),
+        );
+        assert_eq!(error.0, StatusCode::CONFLICT);
+        assert_eq!(
+            error.1 .0["error_code"],
+            "structure_checkpoint_source_incompatible"
+        );
+        assert_eq!(error.1 .0["retryable"], false);
+        assert_eq!(
+            error.1 .0["retry_action"],
+            "rebuild_checkpoint_from_canonical_history"
+        );
     }
 
     #[test]

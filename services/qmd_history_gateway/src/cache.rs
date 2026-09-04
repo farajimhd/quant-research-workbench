@@ -27,6 +27,7 @@ use qmd_core::market_products::{
 };
 use qmd_core::market_signal::{MarketSignalEngine, MarketSignalEvent};
 use qmd_core::microstructure_interval::MicrostructureIntervalWindow;
+use qmd_core::structure_certification::checkpoint_sha256;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -621,9 +622,21 @@ impl HistoricalDerivedCache {
         as_of: DateTime<Utc>,
     ) -> Result<Option<PersistedStructureCheckpointSeed>, String> {
         let session_start = session_anchor(as_of)?;
+        let ticker = ticker.trim().to_ascii_uppercase();
+        // A certified checkpoint already binds the immutable historical event
+        // stream, split lineage, and execution-clock source contract. Requiring
+        // a fresh revision scan over its entire authority horizon defeated the
+        // checkpoint and made every chart rebuild months of history. Only the
+        // post-checkpoint advancement is revalidated by the materializer.
+        if let Some(seed) = self
+            .source
+            .persisted_structure_checkpoint_before(&ticker, session_start)
+            .await?
+        {
+            return Ok(Some(seed));
+        }
         let authority_start =
             structure_rebuild_start(session_start, self.config.structure_book_lookback_days)?;
-        let ticker = ticker.trim().to_ascii_uppercase();
         let revision = self
             .source
             .source_revision(&EventWindow {
@@ -1172,10 +1185,25 @@ impl HistoricalDerivedCache {
         ticker: String,
         profile: CacheProfile,
     ) -> Result<CacheLease, String> {
-        let revision_window =
-            revision_window(&window, &profile, self.config.structure_book_lookback_days)?;
+        let structure_seed = if matches!(&profile, CacheProfile::Structure(_)) {
+            self.source
+                .persisted_structure_checkpoint_before(&ticker, window.start)
+                .await?
+        } else {
+            None
+        };
+        let revision_window = revision_window(
+            &window,
+            &profile,
+            self.config.structure_book_lookback_days,
+            structure_seed.is_some(),
+        )?;
         let source_revision = self.source.source_revision(&revision_window).await?;
-        let key = cache_key(&window, &ticker, &source_revision, &profile);
+        let mut key = cache_key(&window, &ticker, &source_revision, &profile);
+        if let Some(seed) = structure_seed.as_ref() {
+            key.push_str(":structure-seed:");
+            key.push_str(&structure_seed_identity(seed)?);
+        }
         let mut index = self.inner.lock().await;
         if let Some(entry) = index.entries.get(&key).cloned() {
             touch(&mut index.order, &key);
@@ -1241,7 +1269,14 @@ impl HistoricalDerivedCache {
         let build_revision = source_revision.clone();
         tokio::spawn(async move {
             builder
-                .build(build_entry, window, ticker, profile, build_revision)
+                .build(
+                    build_entry,
+                    window,
+                    ticker,
+                    profile,
+                    build_revision,
+                    structure_seed,
+                )
                 .await;
         });
         Ok(CacheLease {
@@ -1359,8 +1394,12 @@ impl HistoricalDerivedCache {
             CacheProfile::Products
         };
         if matches!(&profile, CacheProfile::Bars(_)) {
-            let revision_window =
-                revision_window(&window, &profile, self.config.structure_book_lookback_days)?;
+            let revision_window = revision_window(
+                &window,
+                &profile,
+                self.config.structure_book_lookback_days,
+                false,
+            )?;
             let source_revision = self.source.source_revision(&revision_window).await?;
             let key = cache_key(&window, &ticker, &source_revision, &profile);
             if let Some(artifact) = self
@@ -1763,6 +1802,7 @@ impl HistoricalDerivedCache {
         ticker: String,
         profile: CacheProfile,
         source_revision: SourceRevision,
+        structure_seed: Option<PersistedStructureCheckpointSeed>,
     ) {
         let permit = match self.build_permits.acquire().await {
             Ok(permit) => permit,
@@ -1776,7 +1816,14 @@ impl HistoricalDerivedCache {
             }
         };
         let result = self
-            .build_inner(entry.clone(), window, ticker, profile, source_revision)
+            .build_inner(
+                entry.clone(),
+                window,
+                ticker,
+                profile,
+                source_revision,
+                structure_seed,
+            )
             .await;
         drop(permit);
         let mut state = entry.state.lock().await;
@@ -1803,6 +1850,7 @@ impl HistoricalDerivedCache {
         ticker: String,
         profile: CacheProfile,
         source_revision: SourceRevision,
+        structure_seed: Option<PersistedStructureCheckpointSeed>,
     ) -> Result<u64, String> {
         let builds_products = matches!(&profile, CacheProfile::Products);
         let resolutions = self
@@ -1864,10 +1912,14 @@ impl HistoricalDerivedCache {
             &profile,
             CacheProfile::Derived(_) | CacheProfile::Structure(_)
         ) {
-            if let Some(checkpoint) = self
-                .structure_seed_checkpoint(&ticker, window.start)
-                .await?
-            {
+            let checkpoint = match structure_seed {
+                Some(seed) => Some(seed.checkpoint),
+                None => {
+                    self.structure_seed_checkpoint(&ticker, window.start)
+                        .await?
+                }
+            };
+            if let Some(checkpoint) = checkpoint {
                 if let Some(engine) = structure_engine.as_mut() {
                     engine.seed_checkpoint(&checkpoint);
                 } else {
@@ -2279,6 +2331,18 @@ impl HistoricalDerivedCache {
         ticker: &str,
         before: DateTime<Utc>,
     ) -> StructureSeedResult {
+        // Prefer the durable certified authority before computing a cold-seed
+        // identity. The checkpoint loader validates its causal hash chain and
+        // execution-clock source contract, while advancement validates only
+        // events after its replay cursor. This is the intended checkpoint
+        // boundary and avoids a redundant full-horizon source scan.
+        if let Some(seed) = self
+            .source
+            .persisted_structure_checkpoint_before(ticker, before)
+            .await?
+        {
+            return Ok(Some(seed.checkpoint));
+        }
         // A missing or algorithm-incompatible persisted checkpoint must
         // rebuild the same complete horizon promised by the ticker level-book
         // contract. A shorter fallback silently deleted older levels exactly
@@ -2422,52 +2486,8 @@ impl HistoricalDerivedCache {
                     }
                 }
             }
-            let mut stale_daily_checkpoint = false;
-            if let Some(seed) = source
-                .persisted_structure_checkpoint_before(&ticker, before)
-                .await?
-            {
-                let checkpoint_end = seed
-                    .checkpoint
-                    .replayed_through
-                    .or(seed.checkpoint.updated_at)
-                    .ok_or_else(|| {
-                        "persisted structure checkpoint lacks replay cursor".to_string()
-                    })?
-                    .checked_add_signed(Duration::microseconds(1))
-                    .ok_or_else(|| "persisted structure checkpoint cursor overflow".to_string())?;
-                let authority_window = EventWindow {
-                    start: seed.authority_start,
-                    end: checkpoint_end,
-                    tickers: vec![ticker.clone()],
-                };
-                let current_revision = source.source_revision(&authority_window).await?;
-                if current_revision.complete_for_history
-                    && current_revision.request_complete
-                    && current_revision.source_plan_hash == seed.source_plan_hash
-                    && current_revision.token == seed.source_revision_token
-                {
-                    let mut checkpoint = seed.checkpoint;
-                    let cursor = checkpoint
-                        .replayed_through
-                        .or(checkpoint.updated_at)
-                        .ok_or_else(|| {
-                            "persisted structure checkpoint lacks replay cursor".to_string()
-                        })?;
-                    for adjustment in source
-                        .structure_split_adjustments(&ticker, cursor, before)
-                        .await?
-                    {
-                        checkpoint.apply_split_adjustment(&adjustment)?;
-                    }
-                    return Ok(Some(checkpoint));
-                }
-                stale_daily_checkpoint = true;
-            }
-            if !stale_daily_checkpoint {
-                if let Some(seed) = persisted_structure_book_seed(&source, &ticker, before).await? {
-                    return Ok(Some(seed.checkpoint));
-                }
+            if let Some(seed) = persisted_structure_book_seed(&source, &ticker, before).await? {
+                return Ok(Some(seed.checkpoint));
             }
             // The dedicated level-book profile is trade-driven end to end.
             // Use the same filtered authority for its warm-start rebuild so a
@@ -3630,12 +3650,15 @@ fn revision_window(
     window: &EventWindow,
     profile: &CacheProfile,
     structure_rebuild_days: usize,
+    structure_checkpoint_seeded: bool,
 ) -> Result<EventWindow, String> {
     // Structural books use their checkpoint horizon. Bar and derived profiles
     // calculate EMA/MACD from a bounded persisted-bar warm-up, so their source
     // revision must cover that same history; otherwise a repaired prior bar
     // could leave a stale prepared chart or strategy frame cache authoritative.
-    let start = if matches!(profile, CacheProfile::Structure(_)) {
+    let start = if matches!(profile, CacheProfile::Structure(_)) && structure_checkpoint_seeded {
+        window.start
+    } else if matches!(profile, CacheProfile::Structure(_)) {
         structure_rebuild_start(window.start, structure_rebuild_days)?
     } else if matches!(profile, CacheProfile::Bars(_) | CacheProfile::Derived(_)) {
         indicator_warmup_start(window.start)?
@@ -3647,6 +3670,18 @@ fn revision_window(
         end: window.end,
         tickers: window.tickers.clone(),
     })
+}
+
+fn structure_seed_identity(seed: &PersistedStructureCheckpointSeed) -> Result<String, String> {
+    let checkpoint_hash = checkpoint_sha256(&seed.checkpoint)?;
+    Ok(stable_hash_hex(&format!(
+        "{}:{}:{}:{}:{}",
+        seed.authority_start.timestamp_micros(),
+        seed.source_plan_hash,
+        seed.source_revision_token,
+        seed.checkpoint.last_arrival_sequence,
+        checkpoint_hash,
+    )))
 }
 
 fn cache_event_type_filter(profile: &CacheProfile) -> Option<u8> {
@@ -3978,28 +4013,34 @@ mod tests {
 
         assert_eq!(session_anchor(page.start).unwrap(), expected);
         assert_eq!(
-            revision_window(&page, &CacheProfile::Derived("5m".to_string()), 7)
+            revision_window(&page, &CacheProfile::Derived("5m".to_string()), 7, false)
                 .unwrap()
                 .start,
             Utc.with_ymd_and_hms(2026, 7, 7, 8, 0, 0).unwrap()
         );
         assert_eq!(
-            revision_window(&page, &CacheProfile::Structure("5m".to_string()), 7)
+            revision_window(&page, &CacheProfile::Structure("5m".to_string()), 7, false)
                 .unwrap()
                 .start,
             Utc.with_ymd_and_hms(2026, 7, 7, 8, 0, 0).unwrap()
         );
         assert_eq!(
-            revision_window(&page, &CacheProfile::Products, 7)
+            revision_window(&page, &CacheProfile::Products, 7, false)
                 .unwrap()
                 .start,
             page.start
         );
         assert_eq!(
-            revision_window(&page, &CacheProfile::Bars("1s".to_string()), 7)
+            revision_window(&page, &CacheProfile::Bars("1s".to_string()), 7, false)
                 .unwrap()
                 .start,
             Utc.with_ymd_and_hms(2026, 7, 7, 8, 0, 0).unwrap()
+        );
+        assert_eq!(
+            revision_window(&page, &CacheProfile::Structure("5m".to_string()), 7, true)
+                .unwrap()
+                .start,
+            page.start
         );
     }
 
@@ -4351,10 +4392,20 @@ mod tests {
             tickers: vec!["SUGP".to_string()],
         };
 
-        let derived =
-            revision_window(&window, &CacheProfile::Derived("1s".to_string()), 180).unwrap();
-        let structure =
-            revision_window(&window, &CacheProfile::Structure("1s".to_string()), 180).unwrap();
+        let derived = revision_window(
+            &window,
+            &CacheProfile::Derived("1s".to_string()),
+            180,
+            false,
+        )
+        .unwrap();
+        let structure = revision_window(
+            &window,
+            &CacheProfile::Structure("1s".to_string()),
+            180,
+            false,
+        )
+        .unwrap();
 
         assert_eq!(
             derived.start,
