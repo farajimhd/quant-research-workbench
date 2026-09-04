@@ -32,6 +32,7 @@ from src.trading_runtime.strategy_engine import (
     entry_stage_without_rule_set,
     evaluate_entry_decision_rules,
     long_momentum_strategy_definition,
+    resolve_long_momentum_parameters,
     strategy_input_catalog,
     strategy_observation_source_values,
     strategy_rule_timeframes,
@@ -73,6 +74,7 @@ def test_structural_quality_uses_backend_score_and_preserves_audit_evidence() ->
 def assignment(
     *,
     parameters: dict | None = None,
+    strategy_revision: int = STRATEGY_REVISION,
     status: AssignmentStatus = AssignmentStatus.WATCHING,
     permissions: StrategyPermissions | None = None,
     state: dict | None = None,
@@ -80,7 +82,7 @@ def assignment(
     return StrategyAssignment(
         assignment_id="assignment-1",
         strategy_id=STRATEGY_ID,
-        strategy_revision=STRATEGY_REVISION,
+        strategy_revision=strategy_revision,
         account_id="DU123",
         ticker="AAPL",
         conid=265598,
@@ -4259,8 +4261,12 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(result.evaluation.intents[0].quantity, 50)
 
     def test_profit_pocket_closes_the_campaign_episode_before_reentry(self) -> None:
+        historical_revision = 32
+        parameters = default_long_momentum_parameters(revision=historical_revision)
         managed = assignment(
             status=AssignmentStatus.MANAGING,
+            parameters=parameters,
+            strategy_revision=historical_revision,
             state={
                 "active_stop": 99.0,
                 "initial_stop": 99.0,
@@ -4270,7 +4276,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
                 "last_acceleration": 0.3,
             },
         )
-        result = LongMomentumStrategyEngine().evaluate(
+        result = LongMomentumStrategyEngine(revision=historical_revision).evaluate(
             managed,
             confirmed_observation(
                 price=102.0,
@@ -4287,9 +4293,11 @@ class LongMomentumStrategyTests(unittest.TestCase):
 
         pending = assignment(
             status=AssignmentStatus.EXIT_PENDING,
+            parameters=parameters,
+            strategy_revision=historical_revision,
             state=dict(result.state),
         )
-        duplicate = LongMomentumStrategyEngine().evaluate(
+        duplicate = LongMomentumStrategyEngine(revision=historical_revision).evaluate(
             pending,
             confirmed_observation(
                 price=101.8,
@@ -4301,6 +4309,23 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(duplicate.evaluation.signals[0].action, "hold")
         self.assertEqual(duplicate.evaluation.signals[0].reason, "exit_fill_pending")
         self.assertFalse(duplicate.evaluation.intents)
+
+    def test_active_revision_ignores_stale_profit_pocket_override(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["profit_pocket"]["enabled"] = True
+
+        resolved = resolve_long_momentum_parameters(parameters)
+
+        self.assertFalse(resolved["profit_pocket"]["enabled"])
+        self.assertTrue(
+            resolve_long_momentum_parameters(parameters, revision=32)["profit_pocket"]["enabled"]
+        )
+        current_space = long_momentum_strategy_definition()["config"]["parameter_space"]
+        historical_space = long_momentum_strategy_definition(revision=32)["config"][
+            "parameter_space"
+        ]
+        self.assertNotIn("profit_pocket.trigger", current_space)
+        self.assertIn("profit_pocket.trigger", historical_space)
 
     def test_reentry_cooldown_is_deterministic(self) -> None:
         parameters = default_long_momentum_parameters()

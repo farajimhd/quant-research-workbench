@@ -2607,8 +2607,23 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         migrated = _migrate_draft(legacy)
         migrated_profile = migrated["strategy"]["profiles"][0]
         self.assertEqual(migrated["schema_version"], CONFIGURATION_SCHEMA_VERSION)
-        self.assertEqual(migrated_profile["action_policy_ids"], ["profit-pocket"])
+        self.assertEqual(migrated_profile["action_policy_ids"], [])
+        self.assertFalse(migrated_profile["parameters"]["profit_pocket"]["enabled"])
         self.assertNotIn("capabilities", migrated_profile)
+
+    def test_schema_v45_removes_stale_profit_pocket_from_protected_strategy(self) -> None:
+        legacy = self._draft()
+        legacy["schema_version"] = 45
+        profile = legacy["strategy"]["profiles"][0]
+        profile["action_policy_ids"] = ["profit-pocket"]
+        profile["parameters"]["profit_pocket"]["enabled"] = True
+
+        migrated = _migrate_draft(legacy)
+
+        migrated_profile = migrated["strategy"]["profiles"][0]
+        self.assertEqual(migrated_profile["definition_revision"], STRATEGY_REVISION)
+        self.assertEqual(migrated_profile["action_policy_ids"], [])
+        self.assertFalse(migrated_profile["parameters"]["profit_pocket"]["enabled"])
 
     def _draft(self) -> dict:
         with patch(

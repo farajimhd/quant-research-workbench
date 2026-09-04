@@ -70,7 +70,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 45
+CONFIGURATION_SCHEMA_VERSION = 46
 MARKET_DISCOVERY_MATERIALIZATION_RUN_ID = "market-discovery:materialized-configuration"
 _CONFIGURATION_BASE_CACHE_LOCK = threading.RLock()
 _CONFIGURATION_BASE_CACHE: tuple[str, float, dict[str, Any] | None] = ("", 0.0, None)
@@ -6781,7 +6781,15 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 profile["description"] = deepcopy(default_profile["description"])
                 profile["protected"] = True
                 profile["definition_revision"] = STRATEGY_REVISION
-                profile["action_policy_ids"] = ["profit-pocket"]
+                # Profit pocketing is disabled for the protected long-momentum
+                # strategy. Do not reattach the stale action policy while
+                # upgrading older drafts.
+                profile["action_policy_ids"] = deepcopy(
+                    default_profile["action_policy_ids"]
+                )
+                profile.setdefault("parameters", {})["profit_pocket"] = deepcopy(
+                    default_profile["parameters"]["profit_pocket"]
+                )
                 profile.setdefault("parameters", {})["protection"] = deepcopy(
                     default_profile["parameters"]["protection"]
                 )

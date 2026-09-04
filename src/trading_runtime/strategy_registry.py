@@ -160,7 +160,10 @@ def _ensure_builtin_executors() -> None:
                     definition_factory=lambda revision=revision: long_momentum_strategy_definition(
                         revision=revision
                     ),
-                    parameter_resolver=resolve_long_momentum_parameters,
+                    parameter_resolver=lambda parameters, revision=revision: resolve_long_momentum_parameters(
+                        parameters,
+                        revision=revision,
+                    ),
                     strategy_factory=lambda assignments, revision=revision: AssignedLongMomentumStrategy(
                         assignments,
                         revision=revision,

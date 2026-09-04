@@ -34,8 +34,8 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 32
-HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31)
+STRATEGY_REVISION = 33
+HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32)
 
 SOURCE_MAXIMUM_AGE_MS = {
     "100ms": 500,
@@ -362,7 +362,7 @@ def long_momentum_strategy_definition(
     """Canonical built-in definition and optimization space for the first post-refactor strategy."""
     if revision not in {*HISTORICAL_STRATEGY_REVISIONS, STRATEGY_REVISION}:
         raise ValueError(f"Unsupported Long Momentum Strategy revision: {revision}")
-    parameters = default_long_momentum_parameters()
+    parameters = default_long_momentum_parameters(revision=revision)
     if revision == 26:
         macd_conditions = next(
             row
@@ -399,8 +399,18 @@ def long_momentum_strategy_definition(
                     "ordinal_qualified_support",
                 ],
                 "protection.stop.volatility_multiple": [0.75, 1.0, 1.25, 1.5, 2.0],
-                "profit_pocket.trigger": ["acceleration_slowdown", "favorable_move_pct", "volatility_multiple"],
-                "profit_pocket.quantity_fraction": [1.0],
+                **(
+                    {
+                        "profit_pocket.trigger": [
+                            "acceleration_slowdown",
+                            "favorable_move_pct",
+                            "volatility_multiple",
+                        ],
+                        "profit_pocket.quantity_fraction": [1.0],
+                    }
+                    if revision <= 32
+                    else {}
+                ),
                 "reentry.cooldown_ms": [0, 500, 1000, 5000, 30000],
                 "execution.entry_urgency": ["patient", "regular", "urgent", "very_urgent"],
                 "execution.exit_urgency": ["urgent", "very_urgent"],
@@ -438,7 +448,9 @@ def long_momentum_strategy_definition(
     }
 
 
-def default_long_momentum_parameters() -> dict[str, Any]:
+def default_long_momentum_parameters(
+    *, revision: int = STRATEGY_REVISION,
+) -> dict[str, Any]:
     parameters = {
         "entry": {
             "breakout_timeframe": "1s",
@@ -544,7 +556,9 @@ def default_long_momentum_parameters() -> dict[str, Any]:
         },
         "add": {"enabled": True, "trigger": "bullish_choch_after_pullback", "maximum_adds": 2},
         "profit_pocket": {
-            "enabled": True,
+            # Revision 33 removes profit pocketing from the active strategy.
+            # Keep the prior default only for immutable historical definitions.
+            "enabled": revision <= 32,
             "trigger": "acceleration_slowdown",
             "minimum_gain_pct": 0.75,
             "acceleration_slowdown_threshold": 0.15,
@@ -679,8 +693,19 @@ def default_exit_routes(final_exit: dict[str, Any] | None = None) -> list[dict[s
     ]
 
 
-def resolve_long_momentum_parameters(overrides: dict[str, Any] | None = None) -> dict[str, Any]:
-    parameters = _deep_merge(default_long_momentum_parameters(), dict(overrides or {}))
+def resolve_long_momentum_parameters(
+    overrides: dict[str, Any] | None = None,
+    *,
+    revision: int = STRATEGY_REVISION,
+) -> dict[str, Any]:
+    parameters = _deep_merge(
+        default_long_momentum_parameters(revision=revision),
+        dict(overrides or {}),
+    )
+    if revision >= 33:
+        # Profit pocketing is not part of the active strategy contract. Ignore
+        # stale persisted overrides; revision 32 remains reproducible.
+        parameters["profit_pocket"]["enabled"] = False
     execution = dict(parameters.get("execution") or {})
     execution.pop("time_in_force", None)
     execution.pop("outside_rth", None)
@@ -2024,7 +2049,10 @@ class LongMomentumStrategyEngine:
             raise ValueError("Observation ticker does not match strategy assignment")
         state = dict(assignment.state)
         status = assignment.status
-        parameters = resolve_long_momentum_parameters(assignment.parameters)
+        parameters = resolve_long_momentum_parameters(
+            assignment.parameters,
+            revision=self.revision,
+        )
         flatten_due = bool(
             observation.position_quantity > 0
             and _at_or_after_session_time(
