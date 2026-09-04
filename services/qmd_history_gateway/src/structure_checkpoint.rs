@@ -350,7 +350,7 @@ async fn rebuild_structure_checkpoint_inner(
     {
         return Err("Generic Structure rebuild source plan changed before replay".to_string());
     }
-    let source_revision_before = source.source_revision(&window).await?;
+    let source_revision_before = source.structure_source_revision(&window).await?;
     if !source_revision_before.request_complete {
         return Err("Generic Structure rebuild source revision is incomplete".to_string());
     }
@@ -424,7 +424,7 @@ async fn rebuild_structure_checkpoint_inner(
             "Generic Structure rebuild found no canonical events for {ticker}"
         ));
     }
-    let source_revision_after = source.source_revision(&window).await?;
+    let source_revision_after = source.structure_source_revision(&window).await?;
     if source_revision_after.source_plan_hash != source_plan.plan_hash
         || source_revision_after.token != source_revision_before.token
     {
@@ -513,7 +513,7 @@ async fn advance_structure_checkpoint_inner(
     {
         return Err("Generic Structure checkpoint source plan changed before replay".to_string());
     }
-    let source_revision_before = source.source_revision(&window).await?;
+    let source_revision_before = source.structure_source_revision(&window).await?;
     let event_limit = request
         .event_limit
         .unwrap_or(config.structure_checkpoint_max_events)
@@ -592,7 +592,7 @@ async fn advance_structure_checkpoint_inner(
         engine.apply_split_adjustment(&split_adjustments[next_split])?;
         next_split += 1;
     }
-    let source_revision_after = source.source_revision(&window).await?;
+    let source_revision_after = source.structure_source_revision(&window).await?;
     if source_revision_after.source_plan_hash != source_plan.plan_hash {
         return Err("Generic Structure checkpoint source plan changed during replay".to_string());
     }
@@ -689,7 +689,7 @@ pub async fn advance_historical_structure_timeline(
     {
         return Err("Generic Structure checkpoint source plan changed before replay".to_string());
     }
-    let source_revision_before = source.source_revision(&window).await?;
+    let source_revision_before = source.structure_source_revision(&window).await?;
     let event_limit = request
         .event_limit
         .unwrap_or(config.structure_checkpoint_max_events)
@@ -781,7 +781,7 @@ pub async fn advance_historical_structure_timeline(
         });
         boundary_index += 1;
     }
-    let source_revision_after = source.source_revision(&window).await?;
+    let source_revision_after = source.structure_source_revision(&window).await?;
     if source_revision_after.source_plan_hash != source_plan.plan_hash {
         return Err("Generic Structure checkpoint source plan changed during replay".to_string());
     }

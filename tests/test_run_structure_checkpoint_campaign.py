@@ -16,7 +16,6 @@ from scripts.run_structure_checkpoint_campaign import (
     prepare_recovery_resume,
     recovery_plan,
     request_campaign_stop,
-    run_execution_clock_preflight,
     sha256_file,
     source_commit,
     status_is_fully_certified,
@@ -38,6 +37,18 @@ def test_powershell_launcher_resolves_python_from_the_active_host() -> None:
     assert "if (-not $env:DOTENV_PATHS)" in source
     assert "'secrets\\.env'" in source
     assert "& $resolvedPython @launcherArguments" in source
+
+
+def test_campaign_uses_historical_sip_condition_policy_without_clock_preflight() -> None:
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "run_structure_checkpoint_campaign.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'STRUCTURE_INPUT_POLICY = "historical-sip-condition-v1"' in source
+    assert "--validate-execution-clock-only" not in source
+    assert "--execution-clock-reimport" not in source
 
 
 class _RunningProcess:
@@ -92,7 +103,7 @@ def test_prebuilt_runtime_binary_is_preferred_without_cargo() -> None:
     candidates = binary_candidates(None, {"TRADING_RUNTIME_ROOT": r"E:\TradingRuntime"})
 
     assert candidates[0] == Path(r"E:\TradingRuntime") / "bin" / candidates[0].name
-    assert candidates[0].name == "structure_checkpoint_campaign_v6.exe"
+    assert candidates[0].name == "structure_checkpoint_campaign_v7.exe"
 
 
 def test_executable_hash_is_reported_from_exact_file_bytes(tmp_path: Path) -> None:
@@ -327,45 +338,6 @@ def test_recovery_resume_refuses_to_mutate_source_runtime(tmp_path: Path) -> Non
             ["--runtime-dir", str(source), "--checkpoint-set-id", "successor"],
             str(source),
         )
-
-
-def test_execution_clock_preflight_covers_full_plan_before_workers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    observed = {}
-
-    class _Result:
-        returncode = 0
-
-    def fake_run(command, **kwargs):
-        observed["command"] = command
-        observed["kwargs"] = kwargs
-        return _Result()
-
-    monkeypatch.setattr("scripts.run_structure_checkpoint_campaign.subprocess.run", fake_run)
-    code = run_execution_clock_preflight(
-        tmp_path / "campaign.exe",
-        [
-            "--start-date",
-            "2025-01-01",
-            "--end-date",
-            "2026-08-31",
-            "--checkpoint-set-id",
-            "successor",
-            "--workers",
-            "80",
-        ],
-        [{"ticker": "SUGP"}, {"ticker": "JUNS"}, {"ticker": "A"}],
-        tmp_path / "planner",
-        {"PYTHONDONTWRITEBYTECODE": "1"},
-    )
-
-    assert code == 0
-    command = observed["command"]
-    assert "--validate-execution-clock-only" in command
-    assert command[command.index("--workers") + 1] == "1"
-    ticker_path = Path(command[command.index("--ticker-file") + 1])
-    assert ticker_path.read_text(encoding="utf-8").splitlines() == ["SUGP", "JUNS", "A"]
 
 
 def test_resume_archives_stale_status_and_starts_with_clean_truthful_queue(tmp_path: Path) -> None:

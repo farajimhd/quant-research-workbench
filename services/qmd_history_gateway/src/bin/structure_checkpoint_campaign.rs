@@ -11,7 +11,7 @@ use qmd_core::structure_certification::{
 };
 use qmd_history_gateway::config::HistoricalGatewayConfig;
 use qmd_history_gateway::source::{
-    EventWindow, HistoricalEventSource, StructureCampaignTicker, StructureEventCountEstimateRequest,
+    HistoricalEventSource, StructureCampaignTicker, StructureEventCountEstimateRequest,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -61,7 +61,6 @@ struct Args {
     retry_delay_seconds: u64,
     purge_existing_checkpoints: bool,
     plan_only: bool,
-    validate_execution_clock_only: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -555,32 +554,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if tickers.is_empty() {
         return Err(io_error("ticker universe is empty"));
     }
-    if args.validate_execution_clock_only {
-        let start = New_York
-            .from_local_datetime(
-                &args.start_date.and_time(
-                    NaiveTime::from_hms_opt(4, 0, 0)
-                        .ok_or_else(|| io_error("invalid campaign start time"))?,
-                ),
-            )
-            .single()
-            .ok_or_else(|| io_error("invalid New York campaign start"))?
-            .with_timezone(&Utc);
-        let end = session_end(args.end_date).map_err(io_error)?;
-        let revision = source
-            .source_revision(&EventWindow {
-                start,
-                end,
-                tickers,
-            })
-            .await
-            .map_err(io_error)?;
-        println!(
-            "Certified execution-clock preflight passed: {}",
-            revision.token
-        );
-        return Ok(());
-    }
     if args.purge_existing_checkpoints {
         let deleted = writer
             .purge_daily_structure_checkpoint_set()
@@ -602,7 +575,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     )?;
     if args.plan_only {
         println!(
-            "Validated Campaign v6 plan: tickers={} units={} plan={}",
+            "Validated Campaign v7 plan: tickers={} units={} plan={}",
             plans.len(),
             plans.iter().map(|plan| plan.sessions.len()).sum::<usize>(),
             plan_path.display()
@@ -996,7 +969,7 @@ fn dashboard_lines(
     let mut lines = if compact {
         vec![
             format!(
-                "Checkpoint Campaign v6 | {} | v{} | {} workers",
+                "Checkpoint Campaign v7 | {} | v{} | {} workers",
                 state.to_ascii_uppercase(),
                 progress.algorithm_version,
                 workers
@@ -1049,7 +1022,7 @@ fn dashboard_lines(
     } else {
         vec![
             format!(
-                "Structural Checkpoint Campaign v6 | {} | algorithm v{} | workers {}",
+                "Structural Checkpoint Campaign v7 | {} | algorithm v{} | workers {}",
                 state.to_ascii_uppercase(),
                 progress.algorithm_version,
                 workers
@@ -1239,7 +1212,6 @@ fn validated_current_checkpoint_prefix(
 
 async fn recover_reusable_checkpoint_prefix(
     writer: &IndicatorClickHouseWriter,
-    source: &HistoricalEventSource,
     manifest: &qmd_history_gateway::source::StructureCampaignManifest,
     target_set_id: &str,
     source_set_id: &str,
@@ -1254,10 +1226,6 @@ async fn recover_reusable_checkpoint_prefix(
         .last()
         .ok_or_else(|| "checkpoint recovery has no sessions".to_string())?
         .session_date;
-    let delayed = source
-        .structure_delayed_trade_report_counts(&manifest.ticker, &manifest.sessions)
-        .await?;
-    let first_affected = first_execution_clock_affected_session(manifest, &delayed)?;
     let source_rows = writer
         .load_daily_structure_checkpoint_chain_from_set(
             source_set_id,
@@ -1275,9 +1243,6 @@ async fn recover_reusable_checkpoint_prefix(
     let mut target_predecessor_chain = String::new();
     let mut prior_migrated_checkpoint = None;
     for session in &manifest.sessions {
-        if first_affected.is_some_and(|affected| session.session_date >= affected) {
-            break;
-        }
         let Some(row) = source_rows.get(&session.session_date) else {
             break;
         };
@@ -1305,13 +1270,23 @@ async fn recover_reusable_checkpoint_prefix(
         source_predecessor_checkpoint = source_certification.checkpoint_sha256.clone();
         source_predecessor_chain = source_certification.chain_sha256.clone();
 
+        // Execution-aware archive checkpoints intentionally excluded reports
+        // that the historical SIP-plus-condition policy admits. They are a
+        // different lineage and must be replayed, never relabeled into v7.
+        if row.source_revision_token.contains(":execution-clock-v1:") {
+            break;
+        }
+
         let migrated_checkpoint = GenericStructureEngine::migrate_checkpoint_derived_projections(
             &row.checkpoint,
             prior_migrated_checkpoint.as_ref(),
             row.session_date,
         )?;
 
-        let certification = if row.source_revision_token.contains("execution-clock-v1:") {
+        let certification = if row
+            .source_revision_token
+            .contains(":structure-input-v1:archive-sip-condition:")
+        {
             build_checkpoint_certification(
                 &migrated_checkpoint,
                 source_certification.event_evidence.clone(),
@@ -1333,11 +1308,12 @@ async fn recover_reusable_checkpoint_prefix(
                 target_predecessor_checkpoint.clone(),
                 target_predecessor_chain.clone(),
                 StructureCheckpointRecoveryAttestation {
-                    recovery_revision: "execution-clock-zero-delayed-v1".to_string(),
+                    recovery_revision: "historical-sip-condition-recertification-v1".to_string(),
                     source_checkpoint_set_id: source_set_id.to_string(),
                     source_checkpoint_sha256: source_certification.checkpoint_sha256.clone(),
                     source_chain_sha256: source_certification.chain_sha256.clone(),
-                    execution_clock_revision: session.source_revision.token.clone(),
+                    source_policy_revision: session.source_revision.token.clone(),
+                    execution_clock_revision: String::new(),
                     delayed_trade_report_count: 0,
                 },
             )?
@@ -1366,27 +1342,6 @@ async fn recover_reusable_checkpoint_prefix(
     Ok(())
 }
 
-fn first_execution_clock_affected_session(
-    manifest: &qmd_history_gateway::source::StructureCampaignManifest,
-    delayed: &BTreeMap<NaiveDate, u64>,
-) -> Result<Option<NaiveDate>, String> {
-    for session in &manifest.sessions {
-        if session.event_count == 0 {
-            continue;
-        }
-        let count = delayed.get(&session.session_date).ok_or_else(|| {
-            format!(
-                "checkpoint recovery lacks certified execution-clock coverage for {} {}; refusing to infer zero delayed reports",
-                manifest.ticker, session.session_date
-            )
-        })?;
-        if *count > 0 {
-            return Ok(Some(session.session_date));
-        }
-    }
-    Ok(None)
-}
-
 async fn run_ticker(
     config: &HistoricalGatewayConfig,
     source: &HistoricalEventSource,
@@ -1402,14 +1357,8 @@ async fn run_ticker(
         .structure_campaign_manifest(&plan.ticker, plan.rebuild_start, &plan.sessions)
         .await?;
     if let Some(source_set_id) = recovery_source_checkpoint_set_id {
-        recover_reusable_checkpoint_prefix(
-            writer,
-            source,
-            &manifest,
-            checkpoint_set_id,
-            source_set_id,
-        )
-        .await?;
+        recover_reusable_checkpoint_prefix(writer, &manifest, checkpoint_set_id, source_set_id)
+            .await?;
     }
     let target_rows = writer
         .load_daily_structure_checkpoint_chain_from_set(
@@ -2047,7 +1996,6 @@ fn parse_args() -> Result<Args, String> {
     let mut retry_delay_seconds = 2_u64;
     let mut purge_existing_checkpoints = false;
     let mut plan_only = false;
-    let mut validate_execution_clock_only = false;
     let mut checkpoint_set_id = None;
     let mut recovery_source_checkpoint_set_id = None;
     let mut core_index = None;
@@ -2105,9 +2053,8 @@ fn parse_args() -> Result<Args, String> {
             }
             "--purge-existing-checkpoints" => purge_existing_checkpoints = true,
             "--plan-only" => plan_only = true,
-            "--validate-execution-clock-only" => validate_execution_clock_only = true,
             "--help" | "-h" => {
-                println!("structure-checkpoint-campaign v6");
+                println!("structure-checkpoint-campaign v7");
                 println!("  --start-date YYYY-MM-DD --end-date YYYY-MM-DD");
                 println!("  --checkpoint-set-id ID");
                 println!("  [--recovery-source-checkpoint-set-id ID]");
@@ -2116,7 +2063,6 @@ fn parse_args() -> Result<Args, String> {
                 println!("  [--liquidity-start-date YYYY-MM-DD --liquidity-end-date YYYY-MM-DD]");
                 println!("  [--max-retries 5] [--retry-delay-seconds 2]");
                 println!("  [--purge-existing-checkpoints] [--plan-only]");
-                println!("  [--validate-execution-clock-only]  # read-only source preflight");
                 println!("  [--explicit-universe-only] [--core-index N]");
                 println!("  [--campaign-control-path PATH]  # supervisor-owned stop control");
                 std::process::exit(0);
@@ -2183,7 +2129,6 @@ fn parse_args() -> Result<Args, String> {
         retry_delay_seconds,
         purge_existing_checkpoints,
         plan_only,
-        validate_execution_clock_only,
     })
 }
 
@@ -2231,18 +2176,14 @@ fn io_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sy
 #[cfg(test)]
 mod tests {
     use super::{
-        campaign_fatal_error, dashboard_frame, dashboard_lines,
-        first_execution_clock_affected_session, insert_ticker, log_snapshot, merge_ticker_universe,
-        next_ordinal_chunk, retryable_error, session_is_covered_by_seed,
+        campaign_fatal_error, dashboard_frame, dashboard_lines, insert_ticker, log_snapshot,
+        merge_ticker_universe, next_ordinal_chunk, retryable_error, session_is_covered_by_seed,
         validate_checkpoint_set_id, validate_worker_count, AttemptEventProgress, Counts,
         EventRateWindow, Progress, ProgressWriter, RecentUnit, TickerPlan,
         GENERIC_STRUCTURE_ALGORITHM_VERSION,
     };
     use chrono::{NaiveDate, TimeZone, Utc};
-    use qmd_history_gateway::source::{
-        SourceRevision, StructureCampaignManifest, StructureCampaignSession,
-        StructureCampaignTicker,
-    };
+    use qmd_history_gateway::source::StructureCampaignTicker;
     use std::collections::{BTreeMap, HashSet, VecDeque};
     use std::path::PathBuf;
 
@@ -2276,49 +2217,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(merged, vec!["SUGP", "JUNS", "AAPL", "OLD", "EXTRA"]);
-    }
-
-    #[test]
-    fn legacy_recovery_requires_explicit_clock_coverage_for_every_nonempty_session() {
-        let first = NaiveDate::from_ymd_opt(2026, 8, 20).unwrap();
-        let second = NaiveDate::from_ymd_opt(2026, 8, 21).unwrap();
-        let revision = SourceRevision {
-            complete_for_history: true,
-            event_count: 1,
-            live_continuation_sequence: None,
-            max_build_step: 1,
-            max_updated_at: String::new(),
-            request_complete: true,
-            source_plan_hash: "plan".to_string(),
-            source_tiers: vec!["archive".to_string()],
-            token: "execution-clock-v1:1:1:0:1:now".to_string(),
-        };
-        let session = |session_date| StructureCampaignSession {
-            event_count: 1,
-            first_ordinal: 1,
-            first_sip_timestamp_us: 1,
-            last_sip_timestamp_us: 1,
-            next_ordinal: 2,
-            session_date,
-            source_revision: revision.clone(),
-        };
-        let manifest = StructureCampaignManifest {
-            authority_start: Utc.with_ymd_and_hms(2026, 8, 20, 8, 0, 0).unwrap(),
-            sessions: vec![session(first), session(second)],
-            split_adjustments: Vec::new(),
-            ticker: "SUGP".to_string(),
-        };
-
-        let missing = BTreeMap::from([(first, 0)]);
-        assert!(first_execution_clock_affected_session(&manifest, &missing)
-            .unwrap_err()
-            .contains("refusing to infer zero delayed reports"));
-
-        let complete = BTreeMap::from([(first, 0), (second, 3)]);
-        assert_eq!(
-            first_execution_clock_affected_session(&manifest, &complete).unwrap(),
-            Some(second)
-        );
     }
 
     #[test]

@@ -624,7 +624,7 @@ impl HistoricalDerivedCache {
         let session_start = session_anchor(as_of)?;
         let ticker = ticker.trim().to_ascii_uppercase();
         // A certified checkpoint already binds the immutable historical event
-        // stream, split lineage, and execution-clock source contract. Requiring
+        // stream, split lineage, and historical structural input contract. Requiring
         // a fresh revision scan over its entire authority horizon defeated the
         // checkpoint and made every chart rebuild months of history. Only the
         // post-checkpoint advancement is revalidated by the materializer.
@@ -639,7 +639,7 @@ impl HistoricalDerivedCache {
             structure_rebuild_start(session_start, self.config.structure_book_lookback_days)?;
         let revision = self
             .source
-            .source_revision(&EventWindow {
+            .structure_source_revision(&EventWindow {
                 start: authority_start,
                 end: session_start,
                 tickers: vec![ticker.clone()],
@@ -1198,7 +1198,13 @@ impl HistoricalDerivedCache {
             self.config.structure_book_lookback_days,
             structure_seed.is_some(),
         )?;
-        let source_revision = self.source.source_revision(&revision_window).await?;
+        let source_revision = if matches!(&profile, CacheProfile::Structure(_)) {
+            self.source
+                .structure_source_revision(&revision_window)
+                .await?
+        } else {
+            self.source.source_revision(&revision_window).await?
+        };
         let mut key = cache_key(&window, &ticker, &source_revision, &profile);
         if let Some(seed) = structure_seed.as_ref() {
             key.push_str(":structure-seed:");
@@ -2130,6 +2136,7 @@ impl HistoricalDerivedCache {
                 chunks[next_chunk].clone(),
                 source_revision.live_continuation_sequence,
                 cache_event_type_filter(&profile),
+                structure_only,
             ));
             next_chunk += 1;
         }
@@ -2230,6 +2237,7 @@ impl HistoricalDerivedCache {
                     chunks[next_chunk].clone(),
                     source_revision.live_continuation_sequence,
                     cache_event_type_filter(&profile),
+                    structure_only,
                 ));
                 next_chunk += 1;
             }
@@ -2333,7 +2341,7 @@ impl HistoricalDerivedCache {
     ) -> StructureSeedResult {
         // Prefer the durable certified authority before computing a cold-seed
         // identity. The checkpoint loader validates its causal hash chain and
-        // execution-clock source contract, while advancement validates only
+        // historical structure source contract, while advancement validates only
         // events after its replay cursor. This is the intended checkpoint
         // boundary and avoids a redundant full-horizon source scan.
         if let Some(seed) = self
@@ -2357,7 +2365,7 @@ impl HistoricalDerivedCache {
             end: before,
             tickers: vec![ticker.to_string()],
         };
-        let seed_revision = self.source.source_revision(&seed_window).await?;
+        let seed_revision = self.source.structure_source_revision(&seed_window).await?;
         // Corporate actions are a separate authority from canonical SIP
         // events. A late split correction therefore does not change the event
         // source revision. Include the exact split rows (including their
@@ -2561,6 +2569,7 @@ impl HistoricalDerivedCache {
         window: EventWindow,
         live_continuation_sequence: Option<u64>,
         event_type_filter: Option<u8>,
+        structure_policy: bool,
     ) -> mpsc::Receiver<Result<Vec<LiveCompactEvent>, String>> {
         let (sender, receiver) = mpsc::channel(2);
         let source = self.source.clone();
@@ -2585,16 +2594,28 @@ impl HistoricalDerivedCache {
             };
             let mut cursor: Option<HistoricalCursor> = None;
             loop {
-                match source
-                    .fetch_batch_at_revision_filtered(
-                        &window,
-                        cursor.as_ref(),
-                        batch_size,
-                        live_continuation_sequence,
-                        event_type_filter,
-                    )
-                    .await
-                {
+                let fetched = if structure_policy {
+                    source
+                        .fetch_structure_batch_at_revision_filtered(
+                            &window,
+                            cursor.as_ref(),
+                            batch_size,
+                            live_continuation_sequence,
+                            event_type_filter,
+                        )
+                        .await
+                } else {
+                    source
+                        .fetch_batch_at_revision_filtered(
+                            &window,
+                            cursor.as_ref(),
+                            batch_size,
+                            live_continuation_sequence,
+                            event_type_filter,
+                        )
+                        .await
+                };
+                match fetched {
                     Ok((events, next)) => {
                         let count = events.len();
                         if count > 0 && sender.send(Ok(events)).await.is_err() {

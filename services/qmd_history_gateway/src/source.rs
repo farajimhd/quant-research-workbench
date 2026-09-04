@@ -322,6 +322,7 @@ pub struct HistoricalEventSource {
     latest_coverage_query_gate: Arc<Mutex<()>>,
     structure_table_available: Arc<OnceCell<bool>>,
     structure_daily_checkpoint_table_available: Arc<OnceCell<bool>>,
+    structure_condition_revision: String,
     trade_rules: TradeAggregationRules,
 }
 
@@ -545,6 +546,10 @@ impl HistoricalEventSource {
             &config.clickhouse_database,
         )
         .await?;
+        let structure_condition_revision = format!(
+            "trade-condition-sha256:{:x}",
+            Sha256::digest(references.trade_aggregation_revision_material().as_bytes())
+        );
         let source = Self {
             client: Client::new(),
             config,
@@ -553,6 +558,7 @@ impl HistoricalEventSource {
             latest_coverage_query_gate: Arc::new(Mutex::new(())),
             structure_table_available: Arc::new(OnceCell::new()),
             structure_daily_checkpoint_table_available: Arc::new(OnceCell::new()),
+            structure_condition_revision,
             trade_rules: references.trade_aggregation_rules()?,
         };
         source.health().await?;
@@ -1269,10 +1275,10 @@ impl HistoricalEventSource {
                     source.config.table_prefix,
                     session_date.year()
                 ),
-                &format!(
+                Some(&format!(
                     "{}.{}",
                     source.config.execution_clock_database, source.config.execution_clock_table
-                ),
+                )),
                 &ticker,
                 first_ordinal,
                 next_ordinal,
@@ -1407,9 +1413,6 @@ impl HistoricalEventSource {
                 Vec::new(),
                 &self.config,
             );
-            let execution_clock_revision = self
-                .archive_execution_clock_revision(&window, &plan)
-                .await?;
             if !plan.complete_for_history
                 || plan
                     .segments
@@ -1464,7 +1467,10 @@ impl HistoricalEventSource {
                     cumulative_max_updated_at,
                     plan_token,
                     split_revision_token,
-                    execution_clock_revision,
+                    format!(
+                        "structure-input-v1:archive-sip-condition:{}",
+                        self.structure_condition_revision
+                    ),
                 ),
             };
             let (event_count, first_ordinal, next_ordinal, first_sip, last_sip) = row
@@ -1494,58 +1500,6 @@ impl HistoricalEventSource {
             split_adjustments,
             ticker,
         })
-    }
-
-    /// Count causally stale trade reports for each requested campaign session.
-    /// The query is ticker/ordinal bounded and uses only the immutable compact
-    /// archive plus its ingestion-owned execution-clock sidecar.
-    pub async fn structure_delayed_trade_report_counts(
-        &self,
-        ticker: &str,
-        sessions: &[StructureCampaignSession],
-    ) -> Result<BTreeMap<NaiveDate, u64>, String> {
-        let ticker = normalize_ticker(ticker)?;
-        let Some(first) = sessions.first() else {
-            return Ok(BTreeMap::new());
-        };
-        let last = sessions.last().expect("non-empty sessions");
-        let sql = format!(
-            r#"SELECT
-                toString(source_date) AS session_date,
-                argMax(delayed_trade_report_count, updated_at) AS delayed_count
-            FROM {}.{} FINAL
-            WHERE ticker = {}
-              AND source_date >= toDate('{}')
-              AND source_date <= toDate('{}')
-            GROUP BY source_date
-            ORDER BY source_date
-            FORMAT JSONEachRow"#,
-            self.config.execution_clock_database,
-            self.config.execution_clock_coverage_table,
-            sql_literal(&ticker),
-            first.session_date,
-            last.session_date,
-        );
-        let text = self.query_bounded(&sql, 300).await?;
-        let mut result = BTreeMap::new();
-        for line in text.lines().filter(|line| !line.trim().is_empty()) {
-            let row: Value = serde_json::from_str(line)
-                .map_err(|error| format!("invalid delayed-report audit row: {error}"))?;
-            let date = row
-                .get("session_date")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "delayed-report audit row has no session_date".to_string())?;
-            let count = row
-                .get("delayed_count")
-                .and_then(|value| value.as_u64().or_else(|| value.as_str()?.parse().ok()))
-                .ok_or_else(|| "delayed-report audit row has no delayed_count".to_string())?;
-            result.insert(
-                NaiveDate::parse_from_str(date, "%Y-%m-%d")
-                    .map_err(|error| format!("invalid delayed-report audit date: {error}"))?,
-                count,
-            );
-        }
-        Ok(result)
     }
 
     /// Stream one archive session by its physical `(ticker, ordinal)` key.
@@ -1582,11 +1536,6 @@ impl HistoricalEventSource {
                             source.config.clickhouse_database,
                             source.config.table_prefix,
                             session.session_date.year()
-                        ),
-                        &format!(
-                            "{}.{}",
-                            source.config.execution_clock_database,
-                            source.config.execution_clock_table
                         ),
                         &ticker,
                         first,
@@ -1634,10 +1583,6 @@ impl HistoricalEventSource {
                     source.config.clickhouse_database,
                     source.config.table_prefix,
                     session_date.year()
-                ),
-                &format!(
-                    "{}.{}",
-                    source.config.execution_clock_database, source.config.execution_clock_table
                 ),
                 &ticker,
                 first_ordinal,
@@ -1737,7 +1682,7 @@ impl HistoricalEventSource {
         );
         let text = self.query(&sql).await.map_err(|error| {
             format!(
-                "historical execution-clock authority is unavailable; populate {}.{} before building bars, indicators, or structure: {error}",
+                "historical execution-clock authority is unavailable; populate {}.{} before building execution-aware bars or indicators: {error}",
                 self.config.execution_clock_database, self.config.execution_clock_coverage_table
             )
         })?;
@@ -1745,7 +1690,7 @@ impl HistoricalEventSource {
             .map_err(|error| format!("invalid execution-clock coverage response: {error}"))?;
         if row.expected_ticker_days != row.covered_ticker_days {
             return Err(format!(
-                "historical execution-clock coverage incomplete: covered {}/{} ticker-days for {} through {}; delayed reports cannot safely update bars, indicators, or structure",
+                "historical execution-clock coverage incomplete: covered {}/{} ticker-days for {} through {}; delayed reports cannot safely update execution-aware bars or indicators",
                 row.covered_ticker_days, row.expected_ticker_days, start_date, end_date
             ));
         }
@@ -1760,9 +1705,36 @@ impl HistoricalEventSource {
     }
 
     pub async fn source_revision(&self, window: &EventWindow) -> Result<SourceRevision, String> {
+        self.source_revision_for_policy(window, true).await
+    }
+
+    /// Revision authority for the structural level book. Completed archive
+    /// rows intentionally use SIP availability order plus canonical condition
+    /// eligibility and do not require a reconstructed participant clock.
+    /// Recent q_live rows retain their native participant clock, matching the
+    /// live continuation policy.
+    pub async fn structure_source_revision(
+        &self,
+        window: &EventWindow,
+    ) -> Result<SourceRevision, String> {
+        self.source_revision_for_policy(window, false).await
+    }
+
+    async fn source_revision_for_policy(
+        &self,
+        window: &EventWindow,
+        require_archive_execution_clock: bool,
+    ) -> Result<SourceRevision, String> {
         validate_window(window)?;
         let plan = self.source_plan(window).await?;
-        let execution_clock_revision = self.archive_execution_clock_revision(window, &plan).await?;
+        let input_policy_revision = if require_archive_execution_clock {
+            self.archive_execution_clock_revision(window, &plan).await?
+        } else {
+            format!(
+                "structure-input-v1:archive-sip-condition:recent-participant-aware:{}",
+                self.structure_condition_revision
+            )
+        };
         let ticker_filter = if window.tickers.is_empty() {
             String::new()
         } else {
@@ -1911,7 +1883,7 @@ impl HistoricalEventSource {
                 max_updated_at,
                 plan_token,
                 split_revision_token,
-                execution_clock_revision,
+                input_policy_revision,
             ),
         })
     }
@@ -1958,7 +1930,7 @@ impl HistoricalEventSource {
         cursor: Option<&HistoricalCursor>,
         limit: usize,
     ) -> Result<(Vec<LiveCompactEvent>, Option<HistoricalCursor>), String> {
-        self.fetch_ordered(window, cursor, limit, false, None, None)
+        self.fetch_ordered(window, cursor, limit, false, None, None, true)
             .await
     }
 
@@ -1977,6 +1949,27 @@ impl HistoricalEventSource {
             false,
             live_continuation_sequence,
             event_type_filter,
+            true,
+        )
+        .await
+    }
+
+    pub async fn fetch_structure_batch_at_revision_filtered(
+        &self,
+        window: &EventWindow,
+        cursor: Option<&HistoricalCursor>,
+        limit: usize,
+        live_continuation_sequence: Option<u64>,
+        event_type_filter: Option<u8>,
+    ) -> Result<(Vec<LiveCompactEvent>, Option<HistoricalCursor>), String> {
+        self.fetch_ordered(
+            window,
+            cursor,
+            limit,
+            false,
+            live_continuation_sequence,
+            event_type_filter,
+            false,
         )
         .await
     }
@@ -1987,7 +1980,7 @@ impl HistoricalEventSource {
         limit: usize,
     ) -> Result<Vec<LiveCompactEvent>, String> {
         let (mut events, _) = self
-            .fetch_ordered(window, None, limit, true, None, None)
+            .fetch_ordered(window, None, limit, true, None, None, true)
             .await?;
         events.reverse();
         Ok(events)
@@ -2015,6 +2008,7 @@ impl HistoricalEventSource {
             live_continuation_sequence,
             event_type_filter,
             self.config.scanner_fetch_chunk_minutes.max(1),
+            true,
         )
     }
 
@@ -2043,6 +2037,7 @@ impl HistoricalEventSource {
             live_continuation_sequence,
             event_type_filter,
             chunk_minutes,
+            false,
         )
     }
 
@@ -2053,6 +2048,7 @@ impl HistoricalEventSource {
         live_continuation_sequence: Option<u64>,
         event_type_filter: Option<u8>,
         chunk_minutes: usize,
+        require_archive_execution_clock: bool,
     ) -> Result<mpsc::Receiver<Result<Vec<LiveCompactEvent>, String>>, String> {
         validate_window(&window)?;
         let batch_size = batch_size.clamp(1, 100_000);
@@ -2068,6 +2064,7 @@ impl HistoricalEventSource {
                     live_continuation_sequence,
                     event_type_filter,
                     chunk_minutes,
+                    require_archive_execution_clock,
                     stream_sender,
                 ) => result,
             };
@@ -2085,11 +2082,14 @@ impl HistoricalEventSource {
         live_continuation_sequence: Option<u64>,
         event_type_filter: Option<u8>,
         chunk_minutes: usize,
+        require_archive_execution_clock: bool,
         sender: mpsc::Sender<Result<Vec<LiveCompactEvent>, String>>,
     ) -> Result<(), String> {
         let plan = self.source_plan(&window).await?;
-        self.archive_execution_clock_revision(&window, &plan)
-            .await?;
+        if require_archive_execution_clock {
+            self.archive_execution_clock_revision(&window, &plan)
+                .await?;
+        }
         let mut ticker_filter = ticker_filter(&window.tickers)?;
         if let Some(event_type) = event_type_filter.filter(|value| *value <= 1) {
             ticker_filter.push_str(&format!(
@@ -2126,10 +2126,13 @@ impl HistoricalEventSource {
                             chunk_start.year()
                         ),
                         false,
-                        Some(&format!(
-                            "{}.{}",
-                            self.config.execution_clock_database, self.config.execution_clock_table
-                        )),
+                        require_archive_execution_clock
+                            .then_some(format!(
+                                "{}.{}",
+                                self.config.execution_clock_database,
+                                self.config.execution_clock_table
+                            ))
+                            .as_deref(),
                         chunk_start,
                         chunk_end,
                         &ticker_filter,
@@ -2290,10 +2293,13 @@ impl HistoricalEventSource {
         descending: bool,
         live_continuation_sequence: Option<u64>,
         event_type_filter: Option<u8>,
+        require_archive_execution_clock: bool,
     ) -> Result<(Vec<LiveCompactEvent>, Option<HistoricalCursor>), String> {
         validate_window(window)?;
         let plan = self.source_plan(window).await?;
-        self.archive_execution_clock_revision(window, &plan).await?;
+        if require_archive_execution_clock {
+            self.archive_execution_clock_revision(window, &plan).await?;
+        }
         let limit = limit.clamp(1, 100_000);
         let mut ticker_filter = ticker_filter(&window.tickers)?;
         if let Some(event_type) = event_type_filter.filter(|value| *value <= 1) {
@@ -2317,11 +2323,13 @@ impl HistoricalEventSource {
                                 self.config.clickhouse_database, self.config.table_prefix, year
                             ),
                             false,
-                            Some(&format!(
-                                "{}.{}",
-                                self.config.execution_clock_database,
-                                self.config.execution_clock_table
-                            )),
+                            require_archive_execution_clock
+                                .then_some(format!(
+                                    "{}.{}",
+                                    self.config.execution_clock_database,
+                                    self.config.execution_clock_table
+                                ))
+                                .as_deref(),
                             segment.start,
                             segment.end,
                             &ticker_filter,
@@ -3147,9 +3155,9 @@ impl HistoricalEventSource {
         };
         let row = serde_json::from_str::<PersistedStructureCheckpointRow>(line)
             .map_err(|error| format!("invalid persisted structure checkpoint row: {error}"))?;
-        if !source_revision_uses_execution_clock_v1(&row.source_revision_token) {
+        if !source_revision_uses_historical_structure_policy_v1(&row.source_revision_token) {
             return Err(format!(
-                "persisted structure checkpoint for {ticker} predates the required execution-clock-v1 source contract; rebuild it from certified execution-clock history before using it for charts, indicators, or strategies"
+                "persisted structure checkpoint for {ticker} does not use the required historical SIP-plus-condition structure contract; rebuild or recover it into the configured checkpoint set before using it for charts or strategies"
             ));
         }
         let authority_start = DateTime::parse_from_rfc3339(&row.authority_start)
@@ -3426,8 +3434,8 @@ impl HistoricalEventSource {
     }
 }
 
-fn source_revision_uses_execution_clock_v1(token: &str) -> bool {
-    token.contains(":execution-clock-v1:")
+fn source_revision_uses_historical_structure_policy_v1(token: &str) -> bool {
+    token.contains(":structure-input-v1:archive-sip-condition:")
 }
 
 fn adaptive_structure_chunk_minutes(
@@ -3699,8 +3707,10 @@ fn event_select(
     // restored from a separately certified sidecar keyed by ticker/ordinal.
     let execution_timestamp = if recent {
         "source.execution_timestamp_us"
-    } else {
+    } else if execution_clock_table.is_some() {
         "if(bitAnd(source.event_meta, 1) = 1, execution_clock.execution_timestamp_us, toUInt64(0))"
+    } else {
+        "toUInt64(0)"
     };
     let final_clause = if recent { " FINAL" } else { "" };
     let last_inclusive = end - chrono::Duration::microseconds(1);
@@ -3763,19 +3773,13 @@ fn event_select(
     )
 }
 
-fn ordinal_event_select(
-    table: &str,
-    execution_clock_table: &str,
-    ticker: &str,
-    first: u64,
-    next: u64,
-) -> String {
-    ordinal_event_select_filtered(table, execution_clock_table, ticker, first, next, None)
+fn ordinal_event_select(table: &str, ticker: &str, first: u64, next: u64) -> String {
+    ordinal_event_select_filtered(table, None, ticker, first, next, None)
 }
 
 fn ordinal_event_select_filtered(
     table: &str,
-    execution_clock_table: &str,
+    execution_clock_table: Option<&str>,
     ticker: &str,
     first: u64,
     next: u64,
@@ -3785,13 +3789,34 @@ fn ordinal_event_select_filtered(
         .filter(|value| *value <= 1)
         .map(|value| format!(" AND bitAnd(source.event_meta, 1) = toUInt8({value})"))
         .unwrap_or_default();
+    let execution_timestamp = execution_clock_table
+        .map(|_| {
+            "if(bitAnd(source.event_meta, 1) = 1, execution_clock.execution_timestamp_us, toUInt64(0))"
+        })
+        .unwrap_or("toUInt64(0)");
+    let execution_clock_join = execution_clock_table
+        .map(|table| {
+            format!(
+                r#"LEFT JOIN
+        (
+            SELECT ticker, ordinal, execution_timestamp_us
+            FROM {table} FINAL
+            WHERE ticker = {ticker}
+              AND ordinal >= {first}
+              AND ordinal < {next}
+        ) AS execution_clock
+          ON execution_clock.ticker = source.ticker AND execution_clock.ordinal = source.ordinal"#,
+                ticker = sql_literal(ticker),
+            )
+        })
+        .unwrap_or_default();
     format!(
         r#"SELECT
             upper(source.ticker) AS ticker,
             source.ordinal AS ordinal,
             source.ordinal AS source_sequence,
             source.event_meta,
-            if(bitAnd(source.event_meta, 1) = 1, execution_clock.execution_timestamp_us, toUInt64(0)) AS execution_timestamp_us,
+            {execution_timestamp} AS execution_timestamp_us,
             source.sip_timestamp_us,
             source.price_primary_int,
             source.price_secondary_int,
@@ -3806,15 +3831,7 @@ fn ordinal_event_select_filtered(
             source.condition_token_5,
             toString(source.event_date) AS event_date
         FROM {table} AS source
-        LEFT JOIN
-        (
-            SELECT ticker, ordinal, execution_timestamp_us
-            FROM {execution_clock_table} FINAL
-            WHERE ticker = {ticker}
-              AND ordinal >= {first}
-              AND ordinal < {next}
-        ) AS execution_clock
-          ON execution_clock.ticker = source.ticker AND execution_clock.ordinal = source.ordinal
+        {execution_clock_join}
         PREWHERE source.ticker = {ticker}
           AND source.ordinal >= {first}
           AND source.ordinal < {next}{event_filter}"#,
@@ -4869,11 +4886,12 @@ mod tests {
         materialize_confirmed_recent_coverage, merge_coverage_intervals, merge_daily_chart_bars,
         normalize_ticker, ordinal_event_select, parse_historical_tsv_row,
         persisted_structure_events_sql, recent_coverage_sql, recent_daily_trade_bars_sql,
-        row_to_event, source_revision_uses_execution_clock_v1, split_adjustment_factors,
-        structure_campaign_continuity_sql, structure_campaign_tickers_sql,
-        structure_split_adjustments_sql, structure_split_revision_sql, ticker_filter,
-        CoverageInterval, EventWindow, HistoricalMacroChartRow, HistoricalRow, LatestEventCoverage,
-        MarketSourceTier, RecentCoverageRow,
+        row_to_event, source_revision_uses_historical_structure_policy_v1,
+        split_adjustment_factors, structure_campaign_continuity_sql,
+        structure_campaign_tickers_sql, structure_split_adjustments_sql,
+        structure_split_revision_sql, ticker_filter, CoverageInterval, EventWindow,
+        HistoricalMacroChartRow, HistoricalRow, LatestEventCoverage, MarketSourceTier,
+        RecentCoverageRow,
     };
     use crate::config::HistoricalGatewayConfig;
     use chrono::{NaiveDate, TimeZone, Utc};
@@ -4883,14 +4901,17 @@ mod tests {
     use qmd_core::generic_structure::StructureSplitAdjustment;
 
     #[test]
-    fn persisted_structure_source_revision_requires_execution_clock_contract() {
-        assert!(source_revision_uses_execution_clock_v1(
+    fn persisted_structure_source_revision_requires_historical_structure_contract() {
+        assert!(source_revision_uses_historical_structure_policy_v1(
+            "1:2:0:updated:Archive:1:2:split-sha256:abc:structure-input-v1:archive-sip-condition:trade-condition-sha256:abc"
+        ));
+        assert!(!source_revision_uses_historical_structure_policy_v1(
             "1:2:0:updated:Archive:1:2:split-sha256:abc:execution-clock-v1:5:99:7:updated"
         ));
-        assert!(!source_revision_uses_execution_clock_v1(
+        assert!(!source_revision_uses_historical_structure_policy_v1(
             "1:2:0:updated:Archive:1:2:split-sha256:abc"
         ));
-        assert!(!source_revision_uses_execution_clock_v1(
+        assert!(!source_revision_uses_historical_structure_policy_v1(
             "execution-clock:not-applicable"
         ));
     }
@@ -4947,6 +4968,23 @@ mod tests {
         assert!(sql.contains("FROM q_live.historical_event_execution_clock_v1 FINAL"));
         assert!(sql.contains("AND ticker IN ('AAPL')"));
         assert!(!sql.contains("source.execution_timestamp_us"));
+    }
+
+    #[test]
+    fn historical_structure_event_fetch_does_not_reference_execution_clock() {
+        let sql = event_select(
+            "market_sip_compact.events_2026",
+            false,
+            None,
+            Utc.with_ymd_and_hms(2026, 8, 21, 8, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 8, 21, 9, 0, 0).unwrap(),
+            " AND source.ticker IN ('SUGP')",
+            None,
+        );
+
+        assert!(sql.contains("toUInt64(0) AS execution_timestamp_us"));
+        assert!(!sql.contains("execution_clock."));
+        assert!(!sql.contains("historical_event_execution_clock_v1"));
     }
 
     #[test]
@@ -5042,20 +5080,14 @@ mod tests {
 
     #[test]
     fn campaign_event_fetch_uses_the_physical_ticker_ordinal_key() {
-        let sql = ordinal_event_select(
-            "market_sip_compact.events_2026",
-            "q_live.historical_event_execution_clock_v1",
-            "SUGP",
-            10,
-            20,
-        );
+        let sql = ordinal_event_select("market_sip_compact.events_2026", "SUGP", 10, 20);
         assert!(sql.contains("source.ticker = 'SUGP'"));
         assert!(sql.contains("source.ordinal >= 10"));
         assert!(sql.contains("source.ordinal < 20"));
         assert!(!sql.contains("source.sip_timestamp_us >="));
         assert!(!sql.contains("source.event_date >="));
-        assert!(sql.contains("execution_clock.execution_timestamp_us"));
-        assert!(sql.contains("FROM q_live.historical_event_execution_clock_v1 FINAL"));
+        assert!(sql.contains("toUInt64(0) AS execution_timestamp_us"));
+        assert!(!sql.contains("historical_event_execution_clock_v1"));
         assert!(!sql.contains("source.execution_timestamp_us"));
     }
 

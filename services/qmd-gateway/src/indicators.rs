@@ -52,7 +52,8 @@ fn structure_checkpoint_source_contract_is_compatible(
     checkpoint_set_id: &str,
     source_revision_token: &str,
 ) -> bool {
-    checkpoint_set_id == "live" || source_revision_token.contains(":execution-clock-v1:")
+    checkpoint_set_id == "live"
+        || source_revision_token.contains(":structure-input-v1:archive-sip-condition:")
 }
 
 fn daily_structure_checkpoint_deduplication_token(
@@ -3395,7 +3396,7 @@ impl IndicatorClickHouseWriter {
             &record.source_revision_token,
         ) {
             return Err(
-                "refusing to persist a historical structure checkpoint without the execution-clock-v1 source contract"
+                "refusing to persist a historical structure checkpoint without the SIP-plus-condition structure source contract"
                     .to_string(),
             );
         }
@@ -4384,18 +4385,18 @@ mod tests {
     };
 
     #[test]
-    fn historical_checkpoint_persistence_requires_execution_clock_contract() {
+    fn historical_checkpoint_persistence_requires_structure_input_contract() {
         assert!(structure_checkpoint_source_contract_is_compatible(
             "live",
             "live-source-revision"
         ));
         assert!(structure_checkpoint_source_contract_is_compatible(
             "canonical-v16",
-            "archive:split-sha256:abc:execution-clock-v1:5:99:7:updated"
+            "archive:split-sha256:abc:structure-input-v1:archive-sip-condition:trade-condition-sha256:abc"
         ));
         assert!(!structure_checkpoint_source_contract_is_compatible(
             "canonical-v16",
-            "archive:split-sha256:abc"
+            "archive:split-sha256:abc:execution-clock-v1:5:99:7:updated"
         ));
     }
 

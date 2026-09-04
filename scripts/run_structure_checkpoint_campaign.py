@@ -22,15 +22,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = REPO_ROOT / "services" / "qmd_history_gateway" / "Cargo.toml"
 BUILD_BINARY_NAME = "structure_checkpoint_campaign.exe" if os.name == "nt" else "structure_checkpoint_campaign"
 RUNTIME_BINARY_NAME = (
-    "structure_checkpoint_campaign_v6.exe" if os.name == "nt" else "structure_checkpoint_campaign_v6"
+    "structure_checkpoint_campaign_v7.exe" if os.name == "nt" else "structure_checkpoint_campaign_v7"
 )
 MAX_PROCESS_WORKERS = 80
 RECOVERY_PRIORITY_TICKERS = ("SUGP", "JUNS")
 HOLD_SCORE_REVISION = "beta22-wilson90-v1"
 RELATIVE_SCORE_REVISION = "frozen-prior-session-role-ecdf-midrank-v1"
 CERTIFICATION_SCHEMA_VERSION = 2
-EXECUTION_CLOCK_AUTHORITY = "q_live.historical_event_execution_clock_v1"
-EXECUTION_CLOCK_COVERAGE_AUTHORITY = "q_live.historical_event_execution_clock_coverage_v1"
+STRUCTURE_INPUT_POLICY = "historical-sip-condition-v1"
 
 
 def sha256_file(path: Path) -> str:
@@ -117,7 +116,7 @@ def resolve_binary(
     if cargo is None:
         raise RuntimeError(
             "Cargo and the campaign binary are missing. Copy the prebuilt binary to "
-            r"D:\TradingML\runtimes\bin\structure_checkpoint_campaign_v6.exe."
+            r"D:\TradingML\runtimes\bin\structure_checkpoint_campaign_v7.exe."
         )
     subprocess.run(
         [cargo, "build", "--release", "--bin", "structure_checkpoint_campaign", "--manifest-path", str(MANIFEST)],
@@ -279,59 +278,6 @@ def recovery_plan(
         )
     )
     return [plan for _, plan in indexed]
-
-
-def run_execution_clock_preflight(
-    binary: Path,
-    campaign_args: list[str],
-    plans: list[dict[str, Any]],
-    planner_dir: Path,
-    environ: dict[str, str],
-) -> int:
-    """Validate the whole immutable universe before any shard worker starts."""
-    planner_dir.mkdir(parents=True, exist_ok=True)
-    ticker_file = planner_dir / "execution-clock-preflight-tickers.txt"
-    ticker_file.write_text(
-        "".join(f"{str(plan['ticker']).strip().upper()}\n" for plan in plans),
-        encoding="utf-8",
-    )
-    args = remove_options(
-        campaign_args,
-        {
-            "--workers",
-            "--runtime-dir",
-            "--ticker-file",
-            "--priority-ticker",
-            "--core-index",
-            "--campaign-control-path",
-        },
-        {
-            "--purge-existing-checkpoints",
-            "--plan-only",
-            "--explicit-universe-only",
-            "--shard-worker",
-            "--validate-execution-clock-only",
-        },
-    )
-    preflight_dir = planner_dir / "execution-clock-preflight"
-    preflight_dir.mkdir(parents=True, exist_ok=True)
-    command = [
-        str(binary),
-        *args,
-        "--ticker-file",
-        str(ticker_file),
-        "--explicit-universe-only",
-        "--runtime-dir",
-        str(preflight_dir),
-        "--workers",
-        "1",
-        "--validate-execution-clock-only",
-    ]
-    print(
-        "Validating execution-clock coverage for the complete immutable universe...",
-        flush=True,
-    )
-    return subprocess.run(command, env=environ, check=False).returncode
 
 
 def prepare_shards(plans: list[dict[str, Any]], worker_count: int) -> list[list[dict[str, Any]]]:
@@ -677,7 +623,7 @@ def render_rich(status: dict[str, Any], set_id: str):
     return Panel(
         Group(
             Text(
-                f"Structural Checkpoint Campaign v6  {status['status'].upper()}"
+                f"Structural Checkpoint Campaign v7  {status['status'].upper()}"
                 + ("  REATTACHED" if status.get("monitor_mode") == "reattached" else ""),
                 style="bold cyan",
             ),
@@ -823,7 +769,7 @@ def run_process_campaign(
         raise RuntimeError("process mode requires --start-date and --end-date")
     existing_manifest = read_status(manifest_path)
     requested_identity = {
-        "schema_version": 2,
+        "schema_version": 3,
         "checkpoint_set_id": set_id,
         "start_date": start_date,
         "end_date": end_date,
@@ -840,8 +786,7 @@ def run_process_campaign(
         ),
         "executable_sha256": binary_sha256,
         "certification_schema_version": CERTIFICATION_SCHEMA_VERSION,
-        "execution_clock_authority": EXECUTION_CLOCK_AUTHORITY,
-        "execution_clock_coverage_authority": EXECUTION_CLOCK_COVERAGE_AUTHORITY,
+        "structure_input_policy": STRUCTURE_INPUT_POLICY,
     }
     if recovery_source_runtime is not None:
         if recovery_source_manifest is None:
@@ -897,13 +842,11 @@ def run_process_campaign(
     plans = json.loads(plan_path.read_text(encoding="utf-8"))
     if not plans:
         raise RuntimeError("campaign planner returned an empty universe")
-    if run_execution_clock_preflight(binary, campaign_args, plans, planner_dir, environ):
-        print(
-            "Execution-clock preflight failed; no campaign workers were started and the source campaign remains unchanged.",
-            file=sys.stderr,
-            flush=True,
-        )
-        return 2
+    print(
+        "Historical structure input: SIP availability order plus canonical trade-condition eligibility; "
+        "archive execution-clock coverage is not required.",
+        flush=True,
+    )
     shards = prepare_shards(plans, workers)
     universe_hash = hashlib.sha256(
         "".join(f"{plan['ticker']}\n" for plan in plans).encode("utf-8")
@@ -1090,7 +1033,7 @@ def main(argv: list[str] | None = None) -> int:
             "--resume-from-runtime PATH, --source-commit COMMIT, "
             f"--process-workers 1..{MAX_PROCESS_WORKERS}"
         )
-        print("All other options are forwarded to structure-checkpoint-campaign v6.")
+        print("All other options are forwarded to structure-checkpoint-campaign v7.")
         return 0
     environ = dict(os.environ)
     environ["PYTHONDONTWRITEBYTECODE"] = "1"

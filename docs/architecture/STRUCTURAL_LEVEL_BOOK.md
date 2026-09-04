@@ -2,7 +2,7 @@
 
 ## Authority
 
-Generic Structure algorithm v16 is the single deterministic authority for a ticker's structural level book. It consumes canonical, event-time-ordered eligible trades and quotes. Live, Replay, Backtest, Debug, QMD History, and chart presentation must restore or advance the same checkpoint contract; none may recalculate a competing chart-timeframe book.
+Generic Structure algorithm v16 is the single deterministic authority for a ticker's structural level book. Historical construction consumes compact events in SIP availability order and applies canonical condition eligibility. Live continuation additionally uses participant/execution time to keep reports for already completed seconds out of current structural state. Live, Replay, Backtest, Debug, QMD History, and chart presentation must restore or advance the same checkpoint contract; none may recalculate a competing chart-timeframe book.
 
 The current canonical market-event contract identifies a listing by normalized SIP ticker. A future security-master listing identifier may be added only as a versioned identity migration. Symbol changes or reuse must not be silently joined across that boundary.
 
@@ -63,10 +63,10 @@ End-of-day checkpoints are immutable, versioned seeds, not mutable forecasts. Th
 - A checkpoint from a later session, different algorithm version, incomplete source window, gap-containing plan, or mismatched revision must fail closed.
 
 Full-universe or multi-session population follows the restart and concurrency
-rules in `docs/data_contracts/structural_checkpoint_campaign_v6.md`. Campaign
+rules in `docs/data_contracts/structural_checkpoint_campaign_v7.md`. Campaign
 planning reads the lightweight continuity index; it never performs a second
 raw-event scan merely to estimate work. Resume validates the prior checkpoint's
-complete event and split authority before advancing it.
+complete event, condition-policy, and split authority before advancing it.
 
 ## Split boundaries
 

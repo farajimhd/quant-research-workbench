@@ -24,13 +24,16 @@ Gateway continuation rather than a hidden physical-table read.
 Live compact schema v5 in `q_live.events` preserves
 `execution_timestamp_us` separately from `sip_timestamp_us`. The immutable
 `market_sip_compact.events_YYYY` historical archive retains its common
-16-column SIP-time schema and must not be altered by this service. QMD History
-restores the exact participant clock from the versioned
-`q_live.historical_event_execution_clock_v1` sidecar and requires certified
-ticker/day coverage before reading archive rows. Causal Scanner, indicator,
-VWAP, and structural projections advance in SIP availability order and reject
-delayed reports; retrospective chart bars use execution time. Missing coverage
-is an explicit source-authority error, never permission to substitute SIP time.
+16-column SIP-time schema and must not be altered by this service.
+Execution-aware historical products restore the participant clock from the
+versioned `q_live.historical_event_execution_clock_v1` sidecar and require its
+certified ticker/day coverage. Historical Generic Structure is intentionally a
+separate authority: it reads the immutable compact archive directly in SIP
+order and applies canonical trade-condition eligibility. Its source revision
+binds the condition-rule hash and `historical-sip-condition-v1` policy. Live
+structure continuation remains participant-aware. Retrospective chart bars use
+execution time; missing clock coverage for those products remains an explicit
+source-authority error.
 The application typed QMD client composes that continuation for compact-event
 windows, using this service's exact current-live segment bounds and QMD
 Gateway's versioned bounded page. Chart and historical Scanner continuation are
@@ -361,7 +364,7 @@ cargo test --offline --manifest-path services\qmd_history_gateway\Cargo.toml
 
 ## Standalone structural checkpoint campaign
 
-The `structure_checkpoint_campaign` binary runs Campaign v6 directly on a
+The `structure_checkpoint_campaign` binary runs Campaign v7 directly on a
 workstation. It uses the continuity index both for workload estimates and exact
 per-session ordinal bounds, daily bars only to prioritize currently tradable
 tickers (with one bounded raw-liquidity fallback when those bars are absent),
@@ -373,42 +376,19 @@ split authority once, streams bounded `(ticker, ordinal)` ranges, keeps its book
 in memory, persists every completed session including empty ticker-days, and
 releases it before taking another ticker.
 
-For the bounded first recovery, repair the ingestion-owned coverage audit and
-then certify SUGP and JUNS into the successor set before starting the full
-universe. `--execution-clock-only` never modifies historical compact events:
+The full recovery creates a successor SIP-plus-condition set from the immutable
+v5 campaign and prioritizes SUGP and JUNS. No execution-clock preflight or
+flatfile access is performed:
 
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'
-python pipelines\market_sip\flatfiles\download_update_events.py `
-  --start-date 2025-01-01 --end-date 2026-08-31 `
-  --tickers SUGP,JUNS --execution-clock-only --skip-bars
-
-python scripts\run_structure_checkpoint_campaign.py `
-  --checkpoint-set-id canonical-tradable-20250101-20260831-v16-clock-v2 `
-  --recovery-source-checkpoint-set-id canonical-tradable-20250101-20260831-v16-cert-v1 `
-  --priority-ticker SUGP --priority-ticker JUNS --explicit-universe-only `
-  --start-date 2025-01-01 --end-date 2026-08-31 `
-  --runtime-dir D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v6\priority-sugp-juns-clock-v2 `
-  --process-workers 2
-```
-
-The later full-universe command uses the same successor set ID and a different
-runtime directory. Its contiguous-chain resume immediately validates and skips
-the already recovered priority tickers.
-
-```powershell
-$env:PYTHONDONTWRITEBYTECODE='1'
-python scripts\run_structure_checkpoint_campaign.py `
-  --checkpoint-set-id canonical-tradable-20250101-20260831-v16-clock-v2 `
-  --recovery-source-checkpoint-set-id canonical-tradable-20250101-20260831-v16-cert-v1 `
-  --priority-ticker SUGP `
-  --priority-ticker JUNS `
-  --start-date 2025-01-01 `
-  --end-date 2026-08-31 `
-  --liquidity-start-date 2026-08-01 `
-  --liquidity-end-date 2026-08-31 `
-  --runtime-dir D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v6\canonical-tradable-20250101-20260831-v16-clock-v2 `
-  --process-workers 80
+.\scripts\run_structure_checkpoint_campaign.ps1 `
+  -CheckpointSetId canonical-tradable-20250101-20260831-v16-sip-condition-v1 `
+  -RuntimeDir D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v7\canonical-tradable-20250101-20260831-v16-sip-condition-v1 `
+  -ResumeFromRuntime D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v5\canonical-tradable-20250101-20260831-v16-cert-v1 `
+  -Workers 80 `
+  -NoBuild `
+  -ForegroundSupervisor
 ```
 
 Rerunning the identical command is the supported resume operation. The launcher
@@ -437,11 +417,11 @@ a current-thread runtime pinned by `--core-index` across processor groups, so
 ClickHouse or storage saturation can still prevent linear speedup.
 
 The launcher uses a prebuilt executable from
-`D:\TradingML\runtimes\bin\structure_checkpoint_campaign_v6.exe` when Cargo is
+`D:\TradingML\runtimes\bin\structure_checkpoint_campaign_v7.exe` when Cargo is
 not installed. Use `--purge-existing-checkpoints` only for an explicitly
 authorized cold reset; it deletes only the named checkpoint set on its first
 run. The full contract is
-[`structural_checkpoint_campaign_v6.md`](../../docs/data_contracts/structural_checkpoint_campaign_v6.md).
+[`structural_checkpoint_campaign_v7.md`](../../docs/data_contracts/structural_checkpoint_campaign_v7.md).
 
 If the parent progress window exits while the worker status files continue to
 advance, do not rerun the campaign command because that can launch duplicate
@@ -452,9 +432,9 @@ $env:PYTHONDONTWRITEBYTECODE='1'
 python scripts\run_structure_checkpoint_campaign.py `
   --monitor-existing `
   --no-build `
-  --binary D:\TradingML\runtimes\bin\structure_checkpoint_campaign_v6.exe `
-  --checkpoint-set-id canonical-tradable-20250101-20260831-v16-cert-v1 `
-  --runtime-dir D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v5\canonical-tradable-20250101-20260831-v16-cert-v1
+  --binary D:\TradingML\runtimes\bin\structure_checkpoint_campaign_v7.exe `
+  --checkpoint-set-id canonical-tradable-20250101-20260831-v16-sip-condition-v1 `
+  --runtime-dir D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v7\canonical-tradable-20250101-20260831-v16-sip-condition-v1
 ```
 
 The reattached monitor reconstructs aggregate progress and ETA from the atomic

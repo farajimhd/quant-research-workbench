@@ -1352,7 +1352,7 @@ impl StructureFocusCoordinator {
         let response = self
             .client
             .get(format!(
-                "{}/source-revision?start={}&end={}&tickers={}",
+                "{}/structure-source-revision?start={}&end={}&tickers={}",
                 self.history_url,
                 urlencoding::encode(&start.to_rfc3339()),
                 urlencoding::encode(&end.to_rfc3339()),
@@ -1360,12 +1360,14 @@ impl StructureFocusCoordinator {
             ))
             .send()
             .await
-            .map_err(|error| format!("QMD History source-revision request failed: {error}"))?;
+            .map_err(|error| {
+                format!("QMD History structure-source-revision request failed: {error}")
+            })?;
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             return Err(format!(
-                "QMD History source-revision request returned HTTP {status}: {body}"
+                "QMD History structure-source-revision request returned HTTP {status}: {body}"
             ));
         }
         response

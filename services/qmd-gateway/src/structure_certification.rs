@@ -14,6 +14,9 @@ pub struct StructureCheckpointRecoveryAttestation {
     pub source_checkpoint_set_id: String,
     pub source_checkpoint_sha256: String,
     pub source_chain_sha256: String,
+    #[serde(default)]
+    pub source_policy_revision: String,
+    #[serde(default)]
     pub execution_clock_revision: String,
     pub delayed_trade_report_count: u64,
 }
@@ -236,7 +239,16 @@ pub fn build_recovered_checkpoint_certification(
     predecessor_chain_sha256: String,
     recovery_attestation: StructureCheckpointRecoveryAttestation,
 ) -> Result<StructureCheckpointCertification, String> {
-    if recovery_attestation.recovery_revision != "execution-clock-zero-delayed-v1"
+    let policy_valid = match recovery_attestation.recovery_revision.as_str() {
+        "execution-clock-zero-delayed-v1" => recovery_attestation
+            .execution_clock_revision
+            .contains("execution-clock-v1:"),
+        "historical-sip-condition-recertification-v1" => recovery_attestation
+            .source_policy_revision
+            .contains("structure-input-v1:archive-sip-condition:"),
+        _ => false,
+    };
+    if !policy_valid
         || recovery_attestation.delayed_trade_report_count != 0
         || recovery_attestation
             .source_checkpoint_set_id
@@ -244,9 +256,6 @@ pub fn build_recovered_checkpoint_certification(
             .is_empty()
         || !valid_sha256(&recovery_attestation.source_checkpoint_sha256)
         || !valid_sha256(&recovery_attestation.source_chain_sha256)
-        || !recovery_attestation
-            .execution_clock_revision
-            .contains("execution-clock-v1:")
     {
         return Err("invalid structure checkpoint recovery attestation".to_string());
     }
@@ -295,14 +304,22 @@ pub fn validate_checkpoint_certification(
     ) {
         (STRUCTURE_CERTIFICATION_REPLAY_SCHEMA_VERSION, None) => {}
         (STRUCTURE_CERTIFICATION_SCHEMA_VERSION, Some(attestation))
-            if attestation.recovery_revision == "execution-clock-zero-delayed-v1"
-                && attestation.delayed_trade_report_count == 0
+            if matches!(
+                attestation.recovery_revision.as_str(),
+                "execution-clock-zero-delayed-v1" | "historical-sip-condition-recertification-v1"
+            ) && attestation.delayed_trade_report_count == 0
                 && !attestation.source_checkpoint_set_id.trim().is_empty()
                 && valid_sha256(&attestation.source_checkpoint_sha256)
                 && valid_sha256(&attestation.source_chain_sha256)
-                && attestation
-                    .execution_clock_revision
-                    .contains("execution-clock-v1:")
+                && ((attestation.recovery_revision == "execution-clock-zero-delayed-v1"
+                    && attestation
+                        .execution_clock_revision
+                        .contains("execution-clock-v1:"))
+                    || (attestation.recovery_revision
+                        == "historical-sip-condition-recertification-v1"
+                        && attestation
+                            .source_policy_revision
+                            .contains("structure-input-v1:archive-sip-condition:")))
                 && attestation.source_checkpoint_sha256 == certification.checkpoint_sha256 => {}
         _ => return Err("invalid structure checkpoint recovery certification".to_string()),
     }
@@ -631,6 +648,7 @@ mod tests {
             source_checkpoint_set_id: "legacy-v1".to_string(),
             source_checkpoint_sha256: checkpoint_hash,
             source_chain_sha256: format!("sha256:{}", "1".repeat(64)),
+            source_policy_revision: String::new(),
             execution_clock_revision: "execution-clock-v1:1:10:0:1:now".to_string(),
             delayed_trade_report_count: 0,
         };
@@ -671,6 +689,45 @@ mod tests {
         )
         .unwrap_err()
         .contains("invalid structure checkpoint recovery attestation"));
+    }
+
+    #[test]
+    fn recovered_certification_accepts_historical_sip_condition_policy() {
+        let checkpoint = crate::generic_structure::GenericStructureEngine::new("SUGP").checkpoint();
+        let authority_start = Utc.with_ymd_and_hms(2026, 1, 2, 9, 0, 0).unwrap();
+        let session_date = NaiveDate::from_ymd_opt(2026, 1, 2).unwrap();
+        let revision =
+            "revision:structure-input-v1:archive-sip-condition:trade-condition-sha256:abc";
+        let certification = build_recovered_checkpoint_certification(
+            &checkpoint,
+            StructureEventAuditor::new(true).finish(),
+            session_date,
+            authority_start,
+            "plan",
+            revision,
+            String::new(),
+            String::new(),
+            StructureCheckpointRecoveryAttestation {
+                recovery_revision: "historical-sip-condition-recertification-v1".to_string(),
+                source_checkpoint_set_id: "canonical-v5".to_string(),
+                source_checkpoint_sha256: checkpoint_sha256(&checkpoint).unwrap(),
+                source_chain_sha256: format!("sha256:{}", "1".repeat(64)),
+                source_policy_revision: revision.to_string(),
+                execution_clock_revision: String::new(),
+                delayed_trade_report_count: 0,
+            },
+        )
+        .unwrap();
+
+        validate_checkpoint_certification(
+            &certification,
+            &checkpoint,
+            session_date,
+            authority_start,
+            "plan",
+            revision,
+        )
+        .unwrap();
     }
 
     #[test]

@@ -774,6 +774,37 @@ impl From<&LiveCompactEvent> for CompactEventIdentity {
 }
 
 impl CompactEventReferences {
+    /// Deterministic input material for consumers whose persisted state depends
+    /// on the canonical trade-condition eligibility rules.  Token assignments
+    /// and all three aggregation decisions are included so a reference-table
+    /// correction invalidates structural checkpoints instead of silently
+    /// reusing state built under different eligibility semantics.
+    pub fn trade_aggregation_revision_material(&self) -> String {
+        let mut rows = self
+            .trade_conditions
+            .iter()
+            .map(|(modifier, token)| {
+                let rule = self
+                    .trade_updates
+                    .get(modifier)
+                    .copied()
+                    .unwrap_or(TradeUpdateRule {
+                        update_high_low: false,
+                        update_last: false,
+                        update_volume: false,
+                    });
+                format!(
+                    "{modifier}:{token}:{}:{}:{}",
+                    u8::from(rule.update_high_low),
+                    u8::from(rule.update_last),
+                    u8::from(rule.update_volume),
+                )
+            })
+            .collect::<Vec<_>>();
+        rows.sort();
+        rows.join("|")
+    }
+
     pub fn volume_eligible_trade_tokens(&self) -> Vec<u8> {
         let mut tokens = self
             .trade_conditions
@@ -2422,6 +2453,22 @@ mod tests {
         );
 
         assert_eq!(references.volume_eligible_trade_tokens(), vec![21]);
+    }
+
+    #[test]
+    fn trade_aggregation_revision_material_changes_with_eligibility() {
+        let mut references = references();
+        let before = references.trade_aggregation_revision_material();
+        references.trade_updates.insert(
+            5,
+            TradeUpdateRule {
+                update_high_low: true,
+                update_last: false,
+                update_volume: false,
+            },
+        );
+
+        assert_ne!(before, references.trade_aggregation_revision_material());
     }
 
     fn compact_quote_at(timestamp: DateTime<Utc>, sequence: u64) -> LiveCompactEvent {

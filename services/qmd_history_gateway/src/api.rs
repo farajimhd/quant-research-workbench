@@ -252,6 +252,10 @@ pub fn app(state: AppState) -> Router {
         .route("/universe/tradable", get(tradable_universe))
         .route("/source-plan", get(source_plan))
         .route("/source-revision", get(source_revision_snapshot))
+        .route(
+            "/structure-source-revision",
+            get(structure_source_revision_snapshot),
+        )
         .route("/capability-catalog", get(capability_catalog_snapshot))
         .route("/snapshot/cache", get(cache_snapshot))
         .route("/snapshot/events", get(event_page_snapshot))
@@ -1028,6 +1032,31 @@ async fn source_revision_snapshot(
     let source_revision = state
         .source
         .source_revision(&window)
+        .await
+        .map_err(service_error)?;
+    Ok(Json(HistoricalSourceRevisionPayload {
+        source_revision,
+        calculation_revision: HISTORICAL_CALCULATION_REVISION,
+        corporate_action_revision: HISTORICAL_CORPORATE_ACTION_REVISION,
+    }))
+}
+
+async fn structure_source_revision_snapshot(
+    Query(query): Query<SourcePlanQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<HistoricalSourceRevisionPayload>, ApiError> {
+    let tickers = query
+        .tickers
+        .as_deref()
+        .unwrap_or_default()
+        .split(',')
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .collect();
+    let window = window(&query.start, &query.end, tickers)?;
+    let source_revision = state
+        .source
+        .structure_source_revision(&window)
         .await
         .map_err(service_error)?;
     Ok(Json(HistoricalSourceRevisionPayload {
@@ -2535,6 +2564,7 @@ fn structure_checkpoint_advancement_error(message: String) -> ApiError {
         || normalized.contains("gap")
         || normalized.contains("source plan changed")
         || normalized.contains("predates the required execution-clock-v1")
+        || normalized.contains("does not use the required historical sip-plus-condition")
     {
         (
             StatusCode::CONFLICT,
@@ -2783,9 +2813,9 @@ mod tests {
     }
 
     #[test]
-    fn legacy_structure_checkpoint_is_a_non_retryable_source_conflict() {
+    fn incompatible_structure_checkpoint_is_a_non_retryable_source_conflict() {
         let error = structure_checkpoint_advancement_error(
-            "persisted structure checkpoint for SUGP predates the required execution-clock-v1 source contract"
+            "persisted structure checkpoint for SUGP does not use the required historical SIP-plus-condition structure contract"
                 .to_string(),
         );
         assert_eq!(error.0, StatusCode::CONFLICT);
