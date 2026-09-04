@@ -359,6 +359,15 @@ struct EventCoverageRow {
     ticker_count: u64,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct ExecutionClockCoverageRevisionRow {
+    expected_ticker_days: u64,
+    covered_ticker_days: u64,
+    clock_rows: u64,
+    max_build_step: u64,
+    max_updated_at: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct LatestEventCoverageRow {
     event_count: u64,
@@ -1177,6 +1186,9 @@ impl HistoricalEventSource {
                 Vec::new(),
                 &self.config,
             );
+            let execution_clock_revision = self
+                .archive_execution_clock_revision(&window, &plan)
+                .await?;
             if !plan.complete_for_history
                 || plan
                     .segments
@@ -1225,12 +1237,13 @@ impl HistoricalEventSource {
                     .map(|segment| format!("{:?}", segment.tier).to_ascii_lowercase())
                     .collect(),
                 token: format!(
-                    "{}:{}:0:{}:{}:{}",
+                    "{}:{}:0:{}:{}:{}:{}",
                     cumulative_max_build_step,
                     cumulative_event_count,
                     cumulative_max_updated_at,
                     plan_token,
                     split_revision_token,
+                    execution_clock_revision,
                 ),
             };
             let (event_count, first_ordinal, next_ordinal, first_sip, last_sip) = row
@@ -1297,6 +1310,11 @@ impl HistoricalEventSource {
                             source.config.table_prefix,
                             session.session_date.year()
                         ),
+                        &format!(
+                            "{}.{}",
+                            source.config.execution_clock_database,
+                            source.config.execution_clock_table
+                        ),
                         &ticker,
                         first,
                         next,
@@ -1344,6 +1362,10 @@ impl HistoricalEventSource {
                     source.config.table_prefix,
                     session_date.year()
                 ),
+                &format!(
+                    "{}.{}",
+                    source.config.execution_clock_database, source.config.execution_clock_table
+                ),
                 &ticker,
                 first_ordinal,
                 next_ordinal,
@@ -1359,9 +1381,109 @@ impl HistoricalEventSource {
         Ok(receiver)
     }
 
+    async fn archive_execution_clock_revision(
+        &self,
+        window: &EventWindow,
+        plan: &MarketSourcePlan,
+    ) -> Result<String, String> {
+        let archive_bounds = plan
+            .segments
+            .iter()
+            .filter(|segment| matches!(segment.tier, MarketSourceTier::Archive))
+            .fold(None, |bounds, segment| match bounds {
+                None => Some((segment.start, segment.end)),
+                Some((start, end)) => Some((start.min(segment.start), end.max(segment.end))),
+            });
+        let Some((archive_start, archive_end)) = archive_bounds else {
+            return Ok("execution-clock:not-applicable".to_string());
+        };
+        let ticker_predicate = if window.tickers.is_empty() {
+            String::new()
+        } else {
+            let values = window
+                .tickers
+                .iter()
+                .map(|ticker| normalize_ticker(ticker))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .map(|ticker| sql_literal(&ticker))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(" AND source.ticker IN ({values})")
+        };
+        let start_date = archive_start.with_timezone(&New_York).date_naive();
+        let end_date = (archive_end - chrono::Duration::microseconds(1))
+            .with_timezone(&New_York)
+            .date_naive();
+        let sql = format!(
+            r#"SELECT
+                count() AS expected_ticker_days,
+                countIf(c.event_count = h.event_count AND h.trade_count = h.clock_count AND endsWith(h.source_filter_key, '|execution_clock_v1')) AS covered_ticker_days,
+                sum(ifNull(h.clock_count, 0)) AS clock_rows,
+                max(ifNull(h.build_step, 0)) AS max_build_step,
+                toString(max(ifNull(h.latest_clock_updated_at, toDateTime64(0, 3, 'UTC')))) AS max_updated_at
+            FROM
+            (
+                SELECT
+                    source.ticker,
+                    source.source_date,
+                    argMax(source.event_count, tuple(source.build_step, source.updated_at)) AS event_count
+                FROM {}.events_ordinal_continuity AS source
+                WHERE source.source_date >= toDate('{}')
+                  AND source.source_date <= toDate('{}'){}
+                GROUP BY source.ticker, source.source_date
+            ) AS c
+            LEFT JOIN
+            (
+                SELECT
+                    source.ticker,
+                    source.source_date,
+                    argMax(source.event_count, source.updated_at) AS event_count,
+                    argMax(source.trade_count, source.updated_at) AS trade_count,
+                    argMax(source.clock_count, source.updated_at) AS clock_count,
+                    argMax(source.build_step, source.updated_at) AS build_step,
+                    argMax(source.source_filter_key, source.updated_at) AS source_filter_key,
+                    max(source.updated_at) AS latest_clock_updated_at
+                FROM {}.{} AS source
+                WHERE source.source_date >= toDate('{}')
+                  AND source.source_date <= toDate('{}'){}
+                GROUP BY source.ticker, source.source_date
+            ) AS h ON h.ticker = c.ticker AND h.source_date = c.source_date
+            FORMAT JSONEachRow"#,
+            self.config.clickhouse_database,
+            start_date,
+            end_date,
+            ticker_predicate,
+            self.config.execution_clock_database,
+            self.config.execution_clock_coverage_table,
+            start_date,
+            end_date,
+            ticker_predicate,
+        );
+        let text = self.query(&sql).await.map_err(|error| {
+            format!(
+                "historical execution-clock authority is unavailable; populate {}.{} before building bars, indicators, or structure: {error}",
+                self.config.execution_clock_database, self.config.execution_clock_coverage_table
+            )
+        })?;
+        let row = serde_json::from_str::<ExecutionClockCoverageRevisionRow>(text.trim())
+            .map_err(|error| format!("invalid execution-clock coverage response: {error}"))?;
+        if row.expected_ticker_days != row.covered_ticker_days {
+            return Err(format!(
+                "historical execution-clock coverage incomplete: covered {}/{} ticker-days for {} through {}; delayed reports cannot safely update bars, indicators, or structure",
+                row.covered_ticker_days, row.expected_ticker_days, start_date, end_date
+            ));
+        }
+        Ok(format!(
+            "execution-clock-v1:{}:{}:{}:{}",
+            row.covered_ticker_days, row.clock_rows, row.max_build_step, row.max_updated_at
+        ))
+    }
+
     pub async fn source_revision(&self, window: &EventWindow) -> Result<SourceRevision, String> {
         validate_window(window)?;
         let plan = self.source_plan(window).await?;
+        let execution_clock_revision = self.archive_execution_clock_revision(window, &plan).await?;
         let ticker_filter = if window.tickers.is_empty() {
             String::new()
         } else {
@@ -1503,13 +1625,14 @@ impl HistoricalEventSource {
                 .map(|segment| format!("{:?}", segment.tier).to_ascii_lowercase())
                 .collect(),
             token: format!(
-                "{}:{}:{}:{}:{}:{}",
+                "{}:{}:{}:{}:{}:{}:{}",
                 max_build_step,
                 event_count,
                 live_continuation_sequence.unwrap_or_default(),
                 max_updated_at,
                 plan_token,
                 split_revision_token,
+                execution_clock_revision,
             ),
         })
     }
@@ -1722,6 +1845,10 @@ impl HistoricalEventSource {
                             chunk_start.year()
                         ),
                         false,
+                        Some(&format!(
+                            "{}.{}",
+                            self.config.execution_clock_database, self.config.execution_clock_table
+                        )),
                         chunk_start,
                         chunk_end,
                         &ticker_filter,
@@ -1733,6 +1860,7 @@ impl HistoricalEventSource {
                             self.config.recent_database, self.config.recent_event_table
                         ),
                         true,
+                        None,
                         chunk_start,
                         chunk_end,
                         &ticker_filter,
@@ -1907,6 +2035,11 @@ impl HistoricalEventSource {
                                 self.config.clickhouse_database, self.config.table_prefix, year
                             ),
                             false,
+                            Some(&format!(
+                                "{}.{}",
+                                self.config.execution_clock_database,
+                                self.config.execution_clock_table
+                            )),
                             segment.start,
                             segment.end,
                             &ticker_filter,
@@ -1920,6 +2053,7 @@ impl HistoricalEventSource {
                         self.config.recent_database, self.config.recent_event_table
                     ),
                     true,
+                    None,
                     segment.start,
                     segment.end,
                     &ticker_filter,
@@ -2138,6 +2272,11 @@ impl HistoricalEventSource {
                         selects.push(event_select(
                             &table,
                             false,
+                            Some(&format!(
+                                "{}.{}",
+                                self.config.execution_clock_database,
+                                self.config.execution_clock_table
+                            )),
                             segment.start,
                             segment.end,
                             &ticker_filter,
@@ -2154,6 +2293,7 @@ impl HistoricalEventSource {
                     selects.push(event_select(
                         &table,
                         true,
+                        None,
                         segment.start,
                         segment.end,
                         &ticker_filter,
@@ -3244,6 +3384,7 @@ fn missing_table_error(error: &str) -> bool {
 fn event_select(
     table: &str,
     recent: bool,
+    execution_clock_table: Option<&str>,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
     ticker_filter: &str,
@@ -3262,16 +3403,30 @@ fn event_select(
     } else {
         "source.ordinal"
     };
-    // The immutable market_sip_compact.events_YYYY archive contract has no
-    // participant/execution clock. Only q_live.events carries that optional
-    // live enrichment. Keep one stable wire shape without requiring or
-    // mutating the historical archive schema.
+    // The immutable archive stays unchanged. Its exact participant clock is
+    // restored from a separately certified sidecar keyed by ticker/ordinal.
     let execution_timestamp = if recent {
         "source.execution_timestamp_us"
     } else {
-        "toUInt64(0)"
+        "if(bitAnd(source.event_meta, 1) = 1, execution_clock.execution_timestamp_us, toUInt64(0))"
     };
     let final_clause = if recent { " FINAL" } else { "" };
+    let last_inclusive = end - chrono::Duration::microseconds(1);
+    let clock_ticker_filter = ticker_filter
+        .split(" AND bitAnd(")
+        .next()
+        .unwrap_or_default()
+        .replace("source.ticker", "ticker");
+    let execution_clock_join = execution_clock_table
+        .map(|clock| {
+            format!(
+                " LEFT JOIN (SELECT ticker, ordinal, execution_timestamp_us FROM {clock} FINAL WHERE source_date >= toDate('{}') AND source_date <= toDate('{}'){}) AS execution_clock ON execution_clock.ticker = source.ticker AND execution_clock.ordinal = source.ordinal",
+                start.with_timezone(&New_York).date_naive(),
+                last_inclusive.with_timezone(&New_York).date_naive(),
+                clock_ticker_filter,
+            )
+        })
+        .unwrap_or_default();
     let cursor_filter = cursor
         .filter(|value| value.sip_timestamp_us > 0)
         .map(|value| {
@@ -3283,7 +3438,6 @@ fn event_select(
             )
         })
         .unwrap_or_default();
-    let last_inclusive = end - chrono::Duration::microseconds(1);
     format!(
         r#"SELECT
             upper(source.ticker) AS ticker,
@@ -3304,7 +3458,7 @@ fn event_select(
             source.condition_token_4,
             source.condition_token_5,
             toString(source.event_date) AS event_date
-        FROM {table} AS source{final_clause}
+        FROM {table} AS source{final_clause}{execution_clock_join}
         PREWHERE source.event_date >= toDate('{start_date}')
           AND source.event_date <= toDate('{end_date}')
           AND source.sip_timestamp_us >= {start_us}
@@ -3317,14 +3471,20 @@ fn event_select(
     )
 }
 
-fn ordinal_event_select(table: &str, ticker: &str, first: u64, next: u64) -> String {
+fn ordinal_event_select(
+    table: &str,
+    execution_clock_table: &str,
+    ticker: &str,
+    first: u64,
+    next: u64,
+) -> String {
     format!(
         r#"SELECT
             upper(source.ticker) AS ticker,
             source.ordinal AS ordinal,
             source.ordinal AS source_sequence,
             source.event_meta,
-            toUInt64(0) AS execution_timestamp_us,
+            if(bitAnd(source.event_meta, 1) = 1, execution_clock.execution_timestamp_us, toUInt64(0)) AS execution_timestamp_us,
             source.sip_timestamp_us,
             source.price_primary_int,
             source.price_secondary_int,
@@ -3339,6 +3499,15 @@ fn ordinal_event_select(table: &str, ticker: &str, first: u64, next: u64) -> Str
             source.condition_token_5,
             toString(source.event_date) AS event_date
         FROM {table} AS source
+        LEFT JOIN
+        (
+            SELECT ticker, ordinal, execution_timestamp_us
+            FROM {execution_clock_table} FINAL
+            WHERE ticker = {ticker}
+              AND ordinal >= {first}
+              AND ordinal < {next}
+        ) AS execution_clock
+          ON execution_clock.ticker = source.ticker AND execution_clock.ordinal = source.ordinal
         PREWHERE source.ticker = {ticker}
           AND source.ordinal >= {first}
           AND source.ordinal < {next}"#,
@@ -4296,6 +4465,7 @@ mod tests {
         let sql = event_select(
             "q_live.events",
             true,
+            None,
             Utc.with_ymd_and_hms(2026, 8, 25, 8, 0, 0).unwrap(),
             Utc.with_ymd_and_hms(2026, 8, 25, 9, 0, 0).unwrap(),
             &filter,
@@ -4307,18 +4477,44 @@ mod tests {
     }
 
     #[test]
-    fn archive_event_fetch_does_not_require_an_execution_clock_column() {
+    fn archive_event_fetch_joins_the_versioned_execution_clock_sidecar() {
         let sql = event_select(
             "market_sip_compact.events_2025",
             false,
+            Some("q_live.historical_event_execution_clock_v1"),
             Utc.with_ymd_and_hms(2025, 1, 2, 9, 0, 0).unwrap(),
             Utc.with_ymd_and_hms(2025, 1, 2, 10, 0, 0).unwrap(),
             " AND source.ticker IN ('AAPL')",
             None,
         );
 
-        assert!(sql.contains("toUInt64(0) AS execution_timestamp_us"));
+        assert!(sql.contains("execution_clock.execution_timestamp_us"));
+        assert!(sql.contains("FROM q_live.historical_event_execution_clock_v1 FINAL"));
+        assert!(sql.contains("AND ticker IN ('AAPL')"));
         assert!(!sql.contains("source.execution_timestamp_us"));
+    }
+
+    #[test]
+    fn archive_execution_clock_subquery_does_not_capture_event_kind_predicates() {
+        let sql = event_select(
+            "market_sip_compact.events_2026",
+            false,
+            Some("q_live.historical_event_execution_clock_v1"),
+            Utc.with_ymd_and_hms(2026, 8, 21, 8, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 8, 21, 8, 1, 0).unwrap(),
+            " AND source.ticker IN ('SUGP') AND bitAnd(source.event_meta, 1) = toUInt8(1)",
+            None,
+        );
+
+        let clock_subquery = sql
+            .split("LEFT JOIN (")
+            .nth(1)
+            .unwrap()
+            .split(") AS execution_clock")
+            .next()
+            .unwrap();
+        assert!(clock_subquery.contains("ticker IN ('SUGP')"));
+        assert!(!clock_subquery.contains("source.event_meta"));
     }
 
     #[test]
@@ -4391,13 +4587,20 @@ mod tests {
 
     #[test]
     fn campaign_event_fetch_uses_the_physical_ticker_ordinal_key() {
-        let sql = ordinal_event_select("market_sip_compact.events_2026", "SUGP", 10, 20);
+        let sql = ordinal_event_select(
+            "market_sip_compact.events_2026",
+            "q_live.historical_event_execution_clock_v1",
+            "SUGP",
+            10,
+            20,
+        );
         assert!(sql.contains("source.ticker = 'SUGP'"));
         assert!(sql.contains("source.ordinal >= 10"));
         assert!(sql.contains("source.ordinal < 20"));
         assert!(!sql.contains("source.sip_timestamp_us >="));
         assert!(!sql.contains("source.event_date >="));
-        assert!(sql.contains("toUInt64(0) AS execution_timestamp_us"));
+        assert!(sql.contains("execution_clock.execution_timestamp_us"));
+        assert!(sql.contains("FROM q_live.historical_event_execution_clock_v1 FINAL"));
         assert!(!sql.contains("source.execution_timestamp_us"));
     }
 
@@ -4911,13 +5114,14 @@ mod tests {
         let archive = event_select(
             "market_sip_compact.events_2026",
             false,
+            Some("q_live.historical_event_execution_clock_v1"),
             start,
             end,
             "",
             None,
         );
         assert!(archive.contains("source.ordinal AS source_sequence"));
-        let recent = event_select("q_live.events", true, start, end, "", None);
+        let recent = event_select("q_live.events", true, None, start, end, "", None);
         assert!(archive.contains("source.ordinal AS ordinal"));
         assert!(recent.contains("source.arrival_sequence AS ordinal"));
         assert!(recent.contains("source.source_sequence AS source_sequence"));

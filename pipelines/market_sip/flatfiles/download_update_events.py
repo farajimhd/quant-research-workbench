@@ -135,6 +135,9 @@ DEFAULT_TEST_SAMPLE_SIZE = 100
 DEFAULT_DAY_RAW_AUDIT_SAMPLE_SIZE = 32
 DEFAULT_TICKER_DAY_INDEX_TABLE = "events_ticker_day_index"
 DEFAULT_SOURCE_DAY_STATS_TABLE = "events_source_day_stats"
+DEFAULT_EXECUTION_CLOCK_DATABASE = "q_live"
+DEFAULT_EXECUTION_CLOCK_TABLE = "historical_event_execution_clock_v1"
+DEFAULT_EXECUTION_CLOCK_COVERAGE_TABLE = "historical_event_execution_clock_coverage_v1"
 DEFAULT_DIRECT_MACRO_BAR_TIMEFRAMES = ("1d",)
 SOURCE_DAY_STATS_VERSION = 1
 
@@ -211,6 +214,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--continuity-table", default=DEFAULT_CONTINUITY_TABLE)
     parser.add_argument("--ticker-day-index-table", default=DEFAULT_TICKER_DAY_INDEX_TABLE)
     parser.add_argument("--source-day-stats-table", default=DEFAULT_SOURCE_DAY_STATS_TABLE)
+    parser.add_argument("--execution-clock-database", default=DEFAULT_EXECUTION_CLOCK_DATABASE)
+    parser.add_argument("--execution-clock-table", default=DEFAULT_EXECUTION_CLOCK_TABLE)
+    parser.add_argument("--execution-clock-coverage-table", default=DEFAULT_EXECUTION_CLOCK_COVERAGE_TABLE)
     parser.add_argument("--refresh-source-day-stats", action="store_true")
     parser.add_argument("--no-source-day-stats-cache", action="store_true")
     parser.add_argument("--macro-bars-table", default=DEFAULT_MACRO_BARS_TABLE)
@@ -1222,7 +1228,7 @@ def flatfile_trade_correction_filter_sql(args: argparse.Namespace) -> str:
     return f"\nAND toUInt8(greatest(0, least(15, toInt16OrZero(correction)))) NOT IN ({values})"
 
 
-def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
+def raw_event_union_sql(args: argparse.Namespace, day: DayFiles, *, include_execution_timestamp: bool = False) -> str:
     quote_path = windows_path_to_clickhouse_path(Path(day.quote_job.destination), Path(args.flatfiles_root_win), args.flatfiles_root_ch)
     trade_path = windows_path_to_clickhouse_path(Path(day.trade_job.destination), Path(args.flatfiles_root_win), args.flatfiles_root_ch)
     bid_price = "toFloat64OrZero(bid_price)"
@@ -1261,6 +1267,15 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
         if requested_tickers
         else ""
     )
+    execution_column = ",\n        q.execution_timestamp_us AS execution_timestamp_us" if include_execution_timestamp else ""
+    trade_execution_column = ",\n        t.execution_timestamp_us AS execution_timestamp_us" if include_execution_timestamp else ""
+    quote_execution_expression = (
+        "\n            toUInt64(intDiv(if(toUInt64OrZero(participant_timestamp) > 0, "
+        "toUInt64OrZero(participant_timestamp), toUInt64OrZero(sip_timestamp)), 1000)) AS execution_timestamp_us,"
+        if include_execution_timestamp
+        else ""
+    )
+    trade_execution_expression = quote_execution_expression
     return f"""
     SELECT
         q.ticker AS ticker,
@@ -1278,7 +1293,7 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
         {condition_token_expr("qc3")} AS condition_token_3,
         {condition_token_expr("qc4")} AS condition_token_4,
         {condition_token_expr("qi1")} AS condition_token_5,
-        q.event_date AS event_date
+        q.event_date AS event_date{execution_column}
     FROM
     (
         SELECT
@@ -1294,7 +1309,7 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
             conditions,
             indicators,
             {quote_flags} AS quote_flags,
-            {event_date_expr_from_us("intDiv(toUInt64OrZero(sip_timestamp), 1000)")} AS event_date,
+            {event_date_expr_from_us("intDiv(toUInt64OrZero(sip_timestamp), 1000)")} AS event_date,{quote_execution_expression}
             {condition_code_expr(1)} AS condition_code_1,
             {condition_code_expr(2)} AS condition_code_2,
             {condition_code_expr(3)} AS condition_code_3,
@@ -1332,7 +1347,7 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
         {condition_token_expr("tc3")} AS condition_token_3,
         {condition_token_expr("tc4")} AS condition_token_4,
         {condition_token_expr("tc5")} AS condition_token_5,
-        t.event_date AS event_date
+        t.event_date AS event_date{trade_execution_column}
     FROM
     (
         SELECT
@@ -1344,7 +1359,7 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
             toUInt8OrZero(exchange) AS exchange_u8,
             conditions,
             {trade_flags} AS trade_flags,
-            {event_date_expr_from_us("intDiv(toUInt64OrZero(sip_timestamp), 1000)")} AS event_date,
+            {event_date_expr_from_us("intDiv(toUInt64OrZero(sip_timestamp), 1000)")} AS event_date,{trade_execution_expression}
             {condition_code_expr(1)} AS condition_code_1,
             {condition_code_expr(2)} AS condition_code_2,
             {condition_code_expr(3)} AS condition_code_3,
@@ -1534,6 +1549,275 @@ ORDER BY
 )
 {mergetree_settings(args.storage_policy)}
 """
+
+
+def create_execution_clock_table_sql(args: argparse.Namespace) -> str:
+    return f"""
+CREATE TABLE IF NOT EXISTS {quote_ident(args.execution_clock_database)}.{quote_ident(args.execution_clock_table)}
+(
+    source_date Date,
+    ticker LowCardinality(String),
+    ordinal UInt64,
+    sip_timestamp_us UInt64,
+    execution_timestamp_us UInt64,
+    build_step UInt32,
+    updated_at DateTime64(3, 'UTC') DEFAULT now64(3)
+)
+ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(source_date)
+ORDER BY (ticker, ordinal)
+{mergetree_settings(args.storage_policy)}
+"""
+
+
+def create_execution_clock_coverage_table_sql(args: argparse.Namespace) -> str:
+    return f"""
+CREATE TABLE IF NOT EXISTS {quote_ident(args.execution_clock_database)}.{quote_ident(args.execution_clock_coverage_table)}
+(
+    source_date Date,
+    ticker LowCardinality(String),
+    event_count UInt64,
+    trade_count UInt64,
+    clock_count UInt64,
+    first_ordinal UInt64,
+    next_ordinal UInt64,
+    build_step UInt32,
+    source_filter_key String,
+    updated_at DateTime64(3, 'UTC') DEFAULT now64(3)
+)
+ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(source_date)
+ORDER BY (source_date, ticker)
+{mergetree_settings(args.storage_policy)}
+"""
+
+
+def execution_clock_tickers(args: argparse.Namespace) -> list[str]:
+    return sorted(
+        {
+            value.strip().upper()
+            for value in str(getattr(args, "tickers", "") or "").split(",")
+            if value.strip()
+        }
+    )
+
+
+def execution_clock_ticker_predicate(args: argparse.Namespace, column: str = "ticker") -> str:
+    tickers = execution_clock_tickers(args)
+    if not tickers:
+        return ""
+    return f" AND {column} IN ({', '.join(sql_string(value) for value in tickers)})"
+
+
+def delete_execution_clock_day_sql(args: argparse.Namespace, day: DayFiles) -> str:
+    return f"""
+ALTER TABLE {quote_ident(args.execution_clock_database)}.{quote_ident(args.execution_clock_table)}
+DELETE WHERE source_date = toDate({sql_string(day.source_date)}){execution_clock_ticker_predicate(args)}
+{mutation_settings(args)}
+"""
+
+
+def delete_execution_clock_coverage_day_sql(args: argparse.Namespace, day: DayFiles) -> str:
+    return f"""
+ALTER TABLE {quote_ident(args.execution_clock_database)}.{quote_ident(args.execution_clock_coverage_table)}
+DELETE WHERE source_date = toDate({sql_string(day.source_date)}){execution_clock_ticker_predicate(args)}
+{mutation_settings(args)}
+"""
+
+
+def insert_execution_clock_day_sql(args: argparse.Namespace, day: DayFiles, build_step: int) -> str:
+    archive_db = quote_ident(args.database)
+    continuity = quote_ident(args.continuity_table)
+    clock_db = quote_ident(args.execution_clock_database)
+    clock_table = quote_ident(args.execution_clock_table)
+    return f"""
+INSERT INTO {clock_db}.{clock_table}
+(source_date, ticker, ordinal, sip_timestamp_us, execution_timestamp_us, build_step)
+SELECT
+    toDate({sql_string(day.source_date)}) AS source_date,
+    ordered.ticker,
+    ordered.ordinal,
+    ordered.sip_timestamp_us,
+    ordered.execution_timestamp_us,
+    toUInt32({int(build_step)}) AS build_step
+FROM
+(
+    SELECT
+        e.ticker,
+        c.ordinal_begin
+            + toUInt64(row_number() OVER (PARTITION BY e.ticker ORDER BY e.sip_timestamp_us, e.sequence_number, bitAnd(e.event_meta, 1)) - 1) AS ordinal,
+        e.event_meta,
+        e.sip_timestamp_us,
+        e.execution_timestamp_us
+    FROM
+    (
+{raw_event_union_sql(args, day, include_execution_timestamp=True)}
+    ) AS e
+    INNER JOIN
+    (
+        SELECT
+            ticker,
+            source.ticker,
+            argMax(source.next_ordinal - source.event_count, tuple(source.build_step, source.updated_at)) AS ordinal_begin
+        FROM {archive_db}.{continuity} AS source
+        WHERE source.source_date = toDate({sql_string(day.source_date)}){execution_clock_ticker_predicate(args, 'source.ticker')}
+        GROUP BY source.ticker
+    ) AS c ON c.ticker = e.ticker
+) AS ordered
+WHERE bitAnd(ordered.event_meta, 1) = 1
+ORDER BY ordered.ticker, ordered.ordinal
+{query_settings(args)}
+"""
+
+
+def insert_execution_clock_coverage_day_sql(args: argparse.Namespace, day: DayFiles, build_step: int) -> str:
+    archive_db = quote_ident(args.database)
+    events = quote_ident(args.events_table)
+    continuity = quote_ident(args.continuity_table)
+    clock_db = quote_ident(args.execution_clock_database)
+    clock_table = quote_ident(args.execution_clock_table)
+    coverage = quote_ident(args.execution_clock_coverage_table)
+    tickers = execution_clock_tickers(args)
+    ticker_values = ", ".join(sql_string(value) for value in tickers)
+    event_source = f"""(
+        SELECT *
+        FROM {archive_db}.{events}
+        PREWHERE ticker IN ({ticker_values})
+    )""" if tickers else f"{archive_db}.{events}"
+    clock_ticker_clause = f"\n          AND ticker IN ({ticker_values})" if tickers else ""
+    clock_source = f"""(
+        SELECT ticker, ordinal, execution_timestamp_us, source_date
+        FROM {clock_db}.{clock_table} FINAL
+        WHERE source_date = toDate({sql_string(day.source_date)}){clock_ticker_clause}
+    )"""
+    return f"""
+INSERT INTO {clock_db}.{coverage}
+(source_date, ticker, event_count, trade_count, clock_count, first_ordinal, next_ordinal, build_step, source_filter_key)
+SELECT
+    toDate({sql_string(day.source_date)}) AS source_date,
+    c.ticker,
+    c.latest_event_count,
+    countIf(bitAnd(e.event_meta, 1) = 1) AS trade_count,
+    countIf(bitAnd(e.event_meta, 1) = 1 AND x.execution_timestamp_us > 0) AS clock_count,
+    c.ordinal_begin,
+    c.ordinal_end,
+    toUInt32({int(build_step)}) AS build_step,
+    {sql_string(source_filter_key(args) + '|execution_clock_v1')} AS source_filter_key
+FROM
+(
+    SELECT
+        source.ticker,
+        argMax(source.event_count, tuple(source.build_step, source.updated_at)) AS latest_event_count,
+        argMax(source.next_ordinal - source.event_count, tuple(source.build_step, source.updated_at)) AS ordinal_begin,
+        argMax(source.next_ordinal, tuple(source.build_step, source.updated_at)) AS ordinal_end
+    FROM {archive_db}.{continuity} AS source
+    WHERE source.source_date = toDate({sql_string(day.source_date)}){execution_clock_ticker_predicate(args, 'source.ticker')}
+    GROUP BY source.ticker
+) AS c
+INNER JOIN {event_source} AS e
+    ON e.ticker = c.ticker AND e.ordinal >= c.ordinal_begin AND e.ordinal < c.ordinal_end
+LEFT JOIN {clock_source} AS x
+    ON x.source_date = toDate({sql_string(day.source_date)}) AND x.ticker = e.ticker AND x.ordinal = e.ordinal
+GROUP BY c.ticker, c.latest_event_count, c.ordinal_begin, c.ordinal_end
+HAVING trade_count = clock_count
+{query_settings(args)}
+"""
+
+
+def execution_clock_day_is_complete(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFiles) -> bool:
+    row = first_tsv_row(
+        client,
+        f"""
+SELECT countIf(event_count > 0 AND trade_count = clock_count), count()
+FROM
+(
+    SELECT
+        ticker,
+        argMax(event_count, updated_at) AS event_count,
+        argMax(trade_count, updated_at) AS trade_count,
+        argMax(clock_count, updated_at) AS clock_count
+    FROM {quote_ident(args.execution_clock_database)}.{quote_ident(args.execution_clock_coverage_table)}
+    WHERE source_date = toDate({sql_string(day.source_date)}){execution_clock_ticker_predicate(args)}
+    GROUP BY ticker
+)
+""",
+    )
+    if not row or len(row) != 2:
+        return False
+    covered, total = (int(float(value or 0)) for value in row)
+    expected = first_tsv_row(
+        client,
+        f"""
+SELECT count()
+FROM
+(
+    SELECT ticker
+    FROM {quote_ident(args.database)}.{quote_ident(args.continuity_table)}
+    WHERE source_date = toDate({sql_string(day.source_date)}){execution_clock_ticker_predicate(args)}
+    GROUP BY ticker
+)
+""",
+    )
+    return total > 0 and covered == total == int(float(expected[0] or 0))
+
+
+def execution_clock_rows_match_archive(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFiles) -> bool:
+    tickers = execution_clock_tickers(args)
+    if not tickers:
+        return False
+    for ticker in tickers:
+        bounds = first_tsv_row(
+            client,
+            f"""
+SELECT
+    argMax(source.next_ordinal - source.event_count, tuple(source.build_step, source.updated_at)),
+    argMax(source.next_ordinal, tuple(source.build_step, source.updated_at))
+FROM {quote_ident(args.database)}.{quote_ident(args.continuity_table)} AS source
+WHERE source.source_date = toDate({sql_string(day.source_date)})
+  AND source.ticker = {sql_string(ticker)}
+""",
+        )
+        if not bounds or len(bounds) != 2:
+            return False
+        first_ordinal, next_ordinal = (int(float(value or 0)) for value in bounds)
+        row = first_tsv_row(
+            client,
+            f"""
+SELECT
+    (SELECT count()
+     FROM {quote_ident(args.execution_clock_database)}.{quote_ident(args.execution_clock_table)} FINAL
+     WHERE source_date = toDate({sql_string(day.source_date)}) AND ticker = {sql_string(ticker)}),
+    (SELECT countIf(bitAnd(event_meta, 1) = 1)
+     FROM {quote_ident(args.database)}.{quote_ident(args.events_table)}
+     PREWHERE ticker = {sql_string(ticker)}
+       AND ordinal >= toUInt64({first_ordinal})
+       AND ordinal < toUInt64({next_ordinal}))
+""",
+        )
+        if not row or len(row) != 2:
+            return False
+        clock_rows, trade_rows = (int(float(value or 0)) for value in row)
+        if clock_rows <= 0 or clock_rows != trade_rows:
+            return False
+    return True
+
+
+def rebuild_execution_clock_day(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    day: DayFiles,
+    build_step: int,
+    reporter: UpdateProgressReporter | None = None,
+) -> None:
+    if execution_clock_day_is_complete(client, args, day):
+        return
+    if not execution_clock_rows_match_archive(client, args, day):
+        _run_profiled_with_reporter(client, f"delete_execution_clock_{day.source_date}", delete_execution_clock_day_sql(args, day), reporter, day=day.source_date, stage="execution-clock", detail="stale clock rows")
+        _run_profiled_with_reporter(client, f"insert_execution_clock_{day.source_date}", insert_execution_clock_day_sql(args, day, build_step), reporter, day=day.source_date, stage="execution-clock", detail="raw participant clock")
+    _run_profiled_with_reporter(client, f"delete_execution_clock_coverage_{day.source_date}", delete_execution_clock_coverage_day_sql(args, day), reporter, day=day.source_date, stage="execution-clock", detail="stale coverage rows")
+    _run_profiled_with_reporter(client, f"insert_execution_clock_coverage_{day.source_date}", insert_execution_clock_coverage_day_sql(args, day, build_step), reporter, day=day.source_date, stage="execution-clock", detail="complete ticker/day coverage")
+    if not execution_clock_day_is_complete(client, args, day):
+        raise RuntimeError(f"execution-clock coverage is incomplete after rebuild for source day {day.source_date}")
 
 
 def validate_ticker_day_index_table_schema(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
@@ -1915,6 +2199,9 @@ def ensure_tables(client: ClickHouseHttpClient, args: argparse.Namespace, days: 
     ensure_continuity_table_columns(client, args)
     client.execute(create_ticker_day_index_table_sql(args))
     client.execute(create_source_day_stats_table_sql(args))
+    client.execute(f"CREATE DATABASE IF NOT EXISTS {quote_ident(args.execution_clock_database)}")
+    client.execute(create_execution_clock_table_sql(args))
+    client.execute(create_execution_clock_coverage_table_sql(args))
     validate_ticker_day_index_table_schema(client, args)
 
 
@@ -1945,6 +2232,9 @@ def configure_test_tables(args: argparse.Namespace, run_id: str) -> None:
     args.continuity_table = f"{prefix}_{run_id}_continuity"
     args.ticker_day_index_table = f"{prefix}_{run_id}_ticker_day_index"
     args.source_day_stats_table = f"{prefix}_{run_id}_source_day_stats"
+    args.execution_clock_database = args.database
+    args.execution_clock_table = f"{prefix}_{run_id}_execution_clock"
+    args.execution_clock_coverage_table = f"{prefix}_{run_id}_execution_clock_coverage"
     args.macro_bars_table = f"{prefix}_{run_id}_macro_bars_by_time_symbol"
     args.daily_session_bars_table = f"{prefix}_{run_id}_daily_session_bars"
     args.daily_session_bars_manifest_table = f"{prefix}_{run_id}_daily_session_manifest"
@@ -1957,6 +2247,8 @@ def configure_test_tables(args: argparse.Namespace, run_id: str) -> None:
         args.continuity_table,
         args.ticker_day_index_table,
         args.source_day_stats_table,
+        args.execution_clock_table,
+        args.execution_clock_coverage_table,
         args.macro_bars_table,
         args.daily_session_bars_table,
         args.daily_session_bars_manifest_table,
@@ -1993,6 +2285,8 @@ def drop_test_tables(client: ClickHouseHttpClient, args: argparse.Namespace) -> 
         args.continuity_table,
         args.ticker_day_index_table,
         args.source_day_stats_table,
+        args.execution_clock_table,
+        args.execution_clock_coverage_table,
         args.macro_bars_table,
         args.daily_session_bars_table,
         args.daily_session_bars_manifest_table,
@@ -3295,6 +3589,11 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
             reporter.task_start(f"{day.source_date}:index:manifest_ok", "rebuild ticker/day index", day=day.source_date, stage="index")
         rebuild_day_ticker_index(client, args, day, job.build_step, report_path, reason="manifest_ok")
         if reporter is not None:
+            reporter.task_start(f"{day.source_date}:execution_clock", "restore execution clock", day=day.source_date, stage="execution-clock")
+        rebuild_execution_clock_day(client, args, day, job.build_step, reporter=reporter)
+        if reporter is not None:
+            reporter.task_done(f"{day.source_date}:execution_clock", "ok", detail="exact participant clock coverage")
+        if reporter is not None:
             reporter.task_done(f"{day.source_date}:index:manifest_ok", "ok", detail="manifest was already ok")
         print(f"DAY SKIP {day.source_date} status=ok", flush=True)
         return "skipped"
@@ -3381,6 +3680,11 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
         if reporter is not None:
             reporter.task_start(f"{day.source_date}:audit:continuity", "validate continuity counts", day=day.source_date, stage="audit")
         validate_day_continuity_after_insert(client, args, day, job.build_step, raw_stats.rows, report_path)
+        if reporter is not None:
+            reporter.task_start(f"{day.source_date}:execution_clock", "restore execution clock", day=day.source_date, stage="execution-clock")
+        rebuild_execution_clock_day(client, args, day, job.build_step, reporter=reporter)
+        if reporter is not None:
+            reporter.task_done(f"{day.source_date}:execution_clock", "ok", detail="exact participant clock coverage")
         if reporter is not None:
             reporter.task_done(f"{day.source_date}:audit:continuity", "ok", rows=profile.written_rows, detail="continuity sum matches event rows")
             reporter.task_start(f"{day.source_date}:audit:events", "validate event row integrity", day=day.source_date, stage="audit")
@@ -3683,6 +3987,11 @@ def main() -> None:
     if events_table_uses_year_suffix(str(args.events_table)):
         print("events_table_routing=yearly (source day YYYY -> events_YYYY)", flush=True)
     print(f"ticker_day_index_table={args.ticker_day_index_table}", flush=True)
+    print(
+        f"execution_clock={args.execution_clock_database}.{args.execution_clock_table} "
+        f"coverage={args.execution_clock_database}.{args.execution_clock_coverage_table}",
+        flush=True,
+    )
     print(
         f"source_day_stats_table={args.source_day_stats_table} "
         f"cache_enabled={not args.no_source_day_stats_cache} refresh={args.refresh_source_day_stats}",

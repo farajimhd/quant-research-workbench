@@ -24,12 +24,13 @@ Gateway continuation rather than a hidden physical-table read.
 Live compact schema v5 in `q_live.events` preserves
 `execution_timestamp_us` separately from `sip_timestamp_us`. The immutable
 `market_sip_compact.events_YYYY` historical archive retains its common
-16-column SIP-time schema and must not be altered by this service. Historical
-adapters synthesize an unavailable execution clock (`0`) solely to satisfy the
-shared in-memory wire shape; causal Scanner, indicator, VWAP, and structural
-projections advance in SIP availability order. Exact retrospective execution
-time is therefore available only for live rows whose source contract actually
-contains it, never inferred from an archive column's presence.
+16-column SIP-time schema and must not be altered by this service. QMD History
+restores the exact participant clock from the versioned
+`q_live.historical_event_execution_clock_v1` sidecar and requires certified
+ticker/day coverage before reading archive rows. Causal Scanner, indicator,
+VWAP, and structural projections advance in SIP availability order and reject
+delayed reports; retrospective chart bars use execution time. Missing coverage
+is an explicit source-authority error, never permission to substitute SIP time.
 The application typed QMD client composes that continuation for compact-event
 windows, using this service's exact current-live segment bounds and QMD
 Gateway's versioned bounded page. Chart and historical Scanner continuation are

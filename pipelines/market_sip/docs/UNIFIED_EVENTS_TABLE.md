@@ -475,9 +475,19 @@ inserts into canonical yearly archives. Any future historical schema revision
 requires new versioned tables and an explicit cutover; it must not mutate an
 existing `events_YYYY` table in place.
 
-The optional exchange/participant execution clock belongs to the live
-`q_live.events` contract. Historical readers synthesize zero for the live wire
-field and retain SIP time as the only historical timing authority.
+The participant clock remains outside the immutable 16-column archive, but it
+is required for derived historical market state. The canonical updater
+persists an exact, versioned sidecar in
+`q_live.historical_event_execution_clock_v1`, keyed by `(ticker, ordinal)`, and
+certifies each `(source_date, ticker)` in
+`q_live.historical_event_execution_clock_coverage_v1`. Historical readers must
+join that clock and fail closed when coverage is incomplete. They use SIP time
+for causal availability and participant time for retrospective chart buckets;
+late reports never revise current bars, indicators, or structural evidence.
+For a bounded repair without rebuilding archive rows, run the
+`backfill_execution_clock.py` utility with a ticker and source date. The normal
+daily updater creates the same sidecar and coverage
+automatically for every newly inserted source day.
 
 ## Filtering And Sanitization Rules
 

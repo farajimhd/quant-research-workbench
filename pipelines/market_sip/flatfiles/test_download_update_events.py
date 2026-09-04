@@ -22,6 +22,7 @@ from pipelines.market_sip.flatfiles.download_update_events import (
     clickhouse_price_int,
     confirm_auto_update,
     format_auto_update_summary,
+    insert_execution_clock_day_sql,
     parse_args,
     raw_event_union_sql,
     trade_raw_row_to_event,
@@ -131,6 +132,33 @@ class EventEncodingTests(unittest.TestCase):
 
             self.assertEqual(sql.count("AND ticker IN ('SUGP')"), 2)
             self.assertNotIn("execution_timestamp_us", sql)
+
+    def test_execution_clock_sidecar_reconstructs_the_same_ticker_ordinal(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            day = _day(root, "2026-08-21", cached_quote=True, cached_trade=True)
+            args = argparse.Namespace(
+                condition_token_reference_table="event_condition_token_reference",
+                continuity_table="events_ordinal_continuity",
+                database="market_sip_compact",
+                drop_trade_correction_codes="7,8,10,11",
+                events_table="events_2026",
+                execution_clock_database="q_live",
+                execution_clock_table="historical_event_execution_clock_v1",
+                flatfiles_root_ch="/mnt/d/market-data",
+                flatfiles_root_win=str(root),
+                max_memory_usage="64G",
+                max_partitions_per_insert_block=1024,
+                max_threads=8,
+                tickers="SUGP",
+            )
+
+            sql = insert_execution_clock_day_sql(args, day, 20260821)
+
+            self.assertIn("participant_timestamp", sql)
+            self.assertIn("row_number() OVER (PARTITION BY e.ticker ORDER BY e.sip_timestamp_us, e.sequence_number", sql)
+            self.assertIn("WHERE bitAnd(ordered.event_meta, 1) = 1", sql)
+            self.assertIn("`q_live`.`historical_event_execution_clock_v1`", sql)
 
 
 class AutoUpdatePlanningTests(unittest.TestCase):

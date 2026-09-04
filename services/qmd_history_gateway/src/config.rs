@@ -28,6 +28,9 @@ pub struct HistoricalGatewayConfig {
     pub recent_event_coverage_table: String,
     pub recent_focused_repair_table: String,
     pub recent_intraday_family_bars_table: String,
+    pub execution_clock_database: String,
+    pub execution_clock_table: String,
+    pub execution_clock_coverage_table: String,
     pub daily_session_bars_table: String,
     pub intraday_base_bars_table: String,
     pub fetch_chunk_hours: usize,
@@ -101,6 +104,15 @@ impl HistoricalGatewayConfig {
             recent_intraday_family_bars_table: env_string(
                 "QMD_HISTORY_RECENT_INTRADAY_FAMILY_BARS_TABLE",
                 "intraday_family_bars_v3",
+            ),
+            execution_clock_database: env_string("QMD_HISTORY_EXECUTION_CLOCK_DATABASE", "q_live"),
+            execution_clock_table: env_string(
+                "QMD_HISTORY_EXECUTION_CLOCK_TABLE",
+                "historical_event_execution_clock_v1",
+            ),
+            execution_clock_coverage_table: env_string(
+                "QMD_HISTORY_EXECUTION_CLOCK_COVERAGE_TABLE",
+                "historical_event_execution_clock_coverage_v1",
             ),
             daily_session_bars_table: env_string(
                 "QMD_HISTORY_DAILY_SESSION_BARS_TABLE",
@@ -238,6 +250,12 @@ impl HistoricalGatewayConfig {
                 "QMD_HISTORY_RECENT_INTRADAY_FAMILY_BARS_TABLE must be a ClickHouse identifier"
                     .to_string(),
             );
+        }
+        if !valid_identifier(&self.execution_clock_database)
+            || !valid_identifier(&self.execution_clock_table)
+            || !valid_identifier(&self.execution_clock_coverage_table)
+        {
+            return Err("historical execution-clock database and table names must be ClickHouse identifiers".to_string());
         }
         if !(self.live_gateway_url.starts_with("http://")
             || self.live_gateway_url.starts_with("https://"))
