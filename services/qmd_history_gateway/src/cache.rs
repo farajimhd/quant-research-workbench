@@ -692,30 +692,35 @@ impl HistoricalDerivedCache {
         if let Some(mut artifact) =
             read_indicator_warmup_cache(&path, &ticker, timeframe, session_start)?
         {
-            let revision = if artifact.source_revision.source_tiers == ["recent"] {
-                self.source
-                    .recent_indicator_tail(&ticker, session_start, 1)
-                    .await?
-                    .map(|tail| tail.source_revision)
-                    .ok_or_else(|| {
-                        "persisted recent indicator authority is no longer covered".to_string()
-                    })?
-            } else {
-                self.source
-                    .source_revision(&EventWindow {
-                        start: artifact.authority_start,
-                        end: session_start,
-                        tickers: vec![ticker.clone()],
-                    })
-                    .await?
-            };
-            if revision.token == artifact.source_revision.token
-                && artifact.required_bars == required_bars
-                && artifact.calculation_revision == HISTORICAL_CALCULATION_REVISION
-                && artifact.corporate_action_revision == HISTORICAL_CORPORATE_ACTION_REVISION
-            {
-                artifact.cache_hit = true;
-                return Ok(artifact);
+            // A negative artifact is durable audit evidence, not a permanent
+            // cache hit: later ingestion may add the missing execution-clock
+            // authority. Re-evaluate it cheaply on every campaign resume.
+            if artifact.status == "ready" {
+                let revision = if artifact.source_revision.source_tiers == ["recent"] {
+                    self.source
+                        .recent_indicator_tail(&ticker, session_start, 1)
+                        .await?
+                        .map(|tail| tail.source_revision)
+                        .ok_or_else(|| {
+                            "persisted recent indicator authority is no longer covered".to_string()
+                        })?
+                } else {
+                    self.source
+                        .source_revision(&EventWindow {
+                            start: artifact.authority_start,
+                            end: session_start,
+                            tickers: vec![ticker.clone()],
+                        })
+                        .await?
+                };
+                if revision.token == artifact.source_revision.token
+                    && artifact.required_bars == required_bars
+                    && artifact.calculation_revision == HISTORICAL_CALCULATION_REVISION
+                    && artifact.corporate_action_revision == HISTORICAL_CORPORATE_ACTION_REVISION
+                {
+                    artifact.cache_hit = true;
+                    return Ok(artifact);
+                }
             }
         }
 
@@ -790,6 +795,68 @@ impl HistoricalDerivedCache {
         let mut oldest_range_starts_at_session_boundary = false;
         let mut bars = Vec::new();
         'sessions: for session in sessions {
+            if !session.execution_clock_complete {
+                if !events.is_empty() {
+                    bars = self
+                        .indicator_warmup_bars(timeframe, session_start, &events)
+                        .await?;
+                    if bars.len() > required_bars {
+                        bars.drain(..bars.len() - required_bars);
+                    }
+                }
+                authority_start = New_York
+                    .with_ymd_and_hms(
+                        session.session_date.year(),
+                        session.session_date.month(),
+                        session.session_date.day(),
+                        4,
+                        0,
+                        0,
+                    )
+                    .single()
+                    .ok_or_else(|| "invalid indicator warm-up session boundary".to_string())?
+                    .with_timezone(&Utc);
+                let revision_key = format!(
+                    "{}:{}:{}:{}:{}:{}",
+                    ticker,
+                    session.session_date,
+                    session.first_ordinal,
+                    session.next_ordinal,
+                    session.event_count,
+                    session.execution_clock_revision,
+                );
+                let artifact = IndicatorWarmupArtifact {
+                    schema_version: INDICATOR_WARMUP_CACHE_SCHEMA_VERSION,
+                    calculation_revision: HISTORICAL_CALCULATION_REVISION.to_string(),
+                    corporate_action_revision: HISTORICAL_CORPORATE_ACTION_REVISION.to_string(),
+                    ticker,
+                    timeframe: timeframe.to_string(),
+                    session_start,
+                    authority_start,
+                    required_bars,
+                    bars,
+                    fetched_events,
+                    fetched_ordinal_ranges,
+                    source_revision: SourceRevision {
+                        complete_for_history: false,
+                        event_count: session.event_count,
+                        live_continuation_sequence: None,
+                        max_build_step: 0,
+                        max_updated_at: session.execution_clock_revision,
+                        request_complete: true,
+                        source_plan_hash: stable_hash_hex(&revision_key),
+                        source_tiers: vec!["archive-incomplete-execution-clock".to_string()],
+                        token: format!(
+                            "indicator-warmup-incomplete:{}",
+                            stable_hash_hex(&revision_key)
+                        ),
+                    },
+                    status: "insufficient_history".to_string(),
+                    cache_hit: false,
+                };
+                write_indicator_warmup_cache(&path, &artifact)?;
+                return Ok(artifact);
+            }
             let mut next = session.next_ordinal;
             while next > session.first_ordinal {
                 let first = next

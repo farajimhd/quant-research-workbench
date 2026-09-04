@@ -127,6 +127,8 @@ pub struct StructureCampaignSession {
 #[derive(Clone, Debug, Serialize)]
 pub struct IndicatorWarmupOrdinalSession {
     pub event_count: u64,
+    pub execution_clock_complete: bool,
+    pub execution_clock_revision: String,
     pub first_ordinal: u64,
     pub next_ordinal: u64,
     pub session_date: NaiveDate,
@@ -1098,6 +1100,8 @@ impl HistoricalEventSource {
         let ticker = normalize_ticker(ticker)?;
         let sql = indicator_warmup_ordinal_sessions_sql(
             &self.config.clickhouse_database,
+            &self.config.execution_clock_database,
+            &self.config.execution_clock_coverage_table,
             &ticker,
             before_date,
             max_sessions.clamp(1, 512),
@@ -1105,6 +1109,8 @@ impl HistoricalEventSource {
         #[derive(Deserialize)]
         struct Row {
             event_count: u64,
+            execution_clock_complete: u8,
+            execution_clock_revision: String,
             first_ordinal: u64,
             next_ordinal: u64,
             session_date: String,
@@ -1128,6 +1134,8 @@ impl HistoricalEventSource {
                 }
                 Ok(IndicatorWarmupOrdinalSession {
                     event_count: row.event_count,
+                    execution_clock_complete: row.execution_clock_complete == 1,
+                    execution_clock_revision: row.execution_clock_revision,
                     first_ordinal: row.first_ordinal,
                     next_ordinal: row.next_ordinal,
                     session_date,
@@ -3771,32 +3779,77 @@ fn tradable_tickers_sql(reference_database: &str, as_of_date: NaiveDate) -> Resu
 
 fn indicator_warmup_ordinal_sessions_sql(
     archive_database: &str,
+    execution_clock_database: &str,
+    execution_clock_table: &str,
     ticker: &str,
     before_date: NaiveDate,
     max_sessions: usize,
 ) -> Result<String, String> {
-    if !archive_database
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-    {
+    if [
+        archive_database,
+        execution_clock_database,
+        execution_clock_table,
+    ]
+    .iter()
+    .any(|identifier| {
+        !identifier
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    }) {
         return Err("indicator warm-up archive database is not a valid identifier".to_string());
     }
     Ok(format!(
         r#"SELECT
-               toString(source.source_date) AS session_date,
-               argMax(source.event_count, tuple(source.build_step, source.updated_at)) AS event_count,
-               argMax(source.next_ordinal, tuple(source.build_step, source.updated_at))
-                   - argMax(source.event_count, tuple(source.build_step, source.updated_at)) AS first_ordinal,
-               argMax(source.next_ordinal, tuple(source.build_step, source.updated_at)) AS next_ordinal
-           FROM `{archive_database}`.`events_ordinal_continuity` AS source
-           PREWHERE source.ticker = {ticker}
-             AND source.source_date < toDate('{before_date}')
-           GROUP BY source.source_date
-           HAVING event_count > 0
-           ORDER BY source_date DESC
+               toString(continuity.source_date) AS session_date,
+               continuity.event_count AS event_count,
+               toUInt8(
+                   continuity.event_count = ifNull(clock.event_count, 0)
+                   AND ifNull(clock.trade_count, 0) = ifNull(clock.clock_count, 0)
+                   AND endsWith(ifNull(clock.source_filter_key, ''), '|execution_clock_v1')
+               ) AS execution_clock_complete,
+               concat(
+                   'execution-clock-v1:',
+                   toString(ifNull(clock.clock_count, 0)), ':',
+                   toString(ifNull(clock.build_step, 0)), ':',
+                   ifNull(clock.max_updated_at, '')
+               ) AS execution_clock_revision,
+               continuity.next_ordinal - continuity.event_count AS first_ordinal,
+               continuity.next_ordinal AS next_ordinal
+           FROM
+           (
+               SELECT
+                   source.source_date AS source_date,
+                   argMax(source.event_count, tuple(source.build_step, source.updated_at)) AS event_count,
+                   argMax(source.next_ordinal, tuple(source.build_step, source.updated_at)) AS next_ordinal
+               FROM `{archive_database}`.`events_ordinal_continuity` AS source
+               PREWHERE source.ticker = {ticker}
+                 AND source.source_date < toDate('{before_date}')
+               GROUP BY source.source_date
+               HAVING event_count > 0
+               ORDER BY source_date DESC
+               LIMIT {max_sessions}
+           ) AS continuity
+           LEFT JOIN
+           (
+               SELECT
+                   source.source_date AS source_date,
+                   argMax(source.event_count, source.updated_at) AS event_count,
+                   argMax(source.trade_count, source.updated_at) AS trade_count,
+                   argMax(source.clock_count, source.updated_at) AS clock_count,
+                   argMax(source.build_step, source.updated_at) AS build_step,
+                   argMax(source.source_filter_key, source.updated_at) AS source_filter_key,
+                   toString(max(source.updated_at)) AS max_updated_at
+               FROM `{execution_clock_database}`.`{execution_clock_table}` AS source
+               PREWHERE source.ticker = {ticker}
+                 AND source.source_date < toDate('{before_date}')
+               GROUP BY source.source_date
+           ) AS clock ON clock.source_date = continuity.source_date
+           ORDER BY continuity.source_date DESC
            LIMIT {max_sessions}
            FORMAT JSONEachRow"#,
         ticker = sql_literal(ticker),
+        execution_clock_database = execution_clock_database,
+        execution_clock_table = execution_clock_table,
     ))
 }
 
@@ -4782,6 +4835,8 @@ mod tests {
     fn indicator_warmup_uses_reverse_ticker_ordinal_ranges() {
         let sql = indicator_warmup_ordinal_sessions_sql(
             "market_sip_compact",
+            "q_live",
+            "historical_event_execution_clock_coverage_v1",
             "SUGP",
             NaiveDate::from_ymd_opt(2026, 8, 21).unwrap(),
             260,
