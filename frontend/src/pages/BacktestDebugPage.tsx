@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
 import "./HistoricalWorkspace.css";
-import { TradingModeLaunch } from "../app/components/TradingModeLaunch";
+import { TradingModeLaunch, TradingModeSelectField } from "../app/components/TradingModeLaunch";
 import { usePollingTask } from "../app/hooks/usePollingTask";
 import type { CanvasReplayRun } from "../app/replayRun";
 import { CanvasWorkspaceSurface } from "./CanvasConfigurationPage";
@@ -36,9 +36,12 @@ type DebugRun = CanvasReplayRun & {
 };
 
 type CompletedBacktestRun = CanvasReplayRun & {
+  completed_at?: string;
   configuration_label?: string;
   configuration_revision?: number;
+  fill_count?: number;
   mode: "backtest";
+  net_pnl?: number | string | null;
   resident?: boolean;
   run_plan_name?: string;
   strategy_name?: string;
@@ -92,6 +95,7 @@ export function BacktestDebugPage() {
   const [candidateId, setCandidateId] = useState("");
   const [candidates, setCandidates] = useState<TestCandidateSummary[]>([]);
   const parsed = useMemo(() => parseFixture(marketEvents, derivedFrames, signalEvents, watchlistEvents), [derivedFrames, marketEvents, signalEvents, watchlistEvents]);
+  const selectedCompletedRun = completedRuns.find((row) => row.run_id === selectedCompletedRunId);
 
   useEffect(() => {
     if (workflow !== "fixture") {
@@ -237,7 +241,13 @@ export function BacktestDebugPage() {
         method: "POST",
         timeoutMs: 60_000,
       });
-      setReviewRun(opened);
+      const selection = completedRuns.find((row) => row.run_id === selectedCompletedRunId);
+      setReviewRun(selection ? {
+        ...opened,
+        completed_at: selection.completed_at,
+        fill_count: selection.fill_count,
+        net_pnl: selection.net_pnl,
+      } : opened);
     } catch (reason) {
       setError(message(reason));
     } finally {
@@ -293,7 +303,7 @@ export function BacktestDebugPage() {
       modeControls={<div className="historical-canvas-run-state">
         <button aria-label="Return to completed Backtest selection" className="button secondary compact" onClick={() => setReviewRun(null)} type="button"><ArrowLeft size={14} /> Backtests</button>
         <strong>Completed Backtest review</strong>
-        <span>{reviewRun.strategy_name || reviewRun.configuration_label || "Strategy"}{reviewRun.strategy_revision ? ` r${reviewRun.strategy_revision}` : ""} · session close · {new Intl.NumberFormat("en-US", { notation: "compact" }).format(reviewRun.processed_events || 0)} events</span>
+        <span>{reviewRun.strategy_name || reviewRun.configuration_label || "Strategy"}{reviewRun.strategy_revision ? ` r${reviewRun.strategy_revision}` : ""} · completed {formatBacktestCompletionTime(reviewRun.completed_at || reviewRun.updated_at)} · {formatFillCount(reviewRun.fill_count)} · P&amp;L {formatBacktestPnl(reviewRun.net_pnl)} · {new Intl.NumberFormat("en-US", { notation: "compact" }).format(reviewRun.processed_events || 0)} events</span>
       </div>}
       replayRun={reviewRun}
       runtimeWorkspaceId="completed-review"
@@ -330,11 +340,11 @@ export function BacktestDebugPage() {
     ready={workflow === "review" ? Boolean(selectedCompletedRunId) : Boolean(preflight?.ready && parsed.ok)}
     title={workflow === "review" ? "Review a completed strategy" : "Inspect an exact scenario"}
   >
-            <label className="configuration-field"><span>Debug workflow</span><select aria-label="Debug workflow" onChange={(event) => setWorkflow(event.target.value as "review" | "fixture")} value={workflow}><option value="review">Completed Backtest review</option><option value="fixture">Deterministic test scenario</option></select><small>Review uses immutable real Backtest evidence. A test scenario uses a small manually supplied fixture to isolate one rule.</small></label>
-            {workflow === "review" ? <label className="configuration-field"><span>Completed Backtest</span><select aria-label="Completed Backtest" onChange={(event) => setSelectedCompletedRunId(event.target.value)} value={selectedCompletedRunId}><option value="">No completed Backtest available</option>{completedRuns.map((row) => <option key={row.run_id} value={row.run_id}>{row.session_date} · {row.strategy_name || row.configuration_label || "Strategy"}{row.strategy_revision ? ` r${row.strategy_revision}` : ""} · config {row.configuration_revision ?? "—"} · {row.run_id.slice(0, 8)}</option>)}</select><small>The run is loaded read-only from its durable terminal checkpoint; no strategy or broker action is executed again.</small></label> : <>
-            <label className="configuration-field"><span>Test Candidate</span><select aria-label="Test Candidate" onChange={(event) => setCandidateId(event.target.value)} value={candidateId}><option value="">Latest available candidate</option>{candidates.map((candidate) => <option key={candidate.candidate_id} value={candidate.candidate_id}>t{candidate.candidate_revision} · {candidate.label} · {candidate.content_hash.slice(0, 8)}</option>)}</select><small>The exact immutable configuration exercised by this deterministic scenario.</small></label>
-            <label className="configuration-field"><span>Strategy Run Plan</span><select aria-label="Strategy Run Plan" onChange={(event) => setRunPlanId(event.target.value)} value={runPlanId}>{(preflight?.available_run_plans ?? []).map((plan) => <option key={plan.run_plan_id} value={plan.run_plan_id}>{plan.name} · {plan.strategy_id} r{plan.strategy_revision}</option>)}</select><small>The test scenario runs through this exact Strategy Studio profile and installed executor.</small></label>
-            <label className="configuration-field"><span>Test Scenario library</span><select onChange={(event) => loadFixture(event.target.value)} value={selectedFixture}><option value="">Unsaved scenario</option>{library.map((row) => <option key={row.fixtureId} value={row.fixtureId}>{row.fixtureId}</option>)}</select><small>Stored in this browser; exact submitted records are persisted with the backend run.</small></label>
+            <TradingModeSelectField help="Review uses immutable real Backtest evidence. A test scenario uses a small manually supplied fixture to isolate one rule." label="Debug workflow" onChange={(value) => setWorkflow(value as "review" | "fixture")} options={[{ label: "Completed Backtest review", value: "review" }, { label: "Deterministic test scenario", value: "fixture" }]} value={workflow} />
+            {workflow === "review" ? <TradingModeSelectField help={selectedCompletedRun ? <>Completed {formatBacktestCompletionTime(selectedCompletedRun.completed_at || selectedCompletedRun.updated_at)} · {formatFillCount(selectedCompletedRun.fill_count)} · P&amp;L {formatBacktestPnl(selectedCompletedRun.net_pnl)}</> : "The run is loaded read-only from its durable terminal checkpoint; no strategy or broker action is executed again."} label="Completed Backtest" onChange={setSelectedCompletedRunId} options={completedRuns.length ? completedRuns.map((row) => ({ description: `${formatBacktestCompletionTime(row.completed_at || row.updated_at)} · ${formatFillCount(row.fill_count)} · P&L ${formatBacktestPnl(row.net_pnl)} · config ${row.configuration_revision ?? "—"} · ${row.run_id.slice(0, 8)}`, label: `${row.session_date} · ${row.strategy_name || row.configuration_label || "Strategy"}${row.strategy_revision ? ` r${row.strategy_revision}` : ""}`, value: row.run_id })) : [{ disabled: true, label: "No completed Backtest available", value: "" }]} presentation="catalog" searchable value={selectedCompletedRunId} /> : <>
+            <TradingModeSelectField help="The exact immutable configuration exercised by this deterministic scenario." label="Test Candidate" onChange={setCandidateId} options={[{ label: "Latest available candidate", value: "" }, ...candidates.map((candidate) => ({ label: `t${candidate.candidate_revision} · ${candidate.label} · ${candidate.content_hash.slice(0, 8)}`, value: candidate.candidate_id }))]} value={candidateId} />
+            <TradingModeSelectField help="The test scenario runs through this exact Strategy Studio profile and installed executor." label="Strategy Run Plan" onChange={setRunPlanId} options={(preflight?.available_run_plans ?? []).map((plan) => ({ label: `${plan.name} · ${plan.strategy_id} r${plan.strategy_revision}`, value: plan.run_plan_id }))} value={runPlanId} />
+            <TradingModeSelectField ariaLabel="Test Scenario library" help="Stored in this browser; exact submitted records are persisted with the backend run." label="Test Scenario library" onChange={loadFixture} options={[{ label: "Unsaved scenario", value: "" }, ...library.map((row) => ({ label: row.fixtureId, value: row.fixtureId }))]} value={selectedFixture} />
             <label className="configuration-field"><span>Stable scenario ID</span><input onChange={(event) => setFixtureId(event.target.value)} value={fixtureId} /><small>Used with the backend content hash to identify reproducible evidence.</small></label>
             <label className="configuration-field"><span>Session date</span><input onChange={(event) => updateTemplate(event.target.value, symbol)} type="date" value={sessionDate} /></label>
             <label className="configuration-field"><span>Start clock · New York</span><input onChange={(event) => setStartTime(event.target.value)} step="1" type="time" value={startTime} /></label>
@@ -404,6 +414,34 @@ function readFixtureLibrary(): StoredFixture[] {
     const rows = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || "[]") as StoredFixture[];
     return Array.isArray(rows) ? rows.filter((row) => Boolean(row?.fixtureId)) : [];
   } catch { return []; }
+}
+
+export function formatBacktestCompletionTime(value: string | undefined) {
+  if (!value) return "time unavailable";
+  const timestamp = new Date(value);
+  if (Number.isNaN(timestamp.getTime())) return "time unavailable";
+  return new Intl.DateTimeFormat("en-US", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(timestamp);
+}
+
+export function formatFillCount(value: number | undefined) {
+  return value === undefined || value === null
+    ? "fills unavailable"
+    : `${new Intl.NumberFormat("en-US").format(value)} ${value === 1 ? "fill" : "fills"}`;
+}
+
+export function formatBacktestPnl(value: number | string | null | undefined) {
+  if (value === undefined || value === null || value === "") return "unavailable";
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "unavailable";
+  return new Intl.NumberFormat("en-US", {
+    currency: "USD",
+    currencyDisplay: "narrowSymbol",
+    signDisplay: "exceptZero",
+    style: "currency",
+  }).format(numeric);
 }
 
 function terminal(status: string) { return ["completed", "failed", "stopped"].includes(status); }

@@ -36,6 +36,7 @@ from src.backend.replay_run_service import (
     _historical_watchlist_plans_at_source_native_events,
     _historical_source_native_signal_identities,
     _compact_strategy_chart_activity_row,
+    _completed_backtest_selection_projection,
     _historical_watchlist_assignment_is_observable,
     _historical_signal_events,
     _historical_derived_frames,
@@ -1719,6 +1720,40 @@ class ReplayRunServiceCapacityTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(raised.exception.status_code, 429)
         self.assertEqual(raised.exception.detail, "capacity full")
+
+
+class CompletedBacktestSelectionTests(unittest.TestCase):
+    def test_projects_fill_count_net_pnl_and_completion_time_from_terminal_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run_id = "00000000-0000-0000-0000-000000000123"
+            run_dir = Path(directory) / run_id
+            run_dir.mkdir()
+            journal = TradingJournal(run_dir / "journal.sqlite3")
+            state = {
+                "broker": {
+                    "executions": [{"execution_id": "1"}, {"execution_id": "2"}],
+                    "marks": {"42": 12.5},
+                    "orders": [{"commission_paid": 1.25}, {"commission_paid": 0.75}],
+                    "positions": {
+                        "SIM-01": [{"avg_cost": 10.0, "conid": 42, "quantity": 4.0}],
+                    },
+                    "realized_pnl": {"SIM-01": 25.0},
+                },
+            }
+            journal.save_checkpoint(run_id, "cursor", state, datetime(2026, 9, 3, tzinfo=UTC))
+            journal.close()
+
+            projected = _completed_backtest_selection_projection(
+                run_dir,
+                {
+                    "run_id": run_id,
+                    "updated_at": "2026-09-04T00:24:43+00:00",
+                },
+            )
+
+            self.assertEqual(projected["completed_at"], "2026-09-04T00:24:43+00:00")
+            self.assertEqual(projected["fill_count"], 2)
+            self.assertEqual(projected["net_pnl"], "33")
 
 
 class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):

@@ -658,10 +658,25 @@ def test_unified_structure_scores_can_filter_loaded_levels_without_a_history_req
 def test_debug_page_can_open_a_durable_completed_backtest_review() -> None:
     source = (REPO_ROOT / "frontend" / "src" / "pages" / "BacktestDebugPage.tsx").read_text(encoding="utf-8")
 
-    assert 'value="review">Completed Backtest review' in source
+    assert 'label: "Completed Backtest review", value: "review"' in source
     assert "/api/trading/backtest/runs" in source
     assert "/review`" in source
     assert 'runtimeWorkspaceId="completed-review"' in source
+    assert "formatBacktestCompletionTime" in source
+    assert "formatFillCount" in source
+    assert "formatBacktestPnl" in source
+    assert 'presentation="catalog" searchable' in source
+
+
+def test_trading_launch_pages_use_the_shared_app_dropdown_pattern() -> None:
+    launch_source = (REPO_ROOT / "frontend" / "src" / "app" / "components" / "TradingModeLaunch.tsx").read_text(encoding="utf-8")
+    assert "InventoryFilterSelect" in launch_source
+    assert "export function TradingModeSelectField" in launch_source
+    for filename in ("ReplayTradingPage.tsx", "HistoricalTradingPage.tsx", "BacktestDebugPage.tsx"):
+        source = (REPO_ROOT / "frontend" / "src" / "pages" / filename).read_text(encoding="utf-8")
+        launch_body = source.split("<TradingModeLaunch", 1)[1].split("</TradingModeLaunch>", 1)[0]
+        assert "TradingModeSelectField" in launch_body
+        assert "<select" not in launch_body
 
 
 def test_completed_backtest_focus_rehydrates_after_backend_restart() -> None:

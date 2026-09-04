@@ -20,7 +20,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import "./HistoricalWorkspace.css";
 import { MAIN_CANVAS_ID } from "../app/canvasWorkspace";
-import { TradingModeLaunch } from "../app/components/TradingModeLaunch";
+import { TradingModeLaunch, TradingModeSelectField } from "../app/components/TradingModeLaunch";
 import { isTerminalReplayStatus, latestReplayRun, useReplayRunEvents, type CanvasReplayRun } from "../app/replayRun";
 import { STRATEGY_ACTIVITY_EVENT_LABELS, STRATEGY_ACTIVITY_EVENT_OPTIONS, type StrategyActivityEventType } from "../app/strategyActivity";
 import { CanvasWorkspaceSurface } from "./CanvasConfigurationPage";
@@ -270,16 +270,8 @@ export function ReplayTradingPage() {
       title="Open a historical session"
       secondary={preparingRun || recentRuns.length ? <>{preparingRun ? <ReplayPreparation onCancel={() => void cancelPreparation()} run={preparingRun} /> : null}{recentRuns.length ? <details className="mode-launch-history"><summary><span>Recent runs</span><small>Reopen a run owned by this backend session</small></summary><div>{recentRuns.map((recent) => <button disabled={Boolean(preparingRun) || recent.resident === false || isTerminalReplayStatus(recent.status)} key={recent.run_id} onClick={() => void openRecentRun(recent)} type="button"><span><strong>{recent.session_date}</strong><small>{formatReplayClock(recent.current_time)} ET · {recent.status.replaceAll("_", " ")}</small></span><em>{Math.round(recent.progress * 100)}%</em></button>)}</div></details> : null}</> : null}
     >
-              <label className="configuration-field">
-                <span>Execution</span>
-                <select aria-label="Replay execution mode" disabled={Boolean(preparingRun)} onChange={(event) => setExecutionMode(event.target.value as "manual" | "strategy")} value={executionMode}><option value="manual">Manual / trading actions</option><option value="strategy">Strategy deployment</option></select>
-                <small>Manual uses the Session Profile directly. Strategy adds a published Run Plan.</small>
-              </label>
-              {executionMode === "strategy" ? <label className="configuration-field">
-                <span>Strategy Run Plan</span>
-                <select aria-label="Strategy Run Plan" disabled={Boolean(preparingRun)} onChange={(event) => setRunPlanId(event.target.value)} value={selectedRunPlanId}>{(preflight?.available_run_plans ?? []).map((plan) => <option key={plan.run_plan_id} value={plan.run_plan_id}>{plan.name} · {plan.strategy_id} r{plan.strategy_revision}</option>)}</select>
-                <small>Its Signal Streams and causal Watchlists own the market-wide ticker population.</small>
-              </label> : <label className="configuration-field"><span>Starting symbol</span><input aria-label="Replay symbol" disabled={Boolean(preparingRun)} maxLength={12} onChange={(event) => setSymbol(event.target.value.toUpperCase())} value={symbol} /><small>The Canvas may change symbols later; this only seeds the manual historical event stream.</small></label>}
+              <TradingModeSelectField ariaLabel="Replay execution mode" disabled={Boolean(preparingRun)} help="Manual uses the Session Profile directly. Strategy adds a published Run Plan." label="Execution" onChange={(value) => setExecutionMode(value as "manual" | "strategy")} options={[{ label: "Manual / trading actions", value: "manual" }, { label: "Strategy deployment", value: "strategy" }]} value={executionMode} />
+              {executionMode === "strategy" ? <TradingModeSelectField disabled={Boolean(preparingRun)} help="Its Signal Streams and causal Watchlists own the market-wide ticker population." label="Strategy Run Plan" onChange={setRunPlanId} options={(preflight?.available_run_plans ?? []).map((plan) => ({ label: `${plan.name} · ${plan.strategy_id} r${plan.strategy_revision}`, value: plan.run_plan_id }))} value={selectedRunPlanId} /> : <label className="configuration-field"><span>Starting symbol</span><input aria-label="Replay symbol" disabled={Boolean(preparingRun)} maxLength={12} onChange={(event) => setSymbol(event.target.value.toUpperCase())} value={symbol} /><small>The Canvas may change symbols later; this only seeds the manual historical event stream.</small></label>}
               <label className="configuration-field">
                 <span>Exchange date</span>
                 <input disabled={Boolean(preparingRun)} onChange={(event) => setSessionDate(event.target.value)} type="date" value={sessionDate} />

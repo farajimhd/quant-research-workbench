@@ -1,6 +1,7 @@
 import { CheckCircle2, CircleStop, RefreshCcw, TriangleAlert, type LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
+import { InventoryFilterSelect, type InventoryFilterOption } from "./InventoryFilterSelect";
 import "./TradingModeLaunch.css";
 
 export type TradingLaunchCheck = {
@@ -12,6 +13,47 @@ export type TradingLaunchCheck = {
   status: string;
   summary?: string;
 };
+
+export function TradingModeSelectField({
+  ariaLabel,
+  disabled = false,
+  help,
+  label,
+  onChange,
+  options,
+  presentation = "compact",
+  searchable,
+  value,
+}: {
+  ariaLabel?: string;
+  disabled?: boolean;
+  help: ReactNode;
+  label: string;
+  onChange: (value: string) => void;
+  options: InventoryFilterOption[];
+  presentation?: "catalog" | "compact";
+  searchable?: boolean;
+  value: string;
+}) {
+  return <div className="configuration-field configuration-lookup-field" data-editable={disabled ? "false" : "true"}>
+    <span>{label}</span>
+    <InventoryFilterSelect
+      ariaLabel={ariaLabel ?? label}
+      className="configuration-lookup-button mode-launch-select"
+      disabled={disabled}
+      onChange={onChange}
+      optionLimit={0}
+      options={options}
+      placeholder={`Select ${label.toLowerCase()}`}
+      presentation={presentation}
+      searchable={searchable ?? options.length > 7}
+      searchPlaceholder={`Find ${label.toLowerCase()}…`}
+      showAllOnOpen
+      value={value}
+    />
+    <small>{help}</small>
+  </div>;
+}
 
 export function TradingModeLaunch({
   actionLabel,

@@ -5882,6 +5882,12 @@ class ReplayRunService:
                         rows[run_dir.name] = durable
                 except (OSError, TypeError, ValueError, json.JSONDecodeError):
                     continue
+        for run_id, row in tuple(rows.items()):
+            if row.get("mode") == RunMode.BACKTEST.value and row.get("status") == "completed":
+                rows[run_id] = _completed_backtest_selection_projection(
+                    self.runtime_root / run_id,
+                    row,
+                )
         return sorted(rows.values(), key=lambda row: str(row.get("created_at") or ""), reverse=True)
 
 
@@ -5937,6 +5943,87 @@ def _run_selection_projection(
         "strategy_revision": int(strategy.get("revision") or 0),
         "run_plan_name": str(run_plan.get("name") or run_plan.get("run_plan_id") or ""),
     }
+
+
+def _completed_backtest_selection_projection(
+    run_dir: Path,
+    row: dict[str, Any],
+) -> dict[str, Any]:
+    """Attach bounded, terminal metrics from the durable simulated broker checkpoint."""
+
+    result = {**row, "completed_at": row.get("updated_at")}
+    if "fill_count" in row and "net_pnl" in row:
+        return result
+    journal_path = run_dir / "journal.sqlite3"
+    if not journal_path.is_file():
+        return {**result, "fill_count": None, "net_pnl": None}
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(f"{journal_path.resolve().as_uri()}?mode=ro", uri=True)
+        metrics = connection.execute(
+            """
+            WITH checkpoint AS (
+                SELECT state_json
+                FROM checkpoints
+                WHERE run_id = ?
+                  AND json_type(state_json, '$.broker.executions') = 'array'
+                  AND json_type(state_json, '$.broker.marks') = 'object'
+                  AND json_type(state_json, '$.broker.orders') = 'array'
+                  AND json_type(state_json, '$.broker.positions') = 'object'
+                  AND json_type(state_json, '$.broker.realized_pnl') = 'object'
+                LIMIT 1
+            )
+            SELECT
+                json_array_length(json_extract(state_json, '$.broker.executions')),
+                (
+                    SELECT total(CAST(value AS REAL))
+                    FROM json_each(json_extract(state_json, '$.broker.realized_pnl'))
+                ) - (
+                    SELECT total(CAST(json_extract(value, '$.commission_paid') AS REAL))
+                    FROM json_each(json_extract(state_json, '$.broker.orders'))
+                ) + (
+                    SELECT total(
+                        CAST(json_extract(position.value, '$.quantity') AS REAL) * (
+                            coalesce(
+                                CAST(json_extract(
+                                    checkpoint.state_json,
+                                    '$.broker.marks.' || json_extract(position.value, '$.conid')
+                                ) AS REAL),
+                                CAST(json_extract(position.value, '$.avg_cost') AS REAL)
+                            ) - CAST(json_extract(position.value, '$.avg_cost') AS REAL)
+                        )
+                    )
+                    FROM json_each(json_extract(checkpoint.state_json, '$.broker.positions')) account
+                    JOIN json_each(account.value) position
+                )
+            FROM checkpoint
+            """,
+            (str(row.get("run_id") or run_dir.name),),
+        ).fetchone()
+        if metrics is None:
+            return {**result, "fill_count": None, "net_pnl": None}
+        result = {
+            **result,
+            "fill_count": int(metrics[0] or 0),
+            "net_pnl": format(float(metrics[1] or 0.0), ".12g"),
+        }
+        selection_path = run_dir / "run-selection.json"
+        if selection_path.is_file():
+            temporary = run_dir / "run-selection.json.tmp"
+            try:
+                temporary.write_text(
+                    json.dumps(result, separators=(",", ":"), sort_keys=True),
+                    encoding="utf-8",
+                )
+                _replace_path_with_retry(temporary, selection_path)
+            except OSError:
+                temporary.unlink(missing_ok=True)
+        return result
+    except sqlite3.Error:
+        return {**result, "fill_count": None, "net_pnl": None}
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 def _load_completed_review_materials(

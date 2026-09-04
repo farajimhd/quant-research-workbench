@@ -115,13 +115,15 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.mode-launch-fields > label {
+.mode-launch-fields > label,
+.mode-launch-fields > .configuration-field {
   display: grid;
   gap: 6px;
   min-width: 0;
 }
 
-.mode-launch-fields > label > span {
+.mode-launch-fields > label > span,
+.mode-launch-fields > .configuration-field > span {
   color: var(--foreground);
   font-size: 11px;
   font-weight: 650;
@@ -146,10 +148,17 @@
 .mode-launch-fields select:focus { border-color: var(--primary); outline: 2px solid color-mix(in srgb, var(--primary) 18%, transparent); }
 
 .mode-launch-fields label > small,
+.mode-launch-fields > .configuration-field > small,
 .mode-launch-authority small {
   color: var(--muted-foreground);
   font-size: 10px;
   line-height: 1.45;
+}
+
+.mode-launch-fields .mode-launch-select {
+  background: var(--surface-alt);
+  min-height: 34px;
+  width: 100%;
 }
 
 .mode-launch-state-icon {
