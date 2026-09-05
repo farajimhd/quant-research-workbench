@@ -43,6 +43,9 @@ use tokio::time::{sleep, timeout, Duration};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if qmd_core::generic_structure::GENERIC_STRUCTURE_ALGORITHM_VERSION != 18 {
+        return Err("QMD Live requires structural algorithm 18; build with default features".into());
+    }
     let loaded_env_files = load_env_files();
     if !loaded_env_files.is_empty() {
         println!(

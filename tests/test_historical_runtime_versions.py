@@ -9,17 +9,22 @@ from src.backend import historical_runtime_versions as versions
 
 
 class HistoricalRuntimeVersionsTests(unittest.TestCase):
-    def check(self, revision=None, fingerprint="expected", backend="loaded"):
+    def check(self, revision=None, fingerprint="expected", backend="loaded", algorithm=18, checkpoint_set=None):
         with patch.object(versions, "qmd_source_fingerprint", return_value="expected"), \
              patch.object(versions, "backend_source_fingerprint", return_value=backend), \
              patch.object(versions, "LOADED_BACKEND_FINGERPRINT", "loaded"):
             return versions.runtime_version_check({"strategy": {
                 "strategy_id": versions.STRATEGY_ID,
                 "revision": versions.STRATEGY_REVISION if revision is None else revision}},
-                {"source_fingerprint": fingerprint})
+                {"source_fingerprint": fingerprint, "structure_algorithm_version": algorithm,
+                 "config": {"structure_checkpoint_set_id": checkpoint_set or versions.expected_structure_checkpoint_set()}})
 
     def test_current_code_and_candidate_are_ready(self):
         self.assertEqual(self.check()["status"], "ready")
+
+    def test_wrong_build_features_and_old_checkpoint_namespace_are_blocked(self):
+        self.assertEqual(self.check(algorithm=17)["status"], "blocked")
+        self.assertEqual(self.check(checkpoint_set="old-campaign")["status"], "blocked")
 
     def test_old_candidate_is_blocked_without_mutation(self):
         result = self.check(revision=versions.STRATEGY_REVISION - 1)

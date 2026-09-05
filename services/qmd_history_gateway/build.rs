@@ -22,7 +22,10 @@ fn main() {
         }
     }
     files.push(services.join("qmd_history_gateway/build.rs"));
-    files.sort();
+    // Match the backend's normalized relative-path ordering, not PathBuf's
+    // component ordering (foo/bar.rs versus foo.rs otherwise sorts differently).
+    files.sort_by_key(|path| path.strip_prefix(&services).unwrap()
+        .to_string_lossy().replace('\\', "/"));
     let mut hash = Sha256::new();
     for path in files {
         println!("cargo:rerun-if-changed={}", path.display());

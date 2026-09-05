@@ -22,7 +22,7 @@
       "launch_kind": "qmd_live",
       "readiness": {"kind": "qmd_live", "accepted_statuses": ["running", "closed", "catching_up"], "require_running": true, "snapshot_url": "http://127.0.0.1:8795/snapshot/status", "max_event_lag_seconds": 30, "queue_saturation_ratio": 0.95},
       "start_priority": 5,
-      "fingerprint_env": ["QMD_DERIVED_RECONCILIATION_ENABLED", "QMD_DERIVED_RECONCILIATION_INTERVAL_MS"],
+      "fingerprint_env": ["QMD_STRUCTURE_CHECKPOINT_SET_ID", "QMD_STRUCTURE_SEED_CHECKPOINT_SET_ID", "QMD_DERIVED_RECONCILIATION_ENABLED", "QMD_DERIVED_RECONCILIATION_INTERVAL_MS"],
       "dependencies": [],
       "graceful_timeout_seconds": 20,
       "watch": ["services/qmd-gateway/**", "scripts/run_qmd_gateway.ps1", "scripts/start_qmd_live_gateway.ps1", "scripts/stop_qmd_live_gateway.ps1"]
@@ -39,7 +39,7 @@
         "QMD_HISTORY_STRUCTURE_CHECKPOINT_MAX_CONCURRENT_ADVANCEMENTS": "32"
       },
       "start_priority": 10,
-      "fingerprint_env": ["QMD_HISTORY_BIND", "QMD_HISTORY_CARGO_TARGET_DIR", "QMD_HISTORY_STRUCTURE_CHECKPOINT_MAX_CONCURRENT_ADVANCEMENTS"],
+      "fingerprint_env": ["QMD_STRUCTURE_CHECKPOINT_SET_ID", "QMD_HISTORY_BIND", "QMD_HISTORY_CARGO_TARGET_DIR", "QMD_HISTORY_STRUCTURE_CHECKPOINT_MAX_CONCURRENT_ADVANCEMENTS"],
       "dependencies": [],
       "graceful_timeout_seconds": 20,
       "watch": ["services/qmd_history_gateway/**", "services/qmd-gateway/**", "scripts/run_qmd_history_gateway.ps1"]

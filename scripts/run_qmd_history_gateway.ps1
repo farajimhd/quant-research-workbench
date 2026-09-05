@@ -113,7 +113,7 @@ function Test-ExistingHistoryGateway {
         throw "QMD History is already bound at $($Endpoint.BaseUrl), but it is not ready (status=$($health.status)). Inspect that process instead of starting a duplicate."
     }
     if ($health.calculation_revision -ne $ExpectedCalculationRevision -or
-        $health.structure_algorithm_version -ne 16 -or
+        $health.structure_algorithm_version -ne 18 -or
         $health.config.structure_daily_checkpoint_table -ne $ExpectedCheckpointTable -or
         $health.config.structure_checkpoint_set_id -ne $ExpectedCheckpointSet) {
         throw (
@@ -122,7 +122,7 @@ function Test-ExistingHistoryGateway {
             "algorithm=$($health.structure_algorithm_version), " +
             "table=$($health.config.structure_daily_checkpoint_table), " +
             "set=$($health.config.structure_checkpoint_set_id). Expected calculation_revision=" +
-            "$ExpectedCalculationRevision, algorithm=16, " +
+            "$ExpectedCalculationRevision, algorithm=18, " +
             "table=$ExpectedCheckpointTable, set=$ExpectedCheckpointSet. Stop and restart this service."
         )
     }
@@ -149,9 +149,9 @@ $expectedCheckpointTable = if ($env:QMD_HISTORY_STRUCTURE_DAILY_CHECKPOINT_TABLE
 $expectedCheckpointSet = if ($env:QMD_STRUCTURE_CHECKPOINT_SET_ID) {
     $env:QMD_STRUCTURE_CHECKPOINT_SET_ID.Trim()
 } else {
-    "canonical-tradable-20250101-20260831-v18-sip-condition-v1"
+    "canonical-tradable-20250101-20260904-prominence-v18-v1"
 }
-$expectedCalculationRevision = "qmd-derived-v57"
+$expectedCalculationRevision = "qmd-derived-v58"
 
 if (-not $BuildOnly -and (Test-ExistingHistoryGateway -Endpoint $endpoint -ExpectedCalculationRevision $expectedCalculationRevision -ExpectedCheckpointTable $expectedCheckpointTable -ExpectedCheckpointSet $expectedCheckpointSet)) {
     return
@@ -162,7 +162,7 @@ try {
     if (-not $NoBuild) {
         Write-Host "Building qmd-history-gateway from shared qmd_core..."
         Write-Host "Cargo target: $resolvedCargoTargetDir"
-        cargo build --offline --locked --release --manifest-path $manifest --target-dir $resolvedCargoTargetDir
+        cargo build --offline --locked --release --bin qmd-history-gateway --manifest-path $manifest --target-dir $resolvedCargoTargetDir
         if ($LASTEXITCODE -ne 0) {
             throw "qmd-history-gateway build failed with exit code $LASTEXITCODE"
         }

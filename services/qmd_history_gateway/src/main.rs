@@ -12,6 +12,9 @@ use tokio::sync::Semaphore;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if qmd_core::generic_structure::GENERIC_STRUCTURE_ALGORITHM_VERSION != 18 {
+        return Err(startup_error("QMD History requires structural algorithm 18; build with default features"));
+    }
     let loaded = load_env_files();
     if !loaded.is_empty() {
         eprintln!(

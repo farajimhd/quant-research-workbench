@@ -189,7 +189,7 @@ impl HistoricalGatewayConfig {
             ),
             structure_checkpoint_set_id: env_string(
                 "QMD_STRUCTURE_CHECKPOINT_SET_ID",
-                "canonical-tradable-20250101-20260831-v18-sip-condition-v1",
+                qmd_core::config::CURRENT_STRUCTURE_CHECKPOINT_SET_ID,
             ),
             structure_events_table: env_string(
                 "QMD_HISTORY_STRUCTURE_EVENTS_TABLE",

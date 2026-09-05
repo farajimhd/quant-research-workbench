@@ -1,3 +1,5 @@
+pub const CURRENT_STRUCTURE_CHECKPOINT_SET_ID: &str = "canonical-tradable-20250101-20260904-prominence-v18-v1";
+
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -121,6 +123,7 @@ pub struct GatewayConfig {
     pub structure_focus_inactive_registry_limit: usize,
     pub structure_focus_staging_max_events: usize,
     pub structure_checkpoint_set_id: String,
+    pub structure_seed_checkpoint_set_id: String,
     pub historical_flatfile_autorun: bool,
     pub historical_flatfile_update_enabled: bool,
     pub historical_pipeline_code_root: String,
@@ -354,6 +357,7 @@ impl GatewayConfig {
             )
             .clamp(1_000, 1_000_000),
             structure_checkpoint_set_id: env_string("QMD_STRUCTURE_CHECKPOINT_SET_ID", "live"),
+            structure_seed_checkpoint_set_id: env_string("QMD_STRUCTURE_SEED_CHECKPOINT_SET_ID", CURRENT_STRUCTURE_CHECKPOINT_SET_ID),
             historical_flatfile_autorun: env_bool("QMD_HISTORICAL_FLATFILE_AUTORUN", true),
             historical_flatfile_update_enabled: env_bool(
                 "QMD_HISTORICAL_FLATFILE_UPDATE_ENABLED",

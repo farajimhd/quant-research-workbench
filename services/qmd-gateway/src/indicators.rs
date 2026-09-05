@@ -3755,6 +3755,26 @@ impl IndicatorClickHouseWriter {
         ticker: &str,
         session_date: NaiveDate,
     ) -> Result<Option<DailyStructureCheckpoint>, String> {
+        let own = self.load_daily_structure_checkpoint_from(
+            &self.config.structure_checkpoint_set_id, ticker, session_date).await?;
+        if own.is_some() || self.config.structure_checkpoint_set_id != "live" {
+            return Ok(own);
+        }
+        // Historical seeds are read-only here. Live checkpoints continue to be
+        // written to the operational live namespace, never into a campaign set.
+        self.load_daily_structure_checkpoint_from(
+            &self.config.structure_seed_checkpoint_set_id, ticker, session_date).await
+    }
+
+    async fn load_daily_structure_checkpoint_from(
+        &self,
+        checkpoint_set_id: &str,
+        ticker: &str,
+        session_date: NaiveDate,
+    ) -> Result<Option<DailyStructureCheckpoint>, String> {
+        if !valid_checkpoint_set_id(checkpoint_set_id) {
+            return Err("invalid structural seed checkpoint set".to_string());
+        }
         let sym = ticker.trim().to_ascii_uppercase();
         if sym.is_empty()
             || sym.len() > 32
@@ -3765,7 +3785,7 @@ impl IndicatorClickHouseWriter {
             return Err("invalid daily structure checkpoint ticker".to_string());
         }
         let sql = daily_structure_checkpoint_before_sql(
-            &self.config.structure_checkpoint_set_id,
+            checkpoint_set_id,
             &sym,
             session_date,
         );
@@ -3812,6 +3832,17 @@ impl IndicatorClickHouseWriter {
             .ok_or_else(|| "invalid daily structure checkpoint timestamp".to_string())?;
         let built_at = DateTime::from_timestamp_millis(built_at_ms as i64)
             .ok_or_else(|| "invalid daily structure checkpoint build timestamp".to_string())?;
+        let certificate = certification.as_ref().ok_or_else(||
+            "daily structure seed lacks certification".to_string())?;
+        validate_checkpoint_certification(certificate, &checkpoint, stored_date,
+            authority_start, &parse_string("source_plan_hash"),
+            &parse_string("source_revision_token"))?;
+        if checkpoint.algorithm_version != crate::generic_structure::GENERIC_STRUCTURE_ALGORITHM_VERSION
+            || parse_u64("algorithm_version") != u64::from(checkpoint.algorithm_version)
+            || checkpoint.sym.to_ascii_uppercase() != sym
+            || parse_string("checkpoint_set_id") != checkpoint_set_id {
+            return Err("daily structure seed identity mismatch".to_string());
+        }
         Ok(Some(DailyStructureCheckpoint {
             checkpoint_set_id: parse_string("checkpoint_set_id"),
             session_date: stored_date,

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import hashlib
+import re
+import os
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +40,17 @@ def backend_source_fingerprint() -> str:
 LOADED_BACKEND_FINGERPRINT = backend_source_fingerprint()
 
 
+def expected_structure_checkpoint_set() -> str:
+    configured = os.environ.get("QMD_STRUCTURE_CHECKPOINT_SET_ID", "").strip()
+    if configured and configured != "live":
+        return configured
+    source = (ROOT / "services/qmd-gateway/src/config.rs").read_text(encoding="utf-8")
+    match = re.search(r'CURRENT_STRUCTURE_CHECKPOINT_SET_ID: &str = "([^"]+)"', source)
+    if not match:
+        raise RuntimeError("Missing shared structural checkpoint authority")
+    return match.group(1)
+
+
 def runtime_version_check(configuration: dict[str, Any], health: dict[str, Any]) -> dict[str, Any]:
     problems = []
     strategy = dict(configuration.get("strategy") or {})
@@ -48,6 +61,12 @@ def runtime_version_check(configuration: dict[str, Any], health: dict[str, Any])
         if strategy_id == STRATEGY_ID and int(revision or 0) != STRATEGY_REVISION:
             problems.append(f"Selected Long Momentum revision {revision}; latest is {STRATEGY_REVISION}. "
                             "Refresh the strategy profile and create/select a new test candidate.")
+    expected_set = expected_structure_checkpoint_set()
+    actual_set = (health.get("config") or {}).get("structure_checkpoint_set_id")
+    if health.get("structure_algorithm_version") != 18 or actual_set != expected_set:
+        problems.append(f"QMD History structural authority is algorithm {health.get('structure_algorithm_version')}, "
+                        f"set {actual_set}; expected algorithm 18, set {expected_set}. "
+                        "Rebuild/restart qmd-history with scripts/services.ps1.")
     expected_qmd = qmd_source_fingerprint()
     if health.get("source_fingerprint") != expected_qmd:
         problems.append("QMD History does not match workspace source. Rebuild/restart qmd-history with scripts/services.ps1.")
@@ -56,7 +75,10 @@ def runtime_version_check(configuration: dict[str, Any], health: dict[str, Any])
     return {"id": "runtime_versions", "label": "Current execution code and strategy",
             "status": "blocked" if problems else "ready", "required": True,
             "summary": " ".join(dict.fromkeys(problems)) if problems else "Running executors match workspace source and selected strategy is current.",
-            "evidence": {"strategy_revision": strategy.get("revision"),
+            "evidence": {"structure_algorithm_version": health.get("structure_algorithm_version"),
+                         "structure_checkpoint_set_id": actual_set,
+                         "expected_structure_checkpoint_set_id": expected_set,
+                         "strategy_revision": strategy.get("revision"),
                          "latest_strategy_revision": STRATEGY_REVISION,
                          "qmd_source_fingerprint": health.get("source_fingerprint"),
                          "expected_qmd_source_fingerprint": expected_qmd,

@@ -5,9 +5,8 @@ use chrono_tz::America::New_York;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
-// The immutable historical campaign retains v16 semantics. Default services
-// continue to use v17; the campaign executable explicitly requires this feature.
-// v18 is opt-in validation until full-history reconstruction and rollout review.
+// Normal services use v18. Legacy replay builds must disable default features;
+// historical-campaign-v16 remains an explicit, immutable compatibility build.
 #[cfg(feature = "historical-campaign-v16")]
 pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 16;
 #[cfg(all(

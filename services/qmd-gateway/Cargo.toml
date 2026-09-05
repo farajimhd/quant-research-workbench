@@ -9,6 +9,7 @@ name = "qmd_core"
 path = "src/lib.rs"
 
 [features]
+default = ["structural-prominence-v18"]
 historical-campaign-v16 = []
 structural-prominence-v18 = []
 
