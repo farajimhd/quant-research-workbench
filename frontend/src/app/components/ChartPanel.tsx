@@ -238,6 +238,8 @@ type PriceZone = {
 };
 export type LiveEntryLine = {
   color: string;
+  stopPrice?: number;
+  targetPrices?: number[];
   labelParts?: TradeLabelPart[];
   onClose?: () => void;
   pnl: number;
@@ -944,7 +946,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   ]).size;
   const hasChartData = Boolean(payload?.candles.length);
   const referenceKey = reference ? `${reference.time ?? ""}:${reference.startTime ?? ""}:${reference.endTime ?? ""}:${reference.sessionDate ?? ""}:${reference.minuteOfDay ?? ""}:${reference.label ?? ""}` : "";
-  const liveEntryLineKey = liveEntryLine ? `${liveEntryLine.price}:${liveEntryLine.quantity}:${liveEntryLine.pnl}:${liveEntryLine.color}:${JSON.stringify(liveEntryLine.labelParts ?? [])}` : "";
+  const liveEntryLineKey = liveEntryLine ? `${liveEntryLine.price}:${liveEntryLine.quantity}:${liveEntryLine.pnl}:${liveEntryLine.color}:${liveEntryLine.stopPrice}:${JSON.stringify(liveEntryLine.targetPrices ?? [])}:${JSON.stringify(liveEntryLine.labelParts ?? [])}` : "";
   const liveEntryLineForDraw = liveEntryLine ? { ...liveEntryLine, onClose: onLiveEntryClose } : null;
   liveEntryLineRef.current = liveEntryLineForDraw;
   referenceRef.current = reference ?? null;
@@ -5799,24 +5801,48 @@ function drawLiveEntryLine(
   if (y === null) return;
   const left = 0;
   const width = Math.max(80, layer.clientWidth);
+  const drawProtection = (price: number | undefined, label: string, color: string) => {
+    if (price === undefined || !Number.isFinite(price) || price <= 0) return;
+    const coordinate = priceSeries.priceToCoordinate(price);
+    if (coordinate === null) return;
+    const guide = document.createElement("div");
+    guide.className = "live-entry-price-line live-position-protection-line";
+    guide.dataset.role = label === "Stop" ? "stop" : "target";
+    guide.style.cssText = `left:0;top:${coordinate}px;width:${width}px;border-color:${color}`;
+    const badge = document.createElement("span");
+    badge.className = "live-entry-position-control";
+    badge.style.background = `color-mix(in srgb, ${color} 50%, black)`;
+    badge.style.color = "#ffffff";
+    badge.textContent = `${label} ${formatPrice(price)}`;
+    guide.appendChild(badge);
+    layer.appendChild(guide);
+  };
+  drawProtection(liveEntryLine.stopPrice, "Stop", "var(--danger)");
+  liveEntryLine.targetPrices?.forEach((price) => drawProtection(price, "Target", "var(--success)"));
   const line = document.createElement("div");
   line.className = "live-entry-price-line";
   line.style.left = `${left}px`;
   line.style.top = `${y}px`;
   line.style.width = `${width}px`;
-  line.style.borderColor = liveEntryLine.color;
+  line.style.borderColor = "var(--info)";
 
   const control = document.createElement("div");
   control.className = "live-entry-position-control";
+  const pnlColor = `color-mix(in srgb, ${liveEntryLine.pnl >= 0 ? "var(--success)" : "var(--danger)"} 50%, black)`;
+  control.style.background = pnlColor;
+  control.style.color = "#ffffff";
 
   const sizeBadge = document.createElement("span");
   sizeBadge.className = "live-entry-size-badge";
-  sizeBadge.style.background = liveEntryLine.color;
+  sizeBadge.style.background = pnlColor;
+  sizeBadge.style.color = "#ffffff";
   if (liveEntryLine.labelParts?.length) {
     liveEntryLine.labelParts.forEach((part) => {
       const piece = document.createElement("b");
       piece.className = `trade-label-part ${part.tone ?? "label"}`;
-      piece.textContent = part.text;
+      piece.textContent = `${part.text} `;
+      piece.style.background = "transparent";
+      piece.style.color = "#ffffff";
       sizeBadge.appendChild(piece);
     });
   } else {
@@ -5827,6 +5853,8 @@ function drawLiveEntryLine(
   const pnlBadge = document.createElement("span");
   pnlBadge.className = liveEntryLine.pnl >= 0 ? "live-entry-pnl-badge positive" : "live-entry-pnl-badge negative";
   pnlBadge.textContent = formatMoneyValue(liveEntryLine.pnl);
+  pnlBadge.style.background = pnlColor;
+  pnlBadge.style.color = "#ffffff";
   control.appendChild(pnlBadge);
 
   if (liveEntryLine.onClose) {

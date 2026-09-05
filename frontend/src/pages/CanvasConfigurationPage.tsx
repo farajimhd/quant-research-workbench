@@ -46,6 +46,7 @@ import {
   type CanvasWorkspaceState,
 } from "../app/canvasWorkspace";
 import { isTerminalReplayStatus, latestReplayRun, useReplayRunEvents, type CanvasReplayRun } from "../app/replayRun";
+import { usePollingTask } from "../app/hooks/usePollingTask";
 import { AllNewsContainer, NEWS_ARTICLE_CLASS_OPTIONS, NewsDetailContainer, TickerNewsContainer } from "../app/components/NewsContainers";
 import { AllSecContainer, SecDetailContainer, TickerSecContainer } from "../app/components/SecContainers";
 import { LoadingState } from "../app/components/LoadingState";
@@ -320,6 +321,17 @@ function ReplayCanvasFocusPage({ focusToken, runId, runMode }: { focusToken: str
   }, [handoff, mergeFocusRun, runId, runMode]);
 
   useReplayRunEvents(handoff && runMode === "replay" ? runId : undefined, mergeFocusRun, setError);
+  usePollingTask({
+    enabled: Boolean(handoff && run && runMode !== "replay" && !isTerminalReplayStatus(run.status)),
+    intervalMs: 1000,
+    pauseWhenHidden: false,
+    restartKey: `${runMode}:${runId}`,
+    onError: (reason) => setError(reason instanceof Error ? reason.message : String(reason)),
+    task: async (signal) => {
+      const update = await api<CanvasReplayRun>(`/api/trading/${runMode}/runs/${encodeURIComponent(runId)}?compact=true`, { signal, timeoutMs: 20_000 });
+      if (!signal.aborted) { mergeFocusRun(update); setError(""); }
+    },
+  });
 
   if (error && !run) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-inline-error">{error}</div></div>;
   if (!run) return <div className="canvas-config-page canvas-focus-page"><LoadingState fill label="Loading Replay workspace" /></div>;
@@ -647,6 +659,21 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
     return () => { cancelled = true; if (retryTimer) window.clearTimeout(retryTimer); };
   }, [liveMode, replayRun]);
 
+  usePollingTask({
+    enabled: Boolean(contextReady && replayRun && replayRuntimeReady && previewContainerKey),
+    initialDelayMs: 0,
+    intervalMs: 1000,
+    pauseWhenHidden: false,
+    repeat: !replayRun || !isTerminalReplayStatus(replayRun.status),
+    restartKey: `${replayRun?.run_id}:${activeSymbol}:${previewContainerKey}:${Boolean(replayRun && isTerminalReplayStatus(replayRun.status))}`,
+    onError: (reason) => { setError(reason instanceof Error ? reason.message : String(reason)); setLoading(false); },
+    task: async (signal) => {
+      if (!replayRun) return;
+      const payload = await api<CanvasPreview>(`/api/trading/${runtimeMode}/runs/${encodeURIComponent(replayRun.run_id)}/canvas${query({ symbol: activeSymbol })}`, { signal, timeoutMs: 60000 });
+      if (!signal.aborted) { setPreview(payload); setLoading(false); setError(""); }
+    },
+  });
+
   useEffect(() => {
     if (!contextReady) return;
     if (replayRun && !replayRuntimeReady) {
@@ -661,15 +688,13 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
       setError("");
       return;
     }
+    // Historical snapshots use serialized polling above. Cancelling a request
+    // on every accelerated clock tick can prevent any slow response arriving.
+    if (replayRun) return;
     const controller = new AbortController();
     setLoading(true);
     setError("");
-    const request = replayRun
-      ? api<CanvasPreview>(`/api/trading/${runtimeMode}/runs/${encodeURIComponent(replayRun.run_id)}/canvas${query({ symbol: activeSymbol })}`, {
-          signal: controller.signal,
-          timeoutMs: 60000,
-        })
-      : api<CanvasPreview>("/api/trading/canvas-preview", {
+    const request = api<CanvasPreview>("/api/trading/canvas-preview", {
           body: JSON.stringify({
             chart_symbol: activeSymbol,
             chart_timeframe: "1m",
@@ -917,7 +942,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   function openReplayFocus(profile: CanvasRegistry, state: CanvasWorkspaceState) {
     if (!replayRun) return false;
     const token = writeReplayCanvasFocusHandoff(profile, state);
-    const focusedWindow = window.open(replayFocusCanvasUrl(replayRun.run_id, token), "_blank");
+    const focusedWindow = window.open(replayFocusCanvasUrl(replayRun.run_id, token, replayRun.mode ?? "replay"), "_blank");
     if (focusedWindow) focusedWindow.opener = null;
     return Boolean(focusedWindow);
   }

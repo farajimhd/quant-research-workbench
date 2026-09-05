@@ -332,18 +332,15 @@ export function ChartPreview({
     ? `${formatQuantity(Math.abs(quantity))} filled / ${formatQuantity(targetQuantity)} target`
     : formatQuantity(Math.abs(quantity));
   const activeLifecycleAnnotation = tradeAnnotations.find((annotation) => annotation.status === "open");
-  const protectionLabelParts = activeLifecycleAnnotation ? [
-    { text: activeLifecycleAnnotation.stopPrice ? `SL ${compactPrice(activeLifecycleAnnotation.stopPrice)}` : "NO SL", tone: activeLifecycleAnnotation.stopPrice ? "price" as const : "pnlLoss" as const },
-    { text: activeLifecycleAnnotation.targetPrices?.length ? `TP ${activeLifecycleAnnotation.targetPrices.map(compactPrice).join("/")}` : "NO TP", tone: activeLifecycleAnnotation.targetPrices?.length ? "price" as const : "pnlLoss" as const },
-  ] : [{ text: "NO STRATEGY PLAN", tone: "pnlLoss" as const }];
   const positionLine = strategyPresentationAvailable && activePosition && averagePrice > 0 ? {
-    color: quantity > 0 ? "var(--success)" : "var(--danger)",
+    color: "var(--info)",
+    stopPrice: activeLifecycleAnnotation?.stopPrice,
+    targetPrices: activeLifecycleAnnotation?.targetPrices,
     labelParts: [
-      { text: quantity > 0 ? "LONG" : "SHORT", tone: quantity > 0 ? "long" as const : "short" as const },
+      { text: "Entry", tone: "label" as const },
       { text: positionQuantityLabel, tone: "size" as const },
       { text: "@", tone: "separator" as const },
       { text: money(averagePrice), tone: quantity > 0 ? "priceLong" as const : "priceShort" as const },
-      ...protectionLabelParts,
     ],
     pnl: Number(activePosition.unrealized_pnl || 0),
     price: averagePrice,
@@ -515,7 +512,7 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
     const pnl = Number(row.net_pnl || row.gross_pnl || 0);
     const fills: NonNullable<NonNullable<ChartPayload["trade_annotations"]>[number]["fills"]> = [];
     let activeStop = plannedStopPrice;
-    let activeTarget = plannedTargetPrices[0];
+    let activeTarget = positiveNumber(selectedTargets[0] ?? (Array.isArray(decisionValues.profit_targets) ? decisionValues.profit_targets[0] : undefined)) ?? plannedTargetPrices[0];
     activity.forEach(({ row: event, time }) => {
       if (time <= planStartTime || time >= endTime) return;
       const eventGates = (event.chart_plan as PreviewRow | undefined)
@@ -570,7 +567,7 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
     const brokerTargets = uniquePositivePrices(currentOrders.filter((order) => orderRole(order) === "profit_target").map((order) => order.limit_price))
       .sort((left, right) => side === "SHORT" ? right - left : left - right);
     if (brokerStops.length) activeStop = side === "SHORT" ? Math.min(...brokerStops) : Math.max(...brokerStops);
-    const targetPrices = brokerTargets.length ? brokerTargets : activeTarget !== undefined ? [activeTarget] : plannedTargetPrices;
+    const targetPrices = status === "open" ? brokerTargets : activeTarget !== undefined ? [activeTarget] : plannedTargetPrices;
     fills.sort((left, right) => left.time - right.time);
     const finalFillAnnotation = (action: PositionExecutionAction, fillSide: "entry" | "exit", realizedPnl?: number) => {
       const partial = action.completion === "partial";
@@ -655,7 +652,7 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
       pnl,
       positionSide: side === "SHORT" ? "SHORT" : "LONG",
       status,
-      stopPrice: activeStop,
+      stopPrice: status === "open" && !brokerStops.length ? undefined : activeStop,
       targetPrices,
     }];
   });

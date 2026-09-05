@@ -4,12 +4,28 @@ Last updated: 2026-09-05
 
 Related task: TASK-0014
 
-Status: Revision 45 implementation reference. Focused verification is separate
+Status: Revision 47 implementation reference. Focused verification is separate
 from market-run acceptance. The user authorized a simultaneous JUNS and SUGP
 backtest for August 21, 2026, 04:00-09:30 Eastern, with shared account cash,
 including stopping, fixing defects and rerunning when necessary.
 
 ## 1. Authority and purpose
+
+During a running backtest, detached chart windows follow the same run's clock
+and request current position/order snapshots without manual refresh. Snapshot
+requests are serialized rather than cancelled on each advancing clock tick.
+The open-position overlay shows the filled average entry as a fixed blue line
+(recomputed only as additional entry fills change the average), the current
+working target in green, and the current working stop in red. Entry labels show
+filled quantity, average price and unrealized P&L, with white text on green for
+nonnegative P&L and red for losses. Protection lines move when the canonical
+working orders change; they do not determine execution or strategy decisions.
+
+Revision 47 defaults to a 0.5-bps entry MACD gap and a 1-bps exit gap.
+Both gates remain real-time. No choppiness filter or new re-entry delay is added.
+Revision 46 accepts the lowest available of up to three qualified resistances
+below HOD when fewer than three exist, and blocks entry while an exit remains
+pending. An empty qualified set still blocks entry. Earlier revisions remain immutable.
 
 Revision 45 caps the initial entry stop using `protection.stop.maximum_risk_pct`.
 A distant qualified support remains structural evidence, but the stop is placed
@@ -30,7 +46,7 @@ at/below it invalidates acceptance; a new completed non-red close is required.
 A wick alone cannot create R3 acceptance. Target reconciliation still requires
 a completed non-red 1s candle; making MACD real-time does not change that rule.
 
-Both MACD gaps default to 0.5 basis points of the current eligible trade price.
+Entry defaults to 0.5 basis points and exit to 1 basis point of the current eligible trade price.
 They are separately configurable, finite, nonnegative values. Entry retains
 the positive-MACD-line requirement. The ordinary MACD exit and the below-entry
 MACD loss guard use the same exit threshold with no confirmation delay.
@@ -203,7 +219,7 @@ must not be relabeled as current evidence; other exit authorities remain active.
 
 Define `histogram_bps = 10000 * (MACD_line - MACD_signal) / current_price`.
 Entry requires `histogram_bps >= 0.5` and `MACD_line > 0`, after completed R3
-acceptance. MACD exit requires `histogram_bps <= -0.5`, regardless of whether
+acceptance. MACD exit requires `histogram_bps <= -1.0`, regardless of whether
 the position is profitable. Equality at the configured threshold qualifies.
 The neutral interval between the thresholds neither authorizes a new entry
 nor triggers a MACD exit. Stop, VWAP, target, and session exits are independent.
@@ -460,7 +476,7 @@ that an earlier event-time exit was invalid. Conversely, a recorded exit
 reason is not proof of correctness without the contemporaneous operands,
 source timestamps, position, and policy.
 Both MACD exit routes require `signal - MACD >= current_price * exit_gap_bps / 10000`,
-with `exit_gap_bps = 0.5` by default. The below-entry loss guard cannot bypass
+with `exit_gap_bps = 1.0` by default. The below-entry loss guard cannot bypass
 this threshold with a smaller bearish crossover. Record line, signal, price,
 signed histogram in bps, threshold, and causal observation time for review.
 

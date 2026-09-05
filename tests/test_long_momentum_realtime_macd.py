@@ -57,6 +57,21 @@ class RealtimeMacdTests(unittest.TestCase):
         self.assertTrue(trigger(replace(changed, evaluation_events=("bar_close",)), policy, state)["passed"])
         self.assertFalse(trigger(replace(changed, price=101.5), policy, state)["passed"])
 
+    def test_revision47_asymmetric_gaps_and_immutable_prior_revision(self):
+        p = strategy.resolve_long_momentum_parameters(revision=47)
+        self.assertEqual(p["entry_candle_confirmation"]["minimum_macd_open_gap_bps"], .5)
+        self.assertEqual(p["momentum_management"]["minimum_macd_exit_gap_bps"], 1)
+        self.assertEqual(strategy.resolve_long_momentum_parameters(revision=46)["momentum_management"]["minimum_macd_exit_gap_bps"], .5)
+        for loss_guard in (False, True):
+            p["momentum_management"]["downside_loss_guard"].update(enabled=loss_guard, below_vwap=False)
+            for gap in (.5, .99, 1, 1.01):
+                obs = replace(bar(close=100), observed_at=NOW + timedelta(milliseconds=250),
+                              macd_line=.2, macd_signal=.2 + 100 * gap / 10000,
+                              source_timeframe="", evaluation_events=("market_data_update",))
+                route = strategy._matching_momentum_management_route(
+                    p, obs, {"entry_at": NOW.isoformat()}, gain_pct=-1 if loss_guard else 1, side="long")
+                self.assertEqual(route is not None, gap >= 1, (loss_guard, gap, route))
+
     def test_both_exit_routes_require_gap_on_trade_without_delay(self):
         for loss_guard in (False, True):
             p = current_parameters()

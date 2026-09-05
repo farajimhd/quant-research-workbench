@@ -34,8 +34,8 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 46
-HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45)
+STRATEGY_REVISION = 47
+HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46)
 
 _COMPLETED_FRAME_TOP_N_ENTRY_MODE = "prior_completed_frame_top_n_below_session_high"
 _EVENT_PRICE_TOP_N_ENTRY_MODE = "event_price_top_n_below_session_high"
@@ -694,7 +694,7 @@ def default_long_momentum_parameters(
     if revision >= 44:
         parameters["structural_entry"]["intrabar_after_completed_r3"] = True
         parameters["entry_candle_confirmation"]["evaluate_macd_intrabar"] = True
-        parameters["momentum_management"]["minimum_macd_exit_gap_bps"] = 0.5
+        parameters["momentum_management"]["minimum_macd_exit_gap_bps"] = 1.0 if revision >= 47 else 0.5
         parameters["momentum_management"]["macd_backstop"].update(
             enabled=True, timeframe="1s", active_after_ms=0, closed_for_ms=0,
             close_condition="signal_above_line",

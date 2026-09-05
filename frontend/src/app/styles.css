@@ -5987,12 +5987,12 @@ button {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   gap: 4px;
-  max-width: min(260px, calc(100% - 110px));
+  max-width: min(480px, calc(100% - 24px));
   overflow: hidden;
   padding: 2px;
   pointer-events: auto;
   position: absolute;
-  right: 96px;
+  right: 12px;
   transform: translateY(-50%);
   white-space: nowrap;
 }
