@@ -3,14 +3,14 @@ import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
 import "./HistoricalWorkspace.css";
-import { TradingModeLaunch, TradingModeSelectField } from "../app/components/TradingModeLaunch";
+import { TradingLaunchEvidence, TradingModeLaunch, TradingModeSelectField } from "../app/components/TradingModeLaunch";
 import { usePollingTask } from "../app/hooks/usePollingTask";
 import type { CanvasReplayRun } from "../app/replayRun";
 import { CanvasWorkspaceSurface } from "./CanvasConfigurationPage";
 
 type HistoricalCheck = {
   action?: { hash?: string; label?: string };
-  evidence: string;
+  evidence: unknown;
   id: string;
   label: string;
   required: boolean;
@@ -361,6 +361,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       actionSummary={launchReady ? <><strong>{normalizedTickers.join(", ")}</strong> will run together on <strong>{sessionDate}</strong> from <strong>{startTime.slice(0, 5)}–{endTime.slice(0, 5)} ET</strong> using one shared simulated portfolio and strategy revision <strong>{selectedPlan?.strategy_revision}</strong> (candidate {preflight?.configuration_revision}).</> : !tickerReady ? parsedTickers.invalid.length ? `Remove invalid ticker${parsedTickers.invalid.length === 1 ? "" : "s"}: ${parsedTickers.invalid.join(", ")}.` : "Enter at least one valid ticker before starting." : warmingIndicators ? "Preparing persisted 1-second indicator warm-ups." : !periodReady ? "Choose a valid period inside 04:00–20:00 ET." : preflight && !resolvedSessionMatches ? "The selected date is not an exchange session. Choose a trading day." : "Resolve each required readiness item before starting."}
       busy={creating}
       checking={checking || warmingIndicators || loadingOptions}
+      checkingLabel={loadingOptions ? "Loading saved candidates and strategy settings…" : warmingIndicators ? "Preparing 1-second indicator history…" : "Validating parameters, strategy version, and services…"}
       checks={launchChecks}
       description="Evaluate an immutable Test Candidate across a bounded historical window using the same strategy, Portfolio, OMS, and journal contracts as Paper and Live."
       error={optionsError || error}
@@ -415,7 +416,7 @@ function HistoricalResults({ comparison, comparisonError, results }: { compariso
 }
 
 function EvidenceCheck({ check }: { check: HistoricalCheck }) {
-  return <article data-status={check.status}><div className="historical-evidence-icon">{check.status === "ready" ? <CheckCircle2 size={20} /> : <TriangleAlert size={20} />}</div><div><header><strong>{check.label}</strong></header><p>{check.summary}</p><small>{check.evidence}</small>{check.action?.hash ? <button className="button secondary compact" onClick={() => { window.location.hash = check.action?.hash || "#revision-configuration"; }} type="button">{check.action.label || "Resolve"}</button> : null}</div></article>;
+  return <article data-status={check.status}><div className="historical-evidence-icon">{check.status === "ready" ? <CheckCircle2 size={20} /> : <TriangleAlert size={20} />}</div><div><header><strong>{check.label}</strong></header><p>{check.summary}</p><TradingLaunchEvidence evidence={check.evidence} />{check.action?.hash ? <button className="button secondary compact" onClick={() => { window.location.hash = check.action?.hash || "#revision-configuration"; }} type="button">{check.action.label || "Resolve"}</button> : null}</div></article>;
 }
 
 function parseBacktestTickers(value: string): { invalid: string[]; tickers: string[] } {

@@ -1,4 +1,22 @@
 /* Shared entry surface for Live, Replay, Backtest, and Debug. */
+.app-loading-state.mode-launch-setup-loading {
+  justify-content: flex-start;
+  margin: 0 0 16px;
+  min-height: 0;
+  padding: 8px 0;
+}
+
+.mode-launch-evidence {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  margin-top: 6px;
+}
+.mode-launch-evidence summary { cursor: pointer; }
+.mode-launch-evidence dl { margin: 8px 0 0; }
+.mode-launch-evidence dl > div { margin-top: 8px; }
+.mode-launch-evidence dt { font-weight: 600; }
+.mode-launch-evidence dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+
 .mode-launch-page {
   box-sizing: border-box;
   margin: 0;

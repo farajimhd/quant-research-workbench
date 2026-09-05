@@ -2,17 +2,29 @@ import { CheckCircle2, CircleStop, RefreshCcw, TriangleAlert, type LucideIcon } 
 import type { ReactNode } from "react";
 
 import { InventoryFilterSelect, type InventoryFilterOption } from "./InventoryFilterSelect";
+import { LoadingState } from "./LoadingState";
 import "./TradingModeLaunch.css";
 
 export type TradingLaunchCheck = {
   action?: { hash?: string; label?: string };
-  evidence?: string;
+  evidence?: unknown;
   id: string;
   label: string;
   required?: boolean;
   status: string;
   summary?: string;
 };
+
+export function TradingLaunchEvidence({ evidence }: { evidence: unknown }) {
+  if (evidence == null || evidence === "") return null;
+  if (typeof evidence !== "object") return <small>{String(evidence)}</small>;
+  return <details className="mode-launch-evidence"><summary>Validation details</summary><dl>
+    {Object.entries(evidence).map(([key, value]) => <div key={key}>
+      <dt>{key.replaceAll("_", " ")}</dt>
+      <dd>{value == null ? "Unavailable" : typeof value === "object" ? JSON.stringify(value) : String(value)}</dd>
+    </div>)}
+  </dl></details>;
+}
 
 export function TradingModeSelectField({
   ariaLabel,
@@ -61,6 +73,7 @@ export function TradingModeLaunch({
   busy,
   busyLabel = "Preparing Canvas…",
   checking,
+  checkingLabel = "Validating parameters and checking readiness…",
   checks,
   children,
   description,
@@ -80,6 +93,7 @@ export function TradingModeLaunch({
   busy?: boolean;
   busyLabel?: string;
   checking?: boolean;
+  checkingLabel?: string;
   checks: TradingLaunchCheck[];
   children: ReactNode;
   description: string;
@@ -110,6 +124,7 @@ export function TradingModeLaunch({
           <div><span>{setupEyebrow}</span><strong>{setupTitle}</strong></div>
           {onRefresh ? <button aria-label="Check readiness again" className="button secondary compact" disabled={checking} onClick={onRefresh} type="button"><RefreshCcw aria-hidden="true" size={14} /> Check again</button> : null}
         </div>
+        {checking ? <LoadingState className="mode-launch-setup-loading" label={checkingLabel} /> : null}
         <div className="configuration-field-grid mode-launch-fields">{children}</div>
       </div>
 
@@ -122,7 +137,7 @@ export function TradingModeLaunch({
         <div className="mode-launch-checks">
           {checks.map((check) => <article data-status={check.status} key={check.id}>
             <span>{check.status === "ready" ? <CheckCircle2 aria-hidden="true" size={15} /> : <TriangleAlert aria-hidden="true" size={15} />}</span>
-            <div><strong>{check.label}</strong>{check.status !== "ready" && check.summary ? <p>{check.summary}</p> : null}{check.status !== "ready" && check.evidence && check.evidence !== check.summary ? <small>{check.evidence}</small> : null}</div>
+            <div><strong>{check.label}</strong>{check.status !== "ready" && check.summary ? <p>{check.summary}</p> : null}{check.status !== "ready" && check.evidence !== check.summary ? <TradingLaunchEvidence evidence={check.evidence} /> : null}</div>
             {check.action?.hash ? <button className="button secondary compact" onClick={() => { window.location.hash = check.action?.hash || "#revision-configuration"; }} type="button">{check.action.label || "Resolve"}</button> : null}
           </article>)}
           {!checks.length && checking ? <div className="mode-launch-checking"><span className="loading-spinner" aria-hidden="true" /> Resolving required services and configuration…</div> : null}
