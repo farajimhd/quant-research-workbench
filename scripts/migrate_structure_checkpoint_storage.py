@@ -66,7 +66,12 @@ class ClickHouse:
     def request(self, sql: str, stream: bool = False):
         response = self.session.post(
             self.url, data=sql.encode("utf-8"), stream=stream,
-            params={"max_threads": 2, "max_execution_time": 1800,
+            # Checkpoint strings can be megabytes each. Bound the input block
+            # before tuple/JSON/hash evaluation, not just the final digest stream.
+            params={"max_threads": 1, "max_block_size": 16,
+                    "preferred_block_size_bytes": 1048576,
+                    "cancel_http_readonly_queries_on_client_close": 1,
+                    "max_execution_time": 1800,
                     "max_memory_usage": 4294967296, "async_insert": 0,
                     "wait_for_async_insert": 1}, timeout=(10, 1900),
         )
@@ -99,6 +104,22 @@ def inspect(ch: ClickHouse, database: str) -> dict[str, dict]:
     return {r["name"]: r for r in ch.rows(
         "SELECT name,toString(uuid) AS uuid,storage_policy,create_table_query,total_bytes "
         f"FROM system.tables WHERE database={literal(database)}")}
+
+
+def table_digest(ch: ClickHouse, table: str, projection: str, predicate: str = "1") -> dict:
+    """Verify every row in bounded monthly queries, including unexpected partitions."""
+    partitions = sorted(row["p"] for row in ch.rows(
+        f"SELECT DISTINCT _partition_id AS p FROM {table} WHERE {predicate}"))
+    total, combined = 0, hashlib.sha256()
+    for partition in partitions:
+        print(f"{table} {partition}: verifying complete partition", flush=True)
+        digest = ch.digest(
+            f"SELECT hex(SHA256(toJSONString(tuple({projection})))) AS h FROM {table} FINAL "
+            f"WHERE ({predicate}) AND _partition_id={literal(partition)} ORDER BY h")
+        total += digest["rows"]
+        combined.update(json.dumps([partition, digest], sort_keys=True, separators=(",", ":")).encode())
+        combined.update(b"\n")
+    return {"format": "partition-sha256-v1", "rows": total, "sha256": combined.hexdigest()}
 
 
 def ensure_quiet(ch: ClickHouse, database: str) -> None:
@@ -187,13 +208,18 @@ def migrate(ch: ClickHouse, database: str, runtime: Path, keep: list[str], execu
             partitions = ch.rows(f"SELECT DISTINCT _partition_id AS p FROM {source} WHERE {predicate}")
             for partition in partitions:
                 part = partition["p"]
+                print(f"{name} {part}: checking source and existing SSD copy", flush=True)
                 condition = f"({predicate}) AND _partition_id={literal(part)}"
                 # Stable, complete row digest; order by digest preserves multiplicity.
                 def fingerprint(table: str) -> dict:
                     selected = condition if table == source else f"_partition_id={literal(part)}"
                     return ch.digest(f"SELECT hex(SHA256(toJSONString(tuple({projection})))) AS h FROM {table} FINAL WHERE {selected} ORDER BY h")
                 before = fingerprint(source)
-                if item["partitions"].get(part) == before and fingerprint(target) == before:
+                # A copy may have finished before verification or journaling
+                # failed. Reuse it only after the same full-content proof.
+                if fingerprint(target) == before and fingerprint(source) == before:
+                    item["partitions"][part] = before
+                    save(state_path, state)
                     print(f"{name} {part}: verified, reused", flush=True)
                     continue
                 print(f"{name} {part}: copying {before['rows']:,} retained rows", flush=True)
@@ -206,9 +232,8 @@ def migrate(ch: ClickHouse, database: str, runtime: Path, keep: list[str], execu
                 save(state_path, state)
             ensure_quiet(ch, database)
             # Reconcile the whole retained relation, including empty tables/new partitions.
-            full_sql = f"SELECT hex(SHA256(toJSONString(tuple({projection})))) AS h FROM {{table}} FINAL WHERE {{predicate}} ORDER BY h"
-            verified = ch.digest(full_sql.format(table=source, predicate=predicate))
-            if verified != ch.digest(full_sql.format(table=target, predicate="1")):
+            verified = table_digest(ch, source, projection, predicate)
+            if verified != table_digest(ch, target, projection):
                 raise RuntimeError(f"Final table reconciliation failed: {name}")
             item["verified_digest"] = verified
             save(state_path, state)
@@ -223,7 +248,11 @@ def migrate(ch: ClickHouse, database: str, runtime: Path, keep: list[str], execu
         if tables[name]["uuid"] != item["target_uuid"] or tables[name]["storage_policy"] != "live_market_ssd":
             raise RuntimeError("Post-exchange identity or storage mismatch")
         projection = ",".join(map(identifier, item["columns"]))
-        actual = ch.digest(f"SELECT hex(SHA256(toJSONString(tuple({projection})))) AS h FROM {source} FINAL ORDER BY h")
+        if item["verified_digest"].get("format") == "partition-sha256-v1":
+            actual = table_digest(ch, source, projection)
+        else:
+            # Honor an older journal that already exchanged its verified table.
+            actual = ch.digest(f"SELECT hex(SHA256(toJSONString(tuple({projection})))) AS h FROM {source} FINAL ORDER BY h")
         if actual != item["verified_digest"]:
             raise RuntimeError("Post-exchange content changed; refusing to drop original data")
         if replacement in tables:
