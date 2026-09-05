@@ -70,7 +70,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 50
+CONFIGURATION_SCHEMA_VERSION = 51
 MARKET_DISCOVERY_MATERIALIZATION_RUN_ID = "market-discovery:materialized-configuration"
 _CONFIGURATION_BASE_CACHE_LOCK = threading.RLock()
 _CONFIGURATION_BASE_CACHE: tuple[str, float, dict[str, Any] | None] = ("", 0.0, None)
@@ -4163,7 +4163,6 @@ def _default_draft() -> dict[str, Any]:
         "minimum_ticker_relative_quality_score": 0.20,
         "strict_ticker_relative_quality_gate": True,
         "minimum_hold_observations": 1,
-        "maximum_break_count": 100,
         "maximum_break_probability": 1.0,
         "minimum_independent_pivot_count": 0,
         "minimum_level_age_ms": 0,
@@ -4248,10 +4247,10 @@ def _default_draft() -> dict[str, Any]:
     system_profiles[0]["parameters"]["protection"]["profit_ladder"].update({
         "maximum_targets": 1,
         # The resting target is R3 in the current producer resistance book.
-        # A causal first-resistance hit advances the moving ladder.
+        # A completed one-second close above R1 advances the moving ladder.
         "selection_mode": "ordinal_qualified_level",
         "target_level_ordinal": 3,
-        # Revision 37 consumes an actual trade hit, without a bar-close delay.
+        # Revision 38 uses the confirmed candle-close clock.
         "ratchet_acceptance_buffer_bps": 0.0,
         "minimum_level_strength": 0.0,
         "minimum_level_confidence": 0.0,
@@ -4260,7 +4259,6 @@ def _default_draft() -> dict[str, Any]:
         "minimum_ticker_relative_quality_score": 0.20,
         "strict_ticker_relative_quality_gate": True,
         "minimum_hold_observations": 1,
-        "maximum_break_count": 100,
         "maximum_break_probability": 1.0,
         "minimum_composite_score": 0.0,
         # Target geometry must not veto an otherwise valid causal entry. The

@@ -663,6 +663,10 @@ def qmd_advance_historical_structure_timeline(
     boundaries = payload.get("boundaries")
     if not isinstance(boundaries, list) or len(boundaries) != len(normalized_as_ofs):
         raise RuntimeError("QMD History returned an incomplete Generic Structure boundary set")
+    if as_of_sequences is not None and "execution-clock-v1:" not in str(
+        dict(payload.get("source_revision_before") or {}).get("token") or ""
+    ):
+        raise RuntimeError("QMD History structure advancement must retain the canonical execution clock; restart the updated gateway")
     for index, (expected, boundary) in enumerate(zip(normalized_as_ofs, boundaries, strict=True)):
         if not isinstance(boundary, dict) or not isinstance(boundary.get("snapshot"), dict):
             raise RuntimeError("QMD History returned an invalid Generic Structure boundary")

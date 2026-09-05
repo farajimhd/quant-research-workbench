@@ -521,7 +521,10 @@ async fn advance_structure_checkpoint_inner(
     {
         return Err("Generic Structure checkpoint source plan changed before replay".to_string());
     }
-    let source_revision_before = source.structure_source_revision(&window).await?;
+    // Session advancement must retain execution timestamps: an overnight
+    // trade reported after 04:00 must not become the current session high.
+    // The inherited daily seed keeps its separately declared approximation.
+    let source_revision_before = source.source_revision(&window).await?;
     let event_limit = request
         .event_limit
         .unwrap_or(config.structure_checkpoint_max_events)
@@ -544,14 +547,13 @@ async fn advance_structure_checkpoint_inner(
         .await?;
     let mut next_split = 0_usize;
     let rules = source.trade_aggregation_rules();
-    let mut batches = source.stream_structure_ordered_filtered(
+    let mut batches = source.stream_ordered_filtered(
         window.clone(),
         config.batch_size,
         exact_live_cursor
             .then_some(source_revision_before.live_continuation_sequence)
             .flatten(),
         None,
-        source_revision_before.event_count,
     )?;
     let mut event_count = 0_u64;
     let mut advanced_event_count = 0_u64;
@@ -615,7 +617,7 @@ async fn advance_structure_checkpoint_inner(
         engine.apply_split_adjustment(&split_adjustments[next_split])?;
         next_split += 1;
     }
-    let source_revision_after = source.structure_source_revision(&window).await?;
+    let source_revision_after = source.source_revision(&window).await?;
     if source_revision_after.source_plan_hash != source_plan.plan_hash {
         return Err("Generic Structure checkpoint source plan changed during replay".to_string());
     }
@@ -740,7 +742,7 @@ pub async fn advance_historical_structure_timeline(
     {
         return Err("Generic Structure checkpoint source plan changed before replay".to_string());
     }
-    let source_revision_before = source.structure_source_revision(&window).await?;
+    let source_revision_before = source.source_revision(&window).await?;
     let event_limit = request
         .event_limit
         .unwrap_or(config.structure_checkpoint_max_events)
@@ -758,12 +760,11 @@ pub async fn advance_historical_structure_timeline(
         .await?;
     let mut next_split = 0_usize;
     let rules = source.trade_aggregation_rules();
-    let mut batches = source.stream_structure_ordered_filtered(
+    let mut batches = source.stream_ordered_filtered(
         window.clone(),
         config.batch_size,
         None,
         None,
-        source_revision_before.event_count,
     )?;
     let mut boundary_index = 0_usize;
     let mut event_count = 0_u64;
@@ -848,7 +849,7 @@ pub async fn advance_historical_structure_timeline(
         });
         boundary_index += 1;
     }
-    let source_revision_after = source.structure_source_revision(&window).await?;
+    let source_revision_after = source.source_revision(&window).await?;
     if source_revision_after.source_plan_hash != source_plan.plan_hash {
         return Err("Generic Structure checkpoint source plan changed during replay".to_string());
     }

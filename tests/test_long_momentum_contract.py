@@ -1,4 +1,4 @@
-"""Revision 37 contract checks. Synthetic observations only; no historical run."""
+"""Current momentum contract checks. Synthetic observations only; no historical run."""
 from __future__ import annotations
 
 import unittest
@@ -37,7 +37,7 @@ def observation(price=101, **kwargs):
 
 class StrategyContractTests(unittest.TestCase):
     def test_both_trailing_modes_are_versioned_and_selectable(self):
-        self.assertEqual(strategy.STRATEGY_REVISION, 37)
+        self.assertEqual(strategy.STRATEGY_REVISION, 38)
         self.assertEqual(parameters()["protection"]["trailing"]["mode"], "qualified_support")
         self.assertEqual(parameters("support_distance")["protection"]["trailing"]["mode"], "support_distance")
         with self.assertRaises(ValueError):
@@ -62,6 +62,26 @@ class StrategyContractTests(unittest.TestCase):
         self.assertEqual(evidence["ticker_relative_unavailable_policy"], "fail_closed")
         self.assertEqual(strategy._initial_stop(replace(obs, structural_support_levels=(level(95),)), parameters(), None, side="long"), 0)
 
+    def test_qualified_levels_survive_legacy_break_count_ceiling(self):
+        resolved = strategy.resolve_long_momentum_parameters({
+            "structural_entry": {"maximum_break_count": 100, "minimum_reaction_probability": 0,
+                                 "minimum_ticker_relative_quality_score": 0.2, "maximum_break_probability": 1.0},
+            "protection": {"profit_ladder": {"maximum_break_count": 100}},
+        })
+        row = {**level(3.55, quality=0.3578), "break_count": 140, "hold_count": 571,
+               "hold_probability": 0.8, "hold_observation_count": 711}
+        self.assertNotIn("maximum_break_count", resolved["structural_entry"])
+        self.assertNotIn("maximum_break_count", resolved["protection"]["profit_ladder"])
+        self.assertTrue(strategy._level_is_entry_quality(row, resolved["structural_entry"], observed_at=NOW))
+        self.assertFalse(strategy._level_is_entry_quality(
+            row, {**resolved["structural_entry"], "maximum_break_probability": 0}, observed_at=NOW))
+        levels = tuple({**level(price), "break_count": 140, "side": -1} for price in (3.524, 3.55, 3.601))
+        trigger = strategy._event_price_top_n_resistance_trigger(
+            observation(3.53, structural_session_high=3.62, structural_resistance_levels=levels),
+            resolved["structural_entry"], {"previous_observed_price": 3.52})
+        self.assertTrue(trigger["passed"])
+        self.assertEqual(trigger["reference_price"], 3.524)
+
     def test_support_stop_requires_newer_support_and_never_loosens(self):
         state = {"active_stop": 90, "initial_stop": 90, "entry_reference_price": 100,
                  "entry_at": NOW.isoformat(), "high_water_price": 150}
@@ -82,28 +102,29 @@ class StrategyContractTests(unittest.TestCase):
                  "entry_at": NOW.isoformat(), "trailing_amount": 5, "high_water_price": 112}
         self.assertEqual(strategy._ratcheted_stop(obs, parameters("support_distance"), state, side="long"), 107)
 
-    def target_result(self, previous=100, price=101, *, first=101, events=("market_data_update",), state=None):
+    def target_result(self, previous=100, price=101.1, *, first=101, events=("bar_close",), state=None):
         state = state if state is not None else {"previous_observed_price": previous,
                  "structural_profit_targets": [103],
                  "structural_profit_target_frontier": [level(101, "r1"), level(102), level(103)]}
         obs = observation(price, position_quantity=50,
                           structural_resistance_levels=(level(first, "r1"), level(102), level(103), level(104), level(105)))
-        obs = replace(obs, evaluation_events=events)
+        obs = replace(obs, evaluation_events=events, source_timeframe="1s")
         return strategy.LongMomentumStrategyEngine()._moving_target_result(
-            assignment(strategy_revision=37, parameters=parameters(), status=strategy.AssignmentStatus.MANAGING),
+            assignment(strategy_revision=38, parameters=parameters(), status=strategy.AssignmentStatus.MANAGING),
             obs, parameters(), state, side="long", stop=95), state
 
-    def test_first_resistance_touch_moves_r3_one_level_without_bar_close(self):
+    def test_first_resistance_close_moves_r3_once_per_completed_candle(self):
         result, state = self.target_result()
         self.assertEqual(result.evaluation.intents[0].action, "replace_profit_target")
         self.assertEqual(state["structural_profit_targets"], [104])
+        self.assertEqual(result.evaluation.intents[0].metadata["ratchet_clock"], "completed_1s_bar")
         state["previous_observed_price"] = 101
         self.assertIsNone(self.target_result(previous=101, price=101.1, state=state)[0])
 
-    def test_no_target_move_without_actual_hit_or_when_level_moved_up(self):
-        self.assertIsNone(self.target_result(previous=101.1, price=101.2)[0])
+    def test_no_target_move_on_wick_touch_or_when_level_moved_up(self):
+        self.assertIsNone(self.target_result(price=101)[0])
         self.assertIsNone(self.target_result(price=101.1, first=101.5)[0])
-        self.assertIsNone(self.target_result(events=("bar_close",))[0])
+        self.assertIsNone(self.target_result(events=("market_data_update",))[0])
 
     def test_removed_resistance_cannot_trigger_stale_advancement(self):
         state = {"previous_observed_price": 100, "structural_profit_targets": [103],
@@ -111,7 +132,7 @@ class StrategyContractTests(unittest.TestCase):
         self.assertIsNone(self.target_result(state=state)[0])
 
     def test_zero_fill_pending_entry_exits_on_breached_support(self):
-        current = assignment(strategy_revision=37, parameters=parameters(), status=strategy.AssignmentStatus.ENTRY_PENDING,
+        current = assignment(strategy_revision=38, parameters=parameters(), status=strategy.AssignmentStatus.ENTRY_PENDING,
                              state={"entry_at": NOW.isoformat(), "entry_reference_price": 100,
                                     "initial_stop": 95, "active_stop": 95})
         result = strategy.LongMomentumStrategyEngine().evaluate(current, observation(94, position_quantity=0))
@@ -139,16 +160,30 @@ class StrategyContractTests(unittest.TestCase):
         state = {"entry_at": (NOW - timedelta(seconds=10)).isoformat(), "entry_reference_price": 100,
                  "active_stop": 90, "initial_stop": 90, "last_price": 100,
                  "structural_profit_targets": [103], "structural_profit_target_frontier": [level(101, "r1")]}
-        obs = observation(101, position_quantity=50, structural_support_levels=(level(99), level(95)),
+        obs = observation(101.1, position_quantity=50, structural_support_levels=(level(99), level(95)),
                           structural_resistance_levels=(level(101, "r1"), level(102), level(103), level(104)))
+        obs = replace(obs, evaluation_events=("bar_close",), source_timeframe="1s")
         result = strategy.LongMomentumStrategyEngine().evaluate(
-            assignment(strategy_revision=37, parameters=parameters(), status=strategy.AssignmentStatus.MANAGING, state=state), obs)
+            assignment(strategy_revision=38, parameters=parameters(), status=strategy.AssignmentStatus.MANAGING, state=state), obs)
         self.assertEqual([row.action for row in result.evaluation.intents], ["replace_protective_stop", "replace_profit_target"])
 
 
 class AssignmentExitRaceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_rejected_add_preserves_existing_position_and_target_frontier(self):
+        state = {"entry_reference_price": 3.65, "active_stop": 3.5, "initial_stop": 3.4,
+                 "entry_at": NOW.isoformat(), "structural_profit_targets": [3.7845],
+                 "structural_profit_target_frontier": [level(3.6745)], "entries": 1}
+        current = assignment(strategy_revision=38, parameters=parameters(), status=strategy.AssignmentStatus.MANAGING, state=state)
+        executor = strategy.AssignedLongMomentumStrategy([current])
+        request = replace(oms_helpers.intent(), action="add_long", metadata={"assignment_id": current.assignment_id})
+        await executor.on_intent_rejected(request, reasons=("limited_by_open_risk",), event_time=NOW)
+        after = executor.assignments()[0]
+        self.assertEqual(after.status, strategy.AssignmentStatus.MANAGING)
+        for key, value in state.items():
+            self.assertEqual(after.state[key], value)
+
     async def test_cancel_and_late_buy_cannot_unlatch_exit(self):
-        current = assignment(strategy_revision=37, parameters=parameters(), status=strategy.AssignmentStatus.EXIT_PENDING,
+        current = assignment(strategy_revision=38, parameters=parameters(), status=strategy.AssignmentStatus.EXIT_PENDING,
                              state={"entry_acquisition_exit_latched": True})
         executor = strategy.AssignedLongMomentumStrategy([current])
         snapshot = SimpleNamespace(assignment_id=current.assignment_id, state="cancelled", action="enter_long",
@@ -223,12 +258,15 @@ class StructureCursorClientTests(unittest.TestCase):
     def test_equal_timestamp_boundaries_require_matching_event_sequence(self):
         from src.backend.qmd_gateway_client import qmd_advance_historical_structure_timeline
         at = NOW.isoformat()
-        payload = {"complete": True, "session_id": "session", "boundaries": [
+        payload = {"complete": True, "session_id": "session", "source_revision_before": {"token": "execution-clock-v1:test"}, "boundaries": [
             {"as_of": at, "as_of_sequence": sequence, "snapshot": {}} for sequence in (10, 11)]}
         with patch("src.backend.qmd_gateway_client.qmd_history_post_json", return_value=payload):
             self.assertEqual(qmd_advance_historical_structure_timeline(session_id="session", as_ofs=[at, at], as_of_sequences=[10, 11]), payload)
             payload["boundaries"][0]["as_of_sequence"] = 11
             with self.assertRaisesRegex(RuntimeError, "exact event"):
+                qmd_advance_historical_structure_timeline(session_id="session", as_ofs=[at, at], as_of_sequences=[10, 11])
+            payload["source_revision_before"]["token"] = "structure-input-v1:archive-sip-condition"
+            with self.assertRaisesRegex(RuntimeError, "execution clock"):
                 qmd_advance_historical_structure_timeline(session_id="session", as_ofs=[at, at], as_of_sequences=[10, 11])
 
 

@@ -1198,7 +1198,7 @@ impl HistoricalDerivedCache {
             self.config.structure_book_lookback_days,
             structure_seed.is_some(),
         )?;
-        let source_revision = if matches!(&profile, CacheProfile::Structure(_)) {
+        let source_revision = if matches!(&profile, CacheProfile::Structure(_)) && structure_seed.is_none() {
             self.source
                 .structure_source_revision(&revision_window)
                 .await?
@@ -1872,6 +1872,10 @@ impl HistoricalDerivedCache {
             CacheProfile::Products => None,
         };
         let structure_only = matches!(&profile, CacheProfile::Structure(_));
+        // Only a cold inherited-history rebuild uses the declared SIP
+        // approximation. Post-checkpoint chart advancement must use the same
+        // execution-aware event source as strategy session advancement.
+        let structure_approximation = structure_only && structure_seed.is_none();
         let bars_only = matches!(&profile, CacheProfile::Bars(_));
         let derived_timeframes = match (&profile, &requested_timeframe) {
             (CacheProfile::Bars(_), Some(timeframe)) => vec![timeframe.clone()],
@@ -2136,7 +2140,7 @@ impl HistoricalDerivedCache {
                 chunks[next_chunk].clone(),
                 source_revision.live_continuation_sequence,
                 cache_event_type_filter(&profile),
-                structure_only,
+                structure_approximation,
             ));
             next_chunk += 1;
         }
@@ -2239,7 +2243,7 @@ impl HistoricalDerivedCache {
                     chunks[next_chunk].clone(),
                     source_revision.live_continuation_sequence,
                     cache_event_type_filter(&profile),
-                    structure_only,
+                    structure_approximation,
                 ));
                 next_chunk += 1;
             }

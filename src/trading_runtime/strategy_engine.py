@@ -34,8 +34,8 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 37
-HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36)
+STRATEGY_REVISION = 38
+HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37)
 
 _COMPLETED_FRAME_TOP_N_ENTRY_MODE = "prior_completed_frame_top_n_below_session_high"
 _EVENT_PRICE_TOP_N_ENTRY_MODE = "event_price_top_n_below_session_high"
@@ -763,6 +763,11 @@ def resolve_long_momentum_parameters(
             "qualified_support", "support_distance"
         }:
             raise ValueError("Trailing mode must be qualified_support or support_distance")
+    if revision >= 38:
+        # Break probability is a percentage; the old lifetime break-count
+        # ceiling is not part of the current level qualification contract.
+        parameters["structural_entry"].pop("maximum_break_count", None)
+        parameters["protection"]["profit_ladder"].pop("maximum_break_count", None)
     execution = dict(parameters.get("execution") or {})
     execution.pop("time_in_force", None)
     execution.pop("outside_rth", None)
@@ -3144,6 +3149,8 @@ class LongMomentumStrategyEngine:
                 "entry_acquisition_exit_latched": False,
                 "trailing_support_selection": None,
                 "pending_profit_target_advance": None,
+                "previous_target_close": None,
+                "last_target_candle_at": "",
                 "initial_stop": stop,
                 "active_stop": stop,
                 "trailing_amount": trailing_amount,
@@ -3992,11 +3999,16 @@ class LongMomentumStrategyEngine:
         parameters: dict[str, Any], state: dict[str, Any], *, side: str, stop: float,
     ) -> StrategyEngineResult | None:
         """Consume a causal first-resistance hit, using the moving producer book."""
-        if "market_data_update" not in observation.evaluation_events:
+        candle_clock = self.revision >= 38
+        if candle_clock and (observation.source_timeframe != "1s" or "bar_close" not in observation.evaluation_events):
             return None
-        previous = state.get("previous_observed_price")
+        if not candle_clock and "market_data_update" not in observation.evaluation_events:
+            return None
+        previous = state.get("previous_target_close") if candle_clock else state.get("previous_observed_price")
         previous_frontier = list(state.get("structural_profit_target_frontier") or ())
         retry = state.get("pending_profit_target_advance")
+        if candle_clock and state.get("last_target_candle_at", "") >= observation.observed_at.isoformat():
+            return None
         selection: dict[str, Any] = {}
         targets = _structural_profit_targets(
             observation, parameters, stop=stop, side=side,
@@ -4005,7 +4017,11 @@ class LongMomentumStrategyEngine:
         )
         current_frontier = _target_frontier_from_selection(selection)
         state["structural_profit_target_frontier"] = current_frontier
-        if previous is None or (not previous_frontier and not retry):
+        if candle_clock:
+            closed_at = observation.observed_at.isoformat()
+            state["last_target_candle_at"] = closed_at
+            state["previous_target_close"] = observation.price
+        if (previous is None and not candle_clock) or (not previous_frontier and not retry):
             return None
         first = dict(previous_frontier[0]) if previous_frontier else {}
         identity = str(first.get("unified_level_id") or "")
@@ -4022,13 +4038,15 @@ class LongMomentumStrategyEngine:
         if not found and not retry:
             return None
         boundary = _level_metric(first, "price", "target_price")
-        crossed = (float(previous) < boundary <= observation.price if side == "long"
-                   else float(previous) > boundary >= observation.price)
+        crossed = ((observation.price > boundary if side == "long" else observation.price < boundary)
+                   if candle_clock else
+                   (float(previous) < boundary <= observation.price if side == "long"
+                    else float(previous) > boundary >= observation.price))
         crossed = crossed or bool(retry)
         existing = list(state.get("structural_profit_targets") or ())
         if not crossed or not existing:
             return None
-        acceptance = retry or {"passed": True, "reason": "first_resistance_hit",
+        acceptance = retry or {"passed": True, "reason": "first_resistance_close" if candle_clock else "first_resistance_hit",
                                "level": first, "previous_price": previous, "price": observation.price,
                                "observed_at": observation.observed_at.isoformat()}
         state["pending_profit_target_advance"] = acceptance
@@ -4046,7 +4064,7 @@ class LongMomentumStrategyEngine:
             quantity=observation.position_quantity, profit_target_price=candidate,
             metadata={"previous_profit_target": existing[0], "profit_target": candidate,
                       "previous_profit_target_frontier": previous_frontier,
-                      "profit_target_selection": selection, "ratchet_clock": "resistance_hit",
+                      "profit_target_selection": selection, "ratchet_clock": "completed_1s_bar" if candle_clock else "resistance_hit",
                       "ratchet_acceptance": acceptance},
         )
 
@@ -5130,6 +5148,13 @@ class AssignedLongMomentumStrategy:
                 "reasons": list(reasons),
                 "rejected_at": event_time.isoformat(),
             }
+            if str(intent.action) not in {"enter_long", "enter_short"}:
+                # A rejected add/reduction/exit does not revoke the position
+                # that already exists or its working protection contract.
+                updated = replace(assignment, state=state, updated_at=event_time)
+                self._assignments[key] = updated
+                self._campaigns.register(updated)
+                return
             # These fields describe an accepted entry campaign.  Keeping them
             # after Portfolio rejected the intent produces a phantom position
             # and prevents a later causal observation from retrying.

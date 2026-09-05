@@ -4,7 +4,7 @@ Last updated: 2026-09-04
 
 Related task: TASK-0014
 
-Status: Revision 37 implementation reference. Focused verification is separate
+Status: Revision 38 implementation reference. Focused verification is separate
 from market-run acceptance; no backtest is authorized for this repair.
 
 ## 1. Authority and purpose
@@ -253,55 +253,46 @@ reference from nearest to farthest: R1, R2, R3, R4, and so on. Place the initial
 profit-taking limit at R3. Retain the actual level IDs, prices, qualification,
 and ordering used for that selection.
 
-### 7.2 Advancement on the first resistance hit
+### 7.2 Advancement after a one-second close above the first resistance
 
-The user's rule is: **when the first resistance is hit, move the target one
-resistance up**. It does not require the current profit target to be crossed
-and does not require a later candle close.
+The latest user clarification is authoritative: **advance when a completed
+one-second candle closes strictly above R1**. An intrabar touch or wick alone
+does not authorize target movement. The resting target can still fill on a wick.
 
 Illustrative prices only:
 
 | Event | Active ladder/reference | Target |
 |---|---|---|
 | Entry below qualified levels 4.10, 4.20, 4.30, 4.40 | R1=4.10, R2=4.20, R3=4.30 | Resting at 4.30 |
-| Actual hit of the first resistance, 4.10 | Advance one level through the causal ladder | Amend target to 4.40 |
-| Another event remains above 4.10 without a new first-level hit | Same consumed hit | No additional advancement |
-| No first-resistance hit occurs | No advancement authority | Keep existing target |
+| One-second close above 4.10, but below 4.20 | Advance one level through the causal ladder | Amend target to 4.40 |
+| Intrabar wick above 4.10, followed by close at/below 4.10 | No confirmed close | Keep existing target |
+| Duplicate evaluation of the same closed candle | Already consumed candle | No additional advancement |
 
 This example defines the one-step rule, not fixed prices or a frozen live
 ladder. **R1, R2, R3, and R4 are moving roles in the current producer book.**
-Rebuild that ladder on causal trade updates. Track level identity as well as
-price: if a known R1 moves upward, crossing its old price is not a hit. A level
-removed from the book cannot authorize an advance. A resistance that becomes
-support on the crossing event can still prove that event's hit through its
-same producer identity.
+Use the current causal producer book at the candle boundary. Track level
+identity and current price: a close above an obsolete price cannot advance a
+level that has since moved higher. A removed level cannot authorize an advance.
+A resistance that flips to support remains identifiable through its producer ID.
 
-The implemented touch comparison is `previous eligible trade < current R1
-price <= current eligible trade`. Merely remaining above R1 does not count.
-Newly published levels enter the observed ladder; publication alone cannot
-invent an earlier trade crossing. Without a hit, maintain the existing resting
-target even if another update would place R3 higher. Once a hit is established,
-select R3 above the current trade from the updated book (R4 of the previous
-ladder for an ordinary single-level move). A gap can cross several levels;
-their consumed positions must not produce repeated amendments on later ticks.
+The comparison is `completed 1s close > current producer price of tracked R1`.
+Record the candle boundary, level ID, current level price, and close. Select
+R3 above that close from the current book, normally the previous R4. A gap can
+consume multiple ladder positions, but cannot repeatedly advance on the same
+candle. Afterward the next unconsumed resistance becomes R1. A newly published
+level cannot manufacture an earlier close confirmation.
 The broker processes already-working targets before the resulting Strategy
 decision, so an executable wick/gap fill is not erased by moving its target.
 
 If three target resistances do not qualify, defer a new entry. During an open
 trade, retain the existing target until a qualified replacement exists. Stop
 and target updates caused by the same event can both be emitted; a stop update
-must not discard that event's target hit.
+must not discard that candle's target confirmation.
 
-The implementation needs a distinct resistance-hit event tied to the active
-ladder and level identity, consumed once for advancement. Merely finding
-`current close > stored boundary` is not proof that the required hit occurred
-at that decision. The 04:10:51 ET move called out by the user must be audited
-against this rule, not defended solely by that inequality.
-
-The event must be evaluated against the level that existed before the hit,
-while respecting causal book updates. A same-event role flip must not erase
-the resistance just hit; a newly published level must not manufacture a
-crossing that occurred before the level was known.
+If an amendment fails or a replacement ladder is temporarily unavailable,
+retain the accepted candle evidence for retry and keep the broker-held target.
+Rejection of an add, reduction, or exit must never delete an already-held
+position's target frontier, entry price, or support stop.
 
 ### 7.3 Fill and replacement races
 
@@ -348,11 +339,12 @@ live execution use their respective market-event providers and isolated
 resources, not separate strategy implementations.
 
 Historical market events come exclusively from certified
-`market_sip_compact.events_YYYY`. Historical structure retains the approved
-SIP-availability plus canonical-condition approximation. This repair plan
-does not authorize reopening raw flatfiles or introducing a full-horizon
-execution-clock prerequisite. Live native execution clocks may refine live
-data when available under its declared contract.
+`market_sip_compact.events_YYYY`. Inherited daily structural checkpoints retain
+their declared SIP-availability approximation. Post-checkpoint advancement,
+for both chart and strategy, requires the canonical execution-clock sidecar.
+Delayed overnight trades reported after 04:00 remain audit events and must not
+raise current session HOD. Missing advancement-window coverage fails closed;
+there is no raw-flatfile fallback or full-history rebuild in this repair.
 
 The event flow must let Strategy see a causally coherent structural snapshot,
 session high, trade, and indicator state. Correct event-native Strategy code
@@ -373,11 +365,12 @@ an earlier decision using a later structural book.
 
 ## 10. Explicit implementation choices and configuration
 
-| Detail | Revision 37 contract |
+| Detail | Revision 38 contract |
 |---|---|
 | Support-based trailing formula | Default newer-support advancement; selectable support-derived distance alternative, as specified in section 6. |
 | Insufficient/distant support | Defer without two qualified supports. Preserve a distant support and let Portfolio constrain quantity. |
-| Meaning of resistance hit | Eligible upward trade touch/cross at the current level price, with preceding-price evidence; no completed-candle delay. |
+| Target advancement | Completed one-second close strictly above the tracked first resistance's current producer price; no intrabar advancement. |
+| Level qualification | Minimum ticker-relative quality remains 20%; maximum break probability remains 100% (`1.0`). No lifetime break-count ceiling for entry or target levels. |
 | Ladder mutation and gaps | Follow producer identities and current prices, consume the hit once, and preserve prior broker fills. See section 7. |
 | Fewer than three target resistances | Defer new entry; keep existing protection for held exposure. |
 | Initial entry execution price | Retain the configured adaptive-very-urgent initial tactic. Subsequent remaining-entry amendments use fresh bid. |
@@ -393,7 +386,7 @@ The fee allowance is a sizing reserve, not the simulated or broker fee model.
 The two trailing choices appear in the existing Strategy management parameter
 editor as `protection.trailing.mode`. Select the value in the new versioned
 configuration before a separately authorized trial. Existing revision-36 runs
-and configurations remain historical evidence, not revision-37 acceptance.
+and configurations remain historical evidence, not revision-38 acceptance.
 
 ## 11. Verified pre-repair baseline
 
@@ -411,14 +404,14 @@ observed behavior, not acceptance of the intended contract.
 | Repricing cannot complete some allocations | 2,409 cash-rejected reprices across four entry groups. The unfilled quantity at higher prices plus fees exceeded available cash; OMS repeatedly retried. This is not the old double-counting of filled quantity. |
 | Trade-event observation retains structural inputs | `ReplayRunService._process_strategy_market_event` updates price, quotes, and forming MACD while inheriting structural levels/session high from its base observation. Structural population occurs on the frame path. This is a concrete source of timing mismatch; exact missed entries need event-level attribution. |
 | Residual structural adds remain | `LongMomentumStrategyEngine._structural_entry_tranche_add_result` emits separate `add_long` requests. The run had nine add intents; eight were rejected and one approved for three shares. These are not OMS remainder retries. |
-| Target advancement has the wrong trigger | `_structural_target_replacement_result` requires a completed 1s bar; `_target_ratchet_acceptance` tests a close against a stored boundary, not a newly consumed resistance hit. It recalculates the third target from current price. |
+| Target management state can be lost | In c46dabeb, rejected structural adds at 04:10:38.440 and 04:10:42.299 erased the held position's target/frontier. The one-second close clock is retained by the latest clarification; preserving the moving frontier and actual protection is required. |
 | Protection used price-distance trailing | Initial stops in all 14 inspected entries selected support. Subsequent stop ratcheting used high-water price minus a trailing amount; missing/distant-support probes exposed percentage fallback. The newer-support default and distance alternative above supersede that ambiguity. |
 | Existing descriptions conflict | The old architecture page mixes obsolete revisions, tranche behavior, and exit rules. This document supplies the current intended reference without rewriting historical runs. |
 
 ## 12. Fundamental repair sequence
 
 This sequence identifies the fundamental repairs and the evidence required
-to accept them. Revision 37 implements these seams; market behavior still
+to accept them. Revision 38 implements these seams; market behavior still
 requires a separately authorized trial.
 
 ### A. Publish one versioned behavioral contract
@@ -455,11 +448,11 @@ Primary seams: [strategy_engine.py](../../src/trading_runtime/strategy_engine.py
 [order_management.py](../../src/trading_runtime/order_management.py), and
 [simulated_broker.py](../../src/trading_runtime/simulated_broker.py).
 
-### D. Replace candle-driven target recalculation with level-hit state
+### D. Confirm moving resistance advancement on completed one-second candles
 
 Track the active qualified resistance ladder, first unconsumed resistance,
-resting R3 target, and exact hit event. Advance exactly as the resolved one-step
-rule prescribes, without a candle delay or repeated above-boundary triggers.
+resting R3 target, and exact closed-candle evidence. Advance as the resolved
+one-step rule prescribes, without intrabar movement or duplicate amendments.
 Reconcile broker target fills/amendments against actual exposure, including
 wick/gap events and partial fills.
 
@@ -500,25 +493,31 @@ with deterministic fixtures before separately approved broader market runs.
 
 ## 13. Implementation verification and activation
 
-Revision 37 implements this contract and exposes both trailing modes in the
-strategy parameter editor. Revision 36 remains available for historical
-comparisons. Validation completed with 219 focused Python tests, 101 Rust
-library tests, a gateway binary compile check, and a production frontend build.
-These checks use deterministic fixtures; no backtest was run.
+Revision 38 adds the final candle-close clarification and removes the lifetime
+break-count veto. Revision 37 retains the earlier trade-hit behavior for
+historical comparison; revision 36 retains its original strategy behavior.
+Rejected non-entry requests now preserve held-position state across revisions.
+Validation completed with 223 focused Python tests and 101 Rust library tests.
+The historical gateway release build passed, as did the canonical new-release
+builder with revision 38. No backtest was run.
 
-The broader configuration suite remains blocked by an existing catalog error:
-`Bullish squeeze early impulse` references the unknown Data Field output
-`trade_count_change`. That error was also reproduced with the committed
-configuration service. The UI review captured a configuration loading screen,
-so it does not establish that the trailing-mode dropdown is usable in the
-running application. The build and parameter contract are verified, but that
-interaction still needs verification after configuration loading is restored.
+The confirmed HOD defect was loss of execution timestamps in historical
+structure advancement. Canonical SUGP records reported after 04:00 include
+overnight executions above 3.62; the prepared one-second candles correctly
+show a maximum of 3.62 through 04:10:23. Both post-checkpoint chart and strategy
+advancement now retain execution timestamps, allowing the existing delayed
+report guard to exclude those prints from current structure.
 
-No running service was restarted or broker account changed. Before a later
-authorized trial, activate the updated historical gateway and backend together
-and verify the assignment resolves revision 37 and the intended trailing mode.
-The per-trade historical client requires sequence-aware producer responses and
-fails closed against an older gateway instead of using a later frame snapshot.
+The reported 47% stop is not recorded as an engine crash: c46dabeb completed
+82,406 events through 04:30 with no run error. Its browser failure was not
+reproduced, and this repair does not claim to fix an unidentified UI exception.
+
+Before a later authorized trial, activate the updated historical gateway and
+backend together and use a newly built revision-38 candidate. The per-trade
+client requires both sequence-aware responses and canonical execution-clock
+provenance; an older gateway fails closed. Existing runs are never relabeled
+as revision-38 acceptance. The earlier UI capture covered a loading screen,
+so dropdown interaction has not been claimed as visually verified.
 
 ## 14. Supporting context
 
