@@ -2194,23 +2194,38 @@ async fn build_plans(
         .end_date
         .succ_opt()
         .ok_or_else(|| "campaign end date overflow".to_string())?;
-    let mut estimates = BTreeMap::new();
-    for batch in tickers.chunks(25_000) {
-        let response = source
-            .structure_event_count_estimates(StructureEventCountEstimateRequest {
-                as_of: Utc::now(),
-                start_date: planning_start,
-                end_date: planning_end,
-                tickers: batch.to_vec(),
-            })
-            .await?;
-        for row in response.estimates {
-            estimates.insert(row.ticker, (row.total_events, row.max_session_events));
+    let mut estimates = BTreeMap::<String, (u64, u64)>::new();
+    let windows = if cfg!(feature = "structural-prominence-v18") {
+        planning_month_windows(planning_start, planning_end)?
+    } else {
+        vec![(planning_start, planning_end)]
+    };
+    let planning_as_of = Utc::now();
+    let mut completed_sessions = std::collections::BTreeSet::new();
+    for (window_start, window_end) in windows {
+        for batch in tickers.chunks(25_000) {
+            let response = source
+                .structure_event_count_estimates(StructureEventCountEstimateRequest {
+                    as_of: planning_as_of,
+                    start_date: window_start,
+                    end_date: window_end,
+                    tickers: batch.to_vec(),
+                })
+                .await?;
+            for row in response.estimates {
+                let entry = estimates.entry(row.ticker).or_default();
+                entry.0 = entry.0.checked_add(row.total_events)
+                    .ok_or("campaign event count overflow")?;
+                entry.1 = entry.1.max(row.max_session_events);
+            }
         }
+        completed_sessions.extend(source.completed_session_dates_between(
+            window_start,
+            window_end.pred_opt().ok_or("planning end date underflow")?,
+            planning_as_of,
+        ).await?);
+        eprintln!("Planned event counts: {window_start} through {window_end} exclusive");
     }
-    let completed_sessions = source
-        .completed_session_dates_between(planning_start, args.end_date, Utc::now())
-        .await?;
     let sessions = completed_sessions
         .into_iter()
         .filter(|session| *session >= args.start_date && *session <= args.end_date)
@@ -2243,6 +2258,21 @@ async fn build_plans(
             }
         })
         .collect())
+}
+
+// Limit coordinator aggregation cardinality independently of the total
+// campaign span. The half-open windows neither omit nor double-count a day.
+fn planning_month_windows(start: NaiveDate, end: NaiveDate) -> Result<Vec<(NaiveDate, NaiveDate)>, String> {
+    if start >= end { return Err("planning requires a nonempty half-open date range".into()); }
+    let mut windows = Vec::new();
+    let mut cursor = start;
+    while cursor < end {
+        let next = cursor.with_day(1).ok_or("invalid planning month")?
+            .checked_add_months(chrono::Months::new(1)).ok_or("planning month overflow")?.min(end);
+        windows.push((cursor, next));
+        cursor = next;
+    }
+    Ok(windows)
 }
 
 fn session_end(session_date: NaiveDate) -> Result<DateTime<Utc>, String> {
@@ -2704,6 +2734,20 @@ fn io_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sy
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn planning_windows_cover_leap_days_and_partial_months_exactly_once() {
+        let start = chrono::NaiveDate::from_ymd_opt(2024, 2, 17).unwrap();
+        let end = chrono::NaiveDate::from_ymd_opt(2024, 4, 3).unwrap();
+        let windows = super::planning_month_windows(start, end).unwrap();
+        assert_eq!(windows.len(), 3);
+        assert_eq!(windows[0].0, start);
+        assert_eq!(windows.last().unwrap().1, end);
+        assert!(windows.windows(2).all(|pair| pair[0].1 == pair[1].0));
+        assert_eq!(windows.iter().map(|(a,b)| (*b-*a).num_days()).sum::<i64>(), (end-start).num_days());
+        assert!(windows.iter().all(|(a,b)| (*b-*a).num_days() <= 31));
+        assert!(super::planning_month_windows(end, start).is_err());
+    }
+
     use super::{
         campaign_fatal_error, dashboard_frame, dashboard_lines, insert_ticker, log_snapshot,
         merge_ticker_universe, next_ordinal_chunk, retryable_error, session_is_covered_by_seed,

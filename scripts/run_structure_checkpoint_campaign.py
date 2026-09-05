@@ -59,6 +59,12 @@ def apply_priority_ranking(args: list[str], path: Path) -> list[str]:
             raise RuntimeError("Runtime already pins a different priority report")
         atomic_json(target, report)
     result = list(args)
+    # The report defines the requested ranking session. Do not silently scan
+    # the default entire month merely to order the remaining tickers.
+    if option_value(result, "--liquidity-start-date") is None and option_value(result, "--liquidity-end-date") is None:
+        from datetime import date
+        day = date.fromisoformat(report["session_date"]).isoformat()
+        result += ["--liquidity-start-date", day, "--liquidity-end-date", day]
     for ticker in tickers:
         result += ["--priority-ticker", ticker]
     print(f"Priority session {report['session_date']} (04:00-20:00 ET): {', '.join(tickers)}", flush=True)

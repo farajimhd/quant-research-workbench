@@ -54,6 +54,8 @@ The immutable report includes source revision, historical reference hash,
 per-session turnover, caps, listing identities and exclusions. The launcher
 pins a copy and SHA-256 in the campaign runtime. Changing the priority report,
 source commit, executable hash or algorithm requires a new campaign identity.
+Unless explicit liquidity dates are supplied, the report's session also sets
+the remaining-ticker ranking window, avoiding the older whole-month raw scan.
 
 ## Build and run on the workstation
 
@@ -97,6 +99,11 @@ query. Explicit bounded SQL settings for small shared coverage/ranking queries
 remain effective. These are query budgets, not a whole-process memory guarantee.
 Event batches and retry concurrency remain bounded. Monitor host memory, SSD
 space, query failures and event throughput before increasing any other budget.
+The coordinator aggregates event counts and verifies completed sessions in
+contiguous calendar-month windows, combining checked integer totals and unique
+session dates. Single twenty-month aggregations exceeded
+1 GiB during full-plan validation; month windows bound aggregation cardinality
+without omitting days or raising the workers' memory allowance.
 
 On September 5, ClickHouse reported 128 logical CPU frequency entries, about
 251 GiB total memory and 5.7 TB free on `live_market_ssd`. This is the ClickHouse
@@ -138,6 +145,26 @@ UUIDs, DDL, row counts and each completed exchange/drop are recorded in
 `D:\TradingML\runtimes\structure-validation\checkpoint-reset-20260905\reset.json`.
 The actual launcher preflight passed after the reset. No structural queries,
 queued inserts, mutations, moves or merges remained at the final reset check.
+
+The isolated runnable campaign check processed 131,198 canonical events for
+JUNS and SUGP on August 20 using two supervised workers and the priority barrier.
+Both SSD checkpoints were complete and certified under algorithm 18. A native
+resume then validated and skipped both checkpoints with zero advanced events,
+zero retries and zero failures. Its temporary database was removed after
+verification; evidence remains under
+`D:\TradingML\runtimes\structure-validation\v18-write-resume`.
+
+Regression results: 33 launcher tests, 240 v18 core tests, 104 historical gateway
+tests and 17 native campaign tests passed. Shared changes also passed 233 v16
+core tests and 235 default-service core tests. These include compact dashboard
+coverage, exclusive work claims, priority waiting, fatal-worker propagation,
+immutable recovery and source-build selection.
+
+The complete plan also validated successfully: **6,489 tickers and 2,699,424
+ticker-session units**, with the requested ten tickers first and coverage
+through August 31, 2026. The plan is saved under
+`D:\TradingML\runtimes\structure-validation\v18-full-plan\campaign-plan.json`.
+This validates planning and workload identity; the full rebuild has not run.
 
 Bounded JUNS/SUGP validation is not proof of all-ticker, twenty-month capacity
 or a guarantee of no bugs. The first ten histories provide the next acceptance

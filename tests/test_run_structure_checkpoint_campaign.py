@@ -33,7 +33,9 @@ def test_priority_report_pins_exact_order_and_rejects_ambiguous_scope(tmp_path):
     path = tmp_path / "ranking.json"
     path.write_text(json.dumps(report), encoding="utf-8")
     result = apply_priority_ranking(["--checkpoint-set-id", "fresh"], path)
-    assert result[3::2] == tickers
+    assert [result[i + 1] for i, arg in enumerate(result[:-1]) if arg == "--priority-ticker"] == tickers
+    assert result[result.index("--liquidity-start-date") + 1] == "2026-08-21"
+    assert result[result.index("--liquidity-end-date") + 1] == "2026-08-21"
     report["session_start"] = "09:30"
     path.write_text(json.dumps(report), encoding="utf-8")
     with pytest.raises(RuntimeError, match="full-session"):
