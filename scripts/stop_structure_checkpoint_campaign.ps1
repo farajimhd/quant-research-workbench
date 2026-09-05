@@ -19,9 +19,21 @@ $runtimePattern = '(?i)' + [regex]::Escape($runtime) + '(?=$|[\\\s"])'
 function Get-OwnedCampaignProcesses {
     $candidates = @(Get-CimInstance Win32_Process -Filter "Name='structure_checkpoint_campaign_v18.exe' OR Name='python.exe' OR Name='pythonw.exe'")
     foreach ($process in $candidates) {
-        if ($process.ProcessId -eq $identity.pid -and -not $process.CommandLine) { throw 'Cannot verify recorded supervisor identity.' }
+        # CIM enumeration races with cooperative shutdown. Re-query incomplete
+        # rows by PID; an exited process is not a permissions failure.
+        if (($process.Name -eq 'structure_checkpoint_campaign_v18.exe' -or $process.ProcessId -eq $identity.pid) -and (-not $process.ExecutablePath -or -not $process.CommandLine)) {
+            $fresh = @(Get-CimInstance Win32_Process -Filter "ProcessId = $($process.ProcessId)" | Where-Object { $_.ProcessId -eq $process.ProcessId })
+            if (-not $fresh.Count) { continue }
+            if ($fresh[0].CreationDate -ne $process.CreationDate) { continue }
+            $process = $fresh[0]
+        }
+        # An inspectable command line or executable can rule out another run
+        # without requiring access to every unrelated process on the host.
+        if ($process.CommandLine -and ($process.CommandLine -notmatch $setPattern -or $process.CommandLine -notmatch $runtimePattern)) { continue }
+        if ($process.Name -eq 'structure_checkpoint_campaign_v18.exe' -and $process.ExecutablePath -and $process.ExecutablePath -ine $identity.executable_path) { continue }
+        if ($process.ProcessId -eq $identity.pid -and -not $process.CommandLine) { throw "Cannot inspect live supervisor PID $($process.ProcessId). Rerun from PowerShell opened as Administrator." }
         if ($process.Name -eq 'structure_checkpoint_campaign_v18.exe' -and (-not $process.ExecutablePath -or -not $process.CommandLine)) {
-            throw 'Cannot verify a native campaign process identity. Run with permission to inspect that process.'
+            throw "Cannot inspect live campaign PID $($process.ProcessId) after rechecking. Rerun from PowerShell opened as Administrator. No unverified process was terminated."
         }
         if ($process.CommandLine -notmatch $setPattern -or $process.CommandLine -notmatch $runtimePattern) { continue }
         if ($process.ExecutablePath -ieq $identity.executable_path) { $process; continue }

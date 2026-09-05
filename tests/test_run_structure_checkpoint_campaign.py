@@ -692,7 +692,8 @@ def test_process_liveness_probe_does_not_terminate_a_real_child():
         child.wait(timeout=5)
 
 
-def test_legacy_stop_helper_verifies_identity_and_archives_stale_status(tmp_path):
+@pytest.mark.parametrize("identity_case", ["normal", "exited", "denied"])
+def test_legacy_stop_helper_verifies_identity_and_archives_stale_status(tmp_path, identity_case):
     import shutil
     import subprocess
     shell = shutil.which("pwsh") or shutil.which("powershell")
@@ -710,11 +711,16 @@ def test_legacy_stop_helper_verifies_identity_and_archives_stale_status(tmp_path
     (runtime / "campaign-status.json").write_text(json.dumps({"checkpoint_set_id": "test-set", "status": "degraded", "updated_at": "old", "counts": {"certified": 12}}))
     harness = tmp_path / "exercise.ps1"
     harness.write_text(r'''
-param($Helper, $Runtime)
+param($Helper, $Runtime, $IdentityCase)
 $ErrorActionPreference='Stop'
 $global:stopped=$false
 function global:Get-CimInstance {
     param($ClassName,$Filter)
+    if ($Filter -eq 'ProcessId = 777') {
+        if ($IdentityCase -eq 'denied') { [pscustomobject]@{ProcessId=777; Name='structure_checkpoint_campaign_v18.exe'; ExecutablePath=$null; CommandLine=$null; CreationDate='ghost'} }
+        return
+    }
+    if ($IdentityCase -ne 'normal') { [pscustomobject]@{ProcessId=777; Name='structure_checkpoint_campaign_v18.exe'; ExecutablePath=$null; CommandLine=$null; CreationDate='ghost'} }
     if (-not $global:stopped) {
         [pscustomobject]@{ProcessId=123; Name='structure_checkpoint_campaign_v18.exe'; ExecutablePath='D:\owned.exe'; CommandLine="worker --checkpoint-set-id test-set --runtime-dir `"$Runtime\workers\worker-01`""; CreationDate='same'}
     }
@@ -728,7 +734,12 @@ function global:Stop-Process {
 & $Helper -RuntimeDir $Runtime -CheckpointSetId test-set -GraceSeconds 0
 if (-not $global:stopped) { throw 'Owned worker was not stopped' }
 ''')
-    result = subprocess.run([shell, "-NoProfile", "-File", str(harness), str(helper), str(runtime)], capture_output=True, text=True)
+    result = subprocess.run([shell, "-NoProfile", "-File", str(harness), str(helper), str(runtime), identity_case], capture_output=True, text=True)
+    if identity_case == "denied":
+        assert result.returncode != 0
+        assert "777" in result.stderr and "Administrator" in result.stderr
+        assert json.loads((runtime / "campaign-status.json").read_text())["status"] == "degraded"
+        return
     assert result.returncode == 0, result.stdout + result.stderr
     final = json.loads((runtime / "campaign-status.json").read_text(encoding="utf-8"))
     assert final["status"] == "interrupted" and final["counts"]["certified"] == 12
