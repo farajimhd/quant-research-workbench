@@ -2673,7 +2673,7 @@ function LegendEditor({
           </span>
           <span className="legend-filter-subtitle">Chart labels</span>
           <span className="legend-filter-grid">
-            <UnifiedVisibilityToggle checked={item.showUnifiedQualityLabel !== false} label="Conservative quality" onChange={(showUnifiedQualityLabel) => onUpdate({ showUnifiedQualityLabel })} />
+            <UnifiedVisibilityToggle checked={item.showUnifiedQualityLabel !== false} label="ticker_relative_quality_score" onChange={(showUnifiedQualityLabel) => onUpdate({ showUnifiedQualityLabel })} />
           </span>
         </fieldset>
       ) : null}
@@ -6411,11 +6411,12 @@ function drawPriceZonePrimitiveLabels(
         zone.annotationKind === "unified-structure-level"
         && zone.latest
         && settings.showUnifiedQualityLabel
-        && Number.isFinite(zone.holdQualityScore)
       ) {
         drawUnifiedQualityLabel(
           context,
-          `Q${Math.round(clampNumber(zone.holdQualityScore, 0, 1, 0) * 100)}%`,
+          Number.isFinite(zone.tickerRelativeQualityScore)
+            ? `TQ${Math.round(clampNumber(zone.tickerRelativeQualityScore, 0, 1, 0) * 100)}%`
+            : "TQ —",
           span,
           center,
           borderColor,

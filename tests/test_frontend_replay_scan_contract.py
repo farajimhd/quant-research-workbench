@@ -604,6 +604,13 @@ def test_unified_structure_scores_can_filter_loaded_levels_without_a_history_req
     assert "Evidence quality" in renderer_source
     assert 'label="hold_quality_score"' in renderer_source
     assert 'label="ticker_relative_quality_score"' in renderer_source
+    assert 'label="Conservative quality"' not in renderer_source
+    label_renderer = renderer_source.split('&& settings.showUnifiedQualityLabel', 1)[1].split('if (zone.currentLevelSide', 1)[0]
+    assert 'Number.isFinite(zone.tickerRelativeQualityScore)' in label_renderer
+    assert '`TQ${Math.round(clampNumber(zone.tickerRelativeQualityScore, 0, 1, 0) * 100)}%`' in label_renderer
+    assert '"TQ —"' in label_renderer
+    assert 'zone.holdQualityScore' not in label_renderer
+    assert 'TQ${Math.round(tickerRelativeQuality * 100)}%' in chart_source
     assert 'badge="Ticker-normalized"' in renderer_source
     assert "Same-role percentile against this ticker's distribution frozen at 04:00 ET." in renderer_source
     assert "Loaded normalized evidence" in renderer_source

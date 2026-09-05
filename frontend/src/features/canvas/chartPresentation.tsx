@@ -943,7 +943,7 @@ function pushUnifiedStructureLevels(
       borderStyle: "solid",
       borderWidth: 0,
       color,
-      compactLabel: `${low ? "S" : "R"} Q${Math.round(holdQuality * 100)}${tickerRelativeQuality == null ? "" : ` · TQ${Math.round(tickerRelativeQuality * 100)}`} · n${holdObservations}`,
+      compactLabel: `${low ? "S" : "R"} ${tickerRelativeQuality == null ? "TQ —" : `TQ${Math.round(tickerRelativeQuality * 100)}%`} · n${holdObservations}`,
       breakProbability,
       defaultVisible: true,
       displayItemId: "indicator.qmd_unified_structure",
