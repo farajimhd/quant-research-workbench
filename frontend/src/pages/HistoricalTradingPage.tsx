@@ -361,7 +361,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       actionSummary={launchReady ? <><strong>{normalizedTickers.join(", ")}</strong> will run together on <strong>{sessionDate}</strong> from <strong>{startTime.slice(0, 5)}–{endTime.slice(0, 5)} ET</strong> using one shared simulated portfolio and strategy revision <strong>{selectedPlan?.strategy_revision}</strong> (candidate {preflight?.configuration_revision}).</> : !tickerReady ? parsedTickers.invalid.length ? `Remove invalid ticker${parsedTickers.invalid.length === 1 ? "" : "s"}: ${parsedTickers.invalid.join(", ")}.` : "Enter at least one valid ticker before starting." : warmingIndicators ? "Preparing persisted 1-second indicator warm-ups." : !periodReady ? "Choose a valid period inside 04:00–20:00 ET." : preflight && !resolvedSessionMatches ? "The selected date is not an exchange session. Choose a trading day." : "Resolve each required readiness item before starting."}
       busy={creating}
       checking={checking || warmingIndicators || loadingOptions}
-      checkingLabel={loadingOptions ? "Loading saved candidates and strategy settings…" : warmingIndicators ? "Preparing 1-second indicator history…" : "Validating parameters, strategy version, and services…"}
+      checkingLabel={loadingOptions ? "Loading strategy settings…" : warmingIndicators ? "Preparing indicators…" : "Checking strategy and services…"}
       checks={launchChecks}
       description="Evaluate an immutable Test Candidate across a bounded historical window using the same strategy, Portfolio, OMS, and journal contracts as Paper and Live."
       error={optionsError || error}

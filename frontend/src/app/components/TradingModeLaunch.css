@@ -1,10 +1,18 @@
 /* Shared entry surface for Live, Replay, Backtest, and Debug. */
-.app-loading-state.mode-launch-setup-loading {
-  justify-content: flex-start;
-  margin: 0 0 16px;
-  min-height: 0;
+.mode-launch-validation-status {
+  align-items: center;
+  box-sizing: border-box;
+  color: var(--muted-foreground);
+  display: flex;
+  flex: 0 0 auto;
+  font-size: 12px;
+  gap: 8px;
+  height: 4em;
+  line-height: 1.35;
   padding: 8px 0;
 }
+.mode-launch-validation-status .loading-spinner { flex: 0 0 auto; }
+.mode-launch-validation-status .is-idle { animation: none; visibility: hidden; }
 
 .mode-launch-evidence {
   color: var(--muted-foreground);

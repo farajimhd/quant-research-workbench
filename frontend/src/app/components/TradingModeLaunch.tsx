@@ -2,7 +2,6 @@ import { CheckCircle2, CircleStop, RefreshCcw, TriangleAlert, type LucideIcon } 
 import type { ReactNode } from "react";
 
 import { InventoryFilterSelect, type InventoryFilterOption } from "./InventoryFilterSelect";
-import { LoadingState } from "./LoadingState";
 import "./TradingModeLaunch.css";
 
 export type TradingLaunchCheck = {
@@ -73,7 +72,7 @@ export function TradingModeLaunch({
   busy,
   busyLabel = "Preparing Canvas…",
   checking,
-  checkingLabel = "Validating parameters and checking readiness…",
+  checkingLabel = "Checking setup…",
   checks,
   children,
   description,
@@ -124,23 +123,25 @@ export function TradingModeLaunch({
           <div><span>{setupEyebrow}</span><strong>{setupTitle}</strong></div>
           {onRefresh ? <button aria-label="Check readiness again" className="button secondary compact" disabled={checking} onClick={onRefresh} type="button"><RefreshCcw aria-hidden="true" size={14} /> Check again</button> : null}
         </div>
-        {checking ? <LoadingState className="mode-launch-setup-loading" label={checkingLabel} /> : null}
         <div className="configuration-field-grid mode-launch-fields">{children}</div>
       </div>
 
       <aside className="mode-launch-readiness" data-ready={ready ? "true" : "false"}>
         <header>
           <div className="mode-launch-state-icon">{ready ? <CheckCircle2 aria-hidden="true" size={19} /> : <CircleStop aria-hidden="true" size={19} />}</div>
-          <div><span>Readiness</span><strong>{checking ? "Checking services" : ready ? "Ready to open" : "Action required"}</strong></div>
+          <div><span>Readiness</span><strong>{checking ? "Checking setup" : ready ? "Ready to open" : "Action required"}</strong></div>
           <small>{readyCount}/{requiredChecks.length || checks.length} required</small>
         </header>
+        <div aria-live="polite" className="mode-launch-validation-status" role="status">
+          <span aria-hidden="true" className={`loading-spinner${checking ? "" : " is-idle"}`} />
+          <span>{checking ? checkingLabel : ready ? "Setup checks passed." : "Review the checks below."}</span>
+        </div>
         <div className="mode-launch-checks">
           {checks.map((check) => <article data-status={check.status} key={check.id}>
             <span>{check.status === "ready" ? <CheckCircle2 aria-hidden="true" size={15} /> : <TriangleAlert aria-hidden="true" size={15} />}</span>
             <div><strong>{check.label}</strong>{check.status !== "ready" && check.summary ? <p>{check.summary}</p> : null}{check.status !== "ready" && check.evidence !== check.summary ? <TradingLaunchEvidence evidence={check.evidence} /> : null}</div>
             {check.action?.hash ? <button className="button secondary compact" onClick={() => { window.location.hash = check.action?.hash || "#revision-configuration"; }} type="button">{check.action.label || "Resolve"}</button> : null}
           </article>)}
-          {!checks.length && checking ? <div className="mode-launch-checking"><span className="loading-spinner" aria-hidden="true" /> Resolving required services and configuration…</div> : null}
         </div>
         <div className="mode-launch-command">
           <p>{actionSummary}</p>
