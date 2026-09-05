@@ -32,7 +32,7 @@ RUNTIME_BINARY_NAME = (
 )
 MAX_PROCESS_WORKERS = 96
 ALGORITHM_VERSION = 18
-CAMPAIGN_VERSION = 11
+CAMPAIGN_VERSION = 12
 HOLD_SCORE_REVISION = "beta22-wilson90-v1"
 RELATIVE_SCORE_REVISION = "frozen-prior-session-role-ecdf-midrank-v1"
 CERTIFICATION_SCHEMA_VERSION = 3
@@ -603,18 +603,22 @@ def aggregate_status(paths, plans, started, rates, processes, stopping=False) ->
     # Deriving this value from the immutable plan keeps startup progress truthful.
     counts["queued"] = max(total_units - counts["finished"] - counts["active"], 0)
     now = time.monotonic()
-    # Recovery credits saved events without replaying them. Start a new rate
-    # window after recovery or counter rollback rather than forecasting that
-    # cheap coverage as the cost of replaying the remaining market history.
-    recovering = any("recovery" in stage for row in statuses for stage in row.get("stages", {}).values())
-    if rates and (events < rates[-1][1] or len(rates[-1]) < 3 or counts["skipped"] != rates[-1][2] or recovering):
+    # Keep independent counters: recovery coverage must not reset other
+    # workers' replay rate or be mistaken for replay throughput.
+    recovery_known = all("recovered_events" in row or not row.get("counts", {}).get("skipped", 0) for row in statuses)
+    recovered = sum(int(row.get("recovered_events", 0)) for row in statuses)
+    replayed = max(events - recovered, 0)
+    if rates and (len(rates[-1]) < 4 or replayed < rates[-1][1] or recovered < rates[-1][2]):
         rates.clear()
-    rates.append((now, events, counts["skipped"]))
+    rates.append((now, replayed, recovered, events))
     while len(rates) > 1 and rates[1][0] <= now - 300:
         rates.popleft()
-    rate = 0.0
-    if len(rates) > 1 and now - rates[0][0] >= 15 and events >= rates[0][1]:
-        rate = (events - rates[0][1]) / (now - rates[0][0])
+    rate = recovery_rate = coverage_rate = 0.0
+    if len(rates) > 1 and now - rates[0][0] >= 15:
+        duration = now - rates[0][0]
+        rate = (replayed - rates[0][1]) / duration if recovery_known else 0.0
+        recovery_rate = (recovered - rates[0][2]) / duration if recovery_known else 0.0
+        coverage_rate = (events - rates[0][3]) / duration
     active, issues = [], []
     stages: dict[str, int] = {}
     worker_details = []
@@ -631,7 +635,7 @@ def aggregate_status(paths, plans, started, rates, processes, stopping=False) ->
         if row is None:
             continue
         if process.poll() is None:
-            busy_workers += int(bool(row.get("active")))
+            busy_workers += int(bool(row.get("active")) or any(not stage.startswith("waiting") for stage in row.get("stages", {}).values()))
             active += [f"W{worker + 1:02d} {ticker}@{date}" for ticker, date in row.get("active", {}).items()]
             worker_stages = row.get("stages", {})
             for ticker, stage in worker_stages.items():
@@ -652,9 +656,12 @@ def aggregate_status(paths, plans, started, rates, processes, stopping=False) ->
         "total_estimated_events": total_events,
         "events_processed": events,
         "event_rate_5m": rate,
+        "recovery_event_rate_5m": recovery_rate,
+        "coverage_event_rate_5m": coverage_rate,
+        "recovered_events": recovered,
         "eta_seconds": (max(total_events - events, 0) / rate
-                        if rate > 0 and not recovering and not failed_workers and not counts["failed"] and events < total_events else None),
-        "eta_basis": "recent replay coverage rate; approximate",
+                        if rate > 0 and not failed_workers and not counts["failed"] and events < total_events else None),
+        "eta_basis": "remaining coverage at measured replay rate; recovery counted separately; approximate",
         "worker_processes_busy": busy_workers,
         "worker_processes_waiting": max(len(processes) - exited - busy_workers, 0),
         "elapsed_seconds": now - started,
@@ -713,7 +720,8 @@ def render_plain(status: dict[str, Any]) -> str:
         f"queued={counts['queued']} failed={counts['failed']} blocked={counts['blocked']} "
         f"worker_failures={status.get('worker_processes_failed', 0)} startup_failures={status.get('worker_startup_failures', 0)} restarts={status.get('worker_restarts', 0)} "
         f"retries={counts['retried']} events={fmt_count(status['events_processed'])}/"
-        f"{fmt_count(status['total_estimated_events'])} rate={fmt_count(status['event_rate_5m'])}/s "
+        f"{fmt_count(status['total_estimated_events'])} replay_rate={fmt_count(status['event_rate_5m'])}/s "
+        f"recovery_rate={fmt_count(status.get('recovery_event_rate_5m', 0))}/s "
         f"elapsed={fmt_duration(status['elapsed_seconds'])} eta={eta_label(status)}"
     )
 
@@ -743,7 +751,7 @@ def render_rich(status: dict[str, Any], set_id: str):
     )
     summary.add_row("Recovered days", fmt_count(counts["skipped"]))
     summary.add_row("Events covered", f"{fmt_count(status['events_processed'])} / {fmt_count(total)}  {pct:.1f}%")
-    summary.add_row("Coverage rate", f"{fmt_count(status['event_rate_5m'])}/s aggregate (5m)")
+    summary.add_row("Replay | recovery rate", f"{fmt_count(status['event_rate_5m'])}/s | {fmt_count(status.get('recovery_event_rate_5m', 0))}/s (5m)")
     summary.add_row("Elapsed | ETA", f"{fmt_duration(status['elapsed_seconds'])} | {eta_label(status)}")
     if status.get("monitor_mode") == "reattached":
         oldest = status.get("oldest_worker_status_age_seconds")
@@ -835,7 +843,7 @@ def monitor_existing_campaign(
     starts = [value for row in initial_rows if (value := _status_timestamp(row, "started_at"))]
     elapsed = max((datetime.now(timezone.utc) - min(starts)).total_seconds(), 0.0) if starts else 0.0
     started = time.monotonic() - elapsed
-    rates: deque[tuple[float, int, int]] = deque()
+    rates: deque[tuple[float, int, int, int]] = deque()
     announced: set[str] = set()
     interactive = sys.stdout.isatty()
     live, last_plain = None, 0.0
@@ -1302,7 +1310,7 @@ def main(argv: list[str] | None = None) -> int:
         build = subprocess.run([str(binary), "--campaign-build-info"], check=True, capture_output=True, text=True)
         build_info = json.loads(build.stdout)
         if build_info.get("algorithm_version") != ALGORITHM_VERSION or build_info.get("campaign_version") != CAMPAIGN_VERSION:
-            raise RuntimeError("This campaign requires the version-10 algorithm-18 executable; refusing a different engine")
+            raise RuntimeError("This campaign requires the version-12 algorithm-18 executable; refusing a different engine")
         binary_sha256 = sha256_file(binary)
         print(f"Campaign executable: {binary} (SHA-256 {binary_sha256})", flush=True)
         print(

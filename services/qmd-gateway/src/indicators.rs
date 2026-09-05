@@ -125,14 +125,19 @@ async fn send_idempotent_clickhouse_request(
             Ok(response) => {
                 let status = response.status();
                 match response.text().await {
-                    Ok(_text) if status.is_success() => return Ok(attempt - 1),
+                    Ok(text) if status.is_success() && text.trim().is_empty() => return Ok(attempt - 1),
                     Ok(text) => {
                         let error = format!("ClickHouse HTTP {status}: {text}");
+                        eprintln!("{}", json!({"event":"checkpoint_write_attempt_failed", "phase":"response", "attempt":attempt, "max_attempts":attempts, "status":status.as_u16(), "error":text.chars().take(2048).collect::<String>()}));
+                        // A synchronous INSERT acknowledges success with an empty
+                        // body. ClickHouse can append an exception after HTTP 200.
+                        // Never certify an ambiguous or nonempty success response.
                         if attempt == attempts || !retryable_clickhouse_write_status(status) {
                             return Err(error);
                         }
                     }
                     Err(error) => {
+                        eprintln!("{}", json!({"event":"checkpoint_write_attempt_failed", "phase":"response_body", "attempt":attempt, "max_attempts":attempts, "error":error.to_string()}));
                         if attempt == attempts {
                             return Err(format!(
                                 "ClickHouse idempotent checkpoint response failed after {attempt} attempts: {error:#}"
@@ -142,6 +147,8 @@ async fn send_idempotent_clickhouse_request(
                 }
             }
             Err(error) => {
+                let error = error.without_url();
+                eprintln!("{}", json!({"event":"checkpoint_write_attempt_failed", "phase":"request", "attempt":attempt, "max_attempts":attempts, "error":format!("{error:#}")}));
                 if attempt == attempts {
                     return Err(format!(
                         "ClickHouse idempotent checkpoint request failed before a confirmed response after {attempt} attempts: {error:#}"
@@ -4761,6 +4768,18 @@ mod tests {
         let bodies = state.1.lock().unwrap();
         assert_eq!(bodies.len(), 2);
         assert!(bodies.iter().all(|body| body == payload.as_bytes()));
+    }
+
+    #[tokio::test]
+    async fn checkpoint_writer_rejects_http_200_exception_body() {
+        use axum::{routing::post, Router};
+        let app = Router::new().route("/", post(|| async { "Code: 241. DB::Exception: memory limit exceeded" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let result = send_idempotent_clickhouse_request(&reqwest::Client::new(), &format!("http://{address}/"), "test", "", "INSERT test".into(), 3).await;
+        server.abort();
+        assert!(result.unwrap_err().contains("DB::Exception"));
     }
 
     #[test]

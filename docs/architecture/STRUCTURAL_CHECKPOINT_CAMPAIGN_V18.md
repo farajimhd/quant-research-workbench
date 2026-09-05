@@ -2,7 +2,7 @@
 
 The campaign launcher builds algorithm 18 with the `structural-prominence-v18`
 feature and runs `structure_checkpoint_campaign_v18`. Campaign protocol version
-11 is distinct from structural algorithm version 18. The old v16 executable and
+12 is distinct from structural algorithm version 18. The old v16 executable and
 default service builds retain their existing algorithms. A service consuming
 these new checkpoints must also use algorithm 18; renaming a checkpoint set
 does not make older checkpoints compatible.
@@ -25,16 +25,27 @@ finish. A shared durable queue balances work across up to **96 worker processes*
 one ticker's history is never split across racing workers. Protocol 11 removes the
 protocol-10 completion barrier, which limited useful initial concurrency to ten.
 
-The terminal distinguishes processes alive from workers assigned work and workers
-waiting or starting. ETA is approximate remaining event coverage divided by the
-recent aggregate coverage rate (up to five minutes, with at least 15 seconds of
-measurement). Recovery credits and counter resets restart the measurement window;
-failed work suppresses the estimate. Event coverage alone does not imply finished
+The terminal distinguishes processes alive from workers doing work (including
+source reads, validation and recovery) and workers waiting or starting. Protocol
+12 publishes a separate recovered-event counter. Replay throughput is the change
+in covered events minus recovered events; recovery throughput is measured separately.
+ETA uses remaining event coverage divided by replay throughput (up to five minutes,
+with at least 15 seconds of measurement). Concurrent recovery never resets the
+window; counter rollback does. Failed work suppresses the estimate. This estimate
+prices the remaining work as replay, rather than projecting cheap recovery onto it.
+Event coverage alone does not imply finished
 checkpoint certification. Changed throughput or ticker complexity can change ETA.
 Each priority ticker's full-history certification marker produces a one-time
 terminal completion message with the requested date range. The completed list
 and messages remain in `campaign-status.json` and reappear in a reattached monitor;
 finishing an individual day or merely exhausting event coverage does not qualify.
+
+Recovered write failures produce structured records in each worker's log with
+attempt number, request/response phase, HTTP status when available, and bounded
+error details. Session replay retries include ticker and session date. Successful
+retries remain historical diagnostics, not active blockers. Synchronous checkpoint
+INSERTs require both successful HTTP status and an empty response body; a trailing
+ClickHouse exception or unexpected body fails closed and cannot certify a day.
 
 Priority is scheduling metadata, not an input to structure construction. Rank
 the August 21, 2026 **04:00–20:00 Eastern** session by reported trade dollar

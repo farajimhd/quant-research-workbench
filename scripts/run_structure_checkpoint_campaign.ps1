@@ -111,7 +111,7 @@ if ($MonitorExisting) { $launcherArguments += '--monitor-existing' }
 if ($StopExisting) { $launcherArguments += @('--stop-existing', $StopExisting) }
 if ($CampaignArguments) { $launcherArguments += $CampaignArguments }
 
-Write-Host 'Structural Checkpoint Campaign v10 (algorithm 18)' -ForegroundColor Cyan
+Write-Host 'Structural Checkpoint Campaign v12 (algorithm 18)' -ForegroundColor Cyan
 if ($ResumeFromRuntime) {
     Write-Host "Recovery source remains immutable: $ResumeFromRuntime" -ForegroundColor DarkGray
     Write-Host "Successor target: $CheckpointSetId" -ForegroundColor Cyan

@@ -35,7 +35,7 @@ const MAX_ORDINAL_CHUNK: u64 = 1_000_000;
 const TARGET_FETCH_MILLIS: u128 = 3_000;
 const MAX_WORKERS: usize = 96;
 const CAMPAIGN_STOP_REQUESTED: &str = "campaign stop requested";
-const CAMPAIGN_VERSION: u16 = if cfg!(feature = "structural-prominence-v18") { 11 } else { 9 };
+const CAMPAIGN_VERSION: u16 = if cfg!(feature = "structural-prominence-v18") { 12 } else { 9 };
 static STATUS_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug)]
@@ -121,6 +121,7 @@ struct Progress {
     total_estimated_events: u64,
     counts: Counts,
     events_processed: u64,
+    recovered_events: u64,
     events_advanced: u64,
     active: BTreeMap<String, NaiveDate>,
     stages: BTreeMap<String, String>,
@@ -177,6 +178,7 @@ impl ProgressWriter {
                     ..Counts::default()
                 },
                 events_processed: 0,
+                recovered_events: 0,
                 events_advanced: 0,
                 active: BTreeMap::new(),
                 stages: BTreeMap::new(),
@@ -246,6 +248,7 @@ impl ProgressWriter {
                 progress.counts.certified += 1;
             }
             "skipped" => {
+                progress.recovered_events = progress.recovered_events.saturating_add(event_count);
                 progress.counts.skipped += 1;
                 progress.counts.certified += 1;
                 self.processed_events
@@ -1869,6 +1872,7 @@ async fn run_ticker(
                     ))
                 }
                 Err(error) if retryable_error(&error) && attempt < max_retries => {
+                    eprintln!("{}", serde_json::json!({"event":"campaign_retry", "phase":"session_replay", "ticker":plan.ticker, "session_date":session_date, "attempt":attempt + 1, "error":error.chars().take(2048).collect::<String>()}));
                     engine.seed_checkpoint(&checkpoint_before);
                     attempt += 1;
                     progress.retry().await?;
@@ -2927,6 +2931,11 @@ mod tests {
         drop(aborted);
 
         assert_eq!(writer.snapshot().await.events_processed, 100);
+        writer.finish_unit("SUGP", date, "skipped", 700, 0, 700).await.unwrap();
+        let snapshot = writer.snapshot().await;
+        assert_eq!(snapshot.events_processed, 800);
+        assert_eq!(snapshot.recovered_events, 700);
+        assert_eq!(snapshot.events_processed - snapshot.recovered_events, 100);
         let _ = std::fs::remove_file(path);
     }
 
@@ -2958,6 +2967,7 @@ mod tests {
                 unavailable: 0,
             },
             events_processed: 12_345_678,
+            recovered_events: 1_345_678,
             events_advanced: 11_000_000,
             stages: BTreeMap::new(),
             active: BTreeMap::from([

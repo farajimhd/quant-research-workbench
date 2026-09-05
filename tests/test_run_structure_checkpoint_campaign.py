@@ -556,18 +556,20 @@ def test_recovery_stages_are_visible_and_coverage_does_not_claim_an_eta(tmp_path
     result = aggregate_status([path], [{"estimated_events": 2000000, "sessions": list(range(32))}],
         time.monotonic() - 60, deque([(time.monotonic() - 30, 0)]), [_RunningProcess()])
     assert result["stages"] == {"persist recovery": 1}
+    assert result["worker_processes_busy"] == 1
+    assert result["worker_processes_waiting"] == 0
     assert result["worker_details"] == ["W01 ABC: persist recovery"]
     assert result["eta_seconds"] is None
     assert result["counts"]["certified"] == 16
     assert result["replayed_events"] == 0
 
 
-def test_eta_uses_measured_coverage_and_resets_after_recovery(tmp_path, monkeypatch):
+def test_eta_keeps_replay_throughput_during_concurrent_recovery(tmp_path, monkeypatch):
     from scripts import run_structure_checkpoint_campaign as campaign
     clock = [100.0]
     monkeypatch.setattr(campaign.time, "monotonic", lambda: clock[0])
     path = tmp_path / "status.json"
-    row = {"status": "running", "counts": {"active": 1}, "events_processed": 100,
+    row = {"status": "running", "counts": {"active": 1}, "events_processed": 100, "recovered_events": 0,
            "active": {"TEST": "2025-01-02"}, "stages": {"TEST": "replay"}}
     plans = [{"estimated_events": 1000, "sessions": [1, 2]}]
     rates = deque()
@@ -584,12 +586,16 @@ def test_eta_uses_measured_coverage_and_resets_after_recovery(tmp_path, monkeypa
     assert campaign.eta_label(result) == "~00:02:40 (recent rate)"
     row["counts"]["skipped"] = 1
     row["events_processed"] = 700
+    row["recovered_events"] = 500
     clock[0] = 121.0
-    assert sample()["eta_seconds"] is None
+    result = sample()
+    assert result["eta_seconds"] == pytest.approx(63.0)
+    assert result["recovery_event_rate_5m"] == pytest.approx(500 / 21)
     clock[0] = 141.0
     row["events_processed"] = 800
-    assert sample()["eta_seconds"] == 40.0
+    assert sample()["eta_seconds"] == 41.0
     row["events_processed"] = 20  # A restarted process must not keep its old rate.
+    row["recovered_events"] = 0
     clock[0] = 142.0
     assert sample()["eta_seconds"] is None
     row["counts"]["failed"] = 1
