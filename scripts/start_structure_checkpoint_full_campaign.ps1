@@ -1,6 +1,10 @@
 [CmdletBinding()]
 param(
     [string]$PythonExe = '',
+    [string]$Binary,
+    [ValidatePattern('^[0-9a-fA-F]{40}$')]
+    [string]$SourceCommit,
+    [switch]$NoBuild,
     [switch]$PreflightOnly
 )
 
@@ -18,6 +22,9 @@ $parameters = @{
     PriorityRanking = 'D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v18-v3\priority-ranking.json'
     PythonExe = $PythonExe
 }
+if ($Binary) { $parameters.Binary = $Binary }
+if ($SourceCommit) { $parameters.SourceCommit = $SourceCommit }
+if ($NoBuild) { $parameters.NoBuild = $true }
 if ($PreflightOnly) { $parameters.CampaignArguments = @('--preflight-only') }
 & (Join-Path $PSScriptRoot 'run_structure_checkpoint_campaign.ps1') @parameters
 exit $LASTEXITCODE

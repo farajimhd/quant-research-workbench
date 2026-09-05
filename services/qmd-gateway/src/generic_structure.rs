@@ -619,6 +619,9 @@ pub struct GenericStructureEngine {
     candidate_low_at: Option<DateTime<Utc>>,
     levels: Vec<StructureLevel>,
     unified_tracks: Vec<UnifiedLevelTrack>,
+    // Transient proof that the last consolidation made no merges. It is
+    // invalidated by any matching-key change and is not checkpoint state.
+    unified_consolidation_clean: bool,
     relative_quality_baseline: Option<TickerRelativeQualityBaseline>,
     timeframe_states: Vec<TimeframeState>,
     session_anchor: Option<NaiveDate>,
@@ -793,6 +796,7 @@ impl GenericStructureEngine {
             candidate_low_at: None,
             levels: Vec::new(),
             unified_tracks: Vec::new(),
+            unified_consolidation_clean: false,
             relative_quality_baseline: None,
             timeframe_states: STRUCTURE_TIMEFRAMES
                 .iter()
@@ -1469,6 +1473,7 @@ impl GenericStructureEngine {
         for track in &mut self.unified_tracks {
             let lower = track.level.lower;
             let upper = track.level.upper;
+            let matching_key = (track.level.side, track.level.pending_side, track.lifecycle.visible());
             let tick = price_tick(track.level.price);
             let relation = if price < lower {
                 -1
@@ -1606,6 +1611,9 @@ impl GenericStructureEngine {
                 | LevelLifecycle::RetestContact { direction, .. } => direction,
                 _ => 0,
             };
+            if matching_key != (track.level.side, track.level.pending_side, track.lifecycle.visible()) {
+                self.unified_consolidation_clean = false;
+            }
             // A trade changes lifecycle counters, not source membership or its
             // stored volumes. Merge/creation already refresh source aggregates.
             if rebuild_sources {
@@ -1614,25 +1622,33 @@ impl GenericStructureEngine {
                 refresh_unified_hold_evidence(&mut track.level);
             }
         }
-        // Pending-side transitions also participate in consolidation. Preserve
-        // its complete ordering and lifecycle semantics on every event.
-        consolidate_unified_tracks(&mut self.unified_tracks);
+        // Once a pass made no merges, identical matching keys cannot produce
+        // one. A merging pass is NOT assumed to be a fixed point: merged roles
+        // can enable another match, so the next event must run another pass.
+        if !SCORE_INDEPENDENT_BOOK || !self.unified_consolidation_clean {
+            self.unified_consolidation_clean = consolidate_unified_tracks(&mut self.unified_tracks);
+        }
     }
 
     fn refresh_unified_level_tracks(&mut self, ts: DateTime<Utc>, reference: f64) {
         let candidates =
             unified_structure_levels(&self.sym, &self.timeframe_states, &self.levels, reference);
         let tolerance = (price_tick(reference) * 2.0).max(reference * 0.0005);
+        // Episode geometry is fixed during merging. Build once per refresh;
+        // additions enter the index immediately, preserving sequential matches.
+        let mut price_index = TrackPriceIndex::default();
+        if SCORE_INDEPENDENT_BOOK {
+            for (index, track) in self.unified_tracks.iter().enumerate() {
+                price_index.insert(track.level.price, index);
+            }
+        }
         for candidate in candidates {
             let role_is_coherent = (candidate.side > 0 && reference >= candidate.lower - tolerance)
                 || (candidate.side < 0 && reference <= candidate.upper + tolerance);
             if !role_is_coherent {
                 continue;
             }
-            let matching = self
-                .unified_tracks
-                .iter_mut()
-                .filter(|track| {
+            let eligible = |track: &UnifiedLevelTrack| {
                     track.level.side == candidate.side
                         && !matches!(track.lifecycle, LevelLifecycle::Retired)
                         && if SCORE_INDEPENDENT_BOOK {
@@ -1641,14 +1657,26 @@ impl GenericStructureEngine {
                             candidate.lower <= track.level.upper + tolerance
                                 && candidate.upper >= track.level.lower - tolerance
                         }
-                })
-                .min_by(|left, right| {
-                    (left.level.price - candidate.price)
+                };
+            let nearest = |left: &usize, right: &usize| {
+                    (self.unified_tracks[*left].level.price - candidate.price)
                         .abs()
-                        .total_cmp(&(right.level.price - candidate.price).abs())
-                });
-            if let Some(track) = matching {
-                merge_unified_candidate(track, candidate);
+                        .total_cmp(&(self.unified_tracks[*right].level.price - candidate.price).abs())
+                        // Price-index traversal differs from vector traversal.
+                        // Equal distances must still select the original first.
+                        .then_with(|| left.cmp(right))
+                };
+            let matching = if SCORE_INDEPENDENT_BOOK {
+                price_index.candidates(&candidate)
+                    .filter(|index| eligible(&self.unified_tracks[*index]))
+                    .min_by(nearest)
+            } else {
+                (0..self.unified_tracks.len())
+                    .filter(|index| eligible(&self.unified_tracks[*index]))
+                    .min_by(nearest)
+            };
+            if let Some(index) = matching {
+                merge_unified_candidate(&mut self.unified_tracks[index], candidate);
                 continue;
             }
             let mut level = candidate;
@@ -1682,9 +1710,12 @@ impl GenericStructureEngine {
             track.level.lifecycle = "active".to_string();
             track.level.pending_side = 0;
             refresh_unified_track_evidence(&mut track);
+            if SCORE_INDEPENDENT_BOOK {
+                price_index.insert(track.level.price, self.unified_tracks.len());
+            }
             self.unified_tracks.push(track);
         }
-        consolidate_unified_tracks(&mut self.unified_tracks);
+        self.unified_consolidation_clean = consolidate_unified_tracks(&mut self.unified_tracks);
         prune_unified_tracks(&mut self.unified_tracks, reference);
     }
 
@@ -2038,6 +2069,7 @@ impl GenericStructureEngine {
                 lifecycle: LevelLifecycle::Active,
             })
             .collect();
+        self.unified_consolidation_clean = false;
         self.timeframe_states = snapshot
             .timeframe_states
             .iter()
@@ -2122,6 +2154,7 @@ impl GenericStructureEngine {
         self.candidate_low_at = checkpoint.candidate_low_at;
         self.levels = checkpoint.levels.clone();
         self.unified_tracks = checkpoint.unified_tracks.clone();
+        self.unified_consolidation_clean = false;
         for track in &mut self.unified_tracks {
             refresh_unified_hold_evidence(&mut track.level);
         }
@@ -3186,12 +3219,57 @@ fn unified_geometry_matches(left: &UnifiedStructureLevel, right: &UnifiedStructu
         && right.price <= left.upper + epsilon
 }
 
-fn consolidate_unified_tracks(tracks: &mut Vec<UnifiedLevelTrack>) {
+// Total ordering avoids rounding price buckets or changing floating-point
+// geometry. The index is transient and never enters checkpoint identity.
+#[derive(Clone, Copy, Debug)]
+struct OrderedTrackPrice(f64);
+impl PartialEq for OrderedTrackPrice {
+    fn eq(&self, other: &Self) -> bool { self.cmp(other).is_eq() }
+}
+impl Eq for OrderedTrackPrice {}
+impl PartialOrd for OrderedTrackPrice {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
+}
+impl Ord for OrderedTrackPrice {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.0.total_cmp(&other.0) }
+}
+
+#[derive(Default)]
+struct TrackPriceIndex(BTreeMap<OrderedTrackPrice, Vec<usize>>);
+impl TrackPriceIndex {
+    fn insert(&mut self, price: f64, index: usize) {
+        self.0.entry(OrderedTrackPrice(price)).or_default().push(index);
+    }
+
+    fn candidates(&self, level: &UnifiedStructureLevel) -> impl Iterator<Item = usize> + '_ {
+        use std::ops::Bound::{Included, Unbounded};
+        // unified_geometry_matches uses min(left_tick, right_tick). Using the
+        // candidate tick here is a conservative superset, followed by that
+        // unchanged exact predicate. Non-finite/reversed bounds scan all.
+        let epsilon = price_tick(level.price) * 1e-6;
+        let lower = level.lower - epsilon;
+        let upper = level.upper + epsilon;
+        let bounds = if lower.is_finite() && upper.is_finite() && lower <= upper {
+            (Included(OrderedTrackPrice(lower)), Included(OrderedTrackPrice(upper)))
+        } else {
+            (Unbounded, Unbounded)
+        };
+        self.0.range(bounds).flat_map(|(_, indices)| indices.iter().copied())
+    }
+}
+
+fn consolidate_unified_tracks(tracks: &mut Vec<UnifiedLevelTrack>) -> bool {
+    consolidate_unified_tracks_mode(tracks, SCORE_INDEPENDENT_BOOK)
+}
+
+fn consolidate_unified_tracks_mode(tracks: &mut Vec<UnifiedLevelTrack>, indexed: bool) -> bool {
+    let before = tracks.len();
     tracks.sort_unstable_by_key(|track| (track.level.created_at_ms, track.level.unified_level_id));
     let mut consolidated: Vec<UnifiedLevelTrack> = Vec::with_capacity(tracks.len());
+    let mut price_index = TrackPriceIndex::default();
     for track in tracks.drain(..) {
         let tolerance = price_tick(track.level.price) * 2.0;
-        let matching = consolidated.iter_mut().find(|existing| {
+        let eligible = |existing: &UnifiedLevelTrack| {
             (existing.level.side == track.level.side
                 || existing.level.pending_side == track.level.side
                 || track.level.pending_side == existing.level.side)
@@ -3203,8 +3281,16 @@ fn consolidate_unified_tracks(tracks: &mut Vec<UnifiedLevelTrack>) {
                     track.level.lower <= existing.level.upper + tolerance
                         && track.level.upper >= existing.level.lower - tolerance
                 }
-        });
-        if let Some(existing) = matching {
+        };
+        let matching = if indexed {
+            price_index.candidates(&track.level)
+                .filter(|index| eligible(&consolidated[*index]))
+                .min() // preserve oldest vector match, not nearest price
+        } else {
+            consolidated.iter().position(eligible)
+        };
+        if let Some(index) = matching {
+            let existing = &mut consolidated[index];
             // Retain the older episode identity and geometry. Evidence from a
             // duplicate episode strengthens it without rewriting its past.
             let touch_count = track.level.touch_count;
@@ -3227,10 +3313,12 @@ fn consolidate_unified_tracks(tracks: &mut Vec<UnifiedLevelTrack>) {
             }
             refresh_unified_track_evidence(existing);
         } else {
+            if indexed { price_index.insert(track.level.price, consolidated.len()); }
             consolidated.push(track);
         }
     }
     *tracks = consolidated;
+    tracks.len() == before
 }
 
 fn prune_unified_tracks(tracks: &mut Vec<UnifiedLevelTrack>, reference: f64) {
@@ -4128,6 +4216,37 @@ mod tests {
         for pair in stages.chunks(2) {assert_eq!(pair[0],(pair[1].0,true));assert!(!pair[1].1);}
     }
 
+    #[test]
+    #[cfg(feature = "structural-prominence-v18")]
+    fn clean_consolidation_matches_forced_pass_after_every_event_and_restore() {
+        let mut fast = GenericStructureEngine::new("TEST");
+        let mut reference = GenericStructureEngine::new("TEST");
+        let start = new_york_ms(2026, 8, 20, 9, 30, 0);
+        let mut clean_events = 0;
+        for i in 0..2400 {
+            if i == 1300 {
+                let checkpoint = fast.checkpoint();
+                fast.seed_checkpoint(&checkpoint);
+                reference.seed_checkpoint(&checkpoint);
+                assert!(!fast.unified_consolidation_clean);
+            }
+            let day_offset = if i >= 1600 { 86_400_000 } else { 0 };
+            // Distinct volumes avoid unrelated HashMap POC tie ordering in
+            // two freshly allocated reference engines.
+            let event = trade(start + i*1000 + day_offset, 0.98 + (i%67) as f64*0.001, (i*i+1) as f64, i as u64+1);
+            reference.unified_consolidation_clean = false;
+            let expected = reference.apply_event_without_snapshot(&event, TradeUpdateRule::regular());
+            let actual = fast.apply_event_without_snapshot(&event, TradeUpdateRule::regular());
+            assert_eq!(serde_json::to_value(actual).unwrap(), serde_json::to_value(expected).unwrap());
+            if fast.unified_consolidation_clean && !fast.unified_tracks.is_empty() { clean_events += 1; }
+            if i % 50 == 0 {
+                assert_eq!(serde_json::to_value(fast.checkpoint()).unwrap(), serde_json::to_value(reference.checkpoint()).unwrap());
+            }
+        }
+        assert!(clean_events > 100);
+        assert_eq!(serde_json::to_value(fast.checkpoint()).unwrap(), serde_json::to_value(reference.checkpoint()).unwrap());
+    }
+
     #[cfg(feature = "historical-campaign-v16")]
     #[test]
     fn campaign_v16_retains_its_certified_extrema_policy() {
@@ -4350,6 +4469,59 @@ mod tests {
         assert_eq!(track.level.touch_count, original.touch_count);
         assert_eq!(track.level.hold_count, original.hold_count);
         assert_eq!(track.level.break_count, original.break_count);
+    }
+
+    #[test]
+    #[cfg(feature = "structural-prominence-v18")]
+    fn indexed_consolidation_matches_original_scan_with_pending_roles_and_overlaps() {
+        let at = Utc.timestamp_millis_opt(1_700_000_000_000).unwrap();
+        let mut seed = 42_u64;
+        let mut next = || { seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1); seed };
+        let mut tracks = Vec::new();
+        for id in 0..1800 {
+            let price = 0.98 + (next() % 1500) as f64 * 0.0001;
+            let width = (next() % 20) as f64 * 0.0001;
+            let side = if next() % 3 == 0 { 1 } else { -1 };
+            let mut level = unified_test_level(id, side, price-width, price+width);
+            level.created_at_ms += (next() % 50) as i64;
+            level.hold_count = (next() % 9) as u32;
+            level.break_count = (next() % 4) as u32;
+            let lifecycle = match next() % 5 {
+                0 => LevelLifecycle::Active,
+                1 => LevelLifecycle::Crossed { direction: -side, first_crossed_at: at, beyond_trades: 2, beyond_volume: 100.0 },
+                2 => LevelLifecycle::AwaitingRetest { direction: -side, accepted_at: at },
+                3 => LevelLifecycle::RetestContact { direction: -side, contacted_at: at },
+                _ => LevelLifecycle::Retired,
+            };
+            level.lifecycle = lifecycle.label().into();
+            level.pending_side = if matches!(lifecycle, LevelLifecycle::AwaitingRetest { .. } | LevelLifecycle::RetestContact { .. }) { -side } else { 0 };
+            tracks.push(UnifiedLevelTrack { level, lifecycle, last_relation: 0 });
+        }
+        let mut expected = tracks.clone();
+        for _ in 0..4 {
+            consolidate_unified_tracks_mode(&mut expected, false);
+            consolidate_unified_tracks_mode(&mut tracks, true);
+            assert_eq!(serde_json::to_value(&tracks).unwrap(), serde_json::to_value(&expected).unwrap());
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "structural-prominence-v18")]
+    fn price_index_is_a_superset_of_exact_geometry_across_tick_boundary() {
+        let mut index = TrackPriceIndex::default();
+        let mut levels = Vec::new();
+        for (id, price) in [0.9999, 1.0, 1.000000000001, 0.999999999999, 1.01, 0.99].into_iter().enumerate() {
+            let mut level = unified_test_level(id as u64, -1, price-0.0001, price+0.0001);
+            level.price = price;
+            index.insert(price, id);
+            levels.push(level);
+        }
+        for level in &levels {
+            let found: Vec<_> = index.candidates(level).collect();
+            for (id, other) in levels.iter().enumerate() {
+                if unified_geometry_matches(level, other) { assert!(found.contains(&id)); }
+            }
+        }
     }
 
     #[test]
@@ -5412,7 +5584,9 @@ mod tests {
             source_inserted_at: effective_at,
         };
 
+        engine.unified_consolidation_clean = true;
         assert!(engine.apply_split_adjustment(&adjustment).unwrap());
+        assert!(!engine.unified_consolidation_clean);
         assert!(!engine.apply_split_adjustment(&adjustment).unwrap());
         let checkpoint = engine.checkpoint();
         assert_eq!(checkpoint.levels[0].level_id, 77);

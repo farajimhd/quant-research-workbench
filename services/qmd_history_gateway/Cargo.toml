@@ -22,6 +22,11 @@ name = "structure_checkpoint_replay_probe"
 path = "src/bin/structure_checkpoint_replay_probe.rs"
 required-features = ["structural-prominence-v18"]
 
+[[bin]]
+name = "structure_optimization_probe"
+path = "src/bin/structure_optimization_probe.rs"
+required-features = ["structural-prominence-v18"]
+
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
 chrono = { version = "0.4", features = ["serde"] }
