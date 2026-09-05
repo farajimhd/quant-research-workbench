@@ -4,12 +4,20 @@ Last updated: 2026-09-05
 
 Related task: TASK-0014
 
-Status: Revision 42 implementation reference. Focused verification is separate
+Status: Revision 43 implementation reference. Focused verification is separate
 from market-run acceptance. The user authorized a simultaneous JUNS and SUGP
 backtest for August 21, 2026, 04:00-09:30 Eastern, with shared account cash,
 including stopping, fixing defects and rerunning when necessary.
 
 ## 1. Authority and purpose
+
+Revision 43 accepts a completed non-red close above the current R3 without
+requiring another crossover when other entry conditions become ready later.
+R1 is nearest HOD, R2 second, and R3 third downward. Three qualified levels
+are required. Every entry decision rechecks the current causal R3 and all
+other gates; a saved acceptance does not authorize entry below a changed R3.
+Dojis remain allowed and flat-position entry remains on completed 1s bars.
+No revision-43 market backtest has been performed as part of this correction.
 
 Revision 42 adds the completed non-red candle gate, current-book multi-level
 crossing selection, and fresh validation of deferred target amendments.
@@ -134,11 +142,12 @@ At the current causal event:
 
 1. Take the current qualified resistance records from the shared level book.
 2. Restrict entry candidates to prices at or below the current session high.
-3. Select the three highest such resistance prices, or the available qualified
-   subset when fewer than three exist.
-4. Require a completed one-second close strictly above a selected resistance,
-   following a prior close at or below that boundary. The completed candle
-   must not be red: close >= open. Equality to resistance is not a breakout.
+3. Select the three highest such resistance prices: R1 nearest HOD, R2 second,
+   and R3 third downward. Wait if fewer than three qualify.
+4. A completed one-second non-red close strictly above R3 establishes entry
+   eligibility. The prior close need not be below R3. Later completed candles
+   above the current R3 can enter when the other conditions pass. Close must
+   be >= open; equality to R3 does not qualify.
 
 This set must follow changes in the current-day book and high of day. A wick
 can establish the high of day and can contribute a resistance through the
@@ -155,9 +164,12 @@ labels must identify which set is being shown.
 ### 4.2 Confirmation at the crossing
 
 Entry waits for a completed one-second candle. An intrabar crossing or wick
-is insufficient, and a red candle (close < open) blocks entry. The preceding
-completed close must be at or below the tracked resistance, and the new close
-must be strictly above its current producer price. Other conditions are:
+is insufficient, and a red candle (close < open) blocks entry. A non-red close
+above R3 establishes acceptance, retained for the same qualified R3 while
+completed closes remain above it. A changed R3 requires confirmation against
+its current producer price; missing or unqualified R3, or a close at/below R3,
+invalidates acceptance. This check uses the dynamic current book, not a fixed
+entry snapshot. Other conditions are:
 
 - One-second MACD line is above its signal line.
 - MACD line is above zero; the signal line need not be above zero.
@@ -166,8 +178,10 @@ must be strictly above its current producer price. Other conditions are:
 
 Entry uses the completed one-second MACD available at that candle boundary.
 Forming one-second MACD remains available for immediate exit evaluation.
-A later candle's favorable value cannot retroactively validate a failed
-crossing. The configured gates and observed values must be recorded so an
+A later candle's favorable MACD can authorize entry at that later boundary
+while its non-red close is still above current R3; another crossover is not
+required. It cannot retroactively authorize an earlier order. The configured
+gates and observed values must be recorded so an
 entry or missed entry can be explained without reconstructing it from a later
 chart image.
 

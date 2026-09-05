@@ -34,8 +34,8 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 42
-HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41)
+STRATEGY_REVISION = 43
+HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42)
 
 _COMPLETED_FRAME_TOP_N_ENTRY_MODE = "prior_completed_frame_top_n_below_session_high"
 _EVENT_PRICE_TOP_N_ENTRY_MODE = "event_price_top_n_below_session_high"
@@ -687,6 +687,10 @@ def default_long_momentum_parameters(
             "maximum_targets": 1, "require_resistance_role": True,
         })
         parameters["add"]["enabled"] = False
+    if revision >= 43:
+        parameters["structural_entry"].update(
+            persistent_r3_acceptance=True, maximum_entry_levels=3, acceptance_buffer_bps=0.0,
+        )
     parameters.pop("entry", None)
     return parameters
 
@@ -775,6 +779,10 @@ def resolve_long_momentum_parameters(
         )
         parameters["structural_entry"]["selection_mode"] = _COMPLETED_FRAME_TOP_N_ENTRY_MODE
         parameters["structural_entry"]["follow_current_level_prices"] = True
+    parameters["structural_entry"]["persistent_r3_acceptance"] = revision >= 43
+    if revision >= 43:
+        parameters["structural_entry"]["maximum_entry_levels"] = 3
+        parameters["structural_entry"]["acceptance_buffer_bps"] = 0.0
     execution = dict(parameters.get("execution") or {})
     execution.pop("time_in_force", None)
     execution.pop("outside_rth", None)
@@ -2033,11 +2041,11 @@ def _prior_completed_frame_resistance_trigger(
     policy: dict[str, Any],
     state: dict[str, Any],
 ) -> dict[str, Any]:
-    """Cross only the prior completed 1s frame's qualified resistance set."""
+    """Evaluate completed-close entry evidence using the versioned contract."""
 
     observed_at = observation.observed_at.isoformat()
-    # This mode has no cross latch. Remove legacy frontier state when a
-    # successor configuration starts from a previously serialized campaign.
+    # Remove legacy timed-cross frontier state. Revision 43 keeps separate
+    # R3 confirmation evidence that is revalidated against each current book.
     state.pop("accepted_entry_resistance", None)
     state.pop("pending_entry_resistance", None)
     completed_one_second = bool(
@@ -2163,6 +2171,14 @@ def _prior_completed_frame_resistance_trigger(
             row = dict(raw)
             if int(row.get("side") or 0) >= 0:
                 continue
+            if policy.get("persistent_r3_acceptance"):
+                try:
+                    if any(not isfinite(float(row[key])) or float(row[key]) > observation.observed_at.timestamp() * 1000
+                           for key in ("created_at_ms", "confirmed_at_ms", "updated_at_ms")
+                           if row.get(key) is not None):
+                        continue
+                except (TypeError, ValueError):
+                    continue
             price = _level_metric(row, "price", "upper", "lower")
             if (
                 price <= 0
@@ -2201,6 +2217,45 @@ def _prior_completed_frame_resistance_trigger(
         "levels": current_levels,
     }
     result["current_snapshot"] = dict(state["qualified_entry_resistance_snapshot"])
+    if policy.get("persistent_r3_acceptance"):
+        # R1 is nearest HOD; R3 is third down. A fresh crossover is not
+        # required when other gates become ready on a later completed bar.
+        # Re-select from the causal book each time, never a latched ladder.
+        r3 = current_levels[2] if len(current_levels) >= 3 else None
+        boundary = float(r3["entry_boundary"]) if r3 else None
+        above = boundary is not None and observation.price > boundary
+        non_red = bool(observation.bar_open is not None and observation.bar_open > 0
+                       and observation.price >= observation.bar_open)
+        accepted = state.get("accepted_entry_r3")
+        same_level = bool(
+            isinstance(accepted, Mapping) and r3
+            and accepted.get("unified_level_id") == r3.get("unified_level_id")
+            and accepted.get("threshold_price") == boundary
+        )
+        if not above or not same_level:
+            state.pop("accepted_entry_r3", None)
+        if above and non_red and "accepted_entry_r3" not in state:
+            state["accepted_entry_r3"] = {
+                "unified_level_id": r3.get("unified_level_id"),
+                "threshold_price": boundary,
+                "accepted_at": observed_at,
+                "confirmation_close": observation.price,
+            }
+        accepted = state.get("accepted_entry_r3")
+        passed = bool(above and non_red and accepted)
+        result.update(
+            passed=passed,
+            reason=("current_r3_completed_close_accepted" if passed else
+                    "waiting_for_three_qualified_entry_resistances" if r3 is None else
+                    "entry_closed_candle_bearish" if not non_red else
+                    "waiting_for_completed_close_above_current_r3"),
+            level={**r3, "threshold_price": boundary} if r3 else None,
+            reference_price=boundary,
+            threshold_price=boundary,
+            acceptance=dict(accepted) if accepted else None,
+            # This is an above-R3 acceptance, not a new crossing of R1/R2.
+            crossed_level_ids=[],
+        )
     state["latest_structural_entry_trigger"] = result
     return result
 

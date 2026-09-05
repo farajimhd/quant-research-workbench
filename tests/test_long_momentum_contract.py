@@ -26,7 +26,9 @@ def level(price, identity=None, *, confirmed_at=NOW, quality=0.8):
 
 
 def parameters(mode="qualified_support"):
-    result = strategy.resolve_long_momentum_parameters({"protection": {"trailing": {"mode": mode}}})
+    # Keep existing fresh-cross fixtures reproducible; revision 43 has its own suite.
+    result = strategy.resolve_long_momentum_parameters(
+        {"protection": {"trailing": {"mode": mode}}}, revision=42)
     result["protection"]["luld_profit_target"]["enabled"] = False
     return result
 
@@ -118,7 +120,7 @@ class StrategyContractTests(unittest.TestCase):
         self.assertEqual(state["structural_profit_target_frontier"][0]["unified_level_id"], "r1")
 
     def test_both_trailing_modes_are_versioned_and_selectable(self):
-        self.assertEqual(strategy.STRATEGY_REVISION, 42)
+        self.assertEqual(strategy.STRATEGY_REVISION, 43)
         self.assertEqual(parameters()["protection"]["trailing"]["mode"], "qualified_support")
         self.assertEqual(parameters("support_distance")["protection"]["trailing"]["mode"], "support_distance")
         with self.assertRaises(ValueError):
