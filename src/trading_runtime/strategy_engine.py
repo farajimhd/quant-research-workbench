@@ -34,8 +34,8 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 45
-HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44)
+STRATEGY_REVISION = 46
+HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45)
 
 _COMPLETED_FRAME_TOP_N_ENTRY_MODE = "prior_completed_frame_top_n_below_session_high"
 _EVENT_PRICE_TOP_N_ENTRY_MODE = "event_price_top_n_below_session_high"
@@ -790,6 +790,7 @@ def resolve_long_momentum_parameters(
         parameters["structural_entry"]["selection_mode"] = _COMPLETED_FRAME_TOP_N_ENTRY_MODE
         parameters["structural_entry"]["follow_current_level_prices"] = True
     parameters["structural_entry"]["persistent_r3_acceptance"] = revision >= 43
+    parameters["structural_entry"]["use_available_entry_resistances"] = revision >= 46
     if revision >= 43:
         parameters["structural_entry"]["maximum_entry_levels"] = 3
         parameters["structural_entry"]["acceptance_buffer_bps"] = 0.0
@@ -2264,7 +2265,15 @@ def _prior_completed_frame_resistance_trigger(
         # R1 is nearest HOD; R3 is third down. A fresh crossover is not
         # required when other gates become ready on a later completed bar.
         # Re-select from the causal book each time, never a latched ladder.
-        r3 = current_levels[2] if len(current_levels) >= 3 else None
+        # Revision 46 uses the lowest available of the top three; an empty
+        # qualified set still blocks. Older revisions require all three.
+        use_available = bool(policy.get("use_available_entry_resistances"))
+        if use_available:
+            r3 = current_levels[-1] if current_levels else None
+        else:
+            r3 = current_levels[2] if len(current_levels) >= 3 else None
+        missing_reason = ("waiting_for_qualified_entry_resistance" if use_available
+                          else "waiting_for_three_qualified_entry_resistances")
         boundary = float(r3["entry_boundary"]) if r3 else None
         above = boundary is not None and observation.price > boundary
         non_red = bool(observation.bar_open is not None and observation.bar_open > 0
@@ -2294,7 +2303,7 @@ def _prior_completed_frame_resistance_trigger(
             passed=passed,
             reason=("current_r3_completed_close_accepted" if passed and completed_one_second else
                     "current_r3_acceptance_valid_intrabar" if passed else
-                    "waiting_for_three_qualified_entry_resistances" if r3 is None else
+                    missing_reason if r3 is None else
                     "entry_closed_candle_bearish" if not non_red else
                     "waiting_for_completed_close_above_current_r3"),
             level={**r3, "threshold_price": boundary} if r3 else None,
@@ -2559,6 +2568,13 @@ class LongMomentumStrategyEngine:
         parameters: dict[str, Any],
         state: dict[str, Any],
     ) -> StrategyEngineResult:
+        if self.revision >= 46 and observation.pending_exit_quantity > 0:
+            # A flat projection alone cannot authorize another buy while a
+            # previous sell is still outstanding. Reconcile the exit first.
+            return self._result(
+                assignment, observation, "wait", "exit_fill_pending", 0.0, 1.0,
+                state, assignment.status,
+            )
         reentries = int(state.get("reentries") or 0)
         reentry = parameters["reentry"]
         state.pop("manual_entry_requested", None)

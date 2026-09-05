@@ -120,7 +120,7 @@ class StrategyContractTests(unittest.TestCase):
         self.assertEqual(state["structural_profit_target_frontier"][0]["unified_level_id"], "r1")
 
     def test_both_trailing_modes_are_versioned_and_selectable(self):
-        self.assertEqual(strategy.STRATEGY_REVISION, 45)
+        self.assertEqual(strategy.STRATEGY_REVISION, 46)
         self.assertEqual(parameters()["protection"]["trailing"]["mode"], "qualified_support")
         self.assertEqual(parameters("support_distance")["protection"]["trailing"]["mode"], "support_distance")
         with self.assertRaises(ValueError):

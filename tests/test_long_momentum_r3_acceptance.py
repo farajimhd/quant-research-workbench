@@ -25,6 +25,46 @@ def bar(second=0, close=101.2, prices=(103, 102, 101), **kwargs):
 
 
 class R3AcceptanceTests(unittest.TestCase):
+    def test_revision46_uses_lowest_of_up_to_three_and_preserves_revision45(self):
+        for prices, close, expected in (((7.29, 6.945), 7.2171, 6.945),
+                                        ((6.945,), 7.2171, 6.945),
+                                        ((7.4, 7.29, 6.945, 6.8), 7.2171, 6.945)):
+            obs = replace(bar(), price=close, bar_open=7.1, structural_session_high=7.47,
+                          structural_resistance_levels=tuple({**level(p), "side": -1} for p in prices))
+            policy = strategy.resolve_long_momentum_parameters(revision=46)["structural_entry"]
+            policy["minimum_reaction_probability"] = 0
+            state = {}
+            result = strategy._prior_completed_frame_resistance_trigger(obs, policy, state)
+            self.assertTrue(result["passed"])
+            self.assertEqual(result["threshold_price"], expected)
+            intrabar = replace(obs, observed_at=NOW + timedelta(milliseconds=500),
+                               evaluation_events=("market_data_update",))
+            self.assertTrue(strategy._prior_completed_frame_resistance_trigger(intrabar, policy, state)["passed"])
+            self.assertFalse(strategy._prior_completed_frame_resistance_trigger(
+                replace(obs, structural_resistance_levels=()), policy, {})["passed"])
+            if len(prices) < 3:
+                old = strategy.resolve_long_momentum_parameters(revision=45)["structural_entry"]
+                self.assertFalse(strategy._prior_completed_frame_resistance_trigger(obs, old, {})["passed"])
+
+    def test_revision46_waits_for_exit_then_allows_immediate_valid_reentry(self):
+        engine = strategy.LongMomentumStrategyEngine(revision=46)
+        policy = strategy.resolve_long_momentum_parameters(parameters(), revision=46)
+        current = assignment(strategy_revision=46, parameters=policy)
+        sources = {"indicator.flow_structure.score@100ms": {"value": .7},
+                   "indicator.flow_structure.confidence@100ms": {"value": .8},
+                   "indicator.macd.line@5s": {"value": .4},
+                   "indicator.macd.signal@5s": {"value": .2},
+                   "indicator.macd.histogram@5s": {"value": .2}}
+        obs = bar(source_values=sources)
+        for held, pending in ((50, 50), (0, 50), (0, 0)):
+            waiting = engine.evaluate(replace(current, status=strategy.AssignmentStatus.EXIT_PENDING),
+                                      replace(obs, position_quantity=held, pending_exit_quantity=pending))
+            self.assertFalse(any(i.action == "enter_long" for i in waiting.evaluation.intents))
+        waiting = engine.evaluate(current, replace(obs, pending_exit_quantity=50))
+        self.assertEqual(waiting.evaluation.signals[0].reason, "exit_fill_pending")
+        ready = engine.evaluate(current, obs)
+        self.assertEqual([i.action for i in ready.evaluation.intents], ["enter_long"])
+
     def trigger(self, observation, state=None):
         return strategy._prior_completed_frame_resistance_trigger(
             observation, parameters()["structural_entry"], state if state is not None else {})
