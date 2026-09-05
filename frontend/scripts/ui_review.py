@@ -1063,6 +1063,36 @@ def validate_canvas_interactions(
                 )
             try:
                 chart.get_by_text("Loading chart data...", exact=True).wait_for(state="hidden", timeout=120_000)
+                zoom_button = chart.get_by_role("button", name="Box zoom", exact=True)
+                zoom_button.wait_for(state="visible", timeout=30_000)
+                if not zoom_button.is_disabled():
+                    zoom_button.click()
+                    page.keyboard.press("Escape")
+                    if chart.locator(".chart-box-zoom").count():
+                        issues.append("Box zoom does not cancel with Escape")
+                    zoom_button.click()
+                    zoom_surface = chart.locator(".chart-box-zoom")
+                    zoom_bounds = zoom_surface.bounding_box()
+                    if zoom_bounds:
+                        x = zoom_bounds["x"]
+                        y = zoom_bounds["y"]
+                        w = zoom_bounds["width"]
+                        h = zoom_bounds["height"]
+                        page.mouse.move(x + w * .75, y + h * .75)
+                        page.mouse.down()
+                        page.mouse.move(x + w * .25, y + h * .25, steps=8)
+                        if interaction_screenshot:
+                            page.screenshot(path=str(interaction_screenshot.with_name(interaction_screenshot.stem + "__box-selection.png")))
+                        page.mouse.up()
+                        page.wait_for_timeout(350)
+                        if zoom_button.get_attribute("aria-pressed") != "false" or zoom_surface.count():
+                            issues.append("Box zoom does not apply and return to navigation after a reverse drag")
+                        if interaction_screenshot:
+                            page.screenshot(path=str(interaction_screenshot.with_name(interaction_screenshot.stem + "__box-result.png")))
+                            page.screenshot(path=str(interaction_screenshot))
+                        chart.get_by_role("button", name="Reset view", exact=True).click()
+                else:
+                    issues.append("Box zoom is unavailable on the populated review chart")
                 price_pane = chart.locator(".chart-price").first
                 price_pane.locator(".chart-pane-canvas canvas").first.wait_for(state="visible", timeout=30_000)
                 if not chart_stress_only:
@@ -2490,7 +2520,7 @@ def capture(args: argparse.Namespace) -> int:
                         and scenario["theme"] == "light"
                         and scenario["scale"] == 1.0
                         and scenario["viewport_name"] == "normal"
-                    ) else None
+                    ) else screenshot_path.with_name(f"{screenshot_path.stem}__chart-interaction.png") if scenario["page"] == "canvas-focus" else None
                     issues.extend(validate_canvas_interactions(
                         page, scenario, interaction_screenshot,
                         args.canvas_chart_timeframe, args.chart_stress_cycles,

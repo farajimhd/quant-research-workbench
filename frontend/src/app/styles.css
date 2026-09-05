@@ -5936,6 +5936,42 @@ button {
   border-top: 2px solid;
 }
 
+.chart-box-zoom {
+  position: absolute;
+  inset: 0;
+  left: var(--chart-plot-left, 0px);
+  right: var(--chart-plot-right, 0px);
+  z-index: 10;
+  pointer-events: auto;
+  touch-action: none;
+  cursor: crosshair;
+}
+.chart-box-zoom-hint {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--foreground);
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.chart-box-zoom-selection {
+  position: absolute;
+  border: 1px solid var(--primary);
+  background: color-mix(in srgb, var(--primary) 16%, transparent);
+  pointer-events: none;
+}
+.chart-component-toolbar .toolbar-button[aria-pressed="true"] {
+  color: var(--primary);
+  background: var(--accent-soft);
+  border-color: var(--primary);
+}
+
 .live-entry-price-line {
   border-top-width: 1px;
   pointer-events: none;

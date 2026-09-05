@@ -39,6 +39,7 @@ import {
   RefreshCcw,
   Settings,
   SlidersHorizontal,
+  ZoomIn,
   X
 } from "lucide-react";
 import { Component, forwardRef, type CSSProperties, type ErrorInfo, type FormEvent, type ReactNode, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -881,6 +882,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const [supervisionMenuOpen, setSupervisionMenuOpen] = useState(false);
   const [strategyPresentationOpen, setStrategyPresentationOpen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
+  const [boxZoomActive, setBoxZoomActive] = useState(false);
   const [chartSettingsOpen, setChartSettingsOpen] = useState(false);
   const [chartSettingsAnchor, setChartSettingsAnchor] = useState<HTMLButtonElement | null>(null);
   const legendStorageKey = settingsStorageKey ? `${settingsStorageKey}.legend` : LEGEND_SETTINGS_STORAGE_KEY;
@@ -1799,6 +1801,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       overlay.style.height = `${paneRect.height / scaleY}px`;
     };
     position(pricePaneOverlayRef.current, 0);
+    pricePaneOverlayRef.current?.style.setProperty("--chart-plot-left", `${chart.priceScale("left").width()}px`);
+    pricePaneOverlayRef.current?.style.setProperty("--chart-plot-right", `${chart.priceScale("right").width()}px`);
     oscillatorPaneRuntimesRef.current.forEach((runtime, key) => position(oscillatorPaneRefs.current.get(key) ?? null, runtime.paneIndex));
   }
 
@@ -1971,6 +1975,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         <button aria-label={latestRangeActionLabel(timeframe)} className="toolbar-button" type="button" title={latestRangeActionLabel(timeframe)} onClick={() => executeViewportCommand(() => fitLatestSession(priceChartRef.current, fitCandles(payload), timeframe, chartSettingsRef.current.hideEmptyIntervals))}><CalendarDays size={15} /></button>
         <button aria-label={reference ? "Center trade" : "Center latest"} className="toolbar-button" type="button" title={reference ? "Center trade" : "Center latest"} onClick={() => executeViewportCommand(() => centerReferenceOrLatest(priceChartRef.current, fitCandles(payload), reference, timeframe, undefined, chartSettingsRef.current.hideEmptyIntervals))}><AlignCenterHorizontal size={15} /></button>
         <button aria-label="Reset view" className="toolbar-button" type="button" title="Reset view" onClick={() => executeViewportCommand(() => resetChartViewport(priceChartRef.current, fitCandles(payload), timeframe, priceRef.current?.clientWidth ?? 0, chartSettingsRef.current.candleSize, chartSettingsRef.current.hideEmptyIntervals))}><RefreshCcw size={15} /></button>
+        <button aria-label="Box zoom" aria-pressed={boxZoomActive} className="toolbar-button" disabled={!hasChartData} type="button" title="Box zoom: drag a rectangle on the price chart. Escape cancels." onClick={() => setBoxZoomActive((active) => !active)}><ZoomIn size={15} /></button>
         {enableFullscreen ? (
           <>
             <span className="toolbar-divider" />
@@ -2028,6 +2033,26 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
               ))}
             </div>
             <div className="chart-native-pane-overlay" data-chart-pane="price" ref={pricePaneOverlayRef}>
+              {boxZoomActive ? <ChartBoxZoom key={`${ticker}:${timeframe}`} onCancel={() => setBoxZoomActive(false)} onZoom={(box) => {
+                const chart = priceChartRef.current;
+                const candle = candleRef.current;
+                if (!chart || !candle) return;
+                const from = chart.timeScale().coordinateToLogical(box.left);
+                const to = chart.timeScale().coordinateToLogical(box.right);
+                const priceRange = candle.priceScale().getVisibleRange();
+                const paneHeight = chart.panes()[0]?.getHeight() ?? 0;
+                const fromY = priceRange ? candle.priceToCoordinate(priceRange.from) : null;
+                const toY = priceRange ? candle.priceToCoordinate(priceRange.to) : null;
+                if (fromY === null || toY === null || paneHeight <= 1) return;
+                // Native custom ranges still include scale margins. Map their
+                // anchor coordinates into the selection so the box fills the pane.
+                const firstPrice = candle.coordinateToPrice(box.top + (box.bottom - box.top) * fromY / (paneHeight - 1));
+                const secondPrice = candle.coordinateToPrice(box.top + (box.bottom - box.top) * toY / (paneHeight - 1));
+                if (from === null || to === null || firstPrice === null || secondPrice === null || to <= from) return;
+                executeViewportCommand(() => chart.timeScale().setVisibleLogicalRange({ from, to }));
+                candle.priceScale().setVisibleRange({ from: Math.min(firstPrice, secondPrice), to: Math.max(firstPrice, secondPrice) });
+                setBoxZoomActive(false);
+              }} /> : null}
               <div className="session-layer" ref={priceLayerRef} />
               <ChartLegend
                 indicatorCount={priceIndicatorCount}
@@ -2068,6 +2093,45 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     </div>
   );
 });
+
+function ChartBoxZoom({ onCancel, onZoom }: { onCancel: () => void; onZoom: (box: { left: number; right: number; top: number; bottom: number }) => void }) {
+  const drag = useRef<{ x: number; y: number; pointerId: number } | null>(null);
+  const [selection, setSelection] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  useEffect(() => {
+    const cancel = (event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); onCancel(); } };
+    window.addEventListener("keydown", cancel);
+    return () => window.removeEventListener("keydown", cancel);
+  }, [onCancel]);
+  const point = (element: HTMLDivElement, clientX: number, clientY: number) => {
+    const rect = element.getBoundingClientRect();
+    // Pointer coordinates include the global UI scale; chart coordinates do not.
+    return { x: Math.max(0, Math.min(element.clientWidth, (clientX - rect.left) * element.clientWidth / rect.width)), y: Math.max(0, Math.min(element.clientHeight, (clientY - rect.top) * element.clientHeight / rect.height)) };
+  };
+  return <div className="chart-box-zoom" aria-label="Drag a box to zoom the price chart" onPointerDown={(event) => {
+    if (event.button !== 0 || drag.current) return;
+    event.preventDefault(); event.stopPropagation();
+    drag.current = { ...point(event.currentTarget, event.clientX, event.clientY), pointerId: event.pointerId };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setSelection(null);
+  }} onPointerMove={(event) => {
+    const start = drag.current;
+    if (!start || start.pointerId !== event.pointerId) return;
+    const end = point(event.currentTarget, event.clientX, event.clientY);
+    setSelection({ left: Math.min(start.x, end.x), top: Math.min(start.y, end.y), width: Math.abs(end.x - start.x), height: Math.abs(end.y - start.y) });
+  }} onPointerUp={(event) => {
+    const start = drag.current;
+    if (!start || start.pointerId !== event.pointerId) return;
+    drag.current = null;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    const end = point(event.currentTarget, event.clientX, event.clientY);
+    setSelection(null);
+    if (Math.abs(end.x - start.x) < 8 || Math.abs(end.y - start.y) < 8) return;
+    onZoom({ left: Math.min(start.x, end.x), right: Math.max(start.x, end.x), top: Math.min(start.y, end.y), bottom: Math.max(start.y, end.y) });
+  }} onPointerCancel={() => { drag.current = null; setSelection(null); }} onLostPointerCapture={() => { drag.current = null; setSelection(null); }}>
+    <span className="chart-box-zoom-hint">Drag to zoom · Esc to cancel</span>
+    {selection ? <div className="chart-box-zoom-selection" style={selection} /> : null}
+  </div>;
+}
 
 class ChartPanelErrorBoundary extends Component<{ children: ReactNode; resetKey: string }, { error: string }> {
   state = { error: "" };
@@ -5395,6 +5459,7 @@ function fitLatestSession(target: ChartRangeTarget, candles: Candle[], timeframe
 
 function resetChartViewport(chart: IChartApi | null, candles: Candle[], timeframe: string, chartWidth: number, candleSize: number, hideEmptyIntervals = true) {
   if (!chart) return;
+  chart.priceScale("right").applyOptions({ autoScale: true });
   const timeScale = chart.timeScale();
   const normalizedCandleSize = clampNumber(candleSize, 8, 80, defaultChartAppearanceSettings.candleSize);
   timeScale.applyOptions({
