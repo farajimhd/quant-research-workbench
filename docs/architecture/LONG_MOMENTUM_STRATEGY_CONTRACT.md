@@ -4,10 +4,21 @@ Last updated: 2026-09-04
 
 Related task: TASK-0014
 
-Status: Revision 39 implementation reference. Focused verification is separate
-from market-run acceptance; no backtest is authorized for this repair.
+Status: Revision 40 implementation reference. Focused verification is separate
+from market-run acceptance. The user authorized SUGP, August 21, 2026,
+04:00-04:45 Eastern, including a rerun after the re-entry repair.
 
 ## 1. Authority and purpose
+
+Revision 40 preserves the first exit fill's origin throughout liquidation.
+When a protective stop partially fills and a managed sell finishes the
+remainder, the flat position retains the protective-exit re-entry policy.
+The last execution route must not turn that campaign into a completed
+assignment. Re-entry permissions, `after_protective_exit`, and explicit
+exit-and-stop commands still apply. Origin state resets at each new entry;
+duplicate final fill notifications must not increment re-entry counts twice.
+This repairs the first trade in run `45d60046-7fc0-48f3-8403-67d711ff7b4a`,
+which was stopped at the user's request after becoming inactive at 04:03:12.
 
 This document records the user's intended long momentum strategy, including
 the corrections supplied during the September 4 code and backtest review.

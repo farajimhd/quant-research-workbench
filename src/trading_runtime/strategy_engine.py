@@ -34,8 +34,8 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 39
-HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38)
+STRATEGY_REVISION = 40
+HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39)
 
 _COMPLETED_FRAME_TOP_N_ENTRY_MODE = "prior_completed_frame_top_n_below_session_high"
 _EVENT_PRICE_TOP_N_ENTRY_MODE = "event_price_top_n_below_session_high"
@@ -3180,6 +3180,8 @@ class LongMomentumStrategyEngine:
                 "entry_reference_price": observation.price,
                 "entry_at": observation.observed_at.isoformat(),
                 "entry_acquisition_exit_latched": False,
+                "liquidation_origin_fill_role": "",
+                "liquidation_origin_reentry_after_fill": False,
                 "trailing_support_selection": None,
                 "pending_profit_target_advance": None,
                 "previous_target_close": None,
@@ -5389,6 +5391,14 @@ class AssignedLongMomentumStrategy:
                 status = AssignmentStatus.MANAGING
             elif action in {"exit", "take_profit", "cover"}:
                 fill_role = str(getattr(snapshot, "fill_role", "") or "")
+                if (assignment.strategy_revision >= 40 and incremental_fill > 0
+                        and not state.get("liquidation_origin_fill_role")):
+                    # The first sell owns the liquidation cause. A managed
+                    # remainder must not erase a partially filled stop/target.
+                    state["liquidation_origin_fill_role"] = fill_role or "managed_exit"
+                    state["liquidation_origin_reentry_after_fill"] = bool(
+                        getattr(snapshot, "reentry_after_fill", False)
+                    )
                 if assignment.strategy_revision >= 37:
                     state["entry_acquisition_exit_latched"] = True
                 incremental = incremental_fill
@@ -5499,11 +5509,17 @@ def _fill_allows_reentry(
     if not bool(reentry.get("enabled", True)):
         return False
     fill_role = str(getattr(snapshot, "fill_role", "") or "")
+    if assignment.strategy_revision >= 40 and state.get("liquidation_origin_fill_role"):
+        fill_role = str(state["liquidation_origin_fill_role"])
     if fill_role in {"protective_stop", "trailing_stop", "protective_exit"}:
         return bool(reentry.get("after_protective_exit", False))
     if fill_role == "profit_target":
         return True
-    return bool(getattr(snapshot, "reentry_after_fill", False))
+    return bool(
+        state.get("liquidation_origin_reentry_after_fill", False)
+        if assignment.strategy_revision >= 40 and state.get("liquidation_origin_fill_role")
+        else getattr(snapshot, "reentry_after_fill", False)
+    )
 
 
 def _trigger_reference(
