@@ -860,6 +860,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const initialFitTimerRef = useRef<number | null>(null);
   const overlayInteractionCleanupRef = useRef<(() => void) | null>(null);
   const crosshairInputCleanupRef = useRef<(() => void) | null>(null);
+  const wheelZoomCleanupRef = useRef<(() => void) | null>(null);
   const overlayRedrawFrameRef = useRef<number | null>(null);
   const overlayRedrawTimerRef = useRef<number | null>(null);
   const scaleStabilizationFrameRef = useRef<number | null>(null);
@@ -1281,6 +1282,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     });
     overlayInteractionCleanupRef.current = attachOverlayRedrawListeners(priceRef.current, scheduleOverlayRedraw, scheduleOverlayRedrawBurst);
     crosshairInputCleanupRef.current = attachZoomNormalizedCrosshairInput(priceRef.current);
+    wheelZoomCleanupRef.current = attachFastWheelZoom(priceRef.current, priceChart);
     window.requestAnimationFrame(() => resizeCharts());
     return () => cleanupChartRuntime();
   }, []);
@@ -1720,6 +1722,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     overlayInteractionCleanupRef.current = null;
     crosshairInputCleanupRef.current?.();
     crosshairInputCleanupRef.current = null;
+    wheelZoomCleanupRef.current?.();
+    wheelZoomCleanupRef.current = null;
     resizeObserverRef.current?.disconnect();
     resizeObserverRef.current = null;
     paneResizeObserverRef.current?.disconnect();
@@ -2192,6 +2196,31 @@ function attachOverlayRedrawListeners(target: HTMLElement | null, redraw: () => 
     target.removeEventListener("dblclick", redrawBurst);
     stopPointerRedraw(false);
   };
+}
+
+function attachFastWheelZoom(target: HTMLElement, chart: IChartApi) {
+  const zoom = (event: WheelEvent) => {
+    const handleScale = chart.options().handleScale;
+    const wheelEnabled = typeof handleScale === "boolean" ? handleScale : handleScale.mouseWheel;
+    if (!event.deltaY || Math.abs(event.deltaX) > Math.abs(event.deltaY) || !wheelEnabled) return;
+    const timeScale = chart.timeScale();
+    const range = timeScale.getVisibleLogicalRange();
+    const bounds = target.getBoundingClientRect();
+    const scale = bounds.width / target.clientWidth;
+    const x = (event.clientX - bounds.left) / scale - chart.priceScale("left").width();
+    if (!range || !Number.isFinite(x) || x < 0 || x > timeScale.width()) return;
+    const anchor = timeScale.coordinateToLogical(x);
+    if (anchor === null) return;
+    // A typical wheel notch changes the range by 30%, versus the native 10%.
+    // Preserve fine trackpad deltas and normalize line/page-based wheel devices.
+    const pixels = event.deltaY * (event.deltaMode === 1 ? 100 / 3 : event.deltaMode === 2 ? 100 : 1);
+    const factor = Math.pow(1.3, Math.max(-3, Math.min(3, pixels / 100)));
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    timeScale.setVisibleLogicalRange({ from: anchor + (range.from - anchor) * factor, to: anchor + (range.to - anchor) * factor });
+  };
+  target.addEventListener("wheel", zoom, { capture: true, passive: false });
+  return () => target.removeEventListener("wheel", zoom, { capture: true });
 }
 
 function attachZoomNormalizedCrosshairInput(target: HTMLElement | null) {
