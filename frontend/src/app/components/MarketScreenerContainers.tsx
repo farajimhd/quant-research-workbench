@@ -1030,7 +1030,10 @@ function strategyEvidenceSections(snapshot: ScreenerRow, referencePrice?: number
     }
     if (key === "entry_rules") {
       return Object.entries(value as ScreenerRow).map(([stage, stageValue]) => ({
-        facts: strategyEvidenceFacts(stageValue, [key, stage], [], referencePrice),
+        facts: [
+          ...(stage === "trigger" ? structuralEntrySummary(snapshot.unified_structural_trigger) : []),
+          ...strategyEvidenceFacts(stageValue, [key, stage], [], referencePrice),
+        ],
         label: `${readableEvidenceLabel(stage)} gate`,
         path: `${key}.${stage}`,
         result: strategyEvidenceResult(stageValue, stage === "veto"),
@@ -1065,7 +1068,7 @@ function strategyEvidenceFacts(value: unknown, path: string[] = [], result: Stra
   if (typeof value === "object") {
     const condition = value as ScreenerRow;
     if (typeof condition.passed === "boolean" && ("comparator" in condition || "left_value" in condition || "right_value" in condition)) {
-      const leftLabel = readableEvidenceLabel(String(condition.left_source_id || condition.condition_id || `Condition ${path.at(-1) ?? ""}`));
+      const leftLabel = strategyEvidenceSourceLabel(String(condition.left_source_id || condition.condition_id || `Condition ${path.at(-1) ?? ""}`));
       const timeframe = String(condition.left_timeframe || "");
       const comparator = readableEvidenceComparator(String(condition.comparator || "requires"), condition.buffer_bps, condition.right_value);
       const actual = formatStrategyEvidenceValue(condition.left_value);
@@ -1075,7 +1078,7 @@ function strategyEvidenceFacts(value: unknown, path: string[] = [], result: Stra
         label: `${leftLabel}${timeframe ? ` · ${timeframe}` : ""}`,
         path: path.join("."),
         result: inverse ? (condition.passed ? "fail" : "clear") : condition.passed ? "pass" : "fail",
-        value: `Actual ${actual} · ${comparator} ${expected}`,
+        value: strategyConditionExplanation(condition) ?? `Actual ${actual} · ${comparator} ${expected}${condition.right_source_id ? ` (${strategyEvidenceSourceLabel(String(condition.right_source_id))})` : ""}`,
       });
       return result;
     }
@@ -1112,6 +1115,47 @@ function strategyEvidenceFacts(value: unknown, path: string[] = [], result: Stra
     value: isDecision ? inverse ? (value ? "Veto triggered" : "Veto not triggered") : value ? "Requirement met" : "Requirement not met" : formatStrategyEvidenceValue(value),
   });
   return result;
+}
+
+function strategyEvidenceSourceLabel(source: string) {
+  const labels: Record<string, string> = {
+    "data.market.last_price@1:value": "Last traded price",
+    "data.indicator.structure.unified_resistance_upper@1:value": "Selected entry resistance",
+    "data.indicator.vwap.execution_value@1:value": "Execution VWAP",
+    "data.indicator.macd.line@1:value": "MACD line",
+    "data.indicator.macd.signal@1:value": "MACD signal",
+  };
+  return labels[source] ?? readableEvidenceLabel(source);
+}
+
+function structuralEntrySummary(value: unknown): StrategyEvidenceFact[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  const trigger = value as ScreenerRow;
+  const current = trigger.current_snapshot as ScreenerRow | undefined;
+  const levels = Array.isArray(current?.levels) ? current.levels as ScreenerRow[] : [];
+  if (!levels.length) return [];
+  const ladder = levels.map((level, index) => `R${index + 1}: $${formatStrategyEvidenceValue(level.price)}`).join(" · ");
+  const reason = readableEvidenceLabel(String(trigger.reason || "See recorded structural acceptance evidence")).toLowerCase();
+  return [{ label: "Entry resistance selection", path: "entry_rules.trigger.selection", value: `HOD: $${formatStrategyEvidenceValue(current?.session_high)} · ${ladder}. R1 is nearest below HOD. ${reason.charAt(0).toUpperCase()}${reason.slice(1)}.` }];
+}
+
+function strategyConditionExplanation(condition: ScreenerRow): string | null {
+  if (condition.comparator !== "above_by_bps") return null;
+  const actual = condition.left_value;
+  const reference = condition.right_value;
+  const buffer = condition.buffer_bps;
+  if (typeof actual !== "number" || typeof reference !== "number" || typeof buffer !== "number"
+    || ![actual, reference, buffer].every(Number.isFinite)) return null;
+  const threshold = typeof condition.threshold_value === "number" && Number.isFinite(condition.threshold_value)
+    ? condition.threshold_value : reference * (1 + buffer / 10_000);
+  const priceSource = condition.left_source_id === "data.market.last_price@1:value";
+  const value = (number: number) => `${priceSource ? "$" : ""}${formatStrategyEvidenceValue(number)}`;
+  const difference = actual - threshold;
+  const relation = difference > 0 ? "above" : difference < 0 ? "below" : "equal to";
+  const referenceLabel = strategyEvidenceSourceLabel(String(condition.right_source_id || "Reference"));
+  const bufferLabel = buffer === 0 ? "No extra buffer" : `Extra buffer: ${buffer} bps (${value(threshold - reference)})`;
+  const structural = condition.condition_id === "squeeze-price-over-unified-resistance";
+  return `Current ${value(actual)} · ${referenceLabel}: ${value(reference)} · Required: strictly above ${value(threshold)} · ${difference === 0 ? "Equal to threshold" : `${value(Math.abs(difference))} ${relation} threshold`} · ${bufferLabel}.${structural ? ` Completed-candle acceptance: see entry resistance selection and structural trigger evidence.` : ""}`;
 }
 
 function readableEvidenceComparator(comparator: string, bufferBps: unknown, referencePrice?: unknown) {
