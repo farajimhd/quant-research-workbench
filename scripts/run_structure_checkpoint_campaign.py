@@ -385,6 +385,29 @@ def request_campaign_stop(runtime_dir: Path, set_id: str, mode: str) -> Path:
 def process_is_running(pid: int) -> bool:
     if pid <= 0:
         return False
+    if os.name == "nt":
+        # os.kill(pid, 0) terminates processes on Windows; it is not a probe.
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.WaitForSingleObject.restype = wintypes.DWORD
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+        if not handle:
+            error = ctypes.get_last_error()
+            if error == 87:  # ERROR_INVALID_PARAMETER: PID no longer exists.
+                return False
+            raise OSError(error, "Cannot verify campaign supervisor liveness")
+        try:
+            result = kernel.WaitForSingleObject(handle, 0)
+            if result not in (0, 258):
+                raise OSError(ctypes.get_last_error(), "Cannot query campaign supervisor state")
+            return result == 258  # WAIT_TIMEOUT means still running.
+        finally:
+            kernel.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except OSError:
@@ -561,7 +584,7 @@ def retryable_worker_exit(log: str) -> bool:
     return any(marker in text for marker in ("deadlock_avoided", "timed out", "timeout", "error sending request", "connection reset", "connection closed", "temporarily unavailable", "too many simultaneous queries", "memory limit"))
 
 
-def aggregate_status(paths, plans, started, rates, processes) -> dict[str, Any]:
+def aggregate_status(paths, plans, started, rates, processes, stopping=False) -> dict[str, Any]:
     worker_statuses = [read_status(path) for path in paths]
     statuses = [status for status in worker_statuses if status is not None]
     keys = ("active", "blocked", "certified", "completed", "failed", "finished", "queued", "retried", "skipped", "unavailable")
@@ -597,7 +620,9 @@ def aggregate_status(paths, plans, started, rates, processes) -> dict[str, Any]:
     worker_details = []
     failed_workers, startup_failures, busy_workers = 0, 0, 0
     for worker, (row, process) in enumerate(zip(worker_statuses, processes, strict=True)):
-        if process.poll() not in (None, 0) or (process.poll() == 0 and (row is None or not (status_is_fully_certified(row) or (row.get("status") == "completed" and row.get("total_units") == 0)))):
+        exit_code = process.poll()
+        completed = row is not None and (status_is_fully_certified(row) or (row.get("status") == "completed" and row.get("total_units") == 0))
+        if not stopping and (exit_code not in (None, 0) or (exit_code == 0 and not completed)):
             failed_workers += 1
             startup_failures += int(row is None)
             log_path = paths[worker].parent / "worker.log"
@@ -1112,7 +1137,12 @@ def run_process_campaign(
             live.start()
         while True:
             control = read_status(control_path)
-            stopping = bool(control and control.get("action") in {"stop_fast", "stop_graceful"})
+            stopping = bool(control and control.get("checkpoint_set_id") == set_id and control.get("action") in {"stop_fast", "stop_graceful"})
+            if stopping and control["action"] == "stop_fast":
+                # Enter bounded shutdown now. Waiting for every child before
+                # reaching finally made the forced-stop deadline unreachable.
+                interrupted = True
+                break
             if (work_dir / "failure.txt").exists() and not stopping:
                 request_campaign_stop(runtime_dir, set_id, "fast")
                 stopping = True
@@ -1135,7 +1165,9 @@ def run_process_campaign(
                     stopping = True
             if not any(process.poll() is None for process in processes):
                 break
-            status = aggregate_status(status_paths, plans, started, rates, processes)
+            status = aggregate_status(status_paths, plans, started, rates, processes, stopping=stopping)
+            if stopping:
+                status["status"] = "stopping"
             record_priority_completions(status, work_dir, requested_identity["priority_tickers"], start_date, end_date)
             print_new_priority_completions(status, announced, live)
             status["worker_restarts"] = sum(restarts)
@@ -1169,6 +1201,7 @@ def run_process_campaign(
         )
         if interrupted:
             deadline = time.monotonic() + 60
+            print("Stopping campaign: allowing up to 60 seconds for workers, then terminating remaining owned children.", flush=True)
             while time.monotonic() < deadline and any(p.poll() is None for p in processes):
                 time.sleep(0.25)
             for process in processes:
@@ -1176,7 +1209,7 @@ def run_process_campaign(
                     process.terminate()
         for process in processes:
             process.wait()
-        final = aggregate_status(status_paths, plans, started, rates, processes)
+        final = aggregate_status(status_paths, plans, started, rates, processes, stopping=interrupted and not (work_dir / "failure.txt").exists())
         record_priority_completions(final, work_dir, requested_identity["priority_tickers"], start_date, end_date)
         print_new_priority_completions(final, announced, live)
         final["worker_restarts"] = sum(restarts)

@@ -126,6 +126,17 @@ worker failures, restarts and logs. A fatal worker error stops peers, including
 other workers. Recoverable transport failures retain
 bounded retries. A stopped run is not reported as sealed.
 
+A fast stop enters the supervisor's shutdown path immediately, allows 60 seconds
+for cooperative worker exits, then terminates remaining owned child processes.
+Closing a detached monitor does not stop that supervisor. For an older supervisor
+with the unreachable shutdown deadline, run `scripts/stop_structure_checkpoint_campaign.ps1`
+on the campaign host with its local `RuntimeDir` and `CheckpointSetId`. It verifies
+executable and command-line ownership, stops matching workers after a bounded grace
+period, and checks for no remaining matching processes. If the supervisor died with
+a stale running status, it archives that evidence before marking the local run
+interrupted. It does not delete or certify any checkpoint. Windows liveness checks
+use process handles, never `os.kill(pid, 0)`.
+
 ```powershell
 python scripts/run_structure_checkpoint_campaign.py --stop-existing fast --checkpoint-set-id canonical-tradable-20250101-20260831-prominence-v18-v1 --runtime-dir D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v18
 ```

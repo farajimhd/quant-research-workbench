@@ -625,3 +625,105 @@ def test_priority_completion_requires_full_ticker_marker_and_prints_once(tmp_pat
     assert capsys.readouterr().out.strip() == "SUGP completed from Jan 01, 2025 through Aug 31, 2026"
     update()
     assert capsys.readouterr().out == ""
+
+
+def test_fast_stop_reaches_deadline_even_when_worker_ignores_control(tmp_path, monkeypatch):
+    from scripts import run_structure_checkpoint_campaign as campaign
+    from types import SimpleNamespace
+    source = tmp_path / "source"
+    (source / "planner").mkdir(parents=True)
+    plans = [{"ticker": "TEST", "sessions": ["2025-01-02"], "estimated_events": 5}]
+    (source / "planner" / "campaign-plan.json").write_text(json.dumps(plans))
+    manifest = {"checkpoint_set_id": "source", "universe_hash": hashlib.sha256(b"TEST\n").hexdigest()}
+    (source / "campaign-manifest.json").write_text(json.dumps(manifest))
+    target = tmp_path / "target"
+    ticks = [0.0]
+    workers, registrations = [], []
+    def clock():
+        ticks[0] += 20.0
+        assert ticks[0] < 500, "stop never reached its forced-termination deadline"
+        return ticks[0]
+    monkeypatch.setattr(campaign.time, "monotonic", clock)
+    monkeypatch.setattr(campaign.time, "sleep", lambda _: None)
+    def run(args, **kwargs):
+        registrations.append(args[args.index("--register-set-state") + 1])
+        return SimpleNamespace(returncode=0)
+    class Worker:
+        def __init__(self, args, **kwargs):
+            self.returncode = None
+            workers.append(self)
+            campaign.request_campaign_stop(target, "target", "fast")
+        def poll(self): return self.returncode
+        def terminate(self): self.returncode = 1
+        def wait(self):
+            assert self.returncode is not None
+            return self.returncode
+    monkeypatch.setattr(campaign.subprocess, "run", run)
+    monkeypatch.setattr(campaign.subprocess, "Popen", Worker)
+    result = campaign.run_process_campaign(Path("binary"), "abc", ["--checkpoint-set-id", "target", "--runtime-dir", str(target), "--start-date", "2025-01-01", "--end-date", "2025-01-02"], 1, {}, source, manifest, "a" * 40)
+    assert result == 130 and registrations == ["building", "interrupted"]
+    assert workers[0].returncode == 1
+    final = json.loads((target / "campaign-status.json").read_text())
+    assert final["status"] == "interrupted"
+    assert final["worker_processes_failed"] == 0
+
+
+def test_process_liveness_probe_does_not_terminate_a_real_child():
+    import subprocess
+    import sys
+    from scripts.run_structure_checkpoint_campaign import process_is_running
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        assert process_is_running(child.pid)
+        time.sleep(0.1)
+        assert child.poll() is None
+        child.terminate()
+        child.wait(timeout=5)
+        assert not process_is_running(child.pid)
+    finally:
+        if child.poll() is None:
+            child.terminate()
+        child.wait(timeout=5)
+
+
+def test_legacy_stop_helper_verifies_identity_and_archives_stale_status(tmp_path):
+    import shutil
+    import subprocess
+    shell = shutil.which("pwsh") or shutil.which("powershell")
+    if not shell:
+        pytest.skip("PowerShell unavailable")
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    helper = scripts / "stop_structure_checkpoint_campaign.ps1"
+    shutil.copy(Path(__file__).resolve().parents[1] / "scripts" / helper.name, helper)
+    (scripts / "run_structure_checkpoint_campaign.ps1").write_text("$global:LASTEXITCODE=0\n")
+    runtime = tmp_path / "runtime"
+    (runtime / "supervisor").mkdir(parents=True)
+    (runtime / "campaign-manifest.json").write_text(json.dumps({"checkpoint_set_id": "test-set"}))
+    (runtime / "supervisor" / "supervisor.json").write_text(json.dumps({"checkpoint_set_id": "test-set", "pid": 999, "executable_path": "D:\\owned.exe"}))
+    (runtime / "campaign-status.json").write_text(json.dumps({"checkpoint_set_id": "test-set", "status": "degraded", "updated_at": "old", "counts": {"certified": 12}}))
+    harness = tmp_path / "exercise.ps1"
+    harness.write_text(r'''
+param($Helper, $Runtime)
+$ErrorActionPreference='Stop'
+$global:stopped=$false
+function global:Get-CimInstance {
+    param($ClassName,$Filter)
+    if (-not $global:stopped) {
+        [pscustomobject]@{ProcessId=123; Name='structure_checkpoint_campaign_v18.exe'; ExecutablePath='D:\owned.exe'; CommandLine="worker --checkpoint-set-id test-set --runtime-dir `"$Runtime\workers\worker-01`""; CreationDate='same'}
+    }
+    [pscustomobject]@{ProcessId=456; Name='structure_checkpoint_campaign_v18.exe'; ExecutablePath='D:\owned.exe'; CommandLine="worker --checkpoint-set-id other-set --runtime-dir `"$Runtime\workers\worker-01`""; CreationDate='other'}
+}
+function global:Stop-Process {
+    param($Id,[switch]$Force,$ErrorAction)
+    if ($Id -ne 123) { throw 'Attempted to stop unrelated process' }
+    $global:stopped=$true
+}
+& $Helper -RuntimeDir $Runtime -CheckpointSetId test-set -GraceSeconds 0
+if (-not $global:stopped) { throw 'Owned worker was not stopped' }
+''')
+    result = subprocess.run([shell, "-NoProfile", "-File", str(harness), str(helper), str(runtime)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    final = json.loads((runtime / "campaign-status.json").read_text(encoding="utf-8"))
+    assert final["status"] == "interrupted" and final["counts"]["certified"] == 12
+    assert len(list(runtime.glob("stop-evidence-*/campaign-status.json"))) == 1
