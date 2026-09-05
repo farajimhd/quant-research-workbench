@@ -73,6 +73,7 @@ from src.trading_runtime.strategy_engine import (
     default_long_momentum_parameters,
 )
 from src.trading_runtime.strategy_orders import RuntimeIbkrStrategyOrderPlanner
+from src.trading_runtime.strategy_registry import strategy_executor
 from src.trading_runtime.signals import StrategyIntent
 from src.trading_runtime.runtime import RunMode
 
@@ -3236,7 +3237,8 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_flat_completed_frame_entry_skips_intrabar_evaluation(self) -> None:
         now = datetime(2026, 8, 21, 4, 2, 57, tzinfo=NEW_YORK)
-        parameters = default_long_momentum_parameters(revision=33)
+        parameters = default_long_momentum_parameters(revision=41)
+        parameters["structural_entry"]["enabled"] = True
         parameters["structural_entry"]["selection_mode"] = (
             "prior_completed_frame_top_n_below_session_high"
         )
@@ -3254,7 +3256,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         assigned = StrategyAssignment(
             assignment_id="sugp-flat-event-clock",
             strategy_id=STRATEGY_ID,
-            strategy_revision=33,
+            strategy_revision=41,
             account_id="DU123456",
             ticker="SUGP",
             conid=1,
@@ -3271,6 +3273,9 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         runtime.process_account_strategy_observation = AsyncMock()
         controller._strategy = strategy
         controller._runtime = runtime
+        controller._event_structure_context = AsyncMock(
+            side_effect=AssertionError("A flat completed-frame entry must not request intrabar structure")
+        )
         controller._strategy_engaged_tickers.add("SUGP")
         controller._latest_strategy_observations["SUGP"] = StrategyObservation(
             ticker="SUGP",
@@ -3291,6 +3296,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         processed = await controller._process_strategy_market_event(event)
 
         self.assertFalse(processed)
+        controller._event_structure_context.assert_not_awaited()
         runtime.process_account_strategy_observation.assert_not_awaited()
 
     async def test_flat_event_price_entry_evaluates_forming_macd_on_triggering_trade(self) -> None:
@@ -3332,6 +3338,16 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         runtime.process_account_strategy_observation = AsyncMock()
         controller._strategy = strategy
         controller._runtime = runtime
+        controller._strategy_registration = strategy_executor(STRATEGY_ID, STRATEGY_REVISION)
+        controller._event_structure_context = AsyncMock(return_value={
+            "qmd_structure_session_high": 3.50,
+            "qmd_structure_resistance_levels": ({
+                "unified_level_id": "L3", "side": -1, "price": 3.40,
+                "hold_observation_count": 1,
+                "ticker_relative_quality_status": "available",
+                "ticker_relative_quality_score": 0.20,
+            },),
+        })
         controller._strategy_engaged_tickers.add("SUGP")
         controller._active_historical_watchlist_tickers.add("SUGP")
         controller._latest_strategy_observations["SUGP"] = StrategyObservation(
@@ -3376,6 +3392,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         processed = await controller._process_strategy_market_event(event)
 
         self.assertTrue(processed)
+        controller._event_structure_context.assert_awaited_once_with(event)
         observation = runtime.process_account_strategy_observation.await_args.args[0]
         self.assertEqual(observation.observed_at, event.ts)
         self.assertEqual(observation.price, 3.41)
@@ -3385,6 +3402,10 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_managed_position_market_event_evaluates_latest_indicators_without_claiming_bar_close(self) -> None:
         now = datetime(2026, 8, 21, 4, 2, 57, tzinfo=NEW_YORK)
+        parameters = default_long_momentum_parameters()
+        parameters["structural_entry"].update(
+            enabled=True, selection_mode="prior_completed_frame_top_n_below_session_high"
+        )
         controller = ReplayRunController(
             ReplayRunDefinition(
                 session_date=date(2026, 8, 21),
@@ -3405,7 +3426,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
             conid=1,
             status=AssignmentStatus.MANAGING,
             permissions=StrategyPermissions(observe=True, enter=True),
-            parameters=default_long_momentum_parameters(),
+            parameters=parameters,
             state={"liquidity_admitted_at": now.isoformat()},
             created_at=now,
             updated_at=now,
@@ -3417,6 +3438,10 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         runtime.process_account_strategy_observation = AsyncMock()
         controller._strategy = strategy
         controller._runtime = runtime
+        controller._strategy_registration = strategy_executor(STRATEGY_ID, STRATEGY_REVISION)
+        controller._event_structure_context = AsyncMock(return_value={
+            "qmd_structure_session_high": 3.50,
+        })
         controller._strategy_engaged_tickers.add("SUGP")
         controller._active_historical_watchlist_tickers.add("SUGP")
         controller._latest_strategy_observations["SUGP"] = StrategyObservation(
@@ -3463,6 +3488,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         processed = await controller._process_strategy_market_event(event)
 
         self.assertTrue(processed)
+        controller._event_structure_context.assert_awaited_once_with(event)
         observation = runtime.process_account_strategy_observation.await_args.args[0]
         self.assertEqual(observation.observed_at, event.ts)
         self.assertEqual(observation.price, 3.47)

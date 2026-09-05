@@ -3288,6 +3288,24 @@ class ReplayRunController:
         if (event.raw.get("schema_version") and "price_eligible" not in event.raw
                 and any(row.strategy_revision >= 39 for row in ticker_assignments)):
             raise RuntimeError("Historical strategy requires QMD trade eligibility; restart the updated QMD History gateway")
+        if ticker_assignments and all(
+            assignment.status
+            in {AssignmentStatus.WATCHING, AssignmentStatus.REENTRY_COOLDOWN}
+            and str(
+                dict(assignment.parameters.get("structural_entry") or {}).get(
+                    "selection_mode"
+                )
+                or ""
+            ).lower()
+            == "prior_completed_frame_top_n_below_session_high"
+            for assignment in ticker_assignments
+        ):
+            # Flat entries require completed frames. Those frames independently
+            # consume the full canonical structure timeline. Do not materialize
+            # and project per-trade snapshots that this path cannot use. If an
+            # entry becomes active, the event session advances through every
+            # intervening canonical event before evaluating its next exit.
+            return False
         structural_changed: list[str] = []
         if any(assignment.strategy_revision >= 37
                and bool(dict(assignment.parameters.get("structural_entry") or {}).get("enabled"))
@@ -3313,25 +3331,6 @@ class ReplayRunController:
             structural_values = {key: value for key, value in projected.items() if "structure" in key}
             structural_changed = list(structural_values)
             base = replace(base, source_values={**base.source_values, **structural_values})
-        if ticker_assignments and all(
-            assignment.status
-            in {AssignmentStatus.WATCHING, AssignmentStatus.REENTRY_COOLDOWN}
-            and str(
-                dict(assignment.parameters.get("structural_entry") or {}).get(
-                    "selection_mode"
-                )
-                or ""
-            ).lower()
-            == "prior_completed_frame_top_n_below_session_high"
-            for assignment in ticker_assignments
-        ):
-            # This entry contract intentionally admits only a crossing between
-            # consecutive completed one-second frames. Raw trades remain the
-            # forming-MACD authority while a position or entry is active, but
-            # reevaluating them while unequivocally flat cannot create a legal
-            # entry. Avoid deep-copying the structural level book on every
-            # high-density print while waiting for the next completed frame.
-            return False
         quote = self._quotes.get(event.ticker)
         price = float(event.price) if isinstance(event, TradeEvent) else float(base.price)
         if price <= 0:
