@@ -3179,9 +3179,7 @@ impl HistoricalEventSource {
             .with_timezone(&Utc);
         let stored_checkpoint_value = serde_json::from_str::<Value>(&row.snapshot_json)
             .map_err(|error| format!("invalid persisted structure checkpoint JSON: {error}"))?;
-        let mut checkpoint = serde_json::from_value::<GenericStructureCheckpoint>(
-            stored_checkpoint_value.clone(),
-        )
+        let mut checkpoint = qmd_core::structure_checkpoint_json::decode_checkpoint(&row.snapshot_json)
         .map_err(|error| format!("invalid persisted structure checkpoint payload: {error}"))?;
         let stored_certification_value = checkpoint_certification_value(&stored_checkpoint_value);
         let decoded_checkpoint_value = checkpoint_json_value(&checkpoint)?;

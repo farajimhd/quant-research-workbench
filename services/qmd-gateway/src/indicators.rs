@@ -1,3 +1,4 @@
+use crate::structure_checkpoint_json::decode_checkpoint;
 use crate::bars::{BarRow, SharedBarStore, TradeAggregationRules};
 use crate::computation_targets::SharedComputationTargets;
 use crate::config::GatewayConfig;
@@ -97,7 +98,7 @@ fn retryable_clickhouse_write_status(status: reqwest::StatusCode) -> bool {
 }
 
 fn serialized_structure_checkpoint_sha256(snapshot_json: &str) -> Result<String, String> {
-    let checkpoint: GenericStructureCheckpoint = serde_json::from_str(snapshot_json)
+    let checkpoint = decode_checkpoint(snapshot_json)
         .map_err(|error| format!("failed to decode serialized daily checkpoint: {error}"))?;
     checkpoint_sha256(&checkpoint)
 }
@@ -289,7 +290,7 @@ fn parse_daily_structure_checkpoint_row(
         ));
     }
     let checkpoint =
-        serde_json::from_str::<GenericStructureCheckpoint>(&string("snapshot_json"))
+        decode_checkpoint(&string("snapshot_json"))
             .map_err(|error| format!("invalid daily structure checkpoint for {sym}: {error}"))?;
     let certification_json = string("certification_json");
     let certification = (!certification_json.trim().is_empty())
@@ -3187,6 +3188,37 @@ impl IndicatorClickHouseWriter {
             true,
         )
         .await?;
+        self.initialize_campaign_schema().await?;
+        self.execute(
+            r#"CREATE TABLE IF NOT EXISTS qmd_structure_focus_registry_v1
+            (
+                sym LowCardinality(String),
+                next_advance_at_ms Int64,
+                state LowCardinality(String) DEFAULT 'active',
+                error_code LowCardinality(String) DEFAULT '',
+                retry_action LowCardinality(String) DEFAULT '',
+                error_detail String DEFAULT '',
+                updated_at DateTime64(3, 'UTC')
+            )
+            ENGINE = ReplacingMergeTree(updated_at)
+            ORDER BY sym"#,
+            true,
+        )
+        .await?;
+        self.execute(
+            r#"ALTER TABLE qmd_structure_focus_registry_v1
+                ADD COLUMN IF NOT EXISTS state LowCardinality(String) DEFAULT 'active',
+                ADD COLUMN IF NOT EXISTS error_code LowCardinality(String) DEFAULT '',
+                ADD COLUMN IF NOT EXISTS retry_action LowCardinality(String) DEFAULT '',
+                ADD COLUMN IF NOT EXISTS error_detail String DEFAULT ''"#,
+            true,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Only the supervisor/standalone coordinator may perform campaign DDL.
+    pub async fn initialize_campaign_schema(&self) -> Result<(), String> {
         self.execute(
             r#"CREATE TABLE IF NOT EXISTS qmd_structure_daily_checkpoint_v2
             (
@@ -3252,31 +3284,13 @@ impl IndicatorClickHouseWriter {
             true,
         )
         .await?;
-        self.execute(
-            r#"CREATE TABLE IF NOT EXISTS qmd_structure_focus_registry_v1
-            (
-                sym LowCardinality(String),
-                next_advance_at_ms Int64,
-                state LowCardinality(String) DEFAULT 'active',
-                error_code LowCardinality(String) DEFAULT '',
-                retry_action LowCardinality(String) DEFAULT '',
-                error_detail String DEFAULT '',
-                updated_at DateTime64(3, 'UTC')
-            )
-            ENGINE = ReplacingMergeTree(updated_at)
-            ORDER BY sym"#,
-            true,
-        )
-        .await?;
-        self.execute(
-            r#"ALTER TABLE qmd_structure_focus_registry_v1
-                ADD COLUMN IF NOT EXISTS state LowCardinality(String) DEFAULT 'active',
-                ADD COLUMN IF NOT EXISTS error_code LowCardinality(String) DEFAULT '',
-                ADD COLUMN IF NOT EXISTS retry_action LowCardinality(String) DEFAULT '',
-                ADD COLUMN IF NOT EXISTS error_detail String DEFAULT ''"#,
-            true,
-        )
-        .await?;
+        self.validate_campaign_schema().await
+    }
+
+    /// Read-only worker readiness; never contend for ALTER locks.
+    pub async fn validate_campaign_schema(&self) -> Result<(), String> {
+        self.query("SELECT checkpoint_set_id, session_date, algorithm_version, sym, authority_start, checkpoint_at, last_arrival_sequence, source_plan_hash, source_revision_token, source_complete, built_at, snapshot_json, certification_json FROM qmd_structure_daily_checkpoint_v2 LIMIT 0", true).await?;
+        self.query("SELECT checkpoint_set_id, algorithm_version, authority_start, authority_end, universe_hash, state, ticker_count, checkpoint_count, certification_schema_version, certified_checkpoint_count, event_count, updated_at FROM qmd_structure_checkpoint_set_registry_v1 LIMIT 0", true).await?;
         Ok(())
     }
 
@@ -3316,7 +3330,7 @@ impl IndicatorClickHouseWriter {
                 if sym.is_empty() || checkpoint_json.is_empty() {
                     return Err("QMD structure state row omitted symbol or checkpoint".to_string());
                 }
-                let checkpoint = serde_json::from_str::<GenericStructureCheckpoint>(
+                let checkpoint = decode_checkpoint(
                     checkpoint_json,
                 )
                 .map_err(|error| format!("invalid QMD structure checkpoint for {sym}: {error}"))?;
@@ -3362,7 +3376,7 @@ impl IndicatorClickHouseWriter {
         if checkpoint_json.is_empty() {
             return Ok(None);
         }
-        serde_json::from_str(checkpoint_json)
+        decode_checkpoint(checkpoint_json)
             .map(Some)
             .map_err(|error| format!("invalid QMD structure checkpoint for {sym}: {error}"))
     }
@@ -3574,7 +3588,7 @@ impl IndicatorClickHouseWriter {
             "state": state,
             "ticker_count": ticker_count,
             "checkpoint_count": checkpoint_count,
-            "certification_schema_version": crate::structure_certification::STRUCTURE_CERTIFICATION_SCHEMA_VERSION,
+            "certification_schema_version": crate::structure_certification::STRUCTURE_CERTIFICATION_PROJECTION_SCHEMA_VERSION,
             "certified_checkpoint_count": certified_checkpoint_count,
             "event_count": event_count,
             "updated_at": clickhouse_datetime64(&Utc::now()),
@@ -3650,7 +3664,7 @@ impl IndicatorClickHouseWriter {
                 .unwrap_or_default()
         };
         let checkpoint_json = parse_string("snapshot_json");
-        let checkpoint = serde_json::from_str::<GenericStructureCheckpoint>(&checkpoint_json)
+        let checkpoint = decode_checkpoint(&checkpoint_json)
             .map_err(|error| format!("invalid daily structure checkpoint for {sym}: {error}"))?;
         let certification_json = parse_string("certification_json");
         let certification = (!certification_json.trim().is_empty())

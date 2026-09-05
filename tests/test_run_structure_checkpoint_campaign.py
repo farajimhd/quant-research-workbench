@@ -103,7 +103,7 @@ def test_prebuilt_runtime_binary_is_preferred_without_cargo() -> None:
     candidates = binary_candidates(None, {"TRADING_RUNTIME_ROOT": r"E:\TradingRuntime"})
 
     assert candidates[0] == Path(r"E:\TradingRuntime") / "bin" / candidates[0].name
-    assert candidates[0].name == "structure_checkpoint_campaign_v7.exe"
+    assert candidates[0].name == "structure_checkpoint_campaign_v8.exe"
 
 
 def test_executable_hash_is_reported_from_exact_file_bytes(tmp_path: Path) -> None:
@@ -372,3 +372,65 @@ def test_resume_archives_stale_status_and_starts_with_clean_truthful_queue(tmp_p
     assert status["counts"]["failed"] == 0
     assert status["counts"]["blocked"] == 0
     assert status["issues"] == []
+
+
+def test_startup_failure_is_not_hidden_as_queued_progress(tmp_path):
+    from scripts.run_structure_checkpoint_campaign import retryable_worker_exit
+    path = tmp_path / "campaign-status.json"
+    (tmp_path / "worker.log").write_text("Error: DEADLOCK_AVOIDED (120000 ms)")
+    status = aggregate_status([path], [{"sessions": [1, 2], "estimated_events": 100}], time.monotonic(), deque(), [_ExitedProcess()])
+    assert status["status"] == "failed"
+    assert status["worker_startup_failures"] == status["worker_processes_failed"] == 1
+    assert status["counts"]["queued"] == 2
+    assert status["eta_seconds"] is None
+    assert "DEADLOCK_AVOIDED" in status["issues"][0]["error"]
+    assert retryable_worker_exit("Error: DEADLOCK_AVOIDED")
+    assert not retryable_worker_exit("connection reset; serialized payload hash drifted")
+
+
+def test_zero_exit_without_full_coverage_fails_closed(tmp_path):
+    class ExitedZero:
+        def poll(self): return 0
+    path = tmp_path / "campaign-status.json"
+    path.write_text(json.dumps({"status": "completed", "total_units": 2, "counts": {"certified": 1, "finished": 1}}))
+    status = aggregate_status([path], [{"sessions": [1, 2]}], time.monotonic(), deque(), [ExitedZero()])
+    assert status["status"] == "failed"
+    assert not status_is_fully_certified(status)
+
+
+def test_supervisor_restarts_transient_failure_and_seals_only_certified_work(tmp_path, monkeypatch):
+    import scripts.run_structure_checkpoint_campaign as campaign
+    from types import SimpleNamespace
+    source = tmp_path / "source"
+    (source / "planner").mkdir(parents=True)
+    plans = [{"ticker": "TEST", "sessions": ["2025-01-02"], "estimated_events": 5}]
+    manifest = {"checkpoint_set_id": "source", "start_date": "2025-01-01", "end_date": "2025-01-02", "universe_hash": hashlib.sha256(b"TEST\n").hexdigest()}
+    (source / "campaign-manifest.json").write_text(json.dumps(manifest))
+    (source / "planner" / "campaign-plan.json").write_text(json.dumps(plans))
+    calls = []
+    registrations = []
+    def run(args, **kwargs):
+        registrations.append(args[args.index("--register-set-state") + 1])
+        return SimpleNamespace(returncode=0)
+    class Worker:
+        def __init__(self, args, **kwargs):
+            calls.append(args)
+            directory = Path(args[args.index("--runtime-dir") + 1])
+            self.returncode = 1 if len(calls) == 1 else 0
+            if self.returncode:
+                kwargs["stdout"].write("Error: DEADLOCK_AVOIDED\n")
+                kwargs["stdout"].flush()
+            else:
+                (directory / "campaign-status.json").write_text(json.dumps({"status": "completed", "total_units": 1, "counts": {"certified": 1, "finished": 1, "skipped": 1}, "events_processed": 5}))
+        def poll(self): return self.returncode
+        def wait(self): return self.returncode
+    monkeypatch.setattr(campaign.subprocess, "run", run)
+    monkeypatch.setattr(campaign.subprocess, "Popen", Worker)
+    target = tmp_path / "target"
+    result = campaign.run_process_campaign(Path("binary"), "abc", ["--checkpoint-set-id", "target", "--runtime-dir", str(target), "--start-date", "2025-01-01", "--end-date", "2025-01-02"], 1, {}, source, manifest, "a" * 40)
+    assert result == 0
+    assert len(calls) == 2 and calls[0] == calls[1]
+    assert registrations == ["building", "sealed"]
+    final = json.loads((target / "campaign-status.json").read_text())
+    assert final["worker_restarts"] == 1 and final["counts"]["certified"] == 1
+    assert list((target / "workers" / "worker-01").glob("attempt-*/worker.log"))

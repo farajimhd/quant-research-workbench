@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const STRUCTURE_CERTIFICATION_SCHEMA_VERSION: u16 = 2;
+pub const STRUCTURE_CERTIFICATION_PROJECTION_SCHEMA_VERSION: u16 = 3;
 pub const STRUCTURE_CERTIFICATION_REPLAY_SCHEMA_VERSION: u16 = 1;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -284,6 +285,67 @@ pub fn build_recovered_checkpoint_certification(
     Ok(certification)
 }
 
+/// Recertify only deterministic projections; all retained event state must be exact.
+#[allow(clippy::too_many_arguments)]
+pub fn build_projection_checkpoint_certification(
+    source_checkpoint: &GenericStructureCheckpoint,
+    checkpoint: &GenericStructureCheckpoint,
+    event_evidence: StructureReplayEvidence,
+    session_date: NaiveDate,
+    authority_start: DateTime<Utc>,
+    source_plan_hash: &str,
+    source_revision_token: &str,
+    predecessor_checkpoint_sha256: String,
+    predecessor_chain_sha256: String,
+    recovery_attestation: StructureCheckpointRecoveryAttestation,
+) -> Result<StructureCheckpointCertification, String> {
+    let event_state = |checkpoint: &GenericStructureCheckpoint| -> Result<Value, String> {
+        let mut value = checkpoint_certification_value(
+            &serde_json::to_value(checkpoint).map_err(|e| e.to_string())?,
+        );
+        value
+            .as_object_mut()
+            .ok_or("checkpoint must be an object")?
+            .remove("relative_quality_baseline");
+        Ok(value)
+    };
+    if event_state(source_checkpoint)? != event_state(checkpoint)? {
+        return Err("projection recovery changed retained causal state".into());
+    }
+    if recovery_attestation.source_checkpoint_sha256 != checkpoint_sha256(source_checkpoint)?
+        || recovery_attestation.recovery_revision != "historical-sip-condition-projections-v1"
+        || !recovery_attestation
+            .source_policy_revision
+            .contains("structure-input-v1:archive-sip-condition:")
+        || !valid_sha256(&recovery_attestation.source_chain_sha256)
+        || recovery_attestation.source_checkpoint_set_id.is_empty()
+        || recovery_attestation.delayed_trade_report_count != 0
+    {
+        return Err("invalid projection recovery attestation".into());
+    }
+    let mut certification = build_checkpoint_certification(
+        checkpoint,
+        event_evidence,
+        session_date,
+        authority_start,
+        source_plan_hash,
+        source_revision_token,
+        predecessor_checkpoint_sha256,
+        predecessor_chain_sha256,
+    )?;
+    certification.schema_version = STRUCTURE_CERTIFICATION_PROJECTION_SCHEMA_VERSION;
+    certification.recovery_attestation = Some(recovery_attestation);
+    certification.chain_sha256 = certification_chain_sha256(
+        &certification,
+        checkpoint,
+        session_date,
+        authority_start,
+        source_plan_hash,
+        source_revision_token,
+    )?;
+    Ok(certification)
+}
+
 pub fn validate_checkpoint_certification(
     certification: &StructureCheckpointCertification,
     checkpoint: &GenericStructureCheckpoint,
@@ -294,7 +356,9 @@ pub fn validate_checkpoint_certification(
 ) -> Result<(), String> {
     if !matches!(
         certification.schema_version,
-        STRUCTURE_CERTIFICATION_REPLAY_SCHEMA_VERSION | STRUCTURE_CERTIFICATION_SCHEMA_VERSION
+        STRUCTURE_CERTIFICATION_REPLAY_SCHEMA_VERSION
+            | STRUCTURE_CERTIFICATION_SCHEMA_VERSION
+            | STRUCTURE_CERTIFICATION_PROJECTION_SCHEMA_VERSION
     ) {
         return Err("unsupported structure checkpoint certification schema".to_string());
     }
@@ -303,6 +367,15 @@ pub fn validate_checkpoint_certification(
         &certification.recovery_attestation,
     ) {
         (STRUCTURE_CERTIFICATION_REPLAY_SCHEMA_VERSION, None) => {}
+        (STRUCTURE_CERTIFICATION_PROJECTION_SCHEMA_VERSION, Some(attestation))
+            if attestation.recovery_revision == "historical-sip-condition-projections-v1"
+                && attestation.delayed_trade_report_count == 0
+                && !attestation.source_checkpoint_set_id.is_empty()
+                && valid_sha256(&attestation.source_checkpoint_sha256)
+                && valid_sha256(&attestation.source_chain_sha256)
+                && attestation
+                    .source_policy_revision
+                    .contains("structure-input-v1:archive-sip-condition:") => {}
         (STRUCTURE_CERTIFICATION_SCHEMA_VERSION, Some(attestation))
             if matches!(
                 attestation.recovery_revision.as_str(),
@@ -363,6 +436,23 @@ pub fn validate_checkpoint_certification(
         source_revision_token,
     )?;
     if certification.chain_sha256 != actual_chain_sha256 {
+        // Original schema-1 chains predate the optional recovery field. Verify
+        // that exact historical encoding; never relabel or overwrite its hash.
+        if certification.schema_version == STRUCTURE_CERTIFICATION_REPLAY_SCHEMA_VERSION
+            && certification.recovery_attestation.is_none()
+            && certification.chain_sha256
+                == certification_chain_sha256_encoding(
+                    certification,
+                    checkpoint,
+                    session_date,
+                    authority_start,
+                    source_plan_hash,
+                    source_revision_token,
+                    true,
+                )?
+        {
+            return Ok(());
+        }
         return Err(format!(
             "structure checkpoint chain hash mismatch: certified={}, actual={actual_chain_sha256}",
             certification.chain_sha256,
@@ -385,7 +475,28 @@ fn certification_chain_sha256(
     source_plan_hash: &str,
     source_revision_token: &str,
 ) -> Result<String, String> {
-    let value = serde_json::json!({
+    certification_chain_sha256_encoding(
+        certification,
+        checkpoint,
+        session_date,
+        authority_start,
+        source_plan_hash,
+        source_revision_token,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn certification_chain_sha256_encoding(
+    certification: &StructureCheckpointCertification,
+    checkpoint: &GenericStructureCheckpoint,
+    session_date: NaiveDate,
+    authority_start: DateTime<Utc>,
+    source_plan_hash: &str,
+    source_revision_token: &str,
+    legacy_without_recovery_field: bool,
+) -> Result<String, String> {
+    let mut value = serde_json::json!({
         "authority_start_us": authority_start.timestamp_micros(),
         "checkpoint_sha256": certification.checkpoint_sha256,
         "event_evidence": certification.event_evidence,
@@ -400,6 +511,12 @@ fn certification_chain_sha256(
         "sym": checkpoint.sym.to_ascii_uppercase(),
         "algorithm_version": checkpoint.algorithm_version,
     });
+    if legacy_without_recovery_field {
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("recovery_attestation");
+    }
     let mut bytes = Vec::new();
     write_canonical_json(&value, &mut bytes)?;
     Ok(sha256(&bytes))
@@ -638,6 +755,45 @@ mod tests {
     }
 
     #[test]
+    fn legacy_schema_one_omitted_recovery_field_is_verified_exactly() {
+        let checkpoint = crate::generic_structure::GenericStructureEngine::new("TEST").checkpoint();
+        let date = NaiveDate::from_ymd_opt(2025, 1, 2).unwrap();
+        let at = Utc.with_ymd_and_hms(2025, 1, 1, 9, 0, 0).unwrap();
+        let mut certificate = build_checkpoint_certification(
+            &checkpoint,
+            StructureEventAuditor::new(true).finish(),
+            date,
+            at,
+            "plan",
+            "revision",
+            String::new(),
+            String::new(),
+        )
+        .unwrap();
+        certificate.chain_sha256 = certification_chain_sha256_encoding(
+            &certificate,
+            &checkpoint,
+            date,
+            at,
+            "plan",
+            "revision",
+            true,
+        )
+        .unwrap();
+        validate_checkpoint_certification(&certificate, &checkpoint, date, at, "plan", "revision")
+            .unwrap();
+        assert!(validate_checkpoint_certification(
+            &certificate,
+            &checkpoint,
+            date,
+            at,
+            "changed-plan",
+            "revision"
+        )
+        .is_err());
+    }
+
+    #[test]
     fn recovered_certification_requires_zero_delayed_clock_proof() {
         let checkpoint = crate::generic_structure::GenericStructureEngine::new("SUGP").checkpoint();
         let authority_start = Utc.with_ymd_and_hms(2026, 1, 2, 9, 0, 0).unwrap();
@@ -689,6 +845,51 @@ mod tests {
         )
         .unwrap_err()
         .contains("invalid structure checkpoint recovery attestation"));
+    }
+
+    #[test]
+    fn projection_recovery_preserves_raw_state_and_binds_both_payloads() {
+        let source = crate::generic_structure::GenericStructureEngine::new("TEST").checkpoint();
+        let date = NaiveDate::from_ymd_opt(2025, 1, 6).unwrap();
+        let migrated = crate::generic_structure::GenericStructureEngine::migrate_checkpoint_derived_projections(&source, Some(&source), date).unwrap();
+        let authority = Utc.with_ymd_and_hms(2025, 1, 1, 9, 0, 0).unwrap();
+        let policy = "revision:structure-input-v1:archive-sip-condition:test";
+        let attestation = StructureCheckpointRecoveryAttestation {
+            recovery_revision: "historical-sip-condition-projections-v1".into(),
+            source_checkpoint_set_id: "source-v16".into(),
+            source_checkpoint_sha256: checkpoint_sha256(&source).unwrap(),
+            source_chain_sha256: format!("sha256:{}", "1".repeat(64)),
+            source_policy_revision: policy.into(),
+            execution_clock_revision: String::new(),
+            delayed_trade_report_count: 0,
+        };
+        let build = |checkpoint: &GenericStructureCheckpoint| {
+            build_projection_checkpoint_certification(
+                &source,
+                checkpoint,
+                StructureEventAuditor::new(true).finish(),
+                date,
+                authority,
+                "plan",
+                policy,
+                String::new(),
+                String::new(),
+                attestation.clone(),
+            )
+        };
+        let certificate = build(&migrated).unwrap();
+        assert_ne!(
+            certificate.checkpoint_sha256,
+            attestation.source_checkpoint_sha256
+        );
+        validate_checkpoint_certification(&certificate, &migrated, date, authority, "plan", policy)
+            .unwrap();
+        let mut changed = serde_json::to_value(&migrated).unwrap();
+        changed["last_trade_price"] = serde_json::json!(100.0);
+        let changed = serde_json::from_value(changed).unwrap();
+        assert!(build(&changed)
+            .unwrap_err()
+            .contains("retained causal state"));
     }
 
     #[test]

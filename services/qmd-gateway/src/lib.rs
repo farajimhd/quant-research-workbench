@@ -38,5 +38,6 @@ pub mod signal_catalog;
 pub mod signal_stream;
 pub mod state;
 pub mod structure_certification;
+pub mod structure_checkpoint_json;
 pub mod structure_focus;
 pub mod timefmt;
