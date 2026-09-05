@@ -47,6 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     axum::serve(
         listener,
         app(AppState {
+            execution_structure_permits: Arc::new(Semaphore::new(2)),
             cache,
             config,
             scanner,

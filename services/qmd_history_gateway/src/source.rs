@@ -3152,7 +3152,7 @@ impl HistoricalEventSource {
             FROM {table} FINAL
             WHERE checkpoint_set_id = {checkpoint_set_id}
               AND sym = {ticker}
-              AND algorithm_version = {algorithm_version}
+              AND algorithm_version IN ({algorithm_versions})
               AND checkpoint_at < parseDateTime64BestEffort({before}, 6, 'UTC')
               AND source_complete = 1
             ORDER BY session_date DESC, built_at DESC
@@ -3160,7 +3160,8 @@ impl HistoricalEventSource {
             FORMAT JSONEachRow"#,
             ticker = sql_literal(&ticker),
             checkpoint_set_id = sql_literal(&self.config.structure_checkpoint_set_id),
-            algorithm_version = GENERIC_STRUCTURE_ALGORITHM_VERSION,
+            algorithm_versions = if GENERIC_STRUCTURE_ALGORITHM_VERSION == 17 { "16,17".to_string() }
+                                 else { GENERIC_STRUCTURE_ALGORITHM_VERSION.to_string() },
             before = sql_literal(&before.to_rfc3339()),
         );
         let text = self.query(&sql).await?;
@@ -3215,6 +3216,13 @@ impl HistoricalEventSource {
             &row.source_plan_hash,
             &row.source_revision_token,
         )?;
+        // Validate the original immutable certificate before projecting the
+        // narrowly compatible closed-session seed into the successor engine.
+        let migrated_extrema = checkpoint.algorithm_version == 16
+            && GENERIC_STRUCTURE_ALGORITHM_VERSION == 17;
+        if migrated_extrema {
+            checkpoint.migrate_completed_session_extrema(before.with_timezone(&New_York).date_naive())?;
+        }
         if checkpoint.algorithm_version != GENERIC_STRUCTURE_ALGORITHM_VERSION
             || checkpoint.sym.to_ascii_uppercase() != ticker
             || checkpoint.last_arrival_sequence == 0
@@ -3241,7 +3249,9 @@ impl HistoricalEventSource {
             authority_start,
             checkpoint,
             source_plan_hash: row.source_plan_hash,
-            source_revision_token: row.source_revision_token,
+            source_revision_token: if migrated_extrema {
+                format!("{}:completed-session-extrema-v16-to-v17:{}", row.source_revision_token, stored_checkpoint_sha256)
+            } else { row.source_revision_token },
         }))
     }
 

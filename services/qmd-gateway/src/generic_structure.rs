@@ -1564,7 +1564,7 @@ impl GenericStructureEngine {
                 self.relative_quality_baseline.as_ref(),
             );
         }
-        unified_levels.sort_by(|left, right| {
+        unified_levels.sort_unstable_by(|left, right| {
             right
                 .hold_probability
                 .total_cmp(&left.hold_probability)
@@ -1967,6 +1967,25 @@ impl GenericStructureEngine {
 }
 
 impl GenericStructureCheckpoint {
+    /// Version 17 changes only the four session extrema. They are not inputs
+    /// to persistent level transitions and reset at the next session boundary.
+    /// Never carry a version-16 intraday HOD into a version-17 observation.
+    pub fn migrate_completed_session_extrema(&mut self, next_session: NaiveDate) -> Result<(), String> {
+        if self.algorithm_version != 16 || GENERIC_STRUCTURE_ALGORITHM_VERSION != 17
+            || !self.session_anchor.is_some_and(|day| day < next_session)
+            || !self.updated_at.is_some_and(|ts| ts.with_timezone(&New_York).date_naive() < next_session)
+            || self.replayed_through.is_some_and(|ts| ts.with_timezone(&New_York).date_naive() >= next_session)
+        {
+            return Err("Only completed prior-session v16 checkpoints may migrate to v17 extrema".into());
+        }
+        self.algorithm_version = 17;
+        self.session_high = 0.0;
+        self.session_low = 0.0;
+        self.opening_range_high = 0.0;
+        self.opening_range_low = 0.0;
+        Ok(())
+    }
+
     pub fn apply_split_adjustment(
         &mut self,
         adjustment: &StructureSplitAdjustment,
@@ -2180,7 +2199,7 @@ fn unified_structure_levels(
         // until the event-native acceptance rules declare the break durable.
         .filter(|level| level.is_unified_projection_visible() && level.price > 0.0)
         .collect::<Vec<_>>();
-    book_candidates.sort_by(|left, right| {
+    book_candidates.sort_unstable_by(|left, right| {
         let left_role_coherent = (left.side > 0 && reference >= left.lower - role_tolerance)
             || (left.side < 0 && reference <= left.upper + role_tolerance);
         let right_role_coherent = (right.side > 0 && reference >= right.lower - role_tolerance)
@@ -2767,8 +2786,8 @@ fn build_ticker_relative_quality_baseline(
         })
         .map(|track| track.level.hold_quality_score.clamp(0.0, 1.0))
         .collect::<Vec<_>>();
-    support_quality.sort_by(f64::total_cmp);
-    resistance_quality.sort_by(f64::total_cmp);
+    support_quality.sort_unstable_by(f64::total_cmp);
+    resistance_quality.sort_unstable_by(f64::total_cmp);
     let session_start_ms = New_York
         .from_local_datetime(
             &effective_session
@@ -2900,7 +2919,7 @@ fn is_zero_u32(value: &u32) -> bool {
 }
 
 fn consolidate_unified_tracks(tracks: &mut Vec<UnifiedLevelTrack>) {
-    tracks.sort_by_key(|track| (track.level.created_at_ms, track.level.unified_level_id));
+    tracks.sort_unstable_by_key(|track| (track.level.created_at_ms, track.level.unified_level_id));
     let mut consolidated: Vec<UnifiedLevelTrack> = Vec::with_capacity(tracks.len());
     for track in tracks.drain(..) {
         let tolerance = price_tick(track.level.price) * 2.0;
@@ -3807,6 +3826,33 @@ mod tests {
     use crate::event::{QuoteEvent, TradeEvent};
     use chrono::TimeZone;
     use serde_json::json;
+
+    #[test]
+    fn completed_session_extrema_migration_preserves_persistent_state() {
+        let ts = Utc.with_ymd_and_hms(2026, 8, 20, 14, 0, 0).unwrap();
+        let mut engine = GenericStructureEngine::new("TEST");
+        engine.apply_event_without_snapshot(&trade(ts.timestamp_millis(), 6.0, 100.0, 1),
+                                            TradeUpdateRule { update_last: true, update_high_low: true, update_volume: true });
+        let mut checkpoint = engine.checkpoint();
+        checkpoint.algorithm_version = 16;
+        let mut expected = serde_json::to_value(&checkpoint).unwrap();
+        expected["algorithm_version"] = json!(17);
+        for key in ["session_high", "session_low", "opening_range_high", "opening_range_low"] {
+            expected[key] = json!(0.0);
+        }
+        checkpoint.migrate_completed_session_extrema(NaiveDate::from_ymd_opt(2026, 8, 21).unwrap()).unwrap();
+        assert_eq!(serde_json::to_value(checkpoint).unwrap(), expected);
+    }
+
+    #[test]
+    fn intraday_extrema_checkpoint_migration_is_rejected() {
+        let mut checkpoint = GenericStructureEngine::new("TEST").checkpoint();
+        checkpoint.algorithm_version = 16;
+        checkpoint.session_anchor = Some(NaiveDate::from_ymd_opt(2026, 8, 21).unwrap());
+        checkpoint.updated_at = Some(Utc.with_ymd_and_hms(2026, 8, 21, 11, 0, 0).unwrap());
+        assert!(checkpoint.migrate_completed_session_extrema(NaiveDate::from_ymd_opt(2026, 8, 21).unwrap()).is_err());
+        assert_eq!(checkpoint.algorithm_version, 16);
+    }
 
     fn trade(ms: i64, price: f64, size: f64, sequence: u64) -> MarketEvent {
         MarketEvent::Trade(TradeEvent {

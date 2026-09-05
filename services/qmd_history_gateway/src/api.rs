@@ -61,6 +61,7 @@ pub struct AppState {
     pub source: HistoricalEventSource,
     pub structure_checkpoint_advancement_permits: Arc<Semaphore>,
     pub structure_snapshot_sessions: HistoricalStructureSessionRegistry,
+    pub execution_structure_permits: Arc<Semaphore>,
     pub watchlist_materialization_permits: Arc<Semaphore>,
 }
 
@@ -217,6 +218,8 @@ struct HealthPayload {
     source: &'static str,
     status: &'static str,
     structure_algorithm_version: u16,
+    execution_runtime_revision: u32,
+    source_fingerprint: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -550,33 +553,37 @@ async fn materialize_generic_structure_snapshot_session_batch(
             )
         })?;
     let session_id = request.session_id.trim().to_string();
-    let checkpoint = state
-        .structure_snapshot_sessions
-        .checkout(&session_id)
-        .await
-        .map_err(structure_checkpoint_advancement_error)?;
-    let advanced = match advance_historical_structure_timeline(
-        &state.config,
-        &state.source,
-        checkpoint.clone(),
-        &request,
-    )
-    .await
-    {
-        Ok(advanced) => advanced,
-        Err(error) => {
-            state
-                .structure_snapshot_sessions
-                .replace(session_id, checkpoint)
-                .await;
-            return Err(structure_checkpoint_advancement_error(error));
-        }
-    };
-    state
-        .structure_snapshot_sessions
-        .replace(session_id, advanced.0)
-        .await;
-    Ok(Json(advanced.1))
+    // CPU-heavy structure work must not occupy Tokio's HTTP/source workers.
+    // Hold a separate bounded execution permit inside the blocking task, even
+    // if its HTTP caller disconnects. Chart builders use their own budget.
+    let execution_permit = state.execution_structure_permits.clone()
+        .acquire_owned().await.map_err(|_| service_error("Execution structure lane closed".into()))?;
+    let worker_state = state.clone();
+    let runtime = tokio::runtime::Handle::current();
+    let advancement = tokio::task::spawn_blocking(move || {
+        let _execution_permit = execution_permit;
+        let _permit = _permit;
+        // Checkout and commit/rollback belong to the same non-cancellable job.
+        // An HTTP disconnect must not strand a checked-out ticker checkpoint.
+        runtime.block_on(async move {
+            let checkpoint = worker_state.structure_snapshot_sessions.checkout(&session_id).await?;
+            let result = advance_historical_structure_timeline(
+                &worker_state.config, &worker_state.source, checkpoint.clone(), &request,
+            ).await;
+            match result {
+                Ok((checkpoint, response)) => {
+                    worker_state.structure_snapshot_sessions.replace(session_id, checkpoint).await;
+                    Ok(response)
+                }
+                Err(error) => {
+                    worker_state.structure_snapshot_sessions.replace(session_id, checkpoint).await;
+                    Err(error)
+                }
+            }
+        })
+    }).await.map_err(|error| format!("Historical execution structure worker failed: {error}"))
+        .and_then(|result| result);
+    advancement.map(Json).map_err(structure_checkpoint_advancement_error)
 }
 
 async fn materialize_generic_structure_snapshot(
@@ -784,6 +791,8 @@ async fn health(State(state): State<Arc<AppState>>) -> Result<Json<HealthPayload
         status: "ready",
         structure_algorithm_version:
             qmd_core::generic_structure::GENERIC_STRUCTURE_ALGORITHM_VERSION,
+        execution_runtime_revision: crate::EXECUTION_RUNTIME_REVISION,
+        source_fingerprint: env!("QMD_HISTORY_SOURCE_SHA256"),
     }))
 }
 

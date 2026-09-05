@@ -8,6 +8,7 @@ axum = { version = "0.8", features = ["ws"] }
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 futures-util = "0.3"
+mimalloc = "0.1"
 qmd_core = { package = "qmd-gateway", path = "../qmd-gateway" }
 reqwest = { version = "0.12", default-features = false, features = ["gzip", "json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
@@ -16,3 +17,6 @@ sha2 = "0.10"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tower-http = { version = "0.6", features = ["cors"] }
 urlencoding = "2"
+
+[build-dependencies]
+sha2 = "0.10"

@@ -2265,6 +2265,17 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BacktestPreflightTests(unittest.TestCase):
+    def setUp(self):
+        # These tests isolate population/storage preflight. Version admission
+        # has its own stale-source and stale-candidate regression coverage.
+        health = patch("src.backend.replay_run_service.qmd_history_get_json", return_value={})
+        versions = patch("src.backend.replay_run_service.runtime_version_check",
+                         return_value={"id": "runtime_versions", "status": "ready"})
+        health.start()
+        self.versions = versions.start()
+        self.addCleanup(health.stop)
+        self.addCleanup(versions.stop)
+
     @patch("src.backend.replay_run_service.backtest_runtime_root")
     @patch("src.backend.replay_run_service.historical_preflight")
     def test_preflight_pins_configuration_accounts_and_external_storage(

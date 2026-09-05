@@ -7897,11 +7897,18 @@ def _parameters_with_action_policies(
         str(profile.get("definition_id") or ""),
         int(profile.get("definition_revision") or 0),
     ).parameter_resolver(parameters)
-    if str(profile.get("profile_id") or "") == "long-momentum-balanced":
+    confirmation = dict(resolved.get("entry_candle_confirmation") or {})
+    if (
+        str(profile.get("definition_id") or "") == STRATEGY_ID
+        and bool(confirmation.get("enabled"))
+        and bool(confirmation.get("require_closed_bar"))
+        and str(confirmation.get("timeframe") or "") == "1s"
+    ):
         # The squeeze strategy makes decisions on completed one-second frames.
         # Project its flow/liquidity vetoes at that same causal cadence so the
         # historical runtime does not prepare an unused 100ms product for every
-        # source-signal symbol.
+        # source-signal symbol. This is an executor/cadence contract, not a
+        # profile-name convention: renamed and cloned profiles must retain it.
         for veto_stage in (
             resolved.get("entry_rules", {}).get("veto", {}),
             resolved.get("phase_policy", {})

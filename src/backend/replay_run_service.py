@@ -27,6 +27,7 @@ from src.backend.data_field_contracts import (
 )
 from src.backend.canonical_trading_service import trading_state_payload
 from src.backend.lifecycle_contract import lifecycle_projection
+from src.backend.historical_runtime_versions import runtime_version_check
 from src.backend.news_signal_runtime_service import (
     all_news_synthesis_events,
     bullish_news_signal_rows,
@@ -39,6 +40,7 @@ from src.backend.qmd_gateway_client import (
     qmd_historical_structure_snapshot,
     qmd_historical_source_revision,
     qmd_history_websocket_url,
+    qmd_history_get_json,
     qmd_product_request,
 )
 from src.backend.trading_runtime_service import (
@@ -1495,6 +1497,7 @@ class ReplayRunController:
             "preparation_cache": {
                 "strategy_frames": self._strategy_frame_cache_status,
             },
+            "structure_prefetch": deepcopy(getattr(self, "_structure_prefetch_progress", {})),
             "execution_mode": self.definition.execution_mode,
             "strategy_debug_sources": self._strategy_debug_sources(),
             "error": self.error,
@@ -3565,8 +3568,8 @@ class ReplayRunController:
         ):
             return
         maximum_frames = max(
-            32,
-            min(int(os.environ.get("REPLAY_STRUCTURE_PREFETCH_FRAMES", "256")), 1024),
+            1,
+            min(int(os.environ.get("REPLAY_STRUCTURE_PREFETCH_FRAMES", "16")), 64),
         )
         groups: dict[str, list[datetime]] = {}
         consumed = 0
@@ -3575,6 +3578,11 @@ class ReplayRunController:
             if frame is None:
                 self._historical_structure_prefetch_exhausted = True
                 break
+            if frame.as_of < self.definition.requested_start:
+                # Warm-up frames are remembered, never strategy-evaluated.
+                # Seed the first requested snapshot through all earlier source
+                # events instead of materializing unused per-bar snapshots.
+                continue
             consumed += 1
             boundaries = groups.setdefault(frame.ticker, [])
             if not boundaries or boundaries[-1] != frame.as_of:
@@ -3603,6 +3611,12 @@ class ReplayRunController:
             ordered = [as_of for as_of in ordered if as_of > cached[0]]
         if not ordered:
             return
+        progress = getattr(self, "_structure_prefetch_progress", {})
+        self._structure_prefetch_progress = progress
+        started = time.monotonic()
+        progress[ticker] = {"state": "building", "boundary_count": len(ordered),
+                            "first_as_of": ordered[0].isoformat(), "last_as_of": ordered[-1].isoformat(),
+                            "started_at": datetime.now(UTC).isoformat()}
         payloads: list[dict[str, Any]] = []
         if cached is None:
             seed = await asyncio.to_thread(
@@ -3649,6 +3663,7 @@ class ReplayRunController:
                 )
             self._historical_structure_boundary_cache[(ticker, as_of)] = payload
         final_payload = payload_by_time[ordered[-1]]
+        progress[ticker].update(state="ready", elapsed_seconds=round(time.monotonic() - started, 3))
         self._historical_structure_sessions[ticker] = (
             ordered[-1],
             session_id,
@@ -7775,6 +7790,15 @@ def backtest_preflight(
         except Exception as exc:
             watchlist_error = str(exc)
     checks = list(base["checks"])
+    try:
+        version_check = runtime_version_check(
+            configuration, dict(qmd_history_get_json("/health", timeout=5)),
+        )
+    except Exception as exc:
+        version_check = {"id": "runtime_versions", "label": "Current execution code and strategy",
+                         "status": "blocked", "required": True,
+                         "summary": f"Cannot verify execution versions: {exc}", "evidence": ""}
+    checks.append(version_check)
     checks.append(
         {
             "id": "approved_configuration",
@@ -7853,6 +7877,7 @@ def backtest_preflight(
     )
     ready = bool(
         base["strategy_run_ready"]
+        and version_check["status"] == "ready"
         and bindings
         and work_ready
         and storage_ready

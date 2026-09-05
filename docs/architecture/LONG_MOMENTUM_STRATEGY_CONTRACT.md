@@ -613,7 +613,44 @@ provenance; an older gateway fails closed. Existing runs are never relabeled
 as revision-39 acceptance. The earlier UI capture covered a loading screen,
 so dropdown interaction has not been claimed as visually verified.
 
-## 14. Supporting context
+## 14. Current-code backtest launch and execution resources
+
+New Backtest launches require the selected Long Momentum executor revision to
+match the current strategy revision. Preflight also compares the running QMD
+History binary's build-time source SHA-256 with the workspace Rust source and
+checks that backend/trading-runtime Python source has not changed since backend
+startup. A mismatch blocks launch with the required rebuild/restart or new
+candidate action. Use `scripts/services.ps1` to manage those services. Existing
+saved candidates and results remain immutable; selecting an old candidate does
+not silently upgrade its strategy or relabel its results.
+
+The completed-one-second-candle veto cadence follows the strategy definition
+and candle configuration, including renamed and cloned profiles. It must not
+depend on the built-in profile's name.
+
+QMD History uses mimalloc and allocation-free sorting where the structural
+comparison has a deterministic total order. Historical structure batches run
+on blocking workers with two execution permits, separate from chart build
+capacity. A batch owns its checkpoint checkout and commit/rollback, even if
+the HTTP caller disconnects. Replay prefetch defaults to 16 completed frame
+boundaries (configurable from 1 through 64); it preserves every boundary and
+all intervening canonical events. Run status exposes each ticker's current
+prefetch interval and elapsed completion time. These changes reduce contention
+and progress stalls without weakening causal ordering or fill accounting.
+Frames before the requested run start still warm the indicator memory, but
+do not request unused per-bar structural snapshots. The first required QMD
+snapshot seeds through every earlier canonical event normally.
+
+Structure version 17 can seed from a certified version-16 checkpoint only when
+that checkpoint belongs to a completed earlier session. The original certificate
+and hash are verified first. Migration preserves persistent levels, tracks,
+quality evidence, and source cursors while resetting the four session extrema
+changed by version 17. Provenance records the migration and original hash.
+Intraday version-16 migration is rejected; old HOD values cannot enter the new
+session. Historical events continue to come exclusively from canonical imported
+ClickHouse authority.
+
+## 15. Supporting context
 
 - [September 3-4 execution UAT summary](../codex/chat-summaries/2026/CHAT-20260903-1451-long-strategy-execution-backtest-uat.md)
 - [Earlier freshness and trailing repair](../codex/chat-summaries/2026/CHAT-20260902-UNKNOWN-strategy-freshness-structural-trailing-repair.md)
