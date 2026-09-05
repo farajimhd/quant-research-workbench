@@ -29,10 +29,13 @@ The terminal distinguishes processes alive from workers doing work (including
 source reads, validation and recovery) and workers waiting or starting. Protocol
 12 publishes a separate recovered-event counter. Replay throughput is the change
 in covered events minus recovered events; recovery throughput is measured separately.
-ETA uses remaining event coverage divided by replay throughput (up to five minutes,
-with at least 15 seconds of measurement). Concurrent recovery never resets the
-window; counter rollback does. Failed work suppresses the estimate. This estimate
-prices the remaining work as replay, rather than projecting cheap recovery onto it.
+Primary ETA uses `elapsed_seconds * (total_events - covered_events) / covered_events`,
+including replay and recovered coverage. Both counters come from the same supervisor
+attempt snapshot; reopening a monitor never resets elapsed time. It is labeled
+average coverage and can be optimistic while recovery dominates. Recent replay and
+recovery rates remain separate diagnostics. Worker directories are rediscovered
+on every refresh so startup cannot freeze the monitor at an incomplete worker count.
+Failed work suppresses the estimate.
 Event coverage alone does not imply finished
 checkpoint certification. Changed throughput or ticker complexity can change ETA.
 Each priority ticker's full-history certification marker produces a one-time

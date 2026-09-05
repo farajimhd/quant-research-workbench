@@ -643,7 +643,7 @@ def aggregate_status(paths, plans, started, rates, processes, stopping=False) ->
                 worker_details.append(f"W{worker + 1:02d} {ticker}: {stage}")
         issues += row.get("issues", [])[-2:]
     exited = sum(process.poll() is not None for process in processes)
-    return {
+    result = {
         "schema_version": 1,
         "status": ("degraded" if failed_workers else "running") if exited < len(processes) else ("failed" if failed_workers else "completed"),
         "worker_processes_failed": failed_workers,
@@ -659,9 +659,6 @@ def aggregate_status(paths, plans, started, rates, processes, stopping=False) ->
         "recovery_event_rate_5m": recovery_rate,
         "coverage_event_rate_5m": coverage_rate,
         "recovered_events": recovered,
-        "eta_seconds": (max(total_events - events, 0) / rate
-                        if rate > 0 and not failed_workers and not counts["failed"] and events < total_events else None),
-        "eta_basis": "remaining coverage at measured replay rate; recovery counted separately; approximate",
         "worker_processes_busy": busy_workers,
         "worker_processes_waiting": max(len(processes) - exited - busy_workers, 0),
         "elapsed_seconds": now - started,
@@ -672,6 +669,20 @@ def aggregate_status(paths, plans, started, rates, processes, stopping=False) ->
         "replayed_events": sum(int(row.get("events_advanced", 0)) for row in statuses),
         "issues": issues[-10:],
     }
+    apply_average_coverage_eta(result)
+    return result
+
+
+def apply_average_coverage_eta(status):
+    events = int(status.get("events_processed", 0))
+    total = int(status.get("total_estimated_events", 0))
+    elapsed = float(status.get("elapsed_seconds", 0))
+    rate = events / elapsed if events > 0 and elapsed > 0 else 0.0
+    status["average_coverage_rate"] = rate
+    status["eta_seconds"] = ((total - events) / rate if rate > 0 and total > events
+                             and not status.get("worker_processes_failed", 0)
+                             and not status.get("counts", {}).get("failed", 0) else None)
+    status["eta_basis"] = "elapsed * remaining events / covered events; current supervisor attempt"
 
 
 def eta_label(status: dict[str, Any]) -> str:
@@ -680,7 +691,7 @@ def eta_label(status: dict[str, Any]) -> str:
     if status["counts"].get("certified", 0) == status["total_units"]:
         return "complete"
     if status.get("eta_seconds") is not None:
-        return f"~{fmt_duration(status['eta_seconds'])} (recent rate)"
+        return f"~{fmt_duration(status['eta_seconds'])} (average coverage)"
     if status.get("events_processed", 0) >= status.get("total_estimated_events", 0) > 0:
         return "finishing certification"
     if any("recovery" in stage for stage in status.get("stages", {})):
@@ -752,6 +763,7 @@ def render_rich(status: dict[str, Any], set_id: str):
     summary.add_row("Recovered days", fmt_count(counts["skipped"]))
     summary.add_row("Events covered", f"{fmt_count(status['events_processed'])} / {fmt_count(total)}  {pct:.1f}%")
     summary.add_row("Replay | recovery rate", f"{fmt_count(status['event_rate_5m'])}/s | {fmt_count(status.get('recovery_event_rate_5m', 0))}/s (5m)")
+    summary.add_row("Average coverage rate", f"{fmt_count(status.get('average_coverage_rate', 0))}/s since attempt start")
     summary.add_row("Elapsed | ETA", f"{fmt_duration(status['elapsed_seconds'])} | {eta_label(status)}")
     if status.get("monitor_mode") == "reattached":
         oldest = status.get("oldest_worker_status_age_seconds")
@@ -856,13 +868,20 @@ def monitor_existing_campaign(
         live.start()
     try:
         while True:
+            # Workers are launched incrementally. Refresh discovery rather than
+            # freezing the first few directories observed during startup.
+            status_paths = [directory / "campaign-status.json" for directory in sorted((runtime_dir / "workers").glob("worker-*")) if directory.is_dir()]
             rows = [read_status(path) for path in status_paths]
             views = [_DetachedProcessView(row) for row in rows]
             status = aggregate_status(status_paths, plans, started, rates, views)
             supervisor_status = read_status(runtime_dir / "campaign-status.json") or {}
-            if supervisor_status.get("checkpoint_set_id") == set_id:
-                for key in ("priority_tickers", "priority_completed", "priority_completion_messages"):
-                    status[key] = supervisor_status.get(key, [])
+            authoritative = (supervisor_status.get("checkpoint_set_id") == set_id
+                             and "elapsed_seconds" in supervisor_status and "counts" in supervisor_status)
+            if authoritative:
+                # Use coverage and elapsed from the same snapshot/attempt. A
+                # reopened monitor must not invent its own elapsed baseline.
+                status = dict(supervisor_status)
+            apply_average_coverage_eta(status)
             print_new_priority_completions(status, announced, live)
             now = datetime.now(timezone.utc)
             ages = [
@@ -888,9 +907,8 @@ def monitor_existing_campaign(
             elif time.monotonic() - last_plain >= 15:
                 print(render_plain(status), flush=True)
                 last_plain = time.monotonic()
-            if all(row is not None and row.get("status") != "running" for row in rows):
-                all_certified = all(status_is_fully_certified(row) for row in rows if row is not None)
-                return 0 if all_certified else 1
+            if authoritative and supervisor_status.get("status") in {"completed", "failed", "interrupted"}:
+                return 0 if status_is_fully_certified(supervisor_status) else 1
             time.sleep(1)
     except KeyboardInterrupt:
         print("\nMonitor closed; campaign workers continue independently.", file=sys.stderr, flush=True)

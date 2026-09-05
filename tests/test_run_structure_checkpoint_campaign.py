@@ -548,7 +548,7 @@ def test_supervisor_restarts_transient_failure_and_seals_only_certified_work(tmp
     assert list((target / "workers" / "worker-01").glob("attempt-*/worker.log"))
 
 
-def test_recovery_stages_are_visible_and_coverage_does_not_claim_an_eta(tmp_path):
+def test_recovery_stages_are_visible_and_included_in_average_eta(tmp_path):
     path = tmp_path / "status.json"
     path.write_text(json.dumps({"status": "running", "counts": {"skipped": 16, "certified": 16, "finished": 16},
         "events_processed": 1000000, "events_advanced": 0, "active": {},
@@ -559,7 +559,7 @@ def test_recovery_stages_are_visible_and_coverage_does_not_claim_an_eta(tmp_path
     assert result["worker_processes_busy"] == 1
     assert result["worker_processes_waiting"] == 0
     assert result["worker_details"] == ["W01 ABC: persist recovery"]
-    assert result["eta_seconds"] is None
+    assert result["eta_seconds"] == pytest.approx(60, abs=1)
     assert result["counts"]["certified"] == 16
     assert result["replayed_events"] == 0
 
@@ -580,24 +580,24 @@ def test_eta_keeps_replay_throughput_during_concurrent_recovery(tmp_path, monkey
     clock[0] = 120.0
     row["events_processed"] = 200
     result = sample()
-    assert result["eta_seconds"] == 160.0
+    assert result["eta_seconds"] == 80.0
     assert result["worker_processes_busy"] == 1
     assert result["worker_processes_waiting"] == 0
-    assert campaign.eta_label(result) == "~00:02:40 (recent rate)"
+    assert campaign.eta_label(result) == "~00:01:20 (average coverage)"
     row["counts"]["skipped"] = 1
     row["events_processed"] = 700
     row["recovered_events"] = 500
     clock[0] = 121.0
     result = sample()
-    assert result["eta_seconds"] == pytest.approx(63.0)
+    assert result["eta_seconds"] == pytest.approx(9.0)
     assert result["recovery_event_rate_5m"] == pytest.approx(500 / 21)
     clock[0] = 141.0
     row["events_processed"] = 800
-    assert sample()["eta_seconds"] == 41.0
+    assert sample()["eta_seconds"] == 10.25
     row["events_processed"] = 20  # A restarted process must not keep its old rate.
     row["recovered_events"] = 0
     clock[0] = 142.0
-    assert sample()["eta_seconds"] is None
+    assert sample()["eta_seconds"] == 2058.0
     row["counts"]["failed"] = 1
     assert campaign.eta_label(sample()) == "blocked by failed work"
 
@@ -744,3 +744,41 @@ if (-not $global:stopped) { throw 'Owned worker was not stopped' }
     final = json.loads((runtime / "campaign-status.json").read_text(encoding="utf-8"))
     assert final["status"] == "interrupted" and final["counts"]["certified"] == 12
     assert len(list(runtime.glob("stop-evidence-*/campaign-status.json"))) == 1
+
+
+def test_monitor_discovers_new_workers_and_uses_supervisor_elapsed(tmp_path, monkeypatch):
+    from scripts import run_structure_checkpoint_campaign as campaign
+    (tmp_path / "planner").mkdir()
+    (tmp_path / "campaign-manifest.json").write_text(json.dumps({"checkpoint_set_id": "test"}))
+    (tmp_path / "planner" / "campaign-plan.json").write_text(json.dumps([{"sessions": [1, 2], "estimated_events": 1200}]))
+    first = tmp_path / "workers" / "worker-01"
+    first.mkdir(parents=True)
+    row = {"status": "running", "counts": {}, "events_processed": 300}
+    (first / "campaign-status.json").write_text(json.dumps(row))
+    supervisor = dict(checkpoint_set_id="test", status="running", elapsed_seconds=120,
+                      events_processed=300, total_estimated_events=1200, total_units=2,
+                      counts={"certified": 0}, worker_processes_failed=0)
+    (tmp_path / "campaign-status.json").write_text(json.dumps(supervisor))
+    observed, snapshots = [], []
+    original = campaign.aggregate_status
+    def aggregate(paths, *args, **kwargs):
+        observed.append(len(paths))
+        return original(paths, *args, **kwargs)
+    monkeypatch.setattr(campaign, "aggregate_status", aggregate)
+    monkeypatch.setattr(campaign, "render_plain", lambda status: snapshots.append(dict(status)) or "snapshot")
+    monkeypatch.setattr(campaign.sys.stdout, "isatty", lambda: False)
+    ticks = [1000.0]
+    monkeypatch.setattr(campaign.time, "monotonic", lambda: ticks[0])
+    def advance(_):
+        second = tmp_path / "workers" / "worker-02"
+        second.mkdir()
+        (second / "campaign-status.json").write_text(json.dumps(row))
+        supervisor.update(status="completed", events_processed=1200, elapsed_seconds=200, counts={"certified": 2})
+        (tmp_path / "campaign-status.json").write_text(json.dumps(supervisor))
+        ticks[0] += 20
+    monkeypatch.setattr(campaign.time, "sleep", advance)
+    assert campaign.monitor_existing_campaign(Path("binary"), "sha", ["--runtime-dir", str(tmp_path), "--checkpoint-set-id", "test"], {}) == 0
+    assert observed == [1, 2]
+    assert snapshots[0]["elapsed_seconds"] == 120
+    assert snapshots[0]["eta_seconds"] == 360
+    assert snapshots[-1]["elapsed_seconds"] == 200
