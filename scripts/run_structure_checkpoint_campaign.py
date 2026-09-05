@@ -32,7 +32,7 @@ RUNTIME_BINARY_NAME = (
 )
 MAX_PROCESS_WORKERS = 96
 ALGORITHM_VERSION = 18
-CAMPAIGN_VERSION = 10
+CAMPAIGN_VERSION = 11
 HOLD_SCORE_REVISION = "beta22-wilson90-v1"
 RELATIVE_SCORE_REVISION = "frozen-prior-session-role-ecdf-midrank-v1"
 CERTIFICATION_SCHEMA_VERSION = 3
@@ -580,7 +580,13 @@ def aggregate_status(paths, plans, started, rates, processes) -> dict[str, Any]:
     # Deriving this value from the immutable plan keeps startup progress truthful.
     counts["queued"] = max(total_units - counts["finished"] - counts["active"], 0)
     now = time.monotonic()
-    rates.append((now, events))
+    # Recovery credits saved events without replaying them. Start a new rate
+    # window after recovery or counter rollback rather than forecasting that
+    # cheap coverage as the cost of replaying the remaining market history.
+    recovering = any("recovery" in stage for row in statuses for stage in row.get("stages", {}).values())
+    if rates and (events < rates[-1][1] or len(rates[-1]) < 3 or counts["skipped"] != rates[-1][2] or recovering):
+        rates.clear()
+    rates.append((now, events, counts["skipped"]))
     while len(rates) > 1 and rates[1][0] <= now - 300:
         rates.popleft()
     rate = 0.0
@@ -589,7 +595,7 @@ def aggregate_status(paths, plans, started, rates, processes) -> dict[str, Any]:
     active, issues = [], []
     stages: dict[str, int] = {}
     worker_details = []
-    failed_workers, startup_failures = 0, 0
+    failed_workers, startup_failures, busy_workers = 0, 0, 0
     for worker, (row, process) in enumerate(zip(worker_statuses, processes, strict=True)):
         if process.poll() not in (None, 0) or (process.poll() == 0 and (row is None or not (status_is_fully_certified(row) or (row.get("status") == "completed" and row.get("total_units") == 0)))):
             failed_workers += 1
@@ -600,6 +606,7 @@ def aggregate_status(paths, plans, started, rates, processes) -> dict[str, Any]:
         if row is None:
             continue
         if process.poll() is None:
+            busy_workers += int(bool(row.get("active")))
             active += [f"W{worker + 1:02d} {ticker}@{date}" for ticker, date in row.get("active", {}).items()]
             worker_stages = row.get("stages", {})
             for ticker, stage in worker_stages.items():
@@ -620,7 +627,11 @@ def aggregate_status(paths, plans, started, rates, processes) -> dict[str, Any]:
         "total_estimated_events": total_events,
         "events_processed": events,
         "event_rate_5m": rate,
-        "eta_seconds": None,  # Recovery and replay costs differ; coverage is not a time forecast.
+        "eta_seconds": (max(total_events - events, 0) / rate
+                        if rate > 0 and not recovering and not failed_workers and not counts["failed"] and events < total_events else None),
+        "eta_basis": "recent replay coverage rate; approximate",
+        "worker_processes_busy": busy_workers,
+        "worker_processes_waiting": max(len(processes) - exited - busy_workers, 0),
         "elapsed_seconds": now - started,
         "counts": counts,
         "active": active,
@@ -636,7 +647,36 @@ def eta_label(status: dict[str, Any]) -> str:
         return "blocked by failed work"
     if status["counts"].get("certified", 0) == status["total_units"]:
         return "complete"
-    return fmt_duration(status.get("eta_seconds"))
+    if status.get("eta_seconds") is not None:
+        return f"~{fmt_duration(status['eta_seconds'])} (recent rate)"
+    if status.get("events_processed", 0) >= status.get("total_estimated_events", 0) > 0:
+        return "finishing certification"
+    if any("recovery" in stage for stage in status.get("stages", {})):
+        return "calibrating after recovery"
+    return "measuring throughput"
+
+
+def record_priority_completions(status, work_dir, priorities, start_date, end_date):
+    status["priority_tickers"] = list(priorities)
+    status["priority_completed"] = [ticker for ticker in priorities
+                                    if (work_dir / "completed" / f"{ticker}.done").is_file()]
+    start = datetime.fromisoformat(start_date).strftime("%b %d, %Y")
+    end = datetime.fromisoformat(end_date).strftime("%b %d, %Y")
+    status["priority_completion_messages"] = [
+        f"{ticker} completed from {start} through {end}"
+        for ticker in status["priority_completed"]
+    ]
+
+
+def print_new_priority_completions(status, announced, live=None):
+    for message in status.get("priority_completion_messages", []):
+        if message in announced:
+            continue
+        if live:
+            live.console.print(message, style="green", markup=False)
+        else:
+            print(message, flush=True)
+        announced.add(message)
 
 
 def render_plain(status: dict[str, Any]) -> str:
@@ -644,6 +684,7 @@ def render_plain(status: dict[str, Any]) -> str:
     return (
         f"{status['updated_at']} status={status['status']} processes={status['worker_processes_exited']}/"
         f"{status['worker_processes']} exited units={counts['finished']}/{status['total_units']} "
+        f"busy={status.get('worker_processes_busy', 0)} waiting={status.get('worker_processes_waiting', 0)} "
         f"queued={counts['queued']} failed={counts['failed']} blocked={counts['blocked']} "
         f"worker_failures={status.get('worker_processes_failed', 0)} startup_failures={status.get('worker_startup_failures', 0)} restarts={status.get('worker_restarts', 0)} "
         f"retries={counts['retried']} events={fmt_count(status['events_processed'])}/"
@@ -666,6 +707,10 @@ def render_rich(status: dict[str, Any], set_id: str):
     summary.add_row("Checkpoint set", set_id)
     summary.add_row("Build SHA-256", str(status.get("executable_sha256", "unknown"))[:16])
     summary.add_row("Processes", f"{status['worker_processes'] - status['worker_processes_exited']} alive | {status['worker_processes_exited']} exited | {status.get('worker_processes_failed', 0)} failed")
+    summary.add_row("Worker activity", f"{status.get('worker_processes_busy', 0)} assigned work | {status.get('worker_processes_waiting', 0)} waiting / starting")
+    if status.get("priority_tickers"):
+        completed = status.get("priority_completed", [])
+        summary.add_row("Priority completed", f"{len(completed)}/{len(status['priority_tickers'])}: {', '.join(completed) or 'none yet'}")
     summary.add_row("Startup / restarts", f"{status.get('worker_startup_failures', 0)} | {status.get('worker_restarts', 0)}")
     summary.add_row(
         "Certified days",
@@ -706,7 +751,7 @@ def render_rich(status: dict[str, Any], set_id: str):
     return Panel(
         Group(
             Text(
-                f"Structural Checkpoint Campaign v9  {status['status'].upper()}"
+                f"Structural Checkpoint Campaign v{CAMPAIGN_VERSION}  {status['status'].upper()}"
                 + ("  REATTACHED" if status.get("monitor_mode") == "reattached" else ""),
                 style="bold cyan",
             ),
@@ -765,7 +810,8 @@ def monitor_existing_campaign(
     starts = [value for row in initial_rows if (value := _status_timestamp(row, "started_at"))]
     elapsed = max((datetime.now(timezone.utc) - min(starts)).total_seconds(), 0.0) if starts else 0.0
     started = time.monotonic() - elapsed
-    rates: deque[tuple[float, int]] = deque()
+    rates: deque[tuple[float, int, int]] = deque()
+    announced: set[str] = set()
     interactive = sys.stdout.isatty()
     live, last_plain = None, 0.0
     if interactive:
@@ -780,6 +826,11 @@ def monitor_existing_campaign(
             rows = [read_status(path) for path in status_paths]
             views = [_DetachedProcessView(row) for row in rows]
             status = aggregate_status(status_paths, plans, started, rates, views)
+            supervisor_status = read_status(runtime_dir / "campaign-status.json") or {}
+            if supervisor_status.get("checkpoint_set_id") == set_id:
+                for key in ("priority_tickers", "priority_completed", "priority_completion_messages"):
+                    status[key] = supervisor_status.get(key, [])
+            print_new_priority_completions(status, announced, live)
             now = datetime.now(timezone.utc)
             ages = [
                 max((now - updated).total_seconds(), 0.0)
@@ -1051,6 +1102,7 @@ def run_process_campaign(
 
     aggregate_path = runtime_dir / "campaign-status.json"
     started, rates, interrupted, registry_failed = time.monotonic(), deque(), False, False
+    announced: set[str] = set()
     live, last_plain = None, 0.0
     try:
         if interactive:
@@ -1084,6 +1136,8 @@ def run_process_campaign(
             if not any(process.poll() is None for process in processes):
                 break
             status = aggregate_status(status_paths, plans, started, rates, processes)
+            record_priority_completions(status, work_dir, requested_identity["priority_tickers"], start_date, end_date)
+            print_new_priority_completions(status, announced, live)
             status["worker_restarts"] = sum(restarts)
             status["checkpoint_set_id"] = set_id
             status["universe_hash"] = universe_hash
@@ -1123,6 +1177,8 @@ def run_process_campaign(
         for process in processes:
             process.wait()
         final = aggregate_status(status_paths, plans, started, rates, processes)
+        record_priority_completions(final, work_dir, requested_identity["priority_tickers"], start_date, end_date)
+        print_new_priority_completions(final, announced, live)
         final["worker_restarts"] = sum(restarts)
         final["checkpoint_set_id"] = set_id
         final["universe_hash"] = universe_hash

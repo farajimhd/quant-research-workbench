@@ -2,7 +2,7 @@
 
 The campaign launcher builds algorithm 18 with the `structural-prominence-v18`
 feature and runs `structure_checkpoint_campaign_v18`. Campaign protocol version
-10 is distinct from structural algorithm version 18. The old v16 executable and
+11 is distinct from structural algorithm version 18. The old v16 executable and
 default service builds retain their existing algorithms. A service consuming
 these new checkpoints must also use algorithm 18; renaming a checkpoint set
 does not make older checkpoints compatible.
@@ -19,11 +19,22 @@ Reconstruct the existing tradable-stock universe from **2025-01-01 through
 algorithm-16/17 checkpoint can seed this reconstruction. Preserve each ticker's
 causal event order and checkpoint certification chain.
 
-The first ten tickers below complete their requested histories before workers
-claim the remainder. Within each phase, a shared durable queue balances work;
-one ticker's history is never split across racing workers. Up to **96 worker
-processes** run after the priority barrier clears. Waiting workers inspect only
-the ten priority slots rather than scanning the whole universe on every poll.
+The first ten tickers below are claimed first, in ranking order. Remaining workers
+immediately claim the rest of the universe without waiting for those histories to
+finish. A shared durable queue balances work across up to **96 worker processes**;
+one ticker's history is never split across racing workers. Protocol 11 removes the
+protocol-10 completion barrier, which limited useful initial concurrency to ten.
+
+The terminal distinguishes processes alive from workers assigned work and workers
+waiting or starting. ETA is approximate remaining event coverage divided by the
+recent aggregate coverage rate (up to five minutes, with at least 15 seconds of
+measurement). Recovery credits and counter resets restart the measurement window;
+failed work suppresses the estimate. Event coverage alone does not imply finished
+checkpoint certification. Changed throughput or ticker complexity can change ETA.
+Each priority ticker's full-history certification marker produces a one-time
+terminal completion message with the requested date range. The completed list
+and messages remain in `campaign-status.json` and reappear in a reattached monitor;
+finishing an individual day or merely exhausting event coverage does not qualify.
 
 Priority is scheduling metadata, not an input to structure construction. Rank
 the August 21, 2026 **04:00–20:00 Eastern** session by reported trade dollar
@@ -112,7 +123,7 @@ remote process management returned access denied from the laptop session.
 
 The dashboard retains active stages, queued/completed/certified/failed units,
 worker failures, restarts and logs. A fatal worker error stops peers, including
-workers waiting at the priority barrier. Recoverable transport failures retain
+other workers. Recoverable transport failures retain
 bounded retries. A stopped run is not reported as sealed.
 
 ```powershell
@@ -157,7 +168,7 @@ verification; evidence remains under
 Regression results: 34 launcher tests, 240 v18 core tests, 104 historical gateway
 tests and 17 native campaign tests passed. Shared changes also passed 233 v16
 core tests and 235 default-service core tests. These include compact dashboard
-coverage, exclusive work claims, priority waiting, fatal-worker propagation,
+coverage, exclusive work claims, priority claim ordering, fatal-worker propagation,
 immutable recovery and source-build selection.
 The actual PowerShell wrapper is exercised too: PowerShell boxes nullable dates
 as `DateTime`, so presence checks use null comparisons rather than `.HasValue`.

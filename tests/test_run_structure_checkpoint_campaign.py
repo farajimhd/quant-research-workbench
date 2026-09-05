@@ -560,3 +560,68 @@ def test_recovery_stages_are_visible_and_coverage_does_not_claim_an_eta(tmp_path
     assert result["eta_seconds"] is None
     assert result["counts"]["certified"] == 16
     assert result["replayed_events"] == 0
+
+
+def test_eta_uses_measured_coverage_and_resets_after_recovery(tmp_path, monkeypatch):
+    from scripts import run_structure_checkpoint_campaign as campaign
+    clock = [100.0]
+    monkeypatch.setattr(campaign.time, "monotonic", lambda: clock[0])
+    path = tmp_path / "status.json"
+    row = {"status": "running", "counts": {"active": 1}, "events_processed": 100,
+           "active": {"TEST": "2025-01-02"}, "stages": {"TEST": "replay"}}
+    plans = [{"estimated_events": 1000, "sessions": [1, 2]}]
+    rates = deque()
+    def sample():
+        path.write_text(json.dumps(row))
+        return aggregate_status([path], plans, 100.0, rates, [_RunningProcess()])
+    assert campaign.eta_label(sample()) == "measuring throughput"
+    clock[0] = 120.0
+    row["events_processed"] = 200
+    result = sample()
+    assert result["eta_seconds"] == 160.0
+    assert result["worker_processes_busy"] == 1
+    assert result["worker_processes_waiting"] == 0
+    assert campaign.eta_label(result) == "~00:02:40 (recent rate)"
+    row["counts"]["skipped"] = 1
+    row["events_processed"] = 700
+    clock[0] = 121.0
+    assert sample()["eta_seconds"] is None
+    clock[0] = 141.0
+    row["events_processed"] = 800
+    assert sample()["eta_seconds"] == 40.0
+    row["events_processed"] = 20  # A restarted process must not keep its old rate.
+    clock[0] = 142.0
+    assert sample()["eta_seconds"] is None
+    row["counts"]["failed"] = 1
+    assert campaign.eta_label(sample()) == "blocked by failed work"
+
+
+def test_idle_processes_are_not_presented_as_busy_workers(tmp_path):
+    path = tmp_path / "status.json"
+    path.write_text(json.dumps({"status": "running", "active": {}, "counts": {}}))
+    status = aggregate_status([path, tmp_path / "starting.json"],
+                              [{"sessions": [1], "estimated_events": 10}],
+                              time.monotonic(), deque(), [_RunningProcess(), _RunningProcess()])
+    assert status["worker_processes"] == 2
+    assert status["worker_processes_busy"] == 0
+    assert status["worker_processes_waiting"] == 2
+    from scripts.run_structure_checkpoint_campaign import render_plain
+    assert "busy=0 waiting=2" in render_plain(status)
+
+
+def test_priority_completion_requires_full_ticker_marker_and_prints_once(tmp_path, capsys):
+    from scripts.run_structure_checkpoint_campaign import record_priority_completions, print_new_priority_completions
+    status, announced = {}, set()
+    def update():
+        record_priority_completions(status, tmp_path, ["JUNS", "SUGP"], "2025-01-01", "2026-08-31")
+        print_new_priority_completions(status, announced)
+    update()
+    assert status["priority_completed"] == []
+    assert capsys.readouterr().out == ""
+    (tmp_path / "completed").mkdir()
+    (tmp_path / "completed" / "SUGP.done").write_text("certified")
+    update()
+    assert status["priority_completed"] == ["SUGP"]
+    assert capsys.readouterr().out.strip() == "SUGP completed from Jan 01, 2025 through Aug 31, 2026"
+    update()
+    assert capsys.readouterr().out == ""

@@ -35,8 +35,7 @@ const MAX_ORDINAL_CHUNK: u64 = 1_000_000;
 const TARGET_FETCH_MILLIS: u128 = 3_000;
 const MAX_WORKERS: usize = 96;
 const CAMPAIGN_STOP_REQUESTED: &str = "campaign stop requested";
-const CAMPAIGN_PRIORITY_WAITING: &str = "waiting for priority checkpoint certification";
-const CAMPAIGN_VERSION: u16 = if cfg!(feature = "structural-prominence-v18") { 10 } else { 9 };
+const CAMPAIGN_VERSION: u16 = if cfg!(feature = "structural-prominence-v18") { 11 } else { 9 };
 static STATUS_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug)]
@@ -768,11 +767,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     None => match (&shared_work_dir, &claimed_dir) {
                         (Some(root), Some(owner)) => match claim_work(root, owner) {
                             Ok(plan) => plan,
-                            Err(error) if error == CAMPAIGN_PRIORITY_WAITING => {
-                                progress.stage("priority", CAMPAIGN_PRIORITY_WAITING).await;
-                                tokio::time::sleep(Duration::from_millis(250)).await;
-                                continue;
-                            }
                             Err(error) => {
                                 errors.push(error);
                                 progress.request_abort();
@@ -1410,30 +1404,15 @@ fn claim_work(root: &PathBuf, owner: &PathBuf) -> Result<Option<TickerPlan>, Str
     guard
         .lock()
         .map_err(|e| format!("cannot lock campaign queue: {e}"))?;
-    let priority_path = root.join("priority-tickers.json");
-    let priorities: Vec<String> = if priority_path.exists() {
-        serde_json::from_slice(&fs::read(priority_path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?
-    } else { Vec::new() };
-    let waiting = priorities.iter().any(|t| !root.join("completed").join(format!("{t}.done")).is_file());
-    // The supervisor validates and pins the priority prefix. Waiting workers
-    // need only inspect those slots, not rescan the entire universe every poll.
-    let mut paths: Vec<_> = if waiting {
-        (0..priorities.len()).map(|i| root.join("pending").join(format!("{i:08}.json")))
-            .filter(|p| p.is_file()).collect()
-    } else {
-        fs::read_dir(root.join("pending"))
+    // The immutable plan puts priority tickers first. Claim order preserves
+    // that preference without making other workers wait for full histories.
+    let mut paths: Vec<_> = fs::read_dir(root.join("pending"))
             .map_err(|e| format!("cannot enumerate pending queue: {e}"))?
             .map(|entry| entry.map(|e| e.path()).map_err(|e| format!("cannot read queue entry: {e}")))
             .collect::<Result<Vec<_>, _>>()?
-            .into_iter().filter(|p| p.extension().is_some_and(|s| s == "json")).collect()
-    };
-    if waiting && paths.is_empty() { return Err(CAMPAIGN_PRIORITY_WAITING.into()); }
+            .into_iter().filter(|p| p.extension().is_some_and(|s| s == "json")).collect();
     paths.sort();
     for path in paths {
-        if waiting {
-            let plan: TickerPlan = serde_json::from_slice(&fs::read(&path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-            if !priorities.contains(&plan.ticker) { return Err(CAMPAIGN_PRIORITY_WAITING.into()); }
-        }
         let target = owner.join(path.file_name().unwrap());
         match fs::rename(&path, &target) {
             Ok(()) => {
@@ -3110,7 +3089,7 @@ mod tests {
 mod shared_queue_tests {
     use super::*;
     #[test]
-    fn remainder_waits_for_priority_certification_and_stops_on_failure() {
+    fn remainder_starts_after_priority_claim_without_waiting_for_certification() {
         let root = PathBuf::from("D:/TradingML/runtimes/structure-storage-tests").join(format!("priority-{}", Utc::now().timestamp_nanos_opt().unwrap()));
         fs::create_dir_all(root.join("pending")).unwrap();
         fs::create_dir_all(root.join("worker-1")).unwrap();
@@ -3122,9 +3101,11 @@ mod shared_queue_tests {
         }
         let owner = root.join("worker-1");
         assert_eq!(claim_work(&root, &owner).unwrap().unwrap().ticker, "FIRST");
-        assert_eq!(claim_work(&root, &owner).unwrap_err(), CAMPAIGN_PRIORITY_WAITING);
-        fs::write(root.join("completed/FIRST.done"), b"certified").unwrap();
-        assert_eq!(claim_work(&root, &owner).unwrap().unwrap().ticker, "REST");
+        let second_owner = root.join("worker-2");
+        fs::create_dir_all(&second_owner).unwrap();
+        assert!(!root.join("completed/FIRST.done").exists());
+        assert_eq!(claim_work(&root, &second_owner).unwrap().unwrap().ticker, "REST");
+        assert!(claim_work(&root, &second_owner).unwrap().is_none());
         fs::write(root.join("failure.txt"), b"failure").unwrap();
         assert!(claim_work(&root, &owner).unwrap_err().contains("worker failure"));
         fs::remove_dir_all(root).unwrap();
