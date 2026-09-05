@@ -1,15 +1,20 @@
 # Long Momentum Strategy: Intended Behavior and System Repair Plan
 
-Last updated: 2026-09-04
+Last updated: 2026-09-05
 
 Related task: TASK-0014
 
-Status: Revision 41 implementation reference. Focused verification is separate
+Status: Revision 42 implementation reference. Focused verification is separate
 from market-run acceptance. The user authorized a simultaneous JUNS and SUGP
 backtest for August 21, 2026, 04:00-09:30 Eastern, with shared account cash,
 including stopping, fixing defects and rerunning when necessary.
 
 ## 1. Authority and purpose
+
+Revision 42 adds the completed non-red candle gate, current-book multi-level
+crossing selection, and fresh validation of deferred target amendments.
+Saved earlier revisions retain their original behavior. No revision-42 market
+backtest has been performed as part of this correction.
 
 Revision 41 also reconciles a retired or newly unqualified target frontier
 against the current qualified producer ladder. A missing old identity cannot
@@ -305,44 +310,46 @@ reference from nearest to farthest: R1, R2, R3, R4, and so on. Place the initial
 profit-taking limit at R3. Retain the actual level IDs, prices, qualification,
 and ordering used for that selection.
 
-### 7.2 Advancement after a one-second close above the first resistance
+### 7.2 Advancement after a completed, non-red one-second close
 
-The latest user clarification is authoritative: **advance when a completed
-one-second candle closes strictly above R1**. An intrabar touch or wick alone
-does not authorize target movement. The resting target can still fill on a wick.
+Only a completed 1s candle with `close >= open` can reconcile the target.
+A red candle, intrabar update, wick-only crossing, or close exactly on the
+resistance cannot advance it. Existing target fills and protective exits
+remain active on red candles and between candle closes.
 
-Illustrative prices only:
+Use the producer's qualified level book as of that candle boundary. R1, R2,
+R3, and later positions are dynamic roles, not a saved admission ladder.
+New levels, changed prices and quality, removed levels, and role flips must
+be considered. The strategy does not manufacture resistance from a wick or
+high of day. A known resistance that now appears as support is evaluated
+using its current producer price and qualification, never its old price.
 
-| Event | Active ladder/reference | Target |
-|---|---|---|
-| Entry below qualified levels 4.10, 4.20, 4.30, 4.40 | R1=4.10, R2=4.20, R3=4.30 | Resting at 4.30 |
-| One-second close above 4.10, but below 4.20 | Advance one level through the causal ladder | Amend target to 4.40 |
-| Intrabar wick above 4.10, followed by close at/below 4.10 | No confirmed close | Keep existing target |
-| Duplicate evaluation of the same closed candle | Already consumed candle | No additional advancement |
+Compare the previous completed close with the current qualified resistance
+prices. For all boundaries with `previous close <= resistance < close`,
+select the highest crossed boundary. Place the replacement at the third
+qualified resistance strictly above that boundary in the current book.
+For example, with levels 4.10, 4.20, 4.30, 4.40, and 4.50, a non-red close
+crossing both 4.10 and 4.20 selects 4.50 in one amendment. It must not stop
+at 4.40. Reordering the former first level cannot hide another crossing.
 
-This example defines the one-step rule, not fixed prices or a frozen live
-ladder. **R1, R2, R3, and R4 are moving roles in the current producer book.**
-Use the current causal producer book at the candle boundary. Track level
-identity and current price: a close above an obsolete price cannot advance a
-level that has since moved higher. A removed level cannot authorize an advance.
-A resistance that flips to support remains identifiable through its producer ID.
+Record the candle open, close, previous close, current crossed level IDs and
+prices, highest crossed resistance, and replacement selection. Consume each
+completed candle once. Red candles still advance observed close history,
+but authorize no target reconciliation. Stop and target updates caused by
+one eligible event can both be emitted.
 
-The comparison is `completed 1s close > current producer price of tracked R1`.
-Record the candle boundary, level ID, current level price, and close. Select
-R3 above that close from the current book, normally the previous R4. A gap can
-consume multiple ladder positions, but cannot repeatedly advance on the same
-candle. Afterward the next unconsumed resistance becomes R1. A newly published
-level cannot manufacture an earlier close confirmation.
-The broker processes already-working targets before the resulting Strategy
-decision, so an executable wick/gap fill is not erased by moving its target.
+When fewer than three replacement levels qualify, retain the broker-held
+target. A pending amendment can retry only on a later completed non-red
+candle while its current producer level still exists, still qualifies, and
+remains strictly below that candle's close. Rebuild the selection and record
+fresh candle acceptance. A red candle, retired level, or invalid confirmation
+clears that pending acceptance; never replay the old close as current proof.
+Targets only advance, never move down.
 
-If three target resistances do not qualify, defer a new entry. During an open
-trade, retain the existing target until a qualified replacement exists. Stop
-and target updates caused by the same event can both be emitted; a stop update
-must not discard that candle's target confirmation.
+The broker processes already-working targets before the resulting strategy
+decision. An executable wick or gap fill is not erased by a later amendment.
+This ordering also applies when a candle crosses multiple resistances.
 
-If an amendment fails or a replacement ladder is temporarily unavailable,
-retain the accepted candle evidence for retry and keep the broker-held target.
 Rejection of an add, reduction, or exit must never delete an already-held
 position's target frontier, entry price, or support stop.
 

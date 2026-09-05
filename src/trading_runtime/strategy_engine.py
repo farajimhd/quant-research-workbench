@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, time as clock_time, timedelta, timezone
 from enum import StrEnum
-from math import floor, isfinite
+from math import floor, inf, isfinite, nextafter
 from typing import Any, Mapping
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -34,8 +34,8 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 41
-HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40)
+STRATEGY_REVISION = 42
+HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41)
 
 _COMPLETED_FRAME_TOP_N_ENTRY_MODE = "prior_completed_frame_top_n_below_session_high"
 _EVENT_PRICE_TOP_N_ENTRY_MODE = "event_price_top_n_below_session_high"
@@ -3251,6 +3251,11 @@ class LongMomentumStrategyEngine:
                 ) if entry_level_ids else 1,
             }
         )
+        if self.revision >= 42:
+            state["target_resistance_snapshot"] = [
+                _compact_structural_level_reference(row)
+                for row in observation.structural_resistance_levels
+            ]
         state.pop("entry_target_room_retest", None)
         state.pop("accepted_entry_resistance", None)
         state.pop("pending_entry_resistance", None)
@@ -4071,6 +4076,8 @@ class LongMomentumStrategyEngine:
         parameters: dict[str, Any], state: dict[str, Any], *, side: str, stop: float,
     ) -> StrategyEngineResult | None:
         """Consume a causal first-resistance hit, using the moving producer book."""
+        if self.revision >= 42 and side == "long":
+            return self._closed_dynamic_target_result(assignment, observation, parameters, state, stop=stop)
         candle_clock = self.revision >= 38
         if candle_clock and (observation.source_timeframe != "1s" or "bar_close" not in observation.evaluation_events):
             return None
@@ -4161,6 +4168,100 @@ class LongMomentumStrategyEngine:
             metadata={"previous_profit_target": existing[0], "profit_target": candidate,
                       "previous_profit_target_frontier": previous_frontier,
                       "profit_target_selection": selection, "ratchet_clock": "completed_1s_bar" if candle_clock else "resistance_hit",
+                      "ratchet_acceptance": acceptance},
+        )
+
+    def _closed_dynamic_target_result(
+        self, assignment: StrategyAssignment, observation: StrategyObservation,
+        parameters: dict[str, Any], state: dict[str, Any], *, stop: float,
+    ) -> StrategyEngineResult | None:
+        if observation.source_timeframe != "1s" or "bar_close" not in observation.evaluation_events:
+            return None
+        closed_at = observation.observed_at.isoformat()
+        if state.get("last_target_candle_at", "") >= closed_at:
+            return None
+        previous = state.get("previous_target_close", observation.previous_close)
+        if previous is None:
+            previous = observation.previous_close
+        if previous is None:
+            previous = state.get("entry_reference_price", state.get("previous_observed_price"))
+        prior_frontier = list(state.get("structural_profit_target_frontier") or ())
+        prior_rows = state.get("target_resistance_snapshot", prior_frontier)
+        prior_ids = {str(row.get("unified_level_id")) for row in prior_rows}
+        pending = state.get("pending_profit_target_advance")
+        pending_id = str(dict((pending or {}).get("level") or {}).get("unified_level_id") or "")
+        if pending_id:
+            prior_ids.add(pending_id)
+        now_ms = observation.observed_at.timestamp() * 1000
+
+        def causal(row: Mapping[str, Any]) -> bool:
+            try:
+                return all(isfinite(float(row[key])) and float(row[key]) <= now_ms
+                           for key in ("created_at_ms", "confirmed_at_ms", "updated_at_ms")
+                           if row.get(key) is not None)
+            except (TypeError, ValueError):
+                return False
+
+        resistances = tuple(row for row in observation.structural_resistance_levels if causal(row))
+        supports = tuple(row for row in observation.structural_support_levels if causal(row))
+        # Retain only identities for recognizing a resistance that this candle
+        # flipped to support. Prices and quality always come from the current book.
+        state["target_resistance_snapshot"] = [_compact_structural_level_reference(row) for row in resistances]
+        state["last_target_candle_at"] = closed_at
+        state["previous_target_close"] = observation.price
+        state.pop("pending_profit_target_advance", None)
+        if (observation.bar_open is None or not isfinite(observation.bar_open)
+                or not isfinite(observation.price) or observation.price < observation.bar_open
+                or previous is None or not isfinite(float(previous)) or float(previous) <= 0):
+            return None
+        current = replace(observation, structural_resistance_levels=resistances,
+                          structural_support_levels=supports)
+        crossing_rows = (*resistances, *(row for row in supports
+            if str(row.get("unified_level_id")) in prior_ids))
+        # A deferred command may retry only if its level still exists, qualifies
+        # now, and is below this eligible close. Never reuse its old acceptance.
+        floor_price = float(previous)
+        for row in crossing_rows:
+            if pending_id and str(row.get("unified_level_id")) == pending_id:
+                floor_price = min(floor_price, _level_metric(row, "price"))
+        qualified: list[dict[str, Any]] = []
+        _structural_profit_targets(
+            replace(current, price=nextafter(floor_price, -inf),
+                    structural_resistance_levels=crossing_rows, structural_support_levels=()),
+            parameters, stop=stop, side="long", luld_target=None,
+            qualified_levels_out=qualified,
+        )
+        crossed = [row for row in qualified
+                   if observation.price > _level_metric(row, "price")
+                   and (float(previous) <= _level_metric(row, "price")
+                        or (pending_id and str(row.get("unified_level_id")) == pending_id))]
+        if not crossed or not state.get("structural_profit_targets"):
+            return None
+        highest = max(crossed, key=lambda row: _level_metric(row, "price"))
+        boundary = _level_metric(highest, "price")
+        selection: dict[str, Any] = {}
+        targets = _structural_profit_targets(
+            replace(current, price=boundary), parameters, stop=stop, side="long",
+            luld_target=_luld_target(current, parameters, side="long"), selection_evidence=selection,
+        )
+        acceptance = {"passed": True, "reason": "highest_resistance_non_red_close",
+                      "level": highest, "crossed_levels": crossed,
+                      "previous_price": previous, "price": observation.price,
+                      "bar_open": observation.bar_open, "observed_at": closed_at}
+        existing = state["structural_profit_targets"][0]
+        if not targets or targets[0] <= existing:
+            state["pending_profit_target_advance"] = acceptance
+            return None
+        state["structural_profit_targets"] = targets
+        state["structural_profit_target_frontier"] = _target_frontier_from_selection(selection)
+        state["last_profit_target_replaced_at"] = closed_at
+        return self._result(
+            assignment, observation, "replace_profit_target", "structural_profit_target_advanced",
+            observation.qmd_score, 1.0, state, AssignmentStatus.MANAGING,
+            quantity=observation.position_quantity, profit_target_price=targets[0],
+            metadata={"previous_profit_target": existing, "profit_target": targets[0],
+                      "previous_profit_target_frontier": prior_frontier,
+                      "profit_target_selection": selection, "ratchet_clock": "completed_1s_bar",
                       "ratchet_acceptance": acceptance},
         )
 
@@ -7287,6 +7388,7 @@ def _structural_profit_targets(
     side: str,
     luld_target: float | None,
     selection_evidence: dict[str, Any] | None = None,
+    qualified_levels_out: list[dict[str, Any]] | None = None,
 ) -> list[float]:
     """Build causal targets from level-book resistance/support evidence."""
     policy = dict(parameters["protection"].get("profit_ladder") or {})
@@ -7401,6 +7503,9 @@ def _structural_profit_targets(
             and (maximum_price is None or float(nearest_price) <= maximum_price)
         ):
             ranked_candidates.append((nearest_score, float(nearest_price), nearest_row))
+    if qualified_levels_out is not None:
+        qualified_levels_out.extend(_compact_structural_level_reference(row)
+                                    for _, _, row in ranked_candidates)
     spacing = entry * float(policy.get("minimum_spacing_bps") or 0.0) / 10_000.0
     unique: list[float] = []
     maximum = max(0, int(policy.get("maximum_targets") or 0))

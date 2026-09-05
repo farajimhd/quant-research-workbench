@@ -37,7 +37,7 @@ def observation(price=101, **kwargs):
 
 class StrategyContractTests(unittest.TestCase):
     def test_retired_first_resistance_reconciles_to_current_ladder(self):
-        engine = strategy.LongMomentumStrategyEngine()
+        engine = strategy.LongMomentumStrategyEngine(revision=41)
         for close, expected in ((4.1, None), (4.18, 4.2555)):
             state = {"structural_profit_targets": [4.195],
                      "structural_profit_target_frontier": [level(4.071, "retired"), level(4.125)],
@@ -62,7 +62,7 @@ class StrategyContractTests(unittest.TestCase):
             "levels": [{"unified_level_id": str(price), "price": price, "entry_boundary": price}
                        for price in (100.4, 100.5, 100.6)],
         }}
-        result = strategy.LongMomentumStrategyEngine().evaluate(
+        result = strategy.LongMomentumStrategyEngine(revision=41).evaluate(
             assignment(strategy_revision=41, parameters=policy, state=state), obs)
         self.assertEqual(len(result.evaluation.intents), 1)
         entry = result.evaluation.intents[0]
@@ -74,7 +74,7 @@ class StrategyContractTests(unittest.TestCase):
     def test_current_engine_blocks_red_completed_entry(self):
         policy = parameters()
         policy["structural_entry"]["enabled"] = False
-        result = strategy.LongMomentumStrategyEngine().evaluate(
+        result = strategy.LongMomentumStrategyEngine(revision=41).evaluate(
             assignment(strategy_revision=41, parameters=policy),
             confirmed_observation(price=100.75, bar_open=100.80),
         )
@@ -108,7 +108,7 @@ class StrategyContractTests(unittest.TestCase):
     def test_pending_exit_emits_only_for_uncovered_late_fill(self):
         current = assignment(strategy_revision=41, parameters=parameters(), status=strategy.AssignmentStatus.EXIT_PENDING,
                              state={"last_exit_reason": "protective_stop"})
-        engine = strategy.LongMomentumStrategyEngine()
+        engine = strategy.LongMomentumStrategyEngine(revision=41)
         obs = observation(94, position_quantity=50, pending_exit_quantity=50)
         self.assertEqual(engine.evaluate(current, obs).evaluation.intents, ())
         self.assertEqual(len(engine.evaluate(current, replace(obs, position_quantity=55)).evaluation.intents), 1)
@@ -118,7 +118,7 @@ class StrategyContractTests(unittest.TestCase):
         self.assertEqual(state["structural_profit_target_frontier"][0]["unified_level_id"], "r1")
 
     def test_both_trailing_modes_are_versioned_and_selectable(self):
-        self.assertEqual(strategy.STRATEGY_REVISION, 41)
+        self.assertEqual(strategy.STRATEGY_REVISION, 42)
         self.assertEqual(parameters()["protection"]["trailing"]["mode"], "qualified_support")
         self.assertEqual(parameters("support_distance")["protection"]["trailing"]["mode"], "support_distance")
         with self.assertRaises(ValueError):
@@ -190,7 +190,7 @@ class StrategyContractTests(unittest.TestCase):
         obs = observation(price, position_quantity=50,
                           structural_resistance_levels=(level(first, "r1"), level(102), level(103), level(104), level(105)))
         obs = replace(obs, evaluation_events=events, source_timeframe="1s")
-        return strategy.LongMomentumStrategyEngine()._moving_target_result(
+        return strategy.LongMomentumStrategyEngine(revision=41)._moving_target_result(
             assignment(strategy_revision=41, parameters=parameters(), status=strategy.AssignmentStatus.MANAGING),
             obs, parameters(), state, side="long", stop=95), state
 
@@ -216,7 +216,7 @@ class StrategyContractTests(unittest.TestCase):
         current = assignment(strategy_revision=41, parameters=parameters(), status=strategy.AssignmentStatus.ENTRY_PENDING,
                              state={"entry_at": NOW.isoformat(), "entry_reference_price": 100,
                                     "initial_stop": 95, "active_stop": 95})
-        result = strategy.LongMomentumStrategyEngine().evaluate(current, observation(94, position_quantity=0))
+        result = strategy.LongMomentumStrategyEngine(revision=41).evaluate(current, observation(94, position_quantity=0))
         self.assertEqual(result.status, strategy.AssignmentStatus.EXIT_PENDING)
         request = result.evaluation.intents[0]
         self.assertEqual(request.quantity, 0)
@@ -244,7 +244,7 @@ class StrategyContractTests(unittest.TestCase):
         obs = observation(101.1, position_quantity=50, structural_support_levels=(level(99), level(95)),
                           structural_resistance_levels=(level(101, "r1"), level(102), level(103), level(104)))
         obs = replace(obs, evaluation_events=("bar_close",), source_timeframe="1s")
-        result = strategy.LongMomentumStrategyEngine().evaluate(
+        result = strategy.LongMomentumStrategyEngine(revision=41).evaluate(
             assignment(strategy_revision=41, parameters=parameters(), status=strategy.AssignmentStatus.MANAGING, state=state), obs)
         self.assertEqual([row.action for row in result.evaluation.intents], ["replace_protective_stop", "replace_profit_target"])
 
@@ -260,19 +260,19 @@ class AssignmentExitRaceTests(unittest.IsolatedAsyncioTestCase):
         current = assignment(strategy_revision=41, parameters=policy, state=state)
         obs = confirmed_observation(price=100.75, bar_open=100.3, structural_session_high=100.75,
             structural_resistance_levels=levels, structural_support_levels=(level(99),level(98)))
-        result = strategy.LongMomentumStrategyEngine().evaluate(current, obs)
+        result = strategy.LongMomentumStrategyEngine(revision=41).evaluate(current, obs)
         request = result.evaluation.intents[0]
         current = replace(current, state=result.state, status=result.status)
-        executor = strategy.AssignedLongMomentumStrategy([current])
+        executor = strategy.AssignedLongMomentumStrategy([current], revision=current.strategy_revision)
         await executor.on_intent_deferred(request, reasons=("limited_by_available_funds",), event_time=NOW)
         waiting = executor.assignments()[0]
         resumed = replace(obs, observed_at=NOW+timedelta(seconds=1))
-        retry = strategy.LongMomentumStrategyEngine().evaluate(waiting, resumed)
+        retry = strategy.LongMomentumStrategyEngine(revision=41).evaluate(waiting, resumed)
         self.assertEqual(retry.evaluation.intents[0].intent_id, request.intent_id)
         self.assertEqual(retry.evaluation.signals[0].action, "hold")
-        red = strategy.LongMomentumStrategyEngine().evaluate(waiting, replace(resumed, bar_open=101))
+        red = strategy.LongMomentumStrategyEngine(revision=41).evaluate(waiting, replace(resumed, bar_open=101))
         self.assertEqual(red.evaluation.intents, ())
-        invalid = strategy.LongMomentumStrategyEngine().evaluate(waiting, replace(resumed, price=97))
+        invalid = strategy.LongMomentumStrategyEngine(revision=41).evaluate(waiting, replace(resumed, price=97))
         self.assertEqual(invalid.evaluation.intents, ())
         self.assertNotIn("pending_capital_request", invalid.state)
 
@@ -290,7 +290,7 @@ class AssignmentExitRaceTests(unittest.IsolatedAsyncioTestCase):
                 current = assignment(strategy_revision=41, parameters=policy,
                     status=strategy.AssignmentStatus.MANAGING,
                     state={"entries": 1, "disable_after_exit": disabled})
-                executor = strategy.AssignedLongMomentumStrategy([current])
+                executor = strategy.AssignedLongMomentumStrategy([current], revision=current.strategy_revision)
                 first = SimpleNamespace(assignment_id=current.assignment_id, action="exit",
                     state="partially_filled", fill_role=origin, fill_incremental_quantity=156,
                     updated_at=NOW, reentry_after_fill=False)
