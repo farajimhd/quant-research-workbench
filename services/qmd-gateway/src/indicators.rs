@@ -148,7 +148,14 @@ async fn send_idempotent_clickhouse_request(
             }
             Err(error) => {
                 let error = error.without_url();
-                eprintln!("{}", json!({"event":"checkpoint_write_attempt_failed", "phase":"request", "attempt":attempt, "max_attempts":attempts, "error":format!("{error:#}")}));
+                let mut causes = Vec::new();
+                let mut cause = std::error::Error::source(&error);
+                while let Some(next) = cause {
+                    causes.push(next.to_string());
+                    if causes.len() == 8 { break; }
+                    cause = next.source();
+                }
+                eprintln!("{}", json!({"event":"checkpoint_write_attempt_failed", "phase":"request", "attempt":attempt, "max_attempts":attempts, "error":format!("{error:#}"),"causes":causes,"is_timeout":error.is_timeout(),"is_connect":error.is_connect()}));
                 if attempt == attempts {
                     return Err(format!(
                         "ClickHouse idempotent checkpoint request failed before a confirmed response after {attempt} attempts: {error:#}"
@@ -3574,6 +3581,7 @@ impl IndicatorClickHouseWriter {
         let mut rows = Vec::new();
         let mut tokens = String::new();
         let mut table = "";
+        let encode_started = std::time::Instant::now();
         for record in records {
             let (next_table, body, token) = self.encode_daily_checkpoint_insert(record)?;
             if !table.is_empty() && table != next_table {
@@ -3585,10 +3593,18 @@ impl IndicatorClickHouseWriter {
             tokens.push('\n');
         }
         let token = crate::structure_certification::canonical_json_sha256(&json!(tokens))?;
-        self.query_with_idempotent_body(
+        let body = rows.join("\n");
+        let body_bytes = body.len();
+        let encode_ms = encode_started.elapsed().as_secs_f64() * 1000.0;
+        let send_started = std::time::Instant::now();
+        let result = self.query_with_idempotent_body(
             &format!("INSERT INTO {table} SETTINGS insert_deduplication_token = '{token}', async_insert = 0, input_format_parallel_parsing = 0, max_insert_threads = 1 FORMAT JSONEachRow"),
-            rows.join("\n"), DAILY_STRUCTURE_CHECKPOINT_WRITE_MAX_ATTEMPTS,
-        ).await
+            body, DAILY_STRUCTURE_CHECKPOINT_WRITE_MAX_ATTEMPTS,
+        ).await;
+        if std::env::var("QMD_CAMPAIGN_PROFILE").as_deref() == Ok("1") {
+            eprintln!("{}", json!({"event":"checkpoint_persist_profile", "ticker":records[0].sym, "session_date":records[0].session_date, "rows":records.len(), "body_bytes":body_bytes, "encode_validate_ms":encode_ms, "send_retry_ms":send_started.elapsed().as_secs_f64()*1000.0, "success":result.is_ok()}));
+        }
+        result
     }
 
     pub async fn count_daily_structure_checkpoints(&self) -> Result<u64, String> {

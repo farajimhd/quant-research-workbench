@@ -1937,6 +1937,9 @@ async fn process_ordinal_session(
     predecessor_checkpoint_sha256: String,
     predecessor_chain_sha256: String,
 ) -> Result<DayResult, String> {
+    let profile_started = Instant::now();
+    let mut fetch_total_ms = 0.0;
+    let mut apply_total_ms = 0.0;
     let session_date = session.session_date;
     let authority_end = session_end(session_date)?;
     let as_of = authority_end - ChronoDuration::microseconds(1);
@@ -1975,6 +1978,8 @@ async fn process_ordinal_session(
             buffered.extend(batch?);
         }
         let fetch_millis = fetch_started.elapsed().as_millis().max(1);
+        fetch_total_ms += fetch_started.elapsed().as_secs_f64() * 1000.0;
+        let apply_started = Instant::now();
         for compact in &buffered {
             if compact.ticker.to_ascii_uppercase() != manifest.ticker
                 || compact.arrival_sequence < session.first_ordinal
@@ -2018,6 +2023,7 @@ async fn process_ordinal_session(
             event_count = event_count.saturating_add(1);
         }
         event_progress.record(buffered.len() as u64);
+        apply_total_ms += apply_started.elapsed().as_secs_f64() * 1000.0;
         first_ordinal = next_ordinal;
         ordinal_chunk = next_ordinal_chunk(ordinal_chunk, fetch_millis);
     }
@@ -2041,6 +2047,7 @@ async fn process_ordinal_session(
     // Freeze daily normalization from the same prior completed checkpoint used
     // by recovery. Intraday anchor changes (including pre-04:00 reports) must
     // not select a different reference distribution for a fresh daily build.
+    let preparation_started = Instant::now();
     let mut checkpoint = GenericStructureEngine::migrate_checkpoint_derived_projections(
         &engine.checkpoint(),
         Some(prior_checkpoint),
@@ -2080,6 +2087,8 @@ async fn process_ordinal_session(
             manifest.ticker, session_date,
         ));
     }
+    let preparation_ms = preparation_started.elapsed().as_secs_f64() * 1000.0;
+    let certification_started = Instant::now();
     let certification = build_checkpoint_certification(
         &checkpoint,
         event_evidence,
@@ -2092,6 +2101,8 @@ async fn process_ordinal_session(
     )?;
     let checkpoint_hash = certification.checkpoint_sha256.clone();
     let chain_hash = certification.chain_sha256.clone();
+    let certification_ms = certification_started.elapsed().as_secs_f64() * 1000.0;
+    let persist_started = Instant::now();
     let persistence_retries = writer
         .persist_daily_structure_checkpoint_with_retries(&DailyStructureCheckpoint {
             checkpoint_set_id: config.structure_checkpoint_set_id.clone(),
@@ -2109,6 +2120,9 @@ async fn process_ordinal_session(
             certification: Some(certification),
         })
         .await?;
+    if std::env::var("QMD_CAMPAIGN_PROFILE").as_deref() == Ok("1") {
+        eprintln!("{}", serde_json::json!({"event":"campaign_day_profile", "ticker":manifest.ticker, "session_date":session_date, "events":event_count, "fetch_ms":fetch_total_ms, "apply_ms":apply_total_ms, "prepare_ms":preparation_ms, "certify_ms":certification_ms, "persist_ms":persist_started.elapsed().as_secs_f64()*1000.0, "total_ms":profile_started.elapsed().as_secs_f64()*1000.0, "checkpoint_sha256":checkpoint_hash}));
+    }
     Ok(DayResult {
         status: "completed",
         event_count,
@@ -2536,7 +2550,7 @@ fn parse_args() -> Result<Args, String> {
             "--campaign-build-info" => {
                 println!(
                     "{}",
-                    serde_json::json!({"campaign_version": CAMPAIGN_VERSION, "algorithm_version": GENERIC_STRUCTURE_ALGORITHM_VERSION, "storage_policy": "live_market_ssd"})
+                    serde_json::json!({"campaign_version": CAMPAIGN_VERSION, "algorithm_version": GENERIC_STRUCTURE_ALGORITHM_VERSION, "storage_policy": "live_market_ssd", "profile_schema_version": 1})
                 );
                 std::process::exit(0);
             }
