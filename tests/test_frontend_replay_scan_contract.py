@@ -400,6 +400,12 @@ def test_strategy_activity_loads_a_reviewable_history_window() -> None:
     assert "historicalPage={signalStreamRunId ? preview?.trading.strategy_activity_page : undefined}" in canvas_source
     assert 'offset: String(Number(resolvedHistoricalPage.next_offset ?? 0))' in container_source
     assert 'Load next 2,000 older events' in container_source
+    assert 'loadAllHistory={runtimeMode === "backtest_debug" || runtimeMode === "backtest" || (readOnly && Boolean(signalStreamRunId))}' in canvas_source
+    assert 'loadActivityHistory<ScreenerRow>' in container_source
+    assert 'Loading all activity' in container_source
+    assert 'aria-label="First page"' in container_source
+    assert 'aria-label="Last page"' in container_source
+    assert 'lastPageRequested && !moreAvailable && !moreLoading' in container_source
     assert 'moreAvailable={!resolvedHistoricalPage.complete}' in container_source
     assert 'Load and open next page' in container_source
     assert "strategyActivityEvidenceSnapshot(row)" in container_source

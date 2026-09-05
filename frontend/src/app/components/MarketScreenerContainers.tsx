@@ -1,10 +1,11 @@
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ArrowUpDown, Check, ChevronDown, ChevronLeft, ChevronRight, Columns3, FileCheck2, Flame, GripVertical, ListFilter, Plus, Search, Star, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ArrowUpDown, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Columns3, FileCheck2, Flame, GripVertical, ListFilter, Plus, Search, Star, Trash2, X } from "lucide-react";
 import { forwardRef, useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 
 import { api, apiCached, invalidateApiCache } from "../../api/client";
 import { CONFIGURATION_SESSION_CHANGED_EVENT, readConfigurationSession } from "../configurationSession";
 import { formatBasisPointsWithDollar } from "../format";
 import { STRATEGY_ACTIVITY_EVENT_OPTIONS } from "../strategyActivity";
+import { activitySummaryRow, loadActivityHistory } from "../strategyActivityHistory";
 import { timeRecency } from "../timeRecency";
 import { InventoryFilterSelect } from "./InventoryFilterSelect";
 import { MarketTime } from "./MarketTime";
@@ -757,7 +758,7 @@ export function WatchUniverseContainer({ asOf, live = false, onSettingsChange, o
   </section>;
 }
 
-export function StrategyActivityContainer({ asOf, focusSequence, historicalPage, historicalRows, onSettingsChange, onTickerSelect, runId, settings }: { asOf: string; focusSequence?: number; historicalPage?: StrategyActivityPage; historicalRows?: ScreenerRow[]; onSettingsChange: (patch: Partial<StrategyActivitySettings>) => void; onTickerSelect: (ticker: string) => void; runId?: string; settings: StrategyActivitySettings }) {
+export function StrategyActivityContainer({ asOf, focusSequence, historicalPage, historicalRows, loadAllHistory = false, onSettingsChange, onTickerSelect, runId, settings }: { asOf: string; focusSequence?: number; historicalPage?: StrategyActivityPage; historicalRows?: ScreenerRow[]; loadAllHistory?: boolean; onSettingsChange: (patch: Partial<StrategyActivitySettings>) => void; onTickerSelect: (ticker: string) => void; runId?: string; settings: StrategyActivitySettings }) {
   const [payload, setPayload] = useState<StrategyActivityResponse | null>(null);
   const [error, setError] = useState("");
   const [selectedRecordId, setSelectedRecordId] = useState("");
@@ -766,20 +767,18 @@ export function StrategyActivityContainer({ asOf, focusSequence, historicalPage,
   const [detailLoading, setDetailLoading] = useState(false);
   const [inspectorWidth, setInspectorWidth] = useState(36);
   const [olderRows, setOlderRows] = useState<ScreenerRow[]>([]);
+  const [olderWindowKey, setOlderWindowKey] = useState("");
   const [olderPage, setOlderPage] = useState<StrategyActivityPage | null>(null);
   const [olderLoading, setOlderLoading] = useState(false);
   const [olderError, setOlderError] = useState("");
+  const [historyRetry, setHistoryRetry] = useState(0);
   const olderRequestInFlightRef = useRef(false);
+  const historyAbortRef = useRef<AbortController | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const activityLimit = Math.max(2_000, Math.min(settings.limit, 50_000));
   const asOfRef = useRef(asOf);
   asOfRef.current = asOf;
-  const historicalWindowKey = `${runId ?? ""}:${String(historicalRows?.[0]?.record_id ?? "")}:${historicalRows?.length ?? 0}`;
-  useEffect(() => {
-    setOlderRows([]);
-    setOlderPage(null);
-    setOlderError("");
-  }, [historicalWindowKey]);
+  const historicalWindowKey = `${runId ?? ""}:${loadAllHistory ? asOf : ""}:${String(historicalRows?.[0]?.record_id ?? "")}:${historicalRows?.length ?? 0}`;
   useEffect(() => {
     // Replay and Backtest Canvas already load a bounded, lifecycle-relevant
     // activity projection with the canonical trading snapshot. Re-reading the
@@ -826,10 +825,10 @@ export function StrategyActivityContainer({ asOf, focusSequence, historicalPage,
   }, [activityLimit, focusSequence, historicalRows, runId, settings.eventType, settings.strategyId, settings.ticker]);
   const sourceRows = useMemo(() => {
     const initial = historicalRows ?? payload?.rows ?? [];
-    if (historicalRows === undefined || !olderRows.length) return initial;
+    if (historicalRows === undefined || !olderRows.length || olderWindowKey !== historicalWindowKey) return initial;
     const seen = new Set(initial.map(strategyActivityRowKey));
-    return [...initial, ...olderRows.filter((row) => !seen.has(strategyActivityRowKey(row)))];
-  }, [historicalRows, olderRows, payload]);
+    return [...initial.map(activitySummaryRow), ...olderRows.filter((row) => !seen.has(strategyActivityRowKey(row)))];
+  }, [historicalRows, historicalWindowKey, olderRows, olderWindowKey, payload]);
   const rows = useMemo(() => sourceRows.filter((row) =>
     (!settings.strategyId || String(row.strategy_id) === settings.strategyId)
     && (!settings.runId || String(row.run_id) === settings.runId)
@@ -850,32 +849,64 @@ export function StrategyActivityContainer({ asOf, focusSequence, historicalPage,
     });
     return { actions: decisions.length - waits.length, decisions: decisions.length, waits: waits.length, blockers: [...blockers.entries()].sort((left, right) => right[1] - left[1]).slice(0, 3) };
   }, [rows]);
-  const resolvedHistoricalPage = olderPage ?? historicalPage ?? { complete: true, next_offset: null };
+  const resolvedHistoricalPage = (olderWindowKey === historicalWindowKey ? olderPage : null) ?? historicalPage ?? { complete: true, next_offset: null };
   const loadOlder = async (): Promise<boolean> => {
-    if (!runId || historicalRows === undefined || olderRequestInFlightRef.current || resolvedHistoricalPage.complete) return false;
-    const query = new URLSearchParams({
-      as_of: asOfRef.current,
-      include_decision_evidence: "false",
-      limit: "2000",
-      offset: String(Number(resolvedHistoricalPage.next_offset ?? 0)),
-      run_id: runId,
-    });
+    const controller = historyAbortRef.current;
+    if (!controller || controller.signal.aborted || !runId || historicalRows === undefined || olderRequestInFlightRef.current || resolvedHistoricalPage.complete) return false;
     olderRequestInFlightRef.current = true;
     setOlderLoading(true);
     setOlderError("");
     try {
-      const response = await api<StrategyActivityResponse>(`/api/trading/strategy-activity?${query}`, { timeoutMs: 30000 });
-      setOlderRows((current) => [...current, ...response.rows]);
+      const query = new URLSearchParams({ as_of: asOfRef.current, include_decision_evidence: "false", limit: "2000", offset: String(Number(resolvedHistoricalPage.next_offset ?? 0)), run_id: runId });
+      const response = await api<StrategyActivityResponse>(`/api/trading/strategy-activity?${query}`, { signal: controller.signal, timeoutMs: 30000 });
+      if (controller.signal.aborted) return false;
+      setOlderRows((current) => [...current, ...response.rows.map(activitySummaryRow)]);
       setOlderPage({ complete: response.complete, next_offset: response.next_offset });
       return response.rows.length > 0;
     } catch (reason) {
-      setOlderError(reason instanceof Error ? reason.message : String(reason));
+      if (!controller.signal.aborted) setOlderError(reason instanceof Error ? reason.message : String(reason));
       return false;
     } finally {
-      olderRequestInFlightRef.current = false;
-      setOlderLoading(false);
+      if (!controller.signal.aborted) {
+        olderRequestInFlightRef.current = false;
+        setOlderLoading(false);
+      }
     }
   };
+  useEffect(() => {
+    const controller = new AbortController();
+    historyAbortRef.current = controller;
+    olderRequestInFlightRef.current = false;
+    setOlderRows([]);
+    setOlderWindowKey(historicalWindowKey);
+    setOlderPage(null);
+    setOlderError("");
+    const initialPage = historicalPage ?? { complete: true, next_offset: null };
+    if (!loadAllHistory || !runId || historicalRows === undefined || initialPage.complete) {
+      setOlderLoading(false);
+      return () => controller.abort();
+    }
+    setOlderLoading(true);
+    const seen = new Set(historicalRows.map(strategyActivityRowKey));
+    void loadActivityHistory<ScreenerRow>(initialPage, (offset) => {
+      const query = new URLSearchParams({ as_of: asOf, include_decision_evidence: "false", limit: "2000", offset: String(offset), run_id: runId });
+      return api<StrategyActivityResponse>(`/api/trading/strategy-activity?${query}`, { signal: controller.signal, timeoutMs: 30000 });
+    }, (response) => {
+      const summaries = response.rows.filter((row) => {
+        const key = strategyActivityRowKey(row);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }).map(activitySummaryRow);
+      setOlderRows((current) => [...current, ...summaries]);
+      setOlderPage({ complete: response.complete, next_offset: response.next_offset });
+    }, controller.signal).catch((reason) => {
+      if (!controller.signal.aborted) setOlderError(reason instanceof Error ? reason.message : String(reason));
+    }).finally(() => {
+      if (!controller.signal.aborted) setOlderLoading(false);
+    });
+    return () => controller.abort();
+  }, [historicalWindowKey, historicalPage?.complete, historicalPage?.next_offset, historyRetry, loadAllHistory]);
   useEffect(() => {
     const exactRecordId = String(selectedSummary?.record_id || "");
     if (!selectedRecordId || !exactRecordId) {
@@ -924,12 +955,13 @@ export function StrategyActivityContainer({ asOf, focusSequence, historicalPage,
       <ActivityFilter label="Run" onChange={(runId) => onSettingsChange({ runId })} options={runs} value={settings.runId} />
       <ActivityFilter label="Ticker" onChange={(ticker) => onSettingsChange({ ticker })} options={tickers} value={settings.ticker} />
       <ActivityFilter label="Event" onChange={(eventType) => onSettingsChange({ eventType })} options={STRATEGY_ACTIVITY_EVENT_OPTIONS.map(({ value }) => value)} value={settings.eventType} />
-      {historicalRows !== undefined && !resolvedHistoricalPage.complete ? <button className="strategy-activity-load-older" disabled={olderLoading} onClick={() => void loadOlder()} type="button">{olderLoading ? "Loading older…" : "Load next 2,000 older events"}</button> : null}
+      {historicalRows !== undefined && loadAllHistory && olderLoading ? <span role="status">Loading all activity… {sourceRows.length.toLocaleString()} events loaded</span> : null}
+      {historicalRows !== undefined && !loadAllHistory && !resolvedHistoricalPage.complete ? <button className="strategy-activity-load-older" disabled={olderLoading} onClick={() => void loadOlder()} type="button">{olderLoading ? "Loading older…" : "Load next 2,000 older events"}</button> : null}
     </div>
-    {olderError ? <div className="canvas-inline-error">Older strategy activity unavailable: {olderError}</div> : null}
+    {olderError ? <div className="canvas-inline-error">{loadAllHistory ? "Full strategy activity is not yet loaded" : "Older strategy activity unavailable"}: {olderError} <button onClick={() => { if (loadAllHistory) setHistoryRetry((value) => value + 1); else void loadOlder(); }} type="button">{loadAllHistory ? "Retry loading full history" : "Retry loading older events"}</button></div> : null}
     <div className="strategy-activity-summary" aria-label="Strategy activity summary"><span><small>Decisions</small><strong>{activitySummary.decisions}</strong></span><span><small>Actions</small><strong>{activitySummary.actions}</strong></span><span><small>Waits</small><strong>{activitySummary.waits}</strong></span><div><small>Leading blockers</small><p>{activitySummary.blockers.length ? activitySummary.blockers.map(([reason, count]) => `${readableEvidenceLabel(reason)} (${count})`).join(" · ") : "None in this view"}</p></div></div>
     <div className="strategy-activity-content" ref={contentRef} style={{ "--strategy-inspector-width": `${inspectorWidth}%` } as CSSProperties}>
-      {error ? <div className="canvas-inline-error">Strategy activity unavailable: {error}</div> : <MarketListTable chronological columns={["event_time", "ticker", "event_type", "action", "state", "reason", "gates", "reason_code", "reference_price", "source"]} customColumns={[]} empty="No causal strategy events match these filters yet. Press Play or advance to the next strategy action." limit={100} lockedColumns={[]} moreAvailable={!resolvedHistoricalPage.complete} moreLoading={olderLoading} onColumnsChange={() => undefined} onCustomColumnsChange={() => undefined} onRequestMore={loadOlder} onRowSelect={(row) => setSelectedRecordId(strategyActivityRowKey(row))} onTickerSelect={onTickerSelect} pinnedSequence={focusSequence} rowAction={(row) => <button aria-label={`Inspect strategy event at ${String(row.event_time || "unknown time")}`} className="strategy-activity-inspect" onClick={() => setSelectedRecordId(strategyActivityRowKey(row))} type="button">Inspect</button>} rowIdentity={strategyActivityRowKey} rows={rows} selectedRowId={selectedRecordId} title="Strategy activity" />}
+      {error ? <div className="canvas-inline-error">Strategy activity unavailable: {error}</div> : <MarketListTable chronological columns={["event_time", "ticker", "event_type", "action", "state", "reason", "gates", "reason_code", "reference_price", "source"]} customColumns={[]} empty="No causal strategy events match these filters yet. Press Play or advance to the next strategy action." limit={100} lockedColumns={[]} moreAvailable={!resolvedHistoricalPage.complete} moreLoading={olderLoading} onColumnsChange={() => undefined} onCustomColumnsChange={() => undefined} showBoundaryPages={loadAllHistory} onRequestMore={loadAllHistory ? undefined : loadOlder} onRowSelect={(row) => setSelectedRecordId(strategyActivityRowKey(row))} onTickerSelect={onTickerSelect} pinnedSequence={focusSequence} rowAction={(row) => <button aria-label={`Inspect strategy event at ${String(row.event_time || "unknown time")}`} className="strategy-activity-inspect" onClick={() => setSelectedRecordId(strategyActivityRowKey(row))} type="button">Inspect</button>} rowIdentity={strategyActivityRowKey} rows={rows} selectedRowId={selectedRecordId} title="Strategy activity" />}
       <div aria-label="Resize event evidence" aria-orientation="vertical" aria-valuemax={62} aria-valuemin={24} aria-valuenow={Math.round(inspectorWidth)} className="strategy-activity-resizer" onDoubleClick={() => setInspectorWidth(36)} onKeyDown={(event) => { if (event.key === "ArrowLeft") setInspectorWidth((value) => Math.min(62, value + 3)); if (event.key === "ArrowRight") setInspectorWidth((value) => Math.max(24, value - 3)); }} onPointerDown={startInspectorResize} role="separator" tabIndex={0} title="Drag to resize. Double-click to reset."><GripVertical aria-hidden="true" size={14} /></div>
       {selectedRecordId ? <StrategyActivityInspector error={detailError} loading={detailLoading} onClose={() => setSelectedRecordId("")} row={selectedDetail ?? selectedSummary} /> : <div className="strategy-activity-inspector-empty"><FileCheck2 size={18} /><span><strong>Inspect any event</strong><small>Open a row to see its strategy revision, exact reason, gate checks, thresholds, and point-in-time evidence.</small></span></div>}
     </div>
@@ -1198,6 +1230,7 @@ function MarketListTable({
   rowIdentity,
   rows,
   selectedRowId,
+  showBoundaryPages = false,
   sortColumn,
   title,
   viewStateKey,
@@ -1225,6 +1258,7 @@ function MarketListTable({
   rowIdentity?: (row: ScreenerRow) => string;
   rows: ScreenerRow[];
   selectedRowId?: string;
+  showBoundaryPages?: boolean;
   sortColumn?: string;
   title: string;
   viewStateKey?: string;
@@ -1238,6 +1272,7 @@ function MarketListTable({
   const [headerMenuColumn, setHeaderMenuColumn] = useState<string | null>(null);
   const [newsPopover, setNewsPopover] = useState<{ anchor: TickerNewsPopoverAnchor; ticker: string } | null>(null);
   const [page, setPage] = useState(0);
+  const [lastPageRequested, setLastPageRequested] = useState(false);
   const [query, setQuery] = useState(() => cachedViewState?.query ?? "");
   const [sort, setSort] = useState<{ column: string; direction: "asc" | "desc" }>(() => cachedViewState?.sort ?? { column: chronological ? "event_time" : "change_pct", direction: "desc" });
   const wallClockMs = useWallClock();
@@ -1280,7 +1315,13 @@ function MarketListTable({
   const pageSize = Math.max(1, limit);
   const pageCount = Math.max(1, Math.ceil(matchedRows.length / pageSize));
   const visibleRows = useMemo(() => matchedRows.slice(page * pageSize, (page + 1) * pageSize), [matchedRows, page, pageSize]);
-  useEffect(() => { setPage(0); }, [columnFilters, deferredQuery, filterMatchMode, resolvedViewStateKey, sort]);
+  useEffect(() => { setPage(0); setLastPageRequested(false); }, [columnFilters, deferredQuery, filterMatchMode, resolvedViewStateKey, sort]);
+  useEffect(() => {
+    if (lastPageRequested && !moreAvailable && !moreLoading) {
+      setPage(pageCount - 1);
+      setLastPageRequested(false);
+    }
+  }, [lastPageRequested, moreAvailable, moreLoading, pageCount]);
   useEffect(() => { setPage((current) => Math.min(current, pageCount - 1)); }, [pageCount]);
   useEffect(() => {
     if (!timeFilterNeedsOlderRows || moreLoading || !onRequestMore) return;
@@ -1293,6 +1334,7 @@ function MarketListTable({
     .map((row) => String(row.ticker ?? row.symbol ?? ""))
     .filter(Boolean);
   const nextPage = async () => {
+    setLastPageRequested(false);
     if (page + 1 < pageCount) {
       setPage((current) => Math.min(pageCount - 1, current + 1));
       return;
@@ -1385,8 +1427,10 @@ function MarketListTable({
       <TableColumnFilterControl columns={filterColumns} conditions={columnFilters} matchMode={filterMatchMode} onChange={setColumnFilters} onMatchModeChange={setFilterMatchMode} onOpenChange={setFilterPanelOpen} open={filterPanelOpen} rows={rows} title={title} />
       <div className="market-list-pagination" aria-label={`${title} pages`}>
         <span>{timeFilterNeedsOlderRows && moreLoading ? "Loading older rows for ET filter… · " : ""}{matchedRows.length === rows.length ? `${matchedRows.length}${moreAvailable ? "+" : ""} rows loaded` : `${matchedRows.length} matches in ${rows.length}${moreAvailable ? "+" : ""} loaded`} · page {page + 1} of {pageCount}{moreAvailable ? "+" : ""}</span>
-        <button aria-label="Previous page" disabled={page === 0} onClick={() => setPage((current) => Math.max(0, current - 1))} type="button"><ChevronLeft size={13} /></button>
-        <button aria-label={page + 1 >= pageCount && moreAvailable ? "Load and open next page" : "Next page"} disabled={moreLoading || (page + 1 >= pageCount && !moreAvailable)} onClick={() => void nextPage()} type="button">{moreLoading && page + 1 >= pageCount ? <span className="loading-spinner" aria-hidden="true" /> : <ChevronRight size={13} />}</button>
+        {showBoundaryPages ? <button aria-label="First page" disabled={page === 0 && !lastPageRequested} onClick={() => { setLastPageRequested(false); setPage(0); }} type="button"><ChevronsLeft size={13} /></button> : null}
+        <button aria-label="Previous page" disabled={page === 0} onClick={() => { setLastPageRequested(false); setPage((current) => Math.max(0, current - 1)); }} type="button"><ChevronLeft size={13} /></button>
+        <button aria-label={page + 1 >= pageCount && moreAvailable ? "Load and open next page" : "Next page"} disabled={page + 1 >= pageCount && (moreLoading || !moreAvailable)} onClick={() => void nextPage()} type="button">{moreLoading && page + 1 >= pageCount ? <span className="loading-spinner" aria-hidden="true" /> : <ChevronRight size={13} />}</button>
+        {showBoundaryPages ? <button aria-label="Last page" title={moreAvailable ? "Open the last page when the full history has loaded" : "Last page"} disabled={lastPageRequested || (!moreAvailable && page + 1 >= pageCount)} onClick={() => { if (moreAvailable) setLastPageRequested(true); else setPage(pageCount - 1); }} type="button">{lastPageRequested ? <span className="loading-spinner" aria-hidden="true" /> : <ChevronsRight size={13} />}</button> : null}
       </div>
       <button aria-expanded={columnPickerOpen} className="market-list-columns-button" onClick={() => setColumnPickerOpen((open) => !open)} type="button"><Columns3 size={14} /> Columns <b>{selectedColumns.length}</b></button>
     </div><TableActiveFilterBar columns={filterColumns} conditions={columnFilters} onChange={setColumnFilters} /></div>
