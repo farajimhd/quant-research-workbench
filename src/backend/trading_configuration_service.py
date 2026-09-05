@@ -393,6 +393,28 @@ def configuration_candidate(candidate_id: str = "", *, required: bool = False) -
     return result
 
 
+def backtest_configuration_options(candidate_id: str = "") -> dict[str, Any]:
+    """Lightweight setup choices resolved by the same authority as run launch."""
+    summaries = trading_journal().trading_configuration_candidate_summaries()
+    selected = next((row for row in summaries if row["candidate_id"] == candidate_id), None) if candidate_id else next(iter(summaries), None)
+    if candidate_id and selected is None:
+        raise ValueError("The selected Test Candidate no longer exists. Refresh the setup choices.")
+    result: dict[str, Any] = {"candidates": summaries, "candidate_id": "", "run_plan_id": "", "available_run_plans": [], "error": ""}
+    if selected is None:
+        return result
+    result["candidate_id"] = selected["candidate_id"]
+    try:
+        snapshot = backtest_configuration_snapshot(candidate_id=selected["candidate_id"])
+        plans = snapshot["available_run_plans"]
+        active_profile = dict(snapshot["configuration_model"].get("strategy") or {}).get("active_profile_id")
+        preferred = next((plan for plan in plans if plan["profile_id"] == active_profile), None)
+        result.update(available_run_plans=plans, run_plan_id=preferred["run_plan_id"] if preferred else snapshot["run_plan_id"])
+    except (KeyError, TypeError, ValueError) as exc:
+        # Keep candidate selection usable when an older saved model is invalid.
+        result["error"] = str(exc)
+    return result
+
+
 def approved_configuration(*, required: bool = False) -> dict[str, Any] | None:
     result = trading_journal().approved_trading_configuration()
     if result is None and required:

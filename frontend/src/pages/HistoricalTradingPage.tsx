@@ -35,6 +35,14 @@ type HistoricalPreflight = {
   };
 };
 
+type BacktestConfigurationOptions = {
+  candidates: Array<{ candidate_id: string; candidate_revision: number; label: string; content_hash: string }>;
+  candidate_id: string;
+  run_plan_id: string;
+  available_run_plans: HistoricalPreflight["available_run_plans"];
+  error: string;
+};
+
 type BacktestRun = CanvasReplayRun & {
   configuration_revision: number;
   mode: "backtest";
@@ -104,6 +112,10 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [controlBusy, setControlBusy] = useState("");
   const [runPlanId, setRunPlanId] = useState("");
   const [candidateId, setCandidateId] = useState("");
+  const [configurationOptions, setConfigurationOptions] = useState<BacktestConfigurationOptions | null>(null);
+  const [loadingOptions, setLoadingOptions] = useState(true);
+  const [optionsError, setOptionsError] = useState("");
+  const [checkedSetupKey, setCheckedSetupKey] = useState("");
   const [indicatorWarmup, setIndicatorWarmup] = useState<IndicatorWarmupBatch | null>(null);
   const [warmingIndicators, setWarmingIndicators] = useState(false);
   const parsedTickers = useMemo(() => parseBacktestTickers(tickerInput), [tickerInput]);
@@ -112,17 +124,28 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const periodReady = startTime >= "04:00:00" && endTime <= "20:00:00" && startTime < endTime;
   const anchorDate = nextIsoDate(sessionDate);
   const resolvedSessionMatches = preflight?.window.sessions.length === 1 && preflight.window.sessions[0] === sessionDate;
+  const selectedPlan = configurationOptions?.candidate_id === candidateId
+    ? configurationOptions.available_run_plans.find((plan) => plan.run_plan_id === runPlanId) : undefined;
+  const setupKey = JSON.stringify([candidateId, runPlanId, sessionDate, startTime, endTime, normalizedTickers, refreshKey]);
+  const currentPreflight = checkedSetupKey === setupKey && preflight?.configuration_revision_id === candidateId && preflight.run_plan_id === runPlanId;
 
   useEffect(() => {
     let cancelled = false;
-    api<{ rows: Array<{ candidate_id: string }> }>("/api/trading/configuration/candidates?latest_only=true")
+    const controller = new AbortController();
+    setLoadingOptions(true);
+    setOptionsError("");
+    api<BacktestConfigurationOptions>(`/api/trading/backtest/configuration-options?candidate_id=${encodeURIComponent(candidateId)}`, { signal: controller.signal, timeoutMs: 60_000 })
       .then((payload) => {
         if (cancelled) return;
-        setCandidateId((current) => current || payload.rows[0]?.candidate_id || "");
+        setConfigurationOptions(payload);
+        setCandidateId(payload.candidate_id);
+        setRunPlanId((current) => payload.available_run_plans.some((plan) => plan.run_plan_id === current) ? current : payload.run_plan_id);
+        setOptionsError(payload.error);
       })
-      .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); });
-    return () => { cancelled = true; };
-  }, []);
+      .catch((reason) => { if (!cancelled) setOptionsError(reason instanceof Error ? reason.message : String(reason)); })
+      .finally(() => { if (!cancelled) setLoadingOptions(false); });
+    return () => { cancelled = true; controller.abort(); };
+  }, [candidateId, refreshKey]);
 
   useEffect(() => {
     if (!tickerReady) {
@@ -148,12 +171,14 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   }, [normalizedTickers, refreshKey, sessionDate, tickerReady]);
 
   useEffect(() => {
-    if (!candidateId || !tickerReady || indicatorWarmup?.status !== "ready") {
+    if (!candidateId || !selectedPlan || loadingOptions || optionsError || !tickerReady || indicatorWarmup?.status !== "ready") {
       setChecking(false);
       setPreflight(null);
       return;
     }
     let cancelled = false;
+    setChecking(true);
+    setPreflight(null);
     const timer = window.setTimeout(() => {
       setChecking(true);
       setError("");
@@ -174,7 +199,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
         .then((payload) => {
           if (!cancelled) {
             setPreflight(payload);
-            if (!runPlanId && payload.run_plan_id) setRunPlanId(payload.run_plan_id);
+            setCheckedSetupKey(setupKey);
           }
         })
         .catch((reason) => {
@@ -191,7 +216,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [anchorDate, candidateId, endTime, indicatorWarmup?.status, mode, normalizedTickers, refreshKey, runPlanId, startTime, tickerReady]);
+  }, [anchorDate, candidateId, endTime, indicatorWarmup?.status, loadingOptions, mode, normalizedTickers, optionsError, refreshKey, runPlanId, selectedPlan, setupKey, startTime, tickerReady]);
 
   usePollingTask({
     enabled: Boolean(run && !["completed", "stopped", "failed"].includes(run.status)),
@@ -219,14 +244,14 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   }, [run?.run_id, run?.status]);
 
   async function createRun() {
-    if (!preflight?.strategy_run_ready) return;
+    if (!launchReady || checking || loadingOptions || !currentPreflight) return;
     setCreating(true);
     setError("");
     try {
       const created = await api<BacktestRun>("/api/trading/backtest/runs", {
         body: JSON.stringify({
           anchor_date: anchorDate,
-          configuration_revision_id: preflight.configuration_revision_id,
+          configuration_revision_id: candidateId,
           initial_cash: initialCash,
           run_plan_id: runPlanId,
           session_count: 1,
@@ -321,18 +346,24 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       ? `${indicatorWarmup.items.reduce((total, item) => total + item.fetched_ordinal_ranges, 0)} ordinal range(s) · ${new Intl.NumberFormat("en-US").format(indicatorWarmup.items.reduce((total, item) => total + item.fetched_events, 0))} eligible trades`
       : "market_sip_compact/q_live imported events only",
   };
-  const launchChecks = [warmupCheck, ...(preflight?.checks ?? [])];
-  const launchReady = Boolean(preflight?.strategy_run_ready && indicatorWarmup?.status === "ready" && tickerReady && periodReady && resolvedSessionMatches);
+  const configurationCheck = {
+    id: "selected_configuration", label: "Strategy selection", required: true,
+    status: selectedPlan && !loadingOptions && !optionsError ? "ready" : "blocked",
+    summary: loadingOptions ? "Loading saved candidates and compatible strategies." : optionsError || "Select a saved Test Candidate and strategy. Create a candidate in Test Candidates if none are available.",
+    action: !configurationOptions?.candidates.length && !loadingOptions ? { hash: "#revision-configuration", label: "Test Candidates" } : undefined,
+  };
+  const launchChecks = [configurationCheck, warmupCheck, ...(currentPreflight ? preflight?.checks ?? [] : [])];
+  const launchReady = Boolean(currentPreflight && selectedPlan && !loadingOptions && !optionsError && preflight?.strategy_run_ready && indicatorWarmup?.status === "ready" && tickerReady && periodReady && resolvedSessionMatches);
 
   return (
     <TradingModeLaunch
       actionLabel="Run Backtest"
-      actionSummary={launchReady ? <><strong>{normalizedTickers.join(", ")}</strong> will run together on <strong>{sessionDate}</strong> from <strong>{startTime.slice(0, 5)}–{endTime.slice(0, 5)} ET</strong> using one shared simulated portfolio and strategy revision <strong>{preflight?.configuration_revision}</strong>.</> : !tickerReady ? parsedTickers.invalid.length ? `Remove invalid ticker${parsedTickers.invalid.length === 1 ? "" : "s"}: ${parsedTickers.invalid.join(", ")}.` : "Enter at least one valid ticker before starting." : warmingIndicators ? "Preparing persisted 1-second indicator warm-ups." : !periodReady ? "Choose a valid period inside 04:00–20:00 ET." : preflight && !resolvedSessionMatches ? "The selected date is not an exchange session. Choose a trading day." : "Resolve each required readiness item before starting."}
+      actionSummary={launchReady ? <><strong>{normalizedTickers.join(", ")}</strong> will run together on <strong>{sessionDate}</strong> from <strong>{startTime.slice(0, 5)}–{endTime.slice(0, 5)} ET</strong> using one shared simulated portfolio and strategy revision <strong>{selectedPlan?.strategy_revision}</strong> (candidate {preflight?.configuration_revision}).</> : !tickerReady ? parsedTickers.invalid.length ? `Remove invalid ticker${parsedTickers.invalid.length === 1 ? "" : "s"}: ${parsedTickers.invalid.join(", ")}.` : "Enter at least one valid ticker before starting." : warmingIndicators ? "Preparing persisted 1-second indicator warm-ups." : !periodReady ? "Choose a valid period inside 04:00–20:00 ET." : preflight && !resolvedSessionMatches ? "The selected date is not an exchange session. Choose a trading day." : "Resolve each required readiness item before starting."}
       busy={creating}
-      checking={checking || warmingIndicators}
+      checking={checking || warmingIndicators || loadingOptions}
       checks={launchChecks}
       description="Evaluate an immutable Test Candidate across a bounded historical window using the same strategy, Portfolio, OMS, and journal contracts as Paper and Live."
-      error={error}
+      error={optionsError || error}
       eyebrow="Backtest"
       icon={Gauge}
       onAction={createRun}
@@ -341,6 +372,20 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       secondary={results ? <HistoricalResults comparison={comparison} comparisonError={comparisonError} results={results} /> : null}
       title="Evaluate a strategy"
     >
+              <TradingModeSelectField
+                label="Test Candidate" disabled={loadingOptions || !configurationOptions?.candidates.length}
+                help="Saved configuration containing the strategy, Portfolio, and OMS settings. The latest candidate is selected initially."
+                onChange={(value) => { setPreflight(null); setRunPlanId(""); setCandidateId(value); }}
+                options={configurationOptions?.candidates.length ? configurationOptions.candidates.map((row) => ({ value: row.candidate_id, label: `${row.candidate_revision} · ${row.label}` })) : [{ value: "", label: loadingOptions ? "Loading candidates…" : "No Test Candidates" }]}
+                value={candidateId}
+              />
+              <TradingModeSelectField
+                label="Strategy / Run Plan" disabled={loadingOptions || configurationOptions?.candidate_id !== candidateId || !configurationOptions?.available_run_plans.length || Boolean(optionsError)}
+                help="Choose the strategy revision and its execution plan. Outdated strategy revisions are blocked by launch checks."
+                onChange={(value) => { setPreflight(null); setRunPlanId(value); }}
+                options={configurationOptions?.available_run_plans.length ? configurationOptions.available_run_plans.map((plan) => ({ value: plan.run_plan_id, label: `${plan.name} · strategy r${plan.strategy_revision}`, description: plan.profile_id })) : [{ value: "", label: loadingOptions ? "Loading strategies…" : "No compatible strategies" }]}
+                value={runPlanId}
+              />
               <label className="configuration-field mode-launch-ticker-field"><span>Tickers</span><textarea aria-invalid={!tickerReady && Boolean(tickerInput)} autoCapitalize="characters" onChange={(event) => setTickerInput(event.target.value.toUpperCase())} placeholder="SUGP, AAPL" rows={2} spellCheck={false} value={tickerInput} />{normalizedTickers.length ? <span aria-label="Selected tickers" className="mode-launch-ticker-chips">{normalizedTickers.map((ticker) => <span key={ticker}>{ticker}<button aria-label={`Remove ${ticker}`} onClick={(event) => { event.preventDefault(); setTickerInput(normalizedTickers.filter((value) => value !== ticker).join(", ")); }} type="button"><X aria-hidden="true" size={11} /></button></span>)}</span> : null}<small>Separate up to 100 symbols with commas, spaces, or new lines. They run together in one chronological event stream and share the simulated portfolio.</small></label>
               <label className="configuration-field"><span>Trading date</span><input onChange={(event) => setSessionDate(event.target.value)} type="date" value={sessionDate} /><small>Must be an exchange trading session; weekends and holidays fail closed.</small></label>
               <TradingModeSelectField help="Presets bound the decision window while retaining causal warm-up evidence." label="Time period" onChange={(value) => applyPeriodPreset(value as BacktestPeriodPreset, setPeriodPreset, setStartTime, setEndTime)} options={[{ label: "Premarket · 04:00–09:30 ET", value: "premarket" }, { label: "Regular session · 09:30–16:00 ET", value: "regular" }, { label: "Whole extended session · 04:00–20:00 ET", value: "extended" }, { label: "Custom period", value: "custom" }]} value={periodPreset} />
@@ -348,7 +393,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
               <label className="configuration-field"><span>End time · ET</span><input aria-label="End time" max="20:00:00" min="04:00:01" onChange={(event) => { setPeriodPreset("custom"); setEndTime(normalizeClockInput(event.target.value)); }} step="1" type="time" value={endTime} /><small>The run stops at this exact New York boundary.</small></label>
               <label className="configuration-field"><span>Initial cash</span><input max={1_000_000_000} min={1_000} onChange={(event) => setInitialCash(Math.max(1_000, Number(event.target.value) || 1_000))} step={1_000} type="number" value={initialCash} /><small>Applied to the isolated simulated account for the full run.</small></label>
               <TradingModeSelectField help="Both use $0.005 per share with a $1 minimum commission. Approval requires positive stress results." label="Execution realism" onChange={(value) => setSimulationProfile(value as "baseline" | "stress")} options={[{ label: "Baseline · 25% participation · 5 bps slippage", value: "baseline" }, { label: "Stress · 10% participation · 10 bps slippage", value: "stress" }]} value={simulationProfile} />
-              <div className="historical-accelerated-engine-note"><Zap aria-hidden="true" size={17} /><div><strong>Accelerated causal engine · strategy selected automatically</strong><span>{preflight ? `Immutable strategy revision ${preflight.configuration_revision} · ${preflight.run_plan_id || "compatible run plan"} · ${preflight.configuration_content_hash.slice(0, 12)}.` : "Resolving the latest immutable strategy and its compatible run plan."} Results open directly in a one-second Charts &amp; Quotes view with MACD, strategy positions, lifecycle activity, and performance.</span></div></div>
+              <div className="historical-accelerated-engine-note"><Zap aria-hidden="true" size={17} /><div><strong>Accelerated causal engine</strong><span>{selectedPlan ? `Strategy revision ${selectedPlan.strategy_revision} · candidate ${configurationOptions?.candidates.find((row) => row.candidate_id === candidateId)?.candidate_revision}.` : "Select a strategy above."} Launch checks require current execution code and strategy. Results open in Charts &amp; Quotes with MACD, positions, lifecycle activity, and performance.</span></div></div>
     </TradingModeLaunch>
   );
 }

@@ -242,6 +242,7 @@ from src.backend.trading_configuration_service import (
     approved_canvas_profile,
     approved_configuration,
     backtest_configuration_snapshot,
+    backtest_configuration_options,
     backtest_debug_configuration_snapshot,
     candidate_session_configuration_snapshot,
     configuration_candidate,
@@ -5138,6 +5139,14 @@ def trading_configuration_candidate_create(
             configuration=payload.configuration,
         ))
     except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/trading/backtest/configuration-options")
+async def trading_backtest_configuration_options(candidate_id: str = "") -> dict[str, Any]:
+    try:
+        return await asyncio.to_thread(backtest_configuration_options, candidate_id)
+    except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 

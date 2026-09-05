@@ -682,6 +682,14 @@ class TradingJournal:
         )
         return [_configuration_candidate(row) for row in rows]
 
+    def trading_configuration_candidate_summaries(self) -> list[dict[str, Any]]:
+        """List setup choices without reading or decoding historical model payloads."""
+        rows = self._fetchall(
+            "SELECT candidate_id, candidate_revision, label, content_hash "
+            "FROM trading_configuration_candidates ORDER BY candidate_revision DESC"
+        )
+        return [dict(row) for row in rows]
+
     def trading_configuration_candidate(self, candidate_id: str = "") -> dict[str, Any] | None:
         row = (
             self._fetchone(
