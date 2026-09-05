@@ -855,6 +855,25 @@ impl GenericStructureEngine {
         event: &MarketEvent,
         trade_rule: TradeUpdateRule,
     ) -> Vec<GenericStructureEvent> {
+        self.apply_event_profiled(event, trade_rule, &mut |_, _| {})
+    }
+
+    /// Diagnostic observer only; the same ordered state transitions and return
+    /// value are used by production. The no-op observer is optimized away.
+    pub fn apply_event_profiled(
+        &mut self,
+        event: &MarketEvent,
+        trade_rule: TradeUpdateRule,
+        observe: &mut impl FnMut(&'static str, bool),
+    ) -> Vec<GenericStructureEvent> {
+        macro_rules! stage {
+            ($name:literal, $body:expr) => {{
+                observe($name, true);
+                let result = $body;
+                observe($name, false);
+                result
+            }};
+        }
         let ts = event.ts();
         let arrival_sequence = event.arrival_sequence();
         if self.last_ts.is_some_and(|previous| {
@@ -866,7 +885,7 @@ impl GenericStructureEngine {
         }) {
             return Vec::new();
         }
-        self.reset_session_if_needed(ts);
+        stage!("reset_session", self.reset_session_if_needed(ts));
         // A delayed report remains part of the canonical audit sequence, so
         // its cursor must advance. Its execution belongs to an already closed
         // one-second bucket, however, and must never revise the current
@@ -890,7 +909,7 @@ impl GenericStructureEngine {
                 && trade.price.is_finite()
                 && trade.size > 0.0
             {
-                self.observe_trade_reference(ts, trade.price);
+                stage!("trade_reference", self.observe_trade_reference(ts, trade.price));
             }
         }
         let mut emitted = Vec::new();
@@ -929,17 +948,17 @@ impl GenericStructureEngine {
                 self.last_reference_price = trade.price;
                 #[cfg(feature = "historical-campaign-v16")]
                 self.observe_trade_reference(ts, trade.price);
-                self.update_unified_level_lifecycles(ts, trade.price, size);
-                self.observe_trade_volume(trade.price, size, aggressor);
-                self.update_level_footprints(trade.price, size, aggressor);
-                self.update_level_lifecycles(ts, trade.price, size, &mut emitted);
-                self.update_directional_leg(ts, trade.price, &mut emitted);
-                self.update_timeframe_structures(ts, trade.price, size, aggressor, &mut emitted);
+                stage!("unified_lifecycles", self.update_unified_level_lifecycles(ts, trade.price, size));
+                stage!("trade_volume", self.observe_trade_volume(trade.price, size, aggressor));
+                stage!("level_footprints", self.update_level_footprints(trade.price, size, aggressor));
+                stage!("level_lifecycles", self.update_level_lifecycles(ts, trade.price, size, &mut emitted));
+                stage!("directional_leg", self.update_directional_leg(ts, trade.price, &mut emitted));
+                stage!("timeframe_structures", self.update_timeframe_structures(ts, trade.price, size, aggressor, &mut emitted));
                 // Source membership changes only on structural events. Avoid
                 // reclustering the complete persistent book for every raw
                 // trade; lifecycle acceptance above still remains event-native.
                 if !emitted.is_empty() {
-                    self.refresh_unified_level_tracks(ts, trade.price);
+                    stage!("refresh_unified_tracks", self.refresh_unified_level_tracks(ts, trade.price));
                 }
                 self.last_trade_price = trade.price;
             }
@@ -956,6 +975,10 @@ impl GenericStructureEngine {
             self.last_event = Some(last);
         }
         emitted
+    }
+
+    pub fn diagnostic_state_counts(&self) -> serde_json::Value {
+        serde_json::json!({"levels":self.levels.len(),"unified_tracks":self.unified_tracks.len(),"timeframes":self.timeframe_states.len()})
     }
 
     fn classify_aggressor(&self, price: f64) -> i8 {
@@ -4081,6 +4104,29 @@ mod tests {
     use crate::event::{QuoteEvent, TradeEvent};
     use chrono::TimeZone;
     use serde_json::json;
+
+    #[test]
+    fn profiling_observer_preserves_events_and_resumed_checkpoint() {
+        let mut plain=GenericStructureEngine::new("TEST");
+        let start=new_york_ms(2026,8,20,9,30,0);
+        for i in 0..1200 {
+            let price=5.0+((i%53) as f64)*0.01;
+            plain.apply_event_without_snapshot(&trade(start+i*1000,price,100.0,i as u64+1),TradeUpdateRule::regular());
+        }
+        let mut profiled=GenericStructureEngine::new("TEST");
+        profiled.seed_checkpoint(&plain.checkpoint());
+        let mut stages=Vec::new();
+        for i in 1200..1500 {
+            let event=trade(start+i*1000,5.0+((i%37) as f64)*0.02,120.0,i as u64+1);
+            let actual=profiled.apply_event_profiled(&event,TradeUpdateRule::regular(),&mut |name,enter|stages.push((name,enter)));
+            let expected=plain.apply_event_without_snapshot(&event,TradeUpdateRule::regular());
+            assert_eq!(serde_json::to_value(actual).unwrap(),serde_json::to_value(expected).unwrap());
+        }
+        assert_eq!(serde_json::to_value(plain.checkpoint()).unwrap(),serde_json::to_value(profiled.checkpoint()).unwrap());
+        assert!(stages.iter().any(|(name,_)|*name=="timeframe_structures"));
+        assert_eq!(stages.len()%2,0);
+        for pair in stages.chunks(2) {assert_eq!(pair[0],(pair[1].0,true));assert!(!pair[1].1);}
+    }
 
     #[cfg(feature = "historical-campaign-v16")]
     #[test]
