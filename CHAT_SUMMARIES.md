@@ -7,6 +7,21 @@ each year.
 
 ## 2026
 
+### [2026-09-04 time unavailable - Align long momentum contract and execution](docs/codex/chat-summaries/2026/CHAT-20260904-UNKNOWN-long-momentum-contract-execution-repair.md)
+
+- Chat/task ID: unavailable
+- Related task: `TASK-0014`
+- Summary written: 2026-09-04 PDT
+
+Revision 38 removes the break-count ceiling, retains the 100% probability
+maximum, requests one Portfolio-sized entry, and advances moving structural
+targets only after completed one-second closes. Post-checkpoint structural
+updates preserve execution clocks; rejected non-entry intents retain held
+position state. Candidate 63 and focused Python/Rust validation are recorded.
+The reported 47% crash remains unconfirmed because the saved run completed.
+QMD History was stopped at the user's explicit request; the user owns restart.
+Runtime HOD verification and fresh authorized SUGP acceptance remain pending.
+
 ### [2026-09-02 time unavailable - Repair strategy freshness, structural trailing protection, and incorrect CHOCH exits](docs/codex/chat-summaries/2026/CHAT-20260902-UNKNOWN-strategy-freshness-structural-trailing-repair.md)
 
 - Chat/task ID: unavailable
