@@ -9,18 +9,18 @@ each year.
 
 ### [2026-09-04 time unavailable - Align long momentum contract and execution](docs/codex/chat-summaries/2026/CHAT-20260904-UNKNOWN-long-momentum-contract-execution-repair.md)
 
-- Chat/task ID: unavailable
-- Related task: `TASK-0014`
-- Summary written: 2026-09-04 PDT
+- Chat/task ID: `01a06eb2-3dcb-7580-8cc5-287431048fd3`
+- Related tasks: `TASK-0014`, `TASK-0206`
+- Summary updated: 2026-09-05 PDT
 
-Revision 38 removes the break-count ceiling, retains the 100% probability
-maximum, requests one Portfolio-sized entry, and advances moving structural
-targets only after completed one-second closes. Post-checkpoint structural
-updates preserve execution clocks; rejected non-entry intents retain held
-position state. Candidate 63 and focused Python/Rust validation are recorded.
-The reported 47% crash remains unconfirmed because the saved run completed.
-QMD History was stopped at the user's explicit request; the user owns restart.
-Runtime HOD verification and fresh authorized SUGP acceptance remain pending.
+Tracks the evolving contract through revision 47, chart streaming/viewport and
+readable gate evidence, then experimental score-independent structural v18.
+Fresh bounded JUNS/SUGP probes retain historical and current-day zones with exact
+checkpoint-resume parity. Production rollout and long-history capacity remain
+unvalidated. The SSD migration preserves retained old books; algorithm v18 needs
+fresh reconstruction, not blanket deletion. Campaign scripts still target
+algorithm 16 despite v18/v19 checkpoint-set release names. The user reported
+stopping migration; no deletion or workstation mutation occurred here.
 
 ### [2026-09-02 time unavailable - Repair strategy freshness, structural trailing protection, and incorrect CHOCH exits](docs/codex/chat-summaries/2026/CHAT-20260902-UNKNOWN-strategy-freshness-structural-trailing-repair.md)
 
