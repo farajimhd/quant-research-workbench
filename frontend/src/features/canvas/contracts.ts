@@ -473,7 +473,7 @@ export type CanvasChartSettings = {
   barGptTriggerMode: "auto" | "manual";
 };
 export type ContainerSettings = {
-  version: 29;
+  version: 30;
   chart: CanvasChartSettings;
   charts_quotes: {
     daily: CanvasChartSettings;

@@ -60,7 +60,8 @@ def test_replay_focus_chart_settings_survive_reload() -> None:
     assert "if (transient && !replayRun) return;" in canvas_source
     assert "window.localStorage.setItem(runtimeRegistryStorageKey, JSON.stringify(registry));" in canvas_source
     assert "ensureHistoricalChartsQuotesIndicators(stored.profile, stored.state)" in canvas_source
-    assert '"indicator.qmd_unified_structure"' in navigation_source
+    assert '"indicator.qmd_unified_structure"' in source("features/canvas/chartDefaults.ts")
+    assert "...MAIN_CHART_DEFAULT_INDICATORS" in navigation_source
     assert "HISTORICAL_STRATEGY_REVIEW_INDICATORS" in navigation_source
     assert "Boolean(options.replayRunId)" in navigation_source
 

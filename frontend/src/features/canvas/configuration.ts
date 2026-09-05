@@ -5,6 +5,7 @@ import type { MarketScannerSettings, SignalStreamSettings, StrategyActivitySetti
 import { TRADING_WORKSPACE_CONTAINERS, type WorkspaceContainerId } from "../../app/tradingWorkspace";
 import type { XbrlAnalysisSettings } from "../../app/components/XbrlAnalysisContainer";
 import type { ContainerSettings } from "./contracts";
+import { MAIN_CHART_DEFAULT_INDICATORS } from "./chartDefaults";
 export const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
 export const MANAGER_DEFAULT_CONTAINER_IDS: WorkspaceContainerId[] = ["scanner", "chart", "portfolio", "positions", "orders"];
 export const READ_ONLY_BLOCKED_CONTAINERS = new Set<WorkspaceContainerId>([
@@ -19,10 +20,10 @@ export const READ_ONLY_BLOCKED_CONTAINERS = new Set<WorkspaceContainerId>([
 ]);
 export const DEFAULT_WATCHLIST_TAB_IDS = ["top-large-cap-gainers", "top-mid-cap-gainers", "top-small-cap-gainers", "top-penny-gainers"];
 export const DEFAULT_SETTINGS: ContainerSettings = {
-  version: 29,
+  version: 30,
   chart: { showSplitEvents: false, showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.flow_structure_composite"], barGptVersion: "v2", barGptQuantile: "q50", barGptHorizon: "all", barGptTriggerMode: "auto" },
   charts_quotes: {
-    main: { showSplitEvents: false, showVolume: true, symbol: "AAPL", timeframe: "10s", visibleIndicators: ["indicator.vwap", "indicator.macd"], barGptVersion: "v2", barGptQuantile: "q50", barGptHorizon: "all", barGptTriggerMode: "auto" },
+    main: { showSplitEvents: false, showVolume: true, symbol: "AAPL", timeframe: "10s", visibleIndicators: [...MAIN_CHART_DEFAULT_INDICATORS], barGptVersion: "v2", barGptQuantile: "q50", barGptHorizon: "all", barGptTriggerMode: "auto" },
     month: { showSplitEvents: false, showVolume: true, symbol: "AAPL", timeframe: "1mo", visibleIndicators: [], barGptVersion: "v2", barGptQuantile: "q50", barGptHorizon: "all", barGptTriggerMode: "auto" },
     daily: { showSplitEvents: true, showVolume: true, symbol: "AAPL", timeframe: "1d", visibleIndicators: [], barGptVersion: "v2", barGptQuantile: "q50", barGptHorizon: "all", barGptTriggerMode: "auto" },
     layout: { lowerRowPercent: 33, monthColumnPercent: 40, reservedColumnPercent: 20, tapeColumnPercent: 20 },

@@ -13,13 +13,12 @@ import {
 } from "./canvasWorkspace";
 import type { WorkspaceWindowLayout } from "./components/WorkspaceCanvas";
 import { TRADING_WORKSPACE_LAYOUT_VERSION, type WorkspaceContainerId } from "./tradingWorkspace";
+import { MAIN_CHART_DEFAULT_INDICATORS } from "../features/canvas/chartDefaults";
 
 const CHARTS_QUOTES_FOCUS_INSTANCE_ID = "charts_quotes-focus";
 const HISTORICAL_STRATEGY_REVIEW_INDICATORS = [
-  "indicator.vwap",
+  ...MAIN_CHART_DEFAULT_INDICATORS,
   "indicator.execution_vwap",
-  "indicator.macd",
-  "indicator.qmd_unified_structure",
 ] as const;
 
 export type TickerChartsQuotesOpenOptions = {
@@ -85,7 +84,7 @@ function chartsQuotesFocusProfile(
   const main = recordValue(chartsQuotes.main);
   const month = recordValue(chartsQuotes.month);
   const focusedIndicators = Array.from(new Set([
-    ...(historicalReview ? HISTORICAL_STRATEGY_REVIEW_INDICATORS : ["indicator.vwap", "indicator.macd"]),
+    ...(historicalReview ? HISTORICAL_STRATEGY_REVIEW_INDICATORS : MAIN_CHART_DEFAULT_INDICATORS),
     ...stringArray(main.visibleIndicators),
   ]));
   const focusedSettings = {

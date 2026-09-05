@@ -45,11 +45,16 @@ export function normalizeSettings(stored: Partial<ContainerSettings>): Container
   ].includes(id));
   if (replacedStructure && !canonicalIndicators.includes("indicator.qmd_generic_structure")) canonicalIndicators.push("indicator.qmd_generic_structure");
   if (replacedDecision && !canonicalIndicators.includes("indicator.flow_structure_composite")) canonicalIndicators.push("indicator.flow_structure_composite");
-  const migratedIndicators = stored.version === DEFAULT_SETTINGS.version || canonicalIndicators.includes("indicator.macd") ? canonicalIndicators : [...canonicalIndicators, "indicator.macd"];
-  const visibleIndicators = stored.version === DEFAULT_SETTINGS.version
+  const migratedIndicators = Number(stored.version ?? 0) >= 29 || canonicalIndicators.includes("indicator.macd") ? canonicalIndicators : [...canonicalIndicators, "indicator.macd"];
+  const visibleIndicators = Number(stored.version ?? 0) >= 29
     ? migratedIndicators
     : Array.from(new Set([...migratedIndicators, "indicator.flow_structure_composite"]));
   const timeframe = HISTORICAL_TIMEFRAMES.includes(stored.chart?.timeframe as CanvasChartTimeframe) ? stored.chart!.timeframe! : DEFAULT_SETTINGS.chart.timeframe;
+  const mainChart = normalizeChartSlot(stored.charts_quotes?.main, DEFAULT_SETTINGS.charts_quotes.main);
+  // Adopt the new main-chart default once; later manual removals persist.
+  if (Number(stored.version ?? 0) < 30 && !mainChart.visibleIndicators.includes("indicator.qmd_unified_structure")) {
+    mainChart.visibleIndicators.push("indicator.qmd_unified_structure");
+  }
   const storedPerformance = stored.performance_journal as (Partial<ContainerSettings["performance_journal"]> & { showFees?: boolean }) | undefined;
   const storedWatchlist = stored.watchlist as Partial<WatchUniverseSettings> | undefined;
   const storedWatchlistIds = Array.isArray(storedWatchlist?.watchlistIds) ? storedWatchlist.watchlistIds : [];
@@ -73,7 +78,7 @@ export function normalizeSettings(stored: Partial<ContainerSettings>): Container
       visibleIndicators: [...visibleIndicators],
     },
     charts_quotes: {
-      main: normalizeChartSlot(stored.charts_quotes?.main, DEFAULT_SETTINGS.charts_quotes.main),
+      main: mainChart,
       month: { ...normalizeChartSlot(stored.charts_quotes?.month, DEFAULT_SETTINGS.charts_quotes.month), timeframe: "1mo" },
       daily: { ...normalizeChartSlot(stored.charts_quotes?.daily, DEFAULT_SETTINGS.charts_quotes.daily), timeframe: "1d" },
       layout: normalizeChartsQuotesLayout(stored.charts_quotes?.layout),
