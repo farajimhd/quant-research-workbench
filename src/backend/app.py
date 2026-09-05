@@ -155,6 +155,7 @@ from src.backend.qmd_gateway_client import (
     normalize_qmd_family_bar_snapshot,
     normalize_qmd_macro_bar_snapshot,
     qmd_catalogs,
+    qmd_history_get_json,
     qmd_chart_bars,
     qmd_compact_event_page,
     qmd_computation_requirements,
@@ -6197,6 +6198,22 @@ def trading_ticker_change(symbol: str, as_of: str) -> dict[str, Any]:
         raise _qmd_http_exception(exc) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/trading/canvas-chart/forming")
+def trading_canvas_chart_forming(symbol: str, timeframe: str, as_of: str) -> dict[str, Any]:
+    ticker = symbol.strip().upper()
+    if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker) or timeframe not in SUPPORTED_HISTORICAL_TIMEFRAMES:
+        raise HTTPException(status_code=400, detail="Invalid chart symbol or timeframe")
+    try:
+        cursor = datetime.fromisoformat(as_of)
+        if cursor.tzinfo is None:
+            raise ValueError("as_of must include a timezone")
+        return qmd_history_get_json(f"/snapshot/chart-forming/{ticker}", {"timeframe": timeframe, "as_of": cursor.isoformat()}, timeout=30)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except QmdServiceError as exc:
+        raise _qmd_http_exception(exc) from exc
 
 
 @app.get("/api/trading/canvas-chart/history")

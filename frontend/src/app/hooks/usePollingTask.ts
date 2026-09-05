@@ -53,6 +53,7 @@ export function usePollingTask({
       if (pauseWhenHidden && document.visibilityState === "hidden") return;
 
       const controller = new AbortController();
+      const startedAt = performance.now();
       activeController = controller;
       try {
         await taskRef.current(controller.signal);
@@ -61,7 +62,7 @@ export function usePollingTask({
       } finally {
         if (activeController === controller) activeController = null;
         if (!repeat) completed = true;
-        else if (!stopped) schedule(intervalMs);
+        else if (!stopped) schedule(Math.max(0, intervalMs - (performance.now() - startedAt)));
       }
     };
     const handleVisibilityChange = () => {

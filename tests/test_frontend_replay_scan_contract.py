@@ -152,7 +152,9 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert renderer_source.index("syncTradeAnnotationPrimitive(payload, timeline)") < renderer_source.index("syncRendererData(candleRef.current")
     assert "timeline: Array<{ time: number }>" in renderer_source
     assert "lowerBoundCandleTime(state.timeline" in renderer_source
-    assert "tradeAutoscaleViewportRef.current !== viewportIdentity" in renderer_source
+    assert "const currentPriceRange = preserveViewport" in renderer_source
+    assert "if (currentPriceRange) candleRef.current.priceScale().setVisibleRange(currentPriceRange)" in renderer_source
+    assert "class LivePositionPrimitive" in renderer_source
     assert "candleRef.current?.priceScale().applyOptions({ autoScale: true })" in renderer_source
     assert renderer_source.index('annotation.exitIntents?.forEach') < renderer_source.index('drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, stopColor')
     assert "trading?.strategy_chart_activity ?? trading?.strategy_activity" in chart_source
@@ -167,9 +169,10 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert 'orderType.includes("STP")' in chart_source
     assert 'orderType.includes("LMT")' in chart_source
     assert 'side === "SHORT" ? Math.min(...brokerStops) : Math.max(...brokerStops)' in chart_source
-    assert '"NO SL"' in chart_source
-    assert '"NO TP"' in chart_source
-    assert '"NO STRATEGY PLAN"' in chart_source
+    assert 'stopPrice: stops.length' in chart_source
+    assert 'targetPrices: targets' in chart_source
+    assert 'data-position-price' in renderer_source
+    assert 'P&L ${formatMoneyValue(liveEntryLine.pnl)}' in renderer_source
     assert 'label: `SL@${compactPrice(nextStop)}`' in chart_source
     assert 'label: `TP@${compactPrice(nextTarget)}`' in chart_source
     assert 'settings?.lineStyle === "dashed"' in renderer_source
@@ -365,13 +368,13 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert "nearestCandleIndex" not in annotation_time_source
     assert "layout?.boxes.push(box)" in renderer_source
     assert "anchor - 3" in renderer_source
-    draw_source = renderer_source.split("function drawRegions", 1)[1].split("function drawSessionRegions", 1)[0]
+    draw_source = renderer_source.split("class LivePositionPrimitive", 1)[1].split("type OscillatorThresholdSettings", 1)[0]
     assert "drawTradeAnnotations(" not in draw_source
     assert "drawExecutionAnnotations(" not in draw_source
     assert "drawSessionRegionPrimitiveGeometry(" in renderer_source
     assert 'zOrder: () => "bottom"' in renderer_source
     assert "context.fillStyle = sessionRegionColor(region, settings)" in renderer_source
-    assert "clearOverlayLayer(layer)" in draw_source
+    assert "clearOverlayLayer(this.layer)" in draw_source
     assert "drawSessionRegions(chart, layer" not in draw_source
 
 

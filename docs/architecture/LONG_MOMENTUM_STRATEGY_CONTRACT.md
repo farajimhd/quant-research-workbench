@@ -788,3 +788,33 @@ Read-only canonical sample, SUGP 04:11-04:12 ET: 5,881 trade reports, 1,350
 price-eligible reports, 4,531 excluded price boundaries (77%). This measures
 reduced strategy/snapshot work, not full-run wall-time speedup. The target
 amendment journal uses the candle bar-end boundary, not its chart start label.
+
+
+### Streaming chart presentation
+
+Historical intraday charts request the current forming candle from QMD at the
+Backtest cursor, separately from completed bars and structural enrichment. QMD
+uses canonical compact events available by that cursor and the shared trade
+condition rules. A final precomputed candle must never stand in for a forming
+candle. At accelerated speed the display presents the latest available causal
+state; it does not fabricate intermediate market events.
+
+The first populated chart uses Center latest. Subsequent updates retain the
+price range and horizontal zoom. New bars shift the visible latest window left,
+retaining its right-side space; a user viewing older history keeps that view.
+Explicit fit controls remain available. Indicator enrichment, order updates,
+and structure changes must not refit either axis. The candle budget is a rolling
+window: new bars evict the oldest bars instead of stopping admission.
+
+Open-position labels use the execution-label style: neon blue entry with filled
+quantity and average fill price, a separate P&L badge above (green for positive,
+red for negative, white text), neon green target and neon red stop. Target/stop
+labels contain their price and no P&L. All coordinates follow native chart paints,
+including price-axis drags. Current working broker orders supply protection
+prices independently of delayed journal enrichment. Closing a position removes
+its open-position overlay.
+
+The Unified structural level book retains its causal seed and deltas while a
+new snapshot loads. Requests are serialized independently of candles, survive
+clock updates, and keep the previous book visible until new evidence arrives.
+Missing ordinary indicator rows must not suppress candles or the level book.

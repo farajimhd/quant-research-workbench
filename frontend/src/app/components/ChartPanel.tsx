@@ -522,6 +522,48 @@ class TradeAnnotationPrimitive implements ISeriesPrimitive<Time> {
     this.requestUpdate?.();
   }
 }
+// Reposition DOM controls during native chart paints, including price-axis drags.
+class LivePositionPrimitive implements ISeriesPrimitive<Time> {
+  private chart: IChartApi | null = null;
+  private series: ISeriesApi<"Candlestick"> | null = null;
+  private requestUpdate: (() => void) | null = null;
+  private line: LiveEntryLine | null = null;
+  private candles: Candle[] = [];
+  private contentKey = "";
+  private dirty = true;
+  constructor(private layer: HTMLDivElement) {}
+  attached({ chart, series, requestUpdate }: Parameters<NonNullable<ISeriesPrimitive<Time>["attached"]>>[0]) {
+    this.chart = chart as IChartApi;
+    this.series = series as ISeriesApi<"Candlestick">;
+    this.requestUpdate = requestUpdate;
+  }
+  detached() { clearOverlayLayer(this.layer); this.chart = null; this.series = null; this.requestUpdate = null; }
+  paneViews() {
+    return [{ zOrder: () => "top" as const, renderer: () => ({ draw: () => {
+      if (!this.chart || !this.series) return;
+      if (this.dirty || this.line && !this.layer.childElementCount) {
+        clearOverlayLayer(this.layer);
+        drawLiveEntryLine(this.chart, this.series, this.layer, this.candles, this.line);
+        this.dirty = false;
+      }
+      const left = this.chart.priceScale("left").width();
+      const width = this.chart.timeScale().width();
+      this.layer.querySelectorAll<HTMLElement>("[data-position-price]").forEach((node) => {
+        const y = this.series?.priceToCoordinate(Number(node.dataset.positionPrice));
+        node.style.visibility = y == null ? "hidden" : "visible";
+        if (y != null) node.style.top = `${y}px`;
+        node.style.left = `${left}px`;
+        node.style.width = `${width}px`;
+      });
+    } }) }];
+  }
+  setState(candles: Candle[], line: LiveEntryLine | null) {
+    const key = JSON.stringify(line && [line.price, line.quantity, line.pnl, line.stopPrice, line.targetPrices]);
+    this.dirty ||= key !== this.contentKey || line?.onClose !== this.line?.onClose;
+    this.contentKey = key;
+    this.candles = candles; this.line = line; this.requestUpdate?.();
+  }
+}
 type OscillatorThresholdSettings = {
   color: string;
   lineStyle: LegendLineStyle;
@@ -849,6 +891,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const priceZoneAxisLinesRef = useRef<Map<string, PriceZoneAxisLineRuntime>>(new Map());
   const priceZonePrimitiveRef = useRef<PriceZonePrimitive | null>(null);
   const tradeAnnotationPrimitiveRef = useRef<TradeAnnotationPrimitive | null>(null);
+  const livePositionPrimitiveRef = useRef<LivePositionPrimitive | null>(null);
+  const previousTimelineRef = useRef<Array<{ time: number }>>([]);
   const payloadRef = useRef<ChartPayload | null>(payload);
   const liveEntryLineRef = useRef<LiveEntryLine | null>(null);
   const referenceRef = useRef<ChartReference | null>(reference ?? null);
@@ -875,7 +919,6 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const suppressEarlierLoadUntilRef = useRef(0);
   const fittedChartKeyRef = useRef("");
   const viewportIdentityRef = useRef("");
-  const tradeAutoscaleViewportRef = useRef("");
   const userViewportClaimedRef = useRef(false);
   const candleWindowRef = useRef<{ first: number; last: number } | null>(null);
   const candleBoundsRef = useRef<NumericBounds>(null);
@@ -1236,6 +1279,11 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       priceLineVisible: false
     });
     candleRef.current = candleSeries;
+    if (priceLayerRef.current) {
+      const primitive = new LivePositionPrimitive(priceLayerRef.current);
+      candleSeries.attachPrimitive(primitive);
+      livePositionPrimitiveRef.current = primitive;
+    }
     candleMarkersRef.current = createSeriesMarkers(candleSeries, []);
     forecastCandleRef.current = priceChart.addSeries(CandlestickSeries, {
       lastValueVisible: false,
@@ -1298,7 +1346,6 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       viewportIdentityRef.current = viewportIdentity;
       userViewportClaimedRef.current = false;
       fittedChartKeyRef.current = "";
-      tradeAutoscaleViewportRef.current = "";
       candleWindowRef.current = null;
     }
     const fitKey = buildChartFitKey(ticker, timeframe, referenceKey, payload.candles);
@@ -1308,14 +1355,19 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       && nextCandleWindow
       && nextCandleWindow.first < candleWindowRef.current.first
     );
-    const shouldAutoFit = fitKey !== fittedChartKeyRef.current && !userViewportClaimedRef.current;
+    const shouldAutoFit = payload.candles.length > 0 && fitKey !== fittedChartKeyRef.current && !userViewportClaimedRef.current;
     const autoFitDeferred = shouldAutoFit && deferInitialFitUntilLoaded && loading;
     const preserveViewport = !shouldAutoFit || autoFitDeferred;
     const currentRange = preserveViewport ? priceChartRef.current.timeScale().getVisibleLogicalRange() : null;
+    const currentPriceRange = preserveViewport ? candleRef.current.priceScale().getVisibleRange() : null;
     const currentTimeRange = preserveViewport && earlierBarsPrepended ? priceChartRef.current.timeScale().getVisibleRange() : null;
     const timeline = chartTimelineData(payload.candles, timeframe, chartSettingsRef.current.hideEmptyIntervals, payload.timeline_events);
-    const shouldFitTradeEvidence = Boolean(payload.trade_annotations?.length)
-      && tradeAutoscaleViewportRef.current !== viewportIdentity;
+    const previousTimeline = previousTimelineRef.current;
+    const previousLast = previousTimeline.at(-1)?.time;
+    const appended = previousLast === undefined ? 0 : timeline.filter((bar) => bar.time > previousLast).length;
+    const removed = timeline.length ? previousTimeline.filter((bar) => bar.time < timeline[0].time).length : 0;
+    const followLatest = currentRange && previousTimeline.length && currentRange.to >= previousTimeline.length - 1;
+    previousTimelineRef.current = timeline;
     candleBoundsRef.current = candleValueBounds(payload.candles);
     // Trade guides participate in the candle series autoscale. Seed the
     // primitive before setData/fit operations so off-candle SL/TP prices are
@@ -1341,16 +1393,19 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         const currentPayload = payloadRef.current;
         if (!currentPayload || !priceChartRef.current) return;
         suppressEarlierLoad();
+        candleRef.current?.priceScale().applyOptions({ autoScale: true });
         if (reference) {
           fitAroundReference(priceChartRef.current, currentPayload.candles, reference, timeframe, chartSettingsRef.current.hideEmptyIntervals);
         } else {
-          fitInitialRange(priceChartRef.current, currentPayload.candles, timeframe, initialFitMode, chartSettingsRef.current.hideEmptyIntervals);
+          centerReferenceOrLatest(priceChartRef.current, currentPayload.candles, undefined, timeframe, undefined, chartSettingsRef.current.hideEmptyIntervals);
         }
         drawCurrentRegions();
-        if (shouldFitTradeEvidence) {
-          tradeAutoscaleViewportRef.current = viewportIdentity;
-          fitTradeAnnotationPriceScale();
-        }
+        // Freeze the initial price fit once it has been resolved by the chart.
+        window.requestAnimationFrame(() => {
+          const scale = candleRef.current?.priceScale();
+          const range = scale?.getVisibleRange();
+          if (range) scale?.setVisibleRange(range);
+        });
         initialFitTimerRef.current = null;
       }, 20);
     } else {
@@ -1358,13 +1413,12 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       if (earlierBarsPrepended && currentTimeRange) {
         priceChartRef.current.timeScale().setVisibleRange(currentTimeRange);
       } else if (currentRange) {
-        priceChartRef.current.timeScale().setVisibleLogicalRange(currentRange);
+        const shift = (followLatest ? appended : 0) - removed;
+        priceChartRef.current.timeScale().setVisibleLogicalRange({ from: currentRange.from + shift, to: currentRange.to + shift });
       }
       drawCurrentRegions();
-      if (shouldFitTradeEvidence) {
-        tradeAutoscaleViewportRef.current = viewportIdentity;
-        fitTradeAnnotationPriceScale();
-      }
+      if (currentPriceRange) candleRef.current.priceScale().setVisibleRange(currentPriceRange);
+      scheduleOverlayRedrawBurst();
     }
   }, [deferInitialFitUntilLoaded, effectiveChartSettings.hideEmptyIntervals, initialFitMode, loading, payload, reference, referenceKey, ticker, timeframe]);
 
@@ -1651,7 +1705,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     });
     syncTradeAnnotationPrimitive(currentPayload, timeline);
     syncPriceZoneAxisLines(candleRef.current, selectedZones, legendSettingsRef.current, priceZoneAxisLinesRef.current);
-    drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.candles, liveEntryLineRef.current);
+    livePositionPrimitiveRef.current?.setState(currentPayload.candles, liveEntryLineRef.current);
     oscillatorPaneRuntimesRef.current.forEach((_runtime, key) => {
       drawSessionRegions(
         chart,
@@ -1680,8 +1734,12 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   }
 
   function fitTradeAnnotationPriceScale() {
-    if (!payloadRef.current?.trade_annotations?.length) return;
     candleRef.current?.priceScale().applyOptions({ autoScale: true });
+    window.requestAnimationFrame(() => {
+      const scale = candleRef.current?.priceScale();
+      const range = scale?.getVisibleRange();
+      if (range) scale?.setVisibleRange(range);
+    });
   }
 
   function scheduleOverlayRedraw() {
@@ -1746,6 +1804,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       candleRef.current.detachPrimitive(tradeAnnotationPrimitiveRef.current);
     }
     tradeAnnotationPrimitiveRef.current = null;
+    if (livePositionPrimitiveRef.current && candleRef.current) candleRef.current.detachPrimitive(livePositionPrimitiveRef.current);
+    livePositionPrimitiveRef.current = null;
     if (priceChartRef.current) {
       priceChartRef.current.remove();
     }
@@ -5684,18 +5744,6 @@ function hasMultipleMarketDates(candles: Candle[]) {
 
 // A view more than four orders of magnitude wider or narrower than its loaded
 // data has no analytical value and approaches unstable canvas transforms.
-function drawRegions(
-  chart: IChartApi,
-  priceSeries: ISeriesApi<"Candlestick"> | null,
-  layer: HTMLDivElement | null,
-  candles: Candle[],
-  liveEntryLine?: LiveEntryLine | null
-) {
-  if (!layer) return;
-  clearOverlayLayer(layer);
-  drawLiveEntryLine(chart, priceSeries, layer, candles, liveEntryLine);
-}
-
 function drawSessionRegionPrimitiveGeometry(
   chart: IChartApi,
   context: CanvasRenderingContext2D,
@@ -5799,8 +5847,8 @@ function drawLiveEntryLine(
   if (!priceSeries || !candles.length || !liveEntryLine || !Number.isFinite(liveEntryLine.price)) return;
   const y = priceSeries.priceToCoordinate(liveEntryLine.price);
   if (y === null) return;
-  const left = 0;
-  const width = Math.max(80, layer.clientWidth);
+  const left = chart.priceScale("left").width();
+  const width = chart.timeScale().width();
   const drawProtection = (price: number | undefined, label: string, color: string) => {
     if (price === undefined || !Number.isFinite(price) || price <= 0) return;
     const coordinate = priceSeries.priceToCoordinate(price);
@@ -5808,51 +5856,49 @@ function drawLiveEntryLine(
     const guide = document.createElement("div");
     guide.className = "live-entry-price-line live-position-protection-line";
     guide.dataset.role = label === "Stop" ? "stop" : "target";
-    guide.style.cssText = `left:0;top:${coordinate}px;width:${width}px;border-color:${color}`;
+    guide.dataset.positionPrice = String(price);
+    guide.style.cssText = `left:${left}px;top:${coordinate}px;width:${width}px;border-color:${color}`;
     const badge = document.createElement("span");
     badge.className = "live-entry-position-control";
-    badge.style.background = `color-mix(in srgb, ${color} 50%, black)`;
+    badge.style.background = color;
+    badge.style.borderColor = color;
     badge.style.color = "#ffffff";
     badge.textContent = `${label} ${formatPrice(price)}`;
     guide.appendChild(badge);
     layer.appendChild(guide);
   };
-  drawProtection(liveEntryLine.stopPrice, "Stop", "var(--danger)");
-  liveEntryLine.targetPrices?.forEach((price) => drawProtection(price, "Target", "var(--success)"));
+  drawProtection(liveEntryLine.stopPrice, "Stop", "var(--position-stop)");
+  liveEntryLine.targetPrices?.forEach((price) => drawProtection(price, "Target", "var(--position-profit)"));
   const line = document.createElement("div");
   line.className = "live-entry-price-line";
+  line.dataset.positionPrice = String(liveEntryLine.price);
+  line.dataset.role = "entry";
   line.style.left = `${left}px`;
   line.style.top = `${y}px`;
   line.style.width = `${width}px`;
-  line.style.borderColor = "var(--info)";
+  line.style.borderColor = "var(--position-entry)";
 
   const control = document.createElement("div");
   control.className = "live-entry-position-control";
-  const pnlColor = `color-mix(in srgb, ${liveEntryLine.pnl >= 0 ? "var(--success)" : "var(--danger)"} 50%, black)`;
-  control.style.background = pnlColor;
-  control.style.color = "#ffffff";
-
+  const pnlColor = liveEntryLine.pnl >= 0 ? "var(--position-profit)" : "var(--position-stop)";
+  control.style.borderColor = "var(--position-entry)";
   const sizeBadge = document.createElement("span");
   sizeBadge.className = "live-entry-size-badge";
-  sizeBadge.style.background = pnlColor;
-  sizeBadge.style.color = "#ffffff";
-  if (liveEntryLine.labelParts?.length) {
-    liveEntryLine.labelParts.forEach((part) => {
-      const piece = document.createElement("b");
-      piece.className = `trade-label-part ${part.tone ?? "label"}`;
-      piece.textContent = `${part.text} `;
-      piece.style.background = "transparent";
-      piece.style.color = "#ffffff";
-      sizeBadge.appendChild(piece);
-    });
-  } else {
-    sizeBadge.textContent = liveEntryLine.quantity.toLocaleString();
+  const pieces = [
+    { text: Math.abs(liveEntryLine.quantity).toLocaleString(), tone: "quantity" },
+    { text: "Filled", tone: "filled" },
+    { text: formatPrice(liveEntryLine.price), tone: "price" },
+  ];
+  for (const part of pieces) {
+    const piece = document.createElement("span");
+    piece.className = `live-position-part ${part.tone}`;
+    piece.textContent = part.text;
+    sizeBadge.appendChild(piece);
   }
   control.appendChild(sizeBadge);
-
   const pnlBadge = document.createElement("span");
-  pnlBadge.className = liveEntryLine.pnl >= 0 ? "live-entry-pnl-badge positive" : "live-entry-pnl-badge negative";
-  pnlBadge.textContent = formatMoneyValue(liveEntryLine.pnl);
+  pnlBadge.className = "live-entry-pnl-badge";
+  pnlBadge.textContent = `P&L ${formatMoneyValue(liveEntryLine.pnl)}`;
   pnlBadge.style.background = pnlColor;
   pnlBadge.style.color = "#ffffff";
   control.appendChild(pnlBadge);

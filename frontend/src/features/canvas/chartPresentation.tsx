@@ -3,6 +3,7 @@ import { entryStructurePresentation } from "./entryStructurePresentation";
 import { useEffect, useMemo, useState } from "react";
 import type { UTCTimestamp } from "lightweight-charts";
 
+import { usePollingTask } from "../../app/hooks/usePollingTask";
 import { api } from "../../api/client";
 import { CANVAS_SETTINGS_STORAGE_KEY, type CanvasChartTimeframe, type CanvasLinkContext } from "../../app/canvasWorkspace";
 import { ChartPanel, type ChartAppearanceDefaults, type ChartPayload, type LiveEntryLine } from "../../app/components/ChartPanel";
@@ -206,35 +207,19 @@ export function ChartPreview({
   }, [barGptOriginUs, barGptScopeId, barGptTriggerMode, barGptVersion, barGptView, linkContext.symbol, liveChart.pointInTime, showBarGpt]);
   const strategyPresentationAvailable = showTradeAnnotations && supportsPositionPresentation(timeframe);
   const [scopedStrategyActivity, setScopedStrategyActivity] = useState<PreviewRow[] | null>(null);
-  useEffect(() => {
-    if (!trading || !strategyPresentationAvailable) {
-      setScopedStrategyActivity(null);
-      setStrategyActivityError("");
-      return;
-    }
-    setScopedStrategyActivity(null);
-    setStrategyActivityError("");
-    const controller = new AbortController();
-    const parameters = new URLSearchParams({
-      as_of: trading?.as_of || changeAsOf,
-      consequential_only: "true",
-      include_decision_evidence: "false",
-      limit: "50000",
-      ticker: linkContext.symbol,
-    });
-    if (runId) parameters.set("run_id", runId);
-    api<{ rows: PreviewRow[] }>(`/api/trading/strategy-activity?${parameters}`, { signal: controller.signal, timeoutMs: runId ? 30_000 : 10_000 })
-      .then((response) => {
-        setScopedStrategyActivity(response.rows);
-        setStrategyActivityError("");
-      })
-      .catch(() => {
-        if (controller.signal.aborted) return;
-        setScopedStrategyActivity(null);
-        setStrategyActivityError("Strategy evidence unavailable");
-      });
-    return () => controller.abort();
-  }, [changeAsOf, linkContext.symbol, runId, strategyPresentationAvailable, trading?.as_of]);
+  useEffect(() => { setScopedStrategyActivity(null); }, [runId, linkContext.symbol]);
+  usePollingTask({
+    enabled: Boolean(trading && strategyPresentationAvailable), initialDelayMs: 0, intervalMs: 1000,
+    pauseWhenHidden: false, restartKey: `${runId}:${linkContext.symbol}`,
+    onError: () => setStrategyActivityError("Strategy evidence unavailable"),
+    task: async (signal) => {
+      const parameters = new URLSearchParams({ as_of: trading?.as_of || changeAsOf,
+        consequential_only: "true", include_decision_evidence: "false", limit: "50000", ticker: linkContext.symbol });
+      if (runId) parameters.set("run_id", runId);
+      const response = await api<{ rows: PreviewRow[] }>(`/api/trading/strategy-activity?${parameters}`, { signal, timeoutMs: 30000 });
+      if (!signal.aborted) { setScopedStrategyActivity(response.rows); setStrategyActivityError(""); }
+    },
+  });
   const chartTrading = useMemo(
     () => scopedStrategyActivity === null || !trading
       ? trading
@@ -331,11 +316,20 @@ export function ChartPreview({
   const positionQuantityLabel = targetQuantity > Math.abs(quantity)
     ? `${formatQuantity(Math.abs(quantity))} filled / ${formatQuantity(targetQuantity)} target`
     : formatQuantity(Math.abs(quantity));
-  const activeLifecycleAnnotation = tradeAnnotations.find((annotation) => annotation.status === "open");
+  // Broker protection is available immediately, independently of the slower
+  // lifecycle/journal enrichment request. Never hide a working stop or target
+  // while entry evidence is loading.
+  const protectionOrders = (trading?.orders ?? []).filter((order) =>
+    nestedValue(order, "instrument", "symbol") === linkContext.symbol
+    && String(order.side || "").toUpperCase() === (quantity > 0 ? "SELL" : "BUY")
+    && !Boolean(order.terminal)
+    && String(order.account_id || "") === String(activePosition?.account_id || ""));
+  const stops = uniquePositivePrices(protectionOrders.filter((order) => ["protective_stop", "trailing_stop", "protective_exit"].includes(orderRole(order))).map((order) => order.stop_price));
+  const targets = uniquePositivePrices(protectionOrders.filter((order) => orderRole(order) === "profit_target").map((order) => order.limit_price));
   const positionLine = strategyPresentationAvailable && activePosition && averagePrice > 0 ? {
     color: "var(--info)",
-    stopPrice: activeLifecycleAnnotation?.stopPrice,
-    targetPrices: activeLifecycleAnnotation?.targetPrices,
+    stopPrice: stops.length ? (quantity > 0 ? Math.max(...stops) : Math.min(...stops)) : undefined,
+    targetPrices: targets,
     labelParts: [
       { text: "Entry", tone: "label" as const },
       { text: positionQuantityLabel, tone: "size" as const },

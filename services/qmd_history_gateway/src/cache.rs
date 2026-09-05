@@ -1375,6 +1375,62 @@ impl HistoricalDerivedCache {
         })
     }
 
+    /// The open bucket is computed only from canonical events available by the
+    /// requested cursor. Never slice a precomputed final candle: its high/low
+    /// would disclose later trades. This small read is independent of structural
+    /// history enrichment and uses the same SIP rules as ordinary chart bars.
+    pub async fn forming_chart_bar(
+        &self,
+        ticker: String,
+        timeframe: String,
+        as_of: DateTime<Utc>,
+    ) -> Result<Option<ChartBarRow>, String> {
+        let resolution = parse_resolution_us(&timeframe)
+            .filter(|value| *value <= 3_600_000_000)
+            .ok_or_else(|| "forming candles require an intraday timeframe up to 1h".to_string())?;
+        let resolution = resolution as i64;
+        let start = DateTime::from_timestamp_micros(
+            as_of.timestamp_micros().div_euclid(resolution) * resolution,
+        )
+        .ok_or_else(|| "invalid forming candle start".to_string())?;
+        let window = EventWindow {
+            start,
+            end: as_of + Duration::microseconds(1),
+            tickers: vec![ticker.clone()],
+        };
+        let _permit = self
+            .fetch_permits
+            .acquire()
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut receiver =
+            self.source
+                .stream_ordered_filtered(window, self.config.batch_size, None, Some(1))?;
+        let mut events = Vec::new();
+        while let Some(batch) = receiver.recv().await {
+            events.extend(batch?);
+            if events.len().saturating_mul(size_of::<LiveCompactEvent>())
+                > self.config.cache_max_bytes / self.config.cache_max_concurrent_fetches.max(1)
+            {
+                return Err(
+                    "forming candle exceeds the per-request event memory budget".to_string()
+                );
+            }
+        }
+        forming_bar_from_events(
+            events
+                .iter()
+                .map(|event| self.source.market_event(event))
+                .collect(),
+            &ticker,
+            &timeframe,
+            start,
+            as_of,
+            self.source.trade_aggregation_rules(),
+        )
+        .await
+    }
+
     pub async fn chart_snapshot(
         &self,
         window: EventWindow,
@@ -3832,6 +3888,33 @@ fn touch(order: &mut VecDeque<String>, key: &str) {
     order.push_back(key.to_string());
 }
 
+async fn forming_bar_from_events(
+    mut events: Vec<MarketEvent>,
+    ticker: &str,
+    timeframe: &str,
+    start: DateTime<Utc>,
+    as_of: DateTime<Utc>,
+    rules: qmd_core::bars::TradeAggregationRules,
+) -> Result<Option<ChartBarRow>, String> {
+    events.retain(|event| {
+        event.availability_ts() <= as_of
+            && event.execution_ts() >= start
+            && event.execution_ts() <= as_of
+    });
+    events.sort_by_key(|event| event.execution_ts());
+    let store = SharedBarStore::new_without_structure(vec![timeframe.to_string()], 2, 1, rules);
+    let shard = store.shard(0);
+    for event in events {
+        shard.apply_event(&event.for_execution_time_chart()).await;
+    }
+    Ok(store
+        .snapshot(ticker, timeframe, 1)
+        .await
+        .current
+        .filter(valid_price_bar)
+        .map(|bar| ChartBarRow::from_bar(&bar)))
+}
+
 fn valid_price_bar(bar: &BarRow) -> bool {
     [bar.open, bar.high, bar.low, bar.close]
         .into_iter()
@@ -3872,6 +3955,70 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::{broadcast, Mutex, Notify};
+
+    #[tokio::test]
+    async fn forming_candle_excludes_future_reports_and_preserves_open_bucket() {
+        use qmd_core::event::{MarketEvent, TradeEvent};
+        let start = Utc.with_ymd_and_hms(2026, 8, 21, 11, 21, 31).unwrap();
+        let trade = |availability_ms: i64, execution_ms: i64, price: f64| {
+            MarketEvent::Trade(TradeEvent {
+                conditions: vec![],
+                exchange: 1,
+                ingest_ts: start + Duration::milliseconds(availability_ms),
+                participant_ts: Some(start + Duration::milliseconds(execution_ms)),
+                price,
+                raw: json!({}),
+                sequence: availability_ms as u64,
+                size: 100.0,
+                tape: 1,
+                ticker: "JUNS".to_string(),
+                trade_id: availability_ms.to_string(),
+                trf_id: 0,
+                trf_ts: None,
+                ts: start + Duration::milliseconds(availability_ms),
+            })
+        };
+        let events = vec![
+            trade(100, 100, 7.2),
+            trade(200, 200, 7.3),
+            trade(800, 250, 9.0),
+            trade(250, -100, 1.0),
+        ];
+        let rules = qmd_core::bars::TradeAggregationRules::new([(
+            0,
+            qmd_core::bars::TradeUpdateRule::regular(),
+        )])
+        .unwrap();
+        let early = super::forming_bar_from_events(
+            events.clone(),
+            "JUNS",
+            "1s",
+            start,
+            start + Duration::milliseconds(300),
+            rules.clone(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(!early.is_closed);
+        assert_eq!(
+            (early.open, early.high, early.low, early.close, early.volume),
+            (7.2, 7.3, 7.2, 7.3, 200.0)
+        );
+        assert_eq!(early.bar_end, start + Duration::seconds(1));
+        let later = super::forming_bar_from_events(
+            events,
+            "JUNS",
+            "1s",
+            start,
+            start + Duration::milliseconds(900),
+            rules,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!((later.high, later.close, later.volume), (9.0, 9.0, 300.0));
+    }
 
     #[test]
     fn all_causal_cache_profiles_fetch_quotes_required_by_their_authorities() {

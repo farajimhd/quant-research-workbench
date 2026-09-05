@@ -323,7 +323,7 @@ function ReplayCanvasFocusPage({ focusToken, runId, runMode }: { focusToken: str
   useReplayRunEvents(handoff && runMode === "replay" ? runId : undefined, mergeFocusRun, setError);
   usePollingTask({
     enabled: Boolean(handoff && run && runMode !== "replay" && !isTerminalReplayStatus(run.status)),
-    intervalMs: 1000,
+    intervalMs: 250,
     pauseWhenHidden: false,
     restartKey: `${runMode}:${runId}`,
     onError: (reason) => setError(reason instanceof Error ? reason.message : String(reason)),
@@ -662,7 +662,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   usePollingTask({
     enabled: Boolean(contextReady && replayRun && replayRuntimeReady && previewContainerKey),
     initialDelayMs: 0,
-    intervalMs: 1000,
+    intervalMs: 250,
     pauseWhenHidden: false,
     repeat: !replayRun || !isTerminalReplayStatus(replayRun.status),
     restartKey: `${replayRun?.run_id}:${activeSymbol}:${previewContainerKey}:${Boolean(replayRun && isTerminalReplayStatus(replayRun.status))}`,

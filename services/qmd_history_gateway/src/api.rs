@@ -268,6 +268,10 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/snapshot/bars/{ticker}", get(bar_snapshot))
         .route("/snapshot/chart-bars/{ticker}", get(chart_bar_snapshot))
+        .route(
+            "/snapshot/chart-forming/{ticker}",
+            get(chart_forming_snapshot),
+        )
         .route("/snapshot/scanner-market", get(scanner_market_snapshot))
         .route("/snapshot/scanner-derived", get(scanner_derived_snapshot))
         .route(
@@ -1229,6 +1233,35 @@ async fn bar_snapshot(
         .await
         .map(Json)
         .map_err(service_error)
+}
+
+#[derive(Debug, Deserialize)]
+struct FormingChartQuery {
+    timeframe: String,
+    as_of: String,
+}
+
+async fn chart_forming_snapshot(
+    State(state): State<Arc<AppState>>,
+    Path(ticker): Path<String>,
+    Query(query): Query<FormingChartQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let ticker = normalize_ticker(&ticker)?;
+    let timeframe = query.timeframe;
+    if !is_supported_timeframe(&timeframe) {
+        return Err(bad_request(
+            "forming candles require a supported intraday timeframe",
+        ));
+    }
+    let as_of = parse_timestamp(&query.as_of)?;
+    let bar = state
+        .cache
+        .forming_chart_bar(ticker.clone(), timeframe.clone(), as_of)
+        .await
+        .map_err(service_error)?;
+    Ok(Json(
+        json!({ "ticker": ticker, "timeframe": timeframe, "as_of": as_of, "current": bar }),
+    ))
 }
 
 async fn chart_bar_snapshot(
@@ -2778,6 +2811,15 @@ mod tests {
     use crate::source::SourceRevision;
     use axum::http::StatusCode;
     use serde_json::json;
+
+    #[test]
+    fn forming_chart_query_requires_only_timeframe_and_cursor() {
+        let query: super::FormingChartQuery = serde_json::from_value(
+            serde_json::json!({"timeframe":"1s","as_of":"2026-08-21T11:21:31.150Z"}),
+        )
+        .unwrap();
+        assert_eq!(query.timeframe, "1s");
+    }
 
     #[test]
     fn timestamps_require_explicit_timezone() {
