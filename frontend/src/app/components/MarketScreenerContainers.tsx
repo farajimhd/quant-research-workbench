@@ -9,6 +9,7 @@ import { activitySummaryRow, loadActivityHistory } from "../strategyActivityHist
 import { timeRecency } from "../timeRecency";
 import { InventoryFilterSelect } from "./InventoryFilterSelect";
 import { MarketTime } from "./MarketTime";
+import { compareEventTimes } from "../timeZones";
 import { TickerNewsPopover, type TickerNewsPopoverAnchor } from "./NewsContainers";
 import { NewsIntelligenceIcon, type NewsIconRecency, type NewsReactionDirection } from "./NewsIntelligenceIcon";
 import { filterRowsByConditions, tableTimeFiltersRequireOlderRows, TableActiveFilterBar, TableColumnFilterControl, type TableFilterColumn, type TableFilterCondition, type TableFilterMatchMode } from "./TableColumnFilters";
@@ -1306,7 +1307,9 @@ function MarketListTable({
     const sortedRows = filterRowsByConditions(rows, columnFilters, filterColumns, filterMatchMode).filter((row) => {
       if (deferredQuery && !Object.values(row).some((value) => String(value ?? "").toLowerCase().includes(deferredQuery))) return false;
       return true;
-    }).sort((left, right) => compareValues(left[sort.column], right[sort.column]) * (sort.direction === "asc" ? 1 : -1));
+    }).sort((left, right) => (sort.column === "event_time"
+      ? compareEventTimes(left.event_time, right.event_time) || Number(left.sequence ?? 0) - Number(right.sequence ?? 0)
+      : compareValues(left[sort.column], right[sort.column])) * (sort.direction === "asc" ? 1 : -1));
     if (pinnedSequence === undefined) return sortedRows;
     const pinnedIndex = sortedRows.findIndex((row) => Number(row.sequence) === pinnedSequence);
     if (pinnedIndex <= 0) return sortedRows;
@@ -1548,7 +1551,7 @@ function renderMarketCell(row: ScreenerRow, column: string, presentations: Retur
     const companyName = companyInIdentity ? String(row.company_name ?? presentations[ticker]?.issuer_name ?? "").trim() : "";
     return <SecurityIdentityCell companyName={companyName} country={String(row.country ?? presentations[ticker]?.country ?? "")} halted={row.market_is_halted ?? row.is_halted ?? row.trading_status ?? presentations[ticker]?.market_is_halted ?? presentations[ticker]?.trading_status} logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} onTickerSelect={onTickerSelect} secCount={row.sec_count ?? presentations[ticker]?.sec_count} secLabels={row.sec_labels ?? presentations[ticker]?.sec_labels} secRecency={preferRecentRecency(row.sec_recency, presentations[ticker]?.sec_recency)} secReviewDirection={row.sec_review_fundamental_direction ?? presentations[ticker]?.sec_review_fundamental_direction} secReviewStatus={row.sec_review_status ?? presentations[ticker]?.sec_review_status} secSynthesisCount={row.sec_synthesis_count ?? presentations[ticker]?.sec_synthesis_count} secSynthesisDirection={row.sec_synthesis_direction ?? presentations[ticker]?.sec_synthesis_direction} ticker={ticker} trailing={hasNewsMarker(row) ? <NewsMarketCell compact row={row} ticker={ticker} /> : null} />;
   }
-  if (column === "event_time") return value ? <MarketTime includeSeconds value={String(value)} /> : "—";
+  if (column === "event_time") return value ? <MarketTime includeSubseconds value={String(value)} /> : "—";
   if (column === "news_intelligence") return <NewsMarketCell row={row} ticker={ticker} />;
   const definition = catalogField(column, customColumns, catalog);
   const presentationValueType = definition.presentationValueType ?? presentationForColumn(column).presentationValueType;
@@ -1707,7 +1710,7 @@ function columnClass(column: string, definition = catalogField(column)) {
   const identityClass = column === "logo" ? "market-list-logo-column" : column === "ticker" || column === "symbol" ? "market-list-symbol-column" : column === "news_labels" || column === "sec_labels" ? "market-list-label-column" : NEWS_INTELLIGENCE_COLUMNS.includes(column) ? "market-list-news-card-column" : "";
   const numericClass = ["integer", "money", "multiple", "number", "percent", "percentPlain", "score"].includes(definition.format) ? "market-list-numeric-column" : "";
   const timeClass = definition.format === "date" || ["date", "datetime", "time"].includes(definition.presentationValueType ?? "") ? "market-list-time-column" : "";
-  return `${identityClass} ${numericClass} ${timeClass} ${tableCellClass(column, { presentationValueType: definition.presentationValueType })}`.trim();
+  return `${identityClass} ${numericClass} ${timeClass} ${column === "event_time" ? "market-list-precise-time-column" : ""} ${tableCellClass(column, { presentationValueType: definition.presentationValueType })}`.trim();
 }
 function rowLabels(value: unknown) { return [...new Set(String(value ?? "").split(",").map((item) => item.trim()).filter(Boolean))]; }
 function field(key: string, labelValue: string, group: string, kind: FieldKind, format: FieldDefinition["format"], description: string): FieldDefinition { return { description, format, group, key, kind, label: labelValue }; }

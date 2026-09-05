@@ -16045,6 +16045,7 @@ button {
 .market-list-table tbody tr { height: 48px; }
 .market-list-table tbody td { height: 48px; padding-block: 3px; }
 .market-list-table .market-list-time-column { max-width: 112px; min-width: 94px; width: 102px; }
+.market-list-table .market-list-precise-time-column { max-width: none; min-width: 180px; width: 180px; }
 .market-list-table .market-list-time-column .market-time { line-height: 1.05; }
 .signal-stream-surface .market-list-time-column .market-time-primary strong { font-size: 12px; font-weight: 600; }
 .signal-stream-surface .market-list-time-column .market-time-secondary { font-size: 8.5px; }
