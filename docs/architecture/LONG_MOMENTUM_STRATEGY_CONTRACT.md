@@ -4,12 +4,18 @@ Last updated: 2026-09-05
 
 Related task: TASK-0014
 
-Status: Revision 44 implementation reference. Focused verification is separate
+Status: Revision 45 implementation reference. Focused verification is separate
 from market-run acceptance. The user authorized a simultaneous JUNS and SUGP
 backtest for August 21, 2026, 04:00-09:30 Eastern, with shared account cash,
 including stopping, fixing defects and rerunning when necessary.
 
 ## 1. Authority and purpose
+
+Revision 45 caps the initial entry stop using `protection.stop.maximum_risk_pct`.
+A distant qualified support remains structural evidence, but the stop is placed
+at the maximum permitted distance without blocking entry for that distance.
+The cap is not reapplied during stop updates. Subsequent default-mode changes
+require newer qualified support and can only tighten the existing stop.
 
 Revision 44 retains a completed non-red close above the current R3 without
 requiring another crossover when other entry conditions become ready later.
@@ -325,12 +331,22 @@ below entry. A resistance record must not be substituted for long support,
 and OMS must preserve Strategy's valid protection selection rather than
 replacing it with a generic hybrid/ATR stop.
 
+At entry only, let `P` be the current entry-decision price and `S` the selected
+support stop after its configured buffer. For a long position:
+`initial_stop = max(S, P * (1 - maximum_risk_pct / 100))`.
+Revision 45 enforces `cap_initial_stop_distance = true`. The existing configured
+maximum remains 15% by default; 10% is an illustrative/configurable value, not
+a silent default change. No price-range distance table is currently implemented.
+At P=$4 with a 10% maximum, S=$3.20 produces a $3.60 stop. This cap is an order
+price, not a synthetic support in the QMD level book. Preserve both the real
+support and capped stop in evidence; Portfolio sizes using the actual stop.
+
 `protection.trailing.mode` selects one of two policies:
 
 | Value | Behavior |
 |---|---|
-| `qualified_support` (default) | Start at the second qualified support below entry. Advance only when a newer qualified support selection permits a tighter stop. Price rising alone cannot move it. |
-| `support_distance` (alternative) | Freeze the entry-price minus initial-support-stop distance. Trail that distance behind the favorable price high, without widening the active stop. |
+| `qualified_support` (default) | Start at the second qualified support, capped at entry when necessary. Advance only when a newer qualified support selection permits a tighter stop. Price rising alone cannot move it. |
+| `support_distance` (alternative) | Freeze the entry-price minus actual initial-stop distance, including an entry cap when applied. Trail that fixed distance behind the favorable price high, without widening the active stop. |
 
 Both retain `protection.trailing.enabled` and `activation_gain_pct`. The
 default activation is immediate. In the default mode, reselect the second
@@ -348,9 +364,13 @@ does not reselect a distance on each later event. Broker-native amount trailing
 is used when the selected protection profile supports that contract.
 
 Neither mode substitutes a percentage stop for missing structure. Fewer than
-two qualifying supports defers a new entry. A distant valid support remains
-the stop; Portfolio may reduce or reject the allocation for excessive risk.
-The old 15% stop cap/fallback is not applied by revision 37.
+two qualifying supports still defers a new entry. Revisions 37-44 accepted a
+distant support without capping; revision 45 applies the entry-only cap above.
+For later `qualified_support` updates, use the actual newer qualified support
+without calculating a new percentage floor. If price rises from $4 to $5 and
+the newer qualified support is $3.75, advance the $3.60 stop to $3.75, not $4.50.
+Older, missing, or lower supports retain the active stop. Other Portfolio risk
+and cash constraints still apply to allocation independently.
 
 Initial and subsequent protection evidence must retain the selected support,
 support qualification, anchor/distance calculation, active stop, actual

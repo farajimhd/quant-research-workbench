@@ -34,8 +34,8 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 44
-HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43)
+STRATEGY_REVISION = 45
+HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44)
 
 _COMPLETED_FRAME_TOP_N_ENTRY_MODE = "prior_completed_frame_top_n_below_session_high"
 _EVENT_PRICE_TOP_N_ENTRY_MODE = "event_price_top_n_below_session_high"
@@ -699,6 +699,8 @@ def default_long_momentum_parameters(
             enabled=True, timeframe="1s", active_after_ms=0, closed_for_ms=0,
             close_condition="signal_above_line",
         )
+    if revision >= 45:
+        parameters["protection"]["stop"]["cap_initial_stop_distance"] = True
     parameters.pop("entry", None)
     return parameters
 
@@ -807,6 +809,8 @@ def resolve_long_momentum_parameters(
             if not isfinite(value) or value < 0:
                 raise ValueError("MACD gaps must be finite nonnegative basis points")
             section[key] = value
+    if revision >= 45:
+        parameters["protection"]["stop"]["cap_initial_stop_distance"] = True
     execution = dict(parameters.get("execution") or {})
     execution.pop("time_in_force", None)
     execution.pop("outside_rth", None)
@@ -3482,7 +3486,7 @@ class LongMomentumStrategyEngine:
             state["active_stop"] = float(
                 state.get("active_stop")
                 or state.get("initial_stop")
-                or _initial_stop(observation, parameters, observation.price, side=side)
+                or _initial_stop(observation, parameters, observation.price, side=side, entry_placement=False)
             )
         stop = float(state["active_stop"])
         breakout_level = float(state.get("breakout_level") or 0)
@@ -7161,6 +7165,7 @@ def _initial_stop(
     *,
     side: str,
     selection_evidence: dict[str, Any] | None = None,
+    entry_placement: bool = True,
 ) -> float:
     stop = parameters["protection"]["stop"]
     method = str(stop.get("method") or "hybrid")
@@ -7212,9 +7217,11 @@ def _initial_stop(
             else None
         )
         if bool(stop.get("require_qualified_support")):
-            # Portfolio must size from actual structural risk. Never manufacture
-            # a percentage stop when the required support is absent or distant.
+            # Missing support still defers entry. Revision 45 caps a distant
+            # initial stop; later support selection must not trail a price cap.
             selected = structural_stop or 0.0
+            if structural_stop is not None and entry_placement and stop.get("cap_initial_stop_distance"):
+                selected = max(selected, maximum_risk) if side == "long" else min(selected, maximum_risk)
         elif side == "long":
             selected = max(
                 maximum_risk,
@@ -7252,6 +7259,12 @@ def _initial_stop(
                 "reference_price": observation.price,
                 "maximum_risk_pct": maximum_risk_pct,
                 "maximum_risk_stop": round(maximum_risk, 4),
+                "entry_distance_cap_evaluated": bool(entry_placement and stop.get("cap_initial_stop_distance")),
+                "entry_distance_cap_applied": bool(
+                    entry_placement and stop.get("cap_initial_stop_distance")
+                    and structural_stop is not None and selected != round(structural_stop, 4)
+                ),
+                "uncapped_structural_stop": round(structural_stop, 4) if structural_stop is not None else None,
                 **quality_threshold_evidence,
                 "minimum_hold_observations": minimum_observations,
                 "support_level_ordinal": ordinal,
@@ -7372,7 +7385,7 @@ def _ratcheted_stop(
         return current
     if trailing.get("mode") == "qualified_support":
         evidence: dict[str, Any] = {}
-        candidate = _initial_stop(observation, parameters, None, side=side, selection_evidence=evidence)
+        candidate = _initial_stop(observation, parameters, None, side=side, selection_evidence=evidence, entry_placement=False)
         selected = evidence.get("selected_support_level") or {}
         confirmed = float(selected.get("confirmed_at_ms") or 0)
         entry_at = _optional_aware_datetime(state.get("entry_at"))
