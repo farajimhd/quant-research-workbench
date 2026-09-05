@@ -103,7 +103,7 @@ def test_prebuilt_runtime_binary_is_preferred_without_cargo() -> None:
     candidates = binary_candidates(None, {"TRADING_RUNTIME_ROOT": r"E:\TradingRuntime"})
 
     assert candidates[0] == Path(r"E:\TradingRuntime") / "bin" / candidates[0].name
-    assert candidates[0].name == "structure_checkpoint_campaign_v8.exe"
+    assert candidates[0].name == "structure_checkpoint_campaign_v9.exe"
 
 
 def test_executable_hash_is_reported_from_exact_file_bytes(tmp_path: Path) -> None:
@@ -434,3 +434,17 @@ def test_supervisor_restarts_transient_failure_and_seals_only_certified_work(tmp
     final = json.loads((target / "campaign-status.json").read_text())
     assert final["worker_restarts"] == 1 and final["counts"]["certified"] == 1
     assert list((target / "workers" / "worker-01").glob("attempt-*/worker.log"))
+
+
+def test_recovery_stages_are_visible_and_coverage_does_not_claim_an_eta(tmp_path):
+    path = tmp_path / "status.json"
+    path.write_text(json.dumps({"status": "running", "counts": {"skipped": 16, "certified": 16, "finished": 16},
+        "events_processed": 1000000, "events_advanced": 0, "active": {},
+        "stages": {"ABC": "persist recovery"}, "issues": []}))
+    result = aggregate_status([path], [{"estimated_events": 2000000, "sessions": list(range(32))}],
+        time.monotonic() - 60, deque([(time.monotonic() - 30, 0)]), [_RunningProcess()])
+    assert result["stages"] == {"persist recovery": 1}
+    assert result["worker_details"] == ["W01 ABC: persist recovery"]
+    assert result["eta_seconds"] is None
+    assert result["counts"]["certified"] == 16
+    assert result["replayed_events"] == 0

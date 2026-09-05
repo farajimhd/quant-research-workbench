@@ -5,6 +5,11 @@ use chrono_tz::America::New_York;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
+// The immutable historical campaign retains v16 semantics. Default services
+// continue to use v17; the campaign executable explicitly requires this feature.
+#[cfg(feature = "historical-campaign-v16")]
+pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 16;
+#[cfg(not(feature = "historical-campaign-v16"))]
 pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 17;
 pub const STRUCTURE_HOLD_SCORE_REVISION: &str = "beta22-wilson90-v1";
 pub const TICKER_RELATIVE_QUALITY_SCORE_REVISION: &str =
@@ -765,6 +770,7 @@ impl GenericStructureEngine {
         }
         // Session/opening-range extrema follow the same independent high/low
         // eligibility as candles, not the last-price gate used for pivots.
+        #[cfg(not(feature = "historical-campaign-v16"))]
         if let MarketEvent::Trade(trade) = event {
             if trade_rule.update_high_low
                 && trade.price > 0.0
@@ -808,6 +814,8 @@ impl GenericStructureEngine {
                     self.rolling_trade_size = ewma(self.rolling_trade_size, size, 0.05);
                 }
                 self.last_reference_price = trade.price;
+                #[cfg(feature = "historical-campaign-v16")]
+                self.observe_trade_reference(ts, trade.price);
                 self.update_unified_level_lifecycles(ts, trade.price, size);
                 self.observe_trade_volume(trade.price, size, aggressor);
                 self.update_level_footprints(trade.price, size, aggressor);
@@ -1970,13 +1978,23 @@ impl GenericStructureCheckpoint {
     /// Version 17 changes only the four session extrema. They are not inputs
     /// to persistent level transitions and reset at the next session boundary.
     /// Never carry a version-16 intraday HOD into a version-17 observation.
-    pub fn migrate_completed_session_extrema(&mut self, next_session: NaiveDate) -> Result<(), String> {
-        if self.algorithm_version != 16 || GENERIC_STRUCTURE_ALGORITHM_VERSION != 17
+    pub fn migrate_completed_session_extrema(
+        &mut self,
+        next_session: NaiveDate,
+    ) -> Result<(), String> {
+        if self.algorithm_version != 16
+            || GENERIC_STRUCTURE_ALGORITHM_VERSION != 17
             || !self.session_anchor.is_some_and(|day| day < next_session)
-            || !self.updated_at.is_some_and(|ts| ts.with_timezone(&New_York).date_naive() < next_session)
-            || self.replayed_through.is_some_and(|ts| ts.with_timezone(&New_York).date_naive() >= next_session)
+            || !self
+                .updated_at
+                .is_some_and(|ts| ts.with_timezone(&New_York).date_naive() < next_session)
+            || self
+                .replayed_through
+                .is_some_and(|ts| ts.with_timezone(&New_York).date_naive() >= next_session)
         {
-            return Err("Only completed prior-session v16 checkpoints may migrate to v17 extrema".into());
+            return Err(
+                "Only completed prior-session v16 checkpoints may migrate to v17 extrema".into(),
+            );
         }
         self.algorithm_version = 17;
         self.session_high = 0.0;
@@ -3827,20 +3845,58 @@ mod tests {
     use chrono::TimeZone;
     use serde_json::json;
 
+    #[cfg(feature = "historical-campaign-v16")]
+    #[test]
+    fn campaign_v16_retains_its_certified_extrema_policy() {
+        assert_eq!(GENERIC_STRUCTURE_ALGORITHM_VERSION, 16);
+        let start = new_york_ms(2026, 8, 21, 9, 30, 0);
+        let mut engine = GenericStructureEngine::new("TEST");
+        engine.apply_event(&trade(start, 100.0, 100.0, 1), TradeUpdateRule::regular());
+        engine.apply_event(
+            &trade(start + 1, 110.0, 100.0, 2),
+            TradeUpdateRule {
+                update_last: true,
+                update_high_low: false,
+                update_volume: false,
+            },
+        );
+        assert_eq!(engine.checkpoint().algorithm_version, 16);
+        assert_eq!(
+            engine
+                .snapshot(Utc.timestamp_millis_opt(start + 1).unwrap())
+                .session_high,
+            110.0
+        );
+    }
+
+    #[cfg(not(feature = "historical-campaign-v16"))]
     #[test]
     fn completed_session_extrema_migration_preserves_persistent_state() {
         let ts = Utc.with_ymd_and_hms(2026, 8, 20, 14, 0, 0).unwrap();
         let mut engine = GenericStructureEngine::new("TEST");
-        engine.apply_event_without_snapshot(&trade(ts.timestamp_millis(), 6.0, 100.0, 1),
-                                            TradeUpdateRule { update_last: true, update_high_low: true, update_volume: true });
+        engine.apply_event_without_snapshot(
+            &trade(ts.timestamp_millis(), 6.0, 100.0, 1),
+            TradeUpdateRule {
+                update_last: true,
+                update_high_low: true,
+                update_volume: true,
+            },
+        );
         let mut checkpoint = engine.checkpoint();
         checkpoint.algorithm_version = 16;
         let mut expected = serde_json::to_value(&checkpoint).unwrap();
         expected["algorithm_version"] = json!(17);
-        for key in ["session_high", "session_low", "opening_range_high", "opening_range_low"] {
+        for key in [
+            "session_high",
+            "session_low",
+            "opening_range_high",
+            "opening_range_low",
+        ] {
             expected[key] = json!(0.0);
         }
-        checkpoint.migrate_completed_session_extrema(NaiveDate::from_ymd_opt(2026, 8, 21).unwrap()).unwrap();
+        checkpoint
+            .migrate_completed_session_extrema(NaiveDate::from_ymd_opt(2026, 8, 21).unwrap())
+            .unwrap();
         assert_eq!(serde_json::to_value(checkpoint).unwrap(), expected);
     }
 
@@ -3850,7 +3906,9 @@ mod tests {
         checkpoint.algorithm_version = 16;
         checkpoint.session_anchor = Some(NaiveDate::from_ymd_opt(2026, 8, 21).unwrap());
         checkpoint.updated_at = Some(Utc.with_ymd_and_hms(2026, 8, 21, 11, 0, 0).unwrap());
-        assert!(checkpoint.migrate_completed_session_extrema(NaiveDate::from_ymd_opt(2026, 8, 21).unwrap()).is_err());
+        assert!(checkpoint
+            .migrate_completed_session_extrema(NaiveDate::from_ymd_opt(2026, 8, 21).unwrap())
+            .is_err());
         assert_eq!(checkpoint.algorithm_version, 16);
     }
 
@@ -4478,6 +4536,7 @@ mod tests {
         assert_eq!(snapshot.session_low, 99.0);
     }
 
+    #[cfg(not(feature = "historical-campaign-v16"))]
     #[test]
     fn extrema_eligibility_is_independent_of_last_price_eligibility() {
         let start = new_york_ms(2026, 8, 21, 9, 30, 0);
@@ -4534,6 +4593,7 @@ mod tests {
         assert_eq!(engine.snapshot(event.ts()).session_high, 3.46);
     }
 
+    #[cfg(not(feature = "historical-campaign-v16"))]
     #[test]
     fn extrema_ignore_zero_size_and_nonfinite_prices() {
         let start = new_york_ms(2026, 8, 21, 4, 0, 0);

@@ -8,6 +8,9 @@ default-run = "qmd-gateway"
 name = "qmd_core"
 path = "src/lib.rs"
 
+[features]
+historical-campaign-v16 = []
+
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
 chrono = { version = "0.4", features = ["serde"] }

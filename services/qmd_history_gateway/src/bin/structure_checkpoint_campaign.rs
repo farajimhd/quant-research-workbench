@@ -63,6 +63,7 @@ struct Args {
     purge_existing_checkpoints: bool,
     plan_only: bool,
     plan_file: Option<PathBuf>,
+    shared_work_dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -120,6 +121,7 @@ struct Progress {
     events_processed: u64,
     events_advanced: u64,
     active: BTreeMap<String, NaiveDate>,
+    stages: BTreeMap<String, String>,
     recent: VecDeque<RecentUnit>,
     issues: Vec<Issue>,
 }
@@ -131,6 +133,7 @@ struct ProgressWriter {
     inner: Mutex<Progress>,
     abort_requested: AtomicBool,
     processed_events: AtomicU64,
+    finished_by_ticker: Mutex<BTreeMap<String, usize>>,
     status_notify: Notify,
 }
 
@@ -153,6 +156,7 @@ impl ProgressWriter {
             campaign_control_path,
             abort_requested: AtomicBool::new(false),
             processed_events: AtomicU64::new(0),
+            finished_by_ticker: Mutex::new(BTreeMap::new()),
             status_notify: Notify::new(),
             inner: Mutex::new(Progress {
                 schema_version: 7,
@@ -173,14 +177,31 @@ impl ProgressWriter {
                 events_processed: 0,
                 events_advanced: 0,
                 active: BTreeMap::new(),
+                stages: BTreeMap::new(),
                 recent: VecDeque::new(),
                 issues: Vec::new(),
             }),
         }
     }
 
+    async fn stage(&self, ticker: &str, stage: &str) {
+        self.inner
+            .lock()
+            .await
+            .stages
+            .insert(ticker.into(), stage.into());
+    }
+
+    fn check_stop(&self) -> Result<(), String> {
+        if self.abort_requested() || self.requested_stop_mode().is_some() {
+            return Err(CAMPAIGN_STOP_REQUESTED.into());
+        }
+        Ok(())
+    }
+
     async fn activate(&self, ticker: &str, session_date: NaiveDate) -> Result<(), String> {
         let mut progress = self.inner.lock().await;
+        progress.stages.insert(ticker.into(), "replay".into());
         progress.active.insert(ticker.to_string(), session_date);
         progress.counts.active = progress.active.len();
         progress.counts.queued = progress.total_units.saturating_sub(
@@ -204,6 +225,12 @@ impl ProgressWriter {
         let mut progress = self.inner.lock().await;
         progress.active.remove(ticker);
         progress.counts.active = progress.active.len();
+        *self
+            .finished_by_ticker
+            .lock()
+            .await
+            .entry(ticker.into())
+            .or_default() += 1;
         progress.counts.finished = progress.counts.finished.saturating_add(1);
         progress.counts.queued = progress.total_units.saturating_sub(
             progress
@@ -297,6 +324,7 @@ impl ProgressWriter {
         let mut progress = self.inner.lock().await;
         progress.status = "interrupted".to_string();
         progress.active.clear();
+        progress.stages.clear();
         progress.counts.active = 0;
         progress.counts.queued = progress
             .total_units
@@ -623,7 +651,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     )?;
     if args.plan_only {
         println!(
-            "Validated Campaign v8 plan: tickers={} units={} plan={}",
+            "Validated Campaign v9 plan: tickers={} units={} plan={}",
             plans.len(),
             plans.iter().map(|plan| plan.sessions.len()).sum::<usize>(),
             plan_path.display()
@@ -654,7 +682,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         args.checkpoint_set_id.clone(),
         args.start_date,
         args.end_date,
-        &plans,
+        if args.shared_work_dir.is_some() {
+            &[]
+        } else {
+            &plans
+        },
     ));
     {
         let mut initial = progress.inner.lock().await;
@@ -667,7 +699,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         progress_path.clone(),
         worker_count,
     ));
-    let queue = Arc::new(Mutex::new(VecDeque::from(plans)));
+    let claimed_dir = args
+        .shared_work_dir
+        .as_ref()
+        .map(|root| root.join(args.runtime_dir.file_name().expect("worker directory")));
+    let initial_plans = if let Some(dir) = &claimed_dir {
+        fs::create_dir_all(dir)?;
+        let mut paths: Vec<_> = fs::read_dir(dir)?
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|s| s == "json"))
+            .collect();
+        paths.sort();
+        paths
+            .into_iter()
+            .map(|path| {
+                serde_json::from_slice::<TickerPlan>(&fs::read(path)?)
+                    .map_err(|e| io_error(e.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        plans
+    };
+    let queue = Arc::new(Mutex::new(VecDeque::from(initial_plans)));
     let mut tasks = JoinSet::new();
     for _worker_id in 0..worker_count {
         let queue = queue.clone();
@@ -684,17 +738,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .chain(args.recovery_fallback_checkpoint_set_ids.iter())
             .cloned()
             .collect();
+        let shared_work_dir = args.shared_work_dir.clone();
+        let claimed_dir = claimed_dir.clone();
         tasks.spawn(async move {
             let mut errors = Vec::new();
             loop {
                 if progress.abort_requested() || progress.requested_stop_mode().is_some() {
                     break;
                 }
-                let Some(plan) = queue.lock().await.pop_front() else {
+                let local = queue.lock().await.pop_front();
+                let plan = match local {
+                    Some(plan) => Some(plan),
+                    None => match (&shared_work_dir, &claimed_dir) {
+                        (Some(root), Some(owner)) => match claim_work(root, owner) {
+                            Ok(plan) => plan,
+                            Err(error) => {
+                                errors.push(error);
+                                progress.request_abort();
+                                break;
+                            }
+                        },
+                        _ => None,
+                    },
+                };
+                let Some(plan) = plan else {
                     break;
                 };
+                if shared_work_dir.is_some() {
+                    let mut state = progress.inner.lock().await;
+                    state.total_units += plan.sessions.len();
+                    state.total_estimated_events += plan.estimated_events;
+                    state.ticker_count += 1;
+                    state.counts.queued += plan.sessions.len();
+                }
                 let ticker = plan.ticker.clone();
                 let units = plan.sessions.len();
+
                 if let Err(error) = run_ticker(
                     &config,
                     &source,
@@ -720,8 +799,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         .iter()
                         .any(|issue| issue.ticker == ticker)
                     {
+                        let finished = *progress
+                            .finished_by_ticker
+                            .lock()
+                            .await
+                            .get(&ticker)
+                            .unwrap_or(&0);
                         if let Err(progress_error) = progress
-                            .fail_ticker(&ticker, None, units.saturating_sub(1), error.clone())
+                            .fail_ticker(
+                                &ticker,
+                                None,
+                                units.saturating_sub(finished).saturating_sub(1),
+                                error.clone(),
+                            )
                             .await
                         {
                             errors.push(progress_error);
@@ -732,6 +822,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     }
                     errors.push(error);
                 }
+                progress.inner.lock().await.stages.remove(&ticker);
             }
             errors
         });
@@ -1270,17 +1361,64 @@ fn checkpoint_matches_session(
                 && evidence.ordinal_contiguous == Some(true)))
 }
 
-fn validated_current_checkpoint_prefix(
+/// An OS lock serializes claims; Windows concurrent rename alone is insufficient.
+/// Claims remain on disk so a restarted process revalidates its own saved work.
+fn claim_work(root: &PathBuf, owner: &PathBuf) -> Result<Option<TickerPlan>, String> {
+    let guard = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(root.join("claim.lock"))
+        .map_err(|e| e.to_string())?;
+    guard
+        .lock()
+        .map_err(|e| format!("cannot lock campaign queue: {e}"))?;
+    let mut paths: Vec<_> = fs::read_dir(root.join("pending"))
+        .map_err(|e| format!("cannot enumerate pending queue: {e}"))?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|s| s == "json"))
+        .collect();
+    paths.sort();
+    for path in paths {
+        let target = owner.join(path.file_name().unwrap());
+        match fs::rename(&path, &target) {
+            Ok(()) => {
+                return serde_json::from_slice(
+                    &fs::read(&target).map_err(|e| {
+                        format!("cannot read claimed file {}: {e}", target.display())
+                    })?,
+                )
+                .map(Some)
+                .map_err(|e| e.to_string())
+            }
+            Err(_error) if !path.exists() => continue,
+            Err(error) => return Err(format!("cannot claim campaign work: {error}")),
+        }
+    }
+    Ok(None)
+}
+
+fn validated_checkpoint_window(
     manifest: &qmd_history_gateway::source::StructureCampaignManifest,
     rows: Vec<DailyStructureCheckpoint>,
+    mut prefix: Option<DailyStructureCheckpoint>,
 ) -> Result<Option<DailyStructureCheckpoint>, String> {
     let rows = rows
         .into_iter()
         .map(|row| (row.session_date, row))
         .collect::<BTreeMap<_, _>>();
-    let mut predecessor_checkpoint = String::new();
-    let mut predecessor_chain = String::new();
-    let mut prefix = None;
+    let mut predecessor_checkpoint = prefix
+        .as_ref()
+        .and_then(|r| r.certification.as_ref())
+        .map(|c| c.checkpoint_sha256.clone())
+        .unwrap_or_default();
+    let mut predecessor_chain = prefix
+        .as_ref()
+        .and_then(|r| r.certification.as_ref())
+        .map(|c| c.chain_sha256.clone())
+        .unwrap_or_default();
     for session in &manifest.sessions {
         let Some(row) = rows.get(&session.session_date) else {
             if rows.keys().any(|date| *date > session.session_date) {
@@ -1337,28 +1475,8 @@ async fn recover_reusable_checkpoint_prefix(
     target_set_id: &str,
     source_set_id: &str,
     mut prefix: Option<DailyStructureCheckpoint>,
+    progress: &ProgressWriter,
 ) -> Result<Option<DailyStructureCheckpoint>, String> {
-    let first_session = manifest
-        .sessions
-        .first()
-        .ok_or_else(|| "checkpoint recovery has no sessions".to_string())?
-        .session_date;
-    let last_session = manifest
-        .sessions
-        .last()
-        .ok_or_else(|| "checkpoint recovery has no sessions".to_string())?
-        .session_date;
-    let source_rows = writer
-        .load_daily_structure_checkpoint_chain_from_set(
-            source_set_id,
-            &manifest.ticker,
-            first_session,
-            last_session,
-        )
-        .await?
-        .into_iter()
-        .map(|row| (row.session_date, row))
-        .collect::<BTreeMap<_, _>>();
     let mut source_predecessor_checkpoint = String::new();
     let mut source_predecessor_chain = String::new();
     let seed_date = prefix.as_ref().map(|row| row.session_date);
@@ -1374,122 +1492,184 @@ async fn recover_reusable_checkpoint_prefix(
         .unwrap_or_default();
     let mut prior_migrated_checkpoint =
         Some(GenericStructureEngine::new(&manifest.ticker).checkpoint());
-    for session in &manifest.sessions {
-        let Some(row) = source_rows.get(&session.session_date) else {
-            eprintln!("recovery source={source_set_id} ticker={} stopped={} reason=missing-checkpoint-or-certificate", manifest.ticker, session.session_date);
-            break;
-        };
-        let Some(source_certification) = row.certification.as_ref() else {
-            eprintln!("recovery source={source_set_id} ticker={} stopped={} reason=missing-checkpoint-or-certificate", manifest.ticker, session.session_date);
-            break;
-        };
-        if !checkpoint_matches_session(row, session)
-            || row.authority_start != manifest.authority_start
-            || source_certification.predecessor_checkpoint_sha256 != source_predecessor_checkpoint
-            || source_certification.predecessor_chain_sha256 != source_predecessor_chain
-        {
-            eprintln!("recovery source={source_set_id} ticker={} stopped={} reason=invalid-lineage-or-certificate", manifest.ticker, session.session_date);
-            break;
-        }
-        if let Err(error) = validate_checkpoint_certification(
-            source_certification,
-            &row.checkpoint,
-            row.session_date,
-            row.authority_start,
-            &row.source_plan_hash,
-            &row.source_revision_token,
-        ) {
-            eprintln!(
-                "recovery source={source_set_id} ticker={} stopped={} reason={error}",
-                manifest.ticker, session.session_date
-            );
-            break;
-        }
-        source_predecessor_checkpoint = source_certification.checkpoint_sha256.clone();
-        source_predecessor_chain = source_certification.chain_sha256.clone();
+    // Never span storage partitions in one insert: a cancelled multi-partition
+    // insert could otherwise leave a later date durable before its predecessor.
+    'months: for month in manifest.sessions.chunk_by(|a, b| {
+        (a.session_date.year(), a.session_date.month())
+            == (b.session_date.year(), b.session_date.month())
+    }) {
+        for sessions in month.chunks(16) {
+            progress.check_stop()?;
+            progress.stage(&manifest.ticker, "read source").await;
+            let source_rows = writer
+                .load_daily_structure_checkpoint_chain_from_set(
+                    source_set_id,
+                    &manifest.ticker,
+                    sessions[0].session_date,
+                    sessions.last().unwrap().session_date,
+                )
+                .await?
+                .into_iter()
+                .map(|row| (row.session_date, row))
+                .collect::<BTreeMap<_, _>>();
+            let mut batch = Vec::new();
+            let mut stop_source = false;
+            for session in sessions {
+                progress.check_stop()?;
+                progress.stage(&manifest.ticker, "validate source").await;
+                let Some(row) = source_rows.get(&session.session_date) else {
+                    eprintln!("recovery source={source_set_id} ticker={} stopped={} reason=missing-checkpoint-or-certificate", manifest.ticker, session.session_date);
+                    stop_source = true;
+                    break;
+                };
+                let Some(source_certification) = row.certification.as_ref() else {
+                    eprintln!("recovery source={source_set_id} ticker={} stopped={} reason=missing-checkpoint-or-certificate", manifest.ticker, session.session_date);
+                    stop_source = true;
+                    break;
+                };
+                if !checkpoint_matches_session(row, session)
+                    || row.authority_start != manifest.authority_start
+                    || source_certification.predecessor_checkpoint_sha256
+                        != source_predecessor_checkpoint
+                    || source_certification.predecessor_chain_sha256 != source_predecessor_chain
+                {
+                    eprintln!("recovery source={source_set_id} ticker={} stopped={} reason=invalid-lineage-or-certificate", manifest.ticker, session.session_date);
+                    stop_source = true;
+                    break;
+                }
+                if let Err(error) = validate_checkpoint_certification(
+                    source_certification,
+                    &row.checkpoint,
+                    row.session_date,
+                    row.authority_start,
+                    &row.source_plan_hash,
+                    &row.source_revision_token,
+                ) {
+                    eprintln!(
+                        "recovery source={source_set_id} ticker={} stopped={} reason={error}",
+                        manifest.ticker, session.session_date
+                    );
+                    stop_source = true;
+                    break;
+                }
+                source_predecessor_checkpoint = source_certification.checkpoint_sha256.clone();
+                source_predecessor_chain = source_certification.chain_sha256.clone();
 
-        // Execution-aware archive checkpoints intentionally excluded reports
-        // that the historical SIP-plus-condition policy admits. They are a
-        // different lineage and must be replayed, never relabeled into v7.
-        if row.source_revision_token.contains(":execution-clock-v1:") {
-            eprintln!("recovery source={source_set_id} ticker={} stopped={} reason=incompatible-execution-clock-policy", manifest.ticker, session.session_date);
-            break;
-        }
+                // Execution-aware archive checkpoints intentionally excluded reports
+                // that the historical SIP-plus-condition policy admits. They are a
+                // different lineage and must be replayed, never relabeled into v7.
+                if row.source_revision_token.contains(":execution-clock-v1:") {
+                    eprintln!("recovery source={source_set_id} ticker={} stopped={} reason=incompatible-execution-clock-policy", manifest.ticker, session.session_date);
+                    stop_source = true;
+                    break;
+                }
 
-        let migrated_checkpoint = GenericStructureEngine::migrate_checkpoint_derived_projections(
-            &row.checkpoint,
-            prior_migrated_checkpoint.as_ref(),
-            row.session_date,
-        )?;
-        if seed_date.is_some_and(|date| session.session_date <= date) {
-            if seed_date == Some(session.session_date)
-                && checkpoint_sha256(&migrated_checkpoint)?
-                    != checkpoint_sha256(&prefix.as_ref().unwrap().checkpoint)?
-            {
-                eprintln!("recovery source={source_set_id} ticker={} stopped={} reason=overlap-state-mismatch; retaining validated target prefix", manifest.ticker, session.session_date);
-                break;
+                let migrated_checkpoint =
+                    GenericStructureEngine::migrate_checkpoint_derived_projections(
+                        &row.checkpoint,
+                        prior_migrated_checkpoint.as_ref(),
+                        row.session_date,
+                    )?;
+                if seed_date.is_some_and(|date| session.session_date <= date) {
+                    if seed_date == Some(session.session_date)
+                        && checkpoint_sha256(&migrated_checkpoint)?
+                            != checkpoint_sha256(&prefix.as_ref().unwrap().checkpoint)?
+                    {
+                        eprintln!("recovery source={source_set_id} ticker={} stopped={} reason=overlap-state-mismatch; retaining validated target prefix", manifest.ticker, session.session_date);
+                        stop_source = true;
+                        break;
+                    }
+                    prior_migrated_checkpoint = Some(migrated_checkpoint);
+                    continue;
+                }
+                let certification = if row
+                    .source_revision_token
+                    .contains(":structure-input-v1:archive-sip-condition:")
+                {
+                    build_checkpoint_certification(
+                        &migrated_checkpoint,
+                        source_certification.event_evidence.clone(),
+                        row.session_date,
+                        row.authority_start,
+                        &session.source_revision.source_plan_hash,
+                        &session.source_revision.token,
+                        target_predecessor_checkpoint.clone(),
+                        target_predecessor_chain.clone(),
+                    )?
+                } else {
+                    build_projection_checkpoint_certification(
+                        &row.checkpoint,
+                        &migrated_checkpoint,
+                        source_certification.event_evidence.clone(),
+                        row.session_date,
+                        row.authority_start,
+                        &session.source_revision.source_plan_hash,
+                        &session.source_revision.token,
+                        target_predecessor_checkpoint.clone(),
+                        target_predecessor_chain.clone(),
+                        StructureCheckpointRecoveryAttestation {
+                            recovery_revision: "historical-sip-condition-projections-v1"
+                                .to_string(),
+                            source_checkpoint_set_id: source_set_id.to_string(),
+                            source_checkpoint_sha256: source_certification
+                                .checkpoint_sha256
+                                .clone(),
+                            source_chain_sha256: source_certification.chain_sha256.clone(),
+                            source_policy_revision: session.source_revision.token.clone(),
+                            execution_clock_revision: String::new(),
+                            delayed_trade_report_count: 0,
+                        },
+                    )?
+                };
+                let recovered = DailyStructureCheckpoint {
+                    checkpoint_set_id: target_set_id.to_string(),
+                    session_date: row.session_date,
+                    algorithm_version: row.algorithm_version,
+                    sym: row.sym.clone(),
+                    authority_start: row.authority_start,
+                    checkpoint_at: row.checkpoint_at,
+                    last_arrival_sequence: row.last_arrival_sequence,
+                    source_plan_hash: session.source_revision.source_plan_hash.clone(),
+                    source_revision_token: session.source_revision.token.clone(),
+                    source_complete: true,
+                    built_at: Utc::now(),
+                    checkpoint: migrated_checkpoint.clone(),
+                    certification: Some(certification.clone()),
+                };
+                batch.push(recovered.clone());
+                prefix = Some(recovered);
+                target_predecessor_checkpoint = certification.checkpoint_sha256;
+                target_predecessor_chain = certification.chain_sha256;
+                prior_migrated_checkpoint = Some(migrated_checkpoint);
             }
-            prior_migrated_checkpoint = Some(migrated_checkpoint);
-            continue;
+            progress.check_stop()?;
+            if !batch.is_empty() {
+                progress.stage(&manifest.ticker, "persist recovery").await;
+                let retries = writer
+                    .persist_daily_structure_checkpoint_batch(&batch)
+                    .await?;
+                progress.retries(retries).await?;
+                for record in &batch {
+                    let session = sessions
+                        .iter()
+                        .find(|s| s.session_date == record.session_date)
+                        .unwrap();
+                    progress
+                        .finish_unit(
+                            &manifest.ticker,
+                            record.session_date,
+                            "skipped",
+                            session.event_count,
+                            0,
+                            record.last_arrival_sequence,
+                        )
+                        .await?;
+                }
+            }
+            if stop_source {
+                break 'months;
+            }
         }
-        let certification = if row
-            .source_revision_token
-            .contains(":structure-input-v1:archive-sip-condition:")
-        {
-            build_checkpoint_certification(
-                &migrated_checkpoint,
-                source_certification.event_evidence.clone(),
-                row.session_date,
-                row.authority_start,
-                &session.source_revision.source_plan_hash,
-                &session.source_revision.token,
-                target_predecessor_checkpoint.clone(),
-                target_predecessor_chain.clone(),
-            )?
-        } else {
-            build_projection_checkpoint_certification(
-                &row.checkpoint,
-                &migrated_checkpoint,
-                source_certification.event_evidence.clone(),
-                row.session_date,
-                row.authority_start,
-                &session.source_revision.source_plan_hash,
-                &session.source_revision.token,
-                target_predecessor_checkpoint.clone(),
-                target_predecessor_chain.clone(),
-                StructureCheckpointRecoveryAttestation {
-                    recovery_revision: "historical-sip-condition-projections-v1".to_string(),
-                    source_checkpoint_set_id: source_set_id.to_string(),
-                    source_checkpoint_sha256: source_certification.checkpoint_sha256.clone(),
-                    source_chain_sha256: source_certification.chain_sha256.clone(),
-                    source_policy_revision: session.source_revision.token.clone(),
-                    execution_clock_revision: String::new(),
-                    delayed_trade_report_count: 0,
-                },
-            )?
-        };
-        let recovered = DailyStructureCheckpoint {
-            checkpoint_set_id: target_set_id.to_string(),
-            session_date: row.session_date,
-            algorithm_version: row.algorithm_version,
-            sym: row.sym.clone(),
-            authority_start: row.authority_start,
-            checkpoint_at: row.checkpoint_at,
-            last_arrival_sequence: row.last_arrival_sequence,
-            source_plan_hash: session.source_revision.source_plan_hash.clone(),
-            source_revision_token: session.source_revision.token.clone(),
-            source_complete: true,
-            built_at: Utc::now(),
-            checkpoint: migrated_checkpoint.clone(),
-            certification: Some(certification.clone()),
-        };
-        writer
-            .persist_daily_structure_checkpoint_with_retries(&recovered)
-            .await?;
-        prefix = Some(recovered);
-        target_predecessor_checkpoint = certification.checkpoint_sha256;
-        target_predecessor_chain = certification.chain_sha256;
-        prior_migrated_checkpoint = Some(migrated_checkpoint);
     }
     Ok(prefix)
 }
@@ -1505,6 +1685,8 @@ async fn run_ticker(
     checkpoint_set_id: &str,
     recovery_sources: &[String],
 ) -> Result<(), String> {
+    progress.check_stop()?;
+    progress.stage(&plan.ticker, "source manifest").await;
     let manifest = source
         .structure_campaign_manifest(&plan.ticker, plan.rebuild_start, &plan.sessions)
         .await?;
@@ -1520,21 +1702,50 @@ async fn run_ticker(
             plan.ticker
         ));
     }
-    let target_rows = writer
-        .load_daily_structure_checkpoint_chain_from_set(
-            checkpoint_set_id,
-            &plan.ticker,
-            *plan
-                .sessions
-                .first()
-                .ok_or_else(|| "campaign has no sessions".to_string())?,
-            *plan
-                .sessions
-                .last()
-                .ok_or_else(|| "campaign has no sessions".to_string())?,
-        )
-        .await?;
-    let mut seed = validated_current_checkpoint_prefix(&manifest, target_rows)?;
+    let mut seed = None;
+    let mut missing_target_tail = false;
+    for sessions in manifest.sessions.chunks(16) {
+        progress.check_stop()?;
+        progress.stage(&plan.ticker, "read target").await;
+        let rows = writer
+            .load_daily_structure_checkpoint_chain_from_set(
+                checkpoint_set_id,
+                &plan.ticker,
+                sessions[0].session_date,
+                sessions.last().unwrap().session_date,
+            )
+            .await?;
+        if missing_target_tail && !rows.is_empty() {
+            return Err(format!("invalid target checkpoint gap: {}", plan.ticker));
+        }
+        let window = qmd_history_gateway::source::StructureCampaignManifest {
+            authority_start: manifest.authority_start,
+            ticker: manifest.ticker.clone(),
+            sessions: sessions.to_vec(),
+            split_adjustments: Vec::new(),
+        };
+        progress.stage(&plan.ticker, "validate target").await;
+        seed = validated_checkpoint_window(&window, rows, seed)?;
+        for session in sessions {
+            if session_is_covered_by_seed(
+                session.session_date,
+                seed.as_ref().map(|r| r.session_date),
+            ) {
+                progress
+                    .finish_unit(
+                        &plan.ticker,
+                        session.session_date,
+                        "skipped",
+                        session.event_count,
+                        0,
+                        seed.as_ref().unwrap().last_arrival_sequence,
+                    )
+                    .await?;
+            } else {
+                missing_target_tail = true;
+            }
+        }
+    }
     for source_set_id in recovery_sources {
         if seed.as_ref().map(|row| row.session_date)
             == manifest.sessions.last().map(|session| session.session_date)
@@ -1547,6 +1758,7 @@ async fn run_ticker(
             checkpoint_set_id,
             source_set_id,
             seed,
+            progress,
         )
         .await?;
     }
@@ -1566,10 +1778,6 @@ async fn run_ticker(
         }
     );
     let seed_session = seed.as_ref().map(|row| row.session_date);
-    let seed_cursor = seed
-        .as_ref()
-        .map(|row| row.last_arrival_sequence)
-        .unwrap_or_default();
     let mut predecessor_checkpoint_sha256 = seed
         .as_ref()
         .map(|row| checkpoint_sha256(&row.checkpoint))
@@ -1592,16 +1800,6 @@ async fn run_ticker(
         }
         let session_date = session.session_date;
         if session_is_covered_by_seed(session_date, seed_session) {
-            progress
-                .finish_unit(
-                    &plan.ticker,
-                    session_date,
-                    "skipped",
-                    session.event_count,
-                    0,
-                    seed_cursor,
-                )
-                .await?;
             continue;
         }
         progress.activate(&plan.ticker, session_date).await?;
@@ -2250,6 +2448,7 @@ fn parse_args() -> Result<Args, String> {
     let mut purge_existing_checkpoints = false;
     let mut plan_only = false;
     let mut plan_file = None;
+    let mut shared_work_dir = None;
     let mut checkpoint_set_id = None;
     let mut recovery_source_checkpoint_set_id = None;
     let mut recovery_fallback_checkpoint_set_ids = Vec::new();
@@ -2268,6 +2467,13 @@ fn parse_args() -> Result<Args, String> {
                 .ok_or_else(|| format!("{name} requires a value"))
         };
         match argument.as_str() {
+            "--campaign-build-info" => {
+                println!(
+                    "{}",
+                    serde_json::json!({"campaign_version": 9, "algorithm_version": GENERIC_STRUCTURE_ALGORITHM_VERSION, "storage_policy": "live_market_ssd"})
+                );
+                std::process::exit(0);
+            }
             "--ticker-file" => ticker_files.push(PathBuf::from(value(&argument, &mut values)?)),
             "--checkpoint-set-id" => checkpoint_set_id = Some(value(&argument, &mut values)?),
             "--recovery-source-checkpoint-set-id" => {
@@ -2311,9 +2517,12 @@ fn parse_args() -> Result<Args, String> {
             }
             "--purge-existing-checkpoints" => purge_existing_checkpoints = true,
             "--plan-only" => plan_only = true,
+            "--shared-work-dir" => {
+                shared_work_dir = Some(PathBuf::from(value(&argument, &mut values)?))
+            }
             "--plan-file" => plan_file = Some(PathBuf::from(value(&argument, &mut values)?)),
             "--help" | "-h" => {
-                println!("structure-checkpoint-campaign v8");
+                println!("structure-checkpoint-campaign v9");
                 println!("  --start-date YYYY-MM-DD --end-date YYYY-MM-DD");
                 println!("  --checkpoint-set-id ID");
                 println!("  [--recovery-source-checkpoint-set-id ID] [--recovery-fallback-checkpoint-set-id ID ...]");
@@ -2393,6 +2602,7 @@ fn parse_args() -> Result<Args, String> {
         purge_existing_checkpoints,
         plan_only,
         plan_file,
+        shared_work_dir,
     })
 }
 
@@ -2671,6 +2881,7 @@ mod tests {
             },
             events_processed: 12_345_678,
             events_advanced: 11_000_000,
+            stages: BTreeMap::new(),
             active: BTreeMap::from([
                 (
                     "SUGP".to_string(),
@@ -2793,5 +3004,59 @@ mod tests {
         .unwrap();
         assert_eq!(writer.requested_stop_mode(), Some(super::StopMode::Fast));
         let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
+mod shared_queue_tests {
+    use super::*;
+    #[test]
+    fn claims_are_exclusive_and_survive_worker_restart() {
+        let root = PathBuf::from("D:/TradingML/runtimes/structure-storage-tests").join(format!(
+            "queue-{}",
+            Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        fs::create_dir_all(root.join("pending")).unwrap();
+        for i in 0..100 {
+            let plan = TickerPlan {
+                ticker: format!("T{i}"),
+                rebuild_start: Utc::now(),
+                sessions: vec![NaiveDate::from_ymd_opt(2025, 1, 2).unwrap()],
+                estimated_events: 1,
+            };
+            fs::write(
+                root.join("pending").join(format!("{i:08}.json")),
+                serde_json::to_vec(&plan).unwrap(),
+            )
+            .unwrap();
+        }
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let root = root.clone();
+                std::thread::spawn(move || {
+                    let owner = root.join(format!("worker-{i}"));
+                    fs::create_dir_all(&owner).unwrap();
+                    let mut claimed = Vec::new();
+                    while let Some(plan) = claim_work(&root, &owner).unwrap() {
+                        claimed.push(plan.ticker);
+                    }
+                    assert_eq!(fs::read_dir(owner).unwrap().count(), claimed.len());
+                    claimed
+                })
+            })
+            .collect();
+        let claimed: Vec<_> = handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap())
+            .collect();
+        assert_eq!(claimed.len(), 100);
+        assert_eq!(claimed.iter().collect::<HashSet<_>>().len(), 100);
+        assert_eq!(fs::read_dir(root.join("pending")).unwrap().count(), 0);
+        assert!(root.canonicalize().unwrap().starts_with(
+            PathBuf::from("D:/TradingML/runtimes/structure-storage-tests")
+                .canonicalize()
+                .unwrap()
+        ));
+        fs::remove_dir_all(root).unwrap();
     }
 }

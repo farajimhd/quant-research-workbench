@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Run the canonical Rust level-book algorithm in process-sharded workers."""
+"""Run the immutable algorithm-16 campaign with a shared process work queue.
+
+The explicit historical-campaign-v16 build feature preserves existing certified
+books; default live/history service builds continue to use their current engine.
+"""
 
 from __future__ import annotations
 
@@ -24,7 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = REPO_ROOT / "services" / "qmd_history_gateway" / "Cargo.toml"
 BUILD_BINARY_NAME = "structure_checkpoint_campaign.exe" if os.name == "nt" else "structure_checkpoint_campaign"
 RUNTIME_BINARY_NAME = (
-    "structure_checkpoint_campaign_v8.exe" if os.name == "nt" else "structure_checkpoint_campaign_v8"
+    "structure_checkpoint_campaign_v9.exe" if os.name == "nt" else "structure_checkpoint_campaign_v9"
 )
 MAX_PROCESS_WORKERS = 80
 RECOVERY_PRIORITY_TICKERS = ("SUGP", "JUNS")
@@ -118,10 +122,10 @@ def resolve_binary(
     if cargo is None:
         raise RuntimeError(
             "Cargo and the campaign binary are missing. Copy the prebuilt binary to "
-            r"D:\TradingML\runtimes\bin\structure_checkpoint_campaign_v8.exe."
+            r"D:\TradingML\runtimes\bin\structure_checkpoint_campaign_v9.exe."
         )
     subprocess.run(
-        [cargo, "build", "--release", "--bin", "structure_checkpoint_campaign", "--manifest-path", str(MANIFEST)],
+        [cargo, "build", "--release", "--features", "historical-campaign-v16", "--bin", "structure_checkpoint_campaign", "--manifest-path", str(MANIFEST)],
         cwd=REPO_ROOT,
         env=environ,
         check=True,
@@ -496,7 +500,7 @@ def fmt_count(value: int | float) -> str:
 
 def fmt_duration(seconds: float | None) -> str:
     if seconds is None or seconds < 0:
-        return "warming up"
+        return "not estimated"
     seconds = int(seconds)
     return f"{seconds // 3600:02d}:{seconds % 3600 // 60:02d}:{seconds % 60:02d}"
 
@@ -545,9 +549,11 @@ def aggregate_status(paths, plans, started, rates, processes) -> dict[str, Any]:
     if len(rates) > 1 and now - rates[0][0] >= 15 and events >= rates[0][1]:
         rate = (events - rates[0][1]) / (now - rates[0][0])
     active, issues = [], []
+    stages: dict[str, int] = {}
+    worker_details = []
     failed_workers, startup_failures = 0, 0
     for worker, (row, process) in enumerate(zip(worker_statuses, processes, strict=True)):
-        if process.poll() not in (None, 0) or (process.poll() == 0 and (row is None or not status_is_fully_certified(row))):
+        if process.poll() not in (None, 0) or (process.poll() == 0 and (row is None or not (status_is_fully_certified(row) or (row.get("status") == "completed" and row.get("total_units") == 0)))):
             failed_workers += 1
             startup_failures += int(row is None)
             log_path = paths[worker].parent / "worker.log"
@@ -557,6 +563,10 @@ def aggregate_status(paths, plans, started, rates, processes) -> dict[str, Any]:
             continue
         if process.poll() is None:
             active += [f"W{worker + 1:02d} {ticker}@{date}" for ticker, date in row.get("active", {}).items()]
+            worker_stages = row.get("stages", {})
+            for ticker, stage in worker_stages.items():
+                stages[stage] = stages.get(stage, 0) + 1
+                worker_details.append(f"W{worker + 1:02d} {ticker}: {stage}")
         issues += row.get("issues", [])[-2:]
     exited = sum(process.poll() is not None for process in processes)
     return {
@@ -572,10 +582,13 @@ def aggregate_status(paths, plans, started, rates, processes) -> dict[str, Any]:
         "total_estimated_events": total_events,
         "events_processed": events,
         "event_rate_5m": rate,
-        "eta_seconds": max(total_events - events, 0) / rate if rate > 0 and not failed_workers and not counts["failed"] else None,
+        "eta_seconds": None,  # Recovery and replay costs differ; coverage is not a time forecast.
         "elapsed_seconds": now - started,
         "counts": counts,
         "active": active,
+        "stages": stages,
+        "worker_details": worker_details,
+        "replayed_events": sum(int(row.get("events_advanced", 0)) for row in statuses),
         "issues": issues[-10:],
     }
 
@@ -614,7 +627,7 @@ def render_rich(status: dict[str, Any], set_id: str):
     summary.add_column(justify="right")
     summary.add_row("Checkpoint set", set_id)
     summary.add_row("Build SHA-256", str(status.get("executable_sha256", "unknown"))[:16])
-    summary.add_row("Processes", f"{status['worker_processes'] - status['worker_processes_exited']} active | {status['worker_processes_exited']} exited | {status.get('worker_processes_failed', 0)} failed")
+    summary.add_row("Processes", f"{status['worker_processes'] - status['worker_processes_exited']} alive | {status['worker_processes_exited']} exited | {status.get('worker_processes_failed', 0)} failed")
     summary.add_row("Startup / restarts", f"{status.get('worker_startup_failures', 0)} | {status.get('worker_restarts', 0)}")
     summary.add_row(
         "Certified days",
@@ -633,7 +646,12 @@ def render_rich(status: dict[str, Any], set_id: str):
             else "waiting for first worker status",
         )
     summary.add_row("Queue", f"{fmt_count(counts['queued'])} queued | {counts['retried']} retries | {counts['failed']} failed | {counts['blocked']} blocked")
-    active = "  ".join(status["active"][:8]) or "Workers starting or between tickers"
+    stages = status.get("stages", {})
+    summary.add_row("Worker stages", " | ".join(f"{name}: {count}" for name, count in sorted(stages.items())) or "Starting / between tickers")
+    summary.add_row("Replay events saved", fmt_count(status.get("replayed_events", 0)))
+    details = status.get("worker_details", status["active"])
+    active = "  ".join(details[:2]) or "Workers starting or between tickers"
+    summary.add_row("Worker detail file", "campaign-status.json")
     issue = status["issues"][-1] if status["issues"] else None
     issue_text = "None" if issue is None else f"{issue.get('ticker', '?')} {issue.get('session_date') or ''}: {issue.get('error', '')}"
     if status.get("monitor_mode") == "reattached":
@@ -650,12 +668,12 @@ def render_rich(status: dict[str, Any], set_id: str):
     return Panel(
         Group(
             Text(
-                f"Structural Checkpoint Campaign v8  {status['status'].upper()}"
+                f"Structural Checkpoint Campaign v9  {status['status'].upper()}"
                 + ("  REATTACHED" if status.get("monitor_mode") == "reattached" else ""),
                 style="bold cyan",
             ),
             summary,
-            Text(f"Active  {active}", overflow="ellipsis", no_wrap=True),
+            Text(f"Examples ({min(2, len(details))}/{len(details)})  {active}", overflow="ellipsis", no_wrap=True),
             Text(f"Latest issue  {issue_text}", style="red" if issue else "dim", overflow="ellipsis", no_wrap=True),
             Text(resume_text, style="dim"),
             Text(control_text, style="dim"),
@@ -814,6 +832,7 @@ def run_process_campaign(
         "executable_sha256": binary_sha256,
         "certification_schema_version": CERTIFICATION_SCHEMA_VERSION,
         "structure_input_policy": STRUCTURE_INPUT_POLICY,
+        "algorithm_version": 16,
         "recovery_fallback_checkpoint_set_ids": [campaign_args[i + 1] for i, arg in enumerate(campaign_args[:-1]) if arg == "--recovery-fallback-checkpoint-set-id"],
     }
     if recovery_source_runtime is not None:
@@ -932,6 +951,12 @@ def run_process_campaign(
         {"--workers", "--runtime-dir", "--ticker-file", "--priority-ticker", "--core-index", "--campaign-control-path", "--plan-file"},
         {"--purge-existing-checkpoints", "--plan-only", "--explicit-universe-only"},
     )
+    # A durable shared queue prevents short shards from idling behind long ones.
+    work_dir = runtime_dir / "work-queues" / uuid.uuid4().hex
+    pending = work_dir / "pending"
+    pending.mkdir(parents=True)
+    for index, plan in enumerate(plans):
+        atomic_json(pending / f"{index:08d}.json", plan)
     processes, logs, status_paths, commands = [], [], [], []
     restarts = [0] * len(shards)
     try:
@@ -950,7 +975,7 @@ def run_process_campaign(
                 "--explicit-universe-only",
                 "--runtime-dir", str(worker_dir),
                 "--workers", "1",
-                "--core-index", str(index),
+                "--shared-work-dir", str(work_dir),
                 "--campaign-control-path", str(control_path),
                 "--shard-worker",
                 "--plan-file", str(assigned_plan),
@@ -1087,7 +1112,7 @@ def main(argv: list[str] | None = None) -> int:
             "--resume-from-runtime PATH, --source-commit COMMIT, "
             f"--process-workers 1..{MAX_PROCESS_WORKERS}"
         )
-        print("All other options are forwarded to structure-checkpoint-campaign v8.")
+        print("All other options are forwarded to structure-checkpoint-campaign v9 (algorithm 16).")
         return 0
     environ = dict(os.environ)
     environ["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -1116,6 +1141,10 @@ def main(argv: list[str] | None = None) -> int:
             environ,
             force_rebuild=launcher.rebuild,
         )
+        build = subprocess.run([str(binary), "--campaign-build-info"], check=True, capture_output=True, text=True)
+        build_info = json.loads(build.stdout)
+        if build_info.get("algorithm_version") != 16 or build_info.get("campaign_version") != 9:
+            raise RuntimeError("This campaign requires the version-9 algorithm-16 executable; refusing a different engine")
         binary_sha256 = sha256_file(binary)
         print(f"Campaign executable: {binary} (SHA-256 {binary_sha256})", flush=True)
         print(

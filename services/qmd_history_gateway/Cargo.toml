@@ -3,6 +3,14 @@ name = "qmd-history-gateway"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+historical-campaign-v16 = ["qmd_core/historical-campaign-v16"]
+
+[[bin]]
+name = "structure_checkpoint_campaign"
+path = "src/bin/structure_checkpoint_campaign.rs"
+required-features = ["historical-campaign-v16"]
+
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
 chrono = { version = "0.4", features = ["serde"] }

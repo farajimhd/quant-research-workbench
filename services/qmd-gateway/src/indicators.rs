@@ -1,4 +1,3 @@
-use crate::structure_checkpoint_json::decode_checkpoint;
 use crate::bars::{BarRow, SharedBarStore, TradeAggregationRules};
 use crate::computation_targets::SharedComputationTargets;
 use crate::config::GatewayConfig;
@@ -16,6 +15,7 @@ use crate::scanner::ScannerPrimitiveRouter;
 use crate::structure_certification::{
     checkpoint_sha256, validate_checkpoint_certification, StructureCheckpointCertification,
 };
+use crate::structure_checkpoint_json::decode_checkpoint;
 use crate::timefmt::clickhouse_datetime64;
 use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Timelike, Utc};
 use chrono_tz::America::New_York;
@@ -234,6 +234,7 @@ fn daily_structure_checkpoint_chain_sql(
           AND source_complete = 1
         ORDER BY session_date, built_at DESC
         LIMIT 1 BY session_date
+        SETTINGS max_threads = 1
         FORMAT JSONEachRow"#,
         checkpoint_set_id.replace('\'', "''"),
         sym.replace('\'', "''"),
@@ -289,9 +290,8 @@ fn parse_daily_structure_checkpoint_row(
             "daily structure checkpoint symbol mismatch: expected {expected_sym}, received {sym}"
         ));
     }
-    let checkpoint =
-        decode_checkpoint(&string("snapshot_json"))
-            .map_err(|error| format!("invalid daily structure checkpoint for {sym}: {error}"))?;
+    let checkpoint = decode_checkpoint(&string("snapshot_json"))
+        .map_err(|error| format!("invalid daily structure checkpoint for {sym}: {error}"))?;
     let certification_json = string("certification_json");
     let certification = (!certification_json.trim().is_empty())
         .then(|| serde_json::from_str::<StructureCheckpointCertification>(&certification_json))
@@ -2793,7 +2793,11 @@ pub struct IndicatorClickHouseWriter {
 impl IndicatorClickHouseWriter {
     pub fn new(config: GatewayConfig, metrics: SharedMetrics) -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .timeout(std::time::Duration::from_secs(120))
+                .build()
+                .expect("checkpoint HTTP client"),
             config,
             metrics,
         }
@@ -3174,7 +3178,7 @@ impl IndicatorClickHouseWriter {
             ENGINE = ReplacingMergeTree(built_at)
             PARTITION BY toYYYYMM(session_date)
             ORDER BY (sym, session_date, algorithm_version, source_plan_hash, source_revision_token)
-            SETTINGS non_replicated_deduplication_window = 10000"#,
+            SETTINGS non_replicated_deduplication_window = 10000, storage_policy = 'live_market_ssd', index_granularity = 1"#,
             true,
         )
         .await?;
@@ -3219,6 +3223,7 @@ impl IndicatorClickHouseWriter {
 
     /// Only the supervisor/standalone coordinator may perform campaign DDL.
     pub async fn initialize_campaign_schema(&self) -> Result<(), String> {
+        self.validate_checkpoint_storage(false).await?;
         self.execute(
             r#"CREATE TABLE IF NOT EXISTS qmd_structure_daily_checkpoint_v2
             (
@@ -3239,7 +3244,7 @@ impl IndicatorClickHouseWriter {
             ENGINE = ReplacingMergeTree(built_at)
             PARTITION BY toYYYYMM(session_date)
             ORDER BY (checkpoint_set_id, sym, session_date, algorithm_version, source_plan_hash, source_revision_token)
-            SETTINGS non_replicated_deduplication_window = 10000"#,
+            SETTINGS non_replicated_deduplication_window = 10000, storage_policy = 'live_market_ssd', index_granularity = 1"#,
             true,
         )
         .await?;
@@ -3270,7 +3275,7 @@ impl IndicatorClickHouseWriter {
                 updated_at DateTime64(3, 'UTC')
             )
             ENGINE = ReplacingMergeTree(updated_at)
-            ORDER BY checkpoint_set_id"#,
+            ORDER BY checkpoint_set_id SETTINGS storage_policy = 'live_market_ssd'"#,
             true,
         )
         .await?;
@@ -3289,8 +3294,54 @@ impl IndicatorClickHouseWriter {
 
     /// Read-only worker readiness; never contend for ALTER locks.
     pub async fn validate_campaign_schema(&self) -> Result<(), String> {
+        self.validate_checkpoint_storage(true).await?;
         self.query("SELECT checkpoint_set_id, session_date, algorithm_version, sym, authority_start, checkpoint_at, last_arrival_sequence, source_plan_hash, source_revision_token, source_complete, built_at, snapshot_json, certification_json FROM qmd_structure_daily_checkpoint_v2 LIMIT 0", true).await?;
         self.query("SELECT checkpoint_set_id, algorithm_version, authority_start, authority_end, universe_hash, state, ticker_count, checkpoint_count, certification_schema_version, certified_checkpoint_count, event_count, updated_at FROM qmd_structure_checkpoint_set_registry_v1 LIMIT 0", true).await?;
+        Ok(())
+    }
+
+    /// Check actual parts as well as policy; CREATE IF NOT EXISTS cannot repair placement.
+    async fn validate_checkpoint_storage(&self, require_tables: bool) -> Result<(), String> {
+        let policy = self.config.clickhouse_storage_policy.trim();
+        if !policy.is_empty() && policy != "live_market_ssd" {
+            return Err(
+                "structural checkpoints require live_market_ssd; default is backup-only".into(),
+            );
+        }
+        let available = self.query("SELECT count() FROM system.storage_policies WHERE policy_name = 'live_market_ssd' AND has(disks, 'live_market_ssd') AND NOT has(disks, 'default') FORMAT TSV", true).await?;
+        if available.trim() != "1" {
+            return Err("required live_market_ssd storage policy is unavailable".into());
+        }
+        let (names, required) = if self.config.structure_checkpoint_set_id == "live" {
+            ("'qmd_structure_daily_checkpoint_v2','qmd_structure_checkpoint_set_registry_v1','qmd_structure_daily_checkpoint_v1','qmd_structure_state_v2','qmd_structure_events_v2','qmd_structure_focus_registry_v1'", 6)
+        } else {
+            (
+                "'qmd_structure_daily_checkpoint_v2','qmd_structure_checkpoint_set_registry_v1'",
+                2,
+            )
+        };
+        let rows = self.query(&format!("SELECT name, storage_policy FROM system.tables WHERE database = currentDatabase() AND name IN ({names}) FORMAT JSONEachRow"), true).await?;
+        let mut count = 0;
+        for line in rows.lines().filter(|line| !line.is_empty()) {
+            let row: serde_json::Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
+            if row["storage_policy"] != "live_market_ssd" {
+                return Err(format!(
+                    "storage migration required for {}: expected live_market_ssd, found {}",
+                    row["name"], row["storage_policy"]
+                ));
+            }
+            count += 1;
+        }
+        if require_tables && count != required {
+            return Err("checkpoint tables missing; coordinator must initialize schema".into());
+        }
+        let misplaced = self.query(&format!("SELECT count() FROM system.parts WHERE active AND database = currentDatabase() AND table IN ({names}) AND disk_name != 'live_market_ssd' FORMAT TSV"), true).await?;
+        if misplaced.trim() != "0" {
+            return Err(
+                "checkpoint parts remain outside live_market_ssd; complete storage migration"
+                    .into(),
+            );
+        }
         Ok(())
     }
 
@@ -3330,10 +3381,9 @@ impl IndicatorClickHouseWriter {
                 if sym.is_empty() || checkpoint_json.is_empty() {
                     return Err("QMD structure state row omitted symbol or checkpoint".to_string());
                 }
-                let checkpoint = decode_checkpoint(
-                    checkpoint_json,
-                )
-                .map_err(|error| format!("invalid QMD structure checkpoint for {sym}: {error}"))?;
+                let checkpoint = decode_checkpoint(checkpoint_json).map_err(|error| {
+                    format!("invalid QMD structure checkpoint for {sym}: {error}")
+                })?;
                 Ok((sym, checkpoint))
             })
             .collect()
@@ -3398,10 +3448,10 @@ impl IndicatorClickHouseWriter {
             .map(|_| ())
     }
 
-    pub async fn persist_daily_structure_checkpoint_with_retries(
+    fn encode_daily_checkpoint_insert(
         &self,
         record: &DailyStructureCheckpoint,
-    ) -> Result<usize, String> {
+    ) -> Result<(&'static str, String, String), String> {
         if !record.source_complete {
             return Err("refusing to persist an incomplete daily structure checkpoint".to_string());
         }
@@ -3484,14 +3534,54 @@ impl IndicatorClickHouseWriter {
             &snapshot_json,
             &certification_json,
         );
+        Ok((table, body, deduplication_token))
+    }
+
+    pub async fn persist_daily_structure_checkpoint_with_retries(
+        &self,
+        record: &DailyStructureCheckpoint,
+    ) -> Result<usize, String> {
+        self.persist_daily_structure_checkpoint_batch(std::slice::from_ref(record))
+            .await
+    }
+
+    /// Validate every row before a bounded batch is submitted. The batch token
+    /// binds the ordered per-row semantic tokens; retries reuse the exact body.
+    pub async fn persist_daily_structure_checkpoint_batch(
+        &self,
+        records: &[DailyStructureCheckpoint],
+    ) -> Result<usize, String> {
+        if records.is_empty() {
+            return Ok(0);
+        }
+        if records.len() > 16 {
+            return Err("checkpoint insert batch exceeds 16 rows".into());
+        }
+        let month = records[0].session_date.format("%Y-%m").to_string();
+        if records
+            .iter()
+            .any(|r| r.session_date.format("%Y-%m").to_string() != month)
+        {
+            return Err("checkpoint batch must stay within one storage partition".into());
+        }
+        let mut rows = Vec::new();
+        let mut tokens = String::new();
+        let mut table = "";
+        for record in records {
+            let (next_table, body, token) = self.encode_daily_checkpoint_insert(record)?;
+            if !table.is_empty() && table != next_table {
+                return Err("mixed checkpoint tables in batch".into());
+            }
+            table = next_table;
+            rows.push(body);
+            tokens.push_str(&token);
+            tokens.push('\n');
+        }
+        let token = crate::structure_certification::canonical_json_sha256(&json!(tokens))?;
         self.query_with_idempotent_body(
-            &format!(
-                "INSERT INTO {table} SETTINGS insert_deduplication_token = '{deduplication_token}' FORMAT JSONEachRow"
-            ),
-            body,
-            DAILY_STRUCTURE_CHECKPOINT_WRITE_MAX_ATTEMPTS,
-        )
-        .await
+            &format!("INSERT INTO {table} SETTINGS insert_deduplication_token = '{token}', async_insert = 0, input_format_parallel_parsing = 0, max_insert_threads = 1 FORMAT JSONEachRow"),
+            rows.join("\n"), DAILY_STRUCTURE_CHECKPOINT_WRITE_MAX_ATTEMPTS,
+        ).await
     }
 
     pub async fn count_daily_structure_checkpoints(&self) -> Result<u64, String> {
@@ -4192,6 +4282,24 @@ impl IndicatorClickHouseWriter {
     }
 
     async fn execute(&self, sql: &str, use_database: bool) -> Result<(), String> {
+        // New indicator/structure tables must never inherit the backup disk.
+        let ddl;
+        let sql = if sql.trim_start().starts_with("CREATE TABLE")
+            && sql.contains("MergeTree")
+            && !sql.contains("storage_policy")
+        {
+            ddl = format!(
+                "{sql}{}storage_policy = 'live_market_ssd'",
+                if sql.contains("SETTINGS ") {
+                    ", "
+                } else {
+                    " SETTINGS "
+                }
+            );
+            &ddl
+        } else {
+            sql
+        };
         self.query(sql, use_database).await.map(|_| ())
     }
 
@@ -4237,6 +4345,10 @@ impl IndicatorClickHouseWriter {
         let mut request = self
             .client
             .post(url)
+            .query(&[
+                ("cancel_http_readonly_queries_on_client_close", "1"),
+                ("max_execution_time", "90"),
+            ])
             .header("Content-Type", "text/plain; charset=utf-8")
             .header("X-ClickHouse-User", &self.config.clickhouse_user)
             .body(body.to_string());
@@ -4449,6 +4561,38 @@ mod tests {
         assert!(sql.contains("session_date <= '2026-08-21'"));
         assert!(sql.contains("ORDER BY session_date, built_at DESC"));
         assert!(sql.contains("LIMIT 1 BY session_date"));
+    }
+
+    #[tokio::test]
+    async fn checkpoint_batch_rejects_cross_partition_writes_before_submission() {
+        use super::{
+            DailyStructureCheckpoint, GatewayConfig, IndicatorClickHouseWriter, SharedMetrics,
+        };
+        let now = Utc.with_ymd_and_hms(2025, 1, 2, 20, 0, 0).unwrap();
+        let first = DailyStructureCheckpoint {
+            checkpoint_set_id: "test".into(),
+            session_date: now.date_naive(),
+            algorithm_version: crate::generic_structure::GENERIC_STRUCTURE_ALGORITHM_VERSION,
+            sym: "TEST".into(),
+            authority_start: now,
+            checkpoint_at: now,
+            last_arrival_sequence: 0,
+            source_plan_hash: "plan".into(),
+            source_revision_token: "revision".into(),
+            source_complete: true,
+            built_at: now,
+            checkpoint: GenericStructureEngine::new("TEST").checkpoint(),
+            certification: None,
+        };
+        let mut second = first.clone();
+        second.session_date = NaiveDate::from_ymd_opt(2025, 2, 3).unwrap();
+        let writer =
+            IndicatorClickHouseWriter::new(GatewayConfig::from_env(), SharedMetrics::new());
+        assert!(writer
+            .persist_daily_structure_checkpoint_batch(&[first, second])
+            .await
+            .unwrap_err()
+            .contains("one storage partition"));
     }
 
     #[test]
