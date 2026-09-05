@@ -3596,6 +3596,21 @@ impl IndicatorClickHouseWriter {
             .map_err(|error| format!("invalid daily structure checkpoint count: {error}"))
     }
 
+    pub async fn validate_checkpoint_set_algorithm(&self, set_id: &str) -> Result<(), String> {
+        if set_id.is_empty() || !set_id.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)) {
+            return Err("invalid checkpoint set identifier".into());
+        }
+        let version = crate::generic_structure::GENERIC_STRUCTURE_ALGORITHM_VERSION;
+        let count = self.query(&format!(
+            "SELECT count() FROM qmd_structure_daily_checkpoint_v2 FINAL WHERE checkpoint_set_id = '{set_id}' AND algorithm_version != {version} FORMAT TSV"
+        ), true).await?;
+        let count = count.trim().parse::<u64>().map_err(|e| format!("invalid incompatible checkpoint count: {e}"))?;
+        if count != 0 {
+            return Err(format!("checkpoint set {set_id} contains {count} incompatible rows; use a fresh algorithm-{version} set, never relabel old books"));
+        }
+        Ok(())
+    }
+
     pub async fn count_daily_structure_checkpoints_in_set(&self) -> Result<u64, String> {
         let checkpoint_set_id = self.config.structure_checkpoint_set_id.replace('\'', "''");
         let text = self

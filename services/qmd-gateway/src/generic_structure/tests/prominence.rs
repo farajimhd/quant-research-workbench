@@ -1,6 +1,48 @@
 use super::*;
 
 #[test]
+fn incremental_lifecycle_matches_full_evidence_rebuild_through_crosses_and_flips() {
+    let at = 1_700_000_000_000;
+    let mut reference = GenericStructureEngine::new("TEST");
+    reference.timeframe_states = (0..40).map(|i| confirmed(i, if i % 2 == 0 {1} else {-1}, 9.0 + i as f64 * 0.05, at)).collect();
+    reference.refresh_unified_level_tracks(Utc.timestamp_millis_opt(at + 3000).unwrap(), 10.0);
+    let mut incremental = GenericStructureEngine::new("TEST");
+    incremental.seed_checkpoint(&reference.checkpoint());
+    for i in 0..2_000 {
+        let price = 8.9 + (i % 87) as f64 * 0.03;
+        let ts = Utc.timestamp_millis_opt(at + 4000 + i * 100).unwrap();
+        reference.update_unified_level_lifecycles_mode(ts, price, 100.0, true);
+        incremental.update_unified_level_lifecycles_mode(ts, price, 100.0, false);
+        if i % 37 == 0 {
+            // Source refresh can interleave with ordinary trades.
+            reference.refresh_unified_level_tracks(ts, price);
+            incremental.refresh_unified_level_tracks(ts, price);
+        }
+        assert_eq!(serde_json::to_value(reference.checkpoint()).unwrap(), serde_json::to_value(incremental.checkpoint()).unwrap(), "state diverged at event {i}");
+    }
+    assert!(reference.unified_tracks.iter().any(|t| t.level.role_flip_count > 0));
+}
+
+#[test]
+fn checkpoint_json_preserves_exact_structural_boundaries() {
+    let at = 1_700_000_000_000;
+    let mut engine = GenericStructureEngine::new("TEST");
+    let mut level = event_native_level(1, 1, 2.0, at);
+    // Actual boundaries found drifting by one ULP after a canonical SUGP restore.
+    level.lower = 1.9997009999999997;
+    level.upper = 2.0155039902398121;
+    engine.levels.push(level);
+    let checkpoint = engine.checkpoint();
+    let bytes = serde_json::to_vec(&checkpoint).unwrap();
+    let decoded = crate::structure_checkpoint_json::decode_checkpoint(std::str::from_utf8(&bytes).unwrap()).unwrap();
+    assert_eq!(decoded.levels[0].lower.to_bits(), checkpoint.levels[0].lower.to_bits());
+    assert_eq!(decoded.levels[0].upper.to_bits(), checkpoint.levels[0].upper.to_bits());
+    let mut restored = GenericStructureEngine::new("TEST");
+    restored.seed_checkpoint(&decoded);
+    assert_eq!(serde_json::to_value(checkpoint).unwrap(), serde_json::to_value(restored.checkpoint()).unwrap());
+}
+
+#[test]
 fn prominent_native_evidence_is_inherited_once_without_recounting_refreshes() {
     let at = 1_700_000_000_000;
     let mut engine = GenericStructureEngine::new("TEST");

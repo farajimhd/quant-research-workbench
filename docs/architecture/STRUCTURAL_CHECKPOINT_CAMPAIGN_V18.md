@@ -1,0 +1,144 @@
+# Structural checkpoint campaign v18
+
+The campaign launcher builds algorithm 18 with the `structural-prominence-v18`
+feature and runs `structure_checkpoint_campaign_v18`. Campaign protocol version
+10 is distinct from structural algorithm version 18. The old v16 executable and
+default service builds retain their existing algorithms. A service consuming
+these new checkpoints must also use algorithm 18; renaming a checkpoint set
+does not make older checkpoints compatible.
+
+The construction contract and validation evidence are in
+[STRUCTURAL_PROMINENCE_V18_VALIDATION.md](STRUCTURAL_PROMINENCE_V18_VALIDATION.md).
+Scores remain derived metadata. They do not select, construct, merge or evict
+levels. The strategy's deferred quality-gate policy is unchanged.
+
+## Priority and scope
+
+Reconstruct the existing tradable-stock universe from **2025-01-01 through
+2026-08-31 inclusive**, using canonical ClickHouse SIP events only. No old
+algorithm-16/17 checkpoint can seed this reconstruction. Preserve each ticker's
+causal event order and checkpoint certification chain.
+
+The first ten tickers below complete their requested histories before workers
+claim the remainder. Within each phase, a shared durable queue balances work;
+one ticker's history is never split across racing workers. Up to **96 worker
+processes** run after the priority barrier clears. Waiting workers inspect only
+the ten priority slots rather than scanning the whole universe on every poll.
+
+Priority is scheduling metadata, not an input to structure construction. Rank
+the August 21, 2026 **04:00–20:00 Eastern** session by reported trade dollar
+turnover. This is a liquidity proxy, not a spread/depth estimate. Use the existing
+tradable-stock universe and historical market caps **at or below $2 billion**,
+including microcaps. Observation and insertion timestamps must precede the
+session cutoff. Missing caps are excluded explicitly; no current cap is substituted.
+
+| Rank | Ticker | Session reported turnover |
+| ---: | --- | ---: |
+| 1 | JUNS | $444.82 million |
+| 2 | PURR | $404.46 million |
+| 3 | SDOT | $298.09 million |
+| 4 | ASST | $280.61 million |
+| 5 | HOWL | $273.46 million |
+| 6 | RFAI | $160.52 million |
+| 7 | FBRX | $156.53 million |
+| 8 | VZLA | $155.56 million |
+| 9 | FCEL | $150.21 million |
+| 10 | FLO | $149.98 million |
+
+The report ranked 3,497 eligible tickers; 388 lacked usable historical caps and
+2,068 exceeded the cap. Full-session ranking does not require positive turnover
+in every sub-session. Reported extended-hours trade conditions are included.
+Market-cap observations in the selected rows are dated August 18, 2026.
+
+The immutable report includes source revision, historical reference hash,
+per-session turnover, caps, listing identities and exclusions. The launcher
+pins a copy and SHA-256 in the campaign runtime. Changing the priority report,
+source commit, executable hash or algorithm requires a new campaign identity.
+
+## Build and run on the workstation
+
+Deploy committed laptop source first. From the workstation repository root,
+with its Python environment activated:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE = '1'
+$env:DOTENV_PATHS = 'D:\TradingML\secrets\.env'
+$env:CARGO_TARGET_DIR = 'D:\TradingML\runtimes\cargo-target\quant-research-workbench'
+cargo build --release --manifest-path services/qmd_history_gateway/Cargo.toml --features structural-prominence-v18 --bin structure_liquidity_priority
+New-Item -ItemType Directory -Force D:\TradingML\runtimes\structure-validation\prominence-v18 | Out-Null
+& "$env:CARGO_TARGET_DIR\release\structure_liquidity_priority.exe" 2026-08-21 D:\TradingML\runtimes\structure-validation\prominence-v18\liquidity-smallcap-20260821.json 2000000000
+```
+
+Run the read-only storage/identity preflight before launch:
+
+```powershell
+python scripts/run_structure_checkpoint_campaign.py --preflight-only --start-date 2025-01-01 --end-date 2026-08-31 --checkpoint-set-id canonical-tradable-20250101-20260831-prominence-v18-v1 --runtime-dir D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v18
+```
+
+Then launch the requested scope:
+
+```powershell
+python scripts/run_structure_checkpoint_campaign.py --start-date 2025-01-01 --end-date 2026-08-31 --workers 96 --process-workers 96 --checkpoint-set-id canonical-tradable-20250101-20260831-prominence-v18-v1 --runtime-dir D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v18 --priority-ranking D:\TradingML\runtimes\structure-validation\prominence-v18\liquidity-smallcap-20260821.json
+```
+
+Default launches ask Cargo to validate/build the current source rather than
+silently choosing an old runtime binary. `--binary` and `--no-build` are explicit
+prebuilt-executable choices. For a deployment without Git metadata, additionally
+supply `--source-commit` with the exact committed laptop revision. Never invent
+that revision. Each runtime pins its executable hash and source revision.
+
+The PowerShell wrapper also defaults to 96 workers. The Python commands specify
+96 explicitly and avoid depending on a particular user's Python installation.
+
+## Resource use, progress and stopping
+
+Historical v18 HTTP reads default to one ClickHouse query thread and 1 GiB per
+query. Explicit bounded SQL settings for small shared coverage/ranking queries
+remain effective. These are query budgets, not a whole-process memory guarantee.
+Event batches and retry concurrency remain bounded. Monitor host memory, SSD
+space, query failures and event throughput before increasing any other budget.
+
+On September 5, ClickHouse reported 128 logical CPU frequency entries, about
+251 GiB total memory and 5.7 TB free on `live_market_ssd`. This is the ClickHouse
+host's capacity snapshot, not a measured 96-worker campaign benchmark. Windows
+remote process management returned access denied from the laptop session.
+
+The dashboard retains active stages, queued/completed/certified/failed units,
+worker failures, restarts and logs. A fatal worker error stops peers, including
+workers waiting at the priority barrier. Recoverable transport failures retain
+bounded retries. A stopped run is not reported as sealed.
+
+```powershell
+python scripts/run_structure_checkpoint_campaign.py --stop-existing fast --checkpoint-set-id canonical-tradable-20250101-20260831-prominence-v18-v1 --runtime-dir D:\TradingML\runtimes\qmd_gateway\structure-checkpoint-campaign-v18
+```
+
+Stop control does not require a working/current executable. Fast stop is checked
+at bounded ordinal-chunk boundaries; graceful stop finishes the current unit.
+Restart the same immutable command to revalidate and reuse compatible certified
+prefixes. Algorithm changes require a fresh set rather than a recovery shortcut.
+
+## Storage and rollout boundary
+
+Checkpoint tables and actual active parts must be on `live_market_ssd`.
+`default` is backup-only. Preflight fails rather than falling back to it.
+The interrupted old migration contained originals plus an SSD staging copy;
+resuming that old journal after a reset is invalid because table UUIDs change.
+
+Old checkpoint deletion is separate from ordinary campaign launch. A reset
+must identify exact tables/UUIDs, verify no structural queries, queued inserts,
+mutations or moves, journal each exchange/drop, and preserve canonical SIP and
+unrelated structural state/events/focus data. Other tasks' validation databases
+are outside the production checkpoint reset.
+
+The September 5 reset completed for `q_live.qmd_structure_daily_checkpoint_v2`,
+`qmd_structure_daily_checkpoint_v1` and `qmd_structure_checkpoint_set_registry_v1`.
+All three were recreated empty on `live_market_ssd`. The abandoned
+`qmd_structure_daily_checkpoint_v2_ssd_a2f043ab453b` copy was deleted. Original
+UUIDs, DDL, row counts and each completed exchange/drop are recorded in
+`D:\TradingML\runtimes\structure-validation\checkpoint-reset-20260905\reset.json`.
+The actual launcher preflight passed after the reset. No structural queries,
+queued inserts, mutations, moves or merges remained at the final reset check.
+
+Bounded JUNS/SUGP validation is not proof of all-ticker, twenty-month capacity
+or a guarantee of no bugs. The first ten histories provide the next acceptance
+stage. No strategy orders are submitted by this campaign.

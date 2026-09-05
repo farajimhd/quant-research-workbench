@@ -57,7 +57,7 @@ The probe records source revision, actual event count, elapsed processing time,
 serialized checkpoint size, causal snapshots and source-to-level construction
 decisions. It compares uninterrupted processing against JSON checkpoint restore
 followed by the same remaining events. Resource limits are two million events,
-seven calendar days, fifteen processing minutes and a 256 MiB serialized
+45 calendar days, fifteen processing minutes and a 256 MiB serialized
 checkpoint. Exceeding a limit fails the probe instead of silently dropping data.
 
 Initial targeted windows cover JUNS through 2026-08-21 07:17:40 ET and SUGP
@@ -99,3 +99,27 @@ Detailed snapshots, source-to-level audits and source revisions are in
 `D:\TradingML\runtimes\structure-validation\prominence-v18\JUNS-final.json`
 and `SUGP-final.json` in the same directory. No production checkpoint writes,
 service restart, strategy execution, or full-session trading backtest occurred.
+
+## Extended validation and campaign preparation
+
+The probe now uses the production `structure_checkpoint_json` decoder and
+compares the full checkpoint state, not just published snapshots. An earlier
+diagnostic mismatch came from the probe bypassing that exact decoder; global
+serde float behavior was not changed, preserving existing certificate semantics.
+
+| Ticker | Fresh window (UTC) | Events | Elapsed | Checkpoint bytes | Full resume parity |
+| --- | --- | ---: | ---: | ---: | --- |
+| SUGP | Aug 17 08:00 to Aug 22 00:00 | 777,920 | 241.892 s | 14,121,046 | Exact |
+| JUNS | Jul 20 08:00 to Aug 21 11:18 | 777,509 | 476.210 s | 22,545,692 | Exact |
+
+SUGP's earlier full-state probe took 524.390 seconds on the same source
+revision. Its final snapshots and construction audit match the optimized
+probe exactly. The improvement comes from indexing retained source identities
+during merges and avoiding rebuilding unchanged source aggregates on every
+trade. Lifecycle updates and consolidation still run with their original
+ordering; a differential test covers repeated crossings and role flips.
+
+Reports are `SUGP-full-optimized.json` and `JUNS-month-optimized.json` under
+the validation runtime directory above. The campaign preparation and 96-worker
+commands are documented in
+[STRUCTURAL_CHECKPOINT_CAMPAIGN_V18.md](STRUCTURAL_CHECKPOINT_CAMPAIGN_V18.md).

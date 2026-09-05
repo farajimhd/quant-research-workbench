@@ -7,6 +7,7 @@ import time
 import pytest
 
 from scripts.run_structure_checkpoint_campaign import (
+    apply_priority_ranking,
     _DetachedProcessView,
     aggregate_status,
     archive_previous_attempt_statuses,
@@ -22,6 +23,89 @@ from scripts.run_structure_checkpoint_campaign import (
     validate_process_worker_count,
     worker_process_creationflags,
 )
+
+
+def test_priority_report_pins_exact_order_and_rejects_ambiguous_scope(tmp_path):
+    tickers = [f"T{i}" for i in range(10)]
+    report = dict(schema_version=1, metric="canonical_reported_trade_dollar_volume",
+                  session_date="2026-08-21", timezone="America/New_York",
+                  session_start="04:00", session_end_exclusive="20:00", priority_tickers=tickers)
+    path = tmp_path / "ranking.json"
+    path.write_text(json.dumps(report), encoding="utf-8")
+    result = apply_priority_ranking(["--checkpoint-set-id", "fresh"], path)
+    assert result[3::2] == tickers
+    report["session_start"] = "09:30"
+    path.write_text(json.dumps(report), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="full-session"):
+        apply_priority_ranking([], path)
+
+
+def test_recovery_rejects_old_algorithm_before_binding_source(tmp_path):
+    source = tmp_path / "old"
+    source.mkdir()
+    (source / "campaign-manifest.json").write_text(json.dumps({
+        "algorithm_version": 16, "checkpoint_set_id": "old", "start_date": "2025-01-01", "end_date": "2026-08-31"
+    }), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="different structural algorithm"):
+        prepare_recovery_resume(["--runtime-dir", str(tmp_path / "new"), "--checkpoint-set-id", "new"], str(source))
+
+
+def test_stop_does_not_require_a_build_or_a_compatible_binary(tmp_path, monkeypatch):
+    from scripts import run_structure_checkpoint_campaign as module
+    monkeypatch.setattr(module, "resolve_binary", lambda *a, **k: pytest.fail("stop tried to resolve binary"))
+    (tmp_path / "campaign-manifest.json").write_text(json.dumps({"checkpoint_set_id": "old"}), encoding="utf-8")
+    assert module.main(["--stop-existing", "fast", "--runtime-dir", str(tmp_path), "--checkpoint-set-id", "old"]) == 0
+
+
+def test_default_launch_builds_current_source_instead_of_selecting_stale_binary(tmp_path, monkeypatch):
+    from scripts import run_structure_checkpoint_campaign as campaign
+    old = tmp_path / "old.exe"
+    old.write_bytes(b"old")
+    built = tmp_path / "target" / "release" / campaign.BUILD_BINARY_NAME
+    built.parent.mkdir(parents=True)
+    calls = []
+    monkeypatch.setattr(campaign, "binary_candidates", lambda *a: (old,))
+    monkeypatch.setattr(campaign, "resolve_cargo", lambda *a: "cargo")
+    def build(args, **kwargs):
+        calls.append(args)
+        built.write_bytes(b"fresh")
+    monkeypatch.setattr(campaign.subprocess, "run", build)
+    assert campaign.resolve_binary(None, True, {"CARGO_TARGET_DIR": str(tmp_path / "target")}) == built.resolve()
+    assert len(calls) == 1 and "structural-prominence-v18" in calls[0]
+    assert campaign.resolve_binary(None, False, {}) == old.resolve()
+
+
+def test_supervisor_stops_waiting_workers_after_unrecoverable_exit(tmp_path, monkeypatch):
+    from scripts import run_structure_checkpoint_campaign as campaign
+    from types import SimpleNamespace
+    source = tmp_path / "source"
+    (source / "planner").mkdir(parents=True)
+    plans = [{"ticker": ticker, "sessions": ["2025-01-02"], "estimated_events": 5} for ticker in ["A", "B"]]
+    (source / "planner" / "campaign-plan.json").write_text(json.dumps(plans))
+    manifest = {"checkpoint_set_id": "source", "universe_hash": hashlib.sha256(b"A\nB\n").hexdigest()}
+    (source / "campaign-manifest.json").write_text(json.dumps(manifest))
+    target = tmp_path / "target"
+    registrations, workers = [], []
+    def run(args, **kwargs):
+        registrations.append(args[args.index("--register-set-state") + 1])
+        return SimpleNamespace(returncode=0)
+    class Worker:
+        def __init__(self, args, **kwargs):
+            self.returncode = 1 if not workers else None
+            self.control = Path(args[args.index("--campaign-control-path") + 1])
+            workers.append(self)
+            kwargs["stdout"].write("Error: checkpoint identity mismatch\n" if self.returncode else "Waiting for priority certification\n")
+            kwargs["stdout"].flush()
+        def poll(self):
+            if self.returncode is None and self.control.exists(): self.returncode = 0
+            return self.returncode
+        def wait(self): return self.poll()
+    monkeypatch.setattr(campaign.subprocess, "run", run)
+    monkeypatch.setattr(campaign.subprocess, "Popen", Worker)
+    result = campaign.run_process_campaign(Path("binary"), "abc", ["--checkpoint-set-id", "target", "--runtime-dir", str(target), "--start-date", "2025-01-01", "--end-date", "2025-01-02"], 2, {}, source, manifest, "a" * 40)
+    assert result == 1 and registrations == ["building", "failed"]
+    assert len(workers) == 2 and all(worker.poll() is not None for worker in workers)
+    assert json.loads((target / "campaign-status.json").read_text())["status"] == "failed"
 
 
 def test_powershell_launcher_resolves_python_from_the_active_host() -> None:
@@ -103,7 +187,7 @@ def test_prebuilt_runtime_binary_is_preferred_without_cargo() -> None:
     candidates = binary_candidates(None, {"TRADING_RUNTIME_ROOT": r"E:\TradingRuntime"})
 
     assert candidates[0] == Path(r"E:\TradingRuntime") / "bin" / candidates[0].name
-    assert candidates[0].name == "structure_checkpoint_campaign_v9.exe"
+    assert candidates[0].name == "structure_checkpoint_campaign_v18.exe"
 
 
 def test_executable_hash_is_reported_from_exact_file_bytes(tmp_path: Path) -> None:
@@ -246,11 +330,11 @@ def test_detached_process_view_uses_durable_worker_state() -> None:
     assert _DetachedProcessView({"status": "failed"}).poll() == 1
 
 
-def test_launcher_accepts_eighty_bounded_worker_processes() -> None:
+def test_launcher_accepts_ninety_six_bounded_worker_processes() -> None:
     validate_process_worker_count(1)
-    validate_process_worker_count(80)
-    with pytest.raises(RuntimeError, match="between 1 and 80"):
-        validate_process_worker_count(81)
+    validate_process_worker_count(96)
+    with pytest.raises(RuntimeError, match="between 1 and 96"):
+        validate_process_worker_count(97)
 
 
 def test_native_workers_are_windowless_on_windows_only() -> None:
@@ -291,6 +375,8 @@ def test_recovery_resume_binds_source_identity_and_prioritizes_strategy_tickers(
         "start_date": "2025-01-01",
         "end_date": "2026-08-31",
         "universe_hash": universe_hash,
+        "algorithm_version": 18,
+        "priority_tickers": ["SUGP", "JUNS"],
     }
     (source / "campaign-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     (source / "planner" / "campaign-plan.json").write_text(

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Run the immutable algorithm-16 campaign with a shared process work queue.
+"""Run the immutable algorithm-18 campaign with a shared process work queue.
 
-The explicit historical-campaign-v16 build feature preserves existing certified
-books; default live/history service builds continue to use their current engine.
+The explicit structural-prominence-v18 build leaves old campaign executables
+and default live/history service algorithms unchanged.
 """
 
 from __future__ import annotations
@@ -26,16 +26,43 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = REPO_ROOT / "services" / "qmd_history_gateway" / "Cargo.toml"
-BUILD_BINARY_NAME = "structure_checkpoint_campaign.exe" if os.name == "nt" else "structure_checkpoint_campaign"
+BUILD_BINARY_NAME = "structure_checkpoint_campaign_v18.exe" if os.name == "nt" else "structure_checkpoint_campaign_v18"
 RUNTIME_BINARY_NAME = (
-    "structure_checkpoint_campaign_v9.exe" if os.name == "nt" else "structure_checkpoint_campaign_v9"
+    "structure_checkpoint_campaign_v18.exe" if os.name == "nt" else "structure_checkpoint_campaign_v18"
 )
-MAX_PROCESS_WORKERS = 80
-RECOVERY_PRIORITY_TICKERS = ("SUGP", "JUNS")
+MAX_PROCESS_WORKERS = 96
+ALGORITHM_VERSION = 18
+CAMPAIGN_VERSION = 10
 HOLD_SCORE_REVISION = "beta22-wilson90-v1"
 RELATIVE_SCORE_REVISION = "frozen-prior-session-role-ecdf-midrank-v1"
 CERTIFICATION_SCHEMA_VERSION = 3
 STRUCTURE_INPUT_POLICY = "historical-sip-condition-v1"
+
+
+def apply_priority_ranking(args: list[str], path: Path) -> list[str]:
+    report = json.loads(path.read_text(encoding="utf-8"))
+    tickers = report.get("priority_tickers", [])
+    if (report.get("schema_version") != 1
+        or report.get("metric") != "canonical_reported_trade_dollar_volume"
+        or report.get("session_start") != "04:00"
+        or report.get("session_end_exclusive") != "20:00"
+        or report.get("timezone") != "America/New_York"
+        or not isinstance(tickers, list) or len(tickers) != 10
+        or any(not isinstance(t, str) or not re.fullmatch(r"[A-Z0-9._-]{1,32}", t) for t in tickers)
+        or len(set(tickers)) != 10):
+        raise RuntimeError("Invalid canonical ten-ticker full-session priority report")
+    if "--priority-ticker" in args:
+        raise RuntimeError("Use either --priority-ranking or explicit --priority-ticker options")
+    if runtime := option_value(args, "--runtime-dir"):
+        target = Path(runtime) / "priority-ranking.json"
+        if target.exists() and json.loads(target.read_text(encoding="utf-8")) != report:
+            raise RuntimeError("Runtime already pins a different priority report")
+        atomic_json(target, report)
+    result = list(args)
+    for ticker in tickers:
+        result += ["--priority-ticker", ticker]
+    print(f"Priority session {report['session_date']} (04:00-20:00 ET): {', '.join(tickers)}", flush=True)
+    return result
 
 
 def sha256_file(path: Path) -> str:
@@ -110,11 +137,13 @@ def resolve_binary(
     force_rebuild: bool = False,
 ) -> Path:
     candidates = binary_candidates(explicit, environ)
-    if not force_rebuild:
+    # Default launches ask Cargo to validate/rebuild the current source instead
+    # of silently preferring an older executable in runtimes/bin.
+    if not force_rebuild and (not build or explicit):
         for candidate in candidates:
             if candidate.is_file():
                 return candidate.resolve()
-    elif explicit:
+    elif force_rebuild and explicit:
         raise RuntimeError("--rebuild cannot be combined with --binary")
     if not build:
         raise RuntimeError("campaign binary was not found; searched:\n  " + "\n  ".join(map(str, candidates)))
@@ -122,10 +151,10 @@ def resolve_binary(
     if cargo is None:
         raise RuntimeError(
             "Cargo and the campaign binary are missing. Copy the prebuilt binary to "
-            r"D:\TradingML\runtimes\bin\structure_checkpoint_campaign_v9.exe."
+            r"D:\TradingML\runtimes\bin\structure_checkpoint_campaign_v18.exe."
         )
     subprocess.run(
-        [cargo, "build", "--release", "--features", "historical-campaign-v16", "--bin", "structure_checkpoint_campaign", "--manifest-path", str(MANIFEST)],
+        [cargo, "build", "--release", "--features", "structural-prominence-v18", "--bin", "structure_checkpoint_campaign_v18", "--manifest-path", str(MANIFEST)],
         cwd=REPO_ROOT,
         env=environ,
         check=True,
@@ -143,6 +172,7 @@ def resolve_binary(
 def parse_launcher_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--binary")
+    parser.add_argument("--priority-ranking", help="Frozen canonical full-session liquidity report")
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--rebuild", action="store_true")
     parser.add_argument("--launcher-help", action="store_true")
@@ -213,6 +243,8 @@ def prepare_recovery_resume(
     source_manifest_path = source_runtime / "campaign-manifest.json"
     source_plan_path = source_runtime / "planner" / "campaign-plan.json"
     source_manifest = _required_manifest(source_manifest_path)
+    if source_manifest.get("algorithm_version") != ALGORITHM_VERSION:
+        raise RuntimeError("Cannot recover a different structural algorithm; reconstruct in a new set from canonical events")
     if not source_plan_path.is_file():
         raise RuntimeError(f"source campaign plan is unavailable: {source_plan_path}")
     source_status = read_status(source_runtime / "campaign-status.json")
@@ -247,8 +279,8 @@ def prepare_recovery_resume(
             index += 1
     result = remove_options(result, {"--priority-ticker"}, set())
     priorities = [
-        *RECOVERY_PRIORITY_TICKERS,
-        *(ticker for ticker in existing_priorities if ticker not in RECOVERY_PRIORITY_TICKERS),
+        *source_manifest.get("priority_tickers", []),
+        *(ticker for ticker in existing_priorities if ticker not in source_manifest.get("priority_tickers", [])),
     ]
     # Native planning is bypassed for recovery, but retain the priority identity
     # in worker commands and durable supervisor evidence.
@@ -275,7 +307,7 @@ def recovery_plan(
     ).hexdigest()
     if source_hash != source_manifest.get("universe_hash"):
         raise RuntimeError("source campaign plan does not match its immutable universe hash")
-    priorities = {ticker: index for index, ticker in enumerate(RECOVERY_PRIORITY_TICKERS)}
+    priorities = {ticker: index for index, ticker in enumerate(source_manifest.get("priority_tickers", []))}
     indexed = list(enumerate(plans))
     indexed.sort(
         key=lambda item: (
@@ -832,7 +864,10 @@ def run_process_campaign(
         "executable_sha256": binary_sha256,
         "certification_schema_version": CERTIFICATION_SCHEMA_VERSION,
         "structure_input_policy": STRUCTURE_INPUT_POLICY,
-        "algorithm_version": 16,
+        "algorithm_version": ALGORITHM_VERSION,
+        "campaign_version": CAMPAIGN_VERSION,
+        "priority_tickers": [campaign_args[i + 1] for i, arg in enumerate(campaign_args[:-1]) if arg == "--priority-ticker"],
+        "priority_report_sha256": sha256_file(runtime_dir / "priority-ranking.json") if (runtime_dir / "priority-ranking.json").is_file() else None,
         "recovery_fallback_checkpoint_set_ids": [campaign_args[i + 1] for i, arg in enumerate(campaign_args[:-1]) if arg == "--recovery-fallback-checkpoint-set-id"],
     }
     if recovery_source_runtime is not None:
@@ -894,6 +929,10 @@ def run_process_campaign(
         "archive execution-clock coverage is not required.",
         flush=True,
     )
+    planned_tickers = [str(p["ticker"]) for p in plans]
+    priorities = requested_identity["priority_tickers"]
+    if planned_tickers[:len(priorities)] != priorities:
+        raise RuntimeError("Campaign plan must start with every requested priority ticker in ranking order")
     shards = prepare_shards(plans, workers)
     universe_hash = hashlib.sha256(
         "".join(f"{plan['ticker']}\n" for plan in plans).encode("utf-8")
@@ -955,6 +994,7 @@ def run_process_campaign(
     work_dir = runtime_dir / "work-queues" / uuid.uuid4().hex
     pending = work_dir / "pending"
     pending.mkdir(parents=True)
+    atomic_json(work_dir / "priority-tickers.json", requested_identity["priority_tickers"])
     for index, plan in enumerate(plans):
         atomic_json(pending / f"{index:08d}.json", plan)
     processes, logs, status_paths, commands = [], [], [], []
@@ -1015,6 +1055,9 @@ def run_process_campaign(
         while True:
             control = read_status(control_path)
             stopping = bool(control and control.get("action") in {"stop_fast", "stop_graceful"})
+            if (work_dir / "failure.txt").exists() and not stopping:
+                request_campaign_stop(runtime_dir, set_id, "fast")
+                stopping = True
             for index, process in enumerate(processes):
                 if not stopping and process.poll() not in (None, 0) and restarts[index] < 2 and retryable_worker_exit(worker_log_tail(worker_dirs[index] / "worker.log")):
                     restarts[index] += 1
@@ -1026,6 +1069,12 @@ def run_process_campaign(
                     shutil.move(str(worker_dirs[index] / "worker.log"), str(archive / "worker.log"))
                     logs[index] = (worker_dirs[index] / "worker.log").open("a", encoding="utf-8")
                     processes[index] = subprocess.Popen(commands[index], env=environ, stdout=logs[index], stderr=subprocess.STDOUT, text=True, creationflags=worker_process_creationflags())
+                elif not stopping and process.poll() not in (None, 0):
+                    (work_dir / "failure.txt").write_text(
+                        f"Worker {index + 1} exited with code {process.returncode}; inspect its worker.log", encoding="utf-8"
+                    )
+                    request_campaign_stop(runtime_dir, set_id, "fast")
+                    stopping = True
             if not any(process.poll() is None for process in processes):
                 break
             status = aggregate_status(status_paths, plans, started, rates, processes)
@@ -1080,6 +1129,9 @@ def run_process_campaign(
         set_state = "interrupted" if interrupted else (
             "sealed" if status_is_fully_certified(final) and not final["worker_processes_failed"] else "failed"
         )
+        if (work_dir / "failure.txt").exists():
+            set_state = "failed"
+            final["status"] = "failed"
         set_event_count = (
             int(final["total_estimated_events"])
             if set_state == "sealed"
@@ -1098,7 +1150,7 @@ def run_process_campaign(
             print(render_plain(final), flush=True)
         for log in logs:
             log.close()
-    if interrupted:
+    if interrupted and set_state != "failed":
         return 130
     return 1 if registry_failed or set_state != "sealed" else 0
 
@@ -1109,10 +1161,19 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "Launcher options: --binary PATH, --no-build, --monitor-existing, "
             "--rebuild, --stop-existing {graceful,fast}, --foreground-supervisor, "
-            "--resume-from-runtime PATH, --source-commit COMMIT, "
+            "--resume-from-runtime PATH, --source-commit COMMIT, --priority-ranking JSON, "
             f"--process-workers 1..{MAX_PROCESS_WORKERS}"
         )
-        print("All other options are forwarded to structure-checkpoint-campaign v9 (algorithm 16).")
+        print("All other options are forwarded to structure-checkpoint-campaign v10 (algorithm 18).")
+        return 0
+    if launcher.stop_existing:
+        runtime_value = option_value(campaign_args, "--runtime-dir")
+        set_id = option_value(campaign_args, "--checkpoint-set-id")
+        if not runtime_value or not set_id:
+            print("stop mode requires --runtime-dir and --checkpoint-set-id", file=sys.stderr)
+            return 1
+        path = request_campaign_stop(Path(runtime_value), set_id, launcher.stop_existing)
+        print(f"Published {launcher.stop_existing} stop request: {path}", flush=True)
         return 0
     environ = dict(os.environ)
     environ["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -1124,6 +1185,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         recovery_source_runtime = None
         recovery_source_manifest = None
+        if launcher.priority_ranking:
+            campaign_args = apply_priority_ranking(campaign_args, Path(launcher.priority_ranking))
         if launcher.resume_from_runtime:
             campaign_args, recovery_source_runtime, recovery_source_manifest = (
                 prepare_recovery_resume(campaign_args, launcher.resume_from_runtime)
@@ -1143,24 +1206,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         build = subprocess.run([str(binary), "--campaign-build-info"], check=True, capture_output=True, text=True)
         build_info = json.loads(build.stdout)
-        if build_info.get("algorithm_version") != 16 or build_info.get("campaign_version") != 9:
-            raise RuntimeError("This campaign requires the version-9 algorithm-16 executable; refusing a different engine")
+        if build_info.get("algorithm_version") != ALGORITHM_VERSION or build_info.get("campaign_version") != CAMPAIGN_VERSION:
+            raise RuntimeError("This campaign requires the version-10 algorithm-18 executable; refusing a different engine")
         binary_sha256 = sha256_file(binary)
         print(f"Campaign executable: {binary} (SHA-256 {binary_sha256})", flush=True)
         print(
-            f"Checkpoint migration: {HOLD_SCORE_REVISION} derived evidence is "
-            f"repaired from raw counts and {RELATIVE_SCORE_REVISION} baselines are "
-            "rebuilt across reused daily checkpoints; no purge required.",
+            "Algorithm 18: fresh canonical construction required; only compatible "
+            "v18 checkpoints may resume. Old sets remain immutable.",
             flush=True,
         )
-        if launcher.stop_existing:
-            runtime_value = option_value(campaign_args, "--runtime-dir")
-            set_id = option_value(campaign_args, "--checkpoint-set-id")
-            if not runtime_value or not set_id:
-                raise RuntimeError("stop mode requires --runtime-dir and --checkpoint-set-id")
-            path = request_campaign_stop(Path(runtime_value), set_id, launcher.stop_existing)
-            print(f"Published {launcher.stop_existing} stop request: {path}", flush=True)
-            return 0
         if launcher.monitor_existing:
             return monitor_existing_campaign(binary, binary_sha256, campaign_args, environ)
         workers = (
@@ -1169,7 +1223,7 @@ def main(argv: list[str] | None = None) -> int:
             else int(option_value(campaign_args, "--workers") or "1")
         )
         validate_process_worker_count(workers)
-        if workers > 1 and "--plan-only" not in campaign_args:
+        if "--plan-only" not in campaign_args and "--preflight-only" not in campaign_args:
             if not launcher.supervisor_child and not launcher.foreground_supervisor:
                 return launch_detached_supervisor(
                     binary,

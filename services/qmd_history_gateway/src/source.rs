@@ -1095,6 +1095,75 @@ impl HistoricalEventSource {
             .collect()
     }
 
+    /// Exact reported turnover for scheduling only; do not substitute daily
+    /// close times volume or a current reference population for this session.
+    pub async fn structure_session_liquidity(&self, day: NaiveDate, max_market_cap: Option<f64>) -> Result<Value, String> {
+        if max_market_cap.is_some_and(|v| !v.is_finite() || v <= 0.0) { return Err("market-cap maximum must be finite and positive".into()); }
+        let start = New_York.from_local_datetime(&day.and_hms_opt(4, 0, 0).unwrap()).single().ok_or("invalid session start")?.with_timezone(&Utc);
+        let end = New_York.from_local_datetime(&day.and_hms_opt(20, 0, 0).unwrap()).single().ok_or("invalid session end")?.with_timezone(&Utc);
+        let window = EventWindow { start, end, tickers: vec![] };
+        let before = self.structure_source_revision(&window).await?;
+        if !before.request_complete { return Err("Priority session canonical coverage is incomplete".into()); }
+        let tradable = self.tradable_tickers(day).await?.into_iter().collect::<std::collections::HashSet<_>>();
+        // Match the shared historical reference projection's availability
+        // semantics: both observation and insertion must precede the cutoff.
+        let cap_sql = format!(r#"WITH fromUnixTimestamp64Micro({cutoff}) AS cutoff
+            SELECT upper(u.ticker) AS ticker, u.symbol_id AS symbol_id,
+              m.market_cap AS market_cap, toString(m.observed_at) AS market_cap_observed_at
+            FROM `{db}`.feature_tradable_universe_v1 AS u FINAL
+            INNER JOIN (SELECT symbol_id,
+              argMax(market.market_cap, tuple(market.observed_at_utc, market.inserted_at)) AS market_cap,
+              argMaxIf(market.observed_at_utc, tuple(market.observed_at_utc, market.inserted_at), isNotNull(market.market_cap)) AS observed_at
+              FROM `{db}`.market_security_market_snapshot_v1 AS market FINAL
+              WHERE observed_at_utc <= cutoff AND inserted_at <= cutoff GROUP BY symbol_id) AS m ON m.symbol_id=u.symbol_id
+            WHERE u.universe_date=(SELECT max(universe_date) FROM `{db}`.feature_tradable_universe_v1 FINAL WHERE universe_date <= toDate('{day}') AND inserted_at <= cutoff)
+              AND u.inserted_at <= cutoff AND u.is_tradable=1
+            ORDER BY ticker, symbol_id FORMAT JSONEachRow"#, cutoff=end.timestamp_micros(), db=self.config.recent_database);
+        let cap_text = if max_market_cap.is_some() { self.query_bounded(&cap_sql, 60).await? } else { String::new() };
+        let mut caps = BTreeMap::new();
+        for line in cap_text.lines().filter(|l| !l.trim().is_empty()) {
+            let row: Value = serde_json::from_str(line).map_err(|e| format!("invalid market-cap row: {e}"))?;
+            let ticker = row["ticker"].as_str().ok_or("market-cap ticker missing")?.to_string();
+            if caps.insert(ticker.clone(), row).is_some() { return Err(format!("ambiguous historical market-cap identity for {ticker}")); }
+        }
+        let sql = format!(r#"SELECT ticker,
+            sum(dollars) AS dollar_volume, sum(shares) AS shares, count() AS trades,
+            sumIf(dollars, local_time < '09:30:00') AS premarket_dollars,
+            sumIf(dollars, local_time >= '09:30:00' AND local_time < '16:00:00') AS regular_dollars,
+            sumIf(dollars, local_time >= '16:00:00') AS afterhours_dollars
+            FROM (SELECT upper(ticker) AS ticker, toFloat64(size_primary) AS shares,
+              toFloat64(price_primary_int) / if(bitAnd(event_meta, 2) != 0, 10000.0, 100.0) * shares AS dollars,
+              formatDateTime(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), '%H:%i:%S', 'America/New_York') AS local_time
+              FROM `{database}`.`events_{year}`
+              PREWHERE event_date = toDate('{day}') AND bitAnd(event_meta, 1) = 1
+              WHERE sip_timestamp_us >= {start} AND sip_timestamp_us < {end}
+                AND price_primary_int > 0 AND size_primary > 0 AND isFinite(size_primary))
+            GROUP BY ticker ORDER BY dollar_volume DESC, ticker
+            SETTINGS max_threads=2, max_memory_usage=2147483648 FORMAT JSONEachRow"#,
+            database=self.config.clickhouse_database, year=day.year(), start=start.timestamp_micros(), end=end.timestamp_micros());
+        let mut rows = Vec::new();
+        let mut excluded_missing_cap = 0_u64;
+        let mut excluded_above_cap = 0_u64;
+        for line in self.query_bounded(&sql, 300).await?.lines().filter(|l| !l.trim().is_empty()) {
+            let mut row: Value = serde_json::from_str(line).map_err(|e| format!("invalid liquidity row: {e}"))?;
+            let ticker = row["ticker"].as_str().ok_or("liquidity ticker missing")?;
+            if !tradable.contains(ticker) { continue; }
+            if let Some(maximum) = max_market_cap {
+                let Some(cap_row) = caps.get(ticker).filter(|r| r["market_cap"].as_f64().is_some_and(|v| v.is_finite() && v > 0.0)) else { excluded_missing_cap += 1; continue; };
+                if cap_row["market_cap"].as_f64().unwrap() > maximum { excluded_above_cap += 1; continue; }
+                for field in ["symbol_id", "market_cap", "market_cap_observed_at"] { row[field] = cap_row[field].clone(); }
+            }
+            rows.push(row);
+        }
+        if self.structure_source_revision(&window).await?.token != before.token {
+            return Err("Canonical priority source changed during ranking".into());
+        }
+        if max_market_cap.is_some() && self.query_bounded(&cap_sql, 60).await? != cap_text { return Err("Historical market-cap reference changed during ranking".into()); }
+        Ok(serde_json::json!({"rows":rows,"source_revision":before,"max_market_cap":max_market_cap,
+            "market_cap_as_of":end,"reference_sha256":format!("{:x}", Sha256::digest(cap_text.as_bytes())),
+            "excluded_missing_cap":excluded_missing_cap,"excluded_above_cap":excluded_above_cap}))
+    }
+
     /// Return the point-in-time tradable universe for a historical session.
     /// The reference snapshot is the only universe authority; archive
     /// presence alone does not make a symbol tradable.
@@ -2222,6 +2291,9 @@ impl HistoricalEventSource {
             .header("Content-Type", "text/plain; charset=utf-8")
             .header("X-ClickHouse-User", &self.config.clickhouse_user)
             .body(sql);
+        if cfg!(feature = "structural-prominence-v18") {
+            request = request.query(&[("max_threads", "1"), ("max_memory_usage", "1073741824")]);
+        }
         if !self.config.clickhouse_password.is_empty() {
             request = request.header("X-ClickHouse-Key", &self.config.clickhouse_password);
         }
@@ -3415,6 +3487,9 @@ impl HistoricalEventSource {
             .header("Content-Type", "text/plain; charset=utf-8")
             .header("X-ClickHouse-User", &self.config.clickhouse_user)
             .body(sql.to_string());
+        if cfg!(feature = "structural-prominence-v18") {
+            request = request.query(&[("max_threads", "1"), ("max_memory_usage", "1073741824")]);
+        }
         if !self.config.clickhouse_password.is_empty() {
             request = request.header("X-ClickHouse-Key", &self.config.clickhouse_password);
         }
@@ -3443,6 +3518,9 @@ impl HistoricalEventSource {
             .header("Content-Type", "text/plain; charset=utf-8")
             .header("X-ClickHouse-User", &self.config.clickhouse_user)
             .body(sql.to_string());
+        if cfg!(feature = "structural-prominence-v18") {
+            request = request.query(&[("max_threads", "1"), ("max_memory_usage", "1073741824")]);
+        }
         if !self.config.clickhouse_password.is_empty() {
             request = request.header("X-ClickHouse-Key", &self.config.clickhouse_password);
         }

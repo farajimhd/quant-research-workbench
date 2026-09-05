@@ -12,6 +12,11 @@ name = "structure_checkpoint_campaign"
 path = "src/bin/structure_checkpoint_campaign.rs"
 required-features = ["historical-campaign-v16"]
 
+[[bin]]
+name = "structure_checkpoint_campaign_v18"
+path = "src/bin/structure_checkpoint_campaign_v18.rs"
+required-features = ["structural-prominence-v18"]
+
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
 chrono = { version = "0.4", features = ["serde"] }

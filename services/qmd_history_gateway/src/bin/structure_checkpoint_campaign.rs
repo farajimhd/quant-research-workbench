@@ -33,8 +33,10 @@ const INITIAL_ORDINAL_CHUNK: u64 = 250_000;
 const MIN_ORDINAL_CHUNK: u64 = 100_000;
 const MAX_ORDINAL_CHUNK: u64 = 1_000_000;
 const TARGET_FETCH_MILLIS: u128 = 3_000;
-const MAX_WORKERS: usize = 80;
+const MAX_WORKERS: usize = 96;
 const CAMPAIGN_STOP_REQUESTED: &str = "campaign stop requested";
+const CAMPAIGN_PRIORITY_WAITING: &str = "waiting for priority checkpoint certification";
+const CAMPAIGN_VERSION: u16 = if cfg!(feature = "structural-prominence-v18") { 10 } else { 9 };
 static STATUS_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug)]
@@ -62,6 +64,7 @@ struct Args {
     retry_delay_seconds: u64,
     purge_existing_checkpoints: bool,
     plan_only: bool,
+    preflight_only: bool,
     plan_file: Option<PathBuf>,
     shared_work_dir: Option<PathBuf>,
 }
@@ -529,6 +532,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut gateway_config = GatewayConfig::from_env();
     gateway_config.structure_checkpoint_set_id = args.checkpoint_set_id.clone();
     let writer = IndicatorClickHouseWriter::new(gateway_config, SharedMetrics::new());
+    if args.preflight_only {
+        writer.validate_campaign_schema().await.map_err(io_error)?;
+        writer.validate_checkpoint_set_algorithm(&args.checkpoint_set_id).await.map_err(io_error)?;
+        println!("Preflight passed: algorithm {GENERIC_STRUCTURE_ALGORITHM_VERSION}; checkpoint tables and active parts on live_market_ssd; target set compatible. No checkpoints written.");
+        return Ok(());
+    }
     let mut initialization_attempt = 0;
     loop {
         let result = if args.shard_worker {
@@ -553,6 +562,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     "campaign schema readiness failed: {error}"
                 )))
             }
+        }
+    }
+    if cfg!(feature = "structural-prominence-v18") {
+        for set in std::iter::once(&args.checkpoint_set_id)
+            .chain(args.recovery_source_checkpoint_set_id.iter())
+            .chain(args.recovery_fallback_checkpoint_set_ids.iter()) {
+            writer.validate_checkpoint_set_algorithm(set).await.map_err(io_error)?;
         }
     }
     if let Some(state) = args.register_set_state.as_deref() {
@@ -651,7 +667,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     )?;
     if args.plan_only {
         println!(
-            "Validated Campaign v9 plan: tickers={} units={} plan={}",
+            "Validated Campaign v{CAMPAIGN_VERSION} plan: tickers={} units={} plan={}",
             plans.len(),
             plans.iter().map(|plan| plan.sessions.len()).sum::<usize>(),
             plan_path.display()
@@ -752,6 +768,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     None => match (&shared_work_dir, &claimed_dir) {
                         (Some(root), Some(owner)) => match claim_work(root, owner) {
                             Ok(plan) => plan,
+                            Err(error) if error == CAMPAIGN_PRIORITY_WAITING => {
+                                progress.stage("priority", CAMPAIGN_PRIORITY_WAITING).await;
+                                tokio::time::sleep(Duration::from_millis(250)).await;
+                                continue;
+                            }
                             Err(error) => {
                                 errors.push(error);
                                 progress.request_abort();
@@ -764,6 +785,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let Some(plan) = plan else {
                     break;
                 };
+                progress.inner.lock().await.stages.remove("priority");
                 if shared_work_dir.is_some() {
                     let mut state = progress.inner.lock().await;
                     state.total_units += plan.sessions.len();
@@ -817,10 +839,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             errors.push(progress_error);
                         }
                     }
-                    if campaign_fatal_error(&error) {
+                    if cfg!(feature = "structural-prominence-v18") || campaign_fatal_error(&error) {
                         progress.request_abort();
+                        if let Some(root) = &shared_work_dir {
+                            if let Err(write_error) = fs::write(root.join("failure.txt"), &error) {
+                                errors.push(format!("cannot publish campaign failure: {write_error}"));
+                            }
+                        }
                     }
                     errors.push(error);
+                } else if let Some(root) = &shared_work_dir {
+                    if let Err(error) = fs::create_dir_all(root.join("completed")).and_then(|_| fs::write(root.join("completed").join(format!("{ticker}.done")), b"certified")) {
+                        errors.push(format!("cannot publish completed ticker: {error}"));
+                        let _ = fs::write(root.join("failure.txt"), format!("cannot publish completed ticker {ticker}: {error}"));
+                        progress.request_abort();
+                    }
                 }
                 progress.inner.lock().await.stages.remove(&ticker);
             }
@@ -1364,6 +1397,9 @@ fn checkpoint_matches_session(
 /// An OS lock serializes claims; Windows concurrent rename alone is insufficient.
 /// Claims remain on disk so a restarted process revalidates its own saved work.
 fn claim_work(root: &PathBuf, owner: &PathBuf) -> Result<Option<TickerPlan>, String> {
+    if root.join("failure.txt").exists() {
+        return Err("campaign stopped after a worker failure; inspect worker logs".into());
+    }
     let guard = fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -1374,14 +1410,30 @@ fn claim_work(root: &PathBuf, owner: &PathBuf) -> Result<Option<TickerPlan>, Str
     guard
         .lock()
         .map_err(|e| format!("cannot lock campaign queue: {e}"))?;
-    let mut paths: Vec<_> = fs::read_dir(root.join("pending"))
-        .map_err(|e| format!("cannot enumerate pending queue: {e}"))?
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|s| s == "json"))
-        .collect();
+    let priority_path = root.join("priority-tickers.json");
+    let priorities: Vec<String> = if priority_path.exists() {
+        serde_json::from_slice(&fs::read(priority_path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?
+    } else { Vec::new() };
+    let waiting = priorities.iter().any(|t| !root.join("completed").join(format!("{t}.done")).is_file());
+    // The supervisor validates and pins the priority prefix. Waiting workers
+    // need only inspect those slots, not rescan the entire universe every poll.
+    let mut paths: Vec<_> = if waiting {
+        (0..priorities.len()).map(|i| root.join("pending").join(format!("{i:08}.json")))
+            .filter(|p| p.is_file()).collect()
+    } else {
+        fs::read_dir(root.join("pending"))
+            .map_err(|e| format!("cannot enumerate pending queue: {e}"))?
+            .map(|entry| entry.map(|e| e.path()).map_err(|e| format!("cannot read queue entry: {e}")))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter().filter(|p| p.extension().is_some_and(|s| s == "json")).collect()
+    };
+    if waiting && paths.is_empty() { return Err(CAMPAIGN_PRIORITY_WAITING.into()); }
     paths.sort();
     for path in paths {
+        if waiting {
+            let plan: TickerPlan = serde_json::from_slice(&fs::read(&path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+            if !priorities.contains(&plan.ticker) { return Err(CAMPAIGN_PRIORITY_WAITING.into()); }
+        }
         let target = owner.join(path.file_name().unwrap());
         match fs::rename(&path, &target) {
             Ok(()) => {
@@ -2447,6 +2499,7 @@ fn parse_args() -> Result<Args, String> {
     let mut retry_delay_seconds = 2_u64;
     let mut purge_existing_checkpoints = false;
     let mut plan_only = false;
+    let mut preflight_only = false;
     let mut plan_file = None;
     let mut shared_work_dir = None;
     let mut checkpoint_set_id = None;
@@ -2470,7 +2523,7 @@ fn parse_args() -> Result<Args, String> {
             "--campaign-build-info" => {
                 println!(
                     "{}",
-                    serde_json::json!({"campaign_version": 9, "algorithm_version": GENERIC_STRUCTURE_ALGORITHM_VERSION, "storage_policy": "live_market_ssd"})
+                    serde_json::json!({"campaign_version": CAMPAIGN_VERSION, "algorithm_version": GENERIC_STRUCTURE_ALGORITHM_VERSION, "storage_policy": "live_market_ssd"})
                 );
                 std::process::exit(0);
             }
@@ -2517,12 +2570,13 @@ fn parse_args() -> Result<Args, String> {
             }
             "--purge-existing-checkpoints" => purge_existing_checkpoints = true,
             "--plan-only" => plan_only = true,
+            "--preflight-only" => preflight_only = true,
             "--shared-work-dir" => {
                 shared_work_dir = Some(PathBuf::from(value(&argument, &mut values)?))
             }
             "--plan-file" => plan_file = Some(PathBuf::from(value(&argument, &mut values)?)),
             "--help" | "-h" => {
-                println!("structure-checkpoint-campaign v9");
+                println!("structure-checkpoint-campaign v{CAMPAIGN_VERSION} (algorithm {GENERIC_STRUCTURE_ALGORITHM_VERSION})");
                 println!("  --start-date YYYY-MM-DD --end-date YYYY-MM-DD");
                 println!("  --checkpoint-set-id ID");
                 println!("  [--recovery-source-checkpoint-set-id ID] [--recovery-fallback-checkpoint-set-id ID ...]");
@@ -2530,7 +2584,7 @@ fn parse_args() -> Result<Args, String> {
                 println!("  [--priority-ticker SUGP] [--ticker-file PATH]");
                 println!("  [--liquidity-start-date YYYY-MM-DD --liquidity-end-date YYYY-MM-DD]");
                 println!("  [--max-retries 5] [--retry-delay-seconds 2]");
-                println!("  [--purge-existing-checkpoints] [--plan-only]");
+                println!("  [--purge-existing-checkpoints] [--plan-only] [--preflight-only]");
                 println!("  [--explicit-universe-only] [--core-index N]");
                 println!("  [--campaign-control-path PATH]  # supervisor-owned stop control");
                 std::process::exit(0);
@@ -2601,6 +2655,7 @@ fn parse_args() -> Result<Args, String> {
         retry_delay_seconds,
         purge_existing_checkpoints,
         plan_only,
+        preflight_only,
         plan_file,
         shared_work_dir,
     })
@@ -2774,13 +2829,13 @@ mod tests {
     }
 
     #[test]
-    fn campaign_accepts_up_to_eighty_workers() {
+    fn campaign_accepts_up_to_ninety_six_workers() {
         assert!(validate_worker_count(1).is_ok());
         assert!(validate_worker_count(64).is_ok());
-        assert!(validate_worker_count(80).is_ok());
+        assert!(validate_worker_count(96).is_ok());
         assert_eq!(
-            validate_worker_count(81).unwrap_err(),
-            "--workers must be between 1 and 80"
+            validate_worker_count(97).unwrap_err(),
+            "--workers must be between 1 and 96"
         );
     }
 
@@ -3010,6 +3065,26 @@ mod tests {
 #[cfg(test)]
 mod shared_queue_tests {
     use super::*;
+    #[test]
+    fn remainder_waits_for_priority_certification_and_stops_on_failure() {
+        let root = PathBuf::from("D:/TradingML/runtimes/structure-storage-tests").join(format!("priority-{}", Utc::now().timestamp_nanos_opt().unwrap()));
+        fs::create_dir_all(root.join("pending")).unwrap();
+        fs::create_dir_all(root.join("worker-1")).unwrap();
+        fs::create_dir_all(root.join("completed")).unwrap();
+        fs::write(root.join("priority-tickers.json"), br#"["FIRST"]"#).unwrap();
+        for (i, ticker) in ["FIRST", "REST"].iter().enumerate() {
+            let plan = TickerPlan { ticker: ticker.to_string(), rebuild_start: Utc::now(), sessions: vec![], estimated_events: 0 };
+            fs::write(root.join("pending").join(format!("{i:08}.json")), serde_json::to_vec(&plan).unwrap()).unwrap();
+        }
+        let owner = root.join("worker-1");
+        assert_eq!(claim_work(&root, &owner).unwrap().unwrap().ticker, "FIRST");
+        assert_eq!(claim_work(&root, &owner).unwrap_err(), CAMPAIGN_PRIORITY_WAITING);
+        fs::write(root.join("completed/FIRST.done"), b"certified").unwrap();
+        assert_eq!(claim_work(&root, &owner).unwrap().unwrap().ticker, "REST");
+        fs::write(root.join("failure.txt"), b"failure").unwrap();
+        assert!(claim_work(&root, &owner).unwrap_err().contains("worker failure"));
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn claims_are_exclusive_and_survive_worker_restart() {
         let root = PathBuf::from("D:/TradingML/runtimes/structure-storage-tests").join(format!(

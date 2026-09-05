@@ -28,8 +28,8 @@ async fn main() -> Result<(), String> {
     let ticker = args[0].to_uppercase();
     let start = parse(&args[1])?;
     let end = parse(&args[2])?;
-    if start >= end || end - start > chrono::Duration::days(7) {
-        return Err("Require a positive window of at most seven days".into());
+    if start >= end || end - start > chrono::Duration::days(45) {
+        return Err("Require a positive window of at most 45 days; event/time/memory budgets still apply".into());
     }
     let output = PathBuf::from(&args[3]);
     let root = PathBuf::from(r"D:\TradingML\runtimes")
@@ -116,9 +116,17 @@ async fn main() -> Result<(), String> {
         if checkpoint_bytes > 256 * 1024 * 1024 {
             return Err("Checkpoint exceeded 256 MiB budget; no levels discarded".into());
         }
-        if restored.is_none() {
+        if let Some(other) = &restored {
+            let actual = serde_json::to_value(other.checkpoint()).map_err(|e| e.to_string())?;
+            let expected = serde_json::to_value(engine.checkpoint()).map_err(|e| e.to_string())?;
+            if actual != expected {
+                std::fs::write(output.with_extension("parity-failure.json"), serde_json::to_vec_pretty(&json!({"events":count,"expected":expected,"actual":actual})).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+                return Err(format!("Full checkpoint parity failed after {count} events"));
+            }
+        }
+        if restored.is_none() || count % 50_000 < 5_000 {
             let checkpoint: GenericStructureCheckpoint =
-                serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+                qmd_core::structure_checkpoint_json::decode_checkpoint(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
             let mut other = GenericStructureEngine::new(&ticker);
             other.seed_checkpoint(&checkpoint);
             restored = Some(other);
@@ -139,9 +147,9 @@ async fn main() -> Result<(), String> {
         snapshots.push(json!({"as_of":cuts[next_cut],"book":engine.snapshot(cuts[next_cut]),"construction_audit":engine.construction_audit()}));
         next_cut += 1;
     }
-    let continuous = serde_json::to_value(engine.snapshot(end)).map_err(|e| e.to_string())?;
+    let continuous = serde_json::to_value(engine.checkpoint()).map_err(|e| e.to_string())?;
     let resumed = restored
-        .map(|other| serde_json::to_value(other.snapshot(end)))
+        .map(|other| serde_json::to_value(other.checkpoint()))
         .transpose()
         .map_err(|e| e.to_string())?;
     let parity = resumed.as_ref() == Some(&continuous);

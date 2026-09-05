@@ -1436,6 +1436,10 @@ impl GenericStructureEngine {
     }
 
     fn update_unified_level_lifecycles(&mut self, ts: DateTime<Utc>, price: f64, size: f64) {
+        self.update_unified_level_lifecycles_mode(ts, price, size, !SCORE_INDEPENDENT_BOOK);
+    }
+
+    fn update_unified_level_lifecycles_mode(&mut self, ts: DateTime<Utc>, price: f64, size: f64, rebuild_sources: bool) {
         let observed_move = self.rolling_abs_trade_move.max(0.0);
         let observed_spread = self.rolling_spread.max(0.0);
         let observed_trade_size = self.rolling_trade_size.max(0.0);
@@ -1579,8 +1583,16 @@ impl GenericStructureEngine {
                 | LevelLifecycle::RetestContact { direction, .. } => direction,
                 _ => 0,
             };
-            refresh_unified_track_evidence(track);
+            // A trade changes lifecycle counters, not source membership or its
+            // stored volumes. Merge/creation already refresh source aggregates.
+            if rebuild_sources {
+                refresh_unified_track_evidence(track);
+            } else if !track.level.sources.is_empty() {
+                refresh_unified_hold_evidence(&mut track.level);
+            }
         }
+        // Pending-side transitions also participate in consolidation. Preserve
+        // its complete ordering and lifecycle semantics on every event.
         consolidate_unified_tracks(&mut self.unified_tracks);
     }
 
@@ -2856,23 +2868,26 @@ fn merge_unified_candidate(track: &mut UnifiedLevelTrack, candidate: UnifiedStru
             .position(|(candidate, _)| candidate == timeframe)
             .unwrap_or(usize::MAX)
     });
+    // Retained evidence is uncapped in v18. Searching the complete source
+    // vector for every incoming source made repeated merges quadratic.
+    // Index identities without changing vector order or replacement rules.
+    let mut source_index = HashMap::new();
+    for (index, source) in track.level.sources.iter().enumerate() {
+        source_index.entry((source.level_id, source.timeframe.clone(), source.source_kind.clone())).or_insert(index);
+    }
     for source in candidate.sources {
         let identity = (
             source.level_id,
             source.timeframe.clone(),
             source.source_kind.clone(),
         );
-        if let Some(existing) = track.level.sources.iter_mut().find(|existing| {
-            (
-                existing.level_id,
-                existing.timeframe.clone(),
-                existing.source_kind.clone(),
-            ) == identity
-        }) {
+        if let Some(index) = source_index.get(&identity) {
+            let existing = &mut track.level.sources[*index];
             if source.last_test_at_ms >= existing.last_test_at_ms {
                 *existing = source;
             }
         } else {
+            source_index.insert(identity, track.level.sources.len());
             track.level.sources.push(source);
         }
     }

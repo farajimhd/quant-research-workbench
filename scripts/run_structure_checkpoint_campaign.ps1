@@ -8,9 +8,10 @@ param(
     [string]$ResumeFromRuntime,
     [Nullable[datetime]]$StartDate,
     [Nullable[datetime]]$EndDate,
-    [ValidateRange(1, 80)]
-    [int]$Workers = 80,
+    [ValidateRange(1, 96)]
+    [int]$Workers = 96,
     [string]$Binary,
+    [string]$PriorityRanking,
     [ValidatePattern('^[0-9a-fA-F]{40}$')]
     [string]$SourceCommit,
     [switch]$NoBuild,
@@ -95,6 +96,9 @@ if ($StartDate.HasValue) {
         '--start-date', $StartDate.Value.ToString('yyyy-MM-dd'),
         '--end-date', $EndDate.Value.ToString('yyyy-MM-dd')
     )
+}
+if ($PriorityRanking) {
+    $launcherArguments += @('--priority-ranking', [IO.Path]::GetFullPath($PriorityRanking))
 }
 if ($Binary) {
     $launcherArguments += @('--binary', [IO.Path]::GetFullPath($Binary))
