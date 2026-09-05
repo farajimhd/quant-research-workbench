@@ -3153,7 +3153,7 @@ const strategyVisualElementDefinitions: StrategyVisualElementDefinition[] = [
   { key: "highOfDayLine", kind: "line", title: "Entry high-of-day line", help: "HOD recorded with this entry selection. Solid black by default." },
   { key: "highOfDayLabel", kind: "label", title: "Entry high-of-day label", help: "HOD price for the recorded entry selection." },
   { key: "entryResistanceLine", kind: "line", title: "Entry R1–R3 lines", help: "The three selected resistances under entry HOD. Dashed black by default." },
-  { key: "entryResistanceLabel", kind: "label", title: "Entry R1–R3 labels", help: "Selected entry prices, ascending from R1 to R3; separate from profit targets." },
+  { key: "entryResistanceLabel", kind: "label", title: "Entry R1–R3 labels", help: "R1 is nearest below HOD, then R2 and R3 downward; separate from profit targets." },
   { key: "levelLine", kind: "line", title: "Structural level lines", help: "Support, short-entry, and exit structural evidence." },
   { key: "levelLabel", kind: "label", title: "Structural level labels", help: "Support, short-entry, exit, and trigger identifiers." },
   { key: "stopLine", kind: "line", title: "Protective stop line", help: "Current or immutable entry-plan protection." },

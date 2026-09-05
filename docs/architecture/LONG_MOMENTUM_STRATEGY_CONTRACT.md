@@ -66,7 +66,8 @@ upward moves.
 
 Entry presentation uses the entry decision's recorded resistance-selection
 snapshot: a solid black HOD line and black dashed R1/R2/R3 lines, numbered
-from the lowest selected price upward. These entry references remain fixed
+downward from HOD: R1 is the nearest selected resistance below HOD,
+then R2 and R3 at successively lower prices. These entry references remain fixed
 for that position's historical display; they are not the dynamic profit-target
 ladder. General structural levels and target candidates must never fill missing
 entry references. Older records can use their recorded prior selection and

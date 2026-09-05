@@ -16,10 +16,10 @@ export function entryStructurePresentation(trigger: Evidence, entryTime: number)
     return { highOfDayPrice: undefined, resistancePrices: [] as number[] };
   }
   const levels = Array.isArray(snapshot.levels) ? snapshot.levels as Evidence[] : [];
-  // The producer has already selected and qualified this set. Ascending prices
-  // name the lowest selected boundary R1 and the highest R3.
+  // The producer has already selected and qualified this set. Descending prices
+  // name the nearest selected boundary below HOD R1, then R2 and R3.
   const resistancePrices = [...new Set(levels.map((row) => Number(row.entry_boundary ?? row.price))
     .filter((price) => Number.isFinite(price) && price > 0 && price <= highOfDayPrice))]
-    .sort((left, right) => right - left).slice(0, 3).reverse();
+    .sort((left, right) => right - left).slice(0, 3);
   return { highOfDayPrice, resistancePrices };
 }

@@ -32,15 +32,15 @@ const t = Date.parse('2026-08-21T08:10:23Z') / 1000;
 const snapshot = {selected_at:'2026-08-21T08:10:23Z',session_high:3.62,
   levels:[{price:3.6},{price:3.55},{price:3.52}]};
 assert.deepEqual(project({current_snapshot:snapshot, profit_target_selection:{qualified_levels:[{price:4},{price:5}]}},t),
-  {highOfDayPrice:3.62,resistancePrices:[3.52,3.55,3.6]});
+  {highOfDayPrice:3.62,resistancePrices:[3.6,3.55,3.52]});
 assert.deepEqual(project({current_snapshot:{...snapshot,levels:[{price:4},{price:3.55},{price:3.55},{price:-1}]}},t),
   {highOfDayPrice:3.62,resistancePrices:[3.55]});
 assert.deepEqual(project({current_snapshot:{...snapshot,levels:[]},prior_snapshot_levels:[{price:3.5}]},t).resistancePrices,[]);
 assert.deepEqual(project({profit_target_selection:{qualified_levels:[{price:3.5}]}},t).resistancePrices,[]);
 assert.deepEqual(project({prior_snapshot_session_high:3.62,prior_snapshot_selected_at:snapshot.selected_at,
-  prior_snapshot_levels:snapshot.levels},t).resistancePrices,[3.52,3.55,3.6]);
+  prior_snapshot_levels:snapshot.levels},t).resistancePrices,[3.6,3.55,3.52]);
 assert.deepEqual(project({current_snapshot:{...snapshot,selected_at:'2026-08-21T08:10:24Z'}},t).resistancePrices,[]);
-assert.deepEqual(project({current_snapshot:{...snapshot,session_high:4,levels:[{price:3.7},{price:3.8},{price:3.9}]}},t).resistancePrices,[3.7,3.8,3.9]);
+assert.deepEqual(project({current_snapshot:{...snapshot,session_high:4,levels:[{price:3.7},{price:3.8},{price:3.9}]}},t).resistancePrices,[3.9,3.8,3.7]);
 console.log('7 entry-selection scenarios passed');
 '''.replace("SOURCE_PATH", json.dumps(str(source)))
     result = subprocess.run([shutil.which("node") or "node", "--input-type=module", "-"],
