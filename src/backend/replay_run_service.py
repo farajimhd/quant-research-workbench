@@ -3291,6 +3291,9 @@ class ReplayRunController:
         if (event.raw.get("schema_version") and "price_eligible" not in event.raw
                 and any(row.strategy_revision >= 39 for row in ticker_assignments)):
             raise RuntimeError("Historical strategy requires QMD trade eligibility; restart the updated QMD History gateway")
+        provisional_macd = self._provisional_macd_states.get(event.ticker)
+        forming_open = (provisional_macd.observe_forming_candle(float(event.price), event.ts)
+                        if provisional_macd else None)
         if ticker_assignments and all(
             assignment.status
             in {AssignmentStatus.WATCHING, AssignmentStatus.REENTRY_COOLDOWN}
@@ -3301,9 +3304,13 @@ class ReplayRunController:
                 or ""
             ).lower()
             == "prior_completed_frame_top_n_below_session_high"
+            and not (
+                assignment.strategy_revision >= 44
+                and assignment.state.get("accepted_entry_r3")
+            )
             for assignment in ticker_assignments
         ):
-            # Flat entries require completed frames. Those frames independently
+            # Unconfirmed R3 entries require completed frames. Those frames independently
             # consume the full canonical structure timeline. Do not materialize
             # and project per-trade snapshots that this path cannot use. If an
             # entry becomes active, the event session advances through every
@@ -3352,13 +3359,11 @@ class ReplayRunController:
                 source_values[key] = dict(market_price)
         changed_source_ids = ["market.last_price"] if isinstance(event, TradeEvent) else []
         changed_source_ids.extend(structural_changed)
-        provisional_macd = self._provisional_macd_states.get(event.ticker)
-        forming_open = (
-            provisional_macd.observe_forming_candle(price, event.ts)
-            if provisional_macd
-            else None
-        )
         preview = provisional_macd.preview(price) if provisional_macd else None
+        if preview is None and any(row.strategy_revision >= 44 for row in ticker_assignments):
+            # Missing forming MACD blocks MACD gates, not other exit authorities.
+            # Never relabel an old completed indicator as a current preview.
+            preview = (None, None, None)
         macd_line = base.macd_line
         macd_signal = base.macd_signal
         macd_histogram = base.macd_histogram

@@ -22,7 +22,7 @@ class HistoricalRuntimeVersionsTests(unittest.TestCase):
         self.assertEqual(self.check()["status"], "ready")
 
     def test_old_candidate_is_blocked_without_mutation(self):
-        result = self.check(revision=41)
+        result = self.check(revision=versions.STRATEGY_REVISION - 1)
         self.assertEqual(result["status"], "blocked")
         self.assertIn("new test candidate", result["summary"])
 

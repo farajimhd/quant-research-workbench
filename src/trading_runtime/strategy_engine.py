@@ -34,8 +34,8 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 43
-HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42)
+STRATEGY_REVISION = 44
+HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43)
 
 _COMPLETED_FRAME_TOP_N_ENTRY_MODE = "prior_completed_frame_top_n_below_session_high"
 _EVENT_PRICE_TOP_N_ENTRY_MODE = "event_price_top_n_below_session_high"
@@ -691,6 +691,14 @@ def default_long_momentum_parameters(
         parameters["structural_entry"].update(
             persistent_r3_acceptance=True, maximum_entry_levels=3, acceptance_buffer_bps=0.0,
         )
+    if revision >= 44:
+        parameters["structural_entry"]["intrabar_after_completed_r3"] = True
+        parameters["entry_candle_confirmation"]["evaluate_macd_intrabar"] = True
+        parameters["momentum_management"]["minimum_macd_exit_gap_bps"] = 0.5
+        parameters["momentum_management"]["macd_backstop"].update(
+            enabled=True, timeframe="1s", active_after_ms=0, closed_for_ms=0,
+            close_condition="signal_above_line",
+        )
     parameters.pop("entry", None)
     return parameters
 
@@ -783,6 +791,22 @@ def resolve_long_momentum_parameters(
     if revision >= 43:
         parameters["structural_entry"]["maximum_entry_levels"] = 3
         parameters["structural_entry"]["acceptance_buffer_bps"] = 0.0
+    if revision >= 44:
+        parameters["structural_entry"]["intrabar_after_completed_r3"] = True
+        parameters["entry_candle_confirmation"]["evaluate_macd_intrabar"] = True
+        parameters["momentum_management"]["macd_backstop"].update(
+            enabled=True, timeframe="1s", active_after_ms=0, closed_for_ms=0,
+            close_condition="signal_above_line",
+        )
+        parameters["momentum_management"]["downside_loss_guard"]["timeframe"] = "1s"
+        for section, key in (
+            (parameters["entry_candle_confirmation"], "minimum_macd_open_gap_bps"),
+            (parameters["momentum_management"], "minimum_macd_exit_gap_bps"),
+        ):
+            value = float(section[key])
+            if not isfinite(value) or value < 0:
+                raise ValueError("MACD gaps must be finite nonnegative basis points")
+            section[key] = value
     execution = dict(parameters.get("execution") or {})
     execution.pop("time_in_force", None)
     execution.pop("outside_rth", None)
@@ -1131,6 +1155,16 @@ def _exact_positive_open_macd(
         and line > 0
         and (not require_positive_signal or signal > 0)
     ), evidence
+
+
+def _macd_gap_bps(price: float, line: Any, signal: Any) -> float | None:
+    """Signed MACD-minus-signal distance, normalized by current trade price."""
+    if line is None or signal is None or not isfinite(price) or price <= 0:
+        return None
+    line, signal = float(line), float(signal)
+    if not isfinite(line) or not isfinite(signal):
+        return None
+    return (line - signal) / price * 10_000.0
 
 
 def _record_macd_histogram_history(
@@ -2052,7 +2086,12 @@ def _prior_completed_frame_resistance_trigger(
         "bar_close" in observation.evaluation_events
         and observation.source_timeframe.lower() in {"", "1s"}
     )
-    if not completed_one_second:
+    intrabar = bool(
+        policy.get("intrabar_after_completed_r3")
+        and "market_data_update" in observation.evaluation_events
+        and observation.source_timeframe.lower() in {"", "1s"}
+    )
+    if not completed_one_second and not intrabar:
         return {
             "passed": False,
             "reason": "waiting_for_completed_one_second_resistance_snapshot",
@@ -2061,7 +2100,7 @@ def _prior_completed_frame_resistance_trigger(
         }
     cached = state.get("latest_structural_entry_trigger")
     if (
-        isinstance(cached, Mapping)
+        completed_one_second and isinstance(cached, Mapping)
         and cached.get("observed_at") == observed_at
         and cached.get("completed_one_second") is True
     ):
@@ -2125,7 +2164,7 @@ def _prior_completed_frame_resistance_trigger(
     )
     result: dict[str, Any] = {
         "passed": selected_cross is not None,
-        "completed_one_second": True,
+        "completed_one_second": completed_one_second,
         "reason": (
             "prior_completed_one_second_resistance_crossed"
             if selected_cross is not None
@@ -2232,9 +2271,13 @@ def _prior_completed_frame_resistance_trigger(
             and accepted.get("unified_level_id") == r3.get("unified_level_id")
             and accepted.get("threshold_price") == boundary
         )
+        if same_level and policy.get("intrabar_after_completed_r3"):
+            accepted_at = _optional_aware_datetime(accepted.get("accepted_at"))
+            same_level = bool(accepted_at and accepted_at <= observation.observed_at
+                              and _level_metric(accepted, "confirmation_close") > boundary)
         if not above or not same_level:
             state.pop("accepted_entry_r3", None)
-        if above and non_red and "accepted_entry_r3" not in state:
+        if above and non_red and completed_one_second and "accepted_entry_r3" not in state:
             state["accepted_entry_r3"] = {
                 "unified_level_id": r3.get("unified_level_id"),
                 "threshold_price": boundary,
@@ -2245,7 +2288,8 @@ def _prior_completed_frame_resistance_trigger(
         passed = bool(above and non_red and accepted)
         result.update(
             passed=passed,
-            reason=("current_r3_completed_close_accepted" if passed else
+            reason=("current_r3_completed_close_accepted" if passed and completed_one_second else
+                    "current_r3_acceptance_valid_intrabar" if passed else
                     "waiting_for_three_qualified_entry_resistances" if r3 is None else
                     "entry_closed_candle_bearish" if not non_red else
                     "waiting_for_completed_close_above_current_r3"),
@@ -2869,6 +2913,7 @@ class LongMomentumStrategyEngine:
         if (
             bool(candle_policy.get("enabled", True))
             and bool(candle_policy.get("require_closed_bar", True))
+            and not bool(candle_policy.get("evaluate_macd_intrabar", False))
             and not closed_entry_frame
             and not observation.force_entry
         ):
@@ -2938,9 +2983,13 @@ class LongMomentumStrategyEngine:
             / observation.price
             * 10_000.0
         )
+        if self.revision >= 44:
+            macd_gap_bps = _macd_gap_bps(observation.price,
+                                       entry_macd_evidence["macd_line"],
+                                       entry_macd_evidence["macd_signal"])
         if (
             minimum_macd_gap_bps > 0
-            and macd_gap_bps < minimum_macd_gap_bps
+            and (macd_gap_bps is None or macd_gap_bps + 1e-12 < minimum_macd_gap_bps)
             and not observation.force_entry
         ):
             return self._result(
@@ -2968,10 +3017,8 @@ class LongMomentumStrategyEngine:
                 },
             )
 
-        # Entry uses the completed one-second bar. A bearish close is not
-        # continuation evidence even when the completed MACD regime remains
-        # positive/open. Exit management remains event-native and is evaluated
-        # from the forming one-second MACD before this flat-position path.
+        # Revision 44 applies this gate to the current forming candle too.
+        # Completed R3 acceptance is separate from real-time MACD readiness.
         side = _strategy_side(parameters)
         if (
             bool(candle_policy.get("enabled", True))
@@ -6633,6 +6680,7 @@ def _matching_momentum_management_route(
     settings = dict(parameters.get("momentum_management") or {})
     if not settings or side != "long":
         return None
+    exit_gap = settings.get("minimum_macd_exit_gap_bps")
     elapsed_ms = _elapsed_since(str(state.get("entry_at") or ""), observation.observed_at)
 
     downside = dict(settings.get("downside_loss_guard") or {})
@@ -6640,10 +6688,12 @@ def _matching_momentum_management_route(
     if bool(downside.get("enabled", False)) and gain_pct < 0:
         line = _source_value(observation, "indicator.macd.line", downside_timeframe)
         signal = _source_value(observation, "indicator.macd.signal", downside_timeframe)
+        gap_bps = _macd_gap_bps(observation.price, line, signal)
         if bool(downside.get("macd_closed", True)) and (
             line is not None
             and signal is not None
             and float(signal) > float(line)
+            and (exit_gap is None or (gap_bps is not None and -gap_bps + 1e-12 >= float(exit_gap)))
         ):
             return {
                 "route_id": "downside-macd-closed",
@@ -6655,6 +6705,8 @@ def _matching_momentum_management_route(
                     "macd_timeframe": downside_timeframe,
                     "macd_line": line,
                     "macd_signal": signal,
+                    "histogram_bps": gap_bps,
+                    "minimum_exit_gap_bps": exit_gap,
                 },
             }
         vwap_source_id = str(
@@ -6771,6 +6823,7 @@ def _matching_momentum_management_route(
     signal = _source_value(observation, "indicator.macd.signal", timeframe)
     histogram = _source_value(observation, "indicator.macd.histogram", timeframe)
     close_condition = str(macd.get("close_condition") or "regime_closed")
+    gap_bps = _macd_gap_bps(observation.price, line, signal)
     macd_closed = (
         line is not None
         and signal is not None
@@ -6784,6 +6837,8 @@ def _matching_momentum_management_route(
             )
         )
     )
+    if exit_gap is not None:
+        macd_closed = bool(gap_bps is not None and -gap_bps + 1e-12 >= float(exit_gap))
     if observation.source_timeframe in {"", timeframe}:
         if macd_closed:
             if not state.get("macd_closed_since"):
@@ -6821,6 +6876,8 @@ def _matching_momentum_management_route(
                 "macd_line": line,
                 "macd_signal": signal,
                 "macd_histogram": histogram,
+                "histogram_bps": gap_bps,
+                "minimum_exit_gap_bps": exit_gap,
             },
         }
     return None

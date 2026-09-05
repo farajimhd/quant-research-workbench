@@ -3999,8 +3999,9 @@ def _default_draft() -> dict[str, Any]:
     system_profiles[0]["description"] = (
         "Extended-hours long momentum strategy activated by the Early Squeeze Move "
         "episode start, admitted once by sustained executable liquidity, and entered "
-        "on event-price crossings of QMD's persistent Unified Structural Level Book "
-        "while the forming one-second MACD is positive and open at that event."
+        "after a completed non-red one-second close above current R3, then on the "
+        "first eligible trade meeting the 0.5 bps forming-MACD entry gap and all "
+        "other gates. MACD exits use the opposite 0.5 bps gap without waiting for a close."
     )
     squeeze_lifecycle = system_profiles[0]["lifecycle"]
     squeeze_lifecycle["trading_behavior"]["eligible_sessions"] = [
@@ -4106,6 +4107,7 @@ def _default_draft() -> dict[str, Any]:
     for legacy_exit in squeeze_lifecycle["exit"]["rule_sets"]:
         legacy_exit["enabled"] = False
     system_profiles[0]["parameters"]["momentum_management"] = {
+        "minimum_macd_exit_gap_bps": 0.5,
         "downside_loss_guard": {
             "enabled": True,
             "timeframe": "1s",
@@ -4224,12 +4226,13 @@ def _default_draft() -> dict[str, Any]:
         "minimum_histogram_increase_bps": 0.25,
     }
     system_profiles[0]["parameters"]["entry_candle_confirmation"] = {
-        # Entry requires a completed, non-bearish one-second breakout candle.
+        # R3 confirmation closes first; MACD may authorize entry intrabar later.
         "enabled": True,
         "timeframe": "1s",
         "require_closed_bar": True,
         "reject_bearish_close": True,
         "minimum_macd_open_gap_bps": 0.5,
+        "evaluate_macd_intrabar": True,
     }
     squeeze_lifecycle["reentry"]["target_replenishment"] = {
         # The single structural target is a whole-campaign exit, not a partial

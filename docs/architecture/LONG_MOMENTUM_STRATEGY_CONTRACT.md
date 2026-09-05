@@ -4,20 +4,32 @@ Last updated: 2026-09-05
 
 Related task: TASK-0014
 
-Status: Revision 43 implementation reference. Focused verification is separate
+Status: Revision 44 implementation reference. Focused verification is separate
 from market-run acceptance. The user authorized a simultaneous JUNS and SUGP
 backtest for August 21, 2026, 04:00-09:30 Eastern, with shared account cash,
 including stopping, fixing defects and rerunning when necessary.
 
 ## 1. Authority and purpose
 
-Revision 43 accepts a completed non-red close above the current R3 without
+Revision 44 retains a completed non-red close above the current R3 without
 requiring another crossover when other entry conditions become ready later.
 R1 is nearest HOD, R2 second, and R3 third downward. Three qualified levels
 are required. Every entry decision rechecks the current causal R3 and all
 other gates; a saved acceptance does not authorize entry below a changed R3.
-Dojis remain allowed and flat-position entry remains on completed 1s bars.
-No revision-43 market backtest has been performed as part of this correction.
+Dojis remain allowed. Once R3 is confirmed, entry readiness is evaluated on
+each eligible trade, including within the next forming candle. The forming
+candle must be non-red, price must remain above the same currently qualified
+R3, and all other entry conditions must pass. A changed/removed R3 or price
+at/below it invalidates acceptance; a new completed non-red close is required.
+A wick alone cannot create R3 acceptance. Target reconciliation still requires
+a completed non-red 1s candle; making MACD real-time does not change that rule.
+
+Both MACD gaps default to 0.5 basis points of the current eligible trade price.
+They are separately configurable, finite, nonnegative values. Entry retains
+the positive-MACD-line requirement. The ordinary MACD exit and the below-entry
+MACD loss guard use the same exit threshold with no confirmation delay.
+Earlier revisions remain immutable. Revision 43 was validated over August 21,
+07:15-07:30 ET for JUNS and JUNS/SUGP; those results do not validate revision 44.
 
 Revision 42 adds the completed non-red candle gate, current-book multi-level
 crossing selection, and fresh validation of deferred target amendments.
@@ -145,9 +157,9 @@ At the current causal event:
 3. Select the three highest such resistance prices: R1 nearest HOD, R2 second,
    and R3 third downward. Wait if fewer than three qualify.
 4. A completed one-second non-red close strictly above R3 establishes entry
-   eligibility. The prior close need not be below R3. Later completed candles
-   above the current R3 can enter when the other conditions pass. Close must
-   be >= open; equality to R3 does not qualify.
+   eligibility. The prior close need not be below R3. Subsequent eligible trades
+   above the same current R3 can enter when the real-time gates pass. The
+   confirming close must be >= open; equality to R3 does not qualify.
 
 This set must follow changes in the current-day book and high of day. A wick
 can establish the high of day and can contribute a resistance through the
@@ -163,11 +175,12 @@ labels must identify which set is being shown.
 
 ### 4.2 Confirmation at the crossing
 
-Entry waits for a completed one-second candle. An intrabar crossing or wick
-is insufficient, and a red candle (close < open) blocks entry. A non-red close
-above R3 establishes acceptance, retained for the same qualified R3 while
-completed closes remain above it. A changed R3 requires confirmation against
-its current producer price; missing or unqualified R3, or a close at/below R3,
+R3 acceptance waits for a completed one-second candle. An intrabar crossing or
+wick cannot establish it. Once accepted, MACD and other entry gates evaluate
+on each eligible trade. A red forming candle (current price < open) blocks
+entry. Acceptance is retained for the same qualified R3 while price remains
+above it. A changed R3 requires a new completed confirmation against
+its current producer price; missing or unqualified R3, or price at/below R3,
 invalidates acceptance. This check uses the dynamic current book, not a fixed
 entry snapshot. Other conditions are:
 
@@ -176,10 +189,22 @@ entry snapshot. Other conditions are:
 - Price is above executable VWAP.
 - Configured liquidity, activity, volume, veto, and freshness gates pass.
 
-Entry uses the completed one-second MACD available at that candle boundary.
-Forming one-second MACD remains available for immediate exit evaluation.
-A later candle's favorable MACD can authorize entry at that later boundary
-while its non-red close is still above current R3; another crossover is not
+Entry and exit use the causal forming one-second MACD on each eligible trade.
+The completed-bar EMA state advances once per completed bar. Intrabar previews
+recompute from that committed state and the current trade; they must never
+compound the EMA once per tick. Missing/stale MACD blocks MACD decisions and
+must not be relabeled as current evidence; other exit authorities remain active.
+
+Define `histogram_bps = 10000 * (MACD_line - MACD_signal) / current_price`.
+Entry requires `histogram_bps >= 0.5` and `MACD_line > 0`, after completed R3
+acceptance. MACD exit requires `histogram_bps <= -0.5`, regardless of whether
+the position is profitable. Equality at the configured threshold qualifies.
+The neutral interval between the thresholds neither authorizes a new entry
+nor triggers a MACD exit. Stop, VWAP, target, and session exits are independent.
+At a $10 price, 0.5 bps corresponds to a MACD/signal distance of $0.0005.
+
+A later trade's favorable MACD can authorize entry at that event
+while its forming candle is non-red and price is still above current R3; another crossover is not
 required. It cannot retroactively authorize an earlier order. The configured
 gates and observed values must be recorded so an
 entry or missed entry can be explained without reconstructing it from a later
@@ -214,11 +239,11 @@ Re-delivery of an allocated request cannot create another reservation or order.
 
 An otherwise valid entry with no executable capacity remains a deferred
 Portfolio request. It retains its original request ID and breakout witness.
-Strategy revalidates current structure, completed non-red candle, momentum,
+Strategy revalidates current structure, completed R3 acceptance, non-red forming candle, momentum,
 liquidity and exit conditions before funding; it does not require a second
 breakout merely because capital was occupied. A breached exit condition or
 invalidated producer level withdraws that request. Released capital can fund
-the still-valid waiting request on a subsequent eligible candle. This is not
+the still-valid waiting request on a subsequent eligible trade. This is not
 permission to execute a stale signal after liquidation.
 
 Cash funding and risk-budget accounting are separate: investing cash in an
@@ -405,7 +430,7 @@ profit pocketing, which remains disabled for this strategy.
 ## 8. Exit, re-entry, and session behavior
 
 The earlier accepted exit authorities remain in scope unless explicitly
-changed: support-based trailing protection; forming one-second MACD closure;
+changed: support-based trailing protection; forming one-second MACD exit gap;
 loss of executable VWAP under its configured downside rule; incomplete-target
 liquidation; and configured session/operator controls. Bearish CHOCH and
 discretionary profit-pocket adds/reductions are not restored by this document.
@@ -414,6 +439,10 @@ Forming MACD can change within a second. A later completed candle is not proof
 that an earlier event-time exit was invalid. Conversely, a recorded exit
 reason is not proof of correctness without the contemporaneous operands,
 source timestamps, position, and policy.
+Both MACD exit routes require `signal - MACD >= current_price * exit_gap_bps / 10000`,
+with `exit_gap_bps = 0.5` by default. The below-entry loss guard cannot bypass
+this threshold with a smaller bearish crossover. Record line, signal, price,
+signed histogram in bps, threshold, and causal observation time for review.
 
 Premarket liquidation uses limit orders at fresh executable bids. Regular
 session liquidation may use market orders where the configured policy allows.
@@ -422,7 +451,7 @@ policy for entry completion.
 
 Re-entry is a new opportunity only after the prior applicable account lifecycle
 is confirmed flat and outstanding acquisition/exit work is reconciled. It
-requires another valid current crossing and applicable gates. It is not the
+requires valid completed R3 acceptance and current real-time entry gates. It is not the
 remaining shares from the previous entry. Do not add an arbitrary re-entry cap
 or ticker-specific suppression to improve a particular backtest result.
 
