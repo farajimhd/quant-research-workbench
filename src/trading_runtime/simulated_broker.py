@@ -205,6 +205,7 @@ class SimulatedBrokerAdapter:
         self._quotes_by_ticker: dict[str, QuoteEvent] = {}
         self._trades_by_ticker: dict[str, TradeEvent] = {}
         self._marks: dict[int, float] = {}
+        self._liquidity_consumed: dict[str, tuple[str, float]] = {}
         self._next_order_id = 1
         self._next_execution_id = 1
         self._initialized = False
@@ -216,7 +217,8 @@ class SimulatedBrokerAdapter:
     def checkpoint_state(self) -> dict[str, Any]:
         """Return the complete deterministic broker state required for restart."""
         return {
-            "schema_version": 2,
+            "schema_version": 3,
+            "liquidity_consumed": dict(self._liquidity_consumed),
             "account_ids": list(self._account_ids),
             "cash": dict(self._cash),
             "realized_pnl": dict(self._realized_pnl),
@@ -268,7 +270,7 @@ class SimulatedBrokerAdapter:
     def restore_checkpoint_state(self, payload: dict[str, Any]) -> None:
         """Restore only an exact, complete simulator checkpoint."""
         schema_version = int(payload.get("schema_version") or 0)
-        if schema_version not in {1, 2}:
+        if schema_version not in {1, 2, 3}:
             raise ValueError("Unsupported simulated broker checkpoint schema")
         account_ids = [str(value) for value in payload.get("account_ids") or ()]
         if account_ids != self._account_ids:
@@ -317,6 +319,10 @@ class SimulatedBrokerAdapter:
             values["trade_time"] = _checkpoint_time(values["trade_time"])
             executions.append(Execution(**values))
         self._cash = cash
+        self._liquidity_consumed = {
+            str(key): (str(value[0]), float(value[1]))
+            for key, value in dict(payload.get("liquidity_consumed") or {}).items()
+        }
         self._realized_pnl = realized
         self._positions = positions
         self._orders = orders
@@ -740,6 +746,11 @@ class SimulatedBrokerAdapter:
                     continue
                 price, quantity = fill
                 execution = self._apply_fill(state, fill_time, price, quantity)
+                slot, identity = self._liquidity_identity(event, state.request.side.upper())
+                previous = self._liquidity_consumed.get(slot, (identity, 0.0))
+                self._liquidity_consumed[slot] = (
+                    identity, (previous[1] if previous[0] == identity else 0.0) + quantity,
+                )
                 executions.append(execution)
         return executions
 
@@ -894,9 +905,11 @@ class SimulatedBrokerAdapter:
             # at the causal quote/trade event rather than granting an instant
             # full fill.
             participation = self.config.marketable_liquidity_participation
+        slot, identity = self._liquidity_identity(event, side)
+        prior_identity, consumed = self._liquidity_consumed.get(slot, (identity, 0.0))
         available_quantity = min(
             state.remaining,
-            max(0.0, available * participation),
+            max(0.0, available * participation - (consumed if prior_identity == identity else 0.0)),
         )
         quantity = (
             float(floor(available_quantity + 1e-9))
@@ -908,7 +921,29 @@ class SimulatedBrokerAdapter:
         slippage = self.config.market_slippage_bps / 10_000
         if order_type in {"MKT", "STP", "TRAIL"} and slippage:
             market_price *= 1 + slippage if side == "BUY" else 1 - slippage
+        if side == "BUY" and market_price > 0:
+            # Final broker cash fence: other tickers/accounts' order matching
+            # cannot spend this account's cash twice, including commissions.
+            budget = self._cash[state.request.acctId] + state.commission_paid
+            rate = self.config.commission_per_share
+            affordable = min(
+                (budget - self.config.minimum_commission) / market_price,
+                (budget - state.filled * rate) / (market_price + rate),
+            )
+            if isclose(state.requested_quantity, round(state.requested_quantity), abs_tol=1e-9):
+                affordable = float(floor(affordable + 1e-9))
+            quantity = min(quantity, max(0.0, affordable))
+            if quantity <= 0:
+                return None
         return market_price, quantity
+
+    @staticmethod
+    def _liquidity_identity(event: MarketEvent, side: str) -> tuple[str, str]:
+        kind = "quote" if isinstance(event, QuoteEvent) else "trade"
+        values = ((event.bid_price, event.ask_price, event.bid_size, event.ask_size)
+                  if isinstance(event, QuoteEvent) else (event.price, event.size))
+        return (f"{event.ticker.upper()}:{kind}:{side}",
+                repr((event.ts.isoformat(), event.sequence, values)))
 
     def _apply_fill(self, state: _OrderState, ts: datetime, price: float, quantity: float) -> Execution:
         prior_value = state.avg_price * state.filled

@@ -1512,7 +1512,7 @@ class ReplayRunController:
             "checkpoint": checkpoint,
             "navigation_action": deepcopy(self._last_navigation_action),
             "navigation_search": self._navigation_search_projection(),
-            "progress": min(1.0, elapsed / duration),
+            "progress": 1.0 if self.status == "completed" else min(1.0, elapsed / duration),
             "account_ids": list(self.account_ids),
             "account_mapping": dict(self._account_map),
             **(

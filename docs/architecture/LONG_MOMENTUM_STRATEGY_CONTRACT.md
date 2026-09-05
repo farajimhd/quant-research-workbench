@@ -4,11 +4,20 @@ Last updated: 2026-09-04
 
 Related task: TASK-0014
 
-Status: Revision 40 implementation reference. Focused verification is separate
-from market-run acceptance. The user authorized SUGP, August 21, 2026,
-04:00-04:45 Eastern, including a rerun after the re-entry repair.
+Status: Revision 41 implementation reference. Focused verification is separate
+from market-run acceptance. The user authorized a simultaneous JUNS and SUGP
+backtest for August 21, 2026, 04:00-09:30 Eastern, with shared account cash,
+including stopping, fixing defects and rerunning when necessary.
 
 ## 1. Authority and purpose
+
+Revision 41 also reconciles a retired or newly unqualified target frontier
+against the current qualified producer ladder. A missing old identity cannot
+freeze targets forever. The surviving first resistance must still be passed
+by a completed 1s close before the new third resistance becomes the target.
+The canonical SUGP book at 04:11:01 omitted the previously tracked $4.071
+identity; its surviving $4.125 resistance was below the $4.18 close. The
+repaired calculation advances the target from $4.195 to $4.2555.
 
 Revision 40 preserves the first exit fill's origin throughout liquidation.
 When a protective stop partially fills and a managed sell finishes the
@@ -157,6 +166,31 @@ Repeated market events, acknowledgements, retries, or reconnects must not
 duplicate the logical entry request or its allocation.
 
 ## 5. Portfolio allocation and OMS entry completion
+
+Concurrent entries share one account admission fence. Portfolio allocates
+remaining free cash after all working reservations, fees and configured risk
+limits. Working entries count toward the position-count limit before filling.
+Re-delivery of an allocated request cannot create another reservation or order.
+
+An otherwise valid entry with no executable capacity remains a deferred
+Portfolio request. It retains its original request ID and breakout witness.
+Strategy revalidates current structure, completed non-red candle, momentum,
+liquidity and exit conditions before funding; it does not require a second
+breakout merely because capital was occupied. A breached exit condition or
+invalidated producer level withdraws that request. Released capital can fund
+the still-valid waiting request on a subsequent eligible candle. This is not
+permission to execute a stale signal after liquidation.
+
+Cash funding and risk-budget accounting are separate: investing cash in an
+existing position must not shrink the account risk-budget basis and then
+subtract that position's risk again. The risk basis includes funded position
+cost; available cash still excludes cash already spent or reserved.
+
+The simulator consumes each causal event's displayed liquidity once across
+competing orders, including immediate rematching and checkpoint restoration.
+At actual fill time it enforces nonnegative account cash including cumulative
+order commissions. More shares require new observed liquidity and funding;
+the simulator cannot fabricate depth or instant full fills.
 
 Portfolio evaluates the opportunity against the latest authoritative account
 state, competing entry requests, working allocations, existing positions,

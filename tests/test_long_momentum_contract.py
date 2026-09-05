@@ -36,6 +36,19 @@ def observation(price=101, **kwargs):
 
 
 class StrategyContractTests(unittest.TestCase):
+    def test_retired_first_resistance_reconciles_to_current_ladder(self):
+        engine = strategy.LongMomentumStrategyEngine()
+        for close, expected in ((4.1, None), (4.18, 4.2555)):
+            state = {"structural_profit_targets": [4.195],
+                     "structural_profit_target_frontier": [level(4.071, "retired"), level(4.125)],
+                     "previous_target_close": 4.07}
+            obs = confirmed_observation(price=close, position_quantity=100, source_timeframe="1s",
+                structural_resistance_levels=tuple(level(p) for p in (4.125, 4.195, 4.2275, 4.2555)))
+            result = engine._moving_target_result(
+                assignment(strategy_revision=41, parameters=parameters()), obs,
+                parameters(), state, side="long", stop=4.0)
+            self.assertEqual(result.evaluation.intents[0].profit_target_price if result else None, expected)
+
     def test_confirmed_non_red_breakout_requests_one_persistent_ask_entry(self):
         policy = parameters()
         policy["structural_entry"].update(enabled=True, minimum_reaction_probability=0,
@@ -50,7 +63,7 @@ class StrategyContractTests(unittest.TestCase):
                        for price in (100.4, 100.5, 100.6)],
         }}
         result = strategy.LongMomentumStrategyEngine().evaluate(
-            assignment(strategy_revision=40, parameters=policy, state=state), obs)
+            assignment(strategy_revision=41, parameters=policy, state=state), obs)
         self.assertEqual(len(result.evaluation.intents), 1)
         entry = result.evaluation.intents[0]
         self.assertEqual(entry.action, "enter_long")
@@ -62,7 +75,7 @@ class StrategyContractTests(unittest.TestCase):
         policy = parameters()
         policy["structural_entry"]["enabled"] = False
         result = strategy.LongMomentumStrategyEngine().evaluate(
-            assignment(strategy_revision=40, parameters=policy),
+            assignment(strategy_revision=41, parameters=policy),
             confirmed_observation(price=100.75, bar_open=100.80),
         )
         self.assertEqual(result.evaluation.signals[0].reason, "entry_closed_candle_bearish")
@@ -93,7 +106,7 @@ class StrategyContractTests(unittest.TestCase):
         self.assertTrue(strategy._prior_completed_frame_resistance_trigger(after, policy, state)["passed"])
 
     def test_pending_exit_emits_only_for_uncovered_late_fill(self):
-        current = assignment(strategy_revision=40, parameters=parameters(), status=strategy.AssignmentStatus.EXIT_PENDING,
+        current = assignment(strategy_revision=41, parameters=parameters(), status=strategy.AssignmentStatus.EXIT_PENDING,
                              state={"last_exit_reason": "protective_stop"})
         engine = strategy.LongMomentumStrategyEngine()
         obs = observation(94, position_quantity=50, pending_exit_quantity=50)
@@ -105,7 +118,7 @@ class StrategyContractTests(unittest.TestCase):
         self.assertEqual(state["structural_profit_target_frontier"][0]["unified_level_id"], "r1")
 
     def test_both_trailing_modes_are_versioned_and_selectable(self):
-        self.assertEqual(strategy.STRATEGY_REVISION, 40)
+        self.assertEqual(strategy.STRATEGY_REVISION, 41)
         self.assertEqual(parameters()["protection"]["trailing"]["mode"], "qualified_support")
         self.assertEqual(parameters("support_distance")["protection"]["trailing"]["mode"], "support_distance")
         with self.assertRaises(ValueError):
@@ -178,7 +191,7 @@ class StrategyContractTests(unittest.TestCase):
                           structural_resistance_levels=(level(first, "r1"), level(102), level(103), level(104), level(105)))
         obs = replace(obs, evaluation_events=events, source_timeframe="1s")
         return strategy.LongMomentumStrategyEngine()._moving_target_result(
-            assignment(strategy_revision=40, parameters=parameters(), status=strategy.AssignmentStatus.MANAGING),
+            assignment(strategy_revision=41, parameters=parameters(), status=strategy.AssignmentStatus.MANAGING),
             obs, parameters(), state, side="long", stop=95), state
 
     def test_first_resistance_close_moves_r3_once_per_completed_candle(self):
@@ -200,7 +213,7 @@ class StrategyContractTests(unittest.TestCase):
         self.assertIsNone(self.target_result(state=state)[0])
 
     def test_zero_fill_pending_entry_exits_on_breached_support(self):
-        current = assignment(strategy_revision=40, parameters=parameters(), status=strategy.AssignmentStatus.ENTRY_PENDING,
+        current = assignment(strategy_revision=41, parameters=parameters(), status=strategy.AssignmentStatus.ENTRY_PENDING,
                              state={"entry_at": NOW.isoformat(), "entry_reference_price": 100,
                                     "initial_stop": 95, "active_stop": 95})
         result = strategy.LongMomentumStrategyEngine().evaluate(current, observation(94, position_quantity=0))
@@ -232,11 +245,37 @@ class StrategyContractTests(unittest.TestCase):
                           structural_resistance_levels=(level(101, "r1"), level(102), level(103), level(104)))
         obs = replace(obs, evaluation_events=("bar_close",), source_timeframe="1s")
         result = strategy.LongMomentumStrategyEngine().evaluate(
-            assignment(strategy_revision=40, parameters=parameters(), status=strategy.AssignmentStatus.MANAGING, state=state), obs)
+            assignment(strategy_revision=41, parameters=parameters(), status=strategy.AssignmentStatus.MANAGING, state=state), obs)
         self.assertEqual([row.action for row in result.evaluation.intents], ["replace_protective_stop", "replace_profit_target"])
 
 
 class AssignmentExitRaceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_deferred_capital_keeps_one_request_and_rechecks_current_candle(self):
+        policy = parameters()
+        policy["structural_entry"].update(enabled=True, minimum_reaction_probability=0)
+        levels = tuple({**level(p), "side": -1} for p in (100.4, 100.5, 100.6, 101, 102, 103))
+        state = {"qualified_entry_resistance_snapshot": {
+            "selected_at": (NOW-timedelta(seconds=1)).isoformat(), "reference_close": 100.3,
+            "levels": [{"unified_level_id": str(p), "price": p} for p in (100.4,100.5,100.6)]}}
+        current = assignment(strategy_revision=41, parameters=policy, state=state)
+        obs = confirmed_observation(price=100.75, bar_open=100.3, structural_session_high=100.75,
+            structural_resistance_levels=levels, structural_support_levels=(level(99),level(98)))
+        result = strategy.LongMomentumStrategyEngine().evaluate(current, obs)
+        request = result.evaluation.intents[0]
+        current = replace(current, state=result.state, status=result.status)
+        executor = strategy.AssignedLongMomentumStrategy([current])
+        await executor.on_intent_deferred(request, reasons=("limited_by_available_funds",), event_time=NOW)
+        waiting = executor.assignments()[0]
+        resumed = replace(obs, observed_at=NOW+timedelta(seconds=1))
+        retry = strategy.LongMomentumStrategyEngine().evaluate(waiting, resumed)
+        self.assertEqual(retry.evaluation.intents[0].intent_id, request.intent_id)
+        self.assertEqual(retry.evaluation.signals[0].action, "hold")
+        red = strategy.LongMomentumStrategyEngine().evaluate(waiting, replace(resumed, bar_open=101))
+        self.assertEqual(red.evaluation.intents, ())
+        invalid = strategy.LongMomentumStrategyEngine().evaluate(waiting, replace(resumed, price=97))
+        self.assertEqual(invalid.evaluation.intents, ())
+        self.assertNotIn("pending_capital_request", invalid.state)
+
     async def test_partial_stop_managed_remainder_preserves_reentry_origin(self):
         for origin, enabled, disabled, expected in (
             ("protective_stop", True, False, strategy.AssignmentStatus.REENTRY_COOLDOWN),
@@ -248,7 +287,7 @@ class AssignmentExitRaceTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(origin=origin, enabled=enabled, disabled=disabled):
                 policy = parameters()
                 policy["reentry"]["after_protective_exit"] = enabled
-                current = assignment(strategy_revision=40, parameters=policy,
+                current = assignment(strategy_revision=41, parameters=policy,
                     status=strategy.AssignmentStatus.MANAGING,
                     state={"entries": 1, "disable_after_exit": disabled})
                 executor = strategy.AssignedLongMomentumStrategy([current])
@@ -271,7 +310,7 @@ class AssignmentExitRaceTests(unittest.IsolatedAsyncioTestCase):
         state = {"entry_reference_price": 3.65, "active_stop": 3.5, "initial_stop": 3.4,
                  "entry_at": NOW.isoformat(), "structural_profit_targets": [3.7845],
                  "structural_profit_target_frontier": [level(3.6745)], "entries": 1}
-        current = assignment(strategy_revision=40, parameters=parameters(), status=strategy.AssignmentStatus.MANAGING, state=state)
+        current = assignment(strategy_revision=41, parameters=parameters(), status=strategy.AssignmentStatus.MANAGING, state=state)
         executor = strategy.AssignedLongMomentumStrategy([current], revision=current.strategy_revision)
         request = replace(oms_helpers.intent(), action="add_long", metadata={"assignment_id": current.assignment_id})
         await executor.on_intent_rejected(request, reasons=("limited_by_open_risk",), event_time=NOW)
@@ -281,7 +320,7 @@ class AssignmentExitRaceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(after.state[key], value)
 
     async def test_cancel_and_late_buy_cannot_unlatch_exit(self):
-        current = assignment(strategy_revision=40, parameters=parameters(), status=strategy.AssignmentStatus.EXIT_PENDING,
+        current = assignment(strategy_revision=41, parameters=parameters(), status=strategy.AssignmentStatus.EXIT_PENDING,
                              state={"entry_acquisition_exit_latched": True})
         executor = strategy.AssignedLongMomentumStrategy([current], revision=current.strategy_revision)
         snapshot = SimpleNamespace(assignment_id=current.assignment_id, state="cancelled", action="enter_long",
@@ -295,6 +334,33 @@ class AssignmentExitRaceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PortfolioContractTests(unittest.IsolatedAsyncioTestCase):
+    async def test_duplicate_entry_request_cannot_reserve_cash_twice(self):
+        import asyncio
+        engine = self.make_portfolio()
+        request = replace(intent("same", quantity=20, price=100, invalidation=99),
+            metadata={"entry_completion_quote": "ask", "wait_for_capital": True})
+        results = await asyncio.gather(*(engine.approve(request, account_id="A") for _ in range(2)))
+        self.assertEqual(sum(approved is not None for _, approved in results), 1)
+        self.assertEqual(len(engine.reservations), 1)
+        self.assertIn("entry_request_already_allocated", results[1][0].reasons)
+
+    async def test_competing_requests_share_cash_and_defer_until_capacity_returns(self):
+        import asyncio
+        engine = self.make_portfolio()
+        requests = [replace(intent(name, quantity=60, price=100, invalidation=99), ticker=name,
+                    metadata={"assignment_id": name, "entry_completion_quote": "ask", "wait_for_capital": True})
+                    for name in ("AAA", "BBB", "CCC")]
+        results = await asyncio.gather(*(engine.approve(r, account_id="A") for r in requests))
+        self.assertEqual([d.approved_quantity for d, _ in results], [60, 39, 0])
+        self.assertEqual(str(results[2][0].status), "deferred")
+        self.assertIn(requests[2].intent_id, engine.states["A"].pending_entry_requests)
+        self.assertLessEqual(sum(r.reserved_notional for r in engine.reservations.values()), 10000)
+        engine.release_intent(requests[0].intent_id, reason="liquidated")
+        decision, approved = await engine.approve(requests[2], account_id="A")
+        self.assertEqual(decision.approved_quantity, 60)
+        self.assertIsNotNone(approved)
+        self.assertNotIn(requests[2].intent_id, engine.states["A"].pending_entry_requests)
+
     def make_portfolio(self, mode="backtest", fraction=1.0):
         journal = TradingJournal(Path(":memory:"))
         self.addCleanup(journal.close)

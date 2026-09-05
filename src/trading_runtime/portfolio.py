@@ -301,6 +301,7 @@ class PortfolioAccountState:
     policy_override: PortfolioPolicy | None = None
     disabled_strategy_allocations: set[str] = field(default_factory=set)
     pending_operational_commands: list[dict[str, Any]] = field(default_factory=list)
+    pending_entry_requests: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @property
     def synchronized(self) -> bool:
@@ -937,6 +938,14 @@ class PortfolioManagementEngine:
         requested = float(intent.quantity)
         reasons: list[str] = []
         entry = intent.action in ENTRY_ACTIONS
+        existing_request = next((row for row in self.reservations.values()
+            if row.account_id == state.profile.account_id and row.intent_id == intent.intent_id), None)
+        if entry and existing_request is not None:
+            metrics = self._metrics(state)
+            return self._decision(intent, state, PortfolioDecisionStatus.APPROVED,
+                existing_request.quantity, existing_request.quantity,
+                existing_request.reserved_planned_risk, existing_request.reservation_id,
+                ["entry_request_already_allocated"], metrics, metrics, now), None
         reduction = intent.action in REDUCTION_ACTIONS
         protection_update = intent.action in PROTECTION_ACTIONS
         control_mode = state.control_mode
@@ -1047,6 +1056,11 @@ class PortfolioManagementEngine:
 
         price = _worst_entry_price(intent) if entry else float(intent.reference_price)
         base_price = price * fx_to_base
+        if (entry and requested <= 0 and price > 0 and intent.metadata.get("wait_for_capital")
+                and intent.capital_request is not None):
+            return self._decision(intent, state, PortfolioDecisionStatus.DEFERRED,
+                requested, 0.0, 0.0, "", ["limited_by_available_funds"],
+                metrics_before, metrics_before, now), None
         if requested <= 0 or price <= 0:
             decision = self._decision(
                 intent,
@@ -1087,7 +1101,8 @@ class PortfolioManagementEngine:
             decision = self._decision(
                 intent,
                 state,
-                PortfolioDecisionStatus.REJECTED,
+                (PortfolioDecisionStatus.DEFERRED if entry and intent.metadata.get("wait_for_capital")
+                 else PortfolioDecisionStatus.REJECTED),
                 requested,
                 0.0,
                 0.0,
@@ -1116,7 +1131,8 @@ class PortfolioManagementEngine:
             decision = self._decision(
                 intent,
                 state,
-                PortfolioDecisionStatus.REJECTED,
+                (PortfolioDecisionStatus.DEFERRED if entry and intent.metadata.get("wait_for_capital")
+                 else PortfolioDecisionStatus.REJECTED),
                 requested,
                 0.0,
                 0.0,
@@ -1416,11 +1432,11 @@ class PortfolioManagementEngine:
         assert summary is not None
         eligible_equity = max(0.0, float(summary.netliquidation) * policy.eligible_equity_fraction)
         broker_cash_capacity = self._broker_cash_capacity(state)
-        # Entry risk is based on the current broker-reported cash authority,
-        # not a campaign baseline or an internally compounded balance. This
-        # makes realized gains available to later entries while preserving a
-        # fail-closed settled-cash boundary for cash accounts.
-        risk_capital = max(0.0, broker_cash_capacity + acquisition_notional - policy.minimum_cash_reserve)
+        # Keep funded position cost in the risk-budget base; subtracting the
+        # position's risk from a cash-only base double-counts its capital use.
+        # Actual buying capacity below remains bounded by unspent broker cash.
+        funded_cost = sum(abs(float(row.position) * float(row.avgCost)) for row in state.positions.values())
+        risk_capital = max(0.0, broker_cash_capacity + funded_cost - policy.minimum_cash_reserve)
         current_position = state.positions.get(intent.ticker.upper())
         current_value = abs(float(current_position.mktValue)) if current_position else 0.0
         reserved_notional = sum(
@@ -1507,8 +1523,11 @@ class PortfolioManagementEngine:
                 - allocated_risk
                 - reserved_risk,
             ) / risk_per_share
-        open_positions = sum(1 for row in state.positions.values() if abs(float(row.position)) > 1e-12)
-        if current_position is None and open_positions >= policy.maximum_open_positions:
+        occupied_tickers = {ticker for ticker, row in state.positions.items() if abs(float(row.position)) > 1e-12}
+        occupied_tickers.update(row.ticker for row in self.reservations.values()
+            if row.account_id == state.profile.account_id and row.reserved_notional > 0
+            and row.status not in {"released", "filled", "cancelled", "rejected", "policy_blocked"})
+        if intent.ticker.upper() not in occupied_tickers and len(occupied_tickers) >= policy.maximum_open_positions:
             capacities["position_count"] = 0.0
         for dimension, fraction in (
             ("sector", policy.maximum_sector_fraction),
@@ -1580,6 +1599,16 @@ class PortfolioManagementEngine:
         *,
         decision_id: str = "",
     ) -> PortfolioDecision:
+        if status == PortfolioDecisionStatus.DEFERRED:
+            state.pending_entry_requests[intent.intent_id] = {
+                "request_id": intent.intent_id, "ticker": intent.ticker,
+                "assignment_id": intent.metadata.get("assignment_id", ""),
+                "requested_at": intent.metadata.get("capital_requested_at", intent.event_time.isoformat()),
+                "last_validated_at": intent.event_time.isoformat(), "reasons": list(reasons),
+            }
+            self._persist_state(state)
+        elif state.pending_entry_requests.pop(intent.intent_id, None) is not None:
+            self._persist_state(state)
         decision = PortfolioDecision(
             decision_id=decision_id or str(uuid4()),
             request_id=intent.intent_id,
@@ -1626,6 +1655,15 @@ class PortfolioManagementEngine:
             },
         )
         return decision
+
+    def withdraw_invalidated_requests(self, account_id: str, active_request_ids: set[str]) -> None:
+        state = self._state(account_id)
+        for request_id in list(state.pending_entry_requests):
+            if request_id not in active_request_ids:
+                request = state.pending_entry_requests.pop(request_id)
+                self._record("portfolio_request", request_id, account_id,
+                    {"event": "deferred_entry_withdrawn", "reason": "strategy_authorization_ended", **request})
+                self._persist_state(state)
 
     def _metrics(self, state: PortfolioAccountState) -> dict[str, float]:
         summary = state.summary
@@ -1831,6 +1869,7 @@ class PortfolioManagementEngine:
                 "pending_operational_commands": list(
                     state.pending_operational_commands
                 ),
+                "pending_entry_requests": dict(state.pending_entry_requests),
                 "reservations": [
                     asdict(row)
                     for row in self.reservations.values()
@@ -1876,6 +1915,7 @@ class PortfolioManagementEngine:
                     for item in payload.get("pending_operational_commands") or ()
                     if isinstance(item, Mapping)
                 ][-100:]
+                state.pending_entry_requests = dict(payload.get("pending_entry_requests") or {})
                 for raw in payload.get("reservations") or []:
                     reservation = PortfolioReservation(
                         **{

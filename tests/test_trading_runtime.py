@@ -31,7 +31,7 @@ from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter, Simulat
 TS = datetime(2026, 7, 13, 14, 0, tzinfo=timezone.utc)
 
 
-def quote(*, bid: float, ask: float, bid_size: float = 100, ask_size: float = 100) -> QuoteEvent:
+def quote(*, bid: float, ask: float, bid_size: float = 100, ask_size: float = 100, sequence: int = 1) -> QuoteEvent:
     return QuoteEvent(
         ask_exchange=11,
         ask_price=ask,
@@ -43,7 +43,7 @@ def quote(*, bid: float, ask: float, bid_size: float = 100, ask_size: float = 10
         indicators=(),
         ingest_ts=TS,
         raw={"conid": 265598},
-        sequence=1,
+        sequence=sequence,
         source="test",
         tape=3,
         ticker="AAPL",
@@ -70,6 +70,34 @@ def trade(*, price: float, size: float = 100) -> TradeEvent:
 
 
 class SimulatedBrokerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_repeated_match_and_restore_cannot_reuse_displayed_liquidity(self):
+        orders = [OrderRequest(acctId="DU123", conid=265598, cOID=name, ticker="AAPL",
+            orderType="LMT", side="BUY", quantity=40, price=100) for name in ("a", "b")]
+        for order in orders:
+            await self.broker.place_orders("DU123", [order])
+        event = quote(bid=99, ask=100, ask_size=100)
+        fills = await self.broker.on_market_event(event)
+        self.assertEqual(sum(f.size for f in fills), 50)
+        self.assertEqual(await self.broker.match_current_orders("AAPL", TS), [])
+        restored = SimulatedBrokerAdapter(["DU123"], self.broker.config)
+        await restored.initialize()
+        restored.restore_checkpoint_state(self.broker.checkpoint_state())
+        self.assertEqual(await restored.match_current_orders("AAPL", TS), [])
+        new = await restored.on_market_event(replace(event, sequence=2))
+        self.assertEqual(sum(f.size for f in new), 30)
+
+    async def test_competing_fills_cannot_overdraw_cash_including_fees(self):
+        broker = SimulatedBrokerAdapter(["CASH"], SimulationConfig(initial_cash=1000,
+            commission_per_share=0.01, minimum_commission=1, liquidity_participation=1))
+        await broker.initialize()
+        await broker.on_market_event(quote(bid=99, ask=100, ask_size=100))
+        for name in ("a", "b"):
+            await broker.place_orders("CASH", [OrderRequest(acctId="CASH", conid=265598,
+                cOID=name, ticker="AAPL", orderType="LMT", side="BUY", quantity=6, price=100)])
+        fills = await broker.on_market_event(quote(bid=99, ask=100, ask_size=100, sequence=2))
+        self.assertEqual(sum(f.size for f in fills), 9)
+        self.assertAlmostEqual(float((await broker.account_summary("CASH")).totalcashvalue), 98)
+
     async def asyncSetUp(self) -> None:
         self.broker = SimulatedBrokerAdapter(
             ["DU123"],
@@ -79,6 +107,10 @@ class SimulatedBrokerTests(unittest.IsolatedAsyncioTestCase):
         await self.broker.on_market_event(quote(bid=99, ask=100))
 
     async def test_partial_market_fills_use_quote_liquidity_and_ibkr_statuses(self) -> None:
+        # This tests liquidity, so fund the higher-priced second partial fill.
+        self.broker = SimulatedBrokerAdapter(["DU123"], SimulationConfig(
+            initial_cash=20_000, commission_per_share=0, minimum_commission=0, liquidity_participation=0.5))
+        await self.broker.initialize()
         order = OrderRequest(acctId="DU123", conid=265598, cOID="parent", ticker="AAPL", orderType="MKT", side="BUY", quantity=100)
         response = await self.broker.place_orders("DU123", [order])
         self.assertEqual(response[0]["order_status"], "Submitted")
@@ -401,9 +433,9 @@ class SimulatedBrokerTests(unittest.IsolatedAsyncioTestCase):
         )])
 
         fills = []
-        for _ in range(5):
+        for index in range(5):
             fills.extend(
-                await broker.on_market_event(quote(bid=99, ask=100, ask_size=4))
+                await broker.on_market_event(quote(bid=99, ask=100, ask_size=4, sequence=index + 2))
             )
 
         self.assertEqual(sum(fill.size for fill in fills), 10)
@@ -625,10 +657,14 @@ class SimulatedBrokerTests(unittest.IsolatedAsyncioTestCase):
             quote(bid=99, ask=100, bid_size=80, ask_size=80)
         )
         second = await self.broker.on_market_event(
-            quote(bid=99, ask=100, bid_size=80, ask_size=80)
+            quote(bid=99, ask=100, bid_size=80, ask_size=80, sequence=2)
         )
-
-        sold = sum(fill.size for fill in [*first, *second] if fill.side == "S")
+        third = await self.broker.on_market_event(
+            quote(bid=99, ask=100, bid_size=80, ask_size=80, sequence=3)
+        )
+        self.assertEqual(sum(fill.size for fill in first), 40)
+        self.assertEqual(sum(fill.size for fill in second), 40)
+        sold = sum(fill.size for fill in [*first, *second, *third] if fill.side == "S")
         self.assertEqual(sold, 100)
         self.assertEqual(await self.broker.positions("DU123"), [])
 
@@ -661,10 +697,14 @@ class SimulatedBrokerTests(unittest.IsolatedAsyncioTestCase):
             quote(bid=99, ask=100, bid_size=80, ask_size=80)
         )
         second = await self.broker.on_market_event(
-            quote(bid=99, ask=100, bid_size=80, ask_size=80)
+            quote(bid=99, ask=100, bid_size=80, ask_size=80, sequence=2)
         )
-
-        sold = sum(fill.size for fill in [*first, *second] if fill.side == "S")
+        third = await self.broker.on_market_event(
+            quote(bid=99, ask=100, bid_size=80, ask_size=80, sequence=3)
+        )
+        self.assertEqual(sum(fill.size for fill in first), 40)
+        self.assertEqual(sum(fill.size for fill in second), 40)
+        sold = sum(fill.size for fill in [*first, *second, *third] if fill.side == "S")
         self.assertEqual(sold, 100)
         self.assertEqual(await self.broker.positions("DU123"), [])
         snapshots = await self.broker.live_orders()

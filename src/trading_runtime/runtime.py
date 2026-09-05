@@ -575,6 +575,12 @@ class TradingRuntime:
         if evaluation.intents and self.order_manager is None:
             raise ValueError("Strategy emitted semantic intents but the runtime has no order manager")
         results: list[dict[str, Any]] = []
+        # Portfolio owns deferred requests; Strategy must refresh their causal
+        # authorization. Withdraw any request whose strategy witness expired.
+        if self.config.strategy_revision >= 41 and hasattr(self.strategy, "assignments"):
+            active = {str(a.state.get("pending_capital_request", {}).get("request_id", ""))
+                      for a in self.strategy.assignments() if a.account_id == account_id}
+            self.portfolio.withdraw_invalidated_requests(account_id, active)
         for intent in evaluation.intents:
             self.journal.append(
                 run_id=self.run_id,
@@ -619,10 +625,15 @@ class TradingRuntime:
                 await self._refresh_portfolio_from_broker()
             decision, approved_intent = await self.portfolio.approve(intent, account_id=account_id)
             if approved_intent is None:
-                await self._record_intent_rejection(intent, account_id, decision)
+                if "entry_request_already_allocated" not in decision.reasons:
+                    await self._record_intent_rejection(intent, account_id, decision)
                 results.append({"decision": decision.payload(), "order_group": None})
                 continue
             assignment = self._assignment_for_intent(approved_intent)
+            if str(approved_intent.action) in ENTRY_ACTIONS:
+                funded = getattr(self.strategy, "on_capital_request_funded", None)
+                if funded is not None:
+                    funded(approved_intent)
             opening_entry = str(approved_intent.action) in {"enter_long", "enter_short"}
             if opening_entry and assignment is not None:
                 try:
@@ -713,7 +724,8 @@ class TradingRuntime:
         """
 
         reasons = [str(value) for value in getattr(decision, "reasons", ())]
-        handler = getattr(self.strategy, "on_intent_rejected", None)
+        deferred = str(getattr(decision, "status", "")) == "deferred"
+        handler = getattr(self.strategy, "on_intent_deferred" if deferred else "on_intent_rejected", None)
         if handler is not None:
             result = handler(
                 intent,
@@ -723,21 +735,21 @@ class TradingRuntime:
             if hasattr(result, "__await__"):
                 await result
         reason_detail = (
-            "Portfolio rejected the entry: " + ", ".join(reasons)
+            ("Portfolio deferred the entry: " if deferred else "Portfolio rejected the entry: ") + ", ".join(reasons)
             if reasons
             else "Portfolio rejected the entry without a reason code."
         )
         self.journal.append(
             run_id=self.run_id,
             category="strategy_decision",
-            entity_type="intent_rejection",
-            entity_id=f"{intent.intent_id}:portfolio-rejected",
+            entity_type="intent_deferral" if deferred else "intent_rejection",
+            entity_id=f"{intent.intent_id}:portfolio-{'deferred' if deferred else 'rejected'}",
             account_id=account_id,
             event_time=intent.event_time,
             payload={
-                "event": "intent_rejected",
+                "event": "intent_deferred" if deferred else "intent_rejected",
                 "action": "wait",
-                "reason": "portfolio_rejected",
+                "reason": "portfolio_deferred" if deferred else "portfolio_rejected",
                 "reason_detail": reason_detail,
                 "rejection_reasons": reasons,
                 "ticker": intent.ticker,

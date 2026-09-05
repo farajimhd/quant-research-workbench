@@ -34,8 +34,8 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 40
-HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39)
+STRATEGY_REVISION = 41
+HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40)
 
 _COMPLETED_FRAME_TOP_N_ENTRY_MODE = "prior_completed_frame_top_n_below_session_high"
 _EVENT_PRICE_TOP_N_ENTRY_MODE = "event_price_top_n_below_session_high"
@@ -2460,6 +2460,20 @@ class LongMomentumStrategyEngine:
         reentry = parameters["reentry"]
         state.pop("manual_entry_requested", None)
         state.pop("force_entry_requested", None)
+        pending_capital = dict(state.get("pending_capital_request") or {})
+        if self.revision >= 41 and pending_capital:
+            # Waiting for cash does not suspend exit authority. No broker
+            # position/order exists yet, so invalidation withdraws the request.
+            probe = self._evaluate_position(
+                replace(assignment, status=AssignmentStatus.ENTRY_PENDING),
+                observation, parameters, dict(state),
+            )
+            if any(i.action in {"exit", "cover"} for i in probe.evaluation.intents):
+                state.pop("pending_capital_request", None)
+                return self._result(assignment, observation, "wait", "capital_request_invalidated",
+                    0.0, 1.0, state, AssignmentStatus.WATCHING,
+                    metadata={"request_id": pending_capital["request_id"],
+                              "exit_reason": probe.evaluation.intents[0].reason})
         if assignment.status == AssignmentStatus.ENTRY_PENDING:
             if self.revision >= 37:
                 return self._evaluate_position(assignment, observation, parameters, state)
@@ -2607,6 +2621,28 @@ class LongMomentumStrategyEngine:
                 parameters,
                 state,
             )
+        if self.revision >= 41 and pending_capital:
+            witness = dict(pending_capital.get("trigger") or {})
+            identity = str(dict(witness.get("level") or {}).get("unified_level_id") or "")
+            current = next((dict(row) for row in
+                (*observation.structural_resistance_levels, *observation.structural_support_levels)
+                if identity and str(row.get("unified_level_id") or "") == identity), None)
+            if current is not None:
+                boundary = _level_metric(current, "price", "entry_boundary")
+                valid = (_level_passes_configured_quality(current, parameters["structural_entry"])
+                         and observation.price > boundary > 0)
+            else:
+                valid = False
+            if not valid:
+                state.pop("pending_capital_request", None)
+                return self._result(assignment, observation, "wait", "capital_request_structure_invalidated",
+                    0.0, 1.0, state, AssignmentStatus.WATCHING,
+                    metadata={"request_id": pending_capital["request_id"]})
+            unified_trigger = {**witness, "passed": True, "level": current,
+                "reference_price": boundary, "threshold_price": boundary,
+                "reason": "pending_capital_breakout_revalidated",
+                "original_cross_at": pending_capital["requested_at"],
+                "revalidated_at": observation.observed_at.isoformat()}
 
         liquidity_policy = dict(parameters.get("liquidity_admission") or {})
         execution_detail: dict[str, Any] = {}
@@ -3182,6 +3218,7 @@ class LongMomentumStrategyEngine:
                 "entry_acquisition_exit_latched": False,
                 "liquidation_origin_fill_role": "",
                 "liquidation_origin_reentry_after_fill": False,
+                "last_exit_reason": "",
                 "trailing_support_selection": None,
                 "pending_profit_target_advance": None,
                 "previous_target_close": None,
@@ -4069,12 +4106,32 @@ class LongMomentumStrategyEngine:
         for row in (*observation.structural_resistance_levels, *observation.structural_support_levels):
             if identity and str(row.get("unified_level_id") or "") == identity:
                 if not retry and not _level_passes_configured_quality(row, parameters["protection"]["profit_ladder"]):
-                    return None
+                    if self.revision < 41:
+                        return None
+                    continue
                 first = {**first, **_compact_structural_level_reference(row)}
                 found = True
                 break
         if not found and not retry:
-            return None
+            if self.revision < 41:
+                return None
+            # Producer levels can merge or retire. Reconcile the unconsumed
+            # ladder against today's book rather than waiting forever for a
+            # vanished identity. This is a current producer level, never a
+            # synthetic boundary or an unconditional target advance.
+            anchor = _level_metric(first, "price", "target_price")
+            reconciled: dict[str, Any] = {}
+            _structural_profit_targets(
+                replace(observation, price=anchor), parameters, stop=stop,
+                side=side, luld_target=_luld_target(observation, parameters, side=side),
+                selection_evidence=reconciled,
+            )
+            surviving = _target_frontier_from_selection(reconciled)
+            if not surviving:
+                return None
+            first = dict(surviving[0])
+            state["structural_profit_target_frontier"] = surviving
+            first["reconciled_from_missing_level_id"] = identity
         boundary = _level_metric(first, "price", "target_price")
         crossed = ((observation.price > boundary if side == "long" else observation.price < boundary)
                    if candle_clock else
@@ -4409,6 +4466,11 @@ class LongMomentumStrategyEngine:
     ) -> StrategyEngineResult:
         event_id = str(uuid4())
         resolved_metadata = dict(metadata or {})
+        pending_capital = dict(state.get("pending_capital_request") or {})
+        capital_retry = self.revision >= 41 and bool(pending_capital) and action in {"enter_long", "enter_short"}
+        if capital_retry:
+            resolved_metadata.update(capital_request_id=pending_capital["request_id"],
+                capital_requested_at=pending_capital["requested_at"], capital_revalidation=True)
         if action in {
             "enter_long",
             "enter_short",
@@ -4452,7 +4514,7 @@ class LongMomentumStrategyEngine:
             signal_type=reason,
             ticker=observation.ticker.upper(),
             event_time=observation.observed_at,
-            action=action,  # type: ignore[arg-type]
+            action="hold" if capital_retry else action,  # type: ignore[arg-type]
             direction=(
                 "bearish"
                 if action in {"reduce_long", "take_profit", "exit", "enter_short", "add_short"}
@@ -4493,7 +4555,7 @@ class LongMomentumStrategyEngine:
             )
             intents = (
                 StrategyIntent(
-                    intent_id=event_id,
+                    intent_id=pending_capital["request_id"] if capital_retry else event_id,
                     ticker=observation.ticker.upper(),
                     event_time=observation.observed_at,
                     action=action,  # type: ignore[arg-type]
@@ -4528,6 +4590,8 @@ class LongMomentumStrategyEngine:
                     reason=reason,
                     metadata={
                         "assignment_id": assignment.assignment_id,
+                        **({"wait_for_capital": True} if self.revision >= 41
+                           and action in {"enter_long", "enter_short"} else {}),
                         **({"entry_completion_quote": "ask" if self.revision >= 39 else "bid"} if self.revision >= 37
                            and action in {"enter_long", "add_long"} else {}),
                         "bid": observation.bid,
@@ -5123,6 +5187,8 @@ class AssignedLongMomentumStrategy:
             if assignment.assignment_id != assignment_id:
                 continue
             state = dict(assignment.state)
+            if str(intent.action) in {"enter_long", "enter_short"}:
+                state.pop("pending_capital_request", None)
             if str(intent.action) == "replace_protective_stop":
                 state["active_stop"] = float(intent.metadata["previous_stop"])
                 state["trailing_support_selection"] = intent.metadata.get("previous_support_selection")
@@ -5228,6 +5294,35 @@ class AssignedLongMomentumStrategy:
             self._assignments[key] = updated
             self._campaigns.register(updated)
             return
+
+    async def on_intent_deferred(self, intent: StrategyIntent, *, reasons: tuple[str, ...],
+                                 event_time: datetime) -> None:
+        for key, assignment in self._assignments.items():
+            if assignment.assignment_id != str(intent.metadata.get("assignment_id") or ""):
+                continue
+            state = dict(assignment.state)
+            previous = dict(state.get("pending_capital_request") or {})
+            state["pending_capital_request"] = previous or {
+                "request_id": intent.intent_id, "requested_at": intent.event_time.isoformat(),
+                "trigger": dict(intent.metadata.get("unified_structural_trigger") or {}),
+            }
+            state["entries"] = max(0, int(state.get("entries") or 0) - 1)
+            state["pending_capital_reasons"] = list(reasons)
+            updated = replace(assignment, state=state, status=AssignmentStatus.WATCHING, updated_at=event_time)
+            self._assignments[key] = updated
+            self._campaigns.register(updated)
+            return
+
+    def on_capital_request_funded(self, intent: StrategyIntent) -> None:
+        for key, assignment in self._assignments.items():
+            if assignment.assignment_id == str(intent.metadata.get("assignment_id") or ""):
+                state = dict(assignment.state)
+                state.pop("pending_capital_request", None)
+                state.pop("pending_capital_reasons", None)
+                updated = replace(assignment, state=state)
+                self._assignments[key] = updated
+                self._campaigns.register(updated)
+                return
 
     def upsert_assignment(self, assignment: StrategyAssignment) -> None:
         key = (assignment.account_id, assignment.ticker.upper())
@@ -5368,6 +5463,10 @@ class AssignedLongMomentumStrategy:
                 if assignment.strategy_revision >= 37 and state.get("entry_acquisition_exit_latched"):
                     status = (AssignmentStatus.EXIT_PENDING if abs(float(aggregate_position_quantity or 0)) > 1e-9
                               else AssignmentStatus.COMPLETED)
+                    if (assignment.strategy_revision >= 41 and status == AssignmentStatus.COMPLETED
+                            and not state.get("disable_after_exit") and assignment.permissions.reenter
+                            and bool(resolve_long_momentum_parameters(assignment.parameters)["reentry"].get("enabled"))):
+                        status = AssignmentStatus.WATCHING
                 updated = replace(
                     assignment,
                     status=status,
@@ -5399,6 +5498,8 @@ class AssignedLongMomentumStrategy:
                     state["liquidation_origin_reentry_after_fill"] = bool(
                         getattr(snapshot, "reentry_after_fill", False)
                     )
+                    if not state.get("last_exit_reason"):
+                        state["last_exit_reason"] = fill_role or "managed_exit"
                 if assignment.strategy_revision >= 37:
                     state["entry_acquisition_exit_latched"] = True
                 incremental = incremental_fill
