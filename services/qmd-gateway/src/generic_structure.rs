@@ -5,7 +5,7 @@ use chrono_tz::America::New_York;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
-pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 16;
+pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 17;
 pub const STRUCTURE_HOLD_SCORE_REVISION: &str = "beta22-wilson90-v1";
 pub const TICKER_RELATIVE_QUALITY_SCORE_REVISION: &str =
     "frozen-prior-session-role-ecdf-midrank-v1";
@@ -763,6 +763,17 @@ impl GenericStructureEngine {
             self.last_arrival_sequence = arrival_sequence;
             return Vec::new();
         }
+        // Session/opening-range extrema follow the same independent high/low
+        // eligibility as candles, not the last-price gate used for pivots.
+        if let MarketEvent::Trade(trade) = event {
+            if trade_rule.update_high_low
+                && trade.price > 0.0
+                && trade.price.is_finite()
+                && trade.size > 0.0
+            {
+                self.observe_trade_reference(ts, trade.price);
+            }
+        }
         let mut emitted = Vec::new();
         match event {
             MarketEvent::Quote(quote)
@@ -797,7 +808,6 @@ impl GenericStructureEngine {
                     self.rolling_trade_size = ewma(self.rolling_trade_size, size, 0.05);
                 }
                 self.last_reference_price = trade.price;
-                self.observe_trade_reference(ts, trade.price);
                 self.update_unified_level_lifecycles(ts, trade.price, size);
                 self.observe_trade_volume(trade.price, size, aggressor);
                 self.update_level_footprints(trade.price, size, aggressor);
@@ -4420,6 +4430,86 @@ mod tests {
         let snapshot = engine.snapshot(Utc::now());
         assert_eq!(snapshot.session_high, 102.0);
         assert_eq!(snapshot.session_low, 99.0);
+    }
+
+    #[test]
+    fn extrema_eligibility_is_independent_of_last_price_eligibility() {
+        let start = new_york_ms(2026, 8, 21, 9, 30, 0);
+        for update_high_low in [false, true] {
+            for update_last in [false, true] {
+                let mut engine = GenericStructureEngine::new("TEST");
+                engine.apply_event(&trade(start, 100.0, 100.0, 1), TradeUpdateRule::regular());
+                let rule = TradeUpdateRule {
+                    update_high_low,
+                    update_last,
+                    update_volume: false,
+                };
+                engine.apply_event(&trade(start + 1, 110.0, 100.0, 2), rule);
+                engine.apply_event(&trade(start + 2, 90.0, 100.0, 3), rule);
+                let snapshot = engine.snapshot(Utc.timestamp_millis_opt(start + 2).unwrap());
+                let expected_high = if update_high_low { 110.0 } else { 100.0 };
+                let expected_low = if update_high_low { 90.0 } else { 100.0 };
+                assert_eq!(snapshot.session_high, expected_high);
+                assert_eq!(snapshot.session_low, expected_low);
+                assert_eq!(snapshot.opening_range_high, expected_high);
+                assert_eq!(snapshot.opening_range_low, expected_low);
+                assert_eq!(
+                    engine.last_trade_price,
+                    if update_last { 90.0 } else { 100.0 }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn eligible_form_t_still_updates_premarket_extrema() {
+        let rules = crate::bars::TradeAggregationRules::new([
+            (0, TradeUpdateRule::regular()),
+            (
+                12,
+                TradeUpdateRule {
+                    update_high_low: false,
+                    update_last: false,
+                    update_volume: true,
+                },
+            ),
+        ])
+        .unwrap();
+        let start = new_york_ms(2026, 8, 21, 4, 2, 52);
+        let mut event = trade(start, 3.46, 100.0, 1);
+        let MarketEvent::Trade(ref mut print) = event else {
+            unreachable!()
+        };
+        print.conditions = vec![12];
+        let rule = rules.resolve(&print.conditions, print.ts);
+        assert_eq!(rule, TradeUpdateRule::regular());
+        let mut engine = GenericStructureEngine::new("TEST");
+        engine.apply_event(&event, rule);
+        assert_eq!(engine.snapshot(event.ts()).session_high, 3.46);
+    }
+
+    #[test]
+    fn extrema_ignore_zero_size_and_nonfinite_prices() {
+        let start = new_york_ms(2026, 8, 21, 4, 0, 0);
+        let mut engine = GenericStructureEngine::new("TEST");
+        engine.apply_event(&trade(start, 100.0, 100.0, 1), TradeUpdateRule::regular());
+        for (index, (price, size)) in [
+            (110.0, 0.0),
+            (90.0, -1.0),
+            (f64::INFINITY, 100.0),
+            (f64::NAN, 100.0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            engine.apply_event(
+                &trade(start + index as i64 + 1, price, size, index as u64 + 2),
+                TradeUpdateRule::regular(),
+            );
+        }
+        let snapshot = engine.snapshot(Utc.timestamp_millis_opt(start + 5).unwrap());
+        assert_eq!(snapshot.session_high, 100.0);
+        assert_eq!(snapshot.session_low, 100.0);
     }
 
     #[test]

@@ -64,6 +64,12 @@ upward moves.
 | Accepted orders, fills, cash, and positions | Broker; simulated broker in backtest | An intent or local acknowledgement is not a fill. |
 | Chart and activity presentation | Shared journal projections | Shows what the decision and broker actually knew at each event; does not drive execution. |
 
+Structure algorithm 17 calculates session and opening-range highs/lows using
+the shared `update_high_low` eligibility flag, independently of `update_last`.
+Timely, otherwise eligible Form-T trades remain included during extended hours.
+Delayed reports remain excluded from current structural calculations. Cached
+structure from earlier algorithm versions is not valid for the corrected rule.
+
 Entry presentation uses the entry decision's recorded resistance-selection
 snapshot: a solid black HOD line and black dashed R1/R2/R3 lines, numbered
 downward from HOD: R1 is the nearest selected resistance below HOD,
