@@ -225,6 +225,7 @@ class TradingRuntime:
                 shortability_provider=broker if hasattr(broker, "shortability") else None,
                 fill_callback=self._on_order_group_fill,
                 state_callback=self._on_order_group_state,
+                reprice_authorizer=self._authorize_entry_reprice,
                 execution_market_data=self.execution_market_data,
                 enforce_wall_clock_quote_freshness=(
                     config.mode in {RunMode.LIVE, RunMode.PAPER}
@@ -551,6 +552,10 @@ class TradingRuntime:
                 },
             )
 
+    async def _authorize_entry_reprice(self, intent: StrategyIntent, account_id: str, price: float, remaining: float) -> bool:
+        await self._refresh_portfolio_from_broker()
+        return await self.portfolio.authorize_entry_reprice(intent, account_id, price, remaining)
+
     async def _execute_intents(
         self,
         evaluation: StrategyEvaluation,
@@ -576,6 +581,28 @@ class TradingRuntime:
                     "strategy_revision": self.config.strategy_revision,
                 },
             )
+            if intent.metadata.get("cancel_entry_acquisition") and self.order_manager is not None:
+                await self.order_manager.cancel_entry_acquisition(intent, account_id=account_id)
+                await self._refresh_portfolio_from_broker()
+                positions = await self.broker.positions(account_id)
+                assignment = self._assignment_for_intent(intent)
+                held = sum(float(row.position) for row in positions
+                           if (assignment is not None and int(row.conid) == assignment.conid)
+                           or (assignment is None and str(row.contractDesc).upper() == intent.ticker.upper()))
+                if held <= 0:
+                    # Reconciliation delivers cancellation to the assignment.
+                    # No fabricated one-share sell or Portfolio reduction is needed.
+                    await self.order_manager.reconcile()
+                    results.append({"decision": {"status": "acquisition_cancellation_requested", "held_quantity": held},
+                                    "order_group": None})
+                    continue
+                pending_exit = await self.order_manager.pending_exit_quantity(intent, account_id=account_id)
+                if held <= pending_exit + 1e-9:
+                    results.append({"decision": {"status": "exit_fill_pending", "held_quantity": held},
+                                    "order_group": None})
+                    continue
+                intent = replace(intent, quantity=held - pending_exit,
+                                 metadata={**intent.metadata, "incremental_exit_reconciliation": pending_exit > 0})
             if str(intent.action) in ENTRY_ACTIONS:
                 # Portfolio sizing must see the latest broker account state at
                 # the admission boundary. Periodic synchronization remains a
@@ -612,10 +639,10 @@ class TradingRuntime:
                     account_id=account_id,
                     event=event,
                 )
-                if str(approved_intent.action) == "replace_profit_target":
+                if str(approved_intent.action) in {"replace_profit_target", "replace_protective_stop"}:
                     self.portfolio.release_intent(
                         approved_intent.intent_id,
-                        reason="profit_target_replaced",
+                        reason="protection_replaced",
                     )
                 if order_group.filled_quantity > 0:
                     # Historical orders may fill synchronously from the
@@ -635,7 +662,12 @@ class TradingRuntime:
                     "decision": decision.payload(),
                     "order_group": asdict(order_group),
                 })
-            except Exception:
+            except Exception as exc:
+                if str(approved_intent.action) in {"replace_profit_target", "replace_protective_stop"}:
+                    handler = getattr(self.strategy, "on_intent_rejected", None)
+                    if handler is not None:
+                        await handler(approved_intent, reasons=("broker_replacement_not_confirmed",),
+                                      event_time=approved_intent.event_time)
                 snapshot = self.order_manager.snapshot_for_intent(approved_intent.intent_id)
                 if snapshot is None or snapshot.state != OrderManagementState.OUTCOME_UNKNOWN:
                     self.portfolio.release_intent(
@@ -644,6 +676,15 @@ class TradingRuntime:
                     )
                     if opening_entry and assignment is not None:
                         self.control_plane.campaigns.release_reservation(assignment)
+                if str(approved_intent.action) in {"replace_profit_target", "replace_protective_stop"}:
+                    await self.order_manager.reconcile()
+                    self.journal.append(run_id=self.run_id, category="order_management",
+                                        entity_type="protection_replacement_deferred", entity_id=approved_intent.intent_id,
+                                        account_id=account_id, event_time=approved_intent.event_time,
+                                        payload={"action": str(approved_intent.action), "reason": str(exc)})
+                    results.append({"decision": {"status": "protection_replacement_deferred", "reason": str(exc)},
+                                    "order_group": None})
+                    continue
                 raise
         return results
 

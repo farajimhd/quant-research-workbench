@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -23,7 +24,7 @@ from src.trading_runtime.signals import StrategyIntent
 
 ENTRY_ACTIONS = {"enter_long", "add_long", "enter_short", "add_short"}
 REDUCTION_ACTIONS = {"reduce_long", "take_profit", "exit", "reduce_short", "cover"}
-PROTECTION_ACTIONS = {"replace_profit_target"}
+PROTECTION_ACTIONS = {"replace_profit_target", "replace_protective_stop"}
 
 
 class PortfolioDecisionStatus(StrEnum):
@@ -58,6 +59,7 @@ class PortfolioPolicy:
     revision: int = 1
     eligible_equity_fraction: float = 1.0
     minimum_cash_reserve: float = 0.0
+    entry_fee_buffer_bps: float = 50.0
     maximum_buying_power_utilization: float = 1.0
     maximum_gross_exposure: float = 5_000_000.0
     maximum_net_long_exposure: float = 5_000_000.0
@@ -127,6 +129,8 @@ class PortfolioPolicy:
         )
         if any(value < 0 for value in nonnegative):
             raise ValueError("Portfolio policy limits cannot be negative")
+        if not math.isfinite(self.entry_fee_buffer_bps) or not 0 <= self.entry_fee_buffer_bps <= 10_000:
+            raise ValueError("Entry fee buffer must be finite and between zero and 10000 bps")
         if (
             self.maximum_open_positions < 0
             or self.maximum_snapshot_age_ms < 1
@@ -612,6 +616,11 @@ class PortfolioManagementEngine:
         *,
         account_id: str,
     ) -> tuple[PortfolioDecision, StrategyIntent | None]:
+        async with self._admission_fence(account_id) as state:
+            return self._approve_locked(intent, state)
+
+    @asynccontextmanager
+    async def _admission_fence(self, account_id: str):
         state = self._state(account_id)
         self._refresh_operational_state(state)
         group_ids = sorted(
@@ -658,7 +667,7 @@ class PortfolioManagementEngine:
                     # admission sees reservations committed by every run.
                     self._restore()
                     self._active_admission_lease = account_lease
-                    return self._approve_locked(intent, state)
+                    yield state
                 finally:
                     self._active_admission_lease = None
                     for lease in reversed(leases):
@@ -740,13 +749,15 @@ class PortfolioManagementEngine:
             # stranded a full-position reservation and blocked every later
             # entry for the account.
             reserved_notional=(
-                remaining * reservation.reference_price
+                reservation.reserved_notional * remaining / reservation.remaining_quantity
+                if entry_update and reservation.remaining_quantity > 0
+                else 0.0
                 if entry_update
                 else reservation.reserved_notional
             ),
             reserved_planned_risk=(
-                reservation.reserved_planned_risk * remaining / reservation.quantity
-                if reservation.quantity > 0
+                reservation.reserved_planned_risk * remaining / reservation.remaining_quantity
+                if reservation.remaining_quantity > 0
                 else 0.0
             ),
         )
@@ -1116,7 +1127,7 @@ class PortfolioManagementEngine:
                 now,
             )
             return decision, None
-        notional = approved * base_price
+        notional = approved * base_price * self._entry_funding_factor(intent, policy)
         planned_loss = _planned_loss(intent, approved) * fx_to_base
         decision_id = str(uuid4())
         reservation_id = str(uuid4())
@@ -1204,6 +1215,58 @@ class PortfolioManagementEngine:
             epoch=int(lease["epoch"]),
         ):
             raise RuntimeError("Portfolio admission lease became stale before reservation commit")
+
+    @staticmethod
+    def _entry_funding_factor(intent: StrategyIntent, policy: PortfolioPolicy) -> float:
+        return (1 + policy.entry_fee_buffer_bps / 10_000
+                if intent.metadata.get("entry_completion_quote") == "bid" else 1.0)
+
+    async def authorize_entry_reprice(self, intent: StrategyIntent, account_id: str,
+                                      price: float, remaining: float) -> bool:
+        """Reauthorize the same remaining allocation under the admission fence."""
+        if not all(math.isfinite(value) and value > 0 for value in (price, remaining)):
+            return False
+        async with self._admission_fence(account_id) as state:
+            reservation_id = str(intent.metadata.get("portfolio_reservation_id") or "")
+            reservation = self.reservations.get(reservation_id)
+            if (reservation is None or reservation.account_id != account_id
+                    or reservation.intent_id != intent.intent_id
+                    or remaining > reservation.remaining_quantity + 1e-9
+                    or reservation.status in {"released", "filled", "cancelled", "rejected", "policy_blocked"}
+                    or not state.profile.enabled or state.summary is None
+                    or state.control_mode != PortfolioControlMode.ENABLED
+                    or self.allocation_identity in state.disabled_strategy_allocations
+                    or state.sync_state != PortfolioSyncState.SYNCHRONIZED
+                    or self._snapshot_stale(state, datetime.now(timezone.utc))):
+                return False
+            fx = float(intent.metadata.get("portfolio_fx_to_base") or 1.0)
+            policy = self._policy(state)
+            metrics = self._metrics(state)
+            if (not math.isfinite(fx) or fx <= 0
+                    or metrics["daily_loss"] > policy.maximum_daily_loss
+                    or metrics["drawdown"] > policy.maximum_drawdown):
+                return False
+            repriced = replace(intent, reference_price=price, quantity=remaining,
+                               metadata={**intent.metadata, "ask": price, "bid": price})
+            # Exclude only this unfilled reservation while checking all normal
+            # cash, exposure, account, competing mandate and group limits.
+            self.reservations.pop(reservation_id)
+            try:
+                capacity, reasons = self._entry_capacity(repriced, state, remaining, price * fx)
+            finally:
+                self.reservations[reservation_id] = reservation
+            if capacity + 1e-9 < remaining:
+                return False
+            self._assert_active_admission_lease()
+            updated = replace(reservation, reference_price=price,
+                              reserved_notional=remaining * price * fx * self._entry_funding_factor(intent, policy),
+                              reserved_planned_risk=_planned_loss(repriced, remaining) * fx)
+            self.reservations[reservation_id] = updated
+            self._record("portfolio_reservation", reservation_id, account_id,
+                         {"event": "entry_reprice_authorized", "price": price,
+                          "remaining_quantity": remaining, "reasons": list(reasons), **asdict(updated)})
+            self._persist_state(state)
+            return True
 
     def _capital_request_quantity(
         self,
@@ -1392,12 +1455,17 @@ class PortfolioManagementEngine:
         capacities = {
             "requested": requested,
             "order_notional": policy.maximum_order_notional / base_price,
-            "available_funds": available_cash / base_price,
+            "available_funds": available_cash / (base_price * self._entry_funding_factor(intent, policy)),
             "gross_exposure": max(0.0, policy.maximum_gross_exposure - gross - reserved_notional) / base_price,
             "position": max(0.0, eligible_equity * policy.maximum_position_fraction - current_value) / base_price,
             "ticker": max(0.0, eligible_equity * policy.maximum_ticker_fraction - current_value) / base_price,
             "strategy": max(0.0, eligible_equity * strategy_fraction - attributed - reserved_notional) / base_price,
         }
+        if state.profile.mode in {"live", "paper"}:
+            capacities["account_cash_percentage"] = max(
+                0.0, broker_cash_capacity * strategy_fraction
+                - policy.minimum_cash_reserve - reserved_notional,
+            ) / (base_price * self._entry_funding_factor(intent, policy))
         if intent.action in {"enter_long", "add_long"}:
             capacities["net_exposure"] = max(0.0, policy.maximum_net_long_exposure - max(0.0, net) - reserved_notional) / base_price
         else:

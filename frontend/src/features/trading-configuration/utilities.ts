@@ -36,6 +36,7 @@ export function controlFor(value: Primitive): FieldDefinition["kind"] {
 }
 
 export function choicesFor(path: string): readonly string[] | undefined {
+  if (path === "protection.trailing.mode") return ["qualified_support", "support_distance"];
   if (path.startsWith("lifecycle.phase_modes.")) return ["automatic", "manual"];
   if (path.endsWith(".method")) return ["structure", "volatility", "hybrid"];
   if (path.endsWith(".trigger")) return ["acceleration_slowdown", "favorable_move_pct", "volatility_multiple"];
@@ -64,6 +65,10 @@ export function unitFor(path: string) {
 export function stepFor(value: Primitive) { return typeof value === "number" && Number.isInteger(value) ? 1 : 0.01; }
 
 export const STRATEGY_PARAMETER_PRESENTATION: Record<string, { help: string; label: string }> = {
+  "protection.trailing.mode": {
+    help: "Qualified support advances the stop only with newer qualified support. Support distance freezes the initial support-derived distance and trails it behind the favorable price high.",
+    label: "Trailing mode",
+  },
   "protection.stop.maximum_risk_pct": {
     help: "Maximum permitted distance between the current price and the initial stop. A value of 1.5 limits initial price risk to 1.5%; if the selected structure or volatility boundary is farther away, Strategy moves the stop inward to this cap.",
     label: "Maximum risk",

@@ -980,6 +980,7 @@ class ReplayRunController:
         self._strategy_quality_prune_ready = False
         self._historical_market_quality: dict[str, dict[str, Any]] = {}
         self._historical_prepared_structure: dict[str, dict[str, Any]] = {}
+        self._event_structure_sessions: dict[str, tuple[str, datetime, int]] = {}
         self._historical_structure_context: dict[
             str, tuple[datetime, dict[str, Any], str, dict[str, Any]]
         ] = {}
@@ -2143,6 +2144,9 @@ class ReplayRunController:
                     self.updated_at = datetime.now(UTC)
                     await self._publish(force=True)
                 for event_index, event in enumerate(events, start=1):
+                    if (event_index - 1) % 64 == 0:
+                        self._event_structure_batch = events[event_index - 1:event_index + 63]
+                        self._event_structure_snapshots = {}
                     if self._resume_state is not None and self._source_cursor and not _event_after_cursor(
                         event, self._source_cursor
                     ):
@@ -3275,6 +3279,31 @@ class ReplayRunController:
             for assignment in self._strategy.assignments()
             if assignment.ticker == event.ticker
         )
+        structural_changed: list[str] = []
+        if any(assignment.strategy_revision >= 37
+               and bool(dict(assignment.parameters.get("structural_entry") or {}).get("enabled"))
+               for assignment in ticker_assignments):
+            structural = await self._event_structure_context(event)
+            base = replace(
+                base,
+                swing_high=_optional_positive(structural.get("structure_swing_high")),
+                swing_low=_optional_positive(structural.get("structure_swing_low")),
+                **{f"structural_{side}_{metric}": _optional_positive(structural.get(f"qmd_structure_{side}_{metric}"))
+                   for side in ("support", "resistance") for metric in ("price", "lower", "upper")},
+                **{f"structural_{side}_{metric}": float(structural.get(f"qmd_structure_{side}_{metric}") or 0)
+                   for side in ("support", "resistance") for metric in ("strength", "confidence")},
+                structural_up_probability=float(structural.get("qmd_structure_up_probability") or 0.5),
+                structural_session_high=_optional_positive(structural.get("qmd_structure_session_high")),
+                structural_support_levels=tuple(structural.get("qmd_structure_support_levels") or ()),
+                structural_resistance_levels=tuple(structural.get("qmd_structure_resistance_levels") or ()),
+                source_values={**base.source_values,
+                               "structure.event_cursor": {"observed_at": event.ts.isoformat(),
+                                                          "value": event.raw.get("arrival_sequence", event.sequence)}},
+            )
+            projected = self._strategy_registration.observation_projector(replace(base, observed_at=event.ts), "1s")
+            structural_values = {key: value for key, value in projected.items() if "structure" in key}
+            structural_changed = list(structural_values)
+            base = replace(base, source_values={**base.source_values, **structural_values})
         if ticker_assignments and all(
             assignment.status
             in {AssignmentStatus.WATCHING, AssignmentStatus.REENTRY_COOLDOWN}
@@ -3311,6 +3340,7 @@ class ReplayRunController:
             if key.startswith("market.last_price@"):
                 source_values[key] = dict(market_price)
         changed_source_ids = ["market.last_price"] if isinstance(event, TradeEvent) else []
+        changed_source_ids.extend(structural_changed)
         provisional_macd = self._provisional_macd_states.get(event.ticker)
         forming_open = (
             provisional_macd.observe_forming_candle(price, event.ts)
@@ -3344,7 +3374,7 @@ class ReplayRunController:
                 (quote.ask_price - quote.bid_price) / quote.midpoint * 10_000.0
             )
             source_values["market.spread_bps"] = {
-                "observed_at": event.ts.isoformat(),
+                "observed_at": quote.ts.isoformat(),
                 "value": spread_bps,
             }
             changed_source_ids.append("market.spread_bps")
@@ -3369,6 +3399,44 @@ class ReplayRunController:
         self._latest_strategy_observations[event.ticker] = observation
         await self._evaluate_strategy_observation(observation, ticker_assignments)
         return True
+
+    async def _event_structure_context(self, event: TradeEvent) -> dict[str, Any]:
+        """Advance the shared producer through this exact canonical event.
+
+        This session is independent of frame prefetch, which may already have
+        advanced into the future. Never consume its later snapshot for a trade.
+        """
+        sessions = self._event_structure_sessions
+        cursor = int(event.raw.get("arrival_sequence", event.sequence))
+        snapshots = getattr(self, "_event_structure_snapshots", {})
+        key = (event.ticker, event.ts, cursor)
+        if key in snapshots:
+            return snapshots.pop(key)
+        cached = sessions.get(event.ticker)
+        if cached is None:
+            seed = await asyncio.to_thread(
+                qmd_historical_structure_snapshot, ticker=event.ticker,
+                as_of=(event.ts - timedelta(microseconds=1)).astimezone(UTC).isoformat(),
+            )
+            session_id, previous_sequence = str(seed["session_id"]), None
+        else:
+            session_id, previous_time, previous_sequence = cached
+            if (event.ts, cursor) <= (previous_time, previous_sequence):
+                raise RuntimeError("Structural event cursor must advance monotonically")
+        batch = [row for row in getattr(self, "_event_structure_batch", (event,))
+                 if isinstance(row, TradeEvent) and row.ticker == event.ticker
+                 and (row.ts, int(row.raw.get("arrival_sequence", row.sequence))) >= (event.ts, cursor)]
+        cursors = [int(row.raw.get("arrival_sequence", row.sequence)) for row in batch]
+        payload = await asyncio.to_thread(
+            qmd_advance_historical_structure_timeline, session_id=session_id,
+            as_ofs=[row.ts.astimezone(UTC).isoformat() for row in batch],
+            as_of_sequences=cursors, after_sequence=previous_sequence,
+        )
+        for row, sequence, boundary in zip(batch, cursors, payload["boundaries"], strict=True):
+            snapshots[(row.ticker, row.ts, sequence)] = self._project_historical_structure_snapshot(boundary["snapshot"], "1s")
+        self._event_structure_snapshots = snapshots
+        sessions[event.ticker] = (session_id, batch[-1].ts, cursors[-1])
+        return snapshots.pop(key)
 
     async def _evaluate_strategy_observation(
         self,

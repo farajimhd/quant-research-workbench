@@ -40,6 +40,7 @@ StrategyAction = Literal[
     "reduce_short",
     "cover",
     "replace_profit_target",
+    "replace_protective_stop",
     "hold",
     "wait",
 ]
@@ -315,7 +316,9 @@ class StrategyIntent:
             "add_short",
             "reduce_short",
             "cover",
-        } and self.quantity <= 0 and self.capital_request is None:
+        } and self.quantity <= 0 and self.capital_request is None and not (
+            self.action in {"exit", "cover"} and self.metadata.get("cancel_entry_acquisition")
+        ):
             raise ValueError(f"{self.action} requires a positive quantity")
 
     def payload(self) -> dict[str, Any]:

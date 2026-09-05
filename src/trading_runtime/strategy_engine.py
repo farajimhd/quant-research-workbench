@@ -34,8 +34,8 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 36
-HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33, 34, 35)
+STRATEGY_REVISION = 37
+HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36)
 
 _COMPLETED_FRAME_TOP_N_ENTRY_MODE = "prior_completed_frame_top_n_below_session_high"
 _EVENT_PRICE_TOP_N_ENTRY_MODE = "event_price_top_n_below_session_high"
@@ -399,6 +399,8 @@ def long_momentum_strategy_definition(
             "parameters": parameters,
             "input_catalog": strategy_input_catalog(),
             "parameter_space": {
+                **({"protection.trailing.mode": ["qualified_support", "support_distance"]}
+                   if revision >= 37 else {}),
                 "protection.stop.method": [
                     "structure",
                     "volatility",
@@ -530,6 +532,7 @@ def default_long_momentum_parameters(
         "protection": {
             "stop": {
                 "method": "ordinal_qualified_support",
+                "require_qualified_support": revision >= 37,
                 "structure_buffer_bps": 0.0,
                 "volatility_multiple": 1.25,
                 "maximum_risk_pct": 15.0,
@@ -550,6 +553,7 @@ def default_long_momentum_parameters(
             },
             "trailing": {
                 "enabled": True,
+                "mode": "qualified_support" if revision >= 37 else "support_distance",
                 "activation_gain_pct": 0.0,
                 "distance_volatility_multiple": 2.0,
                 "minimum_distance_bps": 50.0,
@@ -675,6 +679,13 @@ def default_long_momentum_parameters(
         "enabled": bool(parameters["entry"].get("use_unified_structure_levels", False)),
         **dict(parameters["entry"].get("structural_level") or {}),
     }
+    if revision >= 37:
+        parameters["protection"]["stop"].update({"method": "ordinal_qualified_support", "structure_buffer_bps": 0.0})
+        parameters["protection"]["profit_ladder"].update({
+            "selection_mode": "ordinal_qualified_level", "target_level_ordinal": 3,
+            "maximum_targets": 1, "require_resistance_role": True,
+        })
+        parameters["add"]["enabled"] = False
     parameters.pop("entry", None)
     return parameters
 
@@ -740,6 +751,18 @@ def resolve_long_momentum_parameters(
         # Profit pocketing is not part of the active strategy contract. Ignore
         # stale persisted overrides; revision 32 remains reproducible.
         parameters["profit_pocket"]["enabled"] = False
+    if revision >= 37:
+        parameters["add"]["enabled"] = False
+        parameters["structural_entry"]["entry_tranche_count"] = 1
+        parameters["structural_entry"]["retain_crossing_role_flip"] = True
+        parameters["protection"]["stop"]["require_qualified_support"] = True
+        if "initial_entry" in parameters.get("phase_policy", {}):
+            parameters["phase_policy"]["initial_entry"]["add_steps"] = []
+        parameters["reentry"]["target_replenishment"]["enabled"] = False
+        if parameters["protection"]["trailing"].get("mode") not in {
+            "qualified_support", "support_distance"
+        }:
+            raise ValueError("Trailing mode must be qualified_support or support_distance")
     execution = dict(parameters.get("execution") or {})
     execution.pop("time_in_force", None)
     execution.pop("outside_rth", None)
@@ -2192,11 +2215,25 @@ def _event_price_top_n_resistance_trigger(
     )
     current_levels = qualified[:maximum_levels]
     previous_price = state.get("previous_observed_price")
+    crossing_levels = list(current_levels)
+    if policy.get("retain_crossing_role_flip"):
+        # The producer can flip the crossed resistance to support on this very
+        # trade. Keep its prior candidacy, using its current producer record.
+        prior_ids = {str(row.get("unified_level_id") or "")
+                     for row in dict(state.get("qualified_entry_resistance_snapshot") or {}).get("levels") or ()}
+        for row in observation.structural_support_levels:
+            identity = str(row.get("unified_level_id") or "")
+            boundary = _level_metric(dict(row), "price", "upper", "lower")
+            if (identity and identity in prior_ids and 0 < boundary <= float(session_high or 0)
+                    and _level_is_entry_quality(row, policy, observed_at=observation.observed_at)):
+                crossing_levels.append({**_compact_structural_level_reference(row),
+                                        "price": boundary, "entry_boundary": boundary,
+                                        "crossing_role_flip": True})
     buffer_bps = float(policy.get("acceptance_buffer_bps") or 0.0)
     is_trade_event = "market_data_update" in observation.evaluation_events
     crossed: list[dict[str, Any]] = []
     if is_trade_event and previous_price is not None:
-        for level in current_levels:
+        for level in crossing_levels:
             boundary = float(level["entry_boundary"])
             threshold = boundary * (1.0 + buffer_bps / 10_000.0)
             if float(previous_price) <= threshold and observation.price > threshold:
@@ -2317,7 +2354,7 @@ class LongMomentumStrategyEngine:
             return self._result(assignment, observation, "wait", "assignment_not_active", 0.0, 1.0, state, status)
         if status == AssignmentStatus.PAUSED:
             return self._result(assignment, observation, "wait", "assignment_paused", 0.0, 1.0, state, status)
-        if status == AssignmentStatus.EXIT_PENDING and observation.position_quantity > 0:
+        if status == AssignmentStatus.EXIT_PENDING and observation.position_quantity > 0 and self.revision < 37:
             return self._result(
                 assignment,
                 observation,
@@ -2363,6 +2400,13 @@ class LongMomentumStrategyEngine:
                     structural_policy,
                     state,
                 )
+        if self.revision >= 37 and status == AssignmentStatus.EXIT_PENDING:
+            return self._result(
+                assignment, observation, "exit", str(state.get("last_exit_reason") or "exit_pending"),
+                0.0, 1.0, state, AssignmentStatus.EXIT_PENDING,
+                quantity=observation.position_quantity,
+                metadata={"cancel_entry_acquisition": True, "position_fraction": 1.0},
+            )
         if observation.position_quantity > 0:
             return self._evaluate_position(assignment, observation, parameters, state)
         return self._evaluate_flat(assignment, observation, parameters, state)
@@ -2379,7 +2423,15 @@ class LongMomentumStrategyEngine:
         state.pop("manual_entry_requested", None)
         state.pop("force_entry_requested", None)
         if assignment.status == AssignmentStatus.ENTRY_PENDING:
+            if self.revision >= 37:
+                return self._evaluate_position(assignment, observation, parameters, state)
             return self._result(assignment, observation, "wait", "entry_fill_pending", 0.0, 1.0, state, AssignmentStatus.ENTRY_PENDING)
+        if assignment.status == AssignmentStatus.EXIT_PENDING and self.revision >= 37:
+            return self._result(
+                assignment, observation, "exit", str(state.get("last_exit_reason") or "exit_pending"),
+                0.0, 1.0, state, AssignmentStatus.EXIT_PENDING,
+                metadata={"cancel_entry_acquisition": True, "position_fraction": 1.0},
+            )
         phase_name = "reentry" if reentries else "initial_entry"
         if not _phase_is_automatic(parameters, phase_name):
             return self._result(
@@ -2885,6 +2937,12 @@ class LongMomentumStrategyEngine:
             side=side,
             selection_evidence=protective_stop_selection,
         )
+        if stop <= 0:
+            return self._result(
+                assignment, observation, "wait", "qualified_support_unavailable", 0.0, 1.0,
+                state, assignment.status,
+                metadata={"protective_stop_selection": protective_stop_selection},
+            )
         trailing_amount = _trailing_amount(
             observation,
             parameters,
@@ -2923,6 +2981,11 @@ class LongMomentumStrategyEngine:
         )
         if profit_targets:
             target = profit_targets[0]
+        elif self.revision >= 37:
+            return self._result(
+                assignment, observation, "wait", "qualified_target_unavailable", 0.0, 1.0,
+                state, assignment.status, metadata={"profit_target_selection": profit_target_selection},
+            )
         profit_policy = dict(parameters["protection"].get("profit_ladder") or {})
         minimum_entry_target_gap_bps = max(
             0.0,
@@ -3078,6 +3141,9 @@ class LongMomentumStrategyEngine:
                 "breakout_buffer_bps": reference_buffer_bps,
                 "entry_reference_price": observation.price,
                 "entry_at": observation.observed_at.isoformat(),
+                "entry_acquisition_exit_latched": False,
+                "trailing_support_selection": None,
+                "pending_profit_target_advance": None,
                 "initial_stop": stop,
                 "active_stop": stop,
                 "trailing_amount": trailing_amount,
@@ -3197,6 +3263,8 @@ class LongMomentumStrategyEngine:
         state: dict[str, Any],
     ) -> StrategyEngineResult:
         side = _strategy_side(parameters)
+        previous_stop = float(state.get("active_stop") or state.get("initial_stop") or 0)
+        previous_support_selection = state.get("trailing_support_selection")
         manage_automatic = _phase_is_automatic(parameters, "manage")
         previous_high_water = float(
             state.get("high_water_price") or observation.price
@@ -3388,6 +3456,8 @@ class LongMomentumStrategyEngine:
                 ) + 1
             else:
                 state["last_exit_at"] = observation.observed_at.isoformat()
+                if self.revision >= 37:
+                    state["entry_acquisition_exit_latched"] = True
             next_status = AssignmentStatus.EXIT_PENDING
             action = (
                 "reduce_long"
@@ -3405,6 +3475,7 @@ class LongMomentumStrategyEngine:
                 trailing_amount=_trailing_amount(observation, parameters),
                 order_intent=dict(exit_route.get("order_intent") or {}),
                 metadata={
+                    "cancel_entry_acquisition": self.revision >= 37 and not partial_reduction,
                     "exit_rule_set_id": exit_route["route_id"],
                     "exit_rule_set_name": exit_route["name"],
                     "exit_route_id": exit_route["route_id"],
@@ -3419,6 +3490,24 @@ class LongMomentumStrategyEngine:
                     "gain_pct": gain_pct,
                     **dict(exit_route.get("evidence") or {}),
                 },
+            )
+
+        if self.revision >= 37 and observation.position_quantity <= 0:
+            return self._result(
+                assignment, observation, "wait", "entry_fill_pending", 0.0, 1.0,
+                state, AssignmentStatus.ENTRY_PENDING,
+            )
+
+        stop_replacement = None
+        if (self.revision >= 37 and stop > previous_stop > 0
+                and parameters["protection"]["trailing"].get("mode") == "qualified_support"):
+            stop_replacement = self._result(
+                assignment, observation, "replace_protective_stop", "qualified_support_advanced",
+                observation.qmd_score, 1.0, state, AssignmentStatus.MANAGING,
+                quantity=observation.position_quantity, invalidation_price=stop,
+                metadata={"previous_stop": previous_stop,
+                          "previous_support_selection": previous_support_selection,
+                          "protective_stop_selection": state.get("trailing_support_selection", {})},
             )
 
         if float(state.get("target_replenishment_quantity") or 0) > 0:
@@ -3465,7 +3554,14 @@ class LongMomentumStrategyEngine:
             stop=stop,
         )
         if target_replacement is not None:
+            if stop_replacement is not None:
+                return replace(target_replacement, evaluation=StrategyEvaluation(
+                    signals=stop_replacement.evaluation.signals + target_replacement.evaluation.signals,
+                    intents=stop_replacement.evaluation.intents + target_replacement.evaluation.intents,
+                ))
             return target_replacement
+        if stop_replacement is not None:
+            return stop_replacement
 
         confirmation: dict[str, bool] = {}
         add_steps = list(
@@ -3500,7 +3596,7 @@ class LongMomentumStrategyEngine:
                     "maximum_uses": int(legacy_add.get("maximum_adds") or 0),
                     "_legacy_rules_passed": True,
                 }]
-        for add_step in add_steps:
+        for add_step in ([] if self.revision >= 37 else add_steps):
             uses = dict(state.get("add_step_uses") or {})
             step_id = str(add_step.get("step_id") or "")
             used = int(uses.get(step_id) or 0)
@@ -3640,6 +3736,8 @@ class LongMomentumStrategyEngine:
         *,
         side: str,
     ) -> StrategyEngineResult | None:
+        if self.revision >= 37:
+            return None
         policy = dict(parameters.get("structural_entry") or {})
         if (
             not bool(policy.get("enabled", False))
@@ -3889,6 +3987,69 @@ class LongMomentumStrategyEngine:
             )
         return None
 
+    def _moving_target_result(
+        self, assignment: StrategyAssignment, observation: StrategyObservation,
+        parameters: dict[str, Any], state: dict[str, Any], *, side: str, stop: float,
+    ) -> StrategyEngineResult | None:
+        """Consume a causal first-resistance hit, using the moving producer book."""
+        if "market_data_update" not in observation.evaluation_events:
+            return None
+        previous = state.get("previous_observed_price")
+        previous_frontier = list(state.get("structural_profit_target_frontier") or ())
+        retry = state.get("pending_profit_target_advance")
+        selection: dict[str, Any] = {}
+        targets = _structural_profit_targets(
+            observation, parameters, stop=stop, side=side,
+            luld_target=_luld_target(observation, parameters, side=side),
+            selection_evidence=selection,
+        )
+        current_frontier = _target_frontier_from_selection(selection)
+        state["structural_profit_target_frontier"] = current_frontier
+        if previous is None or (not previous_frontier and not retry):
+            return None
+        first = dict(previous_frontier[0]) if previous_frontier else {}
+        identity = str(first.get("unified_level_id") or "")
+        # Follow updated producer prices for a known level. Preserve the prior
+        # resistance when this very event flips it to support.
+        found = False
+        for row in (*observation.structural_resistance_levels, *observation.structural_support_levels):
+            if identity and str(row.get("unified_level_id") or "") == identity:
+                if not retry and not _level_passes_configured_quality(row, parameters["protection"]["profit_ladder"]):
+                    return None
+                first = {**first, **_compact_structural_level_reference(row)}
+                found = True
+                break
+        if not found and not retry:
+            return None
+        boundary = _level_metric(first, "price", "target_price")
+        crossed = (float(previous) < boundary <= observation.price if side == "long"
+                   else float(previous) > boundary >= observation.price)
+        crossed = crossed or bool(retry)
+        existing = list(state.get("structural_profit_targets") or ())
+        if not crossed or not existing:
+            return None
+        acceptance = retry or {"passed": True, "reason": "first_resistance_hit",
+                               "level": first, "previous_price": previous, "price": observation.price,
+                               "observed_at": observation.observed_at.isoformat()}
+        state["pending_profit_target_advance"] = acceptance
+        if not targets:
+            return None
+        candidate = targets[0]
+        if not (candidate > existing[0] if side == "long" else candidate < existing[0]):
+            return None
+        state["structural_profit_targets"] = [candidate]
+        state.pop("pending_profit_target_advance", None)
+        state["last_profit_target_replaced_at"] = observation.observed_at.isoformat()
+        return self._result(
+            assignment, observation, "replace_profit_target", "structural_profit_target_advanced",
+            observation.qmd_score, 1.0, state, AssignmentStatus.MANAGING,
+            quantity=observation.position_quantity, profit_target_price=candidate,
+            metadata={"previous_profit_target": existing[0], "profit_target": candidate,
+                      "previous_profit_target_frontier": previous_frontier,
+                      "profit_target_selection": selection, "ratchet_clock": "resistance_hit",
+                      "ratchet_acceptance": acceptance},
+        )
+
     def _structural_target_replacement_result(
         self,
         assignment: StrategyAssignment,
@@ -3899,6 +4060,8 @@ class LongMomentumStrategyEngine:
         side: str,
         stop: float,
     ) -> StrategyEngineResult | None:
+        if self.revision >= 37:
+            return self._moving_target_result(assignment, observation, parameters, state, side=side, stop=stop)
         policy = dict(parameters["protection"].get("profit_ladder") or {})
         if (
             not bool(policy.get("enabled", True))
@@ -4200,6 +4363,7 @@ class LongMomentumStrategyEngine:
             "exit",
             "cover",
             "replace_profit_target",
+            "replace_protective_stop",
         }:
             resolved_metadata.setdefault(
                 "structural_level_snapshot",
@@ -4254,7 +4418,7 @@ class LongMomentumStrategyEngine:
             },
         )
         intents: tuple[StrategyIntent, ...] = ()
-        if action in {"enter_long", "add_long", "reduce_long", "take_profit", "exit", "enter_short", "add_short", "reduce_short", "cover", "replace_profit_target"}:
+        if action in {"enter_long", "add_long", "reduce_long", "take_profit", "exit", "enter_short", "add_short", "reduce_short", "cover", "replace_profit_target", "replace_protective_stop"}:
             resolved_order_intent = dict(order_intent or {})
             if "time_in_force" in resolved_order_intent or "outside_rth" in resolved_order_intent:
                 raise ValueError(
@@ -4302,9 +4466,14 @@ class LongMomentumStrategyEngine:
                     reason=reason,
                     metadata={
                         "assignment_id": assignment.assignment_id,
+                        **({"entry_completion_quote": "bid"} if self.revision >= 37
+                           and action in {"enter_long", "add_long"} else {}),
                         "bid": observation.bid,
                         "ask": observation.ask,
-                        "quote_observed_at": observation.observed_at.isoformat(),
+                        "quote_observed_at": (
+                            dict(observation.source_values.get("market.spread_bps") or {}).get("observed_at")
+                            or observation.observed_at.isoformat()
+                        ),
                         "tick_size": float(
                             assignment.parameters.get("execution", {}).get("tick_size") or 0.01
                         ),
@@ -4619,6 +4788,9 @@ def _protection_profile_from_phase(
         trailing_rule = TrailingRuleType(
             str(trailing_raw.pop("rule_type", TrailingRuleType.NONE))
         )
+        if parameters["protection"]["trailing"].get("mode") == "qualified_support":
+            trailing_rule = TrailingRuleType.NONE
+            trailing_raw = {}
         if trailing_rule == TrailingRuleType.BROKER_AMOUNT and not trailing_raw.get("amount"):
             trailing_raw["amount"] = trailing_amount
         trailing = TrailingRule(rule_type=trailing_rule, **trailing_raw)
@@ -4889,7 +5061,14 @@ class AssignedLongMomentumStrategy:
             if assignment.assignment_id != assignment_id:
                 continue
             state = dict(assignment.state)
+            if str(intent.action) == "replace_protective_stop":
+                state["active_stop"] = float(intent.metadata["previous_stop"])
+                state["trailing_support_selection"] = intent.metadata.get("previous_support_selection")
+                self._assignments[key] = replace(assignment, state=state, updated_at=event_time)
+                return
             if str(intent.action) == "replace_profit_target":
+                if assignment.strategy_revision >= 37:
+                    state["pending_profit_target_advance"] = intent.metadata.get("ratchet_acceptance")
                 previous = float(intent.metadata.get("previous_profit_target") or 0)
                 if previous > 0:
                     state["structural_profit_targets"] = [previous]
@@ -5117,6 +5296,9 @@ class AssignedLongMomentumStrategy:
                         if int(state.get("reentries") or 0) > 0
                         else AssignmentStatus.WATCHING
                     )
+                if assignment.strategy_revision >= 37 and state.get("entry_acquisition_exit_latched"):
+                    status = (AssignmentStatus.EXIT_PENDING if abs(float(aggregate_position_quantity or 0)) > 1e-9
+                              else AssignmentStatus.COMPLETED)
                 updated = replace(
                     assignment,
                     status=status,
@@ -5134,10 +5316,14 @@ class AssignedLongMomentumStrategy:
                         state.get("target_replenishments") or 0
                     ) + 1
                 status = AssignmentStatus.MANAGING
+                if assignment.strategy_revision >= 37 and state.get("entry_acquisition_exit_latched"):
+                    status = AssignmentStatus.EXIT_PENDING
             elif action in {"reduce_long", "reduce_short"}:
                 status = AssignmentStatus.MANAGING
             elif action in {"exit", "take_profit", "cover"}:
                 fill_role = str(getattr(snapshot, "fill_role", "") or "")
+                if assignment.strategy_revision >= 37:
+                    state["entry_acquisition_exit_latched"] = True
                 incremental = incremental_fill
                 if fill_role == "profit_target" and incremental > 0:
                     targets = [
@@ -6628,7 +6814,11 @@ def _initial_stop(
             if selected_level is not None
             else None
         )
-        if side == "long":
+        if bool(stop.get("require_qualified_support")):
+            # Portfolio must size from actual structural risk. Never manufacture
+            # a percentage stop when the required support is absent or distant.
+            selected = structural_stop or 0.0
+        elif side == "long":
             selected = max(
                 maximum_risk,
                 structural_stop if structural_stop is not None else maximum_risk,
@@ -6646,7 +6836,9 @@ def _initial_stop(
             quality_threshold_evidence = (
                 {
                     "minimum_ticker_relative_quality_score": relative_threshold,
-                    "ticker_relative_unavailable_policy": "fail_open",
+                    "ticker_relative_unavailable_policy": (
+                        "fail_closed" if stop.get("strict_ticker_relative_quality_gate") else "fail_open"
+                    ),
                 }
                 if "minimum_ticker_relative_quality_score" in stop
                 else {
@@ -6743,6 +6935,8 @@ def _trailing_amount(
     stop: float | None = None,
 ) -> float | None:
     trailing = parameters["protection"]["trailing"]
+    if trailing.get("mode") == "qualified_support":
+        return None
     if not trailing["enabled"]:
         return None
     if str(parameters["protection"]["stop"].get("method") or "") == "ordinal_qualified_support":
@@ -6778,6 +6972,22 @@ def _ratcheted_stop(
     ) if entry > 0 else 0
     trailing = parameters["protection"]["trailing"]
     if not trailing["enabled"] or gain_pct < float(trailing["activation_gain_pct"]):
+        return current
+    if trailing.get("mode") == "qualified_support":
+        evidence: dict[str, Any] = {}
+        candidate = _initial_stop(observation, parameters, None, side=side, selection_evidence=evidence)
+        selected = evidence.get("selected_support_level") or {}
+        confirmed = float(selected.get("confirmed_at_ms") or 0)
+        entry_at = _optional_aware_datetime(state.get("entry_at"))
+        prior_selection = dict(state.get("trailing_support_selection") or {}).get("selected_support_level") or {}
+        prior_confirmed = float(prior_selection.get("confirmed_at_ms") or 0)
+        newer = (entry_at is not None
+                 and max(entry_at.timestamp() * 1000, prior_confirmed) < confirmed
+                 <= observation.observed_at.timestamp() * 1000)
+        tightens = candidate > current if side == "long" else 0 < candidate < current
+        if newer and tightens:
+            state["trailing_support_selection"] = evidence
+            return candidate
         return current
     distance = float(
         state.get("trailing_amount")
@@ -6903,7 +7113,8 @@ def _structural_profit_targets(
     # (or below a short entry) is relevant even when its last lifecycle role
     # was the opposite side.  Price-relative filtering below assigns the role.
     level_rows = _consolidated_structure_levels(list(
-        (*observation.structural_support_levels, *observation.structural_resistance_levels)
+        observation.structural_resistance_levels if side == "long" and policy.get("require_resistance_role")
+        else (*observation.structural_support_levels, *observation.structural_resistance_levels)
     ), side=side)
     local_time = observation.observed_at.astimezone(NEW_YORK).time().replace(tzinfo=None)
     regular_session = clock_time(9, 30) <= local_time < clock_time(16, 0)

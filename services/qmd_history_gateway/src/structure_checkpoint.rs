@@ -200,6 +200,8 @@ pub struct StructureSnapshotSessionAdvanceRequest {
     pub as_of: DateTime<Utc>,
     pub expected_source_plan_hash: Option<String>,
     pub event_limit: Option<usize>,
+    pub as_of_sequence: Option<u64>,
+    pub after_sequence: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -207,6 +209,8 @@ pub struct StructureSnapshotSessionBatchRequest {
     pub schema_version: u16,
     pub session_id: String,
     pub as_ofs: Vec<DateTime<Utc>>,
+    pub as_of_sequences: Option<Vec<u64>>,
+    pub after_sequence: Option<u64>,
     pub expected_source_plan_hash: Option<String>,
     pub event_limit: Option<usize>,
 }
@@ -214,6 +218,7 @@ pub struct StructureSnapshotSessionBatchRequest {
 #[derive(Clone, Debug, Serialize)]
 pub struct StructureSnapshotBoundary {
     pub as_of: DateTime<Utc>,
+    pub as_of_sequence: Option<u64>,
     pub event_count: u64,
     pub advanced_event_count: u64,
     pub snapshot: GenericStructureSnapshot,
@@ -246,6 +251,7 @@ pub struct StructureSnapshotSessionAdvanceResponse {
     pub source_revision_before: SourceRevision,
     pub source_revision_after: SourceRevision,
     pub complete: bool,
+    pub as_of_sequence: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -255,6 +261,8 @@ pub struct StructureCheckpointAdvanceRequest {
     pub as_of: DateTime<Utc>,
     pub expected_source_plan_hash: Option<String>,
     pub event_limit: Option<usize>,
+    pub as_of_sequence: Option<u64>,
+    pub after_sequence: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -552,7 +560,22 @@ async fn advance_structure_checkpoint_inner(
         let mut batch_event_count = 0_u64;
         for compact in batch? {
             let event = source.market_event(&compact);
-            if !exact_live_cursor && event.ts() <= replay_start {
+            if !exact_live_cursor
+                && !after_historical_cursor(
+                    event.ts(),
+                    event.arrival_sequence(),
+                    replay_start,
+                    request.after_sequence,
+                )
+            {
+                continue;
+            }
+            if !at_or_before_historical_cursor(
+                event.ts(),
+                event.arrival_sequence(),
+                request.as_of,
+                request.as_of_sequence,
+            ) {
                 continue;
             }
             event_auditor.observe(&compact)?;
@@ -646,7 +669,25 @@ pub async fn advance_historical_structure_timeline(
     if request.as_ofs.len() > 4096 {
         return Err("Generic Structure historical batch exceeds 4096 as_of boundaries".to_string());
     }
-    if request.as_ofs.windows(2).any(|pair| pair[0] >= pair[1]) {
+    if request
+        .as_of_sequences
+        .as_ref()
+        .is_some_and(|seqs| seqs.len() != request.as_ofs.len())
+    {
+        return Err(
+            "Generic Structure boundary sequence count does not match timestamps".to_string(),
+        );
+    }
+    let cursor_at = |index: usize| {
+        (
+            request.as_ofs[index],
+            request
+                .as_of_sequences
+                .as_ref()
+                .map_or(u64::MAX, |seqs| seqs[index]),
+        )
+    };
+    if (1..request.as_ofs.len()).any(|index| cursor_at(index - 1) >= cursor_at(index)) {
         return Err(
             "Generic Structure historical batch as_of boundaries must be strictly increasing"
                 .to_string(),
@@ -657,6 +698,11 @@ pub async fn advance_historical_structure_timeline(
         .last()
         .ok_or_else(|| "Generic Structure historical batch has no final boundary".to_string())?;
     let validation_request = StructureCheckpointAdvanceRequest {
+        as_of_sequence: request
+            .as_of_sequences
+            .as_ref()
+            .and_then(|seqs| seqs.last().copied()),
+        after_sequence: request.after_sequence,
         schema_version: request.schema_version,
         checkpoint: checkpoint.clone(),
         as_of: final_as_of,
@@ -665,7 +711,12 @@ pub async fn advance_historical_structure_timeline(
     };
     let replay_start = validate_request(config, &validation_request, false)?;
     let first_as_of = request.as_ofs[0];
-    if first_as_of < replay_start {
+    if first_as_of < replay_start
+        || (first_as_of == replay_start
+            && request
+                .after_sequence
+                .is_some_and(|after| cursor_at(0).1 <= after))
+    {
         return Err(
             "Generic Structure historical batch first as_of precedes the checkpoint cursor"
                 .to_string(),
@@ -721,11 +772,16 @@ pub async fn advance_historical_structure_timeline(
     while let Some(batch) = batches.recv().await {
         for compact in batch? {
             let event = source.market_event(&compact);
-            if event.ts() <= replay_start {
+            if !after_historical_cursor(
+                event.ts(),
+                event.arrival_sequence(),
+                replay_start,
+                request.after_sequence,
+            ) {
                 continue;
             }
             while boundary_index < request.as_ofs.len()
-                && request.as_ofs[boundary_index] < event.ts()
+                && cursor_at(boundary_index) < (event.ts(), event.arrival_sequence())
             {
                 let as_of = request.as_ofs[boundary_index];
                 while next_split < split_adjustments.len()
@@ -736,11 +792,18 @@ pub async fn advance_historical_structure_timeline(
                 }
                 boundaries.push(StructureSnapshotBoundary {
                     as_of,
+                    as_of_sequence: request
+                        .as_of_sequences
+                        .as_ref()
+                        .map(|seqs| seqs[boundary_index]),
                     event_count,
                     advanced_event_count,
                     snapshot: engine.snapshot(as_of),
                 });
                 boundary_index += 1;
+            }
+            if boundary_index == request.as_ofs.len() {
+                continue;
             }
             event_count = event_count.saturating_add(1);
             if event_count > event_limit as u64 {
@@ -775,6 +838,10 @@ pub async fn advance_historical_structure_timeline(
         }
         boundaries.push(StructureSnapshotBoundary {
             as_of,
+            as_of_sequence: request
+                .as_of_sequences
+                .as_ref()
+                .map(|seqs| seqs[boundary_index]),
             event_count,
             advanced_event_count,
             snapshot: engine.snapshot(as_of),
@@ -847,6 +914,8 @@ pub async fn materialize_structure_snapshot(
                 config,
                 source,
                 StructureCheckpointAdvanceRequest {
+                    as_of_sequence: None,
+                    after_sequence: None,
                     schema_version: STRUCTURE_CHECKPOINT_ADVANCEMENT_SCHEMA_VERSION,
                     checkpoint: seed.checkpoint,
                     as_of: request.as_of,
@@ -921,6 +990,8 @@ pub async fn materialize_structure_snapshot(
         config,
         source,
         StructureCheckpointAdvanceRequest {
+            as_of_sequence: None,
+            after_sequence: None,
             schema_version: STRUCTURE_CHECKPOINT_ADVANCEMENT_SCHEMA_VERSION,
             checkpoint: seed.checkpoint,
             as_of: request.as_of,
@@ -988,6 +1059,8 @@ pub async fn materialize_structure_snapshot_from_seed(
         config,
         source,
         StructureCheckpointAdvanceRequest {
+            as_of_sequence: None,
+            after_sequence: None,
             schema_version: STRUCTURE_CHECKPOINT_ADVANCEMENT_SCHEMA_VERSION,
             checkpoint: seed.checkpoint,
             as_of: request.as_of,
@@ -1075,7 +1148,13 @@ fn validate_request(
             "Generic Structure checkpoint replayed_through must not precede updated_at".to_string(),
         );
     }
-    if request.as_of < start {
+    if request.as_of < start
+        || (request.as_of == start
+            && request
+                .after_sequence
+                .zip(request.as_of_sequence)
+                .is_some_and(|(after, end)| end <= after))
+    {
         return Err("Generic Structure checkpoint as_of must not precede updated_at".to_string());
     }
     let max_window = Duration::hours(config.structure_checkpoint_max_window_hours as i64);
@@ -1168,6 +1247,24 @@ fn validate_rebuild_source_plan(plan: &MarketSourcePlan) -> Result<(), String> {
     Ok(())
 }
 
+fn after_historical_cursor(
+    at: DateTime<Utc>,
+    sequence: u64,
+    start: DateTime<Utc>,
+    after: Option<u64>,
+) -> bool {
+    at > start || (at == start && after.is_some_and(|cursor| sequence > cursor))
+}
+
+fn at_or_before_historical_cursor(
+    at: DateTime<Utc>,
+    sequence: u64,
+    end: DateTime<Utc>,
+    through: Option<u64>,
+) -> bool {
+    at < end || (at == end && through.is_none_or(|cursor| sequence <= cursor))
+}
+
 trait CheckpointCursor {
     fn checkpoint_cursor(&self) -> (i64, u64);
 }
@@ -1231,6 +1328,34 @@ mod tests {
     }
 
     #[test]
+    fn exact_boundary_excludes_later_event_at_identical_timestamp() {
+        let at = Utc.with_ymd_and_hms(2026, 8, 21, 8, 0, 0).unwrap();
+        assert!(super::at_or_before_historical_cursor(at, 10, at, Some(10)));
+        assert!(!super::at_or_before_historical_cursor(at, 11, at, Some(10)));
+        assert!(super::at_or_before_historical_cursor(at, 11, at, None));
+        assert!(!super::at_or_before_historical_cursor(
+            at + chrono::Duration::microseconds(1),
+            1,
+            at,
+            None
+        ));
+    }
+
+    #[test]
+    fn continuation_keeps_only_unconsumed_same_timestamp_events() {
+        let at = Utc.with_ymd_and_hms(2026, 8, 21, 8, 0, 0).unwrap();
+        assert!(!super::after_historical_cursor(at, 10, at, Some(10)));
+        assert!(super::after_historical_cursor(at, 11, at, Some(10)));
+        assert!(!super::after_historical_cursor(at, 11, at, None));
+        assert!(super::after_historical_cursor(
+            at + chrono::Duration::microseconds(1),
+            1,
+            at,
+            None
+        ));
+    }
+
+    #[test]
     fn historical_boundary_checkpoint_does_not_require_archive_ordinal_cursor() {
         let as_of = Utc.with_ymd_and_hms(2026, 3, 10, 20, 0, 0).unwrap();
         let mut checkpoint = GenericStructureEngine::new("SUGP").checkpoint();
@@ -1238,6 +1363,8 @@ mod tests {
         checkpoint.replayed_through = Some(as_of - chrono::Duration::hours(1));
         checkpoint.last_arrival_sequence = 0;
         let request = StructureCheckpointAdvanceRequest {
+            as_of_sequence: None,
+            after_sequence: None,
             schema_version: 1,
             checkpoint,
             as_of,

@@ -46,6 +46,38 @@ from src.backend import trading_runtime_service
 
 NOW = datetime(2026, 7, 24, 14, 0, tzinfo=timezone.utc)
 
+# Preserve the pre-contract execution tests as immutable revision-36 evidence.
+# Revision 37 has its own tests in test_long_momentum_contract.py; do not change
+# these historical target-close, tranche, and percentage-fallback assertions.
+STRATEGY_REVISION = 36
+_current_parameters = default_long_momentum_parameters
+_current_resolver = resolve_long_momentum_parameters
+_current_definition = long_momentum_strategy_definition
+_CurrentEngine = LongMomentumStrategyEngine
+_CurrentAssigned = AssignedLongMomentumStrategy
+
+
+def default_long_momentum_parameters(*, revision=STRATEGY_REVISION):
+    return _current_parameters(revision=revision)
+
+
+def resolve_long_momentum_parameters(overrides=None, *, revision=STRATEGY_REVISION):
+    return _current_resolver(overrides, revision=revision)
+
+
+def long_momentum_strategy_definition(*, revision=STRATEGY_REVISION):
+    return _current_definition(revision=revision)
+
+
+class LongMomentumStrategyEngine(_CurrentEngine):
+    def __init__(self, *, revision=STRATEGY_REVISION):
+        super().__init__(revision=revision)
+
+
+class AssignedLongMomentumStrategy(_CurrentAssigned):
+    def __init__(self, *args, revision=STRATEGY_REVISION, **kwargs):
+        super().__init__(*args, revision=revision, **kwargs)
+
 
 def test_structural_quality_uses_ticker_relative_score_and_preserves_audit_evidence() -> None:
     level = {

@@ -141,7 +141,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertEqual(
             migrated_profile["parameters"]["structural_entry"]["entry_tranche_count"],
-            3,
+            1,
         )
         self.assertEqual(
             migrated_profile["lifecycle"]["initial_entry"]["capital_request"]["mode"],
@@ -1988,7 +1988,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertEqual(
             profile["parameters"]["structural_entry"]["entry_tranche_count"],
-            3,
+            1,
         )
         self.assertEqual(
             profile["parameters"]["protection"]["profit_ladder"][

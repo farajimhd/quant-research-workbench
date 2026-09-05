@@ -258,6 +258,8 @@ class _ManagedOrderGroup:
     reprice_count: int = 0
     last_reprice_at: datetime | None = None
     current_limit_price: float | None = None
+    deferred_reprice: tuple[float, float] | None = None
+    failed_reprice_at: datetime | None = None
     internal_reaction_ms: float | None = None
     protection_task: asyncio.Task[None] | None = None
     high_water_price: float = 0.0
@@ -349,6 +351,7 @@ class OrderManagementEngine:
         enforce_wall_clock_quote_freshness: bool = False,
         causal_execution_clock: bool = False,
         control_plane: TradingControlPlane | None = None,
+        reprice_authorizer: Callable[[StrategyIntent, str, float, float], Awaitable[bool]] | None = None,
     ) -> None:
         self.broker = broker
         self.planner = planner
@@ -365,6 +368,7 @@ class OrderManagementEngine:
         self.enforce_wall_clock_quote_freshness = enforce_wall_clock_quote_freshness
         self.causal_execution_clock = causal_execution_clock
         self.control_plane = control_plane
+        self.reprice_authorizer = reprice_authorizer
         self._command_lanes: dict[str, asyncio.Lock] = {}
         self._warning_lane = (
             control_plane.warning_reply_lane
@@ -757,8 +761,12 @@ class OrderManagementEngine:
             intent,
             account_id=account_id,
         )
+        if str(intent.action) == "replace_protective_stop":
+            return await self._replace_protective_stop(intent, account_id=account_id)
         working_intent = intent
         plan = self.planner(working_intent, account_id, event)
+        if intent.metadata.get("incremental_exit_reconciliation"):
+            plan = replace(plan, cancel_strategy_protection=False)
         if not plan.orders:
             raise ValueError(f"Strategy intent produced no broker order plan: {working_intent.action}")
         if str(working_intent.action) == "replace_profit_target":
@@ -1611,6 +1619,9 @@ class OrderManagementEngine:
                 continue
             if group.intent.ticker.upper() != intent.ticker.upper():
                 continue
+            if (intent.metadata.get("assignment_id")
+                    and group.intent.metadata.get("assignment_id") != intent.metadata["assignment_id"]):
+                continue
             if str(group.intent.action) not in {
                 "enter_long", "enter_short", "add_long", "add_short",
             }:
@@ -1658,8 +1669,19 @@ class OrderManagementEngine:
                     broker_order_id,
                     replacement,
                 )
+                if _warning_response(response):
+                    async with self._warning_lane:
+                        response = await self._resolve_warning_chain_locked(group, response)
+                _require_modify_acknowledgement(response)
                 responses.extend(response)
                 group.orders[request_index] = replacement
+                profile = group.intent.resolved_protection_profile()
+                if profile is not None:
+                    profile = replace(profile, slices=tuple(
+                        replace(item, profit_target_price=target_price)
+                        if item.profit_target_price is not None else item for item in profile.slices
+                    ))
+                group.intent = replace(group.intent, profit_target_price=target_price, protection_profile=profile)
                 touched[group.group_id] = group
         if not touched:
             raise ValueError("Profit-target replacement changed no live order")
@@ -2125,6 +2147,7 @@ class OrderManagementEngine:
         if group.filled_quantity >= float(group.intent.quantity):
             return False
         if group.state in {
+            OrderManagementState.CANCEL_PENDING,
             OrderManagementState.CANCELLED,
             OrderManagementState.REJECTED,
             OrderManagementState.POLICY_BLOCKED,
@@ -2141,6 +2164,9 @@ class OrderManagementEngine:
         quote = self._execution_quote(group.intent) or group.tactic.quote
         if quote.observed_at.astimezone(timezone.utc) > record_time.astimezone(timezone.utc):
             raise RuntimeError("Adaptive repricing cannot consume a future execution quote")
+        if (group.intent.metadata.get("entry_completion_quote") == "bid"
+                and (record_time - quote.observed_at).total_seconds() * 1000 > self.policy.maximum_quote_age_ms):
+            return False
         age_ms = (
             datetime.now(timezone.utc) - quote.observed_at.astimezone(timezone.utc)
         ).total_seconds() * 1_000
@@ -2164,6 +2190,8 @@ class OrderManagementEngine:
                 maximum_reprice_ticks=self.policy.maximum_reprice_ticks,
             ),
         )
+        if group.intent.metadata.get("entry_completion_quote") == "bid" and group.tactic.side.upper() == "BUY":
+            requested_price = envelope.bound("BUY", _round_to_tick(quote.bid, quote.tick_size, "BUY"))
         if group.current_limit_price is not None and math.isclose(
             requested_price,
             group.current_limit_price,
@@ -2171,10 +2199,32 @@ class OrderManagementEngine:
         ):
             return False
         modified = False
+        # Failed/deferred attempts are attempts too; do not hammer the broker
+        # on every historical event or every wake-up at an unchanged quote.
+        group.last_reprice_at = record_time
         for root_order_id, request_index in _open_adaptive_roots(group):
             replacement = replace(group.orders[request_index], price=requested_price)
+            remaining = max(0.0, float(replacement.quantity or 0) - group.filled_by_broker_order.get(root_order_id, 0.0))
+            fingerprint = (requested_price, remaining)
+            if (group.intent.metadata.get("entry_completion_quote") == "bid"
+                    and group.deferred_reprice == fingerprint and group.failed_reprice_at is not None
+                    and (record_time - group.failed_reprice_at).total_seconds() < 1.0):
+                continue
+            if self.reprice_authorizer is not None and group.intent.metadata.get("entry_completion_quote") == "bid":
+                if not await self.reprice_authorizer(group.intent, group.account_id, requested_price, remaining):
+                    if group.deferred_reprice != fingerprint:
+                        self._record("order_management", "entry_reprice_deferred", root_order_id,
+                                     group.account_id, record_time,
+                                     {"reason": "portfolio_allocation_capacity", "requested_price": requested_price,
+                                      "remaining_quantity": remaining})
+                    group.deferred_reprice = fingerprint
+                    continue
             try:
                 async with self._command_lane(group.account_id):
+                    if (group.state in TERMINAL_MANAGEMENT_STATES
+                            or group.state in {OrderManagementState.CANCEL_PENDING, OrderManagementState.OUTCOME_UNKNOWN}
+                            or root_order_id in group.terminal_broker_order_ids):
+                        continue
                     response = await self.broker.modify_order(
                         group.account_id,
                         root_order_id,
@@ -2183,7 +2233,10 @@ class OrderManagementEngine:
                 if _warning_response(response):
                     async with self._warning_lane:
                         response = await self._resolve_warning_chain_locked(group, response)
+                _require_modify_acknowledgement(response)
             except Exception as exc:
+                group.deferred_reprice = fingerprint
+                group.failed_reprice_at = record_time
                 self._record(
                     "broker",
                     "order_reprice_error",
@@ -2199,6 +2252,8 @@ class OrderManagementEngine:
                 await self.reconcile()
                 continue
             group.orders[request_index] = replacement
+            group.deferred_reprice = None
+            group.failed_reprice_at = None
             modified = True
             self._record(
                 "broker",
@@ -2266,6 +2321,87 @@ class OrderManagementEngine:
             )
         return True
 
+    async def cancel_entry_acquisition(self, intent: StrategyIntent, *, account_id: str) -> None:
+        """Cancel acquisition even when no share has filled yet."""
+        await self._cancel_pending_acquisition_before_exit(intent, account_id=account_id)
+
+    async def pending_exit_quantity(self, intent: StrategyIntent, *, account_id: str) -> float:
+        """Count a working exit OCA once, including unresolved submissions."""
+        live = {str(order.orderId): order for order in await self.broker.live_orders()
+                if order.order_status in OPEN_ORDER_STATUSES}
+        pending = 0.0
+        for group in self._groups.values():
+            if (group.account_id != account_id or group.intent.ticker != intent.ticker
+                    or group.intent.metadata.get("assignment_id") != intent.metadata.get("assignment_id")
+                    or str(group.intent.action) not in {"exit", "cover"}):
+                continue
+            if group.state == OrderManagementState.OUTCOME_UNKNOWN:
+                pending += group.remaining_quantity
+                continue
+            pending += max((float(live[key].remainingQuantity) for key in group.broker_order_ids
+                            if key in live), default=0.0)
+        return pending
+
+    async def _replace_protective_stop(self, intent: StrategyIntent, *, account_id: str) -> OrderGroupSnapshot:
+        desired = float(intent.invalidation_price or 0)
+        if desired <= 0 or desired >= intent.reference_price:
+            raise ValueError("Long support stop must be positive and below the market")
+        assignment_id = str(intent.metadata.get("assignment_id") or "")
+        changed: list[_ManagedOrderGroup] = []
+        for order in await self.broker.live_orders():
+            group = self._group_for_order(order)
+            if (group is None or group.account_id != account_id
+                    or group.intent.ticker != intent.ticker
+                    or str(group.intent.metadata.get("assignment_id") or "") != assignment_id
+                    or order.order_status not in OPEN_ORDER_STATUSES
+                    or order.orderType.upper() not in {"STP", "STOP_LIMIT"}):
+                continue
+            index = group.broker_order_request_indexes.get(str(order.orderId))
+            if index is None:
+                continue
+            request = group.orders[index]
+            if desired <= max(float(request.auxPrice or 0), float(order.auxPrice or 0)):
+                # Recover an amendment whose acknowledgement was lost. The
+                # repair contract must retain the stop actually held by the
+                # broker instead of later restoring the previous lower stop.
+                confirmed_stop = float(order.auxPrice or 0)
+                if confirmed_stop >= desired:
+                    group.orders[index] = replace(request, auxPrice=confirmed_stop, price=order.price)
+                    profile = group.intent.resolved_protection_profile()
+                    if profile is not None:
+                        profile = replace(profile, slices=tuple(
+                            replace(item, stop=replace(item.stop, price=confirmed_stop)) for item in profile.slices
+                        ))
+                    group.intent = replace(group.intent, invalidation_price=confirmed_stop, protection_profile=profile)
+                changed.append(group)
+                continue
+            replacement = replace(request, auxPrice=desired,
+                                  price=(float(request.price) + desired - float(request.auxPrice or 0)
+                                         if request.orderType == "STOP_LIMIT" and request.price is not None
+                                         else request.price))
+            async with self._command_lane(account_id):
+                response = await self.broker.modify_order(account_id, str(order.orderId), replacement)
+            if _warning_response(response):
+                async with self._warning_lane:
+                    response = await self._resolve_warning_chain_locked(group, response)
+            _require_modify_acknowledgement(response)
+            group.orders[index] = replacement
+            profile = group.intent.resolved_protection_profile()
+            if profile is not None:
+                profile = replace(profile, slices=tuple(
+                    replace(item, stop=replace(item.stop, price=desired)) for item in profile.slices
+                ))
+            group.intent = replace(group.intent, invalidation_price=desired, protection_profile=profile)
+            group.updated_at = intent.event_time
+            self._transition(group, group.state, {"event": "support_stop_replaced", "stop": desired})
+            self._record("broker", "protective_stop_replaced", str(order.orderId), account_id,
+                         intent.event_time, {"stop": desired, "intent_id": intent.intent_id,
+                                             "selection": intent.metadata.get("protective_stop_selection", {})})
+            changed.append(group)
+        if not changed:
+            raise ValueError("No broker-held support stop is available for replacement")
+        return changed[-1].snapshot(self.policy.version)
+
     async def _cancel_pending_acquisition_before_exit(
         self,
         intent: StrategyIntent,
@@ -2303,11 +2439,14 @@ class OrderManagementEngine:
                 continue
             if group.intent.ticker.upper() != intent.ticker.upper():
                 continue
+            if (intent.metadata.get("assignment_id")
+                    and group.intent.metadata.get("assignment_id") != intent.metadata["assignment_id"]):
+                continue
             # A zero-fill entry has not created the position being reduced.
             # Preserve its abstract protection contract for callers that are
             # only replacing protection, while actual partial acquisitions are
             # frozen before their held shares are sold.
-            if group.filled_quantity <= 1e-9:
+            if group.filled_quantity <= 1e-9 and not intent.metadata.get("cancel_entry_acquisition"):
                 continue
             roots = [
                 (broker_order_id, request_index)
@@ -3599,6 +3738,14 @@ def _protection_group_key(order: LiveOrder) -> str:
     raw = dict(order.raw or {})
     oca_group = str(raw.get("oca_group") or raw.get("ocaGroup") or "")
     return oca_group or str(order.parentId or order.cOID or order.orderId)
+
+
+def _require_modify_acknowledgement(rows: list[dict[str, Any]]) -> None:
+    if not rows or _warning_response(rows):
+        raise ValueError("Broker modification is not acknowledged")
+    for row in rows:
+        if row.get("error") or row.get("errorCode"):
+            raise ValueError(str(row.get("error") or row.get("message") or row["errorCode"]))
 
 
 def _warning_response(rows: list[dict[str, Any]]) -> bool:

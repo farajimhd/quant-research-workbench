@@ -604,11 +604,14 @@ def qmd_historical_structure_snapshot(
 
 
 def qmd_advance_historical_structure_snapshot(
-    *, session_id: str, as_of: str, event_limit: int | None = None
+    *, session_id: str, as_of: str, event_limit: int | None = None,
+    as_of_sequence: int | None = None, after_sequence: int | None = None,
 ) -> dict[str, Any]:
     payload = qmd_history_post_json(
         "/materialize/generic-structure-snapshot-session-advance",
         {
+            "as_of_sequence": as_of_sequence,
+            "after_sequence": after_sequence,
             "schema_version": 1,
             "session_id": str(session_id).strip(),
             "as_of": as_of,
@@ -623,23 +626,31 @@ def qmd_advance_historical_structure_snapshot(
         raise RuntimeError("QMD History returned another Generic Structure session")
     if not isinstance(payload.get("snapshot"), dict):
         raise RuntimeError("QMD History returned no advanced Generic Structure snapshot")
+    if as_of_sequence is not None and payload.get("as_of_sequence") != as_of_sequence:
+        raise RuntimeError("QMD History does not support the required exact event structure cursor")
     return payload
 
 
 def qmd_advance_historical_structure_timeline(
-    *, session_id: str, as_ofs: Sequence[str], event_limit: int | None = None
+    *, session_id: str, as_ofs: Sequence[str], event_limit: int | None = None,
+    as_of_sequences: Sequence[int] | None = None, after_sequence: int | None = None,
 ) -> dict[str, Any]:
     """Advance one resident historical structure engine across ordered boundaries."""
 
     normalized_as_ofs = [str(value).strip() for value in as_ofs if str(value).strip()]
     if not normalized_as_ofs:
         raise ValueError("Historical Generic Structure timeline requires as_of boundaries")
+    if as_of_sequences is not None and (len(as_of_sequences) != len(normalized_as_ofs)
+                                        or any(value < 0 for value in as_of_sequences)):
+        raise ValueError("Historical structure event cursors must match every boundary")
     payload = qmd_history_post_json(
         "/materialize/generic-structure-snapshot-session-batch",
         {
             "schema_version": 1,
             "session_id": str(session_id).strip(),
             "as_ofs": normalized_as_ofs,
+            "as_of_sequences": list(as_of_sequences) if as_of_sequences is not None else None,
+            "after_sequence": after_sequence,
             "expected_source_plan_hash": None,
             "event_limit": event_limit,
         },
@@ -652,7 +663,7 @@ def qmd_advance_historical_structure_timeline(
     boundaries = payload.get("boundaries")
     if not isinstance(boundaries, list) or len(boundaries) != len(normalized_as_ofs):
         raise RuntimeError("QMD History returned an incomplete Generic Structure boundary set")
-    for expected, boundary in zip(normalized_as_ofs, boundaries, strict=True):
+    for index, (expected, boundary) in enumerate(zip(normalized_as_ofs, boundaries, strict=True)):
         if not isinstance(boundary, dict) or not isinstance(boundary.get("snapshot"), dict):
             raise RuntimeError("QMD History returned an invalid Generic Structure boundary")
         if _validate_window_timestamp(
@@ -661,6 +672,8 @@ def qmd_advance_historical_structure_timeline(
             "historical structure requested as_of", expected
         ).astimezone(timezone.utc):
             raise RuntimeError("QMD History returned an out-of-order Generic Structure boundary")
+        if as_of_sequences is not None and boundary.get("as_of_sequence") != as_of_sequences[index]:
+            raise RuntimeError("QMD History does not support the required exact event structure cursor")
     return payload
 
 

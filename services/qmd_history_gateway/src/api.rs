@@ -482,6 +482,8 @@ async fn materialize_generic_structure_snapshot_session_advance(
         .await
         .map_err(structure_checkpoint_advancement_error)?;
     let advance_request = StructureCheckpointAdvanceRequest {
+        as_of_sequence: request.as_of_sequence,
+        after_sequence: request.after_sequence,
         schema_version: request.schema_version,
         checkpoint: checkpoint.clone(),
         as_of: request.as_of,
@@ -506,6 +508,7 @@ async fn materialize_generic_structure_snapshot_session_advance(
         .replace(session_id.clone(), advanced.checkpoint)
         .await;
     Ok(Json(StructureSnapshotSessionAdvanceResponse {
+        as_of_sequence: request.as_of_sequence,
         schema_version: advanced.schema_version,
         session_id,
         as_of: advanced.as_of,

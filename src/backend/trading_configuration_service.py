@@ -70,7 +70,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 49
+CONFIGURATION_SCHEMA_VERSION = 50
 MARKET_DISCOVERY_MATERIALIZATION_RUN_ID = "market-discovery:materialized-configuration"
 _CONFIGURATION_BASE_CACHE_LOCK = threading.RLock()
 _CONFIGURATION_BASE_CACHE: tuple[str, float, dict[str, Any] | None] = ("", 0.0, None)
@@ -4148,10 +4148,9 @@ def _default_draft() -> dict[str, Any]:
         "enabled": True,
         "selection_mode": "event_price_top_n_below_session_high",
         "maximum_entry_levels": 3,
-        # Each selected level remains an independently confirmed entry. Sizing
-        # is not divided here; Portfolio recomputes every order from the latest
-        # broker cash snapshot, support-stop risk, and account constraints.
-        "entry_tranche_count": 3,
+        # One logical entry, allocated by Portfolio and completed by OMS.
+        # Later resistance hits must not generate structural adds.
+        "entry_tranche_count": 1,
         # Structural admission is ticker-independent and owned exclusively by
         # the causal Unified Structural Level Book. Other level scores remain
         # observable, but they do not silently veto a level that satisfies the
@@ -4248,14 +4247,11 @@ def _default_draft() -> dict[str, Any]:
     }
     system_profiles[0]["parameters"]["protection"]["profit_ladder"].update({
         "maximum_targets": 1,
-        # The target is the third nearest qualifying level above the completed
-        # one-second close. As completed bars accept successive levels while
-        # MACD remains positive/open, the same rule advances the live target.
+        # The resting target is R3 in the current producer resistance book.
+        # A causal first-resistance hit advances the moving ladder.
         "selection_mode": "ordinal_qualified_level",
         "target_level_ordinal": 3,
-        # A target ladder advances only after a completed one-second close has
-        # cleared the nearest prior resistance zone. Touching or closing
-        # inside the zone cannot move the resting target.
+        # Revision 37 consumes an actual trade hit, without a bar-close delay.
         "ratchet_acceptance_buffer_bps": 0.0,
         "minimum_level_strength": 0.0,
         "minimum_level_confidence": 0.0,
