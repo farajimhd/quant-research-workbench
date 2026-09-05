@@ -1,3 +1,7 @@
+// Explicit operator default for entry-decision reference rails in every theme.
+export const STRATEGY_ENTRY_REFERENCE_COLOR = "#000000";
+export const STRATEGY_ENTRY_REFERENCE_BACKING = "#FFFFFF";
+
 export type AppThemeId =
   | "light"
   | "slate"

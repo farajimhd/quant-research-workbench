@@ -1,4 +1,5 @@
 import { Activity } from "lucide-react";
+import { entryStructurePresentation } from "./entryStructurePresentation";
 import { useEffect, useMemo, useState } from "react";
 import type { UTCTimestamp } from "lightweight-charts";
 
@@ -501,7 +502,9 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
         : selectedTargets,
     ).slice(0, 3);
     const supportPrices = structuralLevelPrices(structuralSnapshot.supports).slice(0, 3);
-    const resistancePrices = uniquePositivePrices([
+    const entryStructure = entryStructurePresentation(structuralTrigger, entryIntentTime);
+    const highOfDayPrice = side === "SHORT" ? undefined : entryStructure.highOfDayPrice;
+    const resistancePrices = side !== "SHORT" ? entryStructure.resistancePrices : uniquePositivePrices([
       ...structuralLevelPrices(structuralSnapshot.resistances),
       ...plannedTargetPrices,
       ...levelPrices,
@@ -648,6 +651,7 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
       levelPrices,
       supportPrices,
       resistancePrices,
+      highOfDayPrice,
       pnl,
       positionSide: side === "SHORT" ? "SHORT" : "LONG",
       status,

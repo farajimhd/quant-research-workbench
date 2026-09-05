@@ -294,7 +294,7 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert 'annotation.supportPrices?.slice(0, 3)' in renderer_source
     assert 'annotation.resistancePrices?.slice(0, 3)' in renderer_source
     assert '`S${index + 1}`' in renderer_source
-    assert '`R${index + 1}`' in renderer_source
+    assert '`R${index + 1} ${formatPrice(price)}`' in renderer_source
     assert "Liquidity ${admissionFailed === 0 && executionFailed === 0 ? \"passed\" : \"failed\"}" in chart_source
     assert "signedMoneyShort(realizedPnl)" in chart_source
     assert 'annotation.targetPrices?.forEach' in renderer_source

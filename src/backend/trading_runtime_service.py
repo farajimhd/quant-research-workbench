@@ -836,6 +836,8 @@ def _compact_strategy_gate_snapshot(
                 "maximum_breakout_extension_bps",
                 "passed",
                 "previous_price",
+                "prior_snapshot_session_high",
+                "prior_snapshot_selected_at",
                 "reason",
                 "reference_price",
                 "threshold_price",

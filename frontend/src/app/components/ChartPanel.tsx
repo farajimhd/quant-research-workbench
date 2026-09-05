@@ -1,3 +1,4 @@
+import { STRATEGY_ENTRY_REFERENCE_BACKING, STRATEGY_ENTRY_REFERENCE_COLOR } from "../theme";
 import {
   type AutoscaleInfo,
   CandlestickSeries,
@@ -117,6 +118,7 @@ type TradeAnnotation = {
   guideStartTime?: number;
   id: string;
   levelPrices?: number[];
+  highOfDayPrice?: number;
   supportPrices?: number[];
   resistancePrices?: number[];
   pnl?: number;
@@ -154,6 +156,7 @@ type StrategyVisualElementKey =
   | "exitReasonPart" | "exitShortReasonPart" | "exitSizePart" | "exitSeparatorPart" | "exitPricePart" | "exitShortPricePart" | "exitPnlPart" | "exitPnlLossPart"
   | "exitFillArrow" | "exitFillLabel" | "exitFillSizePart" | "exitFillStatusPart" | "exitFillSeparatorPart" | "exitFillPricePart" | "exitFillShortPricePart"
   | "levelLine" | "levelLabel"
+  | "entryResistanceLine" | "entryResistanceLabel" | "highOfDayLine" | "highOfDayLabel"
   | "stopLine" | "stopLabel"
   | "targetLine" | "targetLabel"
   | "adjustmentLine" | "adjustmentArrow" | "adjustmentLabel"
@@ -740,6 +743,10 @@ const defaultStrategyPresentationSettings: StrategyPresentationSettings = {
     exitFillPricePart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#DC2626", labelPaddingX: 4, labelPaddingY: 2 },
     exitFillShortPricePart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#007DFF", labelPaddingX: 4, labelPaddingY: 2 },
     levelLine: strategyPresentationStyle("", "dashed", 1, 0.9),
+    entryResistanceLine: strategyPresentationStyle(STRATEGY_ENTRY_REFERENCE_COLOR, "dashed", 1, 1),
+    entryResistanceLabel: { ...strategyPresentationStyle(STRATEGY_ENTRY_REFERENCE_COLOR, "solid", 1, 1, 9), borderWidth: 0, labelPaddingX: 2, labelPaddingY: 1 },
+    highOfDayLine: strategyPresentationStyle(STRATEGY_ENTRY_REFERENCE_COLOR, "solid", 1, 1),
+    highOfDayLabel: { ...strategyPresentationStyle(STRATEGY_ENTRY_REFERENCE_COLOR, "solid", 1, 1, 9), borderWidth: 0, labelPaddingX: 2, labelPaddingY: 1 },
     levelLabel: { ...strategyPresentationStyle("", "solid", 1, 1, 8, 7, 1), borderWidth: 0, labelPaddingX: 2, labelPaddingY: 1 },
     stopLine: strategyPresentationStyle("", "dashed", 1, 0.95),
     stopLabel: { ...strategyPresentationStyle("", "dashed", 2, 1, 8, 7, 1), borderOpacity: 0.49, borderStyle: "solid", borderWidth: 0, labelPaddingX: 2, labelPaddingY: 2 },
@@ -3143,8 +3150,12 @@ const strategyVisualElementDefinitions: StrategyVisualElementDefinition[] = [
   { key: "exitLabel", kind: "label", title: "Exit intent label", help: "The strategy-issued exit action at its decision reference price." },
   { key: "exitFillArrow", kind: "marker", title: "Exit final-fill arrow", help: "Last immutable execution completing each exit order." },
   { key: "exitFillLabel", kind: "label", title: "Exit final-fill label", help: "Cumulative quantity, truthful fill state, execution VWAP, and final realized P&L." },
-  { key: "levelLine", kind: "line", title: "Structural level lines", help: "Entry-frozen resistance or support evidence." },
-  { key: "levelLabel", kind: "label", title: "Structural level labels", help: "Point-in-time S1–S3, R1–R3, and trigger identifiers." },
+  { key: "highOfDayLine", kind: "line", title: "Entry high-of-day line", help: "HOD recorded with this entry selection. Solid black by default." },
+  { key: "highOfDayLabel", kind: "label", title: "Entry high-of-day label", help: "HOD price for the recorded entry selection." },
+  { key: "entryResistanceLine", kind: "line", title: "Entry R1–R3 lines", help: "The three selected resistances under entry HOD. Dashed black by default." },
+  { key: "entryResistanceLabel", kind: "label", title: "Entry R1–R3 labels", help: "Selected entry prices, ascending from R1 to R3; separate from profit targets." },
+  { key: "levelLine", kind: "line", title: "Structural level lines", help: "Support, short-entry, and exit structural evidence." },
+  { key: "levelLabel", kind: "label", title: "Structural level labels", help: "Support, short-entry, exit, and trigger identifiers." },
   { key: "stopLine", kind: "line", title: "Protective stop line", help: "Current or immutable entry-plan protection." },
   { key: "stopLabel", kind: "label", title: "Protective stop label", help: "Compact SL identifier attached to protection." },
   { key: "targetLine", kind: "line", title: "Profit target lines", help: "Current or immutable entry-plan targets." },
@@ -4405,6 +4416,7 @@ function normalizeStrategyPresentationSettings(settings: Partial<StrategyPresent
     exitFillArrow: legacy.exit, exitFillLabel: legacy.exit ? { ...legacy.exit, color: "" } : undefined,
     exitFillSizePart: undefined, exitFillStatusPart: undefined, exitFillSeparatorPart: undefined, exitFillPricePart: undefined, exitFillShortPricePart: undefined,
     levelLine: legacy.levels, levelLabel: legacy.levels,
+    entryResistanceLine: undefined, entryResistanceLabel: undefined, highOfDayLine: undefined, highOfDayLabel: undefined,
     stopLine: legacy.stop, stopLabel: legacy.stop,
     targetLine: legacy.targets, targetLabel: legacy.targets,
     adjustmentLine: legacy.adjustments, adjustmentArrow: legacy.adjustments, adjustmentLabel: legacy.adjustments,
@@ -7162,10 +7174,18 @@ function drawTradeAnnotationPrimitiveGeometry(
         const y = priceSeries.priceToCoordinate(price);
         if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, supportColor, `S${index + 1}`, chartBackground, width, height, elements.levelLine, elements.levelLabel, labelLayout, elements.connector);
       });
+    }
+    const resistanceLine = annotation.positionSide === "SHORT" ? elements.levelLine : elements.entryResistanceLine;
+    const resistanceLabel = annotation.positionSide === "SHORT" ? elements.levelLabel : elements.entryResistanceLabel;
+    if (resistanceLine.visible || resistanceLabel.visible) {
       annotation.resistancePrices?.slice(0, 3).forEach((price, index) => {
         const y = priceSeries.priceToCoordinate(price);
-        if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, resistanceColor, `R${index + 1}`, chartBackground, width, height, elements.levelLine, elements.levelLabel, labelLayout, elements.connector);
+        if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, resistanceColor, `R${index + 1} ${formatPrice(price)}`, chartBackground, width, height, resistanceLine, resistanceLabel, labelLayout, elements.connector, annotation.positionSide !== "SHORT");
       });
+    }
+    if ((elements.highOfDayLine.visible || elements.highOfDayLabel.visible) && annotation.highOfDayPrice !== undefined) {
+      const y = priceSeries.priceToCoordinate(annotation.highOfDayPrice);
+      if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, STRATEGY_ENTRY_REFERENCE_COLOR, `HOD ${formatPrice(annotation.highOfDayPrice)}`, chartBackground, width, height, elements.highOfDayLine, elements.highOfDayLabel, labelLayout, elements.connector, true);
     }
     if (elements.targetLine.visible || elements.targetLabel.visible) annotation.targetPrices?.forEach((price, index) => {
       const y = priceSeries.priceToCoordinate(price);
@@ -7340,6 +7360,7 @@ function drawCanvasTradeGuide(
   labelSettings: StrategyPresentationStyleSettings,
   labelLayout?: CanvasAnnotationLayout,
   connectorSettings?: StrategyPresentationStyleSettings,
+  entryReference = false,
 ) {
   const minimumWidth = Math.min(56, width);
   const rawLeft = Math.min(left, right);
@@ -7353,10 +7374,16 @@ function drawCanvasTradeGuide(
   }
   const lineColor = strategyPresentationColor(lineSettings.color, fallbackColor);
   const labelColor = strategyPresentationColor(labelSettings.color, fallbackColor);
+  const darkReference = entryReference && document.documentElement.style.colorScheme === "dark";
+  const readableLabel = darkReference && labelColor.toUpperCase() === STRATEGY_ENTRY_REFERENCE_COLOR && !labelSettings.fillColor
+    ? { ...labelSettings, fillColor: STRATEGY_ENTRY_REFERENCE_BACKING } : labelSettings;
   context.save();
   // Entry/exit arrows retain exact event-time authority. Very short positions
   // receive a bounded guide footprint so their SL/TP evidence stays legible.
   if (lineSettings.visible) {
+    if (darkReference && lineColor.toUpperCase() === STRATEGY_ENTRY_REFERENCE_COLOR) {
+      drawCanvasTradeLine(context, renderedLeft, renderedRight, y, STRATEGY_ENTRY_REFERENCE_BACKING, lineSettings.lineWidth + 2, lineSettings.lineStyle, lineSettings.opacity * 0.75);
+    }
     drawCanvasTradeLine(context, renderedLeft, renderedRight, y, lineColor, lineSettings.lineWidth, lineSettings.lineStyle, lineSettings.opacity);
     const capRadius = Math.max(1.5, Math.min(3.5, lineSettings.lineWidth));
     context.fillStyle = rgbaFromHex(lineColor, lineSettings.opacity);
@@ -7364,7 +7391,7 @@ function drawCanvasTradeGuide(
     context.fillRect(renderedRight - capRadius, y - capRadius, capRadius * 2, capRadius * 2);
   }
   context.restore();
-  if (labelSettings.visible) drawCanvasTradeLabel(context, label, (renderedLeft + renderedRight) / 2, y + 3, labelColor, background, "left", width, height, labelSettings, labelLayout, connectorSettings);
+  if (labelSettings.visible) drawCanvasTradeLabel(context, label, (renderedLeft + renderedRight) / 2, y + 3, labelColor, background, "left", width, height, readableLabel, labelLayout, connectorSettings);
 }
 
 type CanvasLabelBox = { bottom: number; left: number; right: number; top: number };
@@ -7545,6 +7572,7 @@ function tradeAnnotationAutoscaleInfo(
     prices.push(...(trade.levelPrices?.slice(0, 3) ?? []));
     prices.push(...(trade.supportPrices?.slice(0, 3) ?? []));
     prices.push(...(trade.resistancePrices?.slice(0, 3) ?? []));
+    if (typeof trade.highOfDayPrice === "number") prices.push(trade.highOfDayPrice);
     if (typeof trade.triggerPrice === "number") prices.push(trade.triggerPrice);
     if (typeof trade.stopPrice === "number") prices.push(trade.stopPrice);
     prices.push(...(trade.targetPrices ?? []));

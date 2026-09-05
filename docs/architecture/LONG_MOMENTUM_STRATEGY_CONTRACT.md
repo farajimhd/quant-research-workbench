@@ -64,6 +64,20 @@ upward moves.
 | Accepted orders, fills, cash, and positions | Broker; simulated broker in backtest | An intent or local acknowledgement is not a fill. |
 | Chart and activity presentation | Shared journal projections | Shows what the decision and broker actually knew at each event; does not drive execution. |
 
+Entry presentation uses the entry decision's recorded resistance-selection
+snapshot: a solid black HOD line and black dashed R1/R2/R3 lines, numbered
+from the lowest selected price upward. These entry references remain fixed
+for that position's historical display; they are not the dynamic profit-target
+ladder. General structural levels and target candidates must never fill missing
+entry references. Older records can use their recorded prior selection and
+its HOD; missing evidence stays unavailable rather than being reconstructed
+from later chart bars. Dark themes add a light outline for legibility.
+
+Each chart's **Strategy Presentation** configuration, also available in Canvas
+configuration, exposes separate HOD and entry R1–R3 line/label controls for
+visibility, color, opacity, width, dash style, and label styling. Settings persist
+per chart instance. TP and protective-stop styles remain independent.
+
 One strategy opportunity may result in approved allocations on multiple
 accounts. Each allocation has its own quantity, reservation, broker orders,
 fills, protection, and outcome. A rejected or delayed allocation on one account
