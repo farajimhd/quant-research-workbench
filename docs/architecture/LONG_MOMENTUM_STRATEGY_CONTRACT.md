@@ -4,7 +4,7 @@ Last updated: 2026-09-04
 
 Related task: TASK-0014
 
-Status: Revision 38 implementation reference. Focused verification is separate
+Status: Revision 39 implementation reference. Focused verification is separate
 from market-run acceptance; no backtest is authorized for this repair.
 
 ## 1. Authority and purpose
@@ -90,7 +90,9 @@ At the current causal event:
 2. Restrict entry candidates to prices at or below the current session high.
 3. Select the three highest such resistance prices, or the available qualified
    subset when fewer than three exist.
-4. Evaluate an actual upward trade-price crossing of a selected resistance.
+4. Require a completed one-second close strictly above a selected resistance,
+   following a prior close at or below that boundary. The completed candle
+   must not be red: close >= open. Equality to resistance is not a breakout.
 
 This set must follow changes in the current-day book and high of day. A wick
 can establish the high of day and can contribute a resistance through the
@@ -106,15 +108,18 @@ labels must identify which set is being shown.
 
 ### 4.2 Confirmation at the crossing
 
-The trade crossing is evaluated without waiting for a completed one-second
-candle. At that same causal evaluation, the agreed momentum conditions are:
+Entry waits for a completed one-second candle. An intrabar crossing or wick
+is insufficient, and a red candle (close < open) blocks entry. The preceding
+completed close must be at or below the tracked resistance, and the new close
+must be strictly above its current producer price. Other conditions are:
 
 - One-second MACD line is above its signal line.
 - MACD line is above zero; the signal line need not be above zero.
 - Price is above executable VWAP.
 - Configured liquidity, activity, volume, veto, and freshness gates pass.
 
-Forming one-second MACD is evaluated from information available at the event.
+Entry uses the completed one-second MACD available at that candle boundary.
+Forming one-second MACD remains available for immediate exit evaluation.
 A later candle's favorable value cannot retroactively validate a failed
 crossing. The configured gates and observed values must be recorded so an
 entry or missed entry can be explained without reconstructing it from a later
@@ -163,7 +168,7 @@ For each approved allocation, OMS owns this lifecycle:
 3. Compute the remaining approved quantity from cumulative fills and any
    explicit Portfolio amendment.
 4. While the entry remains authorized and incomplete, update the remaining buy
-   limit to the fresh current bid as requested by the user.
+   limit to the fresh current ask; sells follow the fresh current bid.
 5. Continue the bounded execution loop until filled, an actual Strategy exit
    or authorized cancellation occurs, or an explicit allocation/broker
    constraint requires resolution.
@@ -177,9 +182,11 @@ API convention while separately tracking the remainder. Sending the remainder
 as a new total must not accidentally cancel approved shares or fall below
 already-filled quantity.
 
-Buying at the bid is passive: prompt amendments do not guarantee immediate
-fills or permit fabricated fills. Initial-order pricing must be specified
-separately from the user's explicit bid-following remainder rule.
+Both the initial buy and subsequent remainder amendments use the executable
+ask. Sell completion uses the executable bid. Orders remain working until
+completion or genuine cancellation/exit authority; a short adaptive deadline
+must not abandon the remainder. Actual displayed liquidity, cash, and broker
+constraints still apply; neither Strategy nor the simulator may fabricate fills.
 
 OMS must not interpret a partial fill as permission to stop working the rest,
 nor use a new Strategy entry/add to recover the missing quantity. A cash or
@@ -323,7 +330,7 @@ source timestamps, position, and policy.
 
 Premarket liquidation uses limit orders at fresh executable bids. Regular
 session liquidation may use market orders where the configured policy allows.
-These sell-side semantics are separate from the requested buy-at-bid remainder
+These sell-side semantics are separate from the requested buy-at-ask remainder
 policy for entry completion.
 
 Re-entry is a new opportunity only after the prior applicable account lifecycle
@@ -365,7 +372,7 @@ an earlier decision using a later structural book.
 
 ## 10. Explicit implementation choices and configuration
 
-| Detail | Revision 38 contract |
+| Detail | Revision 39 contract |
 |---|---|
 | Support-based trailing formula | Default newer-support advancement; selectable support-derived distance alternative, as specified in section 6. |
 | Insufficient/distant support | Defer without two qualified supports. Preserve a distant support and let Portfolio constrain quantity. |
@@ -373,14 +380,14 @@ an earlier decision using a later structural book.
 | Level qualification | Minimum ticker-relative quality remains 20%; maximum break probability remains 100% (`1.0`). No lifetime break-count ceiling for entry or target levels. |
 | Ladder mutation and gaps | Follow producer identities and current prices, consume the hit once, and preserve prior broker fills. See section 7. |
 | Fewer than three target resistances | Defer new entry; keep existing protection for held exposure. |
-| Initial entry execution price | Retain the configured adaptive-very-urgent initial tactic. Subsequent remaining-entry amendments use fresh bid. |
-| Affordability during execution | Portfolio reauthorizes the same remaining reservation under its account/group admission fence. It includes a configurable `entry_fee_buffer_bps` (default 50 bps for bid-completion entries) in funding. No second allocation or Strategy add is created. |
+| Initial entry execution price | Buy at the current ask and reprice the approved remainder to later asks; persistent sell completion follows bids. |
+| Affordability during execution | Portfolio reauthorizes the same remaining reservation under its account/group admission fence. It includes a configurable `entry_fee_buffer_bps` (default 50 bps for managed-completion entries) in funding. No second allocation or Strategy add is created. |
 
-If a bid cannot fund the entire authorized remainder within current constraints,
+If the ask cannot fund the entire authorized remainder within current constraints,
 keep the last accepted order price and record a deferred amendment. Re-evaluate
 capacity on the bounded execution cadence. Deduplicate unchanged deferral
 messages; broker errors receive backoff rather than a tight retry loop.
-This is explicit deferral, not a promise that passive bid orders always fill.
+Deferral is explicit: the mandate cannot spend unavailable cash to guarantee a fill.
 The fee allowance is a sizing reserve, not the simulated or broker fee model.
 
 The two trailing choices appear in the existing Strategy management parameter
@@ -437,7 +444,7 @@ live path rather than assuming a backtest-only fix establishes parity.
 ### C. Make entry acquisition one durable allocation lifecycle
 
 Strategy requests the opportunity once. Portfolio creates and reserves each
-account allocation under competing demand. OMS owns bid-following completion,
+account allocation under competing demand. OMS owns ask-following buy completion and bid-following sell completion,
 fill accounting, idempotent amendments, and constraint feedback to Portfolio.
 Remove fresh Strategy add requests from the completion path. Make cash/fee
 affordability and allocation amendment explicit so rejections cannot become
@@ -473,7 +480,7 @@ Focused regression scenarios must cover:
   retroactively validate it.
 - One opportunity allocated across two accounts while other tickers compete
   for funds; no duplicate reservation or cross-account fill attribution.
-- Many partial fills and changing bids; no new Strategy adds, quantity
+- Many partial fills and changing asks/bids; no new Strategy adds, quantity
   duplication, unsupported cash use, or silent abandonment of the remainder.
 - A fill during modify/cancel, reconnect replay, and an exit during acquisition;
   no oversell, unprotected quantity, duplicate order, or unintended reopening.
@@ -513,10 +520,10 @@ The reported 47% stop is not recorded as an engine crash: c46dabeb completed
 reproduced, and this repair does not claim to fix an unidentified UI exception.
 
 Before a later authorized trial, activate the updated historical gateway and
-backend together and use a newly built revision-38 candidate. The per-trade
+backend together and use a newly built revision-39 candidate. The per-trade
 client requires both sequence-aware responses and canonical execution-clock
 provenance; an older gateway fails closed. Existing runs are never relabeled
-as revision-38 acceptance. The earlier UI capture covered a loading screen,
+as revision-39 acceptance. The earlier UI capture covered a loading screen,
 so dropdown interaction has not been claimed as visually verified.
 
 ## 14. Supporting context
@@ -528,3 +535,67 @@ so dropdown interaction has not been claimed as visually verified.
 
 The September 4 user corrections in the review conversation take precedence
 over these older summaries wherever their rules differ.
+
+### Revision 39 follow-up: failed run 329d8a3f
+
+The later run `329d8a3f-fced-40ed-90dc-b5b9c6c3693f` actually failed under
+revision 38 at 04:12:41 ET, after 30,407 processed events, with `long protective
+stop must be below the reference price`. This differs from completed run
+c46dabeb and must not be dismissed as the earlier unconfirmed UI symptom.
+
+The confirmed trailing-stop amendment was retained in the protection profile,
+but quantity repair attempted to resolve it against the original entry price.
+A valid stop above entry therefore raised an exception. Repair now retains the
+broker-confirmed absolute stop. When a missing stop still has an existing
+target sibling, the repair transfers target capacity before installing the
+replacement pair and rechecks position changes during that transfer.
+
+Revision 38 also issued repeated exit intents while a sell already covered
+the position. Revision 39 reads working OMS exit quantity before deciding:
+covered holdings produce a pending-exit hold; uncovered late fills produce
+only the additional liquidation needed. Full exits latch cancellation of
+entry acquisition, and limit execution remains persistent.
+
+Portfolio completion restores the current acquisition's deployed notional to
+the risk-budget basis rather than shrinking that basis after each own fill.
+Actual available cash, reservations, account constraints, and existing risk
+remain enforced. Risk transferred from a remaining reservation to filled
+allocation is proportional to the remaining quantity, avoiding a second
+partial-fill accounting drift.
+
+The canonical event feed now includes QMD-owned price/high-low/volume
+eligibility plus its revision. Strategy and simulated execution no longer
+consume price-ineligible prints as actionable prices. The observed 4.15
+stop-triggering print at 04:11:02.710401 carried conditions 14/12/37/41.
+The canonical condition reference confirms condition 37 excludes last-price
+and high/low updates while retaining volume. The following round-lot 4.14
+print at 04:11:02.710402 can still legitimately breach the 4.151 stop; this
+repair does not suppress valid protection. Both consumers use the producer
+contract, not an independent Python condition list. Historical revision-39 execution fails clearly when an
+old gateway omits this contract. Structural advancement requests snapshots
+only at actionable trade boundaries; the producer still consumes intervening
+source events, preserving exact causal state and ordering.
+
+At 04:11:01 the journal records a target amendment from 4.195 to 4.2555 at a
+completed close of 4.18. The later position was exited by 04:11:05.918; no held
+position remained to advance a target at 04:11:11. The intrabar 04:11:03.574
+entry was allowed by revision 38, but conflicts with the latest entry-close
+instruction and is rejected by revision 39 until a qualifying candle closes.
+An uncrossed target frontier is retained across book changes and tracked by
+producer identity/current price until its first resistance is actually passed.
+
+Progress publication is wall-time throttled instead of waiting only for a
+hundred-event boundary. Failed/stopped status is published before terminal
+broker/checkpoint cleanup, so cleanup cannot leave the UI claiming the engine
+is running. These are bounded engineering repairs; end-to-end speed and
+strategy acceptance still require a separately authorized fresh run. No
+backtest is launched as part of this repair.
+
+Revision-39 verification: 233 focused Python tests and 102 Rust library tests
+passed; the release gateway build and canonical configuration builder passed.
+No backtest, service restart, or live publication was performed.
+
+Read-only canonical sample, SUGP 04:11-04:12 ET: 5,881 trade reports, 1,350
+price-eligible reports, 4,531 excluded price boundaries (77%). This measures
+reduced strategy/snapshot work, not full-run wall-time speedup. The target
+amendment journal uses the candle bar-end boundary, not its chart start label.

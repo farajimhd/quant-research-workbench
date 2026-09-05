@@ -2164,7 +2164,7 @@ class OrderManagementEngine:
         quote = self._execution_quote(group.intent) or group.tactic.quote
         if quote.observed_at.astimezone(timezone.utc) > record_time.astimezone(timezone.utc):
             raise RuntimeError("Adaptive repricing cannot consume a future execution quote")
-        if (group.intent.metadata.get("entry_completion_quote") == "bid"
+        if (group.intent.metadata.get("entry_completion_quote") in {"bid", "ask"}
                 and (record_time - quote.observed_at).total_seconds() * 1000 > self.policy.maximum_quote_age_ms):
             return False
         age_ms = (
@@ -2192,6 +2192,11 @@ class OrderManagementEngine:
         )
         if group.intent.metadata.get("entry_completion_quote") == "bid" and group.tactic.side.upper() == "BUY":
             requested_price = envelope.bound("BUY", _round_to_tick(quote.bid, quote.tick_size, "BUY"))
+        elif group.intent.metadata.get("entry_completion_quote") == "ask":
+            side = group.tactic.side.upper()
+            requested_price = envelope.bound(side, _round_to_tick(
+                quote.ask if side == "BUY" else quote.bid, quote.tick_size, side,
+            ))
         if group.current_limit_price is not None and math.isclose(
             requested_price,
             group.current_limit_price,
@@ -2206,11 +2211,11 @@ class OrderManagementEngine:
             replacement = replace(group.orders[request_index], price=requested_price)
             remaining = max(0.0, float(replacement.quantity or 0) - group.filled_by_broker_order.get(root_order_id, 0.0))
             fingerprint = (requested_price, remaining)
-            if (group.intent.metadata.get("entry_completion_quote") == "bid"
+            if (group.intent.metadata.get("entry_completion_quote") in {"bid", "ask"}
                     and group.deferred_reprice == fingerprint and group.failed_reprice_at is not None
                     and (record_time - group.failed_reprice_at).total_seconds() < 1.0):
                 continue
-            if self.reprice_authorizer is not None and group.intent.metadata.get("entry_completion_quote") == "bid":
+            if self.reprice_authorizer is not None and group.intent.metadata.get("entry_completion_quote") in {"bid", "ask"}:
                 if not await self.reprice_authorizer(group.intent, group.account_id, requested_price, remaining):
                     if group.deferred_reprice != fingerprint:
                         self._record("order_management", "entry_reprice_deferred", root_order_id,
@@ -2325,6 +2330,16 @@ class OrderManagementEngine:
         """Cancel acquisition even when no share has filled yet."""
         await self._cancel_pending_acquisition_before_exit(intent, account_id=account_id)
 
+    def working_exit_quantity(self, ticker: str, account_id: str) -> float:
+        """Use acknowledged OMS state without a broker query on every trade."""
+        return sum(
+            max(0.0, group.remaining_quantity)
+            for group in self._groups.values()
+            if group.account_id == account_id and group.intent.ticker.upper() == ticker.upper()
+            and str(group.intent.action) in {"exit", "cover"}
+            and group.state not in TERMINAL_MANAGEMENT_STATES
+        )
+
     async def pending_exit_quantity(self, intent: StrategyIntent, *, account_id: str) -> float:
         """Count a working exit OCA once, including unresolved submissions."""
         live = {str(order.orderId): order for order in await self.broker.live_orders()
@@ -2372,7 +2387,8 @@ class OrderManagementEngine:
                         profile = replace(profile, slices=tuple(
                             replace(item, stop=replace(item.stop, price=confirmed_stop)) for item in profile.slices
                         ))
-                    group.intent = replace(group.intent, invalidation_price=confirmed_stop, protection_profile=profile)
+                    group.intent = replace(group.intent, invalidation_price=confirmed_stop, protection_profile=profile,
+                                           metadata={**group.intent.metadata, "confirmed_support_stop": confirmed_stop})
                 changed.append(group)
                 continue
             replacement = replace(request, auxPrice=desired,
@@ -2391,7 +2407,8 @@ class OrderManagementEngine:
                 profile = replace(profile, slices=tuple(
                     replace(item, stop=replace(item.stop, price=desired)) for item in profile.slices
                 ))
-            group.intent = replace(group.intent, invalidation_price=desired, protection_profile=profile)
+            group.intent = replace(group.intent, invalidation_price=desired, protection_profile=profile,
+                                   metadata={**group.intent.metadata, "confirmed_support_stop": desired})
             group.updated_at = intent.event_time
             self._transition(group, group.state, {"event": "support_stop_replaced", "stop": desired})
             self._record("broker", "protective_stop_replaced", str(order.orderId), account_id,
@@ -2810,7 +2827,11 @@ class OrderManagementEngine:
                 return {"required": required, "coverage": coverage, "status": "failed"}
             position_side = "long" if position_quantity >= 0 else "short"
             volatility = float(group.intent.metadata.get("volatility") or 0)
-            stops = [
+            confirmed_stop = float(group.intent.metadata.get("confirmed_support_stop") or 0)
+            # A broker-confirmed trailing stop may be above the entry price.
+            # Repair its quantity at that exact price; do not revalidate it as
+            # a new entry stop or silently loosen it back below entry.
+            stops = [confirmed_stop] if confirmed_stop > 0 else [
                 item.stop.resolve(
                     reference_price=float(group.intent.reference_price),
                     side=position_side,
@@ -2898,6 +2919,43 @@ class OrderManagementEngine:
                 )
                 repairs = [repair]
                 if valid_target:
+                    # A missing stop does not imply its target disappeared.
+                    # Transfer only the target capacity being paired with the
+                    # repaired stop, otherwise two independent sell groups
+                    # compete for the same shares (or fail no-short checks).
+                    transfer = missing
+                    for orphan in live_orders:
+                        if (transfer <= tolerance or str(orphan.orderId) not in owned_broker_order_ids
+                                or group.broker_order_roles.get(str(orphan.orderId)) != "profit_target"
+                                or orphan.order_status not in OPEN_ORDER_STATUSES):
+                            continue
+                        amount = min(transfer, float(orphan.remainingQuantity))
+                        if amount <= 0:
+                            continue
+                        async with self._command_lane(group.account_id):
+                            if amount >= float(orphan.remainingQuantity) - tolerance:
+                                await self.broker.cancel_order(group.account_id, str(orphan.orderId))
+                            else:
+                                index = group.broker_order_request_indexes[str(orphan.orderId)]
+                                replacement = replace(group.orders[index], quantity=float(orphan.filledQuantity)
+                                                      + float(orphan.remainingQuantity) - amount)
+                                response = await self.broker.modify_order(group.account_id, str(orphan.orderId), replacement)
+                                _require_modify_acknowledgement(response)
+                                group.orders[index] = replacement
+                        transfer -= amount
+                    refreshed_orders = {str(row.orderId): row for row in await self.broker.live_orders()}
+                    for orphan in live_orders:
+                        refreshed = refreshed_orders.get(str(orphan.orderId))
+                        if (str(orphan.orderId) in owned_broker_order_ids
+                                and group.broker_order_roles.get(str(orphan.orderId)) == "profit_target"
+                                and refreshed is not None and refreshed.order_status in OPEN_ORDER_STATUSES
+                                and float(refreshed.remainingQuantity) > max(0.0, required - missing) + tolerance):
+                            return {"required": required, "coverage": coverage, "status": "target_transfer_pending"}
+                    positions_now = await self.broker.positions(group.account_id)
+                    held_now = sum(abs(float(row.position)) for row in positions_now
+                                   if int(row.conid) == int(group.orders[0].conid))
+                    if held_now + tolerance < required:
+                        return {"required": held_now, "coverage": coverage, "status": "position_changed_during_repair"}
                     target_raw = {
                         **dict(group.orders[0].raw or {}),
                         "canonical_metadata": {

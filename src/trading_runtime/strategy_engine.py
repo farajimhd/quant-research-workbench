@@ -34,8 +34,8 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 38
-HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37)
+STRATEGY_REVISION = 39
+HISTORICAL_STRATEGY_REVISIONS = (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38)
 
 _COMPLETED_FRAME_TOP_N_ENTRY_MODE = "prior_completed_frame_top_n_below_session_high"
 _EVENT_PRICE_TOP_N_ENTRY_MODE = "event_price_top_n_below_session_high"
@@ -290,6 +290,7 @@ class StrategyObservation:
     bid: float = 0.0
     ask: float = 0.0
     position_quantity: float = 0.0
+    pending_exit_quantity: float = 0.0
     average_price: float = 0.0
     previous_close: float | None = None
     previous_high: float | None = None
@@ -517,10 +518,10 @@ def default_long_momentum_parameters(
             "minimum_histogram_increase_bps": 0.0,
         },
         "entry_candle_confirmation": {
-            "enabled": revision <= 33,
+            "enabled": revision <= 33 or revision >= 39,
             "timeframe": "1s",
-            "require_closed_bar": revision <= 33,
-            "reject_bearish_close": revision <= 33,
+            "require_closed_bar": revision <= 33 or revision >= 39,
+            "reject_bearish_close": revision <= 33 or revision >= 39,
             "minimum_macd_open_gap_bps": 0.5,
         },
         "sizing": {
@@ -768,6 +769,12 @@ def resolve_long_momentum_parameters(
         # ceiling is not part of the current level qualification contract.
         parameters["structural_entry"].pop("maximum_break_count", None)
         parameters["protection"]["profit_ladder"].pop("maximum_break_count", None)
+    if revision >= 39:
+        parameters["entry_candle_confirmation"].update(
+            enabled=True, timeframe="1s", require_closed_bar=True, reject_bearish_close=True,
+        )
+        parameters["structural_entry"]["selection_mode"] = _COMPLETED_FRAME_TOP_N_ENTRY_MODE
+        parameters["structural_entry"]["follow_current_level_prices"] = True
     execution = dict(parameters.get("execution") or {})
     execution.pop("time_in_force", None)
     execution.pop("outside_rth", None)
@@ -2076,7 +2083,28 @@ def _prior_completed_frame_resistance_trigger(
     )
     buffer_bps = float(policy.get("acceptance_buffer_bps") or 0.0)
     crossed: list[dict[str, Any]] = []
+    current_by_id = {str(row.get("unified_level_id")): row for row in
+                     (*observation.structural_resistance_levels, *observation.structural_support_levels)}
+    current_candidates = sorted(
+        (row for row in observation.structural_resistance_levels
+         if int(row.get("side") or 0) < 0
+         and 0 < _level_metric(row, "price", "upper", "lower") <= float(observation.structural_session_high or 0)
+         and _level_is_entry_quality(row, policy, observed_at=observation.observed_at)),
+        key=lambda row: -_level_metric(row, "price", "upper", "lower"),
+    )[:max(1, int(policy.get("maximum_entry_levels") or 3))] if policy.get("follow_current_level_prices") else []
+    current_candidate_ids = {str(row.get("unified_level_id")) for row in current_candidates}
     for level in prior_levels if prior_is_immediate else ():
+        if policy.get("follow_current_level_prices"):
+            identity = str(level.get("unified_level_id"))
+            current = current_by_id.get(identity)
+            if current is None or not _level_is_entry_quality(current, policy, observed_at=observation.observed_at):
+                continue
+            if int(current.get("side") or 0) < 0 and identity not in current_candidate_ids:
+                continue
+            level = {**level, **_compact_structural_level_reference(current),
+                     "entry_boundary": _level_metric(current, "price", "upper", "lower")}
+            if level["entry_boundary"] > float(observation.structural_session_high or 0):
+                continue
         boundary = _level_metric(level, "entry_boundary", "price")
         threshold = boundary * (1.0 + buffer_bps / 10_000.0)
         if boundary > 0 and prior_close <= threshold and observation.price > threshold:
@@ -2406,6 +2434,11 @@ class LongMomentumStrategyEngine:
                     state,
                 )
         if self.revision >= 37 and status == AssignmentStatus.EXIT_PENDING:
+            if self.revision >= 39 and observation.position_quantity <= observation.pending_exit_quantity + 1e-9:
+                return self._result(
+                    assignment, observation, "hold", "exit_fill_pending", 0.0, 1.0,
+                    state, AssignmentStatus.EXIT_PENDING,
+                )
             return self._result(
                 assignment, observation, "exit", str(state.get("last_exit_reason") or "exit_pending"),
                 0.0, 1.0, state, AssignmentStatus.EXIT_PENDING,
@@ -4016,7 +4049,10 @@ class LongMomentumStrategyEngine:
             selection_evidence=selection,
         )
         current_frontier = _target_frontier_from_selection(selection)
-        state["structural_profit_target_frontier"] = current_frontier
+        # Keep the tracked ladder until its first resistance is passed. A
+        # candle that merely changes the nearby book cannot consume that R1.
+        if self.revision < 39:
+            state["structural_profit_target_frontier"] = current_frontier
         if candle_clock:
             closed_at = observation.observed_at.isoformat()
             state["last_target_candle_at"] = closed_at
@@ -4056,6 +4092,7 @@ class LongMomentumStrategyEngine:
         if not (candidate > existing[0] if side == "long" else candidate < existing[0]):
             return None
         state["structural_profit_targets"] = [candidate]
+        state["structural_profit_target_frontier"] = current_frontier
         state.pop("pending_profit_target_advance", None)
         state["last_profit_target_replaced_at"] = observation.observed_at.isoformat()
         return self._result(
@@ -4438,6 +4475,11 @@ class LongMomentumStrategyEngine:
         intents: tuple[StrategyIntent, ...] = ()
         if action in {"enter_long", "add_long", "reduce_long", "take_profit", "exit", "enter_short", "add_short", "reduce_short", "cover", "replace_profit_target", "replace_protective_stop"}:
             resolved_order_intent = dict(order_intent or {})
+            if self.revision >= 39 and action in {"enter_long", "enter_short", "exit", "cover"}:
+                resolved_order_intent.update(
+                    execution_policy="adaptive_urgent", persist_until_cancelled=True,
+                    partial_fill_policy="complete_remainder",
+                )
             if "time_in_force" in resolved_order_intent or "outside_rth" in resolved_order_intent:
                 raise ValueError(
                     "Strategy order intents cannot override OMS session routing"
@@ -4484,7 +4526,7 @@ class LongMomentumStrategyEngine:
                     reason=reason,
                     metadata={
                         "assignment_id": assignment.assignment_id,
-                        **({"entry_completion_quote": "bid"} if self.revision >= 37
+                        **({"entry_completion_quote": "ask" if self.revision >= 39 else "bid"} if self.revision >= 37
                            and action in {"enter_long", "add_long"} else {}),
                         "bid": observation.bid,
                         "ask": observation.ask,
@@ -4679,7 +4721,7 @@ def _execution_policy_from_phase(
                         maximum_buy_price=touch + tick_size * discretion_ticks,
                     ),
                 )
-            elif not buying and policy.envelope.minimum_sell_price is None:
+            elif not buying and policy.envelope.minimum_sell_price is None and not policy.envelope.persist_until_cancelled:
                 bid = float(observation.bid or 0)
                 touch = min(float(observation.price), bid) if bid > 0 else float(observation.price)
                 policy = replace(

@@ -469,7 +469,11 @@ class TradingRuntime:
         self._update_execution_market_from_observation(observation)
         self.last_event_time = observation.observed_at
         for account_id in self.config.account_ids:
-            evaluation = normalize_strategy_evaluation(await handler(observation, account_id))
+            account_observation = replace(observation, pending_exit_quantity=(
+                self.order_manager.working_exit_quantity(observation.ticker, account_id)
+                if self.order_manager is not None else 0.0
+            ))
+            evaluation = normalize_strategy_evaluation(await handler(account_observation, account_id))
             self._record_strategy_signals(evaluation, account_id)
             await self._execute_intents(evaluation, account_id, None)
         self._persist_strategy_assignments(observation.observed_at)
@@ -489,6 +493,10 @@ class TradingRuntime:
             return
         self._update_execution_market_from_observation(observation)
         self.last_event_time = observation.observed_at
+        observation = replace(observation, pending_exit_quantity=(
+            self.order_manager.working_exit_quantity(observation.ticker, account_id)
+            if self.order_manager is not None else 0.0
+        ))
         evaluation = normalize_strategy_evaluation(await handler(observation, account_id))
         self._record_strategy_signals(evaluation, account_id)
         await self._execute_intents(evaluation, account_id, None)

@@ -2287,6 +2287,10 @@ class ReplayRunController:
                         else:
                             self.current_time = event.ts
                             self.updated_at = datetime.now(UTC)
+                    # Publish by wall time as well as event count: expensive
+                    # structural events must not freeze the displayed clock
+                    # until another hundred events have finished.
+                    await self._publish()
                     if event_index % 25 == 0:
                         await asyncio.sleep(0)
             if not self._runtime_inputs_ready:
@@ -3267,6 +3271,8 @@ class ReplayRunController:
         # evaluates price, spread, and provisional indicators together.
         if not isinstance(event, TradeEvent):
             return False
+        if not event.price_eligible:
+            return False
         # Commit the triggering event to broker/market state before an order is
         # created.  Otherwise the passive-event coalescer could replay that
         # already-observed trade after submission and grant a non-causal fill.
@@ -3279,6 +3285,9 @@ class ReplayRunController:
             for assignment in self._strategy.assignments()
             if assignment.ticker == event.ticker
         )
+        if (event.raw.get("schema_version") and "price_eligible" not in event.raw
+                and any(row.strategy_revision >= 39 for row in ticker_assignments)):
+            raise RuntimeError("Historical strategy requires QMD trade eligibility; restart the updated QMD History gateway")
         structural_changed: list[str] = []
         if any(assignment.strategy_revision >= 37
                and bool(dict(assignment.parameters.get("structural_entry") or {}).get("enabled"))
@@ -3424,7 +3433,7 @@ class ReplayRunController:
             if (event.ts, cursor) <= (previous_time, previous_sequence):
                 raise RuntimeError("Structural event cursor must advance monotonically")
         batch = [row for row in getattr(self, "_event_structure_batch", (event,))
-                 if isinstance(row, TradeEvent) and row.ticker == event.ticker
+                 if isinstance(row, TradeEvent) and row.price_eligible and row.ticker == event.ticker
                  and (row.ts, int(row.raw.get("arrival_sequence", row.sequence))) >= (event.ts, cursor)]
         cursors = [int(row.raw.get("arrival_sequence", row.sequence)) for row in batch]
         payload = await asyncio.to_thread(
@@ -4176,6 +4185,13 @@ class ReplayRunController:
             self._schedule_manifest_write()
 
     async def _finish(self, status: str) -> None:
+        if status in {"failed", "stopped"}:
+            # Publish the engine outcome before potentially slow broker and
+            # checkpoint cleanup. A failed engine must not appear to keep
+            # running while terminal evidence is being persisted.
+            self.status = status
+            self.updated_at = datetime.now(UTC)
+            await self._publish(force=True)
         structure_prefetch = self._historical_structure_prefetch_task
         if structure_prefetch is not None and not structure_prefetch.done():
             structure_prefetch.cancel()

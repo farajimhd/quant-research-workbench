@@ -36,8 +36,76 @@ def observation(price=101, **kwargs):
 
 
 class StrategyContractTests(unittest.TestCase):
+    def test_confirmed_non_red_breakout_requests_one_persistent_ask_entry(self):
+        policy = parameters()
+        policy["structural_entry"].update(enabled=True, minimum_reaction_probability=0,
+                                           minimum_ticker_relative_quality_score=0.2)
+        levels = tuple({**level(price), "side": -1} for price in (100.4, 100.5, 100.6, 101, 102, 103))
+        obs = confirmed_observation(price=100.75, bar_open=100.3, structural_session_high=100.75,
+                                    structural_resistance_levels=levels,
+                                    structural_support_levels=(level(99), level(98)))
+        state = {"qualified_entry_resistance_snapshot": {
+            "selected_at": (NOW - timedelta(seconds=1)).isoformat(), "reference_close": 100.3,
+            "levels": [{"unified_level_id": str(price), "price": price, "entry_boundary": price}
+                       for price in (100.4, 100.5, 100.6)],
+        }}
+        result = strategy.LongMomentumStrategyEngine().evaluate(
+            assignment(strategy_revision=39, parameters=policy, state=state), obs)
+        self.assertEqual(len(result.evaluation.intents), 1)
+        entry = result.evaluation.intents[0]
+        self.assertEqual(entry.action, "enter_long")
+        self.assertEqual(entry.metadata["entry_completion_quote"], "ask")
+        self.assertEqual(entry.profit_target_price, 103)
+        self.assertTrue(entry.resolved_execution_policy().envelope.persist_until_cancelled)
+
+    def test_current_engine_blocks_red_completed_entry(self):
+        policy = parameters()
+        policy["structural_entry"]["enabled"] = False
+        result = strategy.LongMomentumStrategyEngine().evaluate(
+            assignment(strategy_revision=39, parameters=policy),
+            confirmed_observation(price=100.75, bar_open=100.80),
+        )
+        self.assertEqual(result.evaluation.signals[0].reason, "entry_closed_candle_bearish")
+        self.assertEqual(result.evaluation.intents, ())
+
+    def test_closed_non_red_entry_is_mandatory_despite_stale_overrides(self):
+        result = strategy.resolve_long_momentum_parameters({"entry_candle_confirmation": {
+            "enabled": False, "require_closed_bar": False, "reject_bearish_close": False,
+        }})
+        self.assertTrue(all(result["entry_candle_confirmation"][key] for key in
+                            ("enabled", "require_closed_bar", "reject_bearish_close")))
+        self.assertEqual(result["structural_entry"]["selection_mode"], strategy._COMPLETED_FRAME_TOP_N_ENTRY_MODE)
+
+    def test_completed_breakout_tracks_current_price_and_rejects_intrabar(self):
+        policy = parameters()["structural_entry"]
+        policy["minimum_reaction_probability"] = 0
+        before = replace(observation(100, structural_session_high=103,
+                         structural_resistance_levels=({**level(101, "r1"), "side": -1},)),
+                         evaluation_events=("bar_close",), source_timeframe="1s")
+        state = {}
+        strategy._prior_completed_frame_resistance_trigger(before, policy, state)
+        after = replace(before, observed_at=NOW + timedelta(seconds=1), price=101.2,
+                        structural_resistance_levels=({**level(101.5, "r1"), "side": -1},))
+        self.assertFalse(strategy._prior_completed_frame_resistance_trigger(after, policy, state)["passed"])
+        after = replace(after, observed_at=NOW + timedelta(seconds=2), price=101.6)
+        self.assertFalse(strategy._prior_completed_frame_resistance_trigger(
+            replace(after, evaluation_events=("market_data_update",)), policy, state)["passed"])
+        self.assertTrue(strategy._prior_completed_frame_resistance_trigger(after, policy, state)["passed"])
+
+    def test_pending_exit_emits_only_for_uncovered_late_fill(self):
+        current = assignment(strategy_revision=39, parameters=parameters(), status=strategy.AssignmentStatus.EXIT_PENDING,
+                             state={"last_exit_reason": "protective_stop"})
+        engine = strategy.LongMomentumStrategyEngine()
+        obs = observation(94, position_quantity=50, pending_exit_quantity=50)
+        self.assertEqual(engine.evaluate(current, obs).evaluation.intents, ())
+        self.assertEqual(len(engine.evaluate(current, replace(obs, position_quantity=55)).evaluation.intents), 1)
+
+    def test_uncrossed_target_ladder_is_not_replaced_by_nearby_book(self):
+        _, state = self.target_result(price=100.5)
+        self.assertEqual(state["structural_profit_target_frontier"][0]["unified_level_id"], "r1")
+
     def test_both_trailing_modes_are_versioned_and_selectable(self):
-        self.assertEqual(strategy.STRATEGY_REVISION, 38)
+        self.assertEqual(strategy.STRATEGY_REVISION, 39)
         self.assertEqual(parameters()["protection"]["trailing"]["mode"], "qualified_support")
         self.assertEqual(parameters("support_distance")["protection"]["trailing"]["mode"], "support_distance")
         with self.assertRaises(ValueError):
@@ -110,7 +178,7 @@ class StrategyContractTests(unittest.TestCase):
                           structural_resistance_levels=(level(first, "r1"), level(102), level(103), level(104), level(105)))
         obs = replace(obs, evaluation_events=events, source_timeframe="1s")
         return strategy.LongMomentumStrategyEngine()._moving_target_result(
-            assignment(strategy_revision=38, parameters=parameters(), status=strategy.AssignmentStatus.MANAGING),
+            assignment(strategy_revision=39, parameters=parameters(), status=strategy.AssignmentStatus.MANAGING),
             obs, parameters(), state, side="long", stop=95), state
 
     def test_first_resistance_close_moves_r3_once_per_completed_candle(self):
@@ -132,7 +200,7 @@ class StrategyContractTests(unittest.TestCase):
         self.assertIsNone(self.target_result(state=state)[0])
 
     def test_zero_fill_pending_entry_exits_on_breached_support(self):
-        current = assignment(strategy_revision=38, parameters=parameters(), status=strategy.AssignmentStatus.ENTRY_PENDING,
+        current = assignment(strategy_revision=39, parameters=parameters(), status=strategy.AssignmentStatus.ENTRY_PENDING,
                              state={"entry_at": NOW.isoformat(), "entry_reference_price": 100,
                                     "initial_stop": 95, "active_stop": 95})
         result = strategy.LongMomentumStrategyEngine().evaluate(current, observation(94, position_quantity=0))
@@ -164,7 +232,7 @@ class StrategyContractTests(unittest.TestCase):
                           structural_resistance_levels=(level(101, "r1"), level(102), level(103), level(104)))
         obs = replace(obs, evaluation_events=("bar_close",), source_timeframe="1s")
         result = strategy.LongMomentumStrategyEngine().evaluate(
-            assignment(strategy_revision=38, parameters=parameters(), status=strategy.AssignmentStatus.MANAGING, state=state), obs)
+            assignment(strategy_revision=39, parameters=parameters(), status=strategy.AssignmentStatus.MANAGING, state=state), obs)
         self.assertEqual([row.action for row in result.evaluation.intents], ["replace_protective_stop", "replace_profit_target"])
 
 
@@ -173,7 +241,7 @@ class AssignmentExitRaceTests(unittest.IsolatedAsyncioTestCase):
         state = {"entry_reference_price": 3.65, "active_stop": 3.5, "initial_stop": 3.4,
                  "entry_at": NOW.isoformat(), "structural_profit_targets": [3.7845],
                  "structural_profit_target_frontier": [level(3.6745)], "entries": 1}
-        current = assignment(strategy_revision=38, parameters=parameters(), status=strategy.AssignmentStatus.MANAGING, state=state)
+        current = assignment(strategy_revision=39, parameters=parameters(), status=strategy.AssignmentStatus.MANAGING, state=state)
         executor = strategy.AssignedLongMomentumStrategy([current])
         request = replace(oms_helpers.intent(), action="add_long", metadata={"assignment_id": current.assignment_id})
         await executor.on_intent_rejected(request, reasons=("limited_by_open_risk",), event_time=NOW)
@@ -183,7 +251,7 @@ class AssignmentExitRaceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(after.state[key], value)
 
     async def test_cancel_and_late_buy_cannot_unlatch_exit(self):
-        current = assignment(strategy_revision=38, parameters=parameters(), status=strategy.AssignmentStatus.EXIT_PENDING,
+        current = assignment(strategy_revision=39, parameters=parameters(), status=strategy.AssignmentStatus.EXIT_PENDING,
                              state={"entry_acquisition_exit_latched": True})
         executor = strategy.AssignedLongMomentumStrategy([current])
         snapshot = SimpleNamespace(assignment_id=current.assignment_id, state="cancelled", action="enter_long",
@@ -235,6 +303,27 @@ class PortfolioContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await engine.authorize_entry_reprice(approved, "B", 100, 99))
         self.assertFalse(await engine.authorize_entry_reprice(approved, "A", float("nan"), 99))
 
+    async def test_partial_acquisition_does_not_shrink_its_original_risk_budget(self):
+        from tests.test_portfolio_management import position
+        from src.trading_runtime.order_management import OrderGroupSnapshot
+        engine = self.make_portfolio()
+        state = engine.states["A"]
+        state.profile = replace(state.profile, policy=replace(state.profile.policy,
+            maximum_planned_risk_fraction=0.08, maximum_open_risk_fraction=0.08))
+        request = replace(intent("entry", quantity=99, price=100, invalidation=92),
+                          metadata={"assignment_id": "assignment-AAPL", "entry_completion_quote": "ask"})
+        decision, approved = await engine.approve(request, account_id="A")
+        self.assertEqual(decision.approved_quantity, 99)
+        engine.on_order_group_update(OrderGroupSnapshot(
+            group_id="g", intent_id="entry", account_id="A", ticker="AAPL", action="enter_long",
+            state=OrderManagementState.PARTIALLY_FILLED, client_order_ids=("c",), broker_order_ids=("b",),
+            submitted_at=request.event_time, updated_at=request.event_time, filled_quantity=40,
+            remaining_quantity=59, warning_message_ids=(), rejection_reason="", decision_to_submit_ms=0,
+            policy_version=1, reentry_after_fill=False, assignment_id="assignment-AAPL"))
+        engine.synchronize_snapshot("A", summary=summary("A", equity=10000, available=6000),
+                                    ledger=ledger("A", cash=6000), positions=[position("A", "AAPL", quantity=40)])
+        self.assertTrue(await engine.authorize_entry_reprice(approved, "A", 100, 59))
+
     async def test_repeated_partial_fills_release_reservation_proportionally(self):
         from src.trading_runtime.order_management import OrderGroupSnapshot
         engine = self.make_portfolio()
@@ -252,6 +341,7 @@ class PortfolioContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(remaining.remaining_quantity, 60)
         self.assertAlmostEqual(remaining.reserved_planned_risk, 60)
         self.assertAlmostEqual(remaining.reserved_notional, 3015)
+        self.assertAlmostEqual(sum(row.planned_risk for row in engine.allocations.values()), 40)
 
 
 class StructureCursorClientTests(unittest.TestCase):
@@ -278,7 +368,8 @@ class StructureBatchTests(unittest.IsolatedAsyncioTestCase):
         controller._event_structure_sessions = {}
         events = [TradeEvent((), str(seq), 1, NOW, None, 100, raw={"arrival_sequence": seq},
                              sequence=seq, ticker="TEST", ts=NOW) for seq in (10, 11)]
-        controller._event_structure_batch = events
+        controller._event_structure_batch = [*events, replace(events[0], sequence=12,
+            raw={"arrival_sequence": 12, "price_eligible": False})]
         payload = {"boundaries": [{"snapshot": {"session_high": value}} for value in (100, 101)]}
         with patch("src.backend.replay_run_service.qmd_historical_structure_snapshot", return_value={"session_id": "s"}), \
              patch("src.backend.replay_run_service.qmd_advance_historical_structure_timeline", return_value=payload) as advance:
@@ -312,6 +403,26 @@ class OmsContractTests(unittest.IsolatedAsyncioTestCase):
         request = replace(request, event_time=NOW,
                           metadata={**request.metadata, "quote_observed_at": NOW.isoformat(), "entry_completion_quote": "bid", "assignment_id": "test"})
         return await self.manager.submit_intent(oms_helpers.portfolio_approved(self.journal, request), account_id="DU1", event=None)
+
+    async def test_ask_completion_fills_same_quantity_across_changing_quotes(self):
+        from src.market_engine.events import QuoteEvent
+        from src.trading_runtime.execution_policies import ExecutionMarketSnapshot
+        submitted = await self.submit()
+        group = self.manager._groups[submitted.group_id]
+        group.intent = replace(group.intent, metadata={**group.intent.metadata, "entry_completion_quote": "ask"})
+        for index in range(1, 5):
+            at = NOW + timedelta(milliseconds=100 * index)
+            ask = 10.02 + index * 0.01
+            self.manager.on_market_snapshot(ExecutionMarketSnapshot("TEST", ask - 0.01, ask, 0.01, at, "test"))
+            await self.manager._attempt_reprice(group, record_time=at)
+            self.assertAlmostEqual(self.broker.modifications[-1][1].price, ask)
+            await self.broker.on_market_event(QuoteEvent(1, ask, 100, 1, ask - 0.01, 100,
+                (), (), at, raw={"conid": 123}, sequence=index, ticker="TEST", ts=at))
+            await self.manager.reconcile()
+        self.assertEqual(group.filled_quantity, 100)
+        self.assertEqual(group.remaining_quantity, 0)
+        self.assertTrue(all(request.quantity == 100 for _, request in self.broker.modifications
+                            if request.side == "BUY"))
 
     async def test_zero_fill_exit_cancels_parent_and_cannot_reprice_it(self):
         submitted = await self.submit()
@@ -368,23 +479,62 @@ class OmsContractTests(unittest.IsolatedAsyncioTestCase):
         await self.manager.reconcile()
         group = self.manager._groups[submitted.group_id]
         self.assertEqual(group.filled_quantity, 100)
-        stop = replace(request, intent_id="support-step", action="replace_protective_stop", invalidation_price=9.9)
+        stop = replace(request, intent_id="support-step", action="replace_protective_stop", invalidation_price=10.2, reference_price=10.5)
         await self.manager.submit_intent(oms_helpers.portfolio_approved(self.journal, stop), account_id="DU1", event=None)
         target = replace(request, intent_id="target-step", action="replace_profit_target", profit_target_price=11.2)
         await self.manager.submit_intent(oms_helpers.portfolio_approved(self.journal, target), account_id="DU1", event=None)
         changed = [row for _, row in self.broker.modifications]
         self.assertEqual({row.orderType for row in changed}, {"STP", "LMT"})
         self.assertTrue(all(row.quantity == 100 and row.isSingleGroup for row in changed))
-        self.assertEqual(group.intent.resolved_protection_profile().slices[0].stop.price, 9.9)
+        self.assertEqual(group.intent.resolved_protection_profile().slices[0].stop.price, 10.2)
         self.assertEqual(group.intent.resolved_protection_profile().slices[0].profit_target_price, 11.2)
         # A lost acknowledgement leaves the local repair profile stale while
         # the broker already holds the higher stop. Retrying must recover it.
         group.intent = replace(group.intent, invalidation_price=9.8, protection_profile=profile)
         await self.manager._replace_protective_stop(stop, account_id="DU1")
-        self.assertEqual(group.intent.resolved_protection_profile().slices[0].stop.price, 9.9)
+        self.assertEqual(group.intent.resolved_protection_profile().slices[0].stop.price, 10.2)
+
+        # Restoring quantity after a partial fill must preserve a valid stop
+        # above the original entry, without validating it as a new entry stop.
+        stops = [row for row in await self.broker.live_orders() if row.orderType == "STP"]
+        for row in stops:
+            await self.broker.cancel_order("DU1", str(row.orderId))
+        await self.manager.reconcile_protection(group)
+        repaired = [row for row in await self.broker.live_orders()
+                    if row.orderType == "STP" and row.remainingQuantity > 0
+                    and row.order_status in {"Submitted", "PreSubmitted"}]
+        self.assertTrue(repaired)
+        self.assertTrue(all(row.auxPrice == 10.2 for row in repaired))
 
 
 class RuntimeExitContractTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failure_is_published_before_terminal_cleanup(self):
+        from src.backend.replay_run_service import ReplayRunController
+        controller = ReplayRunController.__new__(ReplayRunController)
+        controller.status = "running"
+        controller._historical_structure_prefetch_task = None
+        controller._flush_passive_market_events = lambda: None
+        controller._runtime_finished = False
+        controller._runtime = SimpleNamespace(finish=AsyncMock(side_effect=RuntimeError("cleanup failed")))
+        published = []
+        async def publish(**kwargs):
+            published.append(controller.status)
+        controller._publish = publish
+        with self.assertRaisesRegex(RuntimeError, "cleanup failed"):
+            await controller._finish("failed")
+        self.assertEqual(published, ["failed"])
+
+    async def test_ineligible_trade_cannot_change_simulator_mark_or_fill(self):
+        from src.market_engine.events import TradeEvent
+        broker = oms_helpers.RecordingBroker()
+        await broker.initialize()
+        at = NOW
+        event = TradeEvent(conditions=(14, 12, 37, 41), event_id="excluded", exchange=1,
+                           ingest_ts=at, participant_ts=at, price=4.15, size=100,
+                           ticker="TEST", ts=at, raw={"conid": 123, "price_eligible": False})
+        self.assertEqual(await broker.on_market_event(event), [])
+        self.assertNotIn("TEST", broker._trades_by_ticker)
+
     async def test_exit_cancels_zero_fill_without_fabricated_sell(self):
         from src.trading_runtime.runtime import TradingRuntime
         from src.trading_runtime.signals import StrategyEvaluation

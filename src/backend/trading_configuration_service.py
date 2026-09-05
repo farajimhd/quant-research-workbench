@@ -70,7 +70,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 51
+CONFIGURATION_SCHEMA_VERSION = 52
 MARKET_DISCOVERY_MATERIALIZATION_RUN_ID = "market-discovery:materialized-configuration"
 _CONFIGURATION_BASE_CACHE_LOCK = threading.RLock()
 _CONFIGURATION_BASE_CACHE: tuple[str, float, dict[str, Any] | None] = ("", 0.0, None)
@@ -4146,7 +4146,7 @@ def _default_draft() -> dict[str, Any]:
     }
     system_profiles[0]["parameters"]["structural_entry"] = {
         "enabled": True,
-        "selection_mode": "event_price_top_n_below_session_high",
+        "selection_mode": "prior_completed_frame_top_n_below_session_high",
         "maximum_entry_levels": 3,
         # One logical entry, allocated by Portfolio and completed by OMS.
         # Later resistance hits must not generate structural adds.
@@ -4224,13 +4224,11 @@ def _default_draft() -> dict[str, Any]:
         "minimum_histogram_increase_bps": 0.25,
     }
     system_profiles[0]["parameters"]["entry_candle_confirmation"] = {
-        # Entry decisions are event-native. MACD is previewed from the forming
-        # one-second candle at the triggering trade; no bar-close or candle-
-        # color confirmation may defer a valid structural crossing.
-        "enabled": False,
+        # Entry requires a completed, non-bearish one-second breakout candle.
+        "enabled": True,
         "timeframe": "1s",
-        "require_closed_bar": False,
-        "reject_bearish_close": False,
+        "require_closed_bar": True,
+        "reject_bearish_close": True,
         "minimum_macd_open_gap_bps": 0.5,
     }
     squeeze_lifecycle["reentry"]["target_replenishment"] = {

@@ -538,6 +538,18 @@ struct StructureSplitRevisionRow {
     ticker: String,
 }
 
+fn annotate_trade_eligibility(mut decoded: MarketEvent, rules: &TradeAggregationRules) -> MarketEvent {
+    if let MarketEvent::Trade(trade) = &mut decoded {
+        let rule = rules.resolve(&trade.conditions, trade.ts);
+        let delayed = trade.participant_ts.is_some_and(|at| at.timestamp() < trade.ts.timestamp());
+        trade.raw["price_eligible"] = serde_json::json!(rule.update_last && !delayed);
+        trade.raw["high_low_eligible"] = serde_json::json!(rule.update_high_low && !delayed);
+        trade.raw["volume_eligible"] = serde_json::json!(rule.update_volume);
+        trade.raw["eligibility_revision"] = serde_json::json!("qmd-trade-update-v1");
+    }
+    decoded
+}
+
 impl HistoricalEventSource {
     pub async fn initialize(config: HistoricalGatewayConfig) -> Result<Self, String> {
         let references = CompactEventReferences::load_from_clickhouse(
@@ -676,7 +688,7 @@ impl HistoricalEventSource {
     }
 
     pub fn market_event(&self, event: &LiveCompactEvent) -> MarketEvent {
-        self.decoder.decode(event)
+        annotate_trade_eligibility(self.decoder.decode(event), &self.trade_rules)
     }
 
     pub fn trade_aggregation_rules(&self) -> TradeAggregationRules {
@@ -4901,6 +4913,32 @@ mod tests {
     use qmd_core::compact_event::{CompactEventDecoder, LIVE_COMPACT_EVENT_SCHEMA_VERSION};
     use qmd_core::event::MarketEvent;
     use qmd_core::generic_structure::StructureSplitAdjustment;
+
+    #[test]
+    fn wire_trade_eligibility_preserves_condition_and_execution_clock_authority() {
+        use qmd_core::bars::{TradeAggregationRules, TradeUpdateRule};
+        use qmd_core::event::TradeEvent;
+        let rules = TradeAggregationRules::new([
+            (0, TradeUpdateRule::regular()),
+            (37, TradeUpdateRule { update_high_low: false, update_last: false, update_volume: true }),
+        ]).unwrap();
+        let at = Utc.with_ymd_and_hms(2026, 8, 21, 8, 11, 2).unwrap();
+        for (conditions, execution, expected) in [
+            (vec![0], at, true),
+            (vec![37], at, false),
+            (vec![0], at - chrono::Duration::seconds(1), false),
+        ] {
+            let event = MarketEvent::Trade(TradeEvent {
+                conditions, exchange: 1, ingest_ts: at, participant_ts: Some(execution),
+                price: 4.15, raw: serde_json::json!({}), sequence: 1, size: 100.0,
+                tape: 3, ticker: "TEST".into(), trade_id: "t".into(), trf_id: 0,
+                trf_ts: None, ts: at,
+            });
+            let MarketEvent::Trade(trade) = super::annotate_trade_eligibility(event, &rules) else { panic!("trade"); };
+            assert_eq!(trade.raw["price_eligible"], expected);
+            assert_eq!(trade.raw["volume_eligible"], true);
+        }
+    }
 
     #[test]
     fn persisted_structure_source_revision_requires_historical_structure_contract() {

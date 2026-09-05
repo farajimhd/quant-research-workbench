@@ -1219,7 +1219,7 @@ class PortfolioManagementEngine:
     @staticmethod
     def _entry_funding_factor(intent: StrategyIntent, policy: PortfolioPolicy) -> float:
         return (1 + policy.entry_fee_buffer_bps / 10_000
-                if intent.metadata.get("entry_completion_quote") == "bid" else 1.0)
+                if intent.metadata.get("entry_completion_quote") in {"bid", "ask"} else 1.0)
 
     async def authorize_entry_reprice(self, intent: StrategyIntent, account_id: str,
                                       price: float, remaining: float) -> bool:
@@ -1252,7 +1252,16 @@ class PortfolioManagementEngine:
             # cash, exposure, account, competing mandate and group limits.
             self.reservations.pop(reservation_id)
             try:
-                capacity, reasons = self._entry_capacity(repriced, state, remaining, price * fx)
+                acquired_notional = sum(
+                    abs(lot.quantity * lot.average_price)
+                    for lot in self.allocations.values()
+                    if lot.account_id == account_id and lot.assignment_id == reservation.assignment_id
+                    and lot.ticker == reservation.ticker
+                )
+                capacity, reasons = self._entry_capacity(
+                    repriced, state, remaining, price * fx,
+                    acquisition_notional=acquired_notional,
+                )
             finally:
                 self.reservations[reservation_id] = reservation
             if capacity + 1e-9 < remaining:
@@ -1399,6 +1408,8 @@ class PortfolioManagementEngine:
         state: PortfolioAccountState,
         requested: float,
         base_price: float,
+        *,
+        acquisition_notional: float = 0.0,
     ) -> tuple[float, list[str]]:
         policy = self._policy(state)
         summary = state.summary
@@ -1409,7 +1420,7 @@ class PortfolioManagementEngine:
         # not a campaign baseline or an internally compounded balance. This
         # makes realized gains available to later entries while preserving a
         # fail-closed settled-cash boundary for cash accounts.
-        risk_capital = max(0.0, broker_cash_capacity - policy.minimum_cash_reserve)
+        risk_capital = max(0.0, broker_cash_capacity + acquisition_notional - policy.minimum_cash_reserve)
         current_position = state.positions.get(intent.ticker.upper())
         current_value = abs(float(current_position.mktValue)) if current_position else 0.0
         reserved_notional = sum(
@@ -1463,7 +1474,7 @@ class PortfolioManagementEngine:
         }
         if state.profile.mode in {"live", "paper"}:
             capacities["account_cash_percentage"] = max(
-                0.0, broker_cash_capacity * strategy_fraction
+                0.0, (broker_cash_capacity + acquisition_notional) * strategy_fraction - acquisition_notional
                 - policy.minimum_cash_reserve - reserved_notional,
             ) / (base_price * self._entry_funding_factor(intent, policy))
         if intent.action in {"enter_long", "add_long"}:
@@ -1728,8 +1739,8 @@ class PortfolioManagementEngine:
         previous_quantity = current.quantity if current else 0.0
         previous_risk = current.planned_risk if current else 0.0
         incremental_risk = (
-            reservation.reserved_planned_risk * quantity / reservation.quantity
-            if reservation.quantity > 0
+            reservation.reserved_planned_risk * quantity / reservation.remaining_quantity
+            if reservation.remaining_quantity > 0
             else 0.0
         )
         if effective_action in REDUCTION_ACTIONS:

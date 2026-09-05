@@ -609,6 +609,8 @@ class SimulatedBrokerAdapter:
         """Update causal quote/trade marks without running order matching."""
 
         self._require_initialized()
+        if isinstance(event, TradeEvent) and not event.price_eligible:
+            return 0
         ticker = event.ticker.upper()
         if isinstance(event, QuoteEvent):
             self._quotes_by_ticker[ticker] = event

@@ -36,6 +36,11 @@ class TradeEvent:
     def kind(self) -> EventKind:
         return "trade"
 
+    @property
+    def price_eligible(self) -> bool:
+        """Producer-owned price eligibility; synthetic events retain defaults."""
+        return self.raw.get("price_eligible") is not False
+
 
 @dataclass(frozen=True, slots=True)
 class QuoteEvent:
