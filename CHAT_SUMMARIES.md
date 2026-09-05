@@ -7,20 +7,20 @@ each year.
 
 ## 2026
 
-### [2026-09-04 time unavailable - Align long momentum contract and execution](docs/codex/chat-summaries/2026/CHAT-20260904-UNKNOWN-long-momentum-contract-execution-repair.md)
+### [2026-09-04 time unavailable - Long momentum contract and structural campaign optimization](docs/codex/chat-summaries/2026/CHAT-20260904-UNKNOWN-long-momentum-contract-execution-repair.md)
 
 - Chat/task ID: `01a06eb2-3dcb-7580-8cc5-287431048fd3`
 - Related tasks: `TASK-0014`, `TASK-0206`
 - Summary updated: 2026-09-05 PDT
 
-Tracks the evolving contract through revision 47, chart streaming/viewport and
-readable gate evidence, then experimental score-independent structural v18.
-Fresh bounded JUNS/SUGP probes retain historical and current-day zones with exact
-checkpoint-resume parity. Production rollout and long-history capacity remain
-unvalidated. The SSD migration preserves retained old books; algorithm v18 needs
-fresh reconstruction, not blanket deletion. Campaign scripts still target
-algorithm 16 despite v18/v19 checkpoint-set release names. The user reported
-stopping migration; no deletion or workstation mutation occurred here.
+Preserves the latest strategy contract and the campaign's transition to algorithm
+18/protocol 12. Warm profiling isolated structural CPU costs. Commit `602f30f1`
+adds indexed matching and conditional consolidation; laptop replay of 2,025,248
+events across nine ticker-days matched all daily books and 403 intermediate
+checkpoints exactly. Measured speedups: JUNS 1.058x, SUGP 1.002x, SDOT 1.760x.
+The hash-pinned workstation launcher uses 96 workers through September 4, 2026;
+it was staged but not started. Full-history throughput, strategy acceptance,
+retained-data cleanup and POC tie determinism remain unresolved.
 
 ### [2026-09-02 time unavailable - Repair strategy freshness, structural trailing protection, and incorrect CHOCH exits](docs/codex/chat-summaries/2026/CHAT-20260902-UNKNOWN-strategy-freshness-structural-trailing-repair.md)
 
