@@ -14578,8 +14578,8 @@ button {
   flex-direction: column;
   background: var(--surface);
   height: 100%;
-  min-height: 980px;
-  min-width: 1150px;
+  min-height: 0;
+  min-width: 0;
   overflow: hidden;
 }
 
@@ -16187,3 +16187,21 @@ button {
 .live-position-part.price { color: #fff; background: var(--position-entry); font-weight: 700; }
 .live-entry-pnl-badge { position: absolute; bottom: calc(100% + 2px); right: 0; padding: 1px 4px; border-radius: 0; }
 .live-position-protection-line .live-entry-position-control { padding: 1px 4px; }
+
+/* Keep supporting panels mounted so restoring them preserves chart and order-entry state. */
+.charts-quotes-body[data-main-chart-maximized="true"] {
+  grid-template-areas: "main";
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+.charts-quotes-body[data-main-chart-maximized="true"] > :is(.charts-quotes-tape, .charts-quotes-context-row, .charts-quotes-resizer) {
+  display: none;
+}
+.charts-quotes-body[data-main-chart-maximized="true"] > .charts-quotes-main-chart {
+  border: 0;
+  padding-bottom: 0;
+}
+
+.charts-quotes-layout .chart-component-toolbar.compact {
+  flex-wrap: wrap;
+}

@@ -1031,6 +1031,29 @@ def validate_canvas_interactions(
             if not bounds or bounds["height"] < minimum_height:
                 actual = round(bounds["height"]) if bounds else 0
                 issues.append(f"focus container does not fill the working page ({actual} < {minimum_height})")
+            main = charts_quotes.locator(".charts-quotes-main-chart")
+            tape = charts_quotes.locator(".charts-quotes-tape")
+            context = charts_quotes.locator(".charts-quotes-context-row")
+            expanded = main.bounding_box()
+            if tape.is_visible() or context.is_visible():
+                issues.append("Charts & Quotes does not open with the main chart maximized")
+            restore = main.get_by_role("button", name="Restore chart panels", exact=True)
+            restore.click()
+            page.wait_for_timeout(350)
+            restored = main.bounding_box()
+            if not tape.is_visible() or not context.is_visible():
+                issues.append("Restore chart panels does not reveal both supporting regions")
+            if not expanded or not restored or expanded["width"] <= restored["width"] or expanded["height"] <= restored["height"]:
+                issues.append("Maximizing the main chart does not increase both dimensions")
+            if interaction_screenshot:
+                charts_quotes.screenshot(path=str(interaction_screenshot.with_name(f"{interaction_screenshot.stem}__restored.png")))
+            main.get_by_role("button", name="Maximize main chart", exact=True).focus()
+            page.keyboard.press("Enter")
+            page.wait_for_timeout(350)
+            if tape.is_visible() or context.is_visible():
+                issues.append("Keyboard maximize does not hide both supporting regions")
+            restore.click()
+            page.wait_for_timeout(350)
             daily = charts_quotes.locator(".charts-quotes-daily-chart")
             try:
                 daily.get_by_text("Loading chart data...", exact=True).wait_for(state="hidden", timeout=120_000)

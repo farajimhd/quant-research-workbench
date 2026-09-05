@@ -212,6 +212,7 @@ export function ChartsQuotesMarketLayout({
   end,
   layout,
   mainChart,
+  mainChartMaximized = false,
   monthChart,
   onLayoutChange,
   onSymbolChange,
@@ -223,6 +224,7 @@ export function ChartsQuotesMarketLayout({
   end?: string;
   layout: ChartsQuotesLayoutSettings;
   mainChart: ReactNode;
+  mainChartMaximized?: boolean;
   monthChart: ReactNode;
   onLayoutChange: (layout: ChartsQuotesLayoutSettings) => void;
   onSymbolChange?: (symbol: string) => void;
@@ -344,7 +346,7 @@ export function ChartsQuotesMarketLayout({
       </section>
       <MicrostructureHeaderActions connected={connected} references={references} />
     </header>
-    <div className="charts-quotes-body" ref={bodyRef} style={layoutStyle}>
+    <div className="charts-quotes-body" data-main-chart-maximized={mainChartMaximized} ref={bodyRef} style={layoutStyle}>
       <div className="charts-quotes-main-chart">{mainChart}</div>
       <aside aria-label="Tape and liquidity" className="charts-quotes-tape">
         <CompactTapeQuoteCharts quotes={quotes} trades={trades} />

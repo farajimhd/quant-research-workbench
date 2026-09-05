@@ -1,4 +1,4 @@
-import { Activity, Check, Clock3, Globe2, Link2, MapPin, PanelRightOpen, Pause, Play, RefreshCcw, Search, Save, Settings2, ShieldCheck, TriangleAlert, Unlink } from "lucide-react";
+import { Activity, Check, Clock3, Globe2, Link2, MapPin, Maximize2, Minimize2, PanelRightOpen, Pause, Play, RefreshCcw, Search, Save, Settings2, ShieldCheck, TriangleAlert, Unlink } from "lucide-react";
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from "react";
 
 import { api, apiCached, query, type ApiError } from "../api/client";
@@ -1399,6 +1399,7 @@ const ChartContainerPreview = memo(function ChartContainerPreview({ canvasId, cu
 }, chartContainerPreviewPropsEqual);
 
 function ChartsQuotesContainerPreview({ canvasId, cutoffMs, instanceId, linkContext, liveMode, onLinkContextChange, previewContext, readOnly, runId, runtimeMode, settings, strategy, symbolEditable, trading, updateSettings }: Omit<ChartContainerPreviewProps, "linkGroup">) {
+  const [mainChartMaximized, setMainChartMaximized] = useState(true);
   const historicalMode = runtimeMode === "backtest_debug" ? "debug" : runtimeMode === "backtest" ? "backtest" : "replay";
   const fullSession = runtimeMode === "backtest" || runtimeMode === "backtest_debug";
   const main = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.main.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.main.visibleIndicators, liveMode, true, historicalMode, fullSession);
@@ -1423,10 +1424,11 @@ function ChartsQuotesContainerPreview({ canvasId, cutoffMs, instanceId, linkCont
   } : null;
   const chartProps = { changeAsOf, linkContext, logoUrl, onLinkContextChange, runId, strategyDecisions, strategyPresentation, symbolEditable: false, toolbarVariant: "compact" as const, trading };
   return <ChartsQuotesMarketLayout
+    mainChartMaximized={mainChartMaximized}
     dailyChart={<ChartPreview {...chartProps} appearanceDefaults={CHARTS_QUOTES_CONTEXT_APPEARANCE_DEFAULTS} baseHeight={255} canvasId={canvasId} chartSettings={settings.charts_quotes.daily} fillHeight instanceId={`${instanceId}.daily`} liveChart={daily} onChartSettingsChange={(next) => updateSlot("daily", { ...next, timeframe: "1d" })} timeframes={["1d"]} />}
     end={liveMode ? undefined : changeAsOf}
     layout={settings.charts_quotes.layout}
-    mainChart={<ChartPreview {...chartProps} baseHeight={460} canvasId={canvasId} chartSettings={settings.charts_quotes.main} fillHeight fullSessionReview={fullSession} instanceId={`${instanceId}.main`} liveChart={main} onChartSettingsChange={(next) => updateSlot("main", next)} timeframes={HISTORICAL_TIMEFRAMES} />}
+    mainChart={<ChartPreview {...chartProps} toolbarActions={<button aria-label={mainChartMaximized ? "Restore chart panels" : "Maximize main chart"} aria-pressed={mainChartMaximized} className="toolbar-button" onClick={() => setMainChartMaximized((maximized) => !maximized)} title={mainChartMaximized ? "Restore right column and bottom row" : "Maximize main chart: hide right column and bottom row"} type="button">{mainChartMaximized ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>} baseHeight={460} canvasId={canvasId} chartSettings={settings.charts_quotes.main} fillHeight fullSessionReview={fullSession} instanceId={`${instanceId}.main`} liveChart={main} onChartSettingsChange={(next) => updateSlot("main", next)} timeframes={HISTORICAL_TIMEFRAMES} />}
     monthChart={<ChartPreview {...chartProps} appearanceDefaults={CHARTS_QUOTES_CONTEXT_APPEARANCE_DEFAULTS} baseHeight={255} canvasId={canvasId} chartSettings={settings.charts_quotes.month} fillHeight instanceId={`${instanceId}.month`} liveChart={month} onChartSettingsChange={(next) => updateSlot("month", { ...next, timeframe: "1mo" })} timeframes={["1mo"]} />}
     onLayoutChange={(layout) => updateSettings((current) => ({ ...current, charts_quotes: { ...current.charts_quotes, layout } }))}
     onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined}

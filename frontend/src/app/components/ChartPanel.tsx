@@ -685,6 +685,7 @@ type ChartPanelProps = {
   tickerLogoUrl?: string;
   tickerInputWidth?: number | string;
   tickerMaxLength?: number;
+  toolbarActions?: ReactNode;
   toolbarVariant?: "full" | "compact";
   timeframe: string;
   timeframes: string[];
@@ -865,6 +866,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   tickerLogoUrl,
   tickerInputWidth,
   tickerMaxLength = 10,
+  toolbarActions,
   toolbarVariant = "full",
   timeframe,
   timeframes,
@@ -2042,6 +2044,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         <button aria-label={reference ? "Center trade" : "Center latest"} className="toolbar-button" type="button" title={reference ? "Center trade" : "Center latest"} onClick={() => executeViewportCommand(() => centerReferenceOrLatest(priceChartRef.current, fitCandles(payload), reference, timeframe, undefined, chartSettingsRef.current.hideEmptyIntervals))}><AlignCenterHorizontal size={15} /></button>
         <button aria-label="Reset view" className="toolbar-button" type="button" title="Reset view" onClick={() => executeViewportCommand(() => resetChartViewport(priceChartRef.current, fitCandles(payload), timeframe, priceRef.current?.clientWidth ?? 0, chartSettingsRef.current.candleSize, chartSettingsRef.current.hideEmptyIntervals))}><RefreshCcw size={15} /></button>
         <button aria-label="Box zoom" aria-pressed={boxZoomActive} className="toolbar-button" disabled={!hasChartData} type="button" title="Box zoom: drag a rectangle on the price chart. Escape cancels." onClick={() => setBoxZoomActive((active) => !active)}><ZoomIn size={15} /></button>
+        {toolbarActions}
         {enableFullscreen ? (
           <>
             <span className="toolbar-divider" />
