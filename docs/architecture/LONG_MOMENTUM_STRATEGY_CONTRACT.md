@@ -4,6 +4,14 @@ Last updated: 2026-09-05
 
 Related task: TASK-0014
 
+Structural construction clarification (2026-09-05): prominent support and
+resistance must be constructed from causal price structure, independently of
+quality scores. Scores remain downstream metadata. The existing 20%
+ticker-relative strategy gate is unchanged pending a later decision. The
+[v18 structural validation contract](STRUCTURAL_PROMINENCE_V18_VALIDATION.md)
+describes the opt-in correction and isolated JUNS/SUGP tests; it does not change
+the running service or authorize overwriting historical books.
+
 Status: Revision 47 implementation reference. Focused verification is separate
 from market-run acceptance. The user authorized a simultaneous JUNS and SUGP
 backtest for August 21, 2026, 04:00-09:30 Eastern, with shared account cash,

@@ -7,10 +7,25 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 
 // The immutable historical campaign retains v16 semantics. Default services
 // continue to use v17; the campaign executable explicitly requires this feature.
+// v18 is opt-in validation until full-history reconstruction and rollout review.
 #[cfg(feature = "historical-campaign-v16")]
 pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 16;
-#[cfg(not(feature = "historical-campaign-v16"))]
+#[cfg(all(
+    feature = "structural-prominence-v18",
+    feature = "historical-campaign-v16"
+))]
+compile_error!("v18 validation must not change the immutable v16 historical campaign");
+#[cfg(all(
+    not(feature = "historical-campaign-v16"),
+    not(feature = "structural-prominence-v18")
+))]
 pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 17;
+#[cfg(all(
+    not(feature = "historical-campaign-v16"),
+    feature = "structural-prominence-v18"
+))]
+pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 18;
+const SCORE_INDEPENDENT_BOOK: bool = cfg!(feature = "structural-prominence-v18");
 pub const STRUCTURE_HOLD_SCORE_REVISION: &str = "beta22-wilson90-v1";
 pub const TICKER_RELATIVE_QUALITY_SCORE_REVISION: &str =
     "frozen-prior-session-role-ecdf-midrank-v1";
@@ -660,6 +675,104 @@ pub struct GenericStructureCheckpoint {
 }
 
 impl GenericStructureEngine {
+    /// Construction evidence for opt-in validation. Scores are intentionally
+    /// absent: this explains structural membership, not trading eligibility.
+    pub fn construction_audit(&self) -> Vec<serde_json::Value> {
+        let reference = self.last_trade_price;
+        let candidates =
+            unified_structure_levels(&self.sym, &self.timeframe_states, &self.levels, reference);
+        let describe = |id: u64,
+                        kind: &str,
+                        timeframe: &str,
+                        price: f64,
+                        pivot: i64,
+                        confirmed: i64,
+                        precondition: Option<&str>| {
+            let member = self.unified_tracks.iter().find(|track| {
+                track.lifecycle.visible()
+                    && track.level.sources.iter().any(|source| {
+                        source.level_id == id
+                            && source.source_kind == kind
+                            && source.timeframe == timeframe
+                    })
+            });
+            let candidate = candidates.iter().find(|candidate| {
+                candidate.sources.iter().any(|source| {
+                    source.level_id == id
+                        && source.source_kind == kind
+                        && source.timeframe == timeframe
+                })
+            });
+            let tolerance = (price_tick(reference) * 2.0).max(reference * 0.0005);
+            let reason = if member.is_some() {
+                "published_in_unified_level"
+            } else if let Some(reason) = precondition {
+                reason
+            } else if let Some(candidate) = candidate {
+                if (candidate.side > 0 && reference < candidate.lower - tolerance)
+                    || (candidate.side < 0 && reference > candidate.upper + tolerance)
+                {
+                    "awaiting_price_on_confirmed_side"
+                } else {
+                    "candidate_without_retained_track"
+                }
+            } else {
+                "awaiting_confirmed_prominent_structure"
+            };
+            serde_json::json!({"source_id":id,"source_kind":kind,"timeframe":timeframe,
+                "price":price,"pivot_at_ms":pivot,"confirmed_at_ms":confirmed,"reason":reason,
+                "unified_level_id":member.map(|track|track.level.unified_level_id),
+                "unified_price":member.map(|track|track.level.price),
+                "unified_lifecycle":member.map(|track|track.lifecycle.label())})
+        };
+        let mut rows = self
+            .levels
+            .iter()
+            .map(|level| {
+                describe(
+                    level.level_id,
+                    "level_book",
+                    "event-native",
+                    level.price,
+                    level.pivot_at.timestamp_millis(),
+                    level.confirmed_at.timestamp_millis(),
+                    (!level.is_unified_projection_visible()).then_some(level.lifecycle.label()),
+                )
+            })
+            .collect::<Vec<_>>();
+        for state in &self.timeframe_states {
+            for swing in [state.active_high.as_ref(), state.active_low.as_ref()]
+                .into_iter()
+                .flatten()
+            {
+                let reason = if swing.broken {
+                    Some("broken_timeframe_swing")
+                } else if swing.confirmed_at.is_none() {
+                    Some("awaiting_pivot_confirmation")
+                } else if state.timeframe == "100ms" {
+                    Some("subsecond_corroboration_only")
+                } else {
+                    None
+                };
+                rows.push(describe(
+                    swing.level_id,
+                    "timeframe_swing",
+                    &state.timeframe,
+                    swing.price,
+                    swing
+                        .pivot_at
+                        .map(|ts| ts.timestamp_millis())
+                        .unwrap_or_default(),
+                    swing
+                        .confirmed_at
+                        .map(|ts| ts.timestamp_millis())
+                        .unwrap_or_default(),
+                    reason,
+                ));
+            }
+        }
+        rows
+    }
     pub fn new(sym: impl Into<String>) -> Self {
         Self {
             sym: sym.into().to_ascii_uppercase(),
@@ -1302,6 +1415,12 @@ impl GenericStructureEngine {
     }
 
     fn prune_levels(&mut self) {
+        if SCORE_INDEPENDENT_BOOK {
+            // Retired episodes have a terminal lifecycle; live historical
+            // structure must not compete with current-day pivots for slots.
+            self.levels.retain(|level| level.lifecycle.visible());
+            return;
+        }
         if self.levels.len() <= MAX_LEVELS {
             return;
         }
@@ -1481,8 +1600,12 @@ impl GenericStructureEngine {
                 .filter(|track| {
                     track.level.side == candidate.side
                         && !matches!(track.lifecycle, LevelLifecycle::Retired)
-                        && candidate.lower <= track.level.upper + tolerance
-                        && candidate.upper >= track.level.lower - tolerance
+                        && if SCORE_INDEPENDENT_BOOK {
+                            unified_geometry_matches(&candidate, &track.level)
+                        } else {
+                            candidate.lower <= track.level.upper + tolerance
+                                && candidate.upper >= track.level.lower - tolerance
+                        }
                 })
                 .min_by(|left, right| {
                     (left.level.price - candidate.price)
@@ -1573,6 +1696,13 @@ impl GenericStructureEngine {
             );
         }
         unified_levels.sort_unstable_by(|left, right| {
+            if SCORE_INDEPENDENT_BOOK {
+                return left
+                    .side
+                    .cmp(&right.side)
+                    .then_with(|| left.price.total_cmp(&right.price))
+                    .then_with(|| left.unified_level_id.cmp(&right.unified_level_id));
+            }
             right
                 .hold_probability
                 .total_cmp(&left.hold_probability)
@@ -2218,6 +2348,13 @@ fn unified_structure_levels(
         .filter(|level| level.is_unified_projection_visible() && level.price > 0.0)
         .collect::<Vec<_>>();
     book_candidates.sort_unstable_by(|left, right| {
+        if SCORE_INDEPENDENT_BOOK {
+            return left
+                .side
+                .cmp(&right.side)
+                .then_with(|| left.price.total_cmp(&right.price))
+                .then_with(|| left.level_id.cmp(&right.level_id));
+        }
         let left_role_coherent = (left.side > 0 && reference >= left.lower - role_tolerance)
             || (left.side < 0 && reference <= left.upper + role_tolerance);
         let right_role_coherent = (right.side > 0 && reference >= right.lower - role_tolerance)
@@ -2257,6 +2394,9 @@ fn unified_structure_levels(
     let mut atoms = book_candidates
         .into_iter()
         .filter(|level| {
+            if SCORE_INDEPENDENT_BOOK {
+                return true;
+            }
             let count = book_side_counts.entry(level.side).or_default();
             if *count >= MAX_UNIFIED_BOOK_CANDIDATES_PER_SIDE {
                 false
@@ -2302,7 +2442,7 @@ fn unified_structure_levels(
             }
         })
         .collect::<Vec<_>>();
-    let timeframe_atoms = states
+    let mut timeframe_atoms = states
         .iter()
         .flat_map(|state| {
             [state.active_low.as_ref(), state.active_high.as_ref()]
@@ -2342,6 +2482,22 @@ fn unified_structure_levels(
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
+    if SCORE_INDEPENDENT_BOOK {
+        // All fixed engine timeframes are observed regardless of the chart
+        // interval. A confirmed >=1s two-sided swing may found a level;
+        // subsecond swings are corroboration only, not standalone noise.
+        let mut corroboration = Vec::new();
+        for atom in timeframe_atoms {
+            if atom.source.timeframe != "100ms"
+                && atom.source.confirmed_at_ms > atom.source.pivot_at_ms
+            {
+                atoms.push(atom);
+            } else {
+                corroboration.push(atom);
+            }
+        }
+        timeframe_atoms = corroboration;
+    }
     atoms.sort_by(|left, right| {
         left.source
             .side
@@ -2361,11 +2517,20 @@ fn unified_structure_levels(
             cluster
                 .first()
                 .is_some_and(|first| first.source.side == atom.source.side)
-                && cluster
-                    .iter()
-                    .map(|item| item.source.price)
-                    .fold(f64::NEG_INFINITY, f64::max)
-                    + bandwidth
+                && cluster.iter().map(|item| item.source.price).fold(
+                    if SCORE_INDEPENDENT_BOOK {
+                        f64::INFINITY
+                    } else {
+                        f64::NEG_INFINITY
+                    },
+                    |bound, price| {
+                        if SCORE_INDEPENDENT_BOOK {
+                            bound.min(price)
+                        } else {
+                            bound.max(price)
+                        }
+                    },
+                ) + bandwidth
                     >= atom.source.price
         });
         if joins {
@@ -2420,6 +2585,13 @@ fn unified_structure_levels(
         .collect::<Vec<_>>();
     levels.retain(is_major_unified_level);
     levels.sort_by(|left, right| {
+        if SCORE_INDEPENDENT_BOOK {
+            return left
+                .side
+                .cmp(&right.side)
+                .then_with(|| left.price.total_cmp(&right.price))
+                .then_with(|| left.unified_level_id.cmp(&right.unified_level_id));
+        }
         right
             .hold_probability
             .total_cmp(&left.hold_probability)
@@ -2441,6 +2613,9 @@ fn unified_structure_levels(
     levels
         .into_iter()
         .filter(|level| {
+            if SCORE_INDEPENDENT_BOOK {
+                return true;
+            }
             let count = side_counts.entry(level.side).or_default();
             if *count >= MAX_UNIFIED_LEVELS_PER_SIDE {
                 false
@@ -2453,6 +2628,20 @@ fn unified_structure_levels(
 }
 
 fn is_major_unified_level(level: &UnifiedStructureLevel) -> bool {
+    if SCORE_INDEPENDENT_BOOK {
+        return level.sources.iter().any(|source| {
+            source.source_kind == "timeframe_swing"
+                && source.timeframe != "100ms"
+                && source.confirmed_at_ms > source.pivot_at_ms
+        }) || level
+            .sources
+            .iter()
+            .filter(|source| source.source_kind == "level_book")
+            .map(|source| (price_key(source.price), source.pivot_at_ms))
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            >= 2;
+    }
     level
         .sources
         .iter()
@@ -2525,7 +2714,12 @@ fn unified_structure_level(
         .unwrap_or_default();
     let geometry_sources = sources
         .iter()
-        .filter(|source| source.source_kind == "level_book")
+        .filter(|source| {
+            source.source_kind == "level_book"
+                || (SCORE_INDEPENDENT_BOOK
+                    && book_sources.is_empty()
+                    && source.timeframe != "100ms")
+        })
         .collect::<Vec<_>>();
     let lower_source = geometry_sources
         .iter()
@@ -2683,6 +2877,13 @@ fn merge_unified_candidate(track: &mut UnifiedLevelTrack, candidate: UnifiedStru
         }
     }
     track.level.sources.sort_by(|left, right| {
+        if SCORE_INDEPENDENT_BOOK {
+            return left
+                .pivot_at_ms
+                .cmp(&right.pivot_at_ms)
+                .then_with(|| left.level_id.cmp(&right.level_id))
+                .then_with(|| left.timeframe.cmp(&right.timeframe));
+        }
         right
             .role_flip_count
             .cmp(&left.role_flip_count)
@@ -2691,7 +2892,9 @@ fn merge_unified_candidate(track: &mut UnifiedLevelTrack, candidate: UnifiedStru
             .then_with(|| right.last_test_at_ms.cmp(&left.last_test_at_ms))
             .then_with(|| left.level_id.cmp(&right.level_id))
     });
-    track.level.sources.truncate(MAX_UNIFIED_SOURCES_PER_TRACK);
+    if !SCORE_INDEPENDENT_BOOK {
+        track.level.sources.truncate(MAX_UNIFIED_SOURCES_PER_TRACK);
+    }
     refresh_unified_track_evidence(track);
 }
 
@@ -2936,6 +3139,15 @@ fn is_zero_u32(value: &u32) -> bool {
     *value == 0
 }
 
+fn unified_geometry_matches(left: &UnifiedStructureLevel, right: &UnifiedStructureLevel) -> bool {
+    // Numerical tolerance only, not an extra price-distance merge allowance.
+    let epsilon = price_tick(left.price).min(price_tick(right.price)) * 1e-6;
+    left.price >= right.lower - epsilon
+        && left.price <= right.upper + epsilon
+        && right.price >= left.lower - epsilon
+        && right.price <= left.upper + epsilon
+}
+
 fn consolidate_unified_tracks(tracks: &mut Vec<UnifiedLevelTrack>) {
     tracks.sort_unstable_by_key(|track| (track.level.created_at_ms, track.level.unified_level_id));
     let mut consolidated: Vec<UnifiedLevelTrack> = Vec::with_capacity(tracks.len());
@@ -2947,8 +3159,12 @@ fn consolidate_unified_tracks(tracks: &mut Vec<UnifiedLevelTrack>) {
                 || track.level.pending_side == existing.level.side)
                 && existing.lifecycle.visible()
                 && track.lifecycle.visible()
-                && track.level.lower <= existing.level.upper + tolerance
-                && track.level.upper >= existing.level.lower - tolerance
+                && if SCORE_INDEPENDENT_BOOK {
+                    unified_geometry_matches(&track.level, &existing.level)
+                } else {
+                    track.level.lower <= existing.level.upper + tolerance
+                        && track.level.upper >= existing.level.lower - tolerance
+                }
         });
         if let Some(existing) = matching {
             // Retain the older episode identity and geometry. Evidence from a
@@ -2980,6 +3196,10 @@ fn consolidate_unified_tracks(tracks: &mut Vec<UnifiedLevelTrack>) {
 }
 
 fn prune_unified_tracks(tracks: &mut Vec<UnifiedLevelTrack>, reference: f64) {
+    if SCORE_INDEPENDENT_BOOK {
+        tracks.retain(|track| track.lifecycle.visible());
+        return;
+    }
     if tracks.len() <= MAX_UNIFIED_TRACKS {
         return;
     }
@@ -3840,6 +4060,8 @@ fn nearest_round_price(price: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "structural-prominence-v18")]
+    mod prominence;
     use super::*;
     use crate::event::{QuoteEvent, TradeEvent};
     use chrono::TimeZone;
@@ -3871,6 +4093,7 @@ mod tests {
 
     #[cfg(not(feature = "historical-campaign-v16"))]
     #[test]
+    #[cfg(not(feature = "structural-prominence-v18"))]
     fn completed_session_extrema_migration_preserves_persistent_state() {
         let ts = Utc.with_ymd_and_hms(2026, 8, 20, 14, 0, 0).unwrap();
         let mut engine = GenericStructureEngine::new("TEST");
@@ -4093,6 +4316,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "structural-prominence-v18"))]
     fn unified_episode_inherits_event_native_hold_history_once() {
         let start = 1_700_000_000_000;
         let mut engine = GenericStructureEngine::new("TEST");
@@ -4287,6 +4511,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "structural-prominence-v18"))]
     fn timeframe_pivots_only_corroborate_an_event_native_level() {
         let pivot_at_ms = 1_700_000_000_000;
         let states = vec![
@@ -4338,6 +4563,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "structural-prominence-v18"))]
     fn role_coherent_levels_receive_candidate_capacity_before_stale_roles() {
         let start = Utc.timestamp_millis_opt(1_700_000_000_000).unwrap();
         let mut book = (0..MAX_UNIFIED_BOOK_CANDIDATES_PER_SIDE as u64)
@@ -4405,6 +4631,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "structural-prominence-v18"))]
     fn unified_level_book_preserves_observed_lifecycle_evidence_and_identity_across_role_flip() {
         let start = Utc.timestamp_millis_opt(1_700_000_000_000).unwrap();
         let mut book_level = StructureLevel {

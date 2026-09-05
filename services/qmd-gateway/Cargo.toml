@@ -10,6 +10,7 @@ path = "src/lib.rs"
 
 [features]
 historical-campaign-v16 = []
+structural-prominence-v18 = []
 
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }

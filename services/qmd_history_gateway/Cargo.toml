@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
+structural-prominence-v18 = ["qmd_core/structural-prominence-v18"]
 historical-campaign-v16 = ["qmd_core/historical-campaign-v16"]
 
 [[bin]]
