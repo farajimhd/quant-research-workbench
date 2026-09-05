@@ -125,6 +125,30 @@ def test_powershell_launcher_resolves_python_from_the_active_host() -> None:
     assert "& $resolvedPython @launcherArguments" in source
 
 
+def test_powershell_launcher_forwards_dates_and_96_workers(tmp_path):
+    import shutil
+    import subprocess
+    import sys
+    shell = shutil.which("pwsh") or shutil.which("powershell")
+    if not shell:
+        pytest.skip("PowerShell unavailable")
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    wrapper = scripts / "run_structure_checkpoint_campaign.ps1"
+    shutil.copyfile(Path(__file__).resolve().parents[1] / "scripts" / wrapper.name, wrapper)
+    (scripts / "run_structure_checkpoint_campaign.py").write_text("import json,sys; print(json.dumps(sys.argv[1:]))")
+    result = subprocess.run([shell, "-NoProfile", "-File", str(wrapper),
+        "-CheckpointSetId", "test", "-RuntimeDir", str(tmp_path / "runtime"),
+        "-StartDate", "2025-01-01", "-EndDate", "2026-08-31", "-PythonExe", sys.executable,
+        "-NoBuild"], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    args = json.loads(result.stdout.splitlines()[-1])
+    assert args[args.index("--start-date") + 1] == "2025-01-01"
+    assert args[args.index("--end-date") + 1] == "2026-08-31"
+    assert args[args.index("--process-workers") + 1] == "96"
+    assert "algorithm 18" in result.stdout
+
+
 def test_campaign_uses_historical_sip_condition_policy_without_clock_preflight() -> None:
     source = (
         Path(__file__).resolve().parents[1]

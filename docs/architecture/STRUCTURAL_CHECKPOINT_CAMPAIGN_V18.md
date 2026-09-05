@@ -154,11 +154,14 @@ zero retries and zero failures. Its temporary database was removed after
 verification; evidence remains under
 `D:\TradingML\runtimes\structure-validation\v18-write-resume`.
 
-Regression results: 33 launcher tests, 240 v18 core tests, 104 historical gateway
+Regression results: 34 launcher tests, 240 v18 core tests, 104 historical gateway
 tests and 17 native campaign tests passed. Shared changes also passed 233 v16
 core tests and 235 default-service core tests. These include compact dashboard
 coverage, exclusive work claims, priority waiting, fatal-worker propagation,
 immutable recovery and source-build selection.
+The actual PowerShell wrapper is exercised too: PowerShell boxes nullable dates
+as `DateTime`, so presence checks use null comparisons rather than `.HasValue`.
+Its banner and forwarded date/worker arguments match campaign v10/algorithm 18.
 
 The complete plan also validated successfully: **6,489 tickers and 2,699,424
 ticker-session units**, with the requested ten tickers first and coverage

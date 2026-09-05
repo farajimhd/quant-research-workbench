@@ -67,13 +67,13 @@ function Resolve-PythonExecutable {
     throw 'Python was not found. Activate the intended environment or pass -PythonExe <path-to-python.exe>.'
 }
 $resolvedPython = Resolve-PythonExecutable -Requested $PythonExe
-if ($StartDate.HasValue -xor $EndDate.HasValue) {
+if (($null -ne $StartDate) -xor ($null -ne $EndDate)) {
     throw '-StartDate and -EndDate must be supplied together.'
 }
-if ($StartDate.HasValue -and $StartDate.Value.Date -gt $EndDate.Value.Date) {
+if ($null -ne $StartDate -and $StartDate.Date -gt $EndDate.Date) {
     throw '-StartDate must be on or before -EndDate.'
 }
-if (-not $ResumeFromRuntime -and -not $StartDate.HasValue -and -not $MonitorExisting -and -not $StopExisting) {
+if (-not $ResumeFromRuntime -and $null -eq $StartDate -and -not $MonitorExisting -and -not $StopExisting) {
     throw 'A fresh campaign requires -StartDate/-EndDate; a successor recovery requires -ResumeFromRuntime.'
 }
 if ($NoBuild -and $Rebuild) {
@@ -91,10 +91,10 @@ $launcherArguments = @(
 if ($ResumeFromRuntime) {
     $launcherArguments += @('--resume-from-runtime', [IO.Path]::GetFullPath($ResumeFromRuntime))
 }
-if ($StartDate.HasValue) {
+if ($null -ne $StartDate) {
     $launcherArguments += @(
-        '--start-date', $StartDate.Value.ToString('yyyy-MM-dd'),
-        '--end-date', $EndDate.Value.ToString('yyyy-MM-dd')
+        '--start-date', $StartDate.ToString('yyyy-MM-dd'),
+        '--end-date', $EndDate.ToString('yyyy-MM-dd')
     )
 }
 if ($PriorityRanking) {
@@ -111,7 +111,7 @@ if ($MonitorExisting) { $launcherArguments += '--monitor-existing' }
 if ($StopExisting) { $launcherArguments += @('--stop-existing', $StopExisting) }
 if ($CampaignArguments) { $launcherArguments += $CampaignArguments }
 
-Write-Host 'Structural Checkpoint Campaign v9 (algorithm 16)' -ForegroundColor Cyan
+Write-Host 'Structural Checkpoint Campaign v10 (algorithm 18)' -ForegroundColor Cyan
 if ($ResumeFromRuntime) {
     Write-Host "Recovery source remains immutable: $ResumeFromRuntime" -ForegroundColor DarkGray
     Write-Host "Successor target: $CheckpointSetId" -ForegroundColor Cyan
