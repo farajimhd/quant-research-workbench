@@ -198,20 +198,24 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     const controller = new AbortController();
     setLoadingOptions(true);
     setOptionsError("");
-    api<BacktestConfigurationOptions>(`/api/trading/backtest/configuration-options?candidate_id=${encodeURIComponent(candidateId)}`, { signal: controller.signal, timeoutMs: 60_000 })
-      .then((payload) => {
-        if (cancelled) return;
-        if (payload.candidate_id !== candidateId) {
-          resolvedOptionsRequest.current = `${payload.candidate_id}:${refreshKey}`;
-        }
-        setConfigurationOptions(payload);
-        setCandidateId(payload.candidate_id);
-        setRunPlanId((current) => payload.available_run_plans.some((plan) => plan.run_plan_id === current) ? current : payload.run_plan_id);
-        setOptionsError(payload.error);
-      })
-      .catch((reason) => { if (!cancelled) setOptionsError(reason instanceof Error ? reason.message : String(reason)); })
-      .finally(() => { if (!cancelled) setLoadingOptions(false); });
-    return () => { cancelled = true; controller.abort(); };
+    // Defer dispatch so React's development setup/cleanup probe cannot send
+    // an immediately aborted duplicate request to the backend.
+    const timer = window.setTimeout(() => {
+      api<BacktestConfigurationOptions>(`/api/trading/backtest/configuration-options?candidate_id=${encodeURIComponent(candidateId)}`, { signal: controller.signal, timeoutMs: 60_000 })
+        .then((payload) => {
+          if (cancelled) return;
+          if (payload.candidate_id !== candidateId) {
+            resolvedOptionsRequest.current = `${payload.candidate_id}:${refreshKey}`;
+          }
+          setConfigurationOptions(payload);
+          setCandidateId(payload.candidate_id);
+          setRunPlanId((current) => payload.available_run_plans.some((plan) => plan.run_plan_id === current) ? current : payload.run_plan_id);
+          setOptionsError(payload.error);
+        })
+        .catch((reason) => { if (!cancelled) setOptionsError(reason instanceof Error ? reason.message : String(reason)); })
+        .finally(() => { if (!cancelled) setLoadingOptions(false); });
+    }, 0);
+    return () => { cancelled = true; window.clearTimeout(timer); controller.abort(); };
   }, [candidateId, refreshKey]);
 
   useEffect(() => {
