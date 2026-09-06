@@ -46,3 +46,26 @@ console.log('7 entry-selection scenarios passed');
     result = subprocess.run([shutil.which("node") or "node", "--input-type=module", "-"],
                             input=script, text=True, cwd=runtime, capture_output=True)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_entry_reference_guide_never_extends_before_decision():
+    runtime = frontend_runtime_root()
+    source = Path(__file__).resolve().parents[1] / "frontend/src/app/components/tradeGuideGeometry.ts"
+    script = r'''
+const {createRequire} = await import('node:module');
+const require = createRequire(process.cwd() + '/package.json');
+const ts = require('typescript');
+const assert = require('node:assert/strict');
+const source = require('node:fs').readFileSync(SOURCE_PATH, 'utf8');
+const js = ts.transpileModule(source, {compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+const {tradeGuideSpan} = await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'));
+// A subsecond entry/exit must not smear its later HOD/R1-R3 into earlier bars.
+assert.deepEqual(tradeGuideSpan(200,200.2,1000,true),{left:200,right:200.2});
+assert.deepEqual(tradeGuideSpan(200,200,1000,true),{left:200,right:200});
+assert.deepEqual(tradeGuideSpan(-10,20,1000,true),{left:0,right:20});
+assert.deepEqual(tradeGuideSpan(990,1020,1000,true),{left:990,right:1000});
+assert.ok(tradeGuideSpan(200,200.2,1000,false).left < 200);
+'''.replace("SOURCE_PATH", json.dumps(str(source)))
+    result = subprocess.run([shutil.which("node") or "node", "--input-type=module", "-"],
+                            input=script, text=True, cwd=runtime, capture_output=True)
+    assert result.returncode == 0, result.stdout + result.stderr

@@ -1,3 +1,4 @@
+import { tradeGuideSpan } from "./tradeGuideGeometry";
 import { STRATEGY_ENTRY_REFERENCE_BACKING, STRATEGY_ENTRY_REFERENCE_COLOR } from "../theme";
 import {
   type AutoscaleInfo,
@@ -7447,17 +7448,20 @@ function drawTradeAnnotationPrimitiveGeometry(
         if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, supportColor, `S${index + 1}`, chartBackground, width, height, elements.levelLine, elements.levelLabel, labelLayout, elements.connector);
       });
     }
+    // Entry references must never inherit the minimum-width trade footprint.
+    const referenceLeft = Math.max(0, guideStartX ?? entryX);
+    const referenceRight = Math.min(width, exitX);
     const resistanceLine = annotation.positionSide === "SHORT" ? elements.levelLine : elements.entryResistanceLine;
     const resistanceLabel = annotation.positionSide === "SHORT" ? elements.levelLabel : elements.entryResistanceLabel;
     if (resistanceLine.visible || resistanceLabel.visible) {
       annotation.resistancePrices?.slice(0, 3).forEach((price, index) => {
         const y = priceSeries.priceToCoordinate(price);
-        if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, resistanceColor, `R${index + 1} ${formatPrice(price)}`, chartBackground, width, height, resistanceLine, resistanceLabel, labelLayout, elements.connector, annotation.positionSide !== "SHORT");
+        if (y !== null) drawCanvasTradeGuide(context, annotation.positionSide === "SHORT" ? guideSpan.left : referenceLeft, annotation.positionSide === "SHORT" ? guideSpan.right : referenceRight, y, resistanceColor, `R${index + 1} ${formatPrice(price)}`, chartBackground, width, height, resistanceLine, resistanceLabel, labelLayout, elements.connector, annotation.positionSide !== "SHORT");
       });
     }
     if ((elements.highOfDayLine.visible || elements.highOfDayLabel.visible) && annotation.highOfDayPrice !== undefined) {
       const y = priceSeries.priceToCoordinate(annotation.highOfDayPrice);
-      if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, STRATEGY_ENTRY_REFERENCE_COLOR, `HOD ${formatPrice(annotation.highOfDayPrice)}`, chartBackground, width, height, elements.highOfDayLine, elements.highOfDayLabel, labelLayout, elements.connector, true);
+      if (y !== null) drawCanvasTradeGuide(context, referenceLeft, referenceRight, y, STRATEGY_ENTRY_REFERENCE_COLOR, `HOD ${formatPrice(annotation.highOfDayPrice)}`, chartBackground, width, height, elements.highOfDayLine, elements.highOfDayLabel, labelLayout, elements.connector, true);
     }
     if (elements.targetLine.visible || elements.targetLabel.visible) annotation.targetPrices?.forEach((price, index) => {
       const y = priceSeries.priceToCoordinate(price);
@@ -7634,16 +7638,7 @@ function drawCanvasTradeGuide(
   connectorSettings?: StrategyPresentationStyleSettings,
   entryReference = false,
 ) {
-  const minimumWidth = Math.min(56, width);
-  const rawLeft = Math.min(left, right);
-  const rawRight = Math.max(left, right);
-  const center = clampNumber((rawLeft + rawRight) / 2, 0, width, 0);
-  let renderedLeft = Math.max(0, rawLeft);
-  let renderedRight = Math.min(width, rawRight);
-  if (renderedRight - renderedLeft < minimumWidth) {
-    renderedLeft = clampNumber(center - minimumWidth / 2, 0, Math.max(0, width - minimumWidth), 0);
-    renderedRight = Math.min(width, renderedLeft + minimumWidth);
-  }
+  const { left: renderedLeft, right: renderedRight } = tradeGuideSpan(left, right, width, entryReference);
   const lineColor = strategyPresentationColor(lineSettings.color, fallbackColor);
   const labelColor = strategyPresentationColor(labelSettings.color, fallbackColor);
   const darkReference = entryReference && document.documentElement.style.colorScheme === "dark";
@@ -7659,8 +7654,9 @@ function drawCanvasTradeGuide(
     drawCanvasTradeLine(context, renderedLeft, renderedRight, y, lineColor, lineSettings.lineWidth, lineSettings.lineStyle, lineSettings.opacity);
     const capRadius = Math.max(1.5, Math.min(3.5, lineSettings.lineWidth));
     context.fillStyle = rgbaFromHex(lineColor, lineSettings.opacity);
-    context.fillRect(renderedLeft - capRadius, y - capRadius, capRadius * 2, capRadius * 2);
-    context.fillRect(renderedRight - capRadius, y - capRadius, capRadius * 2, capRadius * 2);
+    const capWidth = entryReference ? Math.min(capRadius * 2, Math.max(0, renderedRight - renderedLeft)) : capRadius * 2;
+    context.fillRect(entryReference ? renderedLeft : renderedLeft - capRadius, y - capRadius, capWidth, capRadius * 2);
+    context.fillRect(entryReference ? renderedRight - capWidth : renderedRight - capRadius, y - capRadius, capWidth, capRadius * 2);
   }
   context.restore();
   if (labelSettings.visible) drawCanvasTradeLabel(context, label, (renderedLeft + renderedRight) / 2, y + 3, labelColor, background, "left", width, height, readableLabel, labelLayout, connectorSettings);

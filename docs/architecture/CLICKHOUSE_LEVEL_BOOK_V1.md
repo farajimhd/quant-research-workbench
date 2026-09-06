@@ -255,7 +255,7 @@ source advances; p_norm is clamped min-max normalization using those frozen
 bounds. Equal bounds yield 0.5. An empty seed yields null p_norm and cannot
 qualify for strategy selection; missing prior close fails closed.
 
-The Backtest launch form exposes `Strategy minimum p_norm` (0-1, default 0.85).
+The Backtest launch form exposes `Strategy minimum p_norm` (0-1, default 0.90).
 This run-scoped value is persisted in the definition and attached to strategy
 levels; raw prominence 4 is not an additional gate for this contract. The chart
 indicator form exposes an independent `Minimum p_norm` display filter. Merged
