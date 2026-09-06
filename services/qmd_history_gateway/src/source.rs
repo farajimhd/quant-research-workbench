@@ -3098,6 +3098,24 @@ impl HistoricalEventSource {
             .unwrap_or_default())
     }
 
+    pub async fn market_structure_reference_levels_scoped(
+        &self,
+        tickers: &std::collections::BTreeSet<String>,
+        as_of: DateTime<Utc>,
+    ) -> Result<std::collections::HashMap<String, MarketStructureReferenceLevels>, String> {
+        if tickers.is_empty() {
+            return self.market_structure_reference_levels_all(as_of).await;
+        }
+        let mut result = std::collections::HashMap::new();
+        for ticker in tickers {
+            result.insert(
+                ticker.clone(),
+                self.market_structure_reference_levels(ticker, as_of).await?,
+            );
+        }
+        Ok(result)
+    }
+
     pub async fn market_structure_reference_levels_all(
         &self,
         as_of: DateTime<Utc>,

@@ -1008,7 +1008,7 @@ pub async fn materialize_watchlist_timeline(
         );
     }
     let references = source
-        .market_structure_reference_levels_all(start)
+        .market_structure_reference_levels_scoped(&source_tickers, start)
         .await
         .map_err(|error| format!("historical Watchlist daily references unavailable: {error}"))?;
     let mut engine = CrossSectionEngine::new(&source, references);
@@ -1040,7 +1040,7 @@ pub async fn materialize_watchlist_timeline(
                 let session = session_date(clock);
                 if session != reference_session {
                     let references = source
-                        .market_structure_reference_levels_all(clock)
+                        .market_structure_reference_levels_scoped(&source_tickers, clock)
                         .await
                         .map_err(|error| {
                             format!("historical Watchlist daily references unavailable: {error}")
@@ -1090,7 +1090,7 @@ pub async fn materialize_watchlist_timeline(
         let session = session_date(clock);
         if session != reference_session {
             let references = source
-                .market_structure_reference_levels_all(clock)
+                .market_structure_reference_levels_scoped(&source_tickers, clock)
                 .await
                 .map_err(|error| {
                     format!("historical Watchlist daily references unavailable: {error}")
@@ -1396,7 +1396,7 @@ pub async fn materialize_watchlist_timelines(
         );
     }
     let references = source
-        .market_structure_reference_levels_all(start)
+        .market_structure_reference_levels_scoped(&source_tickers, start)
         .await
         .map_err(|error| format!("historical Watchlist daily references unavailable: {error}"))?;
     let shard_count = config.scanner_shard_count.max(1);
@@ -1451,6 +1451,7 @@ pub async fn materialize_watchlist_timelines(
                     &mut runtimes,
                     clock,
                     &known_tickers,
+                    &source_tickers,
                     &mut core_liquidity,
                     &mut recent_until,
                     &mut reference_session,
@@ -1482,6 +1483,7 @@ pub async fn materialize_watchlist_timelines(
             &mut runtimes,
             clock,
             &known_tickers,
+            &source_tickers,
             &mut core_liquidity,
             &mut recent_until,
             &mut reference_session,
@@ -1603,6 +1605,7 @@ async fn advance_batch_clock(
     runtimes: &mut [BatchPlanRuntime<'_>],
     clock: DateTime<Utc>,
     known_tickers: &BTreeSet<String>,
+    source_tickers: &BTreeSet<String>,
     core_liquidity: &mut CoreLiquidityIndex,
     recent_until: &mut HashMap<String, DateTime<Utc>>,
     reference_session: &mut NaiveDate,
@@ -1620,7 +1623,7 @@ async fn advance_batch_clock(
     let session = session_date(clock);
     if session != *reference_session {
         let references = source
-            .market_structure_reference_levels_all(clock)
+            .market_structure_reference_levels_scoped(&source_tickers, clock)
             .await
             .map_err(|error| {
                 format!("historical Watchlist daily references unavailable: {error}")
