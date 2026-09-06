@@ -918,6 +918,21 @@ function pushUnifiedStructureLevels(
   let latestRank = 0;
   segments.forEach(({ end, latest, level, start }) => {
     if (!Number.isFinite(start) || !(start > 0) || !(chartEnd > start)) return;
+    if (level.book_version === "clickhouse-closing-book-1") {
+      const support = level.side > 0;
+      zones.push({ annotationKind: "unified-structure-level", axisLabelDefault: latest && latestRank++ < 4,
+        color: support ? "var(--success)" : "var(--danger)",
+        compactLabel: `${support ? "S" : "R"} · P${Number(level.prominence ?? 0).toFixed(2)}`,
+        label: `${support ? "Support" : "Resistance"} · ${level.lifecycle.replaceAll("_", " ")} · reaction prominence ${Number(level.prominence ?? 0).toFixed(2)} · Experimental ClickHouse`,
+        legendLabel: "Experimental ClickHouse level book", displayItemId: "indicator.qmd_unified_structure",
+        settingsId: "indicator.qmd_unified_structure.clickhouse-v1", defaultVisible: true,
+        prominence: level.prominence,
+        start, end, latest, extendToRightEdge: latest, lower: level.lower, upper: level.upper,
+        minPixelHeight: 3, renderMode: "zone", fillOpacity: 0.08, borderWidth: 1,
+        historicalLabelsDefault: false, historyBarsDefault: 0,
+        tone: support ? "buy" : "sell" });
+      return;
+    }
     const low = level.side > 0;
     const color = low ? "var(--success)" : "var(--danger)";
     const timeframes = level.timeframes.join(" · ");
@@ -1066,7 +1081,7 @@ function isQmdUnifiedStructureLevel(value: unknown): value is QmdUnifiedStructur
     && (Number(row.side) === 1 || Number(row.side) === -1)
     && Number(row.lower) > 0
     && Number(row.upper) >= Number(row.lower)
-    && Number.isFinite(Number(row.hold_probability))
+    && (row.book_version === "clickhouse-closing-book-1" ? Number.isFinite(row.prominence) : Number.isFinite(Number(row.hold_probability)))
     && Array.isArray(row.timeframes)
     && Array.isArray(row.sources);
 }

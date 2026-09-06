@@ -394,6 +394,8 @@ class ReplayRunDefinition:
     final_session_date: date | None = None
     debug_fixture: HistoricalDebugFixture | None = None
     simulation_profile: str = "baseline"
+    experimental_structure_book: str = ""
+    experimental_structure_fingerprint: str = ""
     historical_frame_cache: dict[tuple[str, str, str, str], Any] | None = field(
         default=None,
         repr=False,
@@ -410,6 +412,17 @@ class ReplayRunDefinition:
             _ticker(value) for value in self.tickers if str(value).strip()
         ))
         object.__setattr__(self, "tickers", normalized_tickers)
+        if self.experimental_structure_book:
+            from src.backend.experimental_structure_book import resolve
+            build = resolve(self.experimental_structure_book)
+            if self.mode != RunMode.BACKTEST or normalized_tickers != (build['ticker'],):
+                raise ValueError('Experimental level book requires a Backtest with its single covered ticker')
+            if not (build['start'] <= self.session_date.isoformat() <=
+                    (self.final_session_date or self.session_date).isoformat() <= build['end']):
+                raise ValueError('Requested sessions are outside experimental level-book coverage')
+            if self.experimental_structure_fingerprint and self.experimental_structure_fingerprint != build['fingerprint']:
+                raise ValueError('Experimental level book fingerprint changed')
+            object.__setattr__(self, 'experimental_structure_fingerprint', build['fingerprint'])
         if self.mode not in {RunMode.REPLAY, RunMode.BACKTEST, RunMode.BACKTEST_DEBUG}:
             raise ValueError("Historical controller mode must be replay, backtest, or backtest_debug")
         if self.execution_mode not in {"manual", "strategy"}:
@@ -493,6 +506,8 @@ class ReplayRunDefinition:
             "requested_start": self.requested_start.isoformat(),
             "initial_cash": self.initial_cash,
             "simulation_profile": self.simulation_profile,
+            "experimental_structure_book": self.experimental_structure_book,
+            "experimental_structure_fingerprint": self.experimental_structure_fingerprint,
             "assignment_ids": list(self.assignment_ids),
             "tickers": list(self.tickers),
             "configuration_revision_id": approved.get("revision_id", ""),
@@ -1578,7 +1593,7 @@ class ReplayRunController:
             **{
                 key: value
                 for key, value in self.definition.payload().items()
-                if key.startswith("configuration_") or key.startswith("canvas_")
+                if key.startswith("configuration_") or key.startswith("canvas_") or key.startswith("experimental_structure_")
             },
             "tickers": list(self.definition.tickers),
             "debug_fixture": (
@@ -2119,7 +2134,7 @@ class ReplayRunController:
             await self._publish(force=True)
             frame_source = await self._load_strategy_frames()
             frame_iterator = iter(frame_source)
-            if self.definition.debug_fixture is None:
+            if self.definition.debug_fixture is None and not self.definition.experimental_structure_book:
                 self._historical_structure_frame_iterator = iter(frame_source)
                 self._schedule_historical_structure_prefetch()
             next_frame = next(frame_iterator, None)
@@ -2942,6 +2957,11 @@ class ReplayRunController:
         await self._ensure_bar_gpt_features(frame.as_of)
         quote = self._quotes.get(frame.ticker)
         indicator = frame.indicator
+        if self.definition.experimental_structure_book:
+            snapshot = await self._experimental_structure_snapshot(frame.ticker, frame.as_of, 'frame')
+            from src.backend.experimental_structure_book import context
+            indicator = {**indicator, **context(snapshot, float(frame.bar.get('close') or 0)),
+                         'qmd_structure_unified_levels': snapshot['unified_levels']}
         bar = frame.bar
         direction = int(indicator.get("structure_choch_direction") or 0)
         structure_event = "choch" if direction else ""
@@ -3321,6 +3341,10 @@ class ReplayRunController:
                and bool(dict(assignment.parameters.get("structural_entry") or {}).get("enabled"))
                for assignment in ticker_assignments):
             structural = await self._event_structure_context(event)
+            if self.definition.experimental_structure_book:
+                # HOD/timeframe swings remain separate canonical market inputs.
+                structural.update(structure_swing_high=base.swing_high, structure_swing_low=base.swing_low,
+                    qmd_structure_session_high=base.structural_session_high)
             base = replace(
                 base,
                 swing_high=_optional_positive(structural.get("structure_swing_high")),
@@ -3416,12 +3440,33 @@ class ReplayRunController:
         await self._evaluate_strategy_observation(observation, ticker_assignments)
         return True
 
+    async def _experimental_structure_snapshot(self, ticker, as_of, lane, sequence=None):
+        from src.backend.experimental_structure_book import BookCursor
+        cursors = getattr(self, '_experimental_cursors', {})
+        self._experimental_cursors = cursors
+        key = (ticker, lane)
+        if key not in cursors:
+            cursors[key] = BookCursor(self.definition.experimental_structure_book, ticker,
+                                     self.definition.experimental_structure_fingerprint)
+            self._record_data_authority('experimental_structure_book', {
+                'authority': 'clickhouse-closing-book-1',
+                'database': self.definition.experimental_structure_book,
+                'fingerprint': self.definition.experimental_structure_fingerprint,
+                'continuation': 'completed-second causal observations; independent frame/event cursors',
+                'legacy_probability_scores': 'unavailable; existing strategy gates unchanged'})
+        return await asyncio.to_thread(cursors[key].snapshot, as_of, sequence)
+
     async def _event_structure_context(self, event: TradeEvent) -> dict[str, Any]:
         """Advance the shared producer through this exact canonical event.
 
         This session is independent of frame prefetch, which may already have
         advanced into the future. Never consume its later snapshot for a trade.
         """
+        if self.definition.experimental_structure_book:
+            from src.backend.experimental_structure_book import context
+            snapshot = await self._experimental_structure_snapshot(event.ticker, event.ts, 'event',
+                int(event.raw.get('arrival_sequence', event.sequence)))
+            return context(snapshot, float(event.price))
         sessions = self._event_structure_sessions
         cursor = int(event.raw.get("arrival_sequence", event.sequence))
         snapshots = getattr(self, "_event_structure_snapshots", {})
@@ -6415,6 +6460,8 @@ def _definition_from_manifest(
         mode=mode,
         debug_fixture=fixture,
         simulation_profile=str(definition.get("simulation_profile") or "baseline"),
+        experimental_structure_book=str(definition.get('experimental_structure_book') or ''),
+        experimental_structure_fingerprint=str(definition.get('experimental_structure_fingerprint') or ''),
     )
 
 

@@ -95,6 +95,12 @@ type IndicatorWarmupBatch = {
 export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [sessionDate, setSessionDate] = useState(previousWeekdayIsoDate);
   const [initialCash, setInitialCash] = useState(10_000);
+  const [structureBook, setStructureBook] = useState("");
+  const [structureBooks, setStructureBooks] = useState<Array<{ id: string; ticker: string; start: string; end: string }>>([]);
+  useEffect(() => { let active = true; api<{ items: typeof structureBooks }>("/api/trading/backtest/structure-books")
+    .then((value) => { if (active) setStructureBooks(value.items); }).catch(() => { if (active) setError("Experimental level books could not be loaded."); });
+    return () => { active = false; };
+  }, []);
   const [simulationProfile, setSimulationProfile] = useState<"baseline" | "stress">("baseline");
   const [periodPreset, setPeriodPreset] = useState<BacktestPeriodPreset>("premarket");
   const [startTime, setStartTime] = useState("04:00:00");
@@ -256,6 +262,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
           run_plan_id: runPlanId,
           session_count: 1,
           simulation_profile: simulationProfile,
+          experimental_structure_book: structureBook,
           start_time: startTime,
           end_time: endTime,
           tickers: normalizedTickers,
@@ -393,6 +400,9 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
               <label className="configuration-field"><span>Start time · ET</span><input aria-label="Start time" max="19:59:59" min="04:00:00" onChange={(event) => { setPeriodPreset("custom"); setStartTime(normalizeClockInput(event.target.value)); }} step="1" type="time" value={startTime} /><small>No new strategy actions are admitted before this time.</small></label>
               <label className="configuration-field"><span>End time · ET</span><input aria-label="End time" max="20:00:00" min="04:00:01" onChange={(event) => { setPeriodPreset("custom"); setEndTime(normalizeClockInput(event.target.value)); }} step="1" type="time" value={endTime} /><small>The run stops at this exact New York boundary.</small></label>
               <label className="configuration-field"><span>Initial cash</span><input max={1_000_000_000} min={1_000} onChange={(event) => setInitialCash(Math.max(1_000, Number(event.target.value) || 1_000))} step={1_000} type="number" value={initialCash} /><small>Applied to the isolated simulated account for the full run.</small></label>
+              <TradingModeSelectField label="Level book" help="Experimental books advance causally during the session and also appear on the chart. Prominence is available; legacy probability and relative-quality scores are unavailable, so existing strategy gates may block trades."
+                value={structureBook} onChange={(value) => { setStructureBook(value); const book = structureBooks.find((row) => row.id === value); if (book) setTickerInput(book.ticker); }}
+                options={[{ label: "Current v18", value: "" }, ...structureBooks.map((row) => ({ label: `Experimental ClickHouse · ${row.ticker} · through ${row.end}`, value: row.id }))]} />
               <TradingModeSelectField help="Both use $0.005 per share with a $1 minimum commission. Approval requires positive stress results." label="Execution realism" onChange={(value) => setSimulationProfile(value as "baseline" | "stress")} options={[{ label: "Baseline · 25% participation · 5 bps slippage", value: "baseline" }, { label: "Stress · 10% participation · 10 bps slippage", value: "stress" }]} value={simulationProfile} />
               <div className="historical-accelerated-engine-note"><Zap aria-hidden="true" size={17} /><div><strong>Accelerated causal engine</strong><span>{selectedPlan ? `Strategy revision ${selectedPlan.strategy_revision} · candidate ${configurationOptions?.candidates.find((row) => row.candidate_id === candidateId)?.candidate_revision}.` : "Select a strategy above."} Launch checks require current execution code and strategy. Results open in Charts &amp; Quotes with MACD, positions, lifecycle activity, and performance.</span></div></div>
     </TradingModeLaunch>

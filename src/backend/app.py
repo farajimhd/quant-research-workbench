@@ -999,6 +999,7 @@ class BacktestRunCreateRequest(BaseModel):
     configuration_revision_id: str = Field(default="", max_length=128)
     run_plan_id: str = Field(default="", max_length=128)
     simulation_profile: str = Field(default="baseline", pattern="^(baseline|stress)$")
+    experimental_structure_book: str = Field(default="", max_length=64)
     start_time: str = "04:00:00"
     end_time: str = "20:00:00"
     tickers: list[str] = Field(default_factory=list, max_length=100)
@@ -5444,6 +5445,12 @@ async def trading_replay_run_create(payload: ReplayRunCreateRequest) -> dict[str
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.get("/api/trading/backtest/structure-books")
+def trading_backtest_structure_books() -> dict[str, Any]:
+    from src.backend.experimental_structure_book import builds
+    return {"items": [{k:v for k,v in row.items() if k != 'runtime'} for row in builds()]}
+
+
 @app.post("/api/trading/backtest/runs")
 async def trading_backtest_run_create(payload: BacktestRunCreateRequest) -> dict[str, Any]:
     try:
@@ -5475,6 +5482,7 @@ async def trading_backtest_run_create(payload: BacktestRunCreateRequest) -> dict
             configuration_revision=configuration_revision,
             mode=RunMode.BACKTEST,
             simulation_profile=payload.simulation_profile,
+            experimental_structure_book=payload.experimental_structure_book,
             tickers=tuple(payload.tickers),
         )
         controller = await backtest_run_service.create(definition)
@@ -6232,6 +6240,7 @@ def trading_canvas_live_chart_history(
     stage: str = Query(default="full", pattern="^(bars|full)$"),
     mode: str = Query(default="live", pattern="^(live|replay|backtest|debug)$"),
     full_session: bool = False,
+    run_id: str | None = None,
     days: int = Query(default=1, ge=1, le=1),
     row_limit: int = Query(default=20_000, ge=1, le=50_000),
 ) -> dict[str, Any]:
@@ -6251,6 +6260,32 @@ def trading_canvas_live_chart_history(
         if len(projected_columns) > 128 or any(not re.fullmatch(r"[A-Za-z0-9_]{1,64}", column) for column in projected_columns):
             raise HTTPException(status_code=400, detail="indicator_columns contains an invalid column")
     try:
+        if run_id and mode == 'backtest' and 'qmd_structure_unified_levels' in (projected_columns or ()):
+            controller = backtest_run_service.get(run_id)
+            build_id = controller.definition.experimental_structure_book
+            if build_id:
+                from src.backend.experimental_structure_book import chart_rows, NY
+                from datetime import time as session_time
+                cutoff = datetime.fromisoformat(as_of.replace('Z', '+00:00')) if as_of else controller.current_time
+                if cutoff is None or cutoff.tzinfo is None:
+                    raise ValueError('Experimental chart requires an aware as-of cursor')
+                if controller.current_time is not None:
+                    cutoff = min(cutoff, controller.current_time)
+                day = date.fromisoformat(session_date) if session_date else cutoff.astimezone(NY).date()
+                start = datetime.combine(day, session_time(4), tzinfo=NY)
+                end = min(cutoff, datetime.combine(day, session_time(20), tzinfo=NY))
+                timeline = chart_rows(build_id, ticker, start, end,
+                    controller.definition.experimental_structure_fingerprint)
+                extra_columns = [column for column in projected_columns if column not in {'bar_start','qmd_structure_unified_levels'}]
+                base = _canvas_live_chart_history(ticker=ticker, timeframe=timeframe, before=before,
+                    session_date=session_date, as_of=cutoff.isoformat(), before_bar=before_bar,
+                    indicator_columns=['bar_start', *extra_columns], allow_persisted_bars=allow_persisted_bars,
+                    include_market_signals=include_market_signals, include_structure=False, stage=stage,
+                    mode=mode, row_limit=row_limit, full_session=full_session) if extra_columns else {}
+                return {**base, 'history': base.get('history', []), 'indicators': [*base.get('indicators', []), *timeline],
+                    'indicators_available': True, 'market_signal_events': base.get('market_signal_events', []), 'structure_events': [],
+                    'structure_level_history': [], 'indicator_provenance': {'authority': 'clickhouse-closing-book-1',
+                    'database': build_id, 'fingerprint': controller.definition.experimental_structure_fingerprint}}
         cache_key = (
             ticker, timeframe, before or "", session_date or "", as_of or "",
             before_bar or "", tuple(projected_columns or ()), allow_persisted_bars, include_market_signals,

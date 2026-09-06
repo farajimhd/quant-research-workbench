@@ -205,6 +205,7 @@ type PriceZone = {
   holdEvidenceReliability?: number;
   holdObservationCount?: number;
   holdQualityScore?: number;
+  prominence?: number;
   tickerRelativeQualityDistributionHash?: string;
   tickerRelativeQualityPopulationSize?: number;
   tickerRelativeQualityReferenceSession?: string;
@@ -4323,7 +4324,7 @@ function buildPriceZoneLegendItems(
     ));
     const presetZoneCount = itemZones.filter((zone) => !zone.preset || zone.preset === settings.preset).length;
     const episodeIds = new Set(selectedZones.filter((zone) => zone.episodeId !== undefined).map((zone) => `${zone.preset}:${zone.episodeId}`));
-    const supportsUnifiedFilters = itemZones.some((zone) => zone.annotationKind === "unified-structure-level");
+    const supportsUnifiedFilters = itemZones.some((zone) => zone.annotationKind === "unified-structure-level" && zone.prominence == null);
     const unifiedRelativeQualitySummary = supportsUnifiedFilters
       ? summarizeTickerRelativeQuality(itemZones)
       : undefined;
@@ -4387,7 +4388,7 @@ function buildPriceZoneLegendItems(
 }
 
 function summarizeTickerRelativeQuality(zones: PriceZone[]): NonNullable<LegendItem["unifiedRelativeQualitySummary"]> {
-  const normalizedZones = zones.filter((zone) => zone.annotationKind === "unified-structure-level");
+  const normalizedZones = zones.filter((zone) => zone.annotationKind === "unified-structure-level" && zone.prominence == null);
   const availableScores = normalizedZones
     .filter((zone) => zone.tickerRelativeQualityStatus === "available" && Number.isFinite(zone.tickerRelativeQualityScore))
     .map((zone) => clampNumber(zone.tickerRelativeQualityScore, 0, 1, 0));
@@ -5078,6 +5079,7 @@ function priceZoneMeetsUnifiedFilters(zone: PriceZone, settings: ResolvedPriceZo
   const roleVisible = zone.tone === "buy" ? settings.showUnifiedSupport : settings.showUnifiedResistance;
   const stateVisible = zone.latest ? settings.showUnifiedActive : settings.showUnifiedBroken;
   const flipVisible = !(Number(zone.roleFlipCount) > 0) || settings.showUnifiedRoleFlipped;
+  if (Number.isFinite(zone.prominence)) return roleVisible && stateVisible && flipVisible;
   return roleVisible && stateVisible && flipVisible
     && clampNumber(zone.holdQualityScore, 0, 1, 0) >= settings.minimumHoldQualityScore
     && (zone.tickerRelativeQualityStatus !== "available"
@@ -6597,7 +6599,7 @@ function drawPriceZonePrimitiveLabels(
       ) {
         drawUnifiedQualityLabel(
           context,
-          Number.isFinite(zone.tickerRelativeQualityScore)
+          Number.isFinite(zone.prominence) ? `P${Number(zone.prominence).toFixed(2)}` : Number.isFinite(zone.tickerRelativeQualityScore)
             ? `TQ${Math.round(clampNumber(zone.tickerRelativeQualityScore, 0, 1, 0) * 100)}%`
             : "TQ —",
           span,

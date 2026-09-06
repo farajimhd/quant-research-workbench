@@ -1391,7 +1391,7 @@ type ChartContainerPreviewProps = {
 const ChartContainerPreview = memo(function ChartContainerPreview({ canvasId, cutoffMs, instanceId, linkContext, liveMode, onLinkContextChange, previewContext, runId, runtimeMode, settings, strategy, symbolEditable, trading, updateSettings }: ChartContainerPreviewProps) {
   const historicalMode = runtimeMode === "backtest_debug" ? "debug" : runtimeMode === "backtest" ? "backtest" : "replay";
   const fullSession = runtimeMode === "backtest" || runtimeMode === "backtest_debug";
-  const liveChart = useCanvasHistoricalChart(linkContext.symbol, settings.chart.timeframe, cutoffMs, previewContext.sessionDate, settings.chart.visibleIndicators, liveMode, true, historicalMode, fullSession);
+  const liveChart = useCanvasHistoricalChart(linkContext.symbol, settings.chart.timeframe, cutoffMs, previewContext.sessionDate, settings.chart.visibleIndicators, liveMode, true, historicalMode, fullSession, runId);
   const presentations = useTickerPresentations([linkContext.symbol]);
   const strategyDecisions = useMemo(() => strategyDecisionEvents(strategy), [strategy]);
   const strategyPresentation = useMemo(() => resolvedStrategyPresentation(strategy), [strategy]);
@@ -1402,9 +1402,9 @@ function ChartsQuotesContainerPreview({ canvasId, cutoffMs, instanceId, linkCont
   const [mainChartMaximized, setMainChartMaximized] = useState(true);
   const historicalMode = runtimeMode === "backtest_debug" ? "debug" : runtimeMode === "backtest" ? "backtest" : "replay";
   const fullSession = runtimeMode === "backtest" || runtimeMode === "backtest_debug";
-  const main = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.main.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.main.visibleIndicators, liveMode, true, historicalMode, fullSession);
-  const month = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.month.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.month.visibleIndicators, liveMode, true, historicalMode, false);
-  const daily = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.daily.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.daily.visibleIndicators, liveMode, true, historicalMode, false);
+  const main = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.main.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.main.visibleIndicators, liveMode, true, historicalMode, fullSession, runId);
+  const month = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.month.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.month.visibleIndicators, liveMode, true, historicalMode, false, runId);
+  const daily = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.daily.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.daily.visibleIndicators, liveMode, true, historicalMode, false, runId);
   const presentations = useTickerPresentations([linkContext.symbol]);
   const logoUrl = presentations[linkContext.symbol]?.logo_url;
   const changeAsOf = new Date(cutoffMs).toISOString();

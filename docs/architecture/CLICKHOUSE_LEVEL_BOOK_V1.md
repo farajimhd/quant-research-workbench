@@ -3,7 +3,8 @@
 Status: experimental full JUNS build, September 6, 2026. This implements the
 user's revised historical-compute direction: ClickHouse constructs the book
 from canonical events; already persisted v18 checkpoints are comparison data.
-No Rust replay, raw-event transfer to Python, or production consumer cutover.
+No Rust replay or raw-event transfer to Python. An explicit experimental
+Backtest source now exists; ordinary backtests and live trading retain v18.
 The earlier exact-v18 reconstruction gate is superseded for this experiment.
 
 ## Inputs and computation
@@ -158,6 +159,43 @@ symbols without that baseline.
 
 ## Results and acceptance
 
+### Experimental backtest integration
+
+The Backtest launch page offers **Level book → Experimental ClickHouse** for
+validated builds discovered under the structural-validation runtime root.
+Choose the covered ticker and a covered date (for JUNS, e.g. August 21, 2026).
+The selection and source fingerprint persist in the run definition and are
+checked again on resume. No global History/Live checkpoint selection changes.
+
+`src/backend/experimental_structure_book.py` loads the prior day's compact
+scalar state from the validated build's `history` table, level geometry and
+confirmation ordinals from `levels`/`candidates`, and completed-second
+observations from `observations`. These diagnostic continuation tables must
+remain available while the experimental run is in use. It fetches no raw SIP
+events. This is currently a backtest provider over certified observations,
+not a live gateway detector or automatic historical repair service.
+
+NumPy advances the same v1 state machine. Independent frame and trade cursors
+prevent prefetch from leaking a later snapshot into an earlier decision.
+Equal-timestamp trade decisions also check the candidate's canonical ordinal.
+Session changes restore the preceding close and apply that day's causal price
+basis; rewinding reconstructs the prefix deterministically. Continuation fields
+remain scalar rather than accumulating evidence arrays.
+
+The chart requests the selected run's provider and clamps levels to the run
+cursor. It uses the same continuation, emits an initial snapshot plus deltas,
+and preserves UInt64 identities as strings. Prominence labels are `P…`; legacy
+probability/relative-quality labels and filters are not applied to those zones.
+Existing strategy score gates are **unchanged** and may reject these levels
+because the old scores are unavailable. Prominence is not converted into a
+probability or used to bypass those gates.
+
+Validation covers every scalar-reference prefix, confirmation sequence ties,
+independent strategy cursors, API cursor clamping, and real JUNS August 6/7/21
+closing states plus chart-delta reconstruction. Price and role comparisons
+remain strict; the logarithmic score uses absolute tolerance 1e-8 because
+ClickHouse's vector log differs from NumPy log1p by up to 1.6e-9 in these tests.
+
 JUNS: 420 certified sessions, January 2, 2025–September 4, 2026;
 3,372,215 source events; 4,284 final level identities; 823,720 level-day states;
 46,426 compressed interval rows. Initial single-copy book size was 1,370,032
@@ -180,7 +218,7 @@ nearest-price metrics, not exact identities, band equivalence or lifecycle
 parity. On the last day, same-role v18 coverage is 2,722/3,684 (73.89%).
 
 The speed/storage experiment succeeded, but the role difference is material.
-Status remains `built_pending_quality_acceptance`. Aligning the streaming and
-historical lifecycle, agreeing retention and score behavior, implementing
-compatible continuation/live persistence, automatic repair and consumer
-cutover remain unfinished. Do not substitute this table for production v18.
+Status remains `built_pending_quality_acceptance`. Live streaming detection and
+persistence, retention and score-policy decisions, automatic repair and a
+production consumer cutover remain unfinished. Use only the explicit
+experimental Backtest selection for visual acceptance.

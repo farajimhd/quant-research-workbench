@@ -63,7 +63,9 @@ export type QmdUnifiedStructureSource = {
   last_test_at_ms: number;
 };
 export type QmdUnifiedStructureLevel = {
-  unified_level_id: number;
+  unified_level_id: number | string;
+  prominence?: number;
+  book_version?: string;
   side: number;
   price: number;
   lower: number;
@@ -103,7 +105,7 @@ export type QmdUnifiedStructureLevel = {
 };
 export type QmdUnifiedStructureLevelDelta = {
   upserts: QmdUnifiedStructureLevel[];
-  removed: Array<{ unified_level_id: number; side: number }>;
+  removed: Array<{ unified_level_id: number | string; side: number }>;
 };
 export type HistoricalIndicator = {
   bar_start: string;
