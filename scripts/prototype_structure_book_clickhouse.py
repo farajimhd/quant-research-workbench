@@ -77,7 +77,7 @@ class Client:
         query_id = 'structure-feasibility-' + uuid.uuid4().hex
         params = dict(query_id=query_id, max_threads=self.threads, max_insert_threads=self.threads,
                       max_memory_usage=2147483648, max_execution_time=seconds,
-                      max_block_size=1 if label.startswith('close_') or label=='baseline_bytes' else 65536,
+                      max_block_size=1 if label.startswith('close_') or label=='baseline_bytes' else 32 if label.startswith('day_') else 65536,
                       max_result_rows=10000, max_result_bytes=8000000, result_overflow_mode='throw')
         if read:
             params['readonly'] = 1

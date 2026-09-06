@@ -1,7 +1,11 @@
 # Compact historical structure book: design and feasibility contract
 
-Status: design/prototype with opt-in streaming score and interval primitives.
-No production authority or consumer is changed; a full new JUNS build is pending.
+Status: the revised ClickHouse-native JUNS algorithm is built and structurally
+validated, with material role differences awaiting quality review. See
+[the current executable contract](CLICKHOUSE_LEVEL_BOOK_V1.md). The earlier
+exact-v18 reconstruction direction below is historical design context and does
+not authorize recalculating the already persisted comparison checkpoints.
+No production authority or consumer is changed.
 Scope: user-approved steps 1–3, September 6, 2026; JUNS from January 2025
 through the latest certified canonical source day. Full reconstruction, live
 activation, and backtest integration remain later approval gates.
@@ -296,17 +300,16 @@ are never blindly retried. A failed/interrupted run requires a fresh isolated
 runtime; a completed run can revalidate without reinserting completed units.
 This fail-closed prototype is not yet the resumable production repair runner.
 
-The full v18 state machine cannot be replaced by adjacent-column comparisons.
-A fully database-side exact implementation (e.g. compiled database extension or
-explicit stateful transform) is not yet demonstrated. No external raw-event
-fetching, extension installation or alternate detector is silently introduced.
-The feasibility result must report this gate even when SQL and storage timings
-are excellent. Running the controller on the workstation does not solve this
-semantic dependency by itself.
+The revised user direction is an efficient new ClickHouse algorithm compared
+against stored v18 output, not a database-side exact v18 port. The current
+contract documents the detector, lifecycle and clustering differences and
+measures their effects. It must not present speed or storage success as proof
+of identical trading behavior.
 
 ## Acceptance before widening scope
 
-- Exact causal book comparison on mature books, pending states and split dates.
+- Measured v18 price/role differences on mature books and split dates, with
+  explicit quality review; exact interval reconstruction of the new book.
 - Exact resumed/uninterrupted continuation including higher timeframes.
 - Authoritative count/order/identity/source-revision checks.
 - As-of opening and intraday checks; no future endpoint/score exposure.
