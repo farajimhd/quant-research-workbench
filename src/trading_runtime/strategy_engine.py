@@ -787,9 +787,9 @@ def resolve_long_momentum_parameters(
             parameters["phase_policy"]["initial_entry"]["add_steps"] = []
         parameters["reentry"]["target_replenishment"]["enabled"] = False
         if parameters["protection"]["trailing"].get("mode") not in {
-            "qualified_support", "support_distance"
+            "qualified_support", "support_distance", "third_resistance_below_session_high"
         }:
-            raise ValueError("Trailing mode must be qualified_support or support_distance")
+            raise ValueError("Unsupported structural trailing mode")
     if revision >= 38:
         # Break probability is a percentage; the old lifetime break-count
         # ceiling is not part of the current level qualification contract.
@@ -3842,9 +3842,9 @@ class LongMomentumStrategyEngine:
 
         stop_replacement = None
         if (self.revision >= 37 and stop > previous_stop > 0
-                and parameters["protection"]["trailing"].get("mode") == "qualified_support"):
+                and parameters["protection"]["trailing"].get("mode") in {"qualified_support", "third_resistance_below_session_high"}):
             stop_replacement = self._result(
-                assignment, observation, "replace_protective_stop", "qualified_support_advanced",
+                assignment, observation, "replace_protective_stop", ("third_resistance_advanced" if parameters["protection"]["trailing"].get("mode") == "third_resistance_below_session_high" else "qualified_support_advanced"),
                 observation.qmd_score, 1.0, state, AssignmentStatus.MANAGING,
                 quantity=observation.position_quantity, invalidation_price=stop,
                 metadata={"previous_stop": previous_stop,
@@ -5273,7 +5273,7 @@ def _protection_profile_from_phase(
         trailing_rule = TrailingRuleType(
             str(trailing_raw.pop("rule_type", TrailingRuleType.NONE))
         )
-        if parameters["protection"]["trailing"].get("mode") == "qualified_support":
+        if parameters["protection"]["trailing"].get("mode") in {"qualified_support", "third_resistance_below_session_high"}:
             trailing_rule = TrailingRuleType.NONE
             trailing_raw = {}
         if trailing_rule == TrailingRuleType.BROKER_AMOUNT and not trailing_raw.get("amount"):
@@ -7540,7 +7540,7 @@ def _trailing_amount(
     stop: float | None = None,
 ) -> float | None:
     trailing = parameters["protection"]["trailing"]
-    if trailing.get("mode") == "qualified_support":
+    if trailing.get("mode") in {"qualified_support", "third_resistance_below_session_high"}:
         return None
     if not trailing["enabled"]:
         return None
@@ -7577,6 +7577,13 @@ def _ratcheted_stop(
     ) if entry > 0 else 0
     trailing = parameters["protection"]["trailing"]
     if not trailing["enabled"] or gain_pct < float(trailing["activation_gain_pct"]):
+        return current
+    if trailing.get("mode") == "third_resistance_below_session_high":
+        evidence: dict[str, Any] = {}
+        candidate = _initial_stop(observation, parameters, None, side=side, selection_evidence=evidence, entry_placement=False)
+        if side == "long" and candidate > current:
+            state["trailing_support_selection"] = evidence
+            return candidate
         return current
     if trailing.get("mode") == "qualified_support":
         evidence: dict[str, Any] = {}

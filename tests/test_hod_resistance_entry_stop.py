@@ -21,7 +21,7 @@ def policy():
 
 
 def observation(price=102.3):
-    levels = [dict(row(p),band_lower=p-.2,band_upper=p+.2,load_contract='merged-point-minmax-v1',p_norm=.95)
+    levels = [dict(row(p),band_lower=p-.2,band_upper=p+.2,load_contract='merged-point-minmax-v1',p_norm=.95,minimum_p_norm=.9)
               for p in (101,104,103,102,105,106)]
     return replace(bar(close=price),structural_session_high=103.5,structural_resistance_levels=tuple(levels),structural_support_levels=())
 
@@ -83,3 +83,34 @@ def test_entry_rank_validation(ordinal):
     p=policy();p['structural_entry']['entry_level_ordinal_below_high']=ordinal
     with pytest.raises(ValueError,match='entry_level_ordinal_below_high'):
         S.resolve_long_momentum_parameters(p,revision=47)
+
+
+def test_trailing_r3_tightens_and_retains_stop_when_lower_or_missing():
+    p=policy();p['protection']['trailing'].update(enabled=True,mode='third_resistance_below_session_high')
+    state={'entry_reference_price':100,'active_stop':100,'high_water_price':104}
+    assert S._ratcheted_stop(observation(),p,state,side='long')==101
+    assert state['trailing_support_selection']['selected_resistance_level']['price']==101
+    state['active_stop']=101.5
+    assert S._ratcheted_stop(observation(),p,state,side='long')==101.5
+    assert S._ratcheted_stop(replace(observation(),structural_resistance_levels=()),p,state,side='long')==101.5
+
+
+def test_real_engine_sends_resistance_stop_replacement():
+    p=policy();p['protection']['trailing'].update(enabled=True,mode='third_resistance_below_session_high')
+    p['phase_policy']={'exit':{'mode':'automatic','rule_sets':[]}}
+    state={'entry_at':NOW.isoformat(),'entry_reference_price':100,'initial_stop':100,'active_stop':100,'high_water_price':102.3}
+    obs=replace(observation(),position_quantity=10,macd_line=.4,macd_signal=.2)
+    result=S.LongMomentumStrategyEngine(revision=47).evaluate(assignment(strategy_revision=47,parameters=p,status=S.AssignmentStatus.MANAGING,state=state),obs)
+    intents=[i for i in result.evaluation.intents if i.action=='replace_protective_stop']
+    assert len(intents)==1,[i.action for i in result.evaluation.intents]
+    assert intents[0].invalidation_price==101
+    assert intents[0].reason=='third_resistance_advanced'
+
+
+def test_default_p_norm_is_inclusive_point_eight_and_saved_threshold_is_preserved():
+    from src.trading_runtime.structure_level_contract import strategy_snapshot
+    from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD
+    assert DEFAULT_THRESHOLD==.8
+    rows=[dict(row(100+i),load_contract='merged-point-minmax-v1',p_norm=score) for i,score in enumerate((.799,.8,.9))]
+    assert len(strategy_snapshot({'unified_levels':rows},NOW)['unified_levels'])==2
+    assert len(strategy_snapshot({'unified_levels':rows},NOW,minimum_p_norm=.9)['unified_levels'])==1
