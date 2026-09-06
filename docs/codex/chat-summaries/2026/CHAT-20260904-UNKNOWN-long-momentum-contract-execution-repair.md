@@ -1,8 +1,8 @@
 # Long momentum contract, structural campaign diagnosis, and validated optimization
 
 - Chat started: 2026-09-04; exact start time unavailable (America/Vancouver)
-- Chat ended or last activity: 2026-09-05T16:44:16-07:00 (summary-request activity)
-- Summary written: 2026-09-05T16:44:16-07:00
+- Chat ended or last activity: 2026-09-05T17:00:59-07:00 (summary-request activity)
+- Summary written: 2026-09-05T17:00:59-07:00
 - Chat/task identifier: 01a06eb2-3dcb-7580-8cc5-287431048fd3; Review long momentum backtest
 - Repository or scope: D:\TradingCodes\quant-research-workbench; Strategy, Portfolio, OMS, QMD structural engine, checkpoint campaign
 - Related task-history entries: TASK-0014, TASK-0206
@@ -44,6 +44,14 @@ Final checks passed 48 v18, 40 default and 38 immutable-v16 Rust tests, three Py
 
 The code was committed and pushed, then staged in workstation `D:\TradingML\codes\quant-research-workbench-602f30f1`; binaries are under `D:\TradingML\runtimes\bin\structure-optimized-602f30f1`. Copy hashes were verified. The campaign executable SHA-256 is `1061cc91e0ad4f1d73c9604d356fbb59c0e14746d48f803defe64fa2b5ed15d1`. The hash-pinned launcher is `D:\TradingML\runtimes\qmd_gateway\start-full-optimized-602f30f1.ps1`. It selects 96 workers, January 1, 2025–September 4, 2026, and new set `canonical-tradable-20250101-20260904-prominence-v18-v1`. Synchronization did not start the campaign or restart services.
 
+The subsequent consumer review found that ordinary QMD builds still defaulted to algorithm 17, the History launcher expected 16, and History selected the obsolete August SIP-condition set. The running History service confirmed algorithm 17/calculation revision 57. Commit `72b301e8`, committed and pushed, makes both ordinary services default to algorithm 18 and rejects legacy builds at normal server entrypoints. The immutable v16 campaign remains available with explicit `--no-default-features --features historical-campaign-v16`. History now defaults to `canonical-tradable-20250101-20260904-prominence-v18-v1`, shared by chart preparation, indicator projections and causal strategy session seeds. Calculation revision 58 invalidates old prepared chart/indicator artifacts. Live retains its operational write namespace; when no compatible live daily seed exists, it reads the new campaign through a separate seed setting and validates identity/certification. It does not write into campaign history. The service manager detects checkpoint-setting changes.
+
+Backtest initialization now checks compiled algorithm and effective checkpoint set as well as source hashes. An isolated release smoke exposed an additional defect: Rust sorted paths by components while Python sorted normalized path strings, producing different fingerprints for `generic_structure.rs` and its nested test module. The build now uses the same normalized relative-path order. Validation passed 245 shared QMD library tests, 104 History library tests and 25 Python provenance/lifecycle checks; Live and the immutable v16 campaign compiled. The separately built History release reported algorithm 18, revision 58, the new set and the exact expected fingerprint on test port 18801; the real backend runtime gate returned ready. That test process was stopped. Evidence is under laptop `runtimes\structure-validation\consumer-alignment`; the staged binary is under `runtimes\qmd_history_gateway\consumer-v18-target\release`. No new backtest or rendered-chart acceptance was performed.
+
+An active backtest, `9aaa9307-a555-4563-b110-005eb320a762`, prevented in-place service activation. The initial release build could not replace its running Windows executable; validation used a separate target directory instead. Existing QMD History and Backend were left intact, and Live was not running at inspection. These are observations from the consumer review, not a fresh status check at summary time. The follow-up explanation was to let the run end, then restart QMD History and Backend through the service manager (Live too if used), verify health/version/set, and start a new backtest instead of resuming old state.
+
+Unlike the earlier staged-only handoff, subsequent database observations establish that the September 4 set has begun filling: initially 3,687 completed rows across 95 tickers, with JUNS through November 13, 2025 and no SUGP certified rows. The latest bounded read in this chat found JUNS advanced to March 4, 2026 (292 certified rows from January 2, 2025); SUGP still had none. Neither is complete. Both checkpoint tables used `live_market_ssd`, and observed active checkpoint parts were on that disk. This summary does not refresh worker state or coverage. For an August 21 test, certified coverage through the preceding August 20 session is sufficient; the full September 4 campaign need not finish first. Missing seeds retain bounded canonical reconstruction/readiness failures without silently selecting an older campaign, and old seeds can require expensive causal advancement. Code readiness therefore must not be confused with requested-ticker readiness.
+
 ### Durable decisions
 
 - **Confirmed requirements:** causal dynamic levels; score-independent construction; exact approved entry/exit authority boundaries; current contract overrides obsolete narrative rules. Laptop correctness before workstation deployment; 96-worker requested configuration; September 4 inclusive end date.
@@ -53,6 +61,7 @@ The code was committed and pushed, then staged in workstation `D:\TradingML\code
 
 ### Delivered outcomes
 
+- Consumer alignment and cross-language fingerprint repair committed/pushed in `72b301e8`; 374 tests and isolated History runtime/version-gate smoke passed. Production service activation remains pending.
 - Current strategy clarifications preserved with earlier commits/candidate context, without claiming renewed trading acceptance.
 - Warm causal profiling identified the structural CPU hotspots; original and optimized local books were compared exactly.
 - Optimization, comparison tools, [validation report](../../../structure-optimization-validation.md), deployment support and inclusive September 4 launcher committed/pushed in 602f30f1; date entry introduced in 92315b8c.
@@ -60,9 +69,10 @@ The code was committed and pushed, then staged in workstation `D:\TradingML\code
 
 ### Unfinished or hanging work
 
-- **TASK-0206 — Full reconstruction:** staged, not started at last verification. User launches from activated `ml4t` using the hash-pinned workstation script; monitor actual processed events, worker states, retries, memory and SSD placement. Do not use an old August restart wrapper.
-- **TASK-0206 — Mature performance:** full-history speed/ETA and best worker count remain unmeasured. After launch, compare sustained mature-book throughput; if slow, profile source construction/evidence aggregation and remaining lifecycle work before further redesign. Laptop agent diagnoses; workstation execution belongs to user unless newly authorized.
+- **TASK-0206 — Full reconstruction:** the new set is now populated but incomplete. Last observed JUNS coverage reached March 4, 2026; SUGP had no certified rows. Refresh certified coverage and current campaign status, then monitor actual processed events, retries, memory and SSD placement. Preserve the September 4 identity; do not use an old August restart wrapper.
+- **TASK-0206 — Mature performance:** full-history speed/ETA and best worker count remain unmeasured. During the campaign, compare sustained mature-book throughput; if slow, profile source construction/evidence aggregation and remaining lifecycle work before further redesign. Laptop agent diagnoses; workstation execution belongs to user unless newly authorized.
 - **TASK-0206 — Retained data/migration:** exact completion of old storage migration/deletion is not established by this summary. Inspect current tables, parts and migration journal before any cleanup; do not delete checkpoints on the assumption that this optimization invalidated them.
+- **TASK-0014/TASK-0206 — Consumer activation:** after the active run ends, restart QMD History and Backend through `scripts/services.ps1`; restart Live if used. Verify algorithm 18, revision 58 and the September 4 set, then use a new run. Check preceding-session ticker coverage first; do not treat health readiness as full historical coverage.
 - **TASK-0014 — Strategy acceptance:** revalidate causal R3 entry arming, MACD exits, target jumps, initial-only stop cap, allocation/remainder fills and chart fidelity with the latest effective revision. No new trading acceptance or profitability result was produced here. New-level quality gating remains deferred.
 - **TASK-0206 — POC ties:** equal-volume map ties can select different POC prices in independent fresh engines. No production change was made to preserve baseline scope. Diagnose and agree on a deterministic rule before changing historical output semantics.
 
@@ -72,4 +82,4 @@ The app inventory exposed related tasks, including “Diagnose level book campai
 
 ### Handoff to the next chat
 
-Read TASK-0206, TASK-0014, this summary, the strategy contract and `docs/structure-optimization-validation.md`. Treat earlier algorithm-16 campaign statements as historical: the staged campaign is protocol 12/algorithm 18. Distinguish level-book parity from trading acceptance, and the modest ticker-dependent gains from an unmeasured full-history ETA. First establish whether the user has launched `start-full-optimized-602f30f1.ps1`; then inspect its new runtime, not the interrupted August v3 run. Preserve old checkpoints, canonical source authority and storage safeguards. Do not restart services, delete data or claim campaign completion from the successful laptop validation.
+Read TASK-0206, TASK-0014, this summary, the strategy contract and `docs/structure-optimization-validation.md`. Treat earlier algorithm-16 campaign statements as historical: the staged campaign is protocol 12/algorithm 18. Distinguish level-book parity from trading acceptance, and the modest ticker-dependent gains from an unmeasured full-history ETA. First refresh the September 4 campaign coverage and active-run status. The user has been told to restart History/Backend after the run ends and preceding-session checkpoints are ready. Read commit `72b301e8` and the validation report for consumer rollout. Preserve old checkpoints, canonical source authority and storage safeguards; do not claim production activation, campaign completion or chart/trading acceptance from isolated validation.

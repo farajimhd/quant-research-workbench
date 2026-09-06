@@ -7,20 +7,21 @@ each year.
 
 ## 2026
 
-### [2026-09-04 time unavailable - Long momentum contract and structural campaign optimization](docs/codex/chat-summaries/2026/CHAT-20260904-UNKNOWN-long-momentum-contract-execution-repair.md)
+### [2026-09-04 time unavailable - Long momentum contract, optimization and consumer alignment](docs/codex/chat-summaries/2026/CHAT-20260904-UNKNOWN-long-momentum-contract-execution-repair.md)
 
 - Chat/task ID: `01a06eb2-3dcb-7580-8cc5-287431048fd3`
 - Related tasks: `TASK-0014`, `TASK-0206`
 - Summary updated: 2026-09-05 PDT
 
-Preserves the latest strategy contract and the campaign's transition to algorithm
-18/protocol 12. Warm profiling isolated structural CPU costs. Commit `602f30f1`
-adds indexed matching and conditional consolidation; laptop replay of 2,025,248
-events across nine ticker-days matched all daily books and 403 intermediate
-checkpoints exactly. Measured speedups: JUNS 1.058x, SUGP 1.002x, SDOT 1.760x.
-The hash-pinned workstation launcher uses 96 workers through September 4, 2026;
-it was staged but not started. Full-history throughput, strategy acceptance,
-retained-data cleanup and POC tie determinism remain unresolved.
+Preserves the strategy contract, exact nine-day optimization parity and staged
+96-worker campaign through September 4. Commit `72b301e8` aligns QMD,
+Backtest, strategy/chart/indicator consumers with algorithm 18 and the new
+checkpoint set, fixes source-fingerprint ordering and invalidates old caches.
+374 tests and an isolated service/version-gate smoke passed. Production restart
+remains pending behind an active backtest. Latest observed JUNS coverage reached
+March 4, 2026 (292 certified rows); SUGP had none. August 21 testing needs
+preceding-session coverage, not full campaign completion. Full reconstruction,
+performance, trading/chart acceptance and POC tie determinism remain open.
 
 ### [2026-09-02 time unavailable - Repair strategy freshness, structural trailing protection, and incorrect CHOCH exits](docs/codex/chat-summaries/2026/CHAT-20260902-UNKNOWN-strategy-freshness-structural-trailing-repair.md)
 
