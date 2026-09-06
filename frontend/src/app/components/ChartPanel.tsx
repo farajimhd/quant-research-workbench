@@ -2062,11 +2062,6 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
               const trade = strategyLifecycles[index];
               if (!trade) return;
               setSelectedStrategyId(trade.id);
-              const start = Math.min(trade.entryIntentTime ?? trade.entryTime, trade.entryTime);
-              const end = Math.max(start, trade.exitTime ?? trade.endTime ?? trade.entryTime);
-              const padding = Math.max(15, (end - start) * 0.2);
-              executeViewportCommand(() => priceChartRef.current?.timeScale().setVisibleRange({ from: (start - padding) as Time, to: (end + padding) as Time }));
-              window.requestAnimationFrame(fitTradeAnnotationPriceScale);
             }}
             onChange={updateStrategyPresentationSettings}
             onOpenChange={(value) => {
