@@ -4641,7 +4641,10 @@ class ReplayRunController:
             for event in self._historical_external_signal_events
             if _strategy_can_enter_at(configuration, event.available_at)
         })
-        return tickers or None
+        # An empty activation window must not expand an explicit ticker run
+        # into a whole-market source request. Native signals remain the
+        # activation authority; this only bounds the watchlist computation.
+        return tickers or sorted(set(self.definition.tickers)) or None
 
     async def _prepare_historical_watchlist_timeline(self) -> None:
         """Materialize historical universe authority without blocking the API loop."""

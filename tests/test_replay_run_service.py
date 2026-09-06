@@ -2884,6 +2884,12 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             controller._historical_watchlist_projection_tickers(), ["PRE"]
         )
+        controller._historical_external_signal_events = []
+        self.assertIsNone(controller._historical_watchlist_projection_tickers())
+        controller.definition = replace(controller.definition, tickers=("JUNS",))
+        self.assertEqual(controller._historical_watchlist_projection_tickers(), ["JUNS"])
+        configuration["payload"]["signal_activation"]["signal_streams"][0].pop("occurrence_source")
+        self.assertIsNone(controller._historical_watchlist_projection_tickers())
 
     async def test_independent_signal_authorities_load_concurrently_and_merge_causally(self) -> None:
         controller = ReplayRunController(
