@@ -35,6 +35,28 @@ def test_entry_requires_r2_upper_bound(price,passed):
     assert 'r3' not in result['reason']
 
 
+@pytest.mark.parametrize('price,opening,passed', [(102.3,102.3,True),(102.2,102.1,False),(102.3,102.4,False)])
+def test_live_r2_acceptance_without_completed_close(price,opening,passed):
+    p=policy();p['structural_entry']['accept_live_price_above_entry_level']=True
+    obs=replace(observation(price),bar_open=opening,evaluation_events=('market_data_update',),source_timeframe='')
+    result=S._prior_completed_frame_resistance_trigger(obs,p['structural_entry'],{})
+    assert result['passed']==passed
+    if passed:
+        assert result['reason']=='current_r2_live_price_accepted'
+        assert result['acceptance']['acceptance_basis']=='live_price'
+    assert not S._prior_completed_frame_resistance_trigger(obs,policy()['structural_entry'],{})['passed']
+
+
+def test_real_engine_live_r2_entry_carries_r3_stop():
+    p=policy();p['structural_entry']['accept_live_price_above_entry_level']=True
+    p['liquidity_admission']['maximum_current_spread_bps']=200
+    obs=replace(observation(),bar_open=102.3,macd_line=.4,macd_signal=.2,
+                evaluation_events=('market_data_update',),source_timeframe='')
+    result=S.LongMomentumStrategyEngine(revision=47).evaluate(assignment(strategy_revision=47,parameters=p),obs)
+    assert any(i.action=='enter_long' for i in result.evaluation.intents), [s.reason for s in result.evaluation.signals]
+    assert result.state['initial_stop']==101
+
+
 def test_stop_is_r3_main_price_and_does_not_substitute_support_or_risk_cap():
     p=policy();p['protection']['stop']['maximum_risk_pct']=.1
     evidence={}

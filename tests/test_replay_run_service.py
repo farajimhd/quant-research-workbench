@@ -3378,12 +3378,16 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
     async def test_confirmed_r3_entry_evaluates_forming_macd_on_triggering_trade(self) -> None:
         await self._check_flat_intrabar_entry("prior_completed_frame_top_n_below_session_high", True)
 
-    async def _check_flat_intrabar_entry(self, mode: str, armed: bool) -> None:
+    async def test_live_r2_entry_evaluates_first_trade_without_closed_acceptance(self) -> None:
+        await self._check_flat_intrabar_entry("prior_completed_frame_top_n_below_session_high", False, live_entry=True)
+
+    async def _check_flat_intrabar_entry(self, mode: str, armed: bool, live_entry: bool = False) -> None:
         now = datetime(2026, 8, 21, 4, 2, 52, tzinfo=NEW_YORK)
         parameters = default_long_momentum_parameters()
         parameters["structural_entry"].update({
             "enabled": True,
             "selection_mode": mode,
+            "accept_live_price_above_entry_level": live_entry,
         })
         controller = ReplayRunController(
             ReplayRunDefinition(

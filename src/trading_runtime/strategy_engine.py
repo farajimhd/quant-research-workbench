@@ -2376,21 +2376,25 @@ def _prior_completed_frame_resistance_trigger(
                               and _level_metric(accepted, "confirmation_close") > boundary)
         if not above or not same_level:
             state.pop(acceptance_key, None)
-        if above and non_red and completed_one_second and acceptance_key not in state:
+        live_acceptance = bool(policy.get("accept_live_price_above_entry_level") and intrabar)
+        if above and non_red and (completed_one_second or live_acceptance) and acceptance_key not in state:
             state[acceptance_key] = {
                 "unified_level_id": r3.get("unified_level_id"),
                 "threshold_price": boundary,
                 "accepted_at": observed_at,
                 "confirmation_close": observation.price,
+                "acceptance_basis": "live_price" if live_acceptance else "completed_close",
             }
         accepted = state.get(acceptance_key)
         passed = bool(above and non_red and accepted)
         result.update(
             passed=passed,
-            reason=("current_r3_completed_close_accepted" if passed and completed_one_second else
+            reason=("current_r3_live_price_accepted" if passed and live_acceptance else
+                    "current_r3_completed_close_accepted" if passed and completed_one_second else
                     "current_r3_acceptance_valid_intrabar" if passed else
                     missing_reason if r3 is None else
                     "entry_closed_candle_bearish" if not non_red else
+                    "waiting_for_live_price_above_current_r3" if policy.get("accept_live_price_above_entry_level") else
                     "waiting_for_completed_close_above_current_r3"),
             level={**r3, "threshold_price": boundary} if r3 else None,
             reference_price=boundary,

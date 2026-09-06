@@ -3342,7 +3342,10 @@ class ReplayRunController:
             == "prior_completed_frame_top_n_below_session_high"
             and not (
                 assignment.strategy_revision >= 44
-                and assignment.state.get("accepted_entry_r3")
+                and (
+                    assignment.state.get("accepted_entry_r3")
+                    or dict(assignment.parameters.get("structural_entry") or {}).get("accept_live_price_above_entry_level")
+                )
             )
             for assignment in ticker_assignments
         ):
