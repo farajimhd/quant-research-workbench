@@ -829,6 +829,9 @@ def resolve_long_momentum_parameters(
     if slope_policy is not None:
         parameters["momentum_management"]["histogram_slope_exit"] = histogram_slope.validate_policy(slope_policy)
     candle = parameters["entry_candle_confirmation"]
+    entry_ordinal = parameters["structural_entry"].get("entry_level_ordinal_below_high")
+    if entry_ordinal is not None and (type(entry_ordinal) is not int or not 1 <= entry_ordinal <= 3):
+        raise ValueError("entry_level_ordinal_below_high must be an integer from 1 to 3")
     rejection_ordinal = parameters["momentum_management"].get("resistance_rejection_level_ordinal")
     if rejection_ordinal is not None and (type(rejection_ordinal) is not int or rejection_ordinal < 1):
         raise ValueError("resistance_rejection_level_ordinal must be a positive integer")
@@ -868,6 +871,7 @@ def resolve_long_momentum_parameters(
         "volatility",
         "hybrid",
         "ordinal_qualified_support",
+        "third_resistance_below_session_high",
     }:
         raise ValueError("Unsupported protective stop method")
     stop = parameters["protection"]["stop"]
@@ -2144,6 +2148,50 @@ def _unified_entry_trigger(
     }
 
 
+def _qualified_resistances_below_session_high(observation, policy):
+    """One causal, price-descending resistance ladder for entry and protection."""
+    session_high = observation.structural_session_high
+    qualified: list[dict[str, Any]] = []
+    if session_high is not None and session_high > 0:
+        for raw in observation.structural_resistance_levels:
+            if not isinstance(raw, Mapping):
+                continue
+            row = dict(raw)
+            if int(row.get("side") or 0) >= 0:
+                continue
+            if policy.get("persistent_r3_acceptance"):
+                try:
+                    if any(not isfinite(float(row[key])) or float(row[key]) > observation.observed_at.timestamp() * 1000
+                           for key in ("created_at_ms", "confirmed_at_ms", "updated_at_ms")
+                           if row.get(key) is not None):
+                        continue
+                except (TypeError, ValueError):
+                    continue
+            price = _level_metric(row, "price", "upper", "lower")
+            if (
+                price <= 0
+                or price > session_high
+                or not _level_is_entry_quality(
+                    row, policy, observed_at=observation.observed_at
+                )
+            ):
+                continue
+            qualified.append({
+                **_compact_structural_level_reference(row),
+                "side": int(row.get("side") or -1),
+                "price": price,
+                "entry_boundary": breakout_confirmation.entry_boundary(row, policy),
+                **({} if is_point_level(row) else {"hold_probability": _level_metric(row, "hold_probability")}),
+            })
+    qualified.sort(
+        key=lambda row: (
+            -float(row["price"]),
+            str(row.get("unified_level_id") or ""),
+        )
+    )
+    return qualified
+
+
 def _prior_completed_frame_resistance_trigger(
     observation: StrategyObservation,
     policy: dict[str, Any],
@@ -2276,44 +2324,7 @@ def _prior_completed_frame_resistance_trigger(
 
     session_high = observation.structural_session_high
     maximum_levels = max(1, int(policy.get("maximum_entry_levels") or 3))
-    qualified: list[dict[str, Any]] = []
-    if session_high is not None and session_high > 0:
-        for raw in observation.structural_resistance_levels:
-            if not isinstance(raw, Mapping):
-                continue
-            row = dict(raw)
-            if int(row.get("side") or 0) >= 0:
-                continue
-            if policy.get("persistent_r3_acceptance"):
-                try:
-                    if any(not isfinite(float(row[key])) or float(row[key]) > observation.observed_at.timestamp() * 1000
-                           for key in ("created_at_ms", "confirmed_at_ms", "updated_at_ms")
-                           if row.get(key) is not None):
-                        continue
-                except (TypeError, ValueError):
-                    continue
-            price = _level_metric(row, "price", "upper", "lower")
-            if (
-                price <= 0
-                or price > session_high
-                or not _level_is_entry_quality(
-                    row, policy, observed_at=observation.observed_at
-                )
-            ):
-                continue
-            qualified.append({
-                **_compact_structural_level_reference(row),
-                "side": int(row.get("side") or -1),
-                "price": price,
-                "entry_boundary": breakout_confirmation.entry_boundary(row, policy),
-                **({} if is_point_level(row) else {"hold_probability": _level_metric(row, "hold_probability")}),
-            })
-    qualified.sort(
-        key=lambda row: (
-            -float(row["price"]),
-            str(row.get("unified_level_id") or ""),
-        )
-    )
+    qualified = _qualified_resistances_below_session_high(observation, policy)
     # The entry set is always the highest N qualified resistance records whose
     # level price is not above the live session high.  Session-high band
     # containment is deliberately not a separate authority: it previously
@@ -2337,17 +2348,23 @@ def _prior_completed_frame_resistance_trigger(
         # Revision 46 uses the lowest available of the top three; an empty
         # qualified set still blocks. Older revisions require all three.
         use_available = bool(policy.get("use_available_entry_resistances"))
-        if use_available:
+        entry_ordinal = policy.get("entry_level_ordinal_below_high")
+        if entry_ordinal is not None:
+            r3 = current_levels[entry_ordinal - 1] if len(current_levels) >= entry_ordinal else None
+        elif use_available:
             r3 = current_levels[-1] if current_levels else None
         else:
             r3 = current_levels[2] if len(current_levels) >= 3 else None
         missing_reason = ("waiting_for_qualified_entry_resistance" if use_available
                           else "waiting_for_three_qualified_entry_resistances")
+        if entry_ordinal is not None:
+            missing_reason = f"waiting_for_{entry_ordinal}_qualified_entry_resistances"
+        acceptance_key = f"accepted_entry_r{entry_ordinal}" if entry_ordinal is not None else "accepted_entry_r3"
         boundary = float(r3["entry_boundary"]) if r3 else None
         above = boundary is not None and boundary > 0 and observation.price > boundary
         non_red = bool(observation.bar_open is not None and observation.bar_open > 0
                        and observation.price >= observation.bar_open)
-        accepted = state.get("accepted_entry_r3")
+        accepted = state.get(acceptance_key)
         same_level = bool(
             isinstance(accepted, Mapping) and r3
             and accepted.get("unified_level_id") == r3.get("unified_level_id")
@@ -2358,15 +2375,15 @@ def _prior_completed_frame_resistance_trigger(
             same_level = bool(accepted_at and accepted_at <= observation.observed_at
                               and _level_metric(accepted, "confirmation_close") > boundary)
         if not above or not same_level:
-            state.pop("accepted_entry_r3", None)
-        if above and non_red and completed_one_second and "accepted_entry_r3" not in state:
-            state["accepted_entry_r3"] = {
+            state.pop(acceptance_key, None)
+        if above and non_red and completed_one_second and acceptance_key not in state:
+            state[acceptance_key] = {
                 "unified_level_id": r3.get("unified_level_id"),
                 "threshold_price": boundary,
                 "accepted_at": observed_at,
                 "confirmation_close": observation.price,
             }
-        accepted = state.get("accepted_entry_r3")
+        accepted = state.get(acceptance_key)
         passed = bool(above and non_red and accepted)
         result.update(
             passed=passed,
@@ -2382,6 +2399,9 @@ def _prior_completed_frame_resistance_trigger(
             # This is an above-R3 acceptance, not a new crossing of R1/R2.
             crossed_level_ids=[],
         )
+        if entry_ordinal is not None:
+            result["entry_level_ordinal_below_high"] = entry_ordinal
+            result["reason"] = result["reason"].replace("r3", f"r{entry_ordinal}")
     state["latest_structural_entry_trigger"] = result
     return result
 
@@ -3246,7 +3266,7 @@ class LongMomentumStrategyEngine:
         )
         if stop <= 0:
             return self._result(
-                assignment, observation, "wait", "qualified_support_unavailable", 0.0, 1.0,
+                assignment, observation, "wait", ("third_resistance_stop_unavailable" if parameters["protection"]["stop"]["method"] == "third_resistance_below_session_high" else "qualified_support_unavailable"), 0.0, 1.0,
                 state, assignment.status,
                 metadata={"protective_stop_selection": protective_stop_selection},
             )
@@ -7334,6 +7354,18 @@ def _initial_stop(
     maximum_risk = observation.price * (
         1 + direction * maximum_risk_pct / 100
     )
+    if method == "third_resistance_below_session_high":
+        rows = _qualified_resistances_below_session_high(observation, parameters["structural_entry"]) if side == "long" else []
+        selected = rows[2] if len(rows) >= 3 else None
+        price = float(selected["price"]) if selected else 0.0
+        valid = 0 < price < observation.price
+        if selection_evidence is not None:
+            selection_evidence.update(selection_mode=method, session_high=observation.structural_session_high,
+                                      resistance_level_ordinal=3, qualified_level_count=len(rows),
+                                      qualified_levels=rows[:3], selected_resistance_level=selected,
+                                      selected_stop=round(price, 4) if valid else 0.0,
+                                      reason="selected" if valid else "third_resistance_missing_or_not_protective")
+        return round(price, 4) if valid else 0.0
     if method == "ordinal_qualified_support":
         relative_threshold = float(
             stop.get("minimum_ticker_relative_quality_score") or 0.0

@@ -1,0 +1,85 @@
+"""R2 entry and R3 stop share the causal, qualified ladder below HOD."""
+from dataclasses import replace
+from datetime import timedelta
+
+import pytest
+
+from src.trading_runtime import strategy_engine as S
+from tests.test_normalized_macd_regime import parameters as prior_parameters
+from tests.test_long_momentum_r3_acceptance import bar
+from tests.test_long_momentum_strategy import NOW, assignment
+from tests.test_point_structure_strategy import row
+
+
+def policy():
+    p = prior_parameters()
+    p['structural_entry']['entry_level_ordinal_below_high'] = 2
+    p['momentum_management']['resistance_rejection_exit'] = False
+    p['protection']['stop']['method'] = 'third_resistance_below_session_high'
+    p['protection']['trailing']['enabled'] = False
+    return S.resolve_long_momentum_parameters(p, revision=47)
+
+
+def observation(price=102.3):
+    levels = [dict(row(p),band_lower=p-.2,band_upper=p+.2,load_contract='merged-point-minmax-v1',p_norm=.95)
+              for p in (101,104,103,102,105,106)]
+    return replace(bar(close=price),structural_session_high=103.5,structural_resistance_levels=tuple(levels),structural_support_levels=())
+
+
+@pytest.mark.parametrize('price,passed',[(101.3,False),(102.2,False),(102.3,True)])
+def test_entry_requires_r2_upper_bound(price,passed):
+    result = S._prior_completed_frame_resistance_trigger(observation(price),policy()['structural_entry'],{})
+    assert result['passed'] == passed
+    assert result['threshold_price'] == 102.2
+    assert result['entry_level_ordinal_below_high'] == 2
+    assert 'r3' not in result['reason']
+
+
+def test_stop_is_r3_main_price_and_does_not_substitute_support_or_risk_cap():
+    p=policy();p['protection']['stop']['maximum_risk_pct']=.1
+    evidence={}
+    assert S._initial_stop(observation(),p,None,side='long',selection_evidence=evidence)==101
+    assert evidence['selected_resistance_level']['unified_level_id']=='101'
+    assert [r['price'] for r in evidence['qualified_levels']]==[103,102,101]
+
+
+@pytest.mark.parametrize('change',['missing','weak','future','support','not_protective'])
+def test_missing_or_invalid_third_level_fails_closed(change):
+    obs=observation();levels=list(obs.structural_resistance_levels)
+    if change=='missing':levels=levels[1:]
+    elif change=='weak':levels[0]['p_norm']=.89
+    elif change=='future':levels[0]['confirmed_at_ms']=(NOW+timedelta(seconds=1)).timestamp()*1000
+    elif change=='support':levels[0]['side']=1
+    else:obs=replace(obs,price=100)
+    assert S._initial_stop(replace(obs,structural_resistance_levels=tuple(levels)),policy(),None,side='long')==0
+
+
+def test_real_engine_entry_carries_r3_stop():
+    sources={'indicator.flow_structure.score@100ms':{'value':.7},'indicator.flow_structure.confidence@100ms':{'value':.8},
+             'indicator.macd.line@5s':{'value':.4},'indicator.macd.signal@5s':{'value':.2},'indicator.macd.histogram@5s':{'value':.2}}
+    for value in sources.values():
+        value['observed_at']=NOW.isoformat()
+    obs=replace(observation(),source_values=sources,macd_line=.4,macd_signal=.2)
+    result=S.LongMomentumStrategyEngine(revision=47).evaluate(assignment(strategy_revision=47,parameters=policy()),obs)
+    assert any(i.action=='enter_long' for i in result.evaluation.intents), [s.reason for s in result.evaluation.signals]
+    assert result.state['initial_stop']==101
+    blocked=S.LongMomentumStrategyEngine(revision=47).evaluate(assignment(strategy_revision=47,parameters=policy()),replace(obs,structural_resistance_levels=obs.structural_resistance_levels[1:]))
+    assert not any(i.action=='enter_long' for i in blocked.evaluation.intents)
+    assert blocked.evaluation.signals[0].reason=='third_resistance_stop_unavailable'
+
+
+def test_fixed_stop_and_disabled_retest_exit():
+    p=policy()
+    state={'entry_at':NOW.isoformat(),'entry_reference_price':102.3,'initial_stop':101,'active_stop':101,'high_water_price':110}
+    assert S._ratcheted_stop(observation(110),p,state,side='long')==101
+    p['momentum_management']['downside_loss_guard']['below_vwap']=False
+    for second,price in enumerate((102.3,103,102.7)):
+        obs=replace(observation(price),observed_at=NOW+timedelta(seconds=second),macd_line=.4,macd_signal=.2)
+        assert S._matching_momentum_management_route(p,obs,state,gain_pct=1,side='long') is None
+
+
+@pytest.mark.parametrize('ordinal',[0,4,True,2.5])
+def test_entry_rank_validation(ordinal):
+    p=policy();p['structural_entry']['entry_level_ordinal_below_high']=ordinal
+    with pytest.raises(ValueError,match='entry_level_ordinal_below_high'):
+        S.resolve_long_momentum_parameters(p,revision=47)
