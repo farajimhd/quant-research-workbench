@@ -9,7 +9,8 @@ it does not promote this experiment to Paper or Live.
 {"momentum_management": {"histogram_slope_exit": {
   "enabled": true,
   "window_bars": 3,
-  "threshold_bps_per_second": 0.0
+  "threshold_bps_per_second": 0.0,
+  "require_positive_slope_for_same_period_reentry": true
 }}}
 ```
 
@@ -28,10 +29,18 @@ strategy checkpoint serialization. Journal exit evidence includes the sample
 timestamps and values, slope, normalization price, threshold and contract.
 
 Protective stops and forced exits retain precedence. Existing MACD, VWAP and
-other exits remain available. This does not change entries or add a cooldown;
-an otherwise valid immediate re-entry may therefore be followed by another
-slope exit. The prototype is a condition on the current slope, not a required
-positive-to-negative crossing after entry.
+other exits remain available. The exit is a condition on the current slope, not
+a required positive-to-negative crossing after entry.
+
+The optional re-entry gate defaults to false for existing candidates. When
+enabled, an accepted slope exit while MACD is open arms a durable gate. In that
+same open period, entry requires a fresh completed slope strictly above zero
+(zero and unavailable slopes block). The gate remains armed until entry, so a
+positive slope that falls again before entry does not bypass it. Any causal 1s
+MACD observation with line <= signal ends the open period and clears the gate;
+this uses the existing intrabar MACD authority. Another exit reason does not arm
+it. Ordinary entries retain their existing rules, including waiting for pending
+exit fills. There is no added time-based cooldown.
 
 Validation covers the real strategy-engine exit/cancel-acquisition path,
 unchanged disabled behavior, positive-histogram early exits, normalization,

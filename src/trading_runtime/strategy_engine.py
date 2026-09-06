@@ -2553,6 +2553,13 @@ class LongMomentumStrategyEngine:
         _record_macd_histogram_history(state, observation)
         if parameters.get("momentum_management", {}).get("histogram_slope_exit", {}).get("enabled"):
             histogram_slope.record(state, observation)
+            slope_policy = parameters["momentum_management"]["histogram_slope_exit"]
+            if slope_policy.get("require_positive_slope_for_same_period_reentry"):
+                histogram_slope.update_reentry_period(
+                    slope_policy, state, observation,
+                    _numeric_source_value(observation, "indicator.macd.line", "1s"),
+                    _numeric_source_value(observation, "indicator.macd.signal", "1s"),
+                )
         _record_structural_anchors(state, observation)
         structural_policy = dict(parameters.get("structural_entry") or {})
         if (
@@ -2634,6 +2641,15 @@ class LongMomentumStrategyEngine:
                 metadata={"cancel_entry_acquisition": True, "position_fraction": 1.0},
             )
         phase_name = "reentry" if reentries else "initial_entry"
+        if histogram_slope.reentry_blocked(
+            parameters.get("momentum_management", {}).get("histogram_slope_exit", {}), state, observation
+        ):
+            return self._result(
+                assignment, observation, "wait", "waiting_for_positive_histogram_slope", 0.0, 1.0,
+                state, AssignmentStatus.REENTRY_COOLDOWN,
+                metadata={"slope_exit": state["histogram_slope_reentry_gate"],
+                          "slope_evidence": state.get("histogram_slope_evidence", {})},
+            )
         if not _phase_is_automatic(parameters, phase_name):
             return self._result(
                 assignment,
@@ -3368,6 +3384,7 @@ class LongMomentumStrategyEngine:
                 "entry_reference_price": observation.price,
                 "entry_at": observation.observed_at.isoformat(),
                 "entry_acquisition_exit_latched": False,
+                "histogram_slope_reentry_gate": None,
                 "liquidation_origin_fill_role": "",
                 "liquidation_origin_reentry_after_fill": False,
                 "last_exit_reason": "",
@@ -3683,6 +3700,10 @@ class LongMomentumStrategyEngine:
             ):
                 state["disable_after_exit"] = True
             state["last_exit_reason"] = reason
+            histogram_slope.arm_after_exit(
+                parameters.get("momentum_management", {}).get("histogram_slope_exit", {}),
+                state, observation, reason,
+            )
             state["last_exit_route_id"] = str(exit_route["route_id"])
             position_fraction = route_fraction
             partial_reduction = position_fraction < 1.0
@@ -6263,6 +6284,7 @@ def _decision_reason_detail(
         "loss_of_confirmed_higher_low": "Exit: price lost the latest causally confirmed one-second higher low.",
         "macd_closed_backstop": "Exit: one-second MACD remained closed for the configured backstop duration.",
         "histogram_slope_exit": "Exit: completed one-second MACD histogram slope reached the configured flattening threshold.",
+        "waiting_for_positive_histogram_slope": "Re-entry blocked after a slope exit: the same MACD-open period requires a fresh, strictly positive three-bar histogram slope.",
         "macd_signal_crossed_above_line": "Exit: the causal one-second MACD signal crossed strictly above the MACD line.",
         "downside_macd_closed": "Loss exit: while below entry, the one-second MACD closed; no confirmation delay applies.",
         "downside_vwap_lost": "Loss exit: while below entry, price moved under the causal one-second VWAP.",
