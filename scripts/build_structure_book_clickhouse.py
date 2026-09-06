@@ -11,6 +11,7 @@ import concurrent.futures as futures
 import datetime as dt
 import hashlib
 import json
+from math import isfinite
 import os
 from pathlib import Path
 import re
@@ -80,6 +81,23 @@ def compress_observations(events,lower,upper,tick):
     selected=bind('limits','tuple(arrayMin(arrayMap(w->w.2,g)),arrayMax(arrayMap(w->w.2,g)))',f'arrayMap(i->g[i],{keep})')
     result=f'arrayFlatten(arrayMap(g->{selected},{groups}))'
     return bind('raw',events,bind('codes',f'arrayMap(z->{code},raw)',result))
+
+
+
+def canonical_splits(rows):
+    """One action per date; duplicate delivery is not another split."""
+    unique = {}
+    for row in rows:
+        day = row['execution_date']
+        ratio = (float(row['split_from']), float(row['split_to']))
+        if not all(isfinite(x) and x > 0 for x in ratio):
+            raise ValueError('Invalid split ratio on '+day)
+        previous = unique.get(day)
+        if previous is not None and ratio != (float(previous['split_from']), float(previous['split_to'])):
+            raise ValueError('Conflicting split ratios on '+day)
+        if previous is None or str(row['inserted_at']) > str(previous['inserted_at']):
+            unique[day] = dict(row)
+    return [unique[day] for day in sorted(unique)]
 
 
 def factor_sql(splits,ts):
@@ -160,9 +178,13 @@ def run(args):
         rules_sql="SELECT token_id,modifier_int,update_high_low,update_last,update_volume FROM market_sip_compact.event_condition_token_reference WHERE source_family='trade_conditions' AND is_join_canonical=1 ORDER BY token_id"
         split_sql=f"SELECT execution_date,split_from,split_to,inserted_at FROM q_live.market_stock_split_v1 FINAL WHERE provider_ticker={P.literal(args.ticker)} AND execution_date BETWEEN '{args.start}' AND '{end}' ORDER BY execution_date"
         baseline_sql=f"SELECT session_date,max(built_at) AS latest_built_at,count() n,argMax(certification_json,built_at) AS certification FROM q_live.qmd_structure_daily_checkpoint_v2 WHERE checkpoint_set_id={P.literal(args.checkpoint_set)} AND sym={P.literal(args.ticker)} AND algorithm_version=18 AND source_complete=1 AND session_date BETWEEN '{args.start}' AND '{end}' GROUP BY session_date ORDER BY session_date"
-        rules=query('rules',rules_sql); splits=query('split_metadata',split_sql)
-        baseline=query('baseline_metadata',baseline_sql)
-        if [x['session_date'] for x in baseline]!=[x['source_date'] for x in days] or any(int(x['n'])!=1 for x in baseline):
+        rules=query('rules',rules_sql); split_rows=query('split_metadata',split_sql)
+        splits=canonical_splits(split_rows)
+        report['split_source_audit'] = dict(source_rows=split_rows, actions=len(splits), duplicate_rows=len(split_rows)-len(splits))
+        baseline=[] if args.without_v18_comparison else query('baseline_metadata',baseline_sql)
+        report['v18_comparison'] = 'not_requested' if args.without_v18_comparison else 'required'
+        print('V18 comparison | '+report['v18_comparison'], flush=True)
+        if not args.without_v18_comparison and ([x['session_date'] for x in baseline]!=[x['source_date'] for x in days] or any(int(x['n'])!=1 for x in baseline)):
             raise ValueError('Stored v18 coverage missing or ambiguous')
         previous=None
         for day,b in zip(days,baseline):
@@ -244,7 +266,7 @@ def run(args):
         # Narrow v18 extraction is validation only and timed separately.
         started=time.perf_counter()
         baseline_jobs=[]
-        for i,d in enumerate(days):
+        for i,d in enumerate(days if not args.without_v18_comparison else []):
             sql=P.closing_sql(db,args.ticker,args.checkpoint_set,d['source_date'],i+1).replace(f'{db}.closes',f'{db}.baseline')
             sql=sql.replace("JSONExtractInt(t,'level','confirmed_at_ms')","JSONExtractInt(t,'level','confirmed_at_ms'),toUInt32(ref_index)")
             sql=sql.replace("ARRAY JOIN JSONExtractArrayRaw(snapshot_json,'unified_tracks') AS t","ARRAY JOIN JSONExtractArrayRaw(snapshot_json,'unified_tracks') AS t,arrayEnumerate(JSONExtractArrayRaw(snapshot_json,'unified_tracks')) AS ref_index")
@@ -252,7 +274,7 @@ def run(args):
         parallel(baseline_jobs)
         times.setdefault('baseline_extraction_wall',time.perf_counter()-started)
         build_output(args,db,days,splits,stage,query,report)
-        if P.digest([query('coverage_final',days_sql),query('rules_final',rules_sql),query('splits_final',split_sql),query('baseline_final',baseline_sql)])!=fingerprint:
+        if P.digest([query('coverage_final',days_sql),query('rules_final',rules_sql),canonical_splits(query('splits_final',split_sql)),([] if args.without_v18_comparison else query('baseline_final',baseline_sql))])!=fingerprint:
             raise ValueError('Authority changed during build')
         report['storage']=query('storage',f"SELECT table,sum(rows) rows,sum(bytes_on_disk) disk_bytes,sum(data_uncompressed_bytes) raw_bytes,groupUniqArray(disk_name) disks FROM system.parts WHERE active AND database='{db}' GROUP BY table ORDER BY table")
         if any(x['disks']!=['live_market_ssd'] for x in report['storage']): raise ValueError('Part placement mismatch')
@@ -306,7 +328,7 @@ def build_output(args,db,days,splits,stage,query,report):
     day_factor=factor_sql(splits,"toUInt64(toUnixTimestamp64Micro(toDateTime64(concat(toString(session_date),' 20:00:00'),6,'America/New_York')))")
     stage('schema_daily_output',f"CREATE TABLE IF NOT EXISTS {db}.daily_output ENGINE=ReplacingMergeTree ORDER BY (session_date,side,price,level_id) SETTINGS storage_policy='live_market_ssd' AS SELECT h.session_date AS session_date,l.level_id AS level_id,l.price*({day_factor}) price,l.lower*({day_factor}) lower,l.upper*({day_factor}) upper,h.state.1 side,h.state.2 phase,log(1+h.state.4.1+h.state.4.2) prominence FROM {db}.history AS h FINAL INNER JOIN {db}.levels AS l FINAL USING level_id WHERE 0")
     stage('daily_output',f"INSERT INTO {db}.daily_output SELECT h.session_date,l.level_id,l.price*({day_factor}),l.lower*({day_factor}),l.upper*({day_factor}),h.state.1,h.state.2,log(1+h.state.4.1+h.state.4.2) FROM {db}.history AS h FINAL INNER JOIN {db}.levels AS l FINAL USING level_id")
-    for label,left,right in [('v18_coverage','baseline','daily_output'),('new_agreement','daily_output','baseline')]:
+    for label,left,right in ([] if args.without_v18_comparison else [('v18_coverage','baseline','daily_output'),('new_agreement','daily_output','baseline')]):
         report[label]=query(label,f"""WITH if(b.price=0,1e100,abs(a.price-b.price)) AS down,if(c.price=0,1e100,abs(a.price-c.price)) AS up,
             greatest(a.upper-a.price,a.price-a.lower,if(a.price<1,.0002,.02)) AS tolerance
           SELECT count() total,countIf(least(down,up)<=tolerance) matched,
@@ -323,6 +345,7 @@ def main():
     p.add_argument('--runtime',type=Path,required=True); p.add_argument('--threads',type=int,default=4); p.add_argument('--workers',type=int,default=2)
     p.add_argument('--env-file',type=Path,default=Path(r'\\DESKTOP-SAAI85T\Workstation-D\TradingML\secrets\.env'))
     p.add_argument('--checkpoint-set',default=P.SET)
+    p.add_argument('--without-v18-comparison',action='store_true',help='Build from certified SIP without a v18 reference; parity remains untested')
     p.add_argument('--resume-compatible',action='store_true',help='Allow controller edits only when every completed SQL unit is unchanged')
     args=p.parse_args()
     if dt.date.fromisoformat(args.start)>dt.date.fromisoformat(args.end): p.error('Invalid date range')

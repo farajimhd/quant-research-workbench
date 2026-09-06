@@ -52,6 +52,20 @@ def reference(events,seed=(1,0,0,(0.,0.,0.,0,0,0),0),lower=9.9,upper=10.1,tick=.
     return output
 
 
+class SplitSourceTests(unittest.TestCase):
+    def test_duplicate_delivery_is_one_action_and_retains_latest_provenance(self):
+        rows=[dict(execution_date='2025-08-25',split_from=10,split_to=1,inserted_at=t)
+              for t in ['2026-06-09','2026-07-08']]
+        result=B.canonical_splits(rows)
+        self.assertEqual(result,[rows[1]])
+        self.assertEqual(result,B.canonical_splits(list(reversed(rows))))
+
+    def test_conflicting_ratios_fail_closed(self):
+        rows=[dict(execution_date='2025-08-25',split_from=n,split_to=1,inserted_at='2026-07-08') for n in [10,100]]
+        with self.assertRaisesRegex(ValueError,'Conflicting split ratios'):
+            B.canonical_splits(rows)
+
+
 @unittest.skipUnless(os.environ.get('STRUCTURE_PROTOTYPE_SQL_TEST')=='1','SQL fixture integration opt-in')
 class ContractTests(unittest.TestCase):
     @classmethod

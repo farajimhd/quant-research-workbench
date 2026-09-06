@@ -153,9 +153,14 @@ results; there is no production publication pointer.
 
 An imported/corrected source revision requires a new isolated successor build.
 This is an executable historical rebuild primitive, not yet an automatic
-ingestion-triggered repair service. The current experiment requires complete
-persisted v18 coverage for comparison and has not been widened to arbitrary
-symbols without that baseline.
+ingestion-triggered repair service. By default construction requires complete
+persisted v18 coverage for comparison. `--without-v18-comparison` explicitly
+builds from certified canonical events without that reference; validation marks
+v18 parity untested while retaining causal-prefix, interval, split, retry and
+physical-storage checks. Merging and p_norm normalization remain load-time only.
+Split deliveries are deduplicated by effective date and identical ratio before
+construction. Conflicting ratios fail closed; the report retains all source rows
+and the duplicate count. Prefix validation uses the actual symbol's split dates.
 
 ## Results and acceptance
 
@@ -258,3 +263,31 @@ identities and score changes form causal chart segments; a later score does not
 rewrite an earlier segment. Old experimental checkpoints require a new run.
 This is a backtest/load-time experiment, not a Live producer or persistence
 migration. Relative normalized scores are not calibrated success probabilities.
+
+
+### SUGP visual-validation build, September 6, 2026
+
+`structure_book_16b0d0af05e7` covers 420 certified sessions, January 2, 2025
+through September 4, 2026, and 6,503,878 canonical source events. Construction
+used two concurrent queries and two threads per query. Cumulative query wall
+work was 192.33 seconds, including 187.01 seconds of sequential daily lifecycle
+work; concurrent query durations are not elapsed controller time.
+
+The book contains 3,709 level identities and 55,341 interval rows, occupying
+1,695,491 bytes. All retained build, validation and continuation tables total
+108,851,149 bytes on live_market_ssd. The first draft was stopped after detecting
+a duplicate 10-for-1 split delivery and replaced by a fresh immutable build.
+The two distinct split actions (August 25, 2025 and August 6, 2026) affected
+1,828 and 3,617 carried levels, with zero adjustment mismatches.
+
+Interval, causal-prefix, retry and storage validation passed. Five full-day
+consumer continuations, including both split dates, match stored SQL states;
+chart snapshots and rewinding also match. At August 21, 2026 07:10 ET, the
+load-time book has 269 merged levels and 39 eligible at p_norm >= 0.85.
+No SUGP v18 reference was available; this is not a v18 parity claim.
+
+Runtime evidence: `D:\TradingML\runtimes\structure-validation\sugp-clickhouse-book-20260906-v2`
+contains `report.json`, `validation.json`, and `consumer-validation.json`.
+Choose Experimental ClickHouse / SUGP in the Backtest form. Construction retains
+separate source levels; same-role overlap merging and normalization occur only
+at load time. The initial form must be refreshed to discover a newly built book.

@@ -60,11 +60,13 @@ def run(args):
             b=f'SELECT session_date,level_id,state FROM {other_db}.history FINAL WHERE has({selected},session_date)'
             zero('compression_equivalence',f'SELECT count() mismatches FROM (({a} EXCEPT ALL {b}) UNION ALL ({b} EXCEPT ALL {a}))')
             result['uncompressed_reference_sessions']=len(complete)
-        # Rebuild timeframe detection from two truncated event prefixes. This
-        # includes the split day and prevents hidden future-bucket dependence.
+        # Rebuild from midpoint/end prefixes and every actual split date.
+        # These prevent hidden future-bucket dependence for any selected ticker.
         result['prefixes']=[]
         prefix_numbers=[]
-        for number,cut in enumerate(['2026-08-06 20:00:00','2026-08-07 12:00:00']):
+        cuts = [days[len(days)//2]['source_date']+' 20:00:00', days[-1]['source_date']+' 12:00:00']
+        cuts += [s['execution_date']+' 12:00:00' for s in splits]
+        for number,cut in enumerate(dict.fromkeys(cuts)):
             if not (days[0]['source_date']<=cut[:10]<=days[-1]['source_date']): continue
             cutoff=f"toUInt64(toUnixTimestamp64Micro(toDateTime64('{cut}',6,'America/New_York')))"
             bucket=f'{db}.validation_buckets_{number}'
@@ -92,7 +94,8 @@ def run(args):
             result['prefixes'].append(cut)
             prefix_numbers.append(number)
         result['comparison_by_day']=[]
-        for direction,left,right in [('v18_coverage','baseline','daily_output'),('new_agreement','daily_output','baseline')]:
+        result['v18_comparison'] = 'not_tested_no_reference' if report.get('v18_comparison') == 'not_requested' else 'performed'
+        for direction,left,right in ([] if report.get('v18_comparison') == 'not_requested' else [('v18_coverage','baseline','daily_output'),('new_agreement','daily_output','baseline')]):
             # Count same-role coverage and price-only coverage separately. These
             # are nearest-neighbor, many-to-one metrics, not level identities.
             for same_role in [True,False]:
@@ -122,7 +125,7 @@ def run(args):
             for kind in ['buckets','candidates']:
                 q(f'cleanup_prefix_{kind}_{number}',f'DROP TABLE IF EXISTS {db}.validation_{kind}_{number} SYNC',False)
         result['opening_queries']=[]
-        for date in ['2026-08-07','2026-08-21','2026-09-04']:
+        for date in dict.fromkeys([days[len(days)//2]['source_date'], days[-1]['source_date'], *[s['execution_date'] for s in splits]]):
             cutoff=f"toUInt64(toUnixTimestamp64Micro(toDateTime64('{date} 04:00:00',6,'America/New_York')))"
             result['opening_queries'].append({'date':date,'result':q('opening_'+date,f"SELECT count() levels,min(price) low,max(price) high,sum(prominence) score_sum FROM {db}.book FINAL WHERE ticker={P.literal(report['ticker'])} AND book_version={P.literal(B.VERSION)} AND cityHash64(ticker)%32=cityHash64({P.literal(report['ticker'])})%32 AND valid_from_us<={cutoff} AND (valid_to_us IS NULL OR {cutoff}<valid_to_us)")})
         # Query-log collection is bounded and does not flush shared server logs.
