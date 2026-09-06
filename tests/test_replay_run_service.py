@@ -911,7 +911,7 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                 "timeframe": "1s",
                 "as_of": "2026-07-28T09:45:01-04:00",
                 "sequence": 1,
-                "bar": {"close": 102.0},
+                "bar": {"open": 101.8, "high": 102.4, "close": 102.0},
                 "indicator": {
                     "close": 102.0,
                     "vwap": 101.5,
@@ -946,6 +946,8 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                 )
                 observation = process.await_args.args[0]
                 self.assertEqual(observation.acceleration, 0.1)
+                self.assertEqual(observation.bar_high, 102.4)
+                self.assertEqual(observation.bar_open, 101.8)
             finally:
                 if controller._journal is not None:
                     controller._journal.close()

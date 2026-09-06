@@ -199,6 +199,7 @@ def strategy_observation_from_market_row(
         bar_open=_positive_numeric(
             row.get("bar_open") or row.get("open") or row.get("market.bar_open@1s")
         ),
+        bar_high=_positive_numeric(row.get("bar_high") or row.get("high") or row.get("market.bar_high@1s")),
         bid=bid,
         ask=ask,
         position_quantity=float(position_quantity),

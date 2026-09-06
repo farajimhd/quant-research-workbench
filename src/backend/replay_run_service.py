@@ -3026,6 +3026,7 @@ class ReplayRunController:
             observed_at=frame.as_of,
             price=float(indicator.get("close") or bar.get("close") or 0),
             bar_open=_optional_positive(bar.get("open")),
+            bar_high=_optional_positive(bar.get("high")),
             bid=float(quote.bid_price if quote else 0),
             ask=float(quote.ask_price if quote else 0),
             previous_close=_optional_positive(
@@ -3438,6 +3439,7 @@ class ReplayRunController:
             observed_at=event.ts,
             price=price,
             bar_open=forming_open,
+            bar_high=None,
             bid=float(quote.bid_price if quote else base.bid),
             ask=float(quote.ask_price if quote else base.ask),
             macd_line=macd_line,

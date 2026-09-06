@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.trading_runtime import breakout_confirmation
+
 from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD
 from src.trading_runtime import histogram_slope
 
@@ -296,6 +298,7 @@ class StrategyObservation:
     observed_at: datetime
     price: float
     bar_open: float | None = None
+    bar_high: float | None = None
     bid: float = 0.0
     ask: float = 0.0
     position_quantity: float = 0.0
@@ -825,6 +828,17 @@ def resolve_long_momentum_parameters(
     slope_policy = parameters["momentum_management"].get("histogram_slope_exit")
     if slope_policy is not None:
         parameters["momentum_management"]["histogram_slope_exit"] = histogram_slope.validate_policy(slope_policy)
+    candle = parameters["entry_candle_confirmation"]
+    for section, key in ((candle, "slope_reentry_break_previous_high"),
+                         (parameters["momentum_management"], "resistance_rejection_exit"),
+                         (parameters["structural_entry"], "break_above_upper_bound")):
+        if key in section and not isinstance(section[key], bool):
+            raise ValueError(f"{key} must be boolean")
+    if "minimum_reentry_macd_gap_bps" in candle:
+        gap = float(candle["minimum_reentry_macd_gap_bps"])
+        if not isfinite(gap) or gap < 0:
+            raise ValueError("Reentry MACD gap must be finite and nonnegative")
+        candle["minimum_reentry_macd_gap_bps"] = gap
     execution.pop("time_in_force", None)
     execution.pop("outside_rth", None)
     parameters["execution"] = execution
@@ -2182,7 +2196,7 @@ def _prior_completed_frame_resistance_trigger(
             if int(current.get("side") or 0) < 0 and identity not in current_candidate_ids:
                 continue
             level = {**level, **_compact_structural_level_reference(current),
-                     "entry_boundary": _level_metric(current, "price", "upper", "lower")}
+                     "entry_boundary": breakout_confirmation.entry_boundary(current, policy)}
             if level["entry_boundary"] > float(observation.structural_session_high or 0):
                 continue
         boundary = _level_metric(level, "entry_boundary", "price")
@@ -2264,12 +2278,12 @@ def _prior_completed_frame_resistance_trigger(
                 **_compact_structural_level_reference(row),
                 "side": int(row.get("side") or -1),
                 "price": price,
-                "entry_boundary": price,
+                "entry_boundary": breakout_confirmation.entry_boundary(row, policy),
                 **({} if is_point_level(row) else {"hold_probability": _level_metric(row, "hold_probability")}),
             })
     qualified.sort(
         key=lambda row: (
-            -float(row["entry_boundary"]),
+            -float(row["price"]),
             str(row.get("unified_level_id") or ""),
         )
     )
@@ -2303,7 +2317,7 @@ def _prior_completed_frame_resistance_trigger(
         missing_reason = ("waiting_for_qualified_entry_resistance" if use_available
                           else "waiting_for_three_qualified_entry_resistances")
         boundary = float(r3["entry_boundary"]) if r3 else None
-        above = boundary is not None and observation.price > boundary
+        above = boundary is not None and boundary > 0 and observation.price > boundary
         non_red = bool(observation.bar_open is not None and observation.bar_open > 0
                        and observation.price >= observation.bar_open)
         accepted = state.get("accepted_entry_r3")
@@ -2551,6 +2565,8 @@ class LongMomentumStrategyEngine:
         state["last_observed_at"] = observation.observed_at.isoformat()
         state["last_price"] = observation.price
         _record_macd_histogram_history(state, observation)
+        if parameters.get("entry_candle_confirmation", {}).get("slope_reentry_break_previous_high"):
+            breakout_confirmation.record_candle(state, observation)
         if parameters.get("momentum_management", {}).get("histogram_slope_exit", {}).get("enabled"):
             histogram_slope.record(state, observation)
             slope_policy = parameters["momentum_management"]["histogram_slope_exit"]
@@ -2641,6 +2657,14 @@ class LongMomentumStrategyEngine:
                 metadata={"cancel_entry_acquisition": True, "position_fraction": 1.0},
             )
         phase_name = "reentry" if reentries else "initial_entry"
+        if (state.get("histogram_slope_reentry_gate")
+                and parameters.get("entry_candle_confirmation", {}).get("slope_reentry_break_previous_high")):
+            reason, evidence = breakout_confirmation.slope_reentry_confirmation(state, observation)
+            state["slope_reentry_candle_confirmation"] = {**evidence, "passed": not reason}
+            if reason:
+                return self._result(assignment, observation, "wait", reason, 0.0, 1.0,
+                                    state, AssignmentStatus.REENTRY_COOLDOWN,
+                                    metadata={"reentry_candle": evidence})
         if histogram_slope.reentry_blocked(
             parameters.get("momentum_management", {}).get("histogram_slope_exit", {}), state, observation
         ):
@@ -3044,6 +3068,11 @@ class LongMomentumStrategyEngine:
         minimum_macd_gap_bps = max(
             0.0, float(candle_policy.get("minimum_macd_open_gap_bps") or 0.0)
         )
+        strict_reentry_gap = 0.0
+        if reentries or state.get("histogram_slope_reentry_gate"):
+            strict_reentry_gap = float(candle_policy.get("minimum_reentry_macd_gap_bps") or 0.0)
+            minimum_macd_gap_bps = max(minimum_macd_gap_bps,
+                strict_reentry_gap)
         macd_gap_bps = (
             max(0.0, float(observation.macd_line or 0) - float(observation.macd_signal or 0))
             / observation.price
@@ -3055,7 +3084,8 @@ class LongMomentumStrategyEngine:
                                        entry_macd_evidence["macd_signal"])
         if (
             minimum_macd_gap_bps > 0
-            and (macd_gap_bps is None or macd_gap_bps + 1e-12 < minimum_macd_gap_bps)
+            and (macd_gap_bps is None or macd_gap_bps + 1e-12 < minimum_macd_gap_bps
+                 or (strict_reentry_gap > 0 and macd_gap_bps <= strict_reentry_gap + 1e-12))
             and not observation.force_entry
         ):
             return self._result(
@@ -6284,6 +6314,9 @@ def _decision_reason_detail(
         "loss_of_confirmed_higher_low": "Exit: price lost the latest causally confirmed one-second higher low.",
         "macd_closed_backstop": "Exit: one-second MACD remained closed for the configured backstop duration.",
         "histogram_slope_exit": "Exit: completed one-second MACD histogram slope reached the configured flattening threshold.",
+        "resistance_rejection": "Exit: resistance was tested from below and rejected below its lower band before an upper-bound breakout.",
+        "reentry_previous_candle_unavailable": "Wait: a fresh completed one-second candle high is unavailable for re-entry.",
+        "reentry_previous_candle_high_not_broken": "Wait: re-entry price must be strictly above the previous one-second candle high.",
         "waiting_for_positive_histogram_slope": "Re-entry blocked after a slope exit: the same MACD-open period requires a fresh, strictly positive three-bar histogram slope.",
         "macd_signal_crossed_above_line": "Exit: the causal one-second MACD signal crossed strictly above the MACD line.",
         "downside_macd_closed": "Loss exit: while below entry, the one-second MACD closed; no confirmation delay applies.",
@@ -6754,6 +6787,14 @@ def _matching_momentum_management_route(
     if not settings or side != "long":
         return None
     slope_exit = histogram_slope.exit_route(settings.get("histogram_slope_exit", {}), state, observation)
+    if settings.get("resistance_rejection_exit"):
+        levels = [row for row in observation.structural_resistance_levels
+                  if int(row.get("side") or 0) < 0
+                  and _level_is_entry_quality(row, parameters.get("structural_entry", {}),
+                                             observed_at=observation.observed_at)]
+        rejection = breakout_confirmation.resistance_rejection(state, observation, levels)
+        if rejection is not None:
+            return rejection
     if slope_exit is not None:
         return slope_exit
     exit_gap = settings.get("minimum_macd_exit_gap_bps")

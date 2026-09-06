@@ -38,7 +38,7 @@ def qualifies(row, observed_at=None):
 
 
 def strategy_snapshot(snapshot, observed_at, minimum_p_norm=DEFAULT_THRESHOLD):
-    """Keep bands as audit data; all strategy boundaries use the exact price."""
+    """Default to point prices; retain bands for opt-in breakout/rejection rules."""
     rows = [dict(row, minimum_p_norm=minimum_p_norm) if row.get('load_contract') else row for row in snapshot['unified_levels']]
     return {'unified_levels': [dict(row, band_lower=row['lower'], band_upper=row['upper'],
         lower=row['price'], upper=row['price'], strategy_level_contract=STRATEGY_CONTRACT)

@@ -47,3 +47,42 @@ unchanged disabled behavior, positive-histogram early exits, normalization,
 serialization, missing/invalid inputs and timestamp causality. A saved JUNS
 completed-bar audit is only an indicator-condition check, not a portfolio
 backtest or evidence of improved returns.
+
+The successor test candidate also enables these parameters (absent parameters
+preserve earlier candidates):
+
+```json
+{
+  "entry_candle_confirmation": {
+    "slope_reentry_break_previous_high": true,
+    "minimum_reentry_macd_gap_bps": 1.0
+  },
+  "structural_entry": {"break_above_upper_bound": true},
+  "momentum_management": {"resistance_rejection_exit": true}
+}
+```
+
+Slope-gated re-entry must have a non-red current one-second candle and price
+strictly above the previous completed one-second candle high. The high is
+carried from the canonical completed bar, not inferred from its close or from
+the developing candle. Missing or older-than-two-second candle evidence blocks.
+All re-entries additionally require `(MACD line - signal) / price * 10000 > 1`;
+initial entries retain their 0.5 bps setting. The positive slope requirement
+continues to apply only after a slope exit in the same MACD-open period.
+
+Resistance ordering and quality selection still use the level price. Breakout
+acceptance requires a non-red completed close strictly above the selected
+resistance's upper band, and current price must remain above it. The point-book
+adapter preserves original bounds in `band_lower` and `band_upper`; these are
+used before the point-valued `lower` and `upper` fields. Missing/invalid bounds
+cannot certify a breakout. Stops and profit-target prices retain their current
+contract.
+
+While holding, an observed price entering a qualified resistance band from
+below arms a rejection test. The first later price strictly below its lower
+bound triggers a full exit unless a price strictly above its upper bound has
+already cancelled that test. Equality at the upper bound is a touch. Removed,
+role-changed, unqualified or geometrically changed levels clear the old test.
+Tests are scoped to the entry lifecycle, survive checkpoint serialization,
+and contain touch/rejection timestamps and band geometry for audit. Protective
+and session exits retain precedence. No Paper/Live promotion is implied.
