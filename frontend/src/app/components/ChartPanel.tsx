@@ -342,6 +342,7 @@ type LegendSeriesSettings = {
   maximumBreakProbability?: number;
   minimumHoldEvidenceReliability?: number;
   minimumHoldObservations?: number;
+  minimumProminence?: number;
   minimumHoldQualityScore?: number;
   /** Legacy persisted key. Its value already represented conservative quality. */
   minimumHoldProbability?: number;
@@ -2421,6 +2422,7 @@ type LegendItem = {
   maximumBreakProbability?: number;
   minimumHoldEvidenceReliability?: number;
   minimumHoldObservations?: number;
+  minimumProminence?: number;
   minimumHoldQualityScore?: number;
   minimumPressureMagnitude?: number;
   minimumTickerRelativeQualityScore?: number;
@@ -2449,6 +2451,8 @@ type LegendItem = {
   supportsHistoricalLabels?: boolean;
   supportsHistoryWindow?: boolean;
   supportsStroke?: boolean;
+  maximumProminence?: number;
+  supportsProminenceFilter?: boolean;
   supportsUnifiedFilters?: boolean;
   unifiedRelativeQualitySummary?: {
     availableCount: number;
@@ -2652,7 +2656,7 @@ function LegendEditor({
   if (!anchor) return null;
   return createPortal(
     <div
-      className={item.supportsUnifiedFilters ? "chart-legend-editor unified-structure-editor" : "chart-legend-editor"}
+      className={item.supportsUnifiedFilters || item.supportsProminenceFilter ? "chart-legend-editor unified-structure-editor" : "chart-legend-editor"}
       ref={editorRef}
       role="dialog"
       aria-label={`${item.label} presentation settings`}
@@ -2779,6 +2783,24 @@ function LegendEditor({
             <output>{item.currentLevelCount ?? 3}</output>
           </span>
         </label>
+      ) : null}
+      {item.itemKind === "zone" && item.supportsProminenceFilter ? (
+        <fieldset className="legend-unified-filters">
+          <legend>Prominence</legend>
+          <label className="legend-filter-control">
+            <span className="legend-filter-control-copy">
+              <span>Minimum prominence</span>
+              <small>Show levels with P at or above this value. Range: 0 to {Math.max(item.maximumProminence ?? 1, item.minimumProminence ?? 0).toFixed(1)}. Zero shows all scores. Display only.</small>
+            </span>
+            <span className="legend-range-control">
+              <input aria-label="Minimum prominence" type="range" min={0} step={0.1}
+                max={Math.max(item.maximumProminence ?? 1, item.minimumProminence ?? 0)}
+                value={item.minimumProminence ?? 0}
+                onChange={(event) => onUpdate({ minimumProminence: clampNumber(Number(event.target.value), 0, Number.MAX_VALUE, 0) })} />
+              <output>{(item.minimumProminence ?? 0).toFixed(1)}</output>
+            </span>
+          </label>
+        </fieldset>
       ) : null}
       {item.itemKind === "zone" && item.supportsUnifiedFilters ? (
         <fieldset className="legend-unified-filters">
@@ -4344,6 +4366,7 @@ function buildPriceZoneLegendItems(
       maximumBreakProbability: settings.maximumBreakProbability,
       minimumHoldEvidenceReliability: settings.minimumHoldEvidenceReliability,
       minimumHoldObservations: settings.minimumHoldObservations,
+      minimumProminence: settings.minimumProminence,
       minimumHoldQualityScore: settings.minimumHoldQualityScore,
       minimumPressureMagnitude: settings.minimumPressureMagnitude,
       minimumTickerRelativeQualityScore: settings.minimumTickerRelativeQualityScore,
@@ -4375,6 +4398,8 @@ function buildPriceZoneLegendItems(
         || zone.annotationKind === "level-footprint"
         || zone.annotationKind === "swing-footprint"),
       supportsPreset: Boolean(displayItem?.presetOptions?.length),
+      maximumProminence: itemZones.reduce((maximum, zone) => Math.max(maximum, Math.ceil((Number.isFinite(zone.prominence) ? Number(zone.prominence) : 0) * 10) / 10), 1),
+      supportsProminenceFilter: itemZones.some((zone) => Number.isFinite(zone.prominence)),
       supportsUnifiedFilters,
       unifiedRelativeQualitySummary,
       value: itemZones.some((zone) => zone.annotationKind === "signal-episode-range")
@@ -4948,6 +4973,7 @@ function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettin
     maximumBreakProbability: 1,
     minimumHoldEvidenceReliability: 0,
     minimumHoldObservations: 0,
+    minimumProminence: 0,
     minimumHoldQualityScore: 0,
     minimumHoldProbability: 0,
     minimumPressureMagnitude: 0,
@@ -4985,6 +5011,7 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
     maximumBreakProbability: clampNumber(stored.maximumBreakProbability, 0, 1, defaults.maximumBreakProbability),
     minimumHoldEvidenceReliability: clampNumber(stored.minimumHoldEvidenceReliability, 0, 1, defaults.minimumHoldEvidenceReliability),
     minimumHoldObservations: Math.max(0, Math.round(stored.minimumHoldObservations ?? defaults.minimumHoldObservations)),
+    minimumProminence: clampNumber(stored.minimumProminence, 0, Number.MAX_VALUE, 0),
     minimumHoldQualityScore: clampNumber(stored.minimumHoldQualityScore ?? stored.minimumHoldProbability, 0, 1, defaults.minimumHoldQualityScore),
     minimumHoldProbability: defaults.minimumHoldProbability,
     minimumPressureMagnitude: clampNumber(stored.minimumPressureMagnitude, 0, 1, defaults.minimumPressureMagnitude),
@@ -5019,6 +5046,7 @@ type ResolvedPriceZoneLegendSettings = {
   maximumBreakProbability: number;
   minimumHoldEvidenceReliability: number;
   minimumHoldObservations: number;
+  minimumProminence: number;
   minimumHoldQualityScore: number;
   minimumPressureMagnitude: number;
   minimumTickerRelativeQualityScore: number;
@@ -5050,6 +5078,7 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
     maximumBreakProbability: clampNumber(stored.maximumBreakProbability, 0, 1, 1),
     minimumHoldEvidenceReliability: clampNumber(stored.minimumHoldEvidenceReliability, 0, 1, 0),
     minimumHoldObservations: Math.max(0, Math.round(stored.minimumHoldObservations ?? 0)),
+    minimumProminence: clampNumber(stored.minimumProminence, 0, Number.MAX_VALUE, 0),
     minimumHoldQualityScore: clampNumber(stored.minimumHoldQualityScore ?? stored.minimumHoldProbability, 0, 1, 0),
     minimumPressureMagnitude: clampNumber(stored.minimumPressureMagnitude, 0, 1, 0),
     minimumTickerRelativeQualityScore: clampNumber(stored.minimumTickerRelativeQualityScore, 0, 1, 0),
@@ -5079,7 +5108,8 @@ function priceZoneMeetsUnifiedFilters(zone: PriceZone, settings: ResolvedPriceZo
   const roleVisible = zone.tone === "buy" ? settings.showUnifiedSupport : settings.showUnifiedResistance;
   const stateVisible = zone.latest ? settings.showUnifiedActive : settings.showUnifiedBroken;
   const flipVisible = !(Number(zone.roleFlipCount) > 0) || settings.showUnifiedRoleFlipped;
-  if (Number.isFinite(zone.prominence)) return roleVisible && stateVisible && flipVisible;
+  if (Number.isFinite(zone.prominence)) return roleVisible && stateVisible && flipVisible
+    && Number(zone.prominence) >= settings.minimumProminence;
   return roleVisible && stateVisible && flipVisible
     && clampNumber(zone.holdQualityScore, 0, 1, 0) >= settings.minimumHoldQualityScore
     && (zone.tickerRelativeQualityStatus !== "available"
