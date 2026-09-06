@@ -1,5 +1,6 @@
 """Versioned strategy interpretation of the experimental point-price book."""
 from math import isfinite
+from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD
 
 BOOK_VERSION = 'clickhouse-closing-book-1'
 STRATEGY_CONTRACT = 'clickhouse-merged-point-pnorm-v1'
@@ -17,7 +18,7 @@ def qualifies(row, observed_at=None):
         score, price = float(row['prominence']), float(row['price'])
         if row.get('load_contract') == 'merged-point-minmax-v1':
             score = float(row['p_norm'])
-            threshold = float(row.get('minimum_p_norm', .5))
+            threshold = float(row.get('minimum_p_norm', DEFAULT_THRESHOLD))
             if not 0 <= score <= 1 or not 0 <= threshold <= 1 or score < threshold:
                 return False
         elif score < MINIMUM_PROMINENCE:
@@ -36,7 +37,7 @@ def qualifies(row, observed_at=None):
         return False
 
 
-def strategy_snapshot(snapshot, observed_at, minimum_p_norm=.5):
+def strategy_snapshot(snapshot, observed_at, minimum_p_norm=DEFAULT_THRESHOLD):
     """Keep bands as audit data; all strategy boundaries use the exact price."""
     rows = [dict(row, minimum_p_norm=minimum_p_norm) if row.get('load_contract') else row for row in snapshot['unified_levels']]
     return {'unified_levels': [dict(row, band_lower=row['lower'], band_upper=row['upper'],

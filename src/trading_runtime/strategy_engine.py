@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD
+
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, time as clock_time, timedelta, timezone
 from enum import StrEnum
@@ -7303,7 +7305,7 @@ def _initial_stop(
                 ),
                 "uncapped_structural_stop": round(structural_stop, 4) if structural_stop is not None else None,
                 **({"strategy_level_contract": STRATEGY_CONTRACT,
-                    **({"minimum_p_norm": rows[0].get("minimum_p_norm", .5)} if rows and rows[0].get("load_contract") else {"minimum_prominence": MINIMUM_PROMINENCE})}
+                    **({"minimum_p_norm": rows[0].get("minimum_p_norm", DEFAULT_THRESHOLD)} if rows and rows[0].get("load_contract") else {"minimum_prominence": MINIMUM_PROMINENCE})}
                    if any(is_point_level(row) for row in rows) else
                    {**quality_threshold_evidence, "minimum_hold_observations": minimum_observations}),
                 "support_level_ordinal": ordinal,

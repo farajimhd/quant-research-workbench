@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD
+
 import asyncio
 import hashlib
 import json
@@ -396,7 +398,7 @@ class ReplayRunDefinition:
     simulation_profile: str = "baseline"
     experimental_structure_book: str = ""
     experimental_structure_fingerprint: str = ""
-    minimum_p_norm: float = .5
+    minimum_p_norm: float = DEFAULT_THRESHOLD
     historical_frame_cache: dict[tuple[str, str, str, str], Any] | None = field(
         default=None,
         repr=False,

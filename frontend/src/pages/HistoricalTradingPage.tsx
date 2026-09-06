@@ -96,7 +96,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [sessionDate, setSessionDate] = useState(previousWeekdayIsoDate);
   const [initialCash, setInitialCash] = useState(10_000);
   const [structureBook, setStructureBook] = useState("");
-  const [minimumPNorm, setMinimumPNorm] = useState(0.5);
+  const [minimumPNorm, setMinimumPNorm] = useState(0.85);
   const [structureBooks, setStructureBooks] = useState<Array<{ id: string; ticker: string; start: string; end: string }>>([]);
   useEffect(() => { let active = true; api<{ items: typeof structureBooks }>("/api/trading/backtest/structure-books")
     .then((value) => { if (active) setStructureBooks(value.items); }).catch(() => { if (active) setError("Experimental level books could not be loaded."); });

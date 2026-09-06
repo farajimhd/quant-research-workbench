@@ -3,7 +3,7 @@ from hashlib import sha256
 from math import fsum, isfinite
 
 CONTRACT = 'merged-point-minmax-v1'
-DEFAULT_THRESHOLD = 0.5
+DEFAULT_THRESHOLD = 0.85
 
 
 def merge_levels(levels):

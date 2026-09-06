@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD
+
 import asyncio
 import http.client
 import json
@@ -1000,7 +1002,7 @@ class BacktestRunCreateRequest(BaseModel):
     run_plan_id: str = Field(default="", max_length=128)
     simulation_profile: str = Field(default="baseline", pattern="^(baseline|stress)$")
     experimental_structure_book: str = Field(default="", max_length=64)
-    minimum_p_norm: float = Field(default=.5, ge=0, le=1)
+    minimum_p_norm: float = Field(default=DEFAULT_THRESHOLD, ge=0, le=1)
     start_time: str = "04:00:00"
     end_time: str = "20:00:00"
     tickers: list[str] = Field(default_factory=list, max_length=100)
