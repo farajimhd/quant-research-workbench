@@ -29,6 +29,7 @@ import {
   ChartNoAxesCombined,
   Check,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   CircleHelp,
   Eye,
@@ -939,6 +940,14 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const [columnMenuOpen, setColumnMenuOpen] = useState(false);
   const [supervisionMenuOpen, setSupervisionMenuOpen] = useState(false);
   const [strategyPresentationOpen, setStrategyPresentationOpen] = useState(false);
+  const [selectedStrategyId, setSelectedStrategyId] = useState<string | null>(null);
+  const strategyLifecycles = useMemo(() => [...(payload?.trade_annotations ?? [])]
+    .sort((a, b) => a.entryTime - b.entryTime || a.id.localeCompare(b.id)), [payload?.trade_annotations]);
+  const selectedStrategy = strategyLifecycles.find((trade) => trade.id === selectedStrategyId)
+    ?? strategyLifecycles.find((trade) => trade.selected) ?? strategyLifecycles[0];
+  const selectedStrategyIndex = selectedStrategy ? strategyLifecycles.indexOf(selectedStrategy) : -1;
+  const selectedStrategyRef = useRef<string | null>(null);
+  selectedStrategyRef.current = selectedStrategy?.id ?? null;
   const [fullscreen, setFullscreen] = useState(false);
   const [boxZoomActive, setBoxZoomActive] = useState(false);
   const [chartSettingsOpen, setChartSettingsOpen] = useState(false);
@@ -1260,6 +1269,12 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     // chart data, refit the time range, or re-enable price autoscaling.
     tradeAnnotationPrimitiveRef.current?.setSettings(strategyPresentationSettings);
   }, [strategyPresentationSettings]);
+
+  useEffect(() => {
+    if (selectedStrategy) setSelectedStrategyId(selectedStrategy.id);
+    else setSelectedStrategyId(null);
+    drawCurrentRegions();
+  }, [selectedStrategy?.id, strategyPresentationEnabled]);
 
   useEffect(() => {
     oscillatorPaneGroups.forEach((group) => {
@@ -1734,14 +1749,17 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   }
 
   function syncTradeAnnotationPrimitive(currentPayload: ChartPayload, timeline: Array<{ time: number }>) {
+    const trades = currentPayload.trade_annotations ?? [];
     tradeAnnotationPrimitiveRef.current?.setState({
       candles: currentPayload.candles,
-      executions: currentPayload.execution_annotations ?? [],
+      // Standalone executions have no lifecycle identity. The selected trade
+      // already contains its canonical fills; unrelated executions must not leak in.
+      executions: strategyPresentationEnabled ? [] : currentPayload.execution_annotations ?? [],
       settings: strategyPresentationSettingsRef.current,
       // Autoscale logical indexes belong to the rendered series timeline;
       // raw candles omit explicit whitespace bars and are not index-compatible.
       timeline,
-      trades: currentPayload.trade_annotations ?? [],
+      trades: strategyPresentationEnabled ? trades.filter((trade) => trade.id === selectedStrategyRef.current) : trades,
     });
   }
 
@@ -2017,6 +2035,18 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         {strategyPresentationEnabled ? (
           <StrategyPresentationSelect
             annotationCount={payload?.trade_annotations?.length ?? 0}
+            selectedIndex={selectedStrategyIndex}
+            selectedTrade={selectedStrategy}
+            onSelect={(index) => {
+              const trade = strategyLifecycles[index];
+              if (!trade) return;
+              setSelectedStrategyId(trade.id);
+              const start = Math.min(trade.entryIntentTime ?? trade.entryTime, trade.entryTime);
+              const end = Math.max(start, trade.exitTime ?? trade.endTime ?? trade.entryTime);
+              const padding = Math.max(15, (end - start) * 0.2);
+              executeViewportCommand(() => priceChartRef.current?.timeScale().setVisibleRange({ from: (start - padding) as Time, to: (end + padding) as Time }));
+              window.requestAnimationFrame(fitTradeAnnotationPriceScale);
+            }}
             onChange={updateStrategyPresentationSettings}
             onOpenChange={(value) => {
               setStrategyPresentationOpen(value);
@@ -3252,6 +3282,9 @@ function IndicatorFeatureSelect({
 
 function StrategyPresentationSelect({
   annotationCount,
+  selectedIndex,
+  selectedTrade,
+  onSelect,
   onChange,
   onOpenChange,
   onReset,
@@ -3259,6 +3292,9 @@ function StrategyPresentationSelect({
   settings,
 }: {
   annotationCount: number;
+  selectedIndex: number;
+  selectedTrade?: TradeAnnotation;
+  onSelect: (index: number) => void;
   onChange: (settings: StrategyPresentationSettingsUpdate) => void;
   onOpenChange: (value: boolean) => void;
   onReset: () => void;
@@ -3293,6 +3329,12 @@ function StrategyPresentationSelect({
       <b>{settings.visible ? enabledCount : 0}</b>
       <ChevronDown size={14} />
     </button>
+    <div className="strategy-presentation-navigation" role="group" aria-label="Strategy lifecycle navigation">
+      <button className="toolbar-button" aria-label="Previous strategy position" title="Previous position" disabled={selectedIndex <= 0} onClick={() => onSelect(selectedIndex - 1)} type="button"><ChevronLeft size={16} /></button>
+      <span aria-live="polite" title={selectedTrade ? `${selectedTrade.positionSide ?? "Position"} - ${new Date(selectedTrade.entryTime * 1000).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour12: false })} ET` : "No strategy positions in this chart"}>{selectedIndex + 1} / {annotationCount}</span>
+      <input aria-label="Strategy position" aria-valuetext={selectedTrade ? `Position ${selectedIndex + 1} of ${annotationCount}` : "No positions"} disabled={annotationCount < 2} min={1} max={Math.max(1, annotationCount)} step={1} type="range" value={Math.max(1, selectedIndex + 1)} onChange={(event) => onSelect(Number(event.target.value) - 1)} />
+      <button className="toolbar-button" aria-label="Next strategy position" title="Next position" disabled={selectedIndex < 0 || selectedIndex >= annotationCount - 1} onClick={() => onSelect(selectedIndex + 1)} type="button"><ChevronRight size={16} /></button>
+    </div>
     {open ? <ChartColumnMenuPortal anchor={triggerRef.current} className="strategy-presentation-menu">
       {selectedDefinition && styleElement ? <StrategyPresentationStylePage
         definition={selectedDefinition}
@@ -3320,7 +3362,7 @@ function StrategyPresentationSelect({
         </div>
         <label className="chart-setting-toggle strategy-presentation-master">
           <input checked={settings.visible} onChange={(event) => onChange((current) => ({ ...current, visible: event.target.checked }))} type="checkbox" />
-          <span><strong>Show strategy presentation</strong><small>One switch for all position evidence. Individual elements remain configured below.</small></span>
+          <span><strong>Show strategy presentation</strong><small>Shows the selected position’s evidence. Configure individual elements below.</small></span>
         </label>
         <section className="strategy-presentation-behavior" aria-label="Presentation behavior">
           <label><input checked={settings.avoidLabelCollisions} onChange={(event) => onChange((current) => ({ ...current, avoidLabelCollisions: event.target.checked }))} type="checkbox" /><span><strong>Avoid label collisions</strong><small>Moves labels to the nearest clear position while preserving their anchor.</small></span></label>

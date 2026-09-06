@@ -5371,6 +5371,33 @@ button {
   line-height: 1.35;
 }
 
+.chart-strategy-presentation-select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.strategy-presentation-navigation {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.strategy-presentation-navigation > span {
+  color: var(--foreground);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.strategy-presentation-navigation input {
+  width: clamp(64px, 8vw, 140px);
+  min-width: 0;
+  accent-color: var(--primary);
+}
+
 .strategy-presentation-master {
   margin: 10px 14px 0;
   border: 1px solid color-mix(in oklab, var(--primary) 24%, var(--surface-border));
