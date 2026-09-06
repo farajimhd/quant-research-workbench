@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD
+from src.trading_runtime import histogram_slope
 
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, time as clock_time, timedelta, timezone
@@ -821,6 +822,9 @@ def resolve_long_momentum_parameters(
     if revision >= 45:
         parameters["protection"]["stop"]["cap_initial_stop_distance"] = True
     execution = dict(parameters.get("execution") or {})
+    slope_policy = parameters["momentum_management"].get("histogram_slope_exit")
+    if slope_policy is not None:
+        parameters["momentum_management"]["histogram_slope_exit"] = histogram_slope.validate_policy(slope_policy)
     execution.pop("time_in_force", None)
     execution.pop("outside_rth", None)
     parameters["execution"] = execution
@@ -1014,6 +1018,8 @@ def _active_rule_source_dependencies(
                     _rule_stage_source_dependencies(dict(route.get("rules") or {}))
                 )
         management = dict(parameters.get("momentum_management") or {})
+        if management.get("histogram_slope_exit", {}).get("enabled"):
+            dependencies.update({("indicator.macd.line", "1s"), ("indicator.macd.signal", "1s")})
         downside = dict(management.get("downside_loss_guard") or {})
         if bool(downside.get("enabled", False)):
             timeframe = str(downside.get("timeframe") or "1s")
@@ -2545,6 +2551,8 @@ class LongMomentumStrategyEngine:
         state["last_observed_at"] = observation.observed_at.isoformat()
         state["last_price"] = observation.price
         _record_macd_histogram_history(state, observation)
+        if parameters.get("momentum_management", {}).get("histogram_slope_exit", {}).get("enabled"):
+            histogram_slope.record(state, observation)
         _record_structural_anchors(state, observation)
         structural_policy = dict(parameters.get("structural_entry") or {})
         if (
@@ -6254,6 +6262,7 @@ def _decision_reason_detail(
         "qmd_flow_geometry_exhaustion": "Exit: QMD flow structure weakened with confident flow-price divergence.",
         "loss_of_confirmed_higher_low": "Exit: price lost the latest causally confirmed one-second higher low.",
         "macd_closed_backstop": "Exit: one-second MACD remained closed for the configured backstop duration.",
+        "histogram_slope_exit": "Exit: completed one-second MACD histogram slope reached the configured flattening threshold.",
         "macd_signal_crossed_above_line": "Exit: the causal one-second MACD signal crossed strictly above the MACD line.",
         "downside_macd_closed": "Loss exit: while below entry, the one-second MACD closed; no confirmation delay applies.",
         "downside_vwap_lost": "Loss exit: while below entry, price moved under the causal one-second VWAP.",
@@ -6722,6 +6731,9 @@ def _matching_momentum_management_route(
     settings = dict(parameters.get("momentum_management") or {})
     if not settings or side != "long":
         return None
+    slope_exit = histogram_slope.exit_route(settings.get("histogram_slope_exit", {}), state, observation)
+    if slope_exit is not None:
+        return slope_exit
     exit_gap = settings.get("minimum_macd_exit_gap_bps")
     elapsed_ms = _elapsed_since(str(state.get("entry_at") or ""), observation.observed_at)
 
