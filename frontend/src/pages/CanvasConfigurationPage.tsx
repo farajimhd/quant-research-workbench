@@ -86,7 +86,7 @@ import {
 import { marketSessionDate, useCanvasHistoricalChart } from "../features/canvas/chartData";
 import { nestedValue } from "../features/canvas/presentationFormat";
 import { cloneDefaultSettings, instanceSettings, normalizeSettings } from "../features/canvas/settings";
-import { ensureHistoricalChartsQuotesIndicators, openTickerChartsQuotes } from "../app/tickerNavigation";
+import { chartsQuotesFocusProfile, ensureHistoricalChartsQuotesIndicators, openTickerChartsQuotes } from "../app/tickerNavigation";
 import { useCanvasLiveScannerSnapshot, useCanvasScannerSnapshot } from "../features/canvas/scannerData";
 import { dateInTimeZone } from "../features/canvas/time";
 import { readLiveAccountKeys, TradingPerformanceStrip, useTradingPerformance } from "../features/trading-performance/TradingPerformance";
@@ -192,7 +192,7 @@ export function CanvasFocusPage() {
   const replayFocusToken = params.get("replay_focus") || undefined;
   const historicalModeValue = params.get("historical_mode");
   const historicalMode = historicalModeValue === "backtest" || historicalModeValue === "backtest_debug" ? historicalModeValue : "replay";
-  if (replayRunId && replayFocusToken) return <ReplayCanvasFocusPage focusToken={replayFocusToken} runId={replayRunId} runMode={historicalMode} />;
+  if (replayRunId) return <ReplayCanvasFocusPage focusToken={replayFocusToken} runId={replayRunId} runMode={historicalMode} />;
   const acceptanceKind = params.get("container_preview") as WorkspaceContainerId | null;
   if (acceptanceKind && TRADING_WORKSPACE_CONTAINERS.some((definition) => definition.id === acceptanceKind)) {
     return <CanvasContainerAcceptancePage
@@ -285,26 +285,33 @@ function ApprovedCanvasFocusPage({ canvasId, requestedInstanceId, requestedNewsI
   return <CanvasWorkspaceSurface approvedCanvas={approved} canvasId={canvasId} manager={false} requestedInstanceId={requestedInstanceId} requestedNewsId={requestedNewsId} requestedSecAccession={requestedSecAccession} requestedSecCik={requestedSecCik} runtimeMode={runtimeMode} />;
 }
 
-function ReplayCanvasFocusPage({ focusToken, runId, runMode }: { focusToken: string; runId: string; runMode: "backtest" | "backtest_debug" | "replay" }) {
+function ReplayCanvasFocusPage({ focusToken, runId, runMode }: { focusToken?: string; runId: string; runMode: "backtest" | "backtest_debug" | "replay" }) {
   const [handoff] = useState(() => {
-    const stored = readReplayCanvasFocusHandoff(focusToken);
+    const stored = focusToken ? readReplayCanvasFocusHandoff(focusToken) : null;
     return stored ? { ...stored, profile: ensureHistoricalChartsQuotesIndicators(stored.profile, stored.state) } : null;
   });
   const [run, setRun] = useState<CanvasReplayRun | null>(null);
-  const [error, setError] = useState(handoff ? "" : "This Replay focus link is missing or expired.");
+  const [error, setError] = useState("");
   const mergeFocusRun = useCallback((update: CanvasReplayRun) => {
     setRun((current) => {
       const latest = latestReplayRun(current, update);
-      return handoff ? { ...latest, canvas_profile: { ...handoff.profile, defaultState: handoff.state } } : latest;
+      if (handoff) return { ...latest, canvas_profile: { ...handoff.profile, defaultState: handoff.state } };
+      // Reuse the ticker drilldown's chart profile rather than opening the
+      // strategy workspace (which may contain only the activity table).
+      const base = latest.canvas_profile?.instanceSettings ? latest.canvas_profile : readCanvasRegistry();
+      const prepared = latest.execution_mode === "strategy" ? strategyReplayRegistry(base, latest) : base;
+      const { profile } = chartsQuotesFocusProfile(prepared, null, latest.tickers?.[0] || "", true);
+      return { ...latest, canvas_profile: profile };
     });
   }, [handoff]);
 
   useEffect(() => {
-    if (!handoff) return;
     let cancelled = false;
     const loadRun = async () => {
       try {
-        return await api<CanvasReplayRun>(`/api/trading/${runMode}/runs/${encodeURIComponent(runId)}?compact=true`, { timeoutMs: 20_000 });
+        // A local focus handoff is optional presentation state. Portable links
+        // recover the authoritative run and its full saved Canvas profile.
+        return await api<CanvasReplayRun>(`/api/trading/${runMode}/runs/${encodeURIComponent(runId)}${handoff ? "?compact=true" : ""}`, { timeoutMs: 20_000 });
       } catch (reason) {
         const status = typeof reason === "object" && reason && "status" in reason ? Number((reason as ApiError).status) : 0;
         if (runMode !== "backtest" || status !== 404) throw reason;
@@ -320,9 +327,9 @@ function ReplayCanvasFocusPage({ focusToken, runId, runMode }: { focusToken: str
     return () => { cancelled = true; };
   }, [handoff, mergeFocusRun, runId, runMode]);
 
-  useReplayRunEvents(handoff && runMode === "replay" ? runId : undefined, mergeFocusRun, setError);
+  useReplayRunEvents(runMode === "replay" ? runId : undefined, mergeFocusRun, setError);
   usePollingTask({
-    enabled: Boolean(handoff && run && runMode !== "replay" && !isTerminalReplayStatus(run.status)),
+    enabled: Boolean(run && runMode !== "replay" && !isTerminalReplayStatus(run.status)),
     intervalMs: 250,
     pauseWhenHidden: false,
     restartKey: `${runMode}:${runId}`,
@@ -335,7 +342,7 @@ function ReplayCanvasFocusPage({ focusToken, runId, runMode }: { focusToken: str
 
   if (error && !run) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-inline-error">{error}</div></div>;
   if (!run) return <div className="canvas-config-page canvas-focus-page"><LoadingState fill label="Loading Replay workspace" /></div>;
-  return <CanvasWorkspaceSurface canvasId={MAIN_CANVAS_ID} manager={false} modeControls={<ReplayFocusTransportStatus run={run} />} readOnly={runMode !== "replay"} replayRun={run} runtimeWorkspaceId={focusToken} transient />;
+  return <CanvasWorkspaceSurface canvasId={MAIN_CANVAS_ID} manager={false} modeControls={<ReplayFocusTransportStatus run={run} />} readOnly={runMode !== "replay"} replayRun={run} runtimeWorkspaceId={handoff ? focusToken : `${runId}.charts`} transient />;
 }
 
 function ReplayFocusTransportStatus({ run }: { run: CanvasReplayRun }) {

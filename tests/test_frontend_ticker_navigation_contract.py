@@ -35,7 +35,7 @@ def test_ticker_identity_is_the_explicit_charts_quotes_control() -> None:
     assert 'return "popup-blocked"' not in navigation_source
     assert "writeCanvasFocusHandoff" in navigation_source
     assert "writeReplayCanvasFocusHandoff" in navigation_source
-    assert 'replayRun={run} runtimeWorkspaceId={focusToken} transient' in canvas_source
+    assert 'replayRun={run} runtimeWorkspaceId={handoff ? focusToken : `${runId}.charts`} transient' in canvas_source
     assert 'replayRun?.execution_mode === "strategy" && !requestedInstanceId && !transient' in canvas_source
     assert "ReplayFocusTransportStatus" in canvas_source
     assert 'modeControls={<ReplayFocusTransportStatus run={run} />}' in canvas_source

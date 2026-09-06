@@ -2265,7 +2265,7 @@ def capture(args: argparse.Namespace) -> int:
                             ],
                         },
                         "charts_quotes": {
-                            "main": {"showVolume": True, "symbol": args.canvas_symbol, "timeframe": "10s", "visibleIndicators": []},
+                            "main": {"showVolume": True, "symbol": args.canvas_symbol, "timeframe": args.canvas_chart_timeframe if args.historical_run_id else "10s", "visibleIndicators": []},
                             "month": {"showVolume": True, "symbol": args.canvas_symbol, "timeframe": "1mo", "visibleIndicators": []},
                             "daily": {"showVolume": True, "symbol": args.canvas_symbol, "timeframe": "1d", "visibleIndicators": []},
                         },
@@ -2424,6 +2424,8 @@ def capture(args: argparse.Namespace) -> int:
                     canvas_query = f"?liveCanvas={args.canvas_id}"
                 elif scenario["page"] == "canvas-focus":
                     canvas_query = f"?canvas={args.canvas_id or 'review-focus'}&canvas_profile=draft"
+                    if args.historical_run_id:
+                        canvas_query = f"?replay_run={args.historical_run_id}&historical_mode=backtest"
                     if args.canvas_runtime_mode:
                         canvas_query += f"&runtime_mode={args.canvas_runtime_mode}"
                 elif args.seed_core_containers and scenario["page"] == "replay-trading":
@@ -2439,6 +2441,8 @@ def capture(args: argparse.Namespace) -> int:
                     page.locator(".app-shell").wait_for(
                         state="visible", timeout=args.timeout_ms,
                     )
+                    if args.historical_run_id:
+                        page.get_by_role("button", name=args.canvas_chart_timeframe, exact=True).click(timeout=args.timeout_ms)
                     page.wait_for_timeout(args.settle_ms)
                     metrics = page.evaluate("""() => {
                         const root = document.documentElement;
@@ -2603,6 +2607,7 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("--url", default="http://127.0.0.1:5173")
     result.add_argument("--canvas-id", help="open trading routes directly in the named child canvas")
+    result.add_argument("--historical-run-id", help="review a portable Backtest Canvas link without local focus storage")
     result.add_argument("--canvas-session-date", help="seed a deterministic Canvas preview session date (YYYY-MM-DD)")
     result.add_argument("--canvas-preview-time", default="09:45", help="preview time paired with --canvas-session-date (HH:MM)")
     result.add_argument("--canvas-runtime-mode", choices=("live", "paper"), help="open Canvas focus review under the selected real-time runtime authority")

@@ -66,7 +66,7 @@ export function normalizeTicker(value: string) {
   return /^[A-Z][A-Z0-9.\-]{0,15}$/.test(symbol) ? symbol : "";
 }
 
-function chartsQuotesFocusProfile(
+export function chartsQuotesFocusProfile(
   registry: CanvasRegistry,
   workspaceState: CanvasWorkspaceState | null,
   symbol: string,
