@@ -2795,14 +2795,14 @@ function LegendEditor({
           <label className="legend-filter-control">
             <span className="legend-filter-control-copy">
               <span>Minimum prominence</span>
-              <small>Show levels with P at or above this value. Range: 0 to {Math.max(item.maximumProminence ?? 1, item.minimumProminence ?? 0).toFixed(1)}. Zero shows all scores. Display only.</small>
+              <small>Show levels with P at or above this value. Range: 0 to {Math.max(item.maximumProminence ?? 1, item.minimumProminence ?? 4).toFixed(1)}. Zero shows all scores. Display only.</small>
             </span>
             <span className="legend-range-control">
               <input aria-label="Minimum prominence" type="range" min={0} step={0.1}
-                max={Math.max(item.maximumProminence ?? 1, item.minimumProminence ?? 0)}
-                value={item.minimumProminence ?? 0}
+                max={Math.max(item.maximumProminence ?? 1, item.minimumProminence ?? 4)}
+                value={item.minimumProminence ?? 4}
                 onChange={(event) => onUpdate({ minimumProminence: clampNumber(Number(event.target.value), 0, Number.MAX_VALUE, 0) })} />
-              <output>{(item.minimumProminence ?? 0).toFixed(1)}</output>
+              <output>{(item.minimumProminence ?? 4).toFixed(1)}</output>
             </span>
           </label>
         </fieldset>
@@ -2873,10 +2873,11 @@ function LegendEditor({
       {item.supportsProminenceFilter ? (
         <fieldset className="legend-unified-filters">
           <legend>Price line and band</legend>
+          <label><input type="checkbox" checked={item.showUnifiedQualityLabel === true} onChange={(event) => onUpdate({ showUnifiedQualityLabel: event.target.checked })} /> Show level labels</label>
           <ScoreThresholdControl label="Price line opacity" description="Line at the exact level price. Shape and width above apply to this line."
-            value={item.priceOpacity ?? 0.4} onChange={(priceOpacity) => onUpdate({ priceOpacity })} />
+            value={item.priceOpacity ?? 0.1} onChange={(priceOpacity) => onUpdate({ priceOpacity })} />
           <ScoreThresholdControl label="Band opacity" description="Shading between the lower and upper boundaries."
-            value={item.bandOpacity ?? 0.25} onChange={(bandOpacity) => onUpdate({ bandOpacity })} />
+            value={item.bandOpacity ?? 0.05} onChange={(bandOpacity) => onUpdate({ bandOpacity })} />
         </fieldset>
       ) : (
       <label>
@@ -4991,9 +4992,9 @@ function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettin
     maximumBreakProbability: 1,
     minimumHoldEvidenceReliability: 0,
     minimumHoldObservations: 0,
-    bandOpacity: 0.25,
-    priceOpacity: 0.4,
-    minimumProminence: 0,
+    bandOpacity: 0.05,
+    priceOpacity: 0.1,
+    minimumProminence: 4,
     minimumHoldQualityScore: 0,
     minimumHoldProbability: 0,
     minimumPressureMagnitude: 0,
@@ -5006,7 +5007,7 @@ function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettin
     showLabels: true,
     showUnifiedActive: true,
     showUnifiedBroken: true,
-    showUnifiedQualityLabel: true,
+    showUnifiedQualityLabel: false,
     showUnifiedHoldProbability: true,
     showUnifiedResistance: true,
     showUnifiedRoleFlipped: true,
@@ -5031,9 +5032,9 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
     maximumBreakProbability: clampNumber(stored.maximumBreakProbability, 0, 1, defaults.maximumBreakProbability),
     minimumHoldEvidenceReliability: clampNumber(stored.minimumHoldEvidenceReliability, 0, 1, defaults.minimumHoldEvidenceReliability),
     minimumHoldObservations: Math.max(0, Math.round(stored.minimumHoldObservations ?? defaults.minimumHoldObservations)),
-    bandOpacity: clampNumber(stored.bandOpacity, 0, 1, 0.25),
-    priceOpacity: clampNumber(stored.priceOpacity, 0, 1, 0.4),
-    minimumProminence: clampNumber(stored.minimumProminence, 0, Number.MAX_VALUE, 0),
+    bandOpacity: clampNumber(stored.bandOpacity, 0, 1, 0.05),
+    priceOpacity: clampNumber(stored.priceOpacity, 0, 1, 0.1),
+    minimumProminence: clampNumber(stored.minimumProminence, 0, Number.MAX_VALUE, 4),
     minimumHoldQualityScore: clampNumber(stored.minimumHoldQualityScore ?? stored.minimumHoldProbability, 0, 1, defaults.minimumHoldQualityScore),
     minimumHoldProbability: defaults.minimumHoldProbability,
     minimumPressureMagnitude: clampNumber(stored.minimumPressureMagnitude, 0, 1, defaults.minimumPressureMagnitude),
@@ -5102,9 +5103,9 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
     maximumBreakProbability: clampNumber(stored.maximumBreakProbability, 0, 1, 1),
     minimumHoldEvidenceReliability: clampNumber(stored.minimumHoldEvidenceReliability, 0, 1, 0),
     minimumHoldObservations: Math.max(0, Math.round(stored.minimumHoldObservations ?? 0)),
-    bandOpacity: clampNumber(stored.bandOpacity, 0, 1, 0.25),
-    priceOpacity: clampNumber(stored.priceOpacity, 0, 1, 0.4),
-    minimumProminence: clampNumber(stored.minimumProminence, 0, Number.MAX_VALUE, 0),
+    bandOpacity: clampNumber(stored.bandOpacity, 0, 1, 0.05),
+    priceOpacity: clampNumber(stored.priceOpacity, 0, 1, 0.1),
+    minimumProminence: clampNumber(stored.minimumProminence, 0, Number.MAX_VALUE, 4),
     minimumHoldQualityScore: clampNumber(stored.minimumHoldQualityScore ?? stored.minimumHoldProbability, 0, 1, 0),
     minimumPressureMagnitude: clampNumber(stored.minimumPressureMagnitude, 0, 1, 0),
     minimumTickerRelativeQualityScore: clampNumber(stored.minimumTickerRelativeQualityScore, 0, 1, 0),
@@ -5120,7 +5121,7 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
     showHistoricalLabels: stored.showHistoricalLabels ?? zone?.historicalLabelsDefault ?? false,
     showUnifiedActive: stored.showUnifiedActive !== false,
     showUnifiedBroken: stored.showUnifiedBroken !== false,
-    showUnifiedQualityLabel: stored.showUnifiedQualityLabel ?? stored.showUnifiedHoldProbability ?? true,
+    showUnifiedQualityLabel: stored.showUnifiedQualityLabel ?? stored.showUnifiedHoldProbability ?? false,
     showUnifiedResistance: stored.showUnifiedResistance !== false,
     showUnifiedRoleFlipped: stored.showUnifiedRoleFlipped !== false,
     showUnifiedSupport: stored.showUnifiedSupport !== false,
@@ -6810,16 +6811,16 @@ function drawUnifiedQualityLabel(
   }
   if (Math.abs((selected.top + selected.bottom) / 2 - centerY) > 1) {
     const connectorX = selected.right;
-    context.strokeStyle = rgbaFromHex(color, Math.max(0.45, settings.opacity));
+    context.strokeStyle = rgbaFromHex(color, settings.priceOpacity);
     context.lineWidth = 1;
     context.beginPath();
     context.moveTo(connectorX, centerY);
     context.lineTo(connectorX, selected.top > centerY ? selected.top : selected.bottom);
     context.stroke();
   }
-  context.fillStyle = rgbaFromHex(chartBackground, 0.92);
+  context.fillStyle = rgbaFromHex(chartBackground, settings.priceOpacity);
   context.fillRect(selected.left, selected.top, labelWidth, labelHeight);
-  context.fillStyle = rgbaFromHex(color, Math.max(0.72, settings.opacity));
+  context.fillStyle = rgbaFromHex(color, settings.priceOpacity);
   context.textBaseline = "middle";
   context.fillText(text, selected.left + 3, selected.top + labelHeight / 2);
   placed.push(selected);
