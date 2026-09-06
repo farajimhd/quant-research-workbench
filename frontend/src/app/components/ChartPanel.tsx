@@ -1,4 +1,5 @@
 import { tradeGuideSpan } from "./tradeGuideGeometry";
+import { macdBpsPoints } from "./macdBps";
 import { STRATEGY_ENTRY_REFERENCE_BACKING, STRATEGY_ENTRY_REFERENCE_COLOR } from "../theme";
 import {
   type AutoscaleInfo,
@@ -576,6 +577,8 @@ class LivePositionPrimitive implements ISeriesPrimitive<Time> {
   }
 }
 type OscillatorThresholdSettings = {
+  macdBpsVisible?: boolean;
+  macdBpsValue?: number;
   color: string;
   lineStyle: LegendLineStyle;
   lineWidth: number;
@@ -990,7 +993,17 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   visibleSelectionRef.current = visibleSelectionLookup;
   const displayedOverlaySeries = (payload?.overlay_series ?? []).filter((series) => visibleColumnLookup.has(seriesSelectionKey(series)));
   const displayedPriceZones = (payload?.price_zones ?? []).filter((zone) => !zone.displayItemId || visibleSelectionLookup.has(zone.displayItemId.toLowerCase()));
-  const displayedOscillatorSeries = (payload?.oscillator_series ?? []).filter((series) => visibleColumnLookup.has(seriesSelectionKey(series)));
+  const macdBpsSeries = useMemo(() => (payload?.oscillator_series ?? [])
+    .filter((series) => oscillatorPaneKey(series) === "oscillator:macd")
+    .map((series): ChartSeries => ({ ...series,
+      label: `${series.label} bps`, axisTitle: `${series.axisTitle ?? series.label} bps`,
+      paneKey: "macd", chartRole: "macd-bps", priceScaleId: "left",
+      data: macdBpsPoints(series.data, payload?.candles ?? []),
+    })), [payload?.oscillator_series, payload?.candles]);
+  const macdBpsEnabled = oscillatorThresholdSettings["oscillator:macd"]?.macdBpsVisible !== false;
+  const displayedOscillatorSeries = (payload?.oscillator_series ?? []).filter((series) =>
+    visibleColumnLookup.has(seriesSelectionKey(series)) && !(macdBpsEnabled && oscillatorPaneKey(series) === "oscillator:macd"));
+  if (macdBpsEnabled) displayedOscillatorSeries.push(...macdBpsSeries.filter((series) => visibleColumnLookup.has(seriesSelectionKey(series))));
   const oscillatorPaneGroups = buildOscillatorPaneGroups(displayedOscillatorSeries);
   const oscillatorPaneTotalHeight = oscillatorPaneGroups.reduce((total, group) => total + defaultOscillatorPaneHeight(group), 0);
   const nativeChartHeight: CSSProperties["height"] = fullscreen
@@ -998,7 +1011,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     : baseHeight + oscillatorPaneTotalHeight;
   // Each chart instance can choose its initial price-scale gutters while
   // preserving explicit user choices in that instance's persisted settings.
-  const alignLeftPriceScale = chartSettings.legendGutterVisible;
+  // Native panes share axis gutters; per-pane visibility breaks chart layout.
+  const alignLeftPriceScale = chartSettings.legendGutterVisible || displayedOscillatorSeries.some((series) => series.chartRole === "macd-bps");
   const reserveRightPriceScale = chartSettings.rightLegendGutterVisible;
   const priceLegendItems = [
     ...buildSeriesLegendItems(displayedOverlaySeries, "price", legendSettings, displayItemOptions, catalogColumns, chartSettings),
@@ -1287,7 +1301,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   useEffect(() => {
     chartSettingsRef.current = effectiveChartSettings;
     applyChartAppearance();
-  }, [effectiveChartSettings, themeSignature, timeframe]);
+  }, [effectiveChartSettings, themeSignature, timeframe, alignLeftPriceScale]);
 
   useEffect(() => {
     if (!priceRef.current || priceChartRef.current) return undefined;
@@ -1467,7 +1481,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   useEffect(() => {
     if (!priceChartRef.current) return;
     updateOscillatorPanes(oscillatorPaneGroups);
-  }, [payload, visibleColumnKey, timeframe]);
+  }, [payload, visibleColumnKey, timeframe, oscillatorThresholdSettings]);
 
   function applyChartAppearance() {
     const palette = readChartPalette();
@@ -1592,6 +1606,13 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   function updateOscillatorPaneSeries(runtime: OscillatorPaneRuntime, seriesList: ChartSeries[]) {
     const chart = priceChartRef.current;
     if (!chart) return;
+    if (seriesList.some((series) => oscillatorPaneKey(series) === "oscillator:macd")) {
+      // Keep the invisible timeline on the active scale so the unused side
+      // cannot display an unrelated default numerical range.
+      const bps = seriesList.some((series) => series.chartRole === "macd-bps");
+      runtime.timelineRenderer?.applyOptions({ priceScaleId: bps ? "left" : "right", priceFormat: adaptiveSeriesPriceFormat(seriesList[0]) });
+      chart.priceScale("left", runtime.paneIndex).applyOptions({ alignLabels: bps });
+    }
     const layeredSeries = [...seriesList].sort((left, right) => Number(left.style === "line") - Number(right.style === "line"));
     const requestedPrimaryKey = seriesList[0] ? legendSeriesKey("oscillator", seriesList[0]) : "";
     const layerSignature = layeredSeries.map((series) => `${legendSeriesKey("oscillator", series)}:${series.style}:${series.priceScaleId || "right"}`).join("|");
@@ -1670,7 +1691,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         lineStyle: toChartLineStyle(threshold.lineStyle),
         lineVisible: threshold.visible,
         lineWidth: toLineWidth(threshold.lineWidth),
-        price: threshold.value,
+        price: threshold.macdBpsVisible ? threshold.macdBpsValue ?? 0 : threshold.value,
         title: ""
       });
       runtime.zeroLineRenderer = renderer;
@@ -1682,7 +1703,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         lineStyle: toChartLineStyle(threshold.lineStyle),
         lineVisible: threshold.visible,
         lineWidth: toLineWidth(threshold.lineWidth),
-        price: threshold.value,
+        price: threshold.macdBpsVisible ? threshold.macdBpsValue ?? 0 : threshold.value,
         title: ""
       });
     }
@@ -2541,7 +2562,7 @@ function ChartLegend({
   if (!items.length) return null;
   const editingItem = items.find((item) => item.key === editingKey && item.configurable);
   return (
-    <div className={collapsed ? "chart-legend collapsed" : "chart-legend"}>
+    <div className={collapsed ? "chart-legend collapsed" : "chart-legend"} style={threshold?.macdBpsVisible ? { left: CHART_PRICE_SCALE_MIN_WIDTH + 8 } : undefined}>
       <button
         aria-label={collapsed ? "Expand legend" : "Collapse legend"}
         className="chart-legend-header"
@@ -2972,14 +2993,22 @@ function LegendEditor({
       )}
       {threshold && onThresholdUpdate ? (
         <>
+          {typeof threshold.macdBpsVisible === "boolean" ? <>
+            <div className="chart-legend-editor-section-title">MACD normalization</div>
+            <label className="legend-checkbox">
+              <input checked={threshold.macdBpsVisible} type="checkbox" onChange={(event) => onThresholdUpdate({ macdBpsVisible: event.target.checked })} />
+              Show MACD bps on left axis
+            </label>
+            <small>Uses each candle’s close: value ÷ close × 10,000. Turn off to show raw values on the right axis.</small>
+          </> : null}
           <div className="chart-legend-editor-section-title">Pane threshold</div>
           <label className="legend-checkbox">
             <input checked={threshold.visible} type="checkbox" onChange={(event) => onThresholdUpdate({ visible: event.target.checked })} />
             Show baseline
           </label>
           <label>
-            Value
-            <input className="legend-number-input" step="any" type="number" value={threshold.value} onChange={(event) => onThresholdUpdate({ value: Number(event.target.value) })} />
+            Value{threshold.macdBpsVisible ? " (bps)" : ""}
+            <input className="legend-number-input" step="any" type="number" value={threshold.macdBpsVisible ? threshold.macdBpsValue ?? 0 : threshold.value} onChange={(event) => onThresholdUpdate(threshold.macdBpsVisible ? { macdBpsValue: Number(event.target.value) } : { value: Number(event.target.value) })} />
           </label>
           <label>
             Color
@@ -4382,7 +4411,7 @@ function buildSeriesLegendItems(series: ChartSeries[], pane: LegendPane, setting
       semanticColor: item.colorMode === "sign",
       semanticColors: { down: appearance.downColor, neutral: readNeutralChartColor(), up: appearance.upColor },
       showValue: settings.showValue,
-      value: latest === null ? "-" : formatPrice(latest),
+      value: latest === null ? "-" : item.chartRole === "macd-bps" ? `${latest.toFixed(1)} bps` : formatPrice(latest),
       visible: settings.visible
     };
   });
@@ -4711,6 +4740,7 @@ function resolveOscillatorThresholdSettings(settings?: Partial<OscillatorThresho
   const defaultValue = group?.key === "oscillator:rsi" ? 50 : 0;
   const defaultColor = validHexColor(readNeutralChartColor(), "#667085");
   return {
+    ...(group?.key === "oscillator:macd" ? { macdBpsVisible: settings?.macdBpsVisible !== false, macdBpsValue: Number.isFinite(settings?.macdBpsValue) ? settings!.macdBpsValue : 0 } : {}),
     color: validHexColor(settings?.color, defaultColor),
     lineStyle: settings?.lineStyle === "solid" || settings?.lineStyle === "dotted" ? settings.lineStyle : "dashed",
     lineWidth: Math.max(1, Math.min(4, Math.round(Number(settings?.lineWidth) || 1))),
@@ -5333,6 +5363,7 @@ function seriesAutoscaleInfoProvider(series: ChartSeries) {
 }
 
 function adaptiveSeriesPriceFormat(series: ChartSeries) {
+  if (series.chartRole === "macd-bps") return { type: "custom" as const, minMove: 0.1, formatter: (value: number) => `${value.toFixed(1)} bps` };
   let maxAbs = 0;
   series.data.forEach((point) => {
     const value = Math.abs(Number(point.value));
