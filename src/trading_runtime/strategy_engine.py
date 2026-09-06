@@ -9,6 +9,12 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from src.request_context import causal_identity
+from src.trading_runtime.structure_level_contract import (
+    MINIMUM_PROMINENCE,
+    STRATEGY_CONTRACT,
+    is_point_level,
+    qualifies as point_level_qualifies,
+)
 
 from src.trading_runtime.execution_policies import (
     AddProtectionPolicy,
@@ -1501,6 +1507,8 @@ def _level_has_minimum_ticker_relative_quality(
 def _level_passes_configured_quality(
     row: Mapping[str, Any], policy: Mapping[str, Any]
 ) -> bool:
+    if is_point_level(row):
+        return point_level_qualifies(row)
     if "minimum_ticker_relative_quality_score" in policy:
         return _level_has_minimum_ticker_relative_quality(
             row,
@@ -1528,6 +1536,7 @@ def _compact_structural_level_reference(row: Mapping[str, Any] | None) -> dict[s
         return {}
     scalar_fields = (
         "unified_level_id",
+        "book_version", "prominence", "strategy_level_contract", "band_lower", "band_upper", "lifecycle",
         "side",
         "price",
         "lower",
@@ -1608,6 +1617,7 @@ def _decision_structural_level_snapshot(
             row
             for row in qualified
             if _level_metric(row, "price", "lower", "upper") < observation.price
+            and (not is_point_level(row) or row['side'] == 1)
         ),
         key=lambda row: _level_metric(row, "price", "lower", "upper"),
         reverse=True,
@@ -1617,6 +1627,7 @@ def _decision_structural_level_snapshot(
             row
             for row in qualified
             if _level_metric(row, "price", "lower", "upper") > observation.price
+            and (not is_point_level(row) or row['side'] == -1)
         ),
         key=lambda row: _level_metric(row, "price", "lower", "upper"),
     )[:3]
@@ -1637,6 +1648,8 @@ def _level_is_entry_quality(
     *,
     observed_at: datetime,
 ) -> bool:
+    if is_point_level(row):
+        return point_level_qualifies(row, observed_at)
     created_at_ms = _level_metric(row, "created_at_ms")
     age_ms = (
         observed_at.timestamp() * 1_000.0 - created_at_ms
@@ -1682,8 +1695,15 @@ def _consolidated_structure_levels(
     *,
     side: str,
 ) -> list[dict[str, Any]]:
-    """Merge overlapping level-book bands into one causal structural frontier."""
+    """Preserve point identities; consolidate bands only for the legacy book."""
 
+    if any(is_point_level(row) for row in rows):
+        if not all(is_point_level(row) for row in rows):
+            raise ValueError('Mixed structural level contracts are not allowed')
+        # A producer level is one price/identity. Never merge its shading ranges.
+        unique = {str(row['unified_level_id']): dict(row, lower=row['price'], upper=row['price'])
+                  for row in rows if point_level_qualifies(row)}
+        return sorted(unique.values(), key=lambda row: (row['price'], str(row['unified_level_id'])))
     prepared: list[dict[str, Any]] = []
     for raw in rows:
         row = dict(raw)
@@ -2237,7 +2257,7 @@ def _prior_completed_frame_resistance_trigger(
                 "side": int(row.get("side") or -1),
                 "price": price,
                 "entry_boundary": price,
-                "hold_probability": _level_metric(row, "hold_probability"),
+                **({} if is_point_level(row) else {"hold_probability": _level_metric(row, "hold_probability")}),
             })
     qualified.sort(
         key=lambda row: (
@@ -7219,8 +7239,9 @@ def _initial_stop(
                 )
             if (
                 on_protective_side
+                and (not is_point_level(row) or (row['side'] == 1 and point_level_qualifies(row, observation.observed_at)))
                 and _level_passes_configured_quality(row, stop)
-                and observations >= minimum_observations
+                and (is_point_level(row) or observations >= minimum_observations)
             ):
                 qualified.append((candidate, row))
         qualified.sort(key=lambda item: item[0], reverse=side == "long")
@@ -7281,8 +7302,9 @@ def _initial_stop(
                     and structural_stop is not None and selected != round(structural_stop, 4)
                 ),
                 "uncapped_structural_stop": round(structural_stop, 4) if structural_stop is not None else None,
-                **quality_threshold_evidence,
-                "minimum_hold_observations": minimum_observations,
+                **({"strategy_level_contract": STRATEGY_CONTRACT, "minimum_prominence": MINIMUM_PROMINENCE}
+                   if any(is_point_level(row) for row in rows) else
+                   {**quality_threshold_evidence, "minimum_hold_observations": minimum_observations}),
                 "support_level_ordinal": ordinal,
                 "qualified_level_count": len(qualified),
                 "qualified_levels_truncated": len(audit_rows) < len(qualified),
@@ -7454,6 +7476,8 @@ def _profit_level_score(
 ) -> float:
     """Rank by the quality authority selected by the revisioned policy."""
 
+    if is_point_level(row):
+        return _level_metric(row, "prominence")
     if "minimum_ticker_relative_quality_score" in (policy or {}):
         return _level_metric(row, "ticker_relative_quality_score")
     return _level_metric(row, "hold_quality_score", "hold_probability")
@@ -7536,9 +7560,9 @@ def _structural_profit_targets(
     if not bool(policy.get("enabled", True)):
         return [luld_target] if luld_target is not None else []
     entry = observation.price
-    # Profit targets are geometric: any qualifying level above a long entry
+    # Legacy profit targets are geometric: any qualifying level above a long entry
     # (or below a short entry) is relevant even when its last lifecycle role
-    # was the opposite side.  Price-relative filtering below assigns the role.
+    # was the opposite side. The point contract additionally requires producer role.
     level_rows = _consolidated_structure_levels(list(
         observation.structural_resistance_levels if side == "long" and policy.get("require_resistance_role")
         else (*observation.structural_support_levels, *observation.structural_resistance_levels)
@@ -7576,7 +7600,7 @@ def _structural_profit_targets(
         candidate = row.get("price")
         if candidate is None:
             candidate = row.get("lower") if side == "long" else row.get("upper")
-        if (
+        legacy_qualified = (
             candidate is not None
             and strength >= float(policy.get("minimum_level_strength") or 0.0)
             and confidence >= float(policy.get("minimum_level_confidence") or 0.0)
@@ -7591,7 +7615,11 @@ def _structural_profit_targets(
                 or break_count <= float(maximum_break_count)
             )
             and score >= float(policy.get("minimum_composite_score") or 0.0)
-        ):
+        )
+        qualified = (point_level_qualifies(row, observation.observed_at)
+                     and int(row['side']) == (-1 if side == 'long' else 1)
+                     if is_point_level(row) else legacy_qualified)
+        if qualified:
             candidate_value = float(candidate)
             favorable_side = (
                 candidate_value > entry

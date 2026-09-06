@@ -1756,6 +1756,7 @@ class ReplayRunController:
                 "source_cursor": deepcopy(self._source_cursor),
                 "frame_cursor": deepcopy(self._frame_cursor),
                 "processed_frames": self._processed_frames,
+                "experimental_session_highs": deepcopy(getattr(self, "_experimental_session_highs", {})),
                 "previous_vwap": [
                     {
                         "ticker": ticker,
@@ -2681,6 +2682,8 @@ class ReplayRunController:
         runtime = state.get("runtime")
         if not isinstance(controller, dict) or not isinstance(runtime, dict):
             raise ValueError("Historical restart checkpoint omitted runtime state")
+        if self.definition.experimental_structure_book and "experimental_session_highs" not in controller:
+            raise ValueError("Experimental backtest checkpoint predates the point-level/session-high contract; start a new run")
         current_time = _optional_checkpoint_time(controller.get("current_time"))
         last_event_time = _optional_checkpoint_time(runtime.get("last_event_time"))
         self.current_time = current_time
@@ -2689,6 +2692,7 @@ class ReplayRunController:
         self._source_cursor = dict(controller.get("source_cursor") or {})
         self._frame_cursor = dict(controller.get("frame_cursor") or {})
         self._processed_frames = int(controller.get("processed_frames") or 0)
+        self._experimental_session_highs = deepcopy(controller.get("experimental_session_highs") or {})
         checkpoint_interval = self._restart_checkpoint_interval_events()
         self._last_restart_checkpoint_event_bucket = (
             self.processed_events // checkpoint_interval
@@ -2814,6 +2818,8 @@ class ReplayRunController:
         if self._runtime is None:
             raise RuntimeError("Replay runtime was not initialized")
         self._observe_historical_market_quality_event(event)
+        if isinstance(event, TradeEvent) and event.price_eligible:
+            self._experimental_session_high(event.ticker, event.ts, event.price)
         if isinstance(event, QuoteEvent):
             self._quotes[event.ticker] = event
         if (
@@ -2891,6 +2897,7 @@ class ReplayRunController:
     async def _process_strategy_frame(self, frame: ReplayDerivedFrame) -> bool:
         if self._runtime is None or self._strategy is None:
             return False
+        self._remember_strategy_frame(frame)
         self._flush_passive_market_events()
         if frame.timeframe == "1s":
             close = float(
@@ -2961,6 +2968,7 @@ class ReplayRunController:
             snapshot = await self._experimental_structure_snapshot(frame.ticker, frame.as_of, 'frame')
             from src.backend.experimental_structure_book import context
             indicator = {**indicator, **context(snapshot, float(frame.bar.get('close') or 0)),
+                         'qmd_structure_session_high': self._experimental_session_high(frame.ticker, frame.as_of),
                          'qmd_structure_unified_levels': snapshot['unified_levels']}
         bar = frame.bar
         direction = int(indicator.get("structure_choch_direction") or 0)
@@ -3337,14 +3345,14 @@ class ReplayRunController:
             # intervening canonical event before evaluating its next exit.
             return False
         structural_changed: list[str] = []
-        if any(assignment.strategy_revision >= 37
+        if self.definition.experimental_structure_book or any(assignment.strategy_revision >= 37
                and bool(dict(assignment.parameters.get("structural_entry") or {}).get("enabled"))
                for assignment in ticker_assignments):
             structural = await self._event_structure_context(event)
             if self.definition.experimental_structure_book:
                 # HOD/timeframe swings remain separate canonical market inputs.
                 structural.update(structure_swing_high=base.swing_high, structure_swing_low=base.swing_low,
-                    qmd_structure_session_high=base.structural_session_high)
+                    qmd_structure_session_high=self._experimental_session_high(event.ticker, event.ts))
             base = replace(
                 base,
                 swing_high=_optional_positive(structural.get("structure_swing_high")),
@@ -3442,6 +3450,9 @@ class ReplayRunController:
 
     async def _experimental_structure_snapshot(self, ticker, as_of, lane, sequence=None):
         from src.backend.experimental_structure_book import BookCursor
+        from src.trading_runtime.structure_level_contract import (
+            MINIMUM_PROMINENCE, STRATEGY_CONTRACT, strategy_snapshot,
+        )
         cursors = getattr(self, '_experimental_cursors', {})
         self._experimental_cursors = cursors
         key = (ticker, lane)
@@ -3453,8 +3464,12 @@ class ReplayRunController:
                 'database': self.definition.experimental_structure_book,
                 'fingerprint': self.definition.experimental_structure_fingerprint,
                 'continuation': 'completed-second causal observations; independent frame/event cursors',
-                'legacy_probability_scores': 'unavailable; existing strategy gates unchanged'})
-        return await asyncio.to_thread(cursors[key].snapshot, as_of, sequence)
+                'strategy_level_contract': STRATEGY_CONTRACT,
+                'minimum_prominence': MINIMUM_PROMINENCE, 'price_authority': 'price',
+                'session_high_authority': 'causal canonical one-second highs and price-eligible trades',
+                'legacy_probability_scores': 'not used by this versioned contract'})
+        snapshot = await asyncio.to_thread(cursors[key].snapshot, as_of, sequence)
+        return strategy_snapshot(snapshot, as_of)
 
     async def _event_structure_context(self, event: TradeEvent) -> dict[str, Any]:
         """Advance the shared producer through this exact canonical event.
@@ -4152,7 +4167,27 @@ class ReplayRunController:
         # Historical artifacts can still contain consolidated VWAP fields, but
         # current replay decisions must not hydrate or derive state from them.
         # Execution VWAP is carried directly on each causal indicator frame.
-        return None
+        if frame.timeframe == "1s":
+            self._experimental_session_high(frame.ticker, frame.as_of, frame.bar.get("high"))
+
+    def _experimental_session_high(self, ticker: str, at: datetime, price=None):
+        """Track HOD independently of v18 from the already ordered canonical stream."""
+        if not getattr(getattr(self, "definition", None), "experimental_structure_book", ""):
+            return None
+        local = at.astimezone(NEW_YORK)
+        if local.hour < 4 or local.hour >= 20:
+            return None
+        highs = getattr(self, "_experimental_session_highs", {})
+        self._experimental_session_highs = highs
+        day = local.date().isoformat()
+        state = highs.get(ticker, {})
+        if state.get("session_date") != day:
+            state = {"session_date": day, "high": None}
+            highs[ticker] = state
+        value = _optional_positive(price)
+        if value is not None:
+            state["high"] = max(value, state["high"] or value)
+        return state["high"]
 
     async def _wait_until_active(self) -> None:
         async with self._condition:

@@ -186,9 +186,17 @@ The chart requests the selected run's provider and clamps levels to the run
 cursor. It uses the same continuation, emits an initial snapshot plus deltas,
 and preserves UInt64 identities as strings. Prominence labels are `P…`; legacy
 probability/relative-quality labels and filters are not applied to those zones.
-Existing strategy score gates are **unchanged** and may reject these levels
-because the old scores are unavailable. Prominence is not converted into a
-probability or used to bypass those gates.
+The experimental strategy contract is `clickhouse-point-level-prominence-4-v1`.
+Only causally confirmed levels with prominence >= 4 enter strategy observations.
+Entry, support stops and resistance targets use exact `price` and producer role;
+overlapping shading bands do not merge distinct identities. This version replaces
+legacy level probability/relative-quality eligibility with prominence, without
+changing market entry conditions, ordinal selection or risk caps. Chart filters
+remain independent and may show weaker levels. Current v18 behavior is unchanged.
+Session high is maintained separately from canonical completed one-second bar
+highs and price-eligible trades, including pre-activation warmup. It resets each
+session and persists in the restart state. Older experimental restart states
+without this contract require a new run; they cannot resume under changed rules.
 
 Validation covers every scalar-reference prefix, confirmation sequence ties,
 independent strategy cursors, API cursor clamping, and real JUNS August 6/7/21

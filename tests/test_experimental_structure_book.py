@@ -72,6 +72,37 @@ class ContinuationTests(unittest.TestCase):
 
 
 class WiringTests(unittest.IsolatedAsyncioTestCase):
+    def test_session_high_uses_warmup_highs_and_resets_next_session(self):
+        from src.backend.replay_run_service import ReplayRunController
+        run = object.__new__(ReplayRunController)
+        run.definition = SimpleNamespace(experimental_structure_book='selected')
+        at = datetime(2026, 8, 21, 7, 0, tzinfo=E.NY)
+        run._remember_strategy_frame(SimpleNamespace(ticker='JUNS', timeframe='1s', as_of=at, bar={'high': 10}))
+        self.assertEqual(run._experimental_session_high('JUNS', at, 9), 10)
+        self.assertEqual(run._experimental_session_high('JUNS', at + timedelta(seconds=1), 11), 11)
+        self.assertEqual(run._experimental_session_high('JUNS', at + timedelta(days=1), 8), 8)
+        self.assertIsNone(run._experimental_session_high('OTHER', at))
+
+    async def test_strategy_provider_filters_scores_and_projects_price_not_band(self):
+        from src.backend.replay_run_service import ReplayRunController
+        from unittest.mock import Mock
+        from src.trading_runtime.structure_level_contract import BOOK_VERSION
+        run = object.__new__(ReplayRunController)
+        run.definition = SimpleNamespace(experimental_structure_book='selected', experimental_structure_fingerprint='pinned')
+        run._record_data_authority = Mock()
+        at = datetime(2026, 8, 21, 9, 30, tzinfo=E.NY)
+        raw = {'unified_levels': [dict(unified_level_id=str(score), book_version=BOOK_VERSION,
+            prominence=score, price=10, lower=9, upper=11, side=-1,
+            created_at_ms=at.timestamp()*1000, confirmed_at_ms=at.timestamp()*1000)
+            for score in (3.99, 4)]}
+        with patch.object(E, 'BookCursor') as cursor:
+            cursor.return_value.snapshot.return_value = raw
+            result = await run._experimental_structure_snapshot('JUNS', at, 'frame')
+        self.assertEqual(len(result['unified_levels']), 1)
+        self.assertEqual(result['unified_levels'][0]['lower'], 10)
+        self.assertEqual(raw['unified_levels'][1]['lower'], 9)
+        self.assertEqual(run._record_data_authority.call_args.args[1]['minimum_prominence'], 4)
+
     async def test_event_and_frame_have_independent_causal_cursors(self):
         from src.backend.replay_run_service import ReplayRunController
         from unittest.mock import Mock

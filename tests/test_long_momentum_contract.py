@@ -463,6 +463,7 @@ class StructureBatchTests(unittest.IsolatedAsyncioTestCase):
         from src.backend.replay_run_service import ReplayRunController
         from src.market_engine.events import TradeEvent
         controller = ReplayRunController.__new__(ReplayRunController)
+        controller.definition = SimpleNamespace(experimental_structure_book=None)
         controller._event_structure_sessions = {}
         events = [TradeEvent((), str(seq), 1, NOW, None, 100, raw={"arrival_sequence": seq},
                              sequence=seq, ticker="TEST", ts=NOW) for seq in (10, 11)]
