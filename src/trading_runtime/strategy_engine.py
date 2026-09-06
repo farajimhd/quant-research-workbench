@@ -829,6 +829,13 @@ def resolve_long_momentum_parameters(
     if slope_policy is not None:
         parameters["momentum_management"]["histogram_slope_exit"] = histogram_slope.validate_policy(slope_policy)
     candle = parameters["entry_candle_confirmation"]
+    if "normalized_macd_threshold_bps" in parameters:
+        threshold = float(parameters["normalized_macd_threshold_bps"])
+        if not isfinite(threshold) or threshold <= 0 or revision < 44:
+            raise ValueError("Normalized MACD threshold requires revision 44+ and positive finite basis points")
+        parameters["normalized_macd_threshold_bps"] = threshold
+        parameters["momentum_management"]["histogram_slope_exit"] = {"enabled": False}
+        candle["slope_reentry_break_previous_high"] = False
     for section, key in ((candle, "slope_reentry_break_previous_high"),
                          (parameters["momentum_management"], "resistance_rejection_exit"),
                          (parameters["structural_entry"], "break_above_upper_bound")):
@@ -1198,6 +1205,23 @@ def _macd_gap_bps(price: float, line: Any, signal: Any) -> float | None:
     if not isfinite(line) or not isfinite(signal):
         return None
     return (line - signal) / price * 10_000.0
+
+
+def _normalized_macd_regime(parameters, observation, timeframe="1s"):
+    """Causal price-relative line strength; absence preserves earlier candidates."""
+    threshold = parameters.get("normalized_macd_threshold_bps")
+    if threshold is None:
+        return None
+    line = _numeric_source_value(observation, "indicator.macd.line", timeframe)
+    signal = _numeric_source_value(observation, "indicator.macd.signal", timeframe)
+    line_bps = _macd_gap_bps(observation.price, line, 0)
+    signal_bps = _macd_gap_bps(observation.price, signal, 0)
+    valid = line_bps is not None and signal_bps is not None
+    return {
+        "threshold_bps": threshold, "macd_line_bps": line_bps, "macd_signal_bps": signal_bps,
+        "entry_gap_bypassed": bool(valid and line_bps > threshold + 1e-12),
+        "exit_confirmed": bool(valid and signal > line and max(line_bps, signal_bps) < threshold - 1e-12),
+    }
 
 
 def _record_macd_histogram_history(
@@ -2657,6 +2681,8 @@ class LongMomentumStrategyEngine:
                 metadata={"cancel_entry_acquisition": True, "position_fraction": 1.0},
             )
         phase_name = "reentry" if reentries else "initial_entry"
+        if parameters.get("normalized_macd_threshold_bps") is not None:
+            state.pop("histogram_slope_reentry_gate", None)
         if (state.get("histogram_slope_reentry_gate")
                 and parameters.get("entry_candle_confirmation", {}).get("slope_reentry_break_previous_high")):
             reason, evidence = breakout_confirmation.slope_reentry_confirmation(state, observation)
@@ -3035,14 +3061,19 @@ class LongMomentumStrategyEngine:
         # This strategy's momentum regime is a semantic invariant, not merely
         # one editable rule-set row. Configuration materialization, re-entry
         # rule pruning, or a future catalog migration must never authorize an
-        # order unless the latest causal one-second MACD is exactly open and
-        # positive and open: line > signal and line > 0. The signal line may
-        # still be below zero during an early momentum turn.
+        # order unless the latest causal one-second MACD is positive and open,
+        # or the explicitly configured normalized strong-momentum regime applies.
+        # Earlier candidates retain line > signal and line > 0.
         entry_macd_open, entry_macd_evidence = _exact_positive_open_macd(
             observation,
             "1s",
             require_positive_signal=self.revision == 26,
         )
+        normalized_macd = _normalized_macd_regime(parameters, observation)
+        bypass_gap = bool(normalized_macd and normalized_macd["entry_gap_bypassed"])
+        if normalized_macd is not None:
+            entry_macd_evidence["normalized_regime"] = normalized_macd
+            entry_macd_open = entry_macd_open or bypass_gap
         if not entry_macd_open and not observation.force_entry:
             return self._result(
                 assignment,
@@ -3087,6 +3118,7 @@ class LongMomentumStrategyEngine:
             and (macd_gap_bps is None or macd_gap_bps + 1e-12 < minimum_macd_gap_bps
                  or (strict_reentry_gap > 0 and macd_gap_bps <= strict_reentry_gap + 1e-12))
             and not observation.force_entry
+            and not bypass_gap
         ):
             return self._result(
                 assignment,
@@ -6797,7 +6829,8 @@ def _matching_momentum_management_route(
             return rejection
     if slope_exit is not None:
         return slope_exit
-    exit_gap = settings.get("minimum_macd_exit_gap_bps")
+    exit_gap = (None if parameters.get("normalized_macd_threshold_bps") is not None
+                else settings.get("minimum_macd_exit_gap_bps"))
     elapsed_ms = _elapsed_since(str(state.get("entry_at") or ""), observation.observed_at)
 
     downside = dict(settings.get("downside_loss_guard") or {})
@@ -6806,11 +6839,14 @@ def _matching_momentum_management_route(
         line = _source_value(observation, "indicator.macd.line", downside_timeframe)
         signal = _source_value(observation, "indicator.macd.signal", downside_timeframe)
         gap_bps = _macd_gap_bps(observation.price, line, signal)
+        normalized_macd = _normalized_macd_regime(parameters, observation, downside_timeframe)
         if bool(downside.get("macd_closed", True)) and (
+            normalized_macd["exit_confirmed"] if normalized_macd is not None else (
             line is not None
             and signal is not None
             and float(signal) > float(line)
             and (exit_gap is None or (gap_bps is not None and -gap_bps + 1e-12 >= float(exit_gap)))
+            )
         ):
             return {
                 "route_id": "downside-macd-closed",
@@ -6824,6 +6860,7 @@ def _matching_momentum_management_route(
                     "macd_signal": signal,
                     "histogram_bps": gap_bps,
                     "minimum_exit_gap_bps": exit_gap,
+                    "normalized_regime": normalized_macd,
                 },
             }
         vwap_source_id = str(
@@ -6956,6 +6993,9 @@ def _matching_momentum_management_route(
     )
     if exit_gap is not None:
         macd_closed = bool(gap_bps is not None and -gap_bps + 1e-12 >= float(exit_gap))
+    normalized_macd = _normalized_macd_regime(parameters, observation, timeframe)
+    if normalized_macd is not None:
+        macd_closed = normalized_macd["exit_confirmed"]
     if observation.source_timeframe in {"", timeframe}:
         if macd_closed:
             if not state.get("macd_closed_since"):
@@ -6995,6 +7035,7 @@ def _matching_momentum_management_route(
                 "macd_histogram": histogram,
                 "histogram_bps": gap_bps,
                 "minimum_exit_gap_bps": exit_gap,
+                "normalized_regime": normalized_macd,
             },
         }
     return None

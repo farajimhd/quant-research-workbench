@@ -86,3 +86,26 @@ role-changed, unqualified or geometrically changed levels clear the old test.
 Tests are scoped to the entry lifecycle, survive checkpoint serialization,
 and contain touch/rejection timestamps and band geometry for audit. Protective
 and session exits retain precedence. No Paper/Live promotion is implied.
+
+## Normalized MACD regime successor
+
+The opt-in `normalized_macd_threshold_bps: 30` strategy parameter replaces
+histogram-slope exit/re-entry gating. Both one-second MACD lines are normalized
+by the current causal trade price, multiplied by 10,000. Initial entry still
+requires a positive MACD line and a histogram gap of at least 0.5 bps; re-entry
+requires a gap strictly above 1 bps. When the MACD line itself is strictly above
+30 bps, both entry paths bypass the gap and line-over-signal requirements.
+At exactly 30 bps the entry bypass does not apply.
+
+MACD exits, including the below-entry loss guard, require signal strictly above
+MACD and the maximum of the two normalized lines strictly below 30 bps. There
+is no histogram-gap minimum or slope confirmation for these exits. At exactly
+30 bps the position is held against a MACD exit. Missing/nonfinite operands do
+not establish either exemption or exit confirmation.
+
+The successor candidate uses a separate positive-one-second-MACD rule set in
+both entry phases so the prior line-over-signal rule cannot veto the strong
+regime. The exact normalized and gap checks remain in the strategy engine.
+Resistance rejection, upper-band breakout, completed non-red candle acceptance,
+VWAP protection, structural stops, targets, and session exits remain in force.
+Prior candidates keep their original behavior when this parameter is absent.
