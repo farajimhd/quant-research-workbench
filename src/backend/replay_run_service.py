@@ -5984,16 +5984,16 @@ class ReplayRunService:
         await controller.start()
         return controller
 
-    async def review_completed(self, run_id: str) -> ReplayRunController:
-        """Open a durable completed Backtest as an immutable Canvas review."""
+    async def review_saved(self, run_id: str) -> ReplayRunController:
+        """Open completed or stopped Backtest evidence without resuming execution."""
 
         normalized = str(run_id or "").strip()
         if not re.fullmatch(r"[0-9a-fA-F-]{36}", normalized):
             raise KeyError(run_id)
         resident = self._runs.get(normalized)
         if resident is not None:
-            if resident.status != "completed":
-                raise ValueError("Only completed Backtests can be opened for review")
+            if resident.status not in {"completed", "stopped"}:
+                raise ValueError("Only completed or stopped Backtests can be opened for review")
             return resident
         run_dir = (self.runtime_root / normalized).resolve()
         if self.runtime_root != run_dir and self.runtime_root not in run_dir.parents:
@@ -6003,7 +6003,7 @@ class ReplayRunService:
         if not manifest_path.is_file() or not journal_path.is_file():
             raise KeyError(run_id)
         persisted_run, definition, state = await asyncio.to_thread(
-            _load_completed_review_materials,
+            _load_saved_review_materials,
             normalized,
             run_dir,
             manifest_path,
@@ -6016,11 +6016,13 @@ class ReplayRunService:
             resume_state=state,
         )
         controller._journal = TradingJournal(journal_path, read_only=True)
-        await asyncio.to_thread(
-            _initialize_completed_review_controller,
-            controller,
-        )
-        controller.status = "completed"
+        try:
+            await asyncio.to_thread(_initialize_completed_review_controller, controller)
+        except Exception:
+            controller._journal.close()
+            controller._journal = None
+            raise
+        controller.status = str(persisted_run["status"])
         controller.error = str(persisted_run.get("error") or "")
         controller._runtime_inputs_ready = True
         controller._runtime_finished = True
@@ -6255,7 +6257,7 @@ def _durable_backtest_tickers(run_dir: Path) -> list[str]:
         return []
 
 
-def _load_completed_review_materials(
+def _load_saved_review_materials(
     run_id: str,
     run_dir: Path,
     manifest_path: Path,
@@ -6265,11 +6267,11 @@ def _load_completed_review_materials(
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     persisted_run = dict(manifest.get("run") or {})
-    if str(persisted_run.get("status") or "") != "completed":
-        raise ValueError("Only completed Backtests can be opened for review")
+    if str(persisted_run.get("status") or "") not in {"completed", "stopped"}:
+        raise ValueError("Only completed or stopped Backtests can be opened for review")
     definition = _definition_from_manifest(manifest, run_dir=run_dir)
     if definition.mode != RunMode.BACKTEST:
-        raise ValueError("Completed-run review accepts Backtest runs only")
+        raise ValueError("Saved-run review accepts Backtest runs only")
     journal = TradingJournal(journal_path, read_only=True)
     try:
         persisted = journal.load_checkpoint(run_id)
@@ -6280,7 +6282,7 @@ def _load_completed_review_materials(
         int(state.get("schema_version") or 0) != RESTART_CHECKPOINT_SCHEMA_VERSION
         or not bool(state.get("complete"))
     ):
-        raise ValueError("Completed Backtest has no complete review checkpoint")
+        raise ValueError("Saved Backtest has no complete review checkpoint")
     return persisted_run, definition, state
 
 

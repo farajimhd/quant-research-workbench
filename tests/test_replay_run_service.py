@@ -1041,6 +1041,60 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 review._journal.close()
 
+    async def test_saved_review_restores_stopped_checkpoint_without_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = ReplayRunController(
+                ReplayRunDefinition(
+                    session_date=date(2026, 7, 28), start_time=time(9, 45),
+                    mode=RunMode.BACKTEST, tickers=("AAPL",),
+                    configuration_revision=approved_configuration(),
+                ), runtime_root=root,
+            )
+            source.run_dir.mkdir(parents=True)
+            source._journal = TradingJournal(source.run_dir / "journal.sqlite3")
+            await source._initialize_runtime(record_configuration=False, record_lifecycle=False)
+            source.status = "stopped"
+            source.current_time = datetime(2026, 7, 28, 10, tzinfo=NEW_YORK)
+            source.processed_events = 42
+            source._source_cursor = {"market": {"ticker": "AAPL", "sequence": 42, "ts": source.current_time.isoformat()}}
+            source._save_restart_checkpoint(source.current_time)
+            source._write_approved_configuration()
+            source._write_manifest()
+            source._journal.close()
+            manifest_path = source.run_dir / "manifest.json"
+            original_manifest = manifest_path.read_bytes()
+            original_journal = (source.run_dir / "journal.sqlite3").read_bytes()
+            service = ReplayRunService(runtime_root=root)
+            with patch.object(ReplayRunController, "start", new_callable=AsyncMock) as start:
+                review = await service.review_saved(source.run_id)
+                try:
+                    self.assertEqual(review.status, "stopped")
+                    self.assertEqual(review.processed_events, 42)
+                    self.assertEqual(review.current_time, source.current_time)
+                    self.assertIsNone(review._task)
+                    self.assertIs(await service.review_saved(source.run_id), review)
+                    start.assert_not_awaited()
+                finally:
+                    review._journal.close()
+            self.assertEqual(manifest_path.read_bytes(), original_manifest)
+            self.assertEqual((source.run_dir / "journal.sqlite3").read_bytes(), original_journal)
+
+            manifest = json.loads(original_manifest)
+            manifest["run"]["status"] = "running"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Only completed or stopped"):
+                await ReplayRunService(runtime_root=root).review_saved(source.run_id)
+            manifest_path.write_bytes(original_manifest)
+            journal = TradingJournal(source.run_dir / "journal.sqlite3")
+            checkpoint = journal.load_checkpoint(source.run_id)
+            state = checkpoint["state"]
+            state["complete"] = False
+            journal.save_checkpoint(source.run_id, "invalid", state, source.current_time)
+            journal.close()
+            with self.assertRaisesRegex(ValueError, "no complete review checkpoint"):
+                await ReplayRunService(runtime_root=root).review_saved(source.run_id)
+
     async def test_service_restores_complete_debug_checkpoint(self) -> None:
         class StopAfterFirstEvent(ReplayRunController):
             async def _after_event(self, event_time: datetime) -> None:

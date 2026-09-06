@@ -5794,7 +5794,7 @@ def trading_backtest_run(run_id: str) -> dict[str, Any]:
 @app.post("/api/trading/backtest/runs/{run_id}/review")
 async def trading_backtest_run_review(run_id: str) -> dict[str, Any]:
     try:
-        controller = await backtest_run_service.review_completed(run_id)
+        controller = await backtest_run_service.review_saved(run_id)
         return controller.snapshot()
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Backtest run not found") from exc
