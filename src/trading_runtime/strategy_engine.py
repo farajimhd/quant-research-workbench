@@ -829,6 +829,9 @@ def resolve_long_momentum_parameters(
     if slope_policy is not None:
         parameters["momentum_management"]["histogram_slope_exit"] = histogram_slope.validate_policy(slope_policy)
     candle = parameters["entry_candle_confirmation"]
+    rejection_ordinal = parameters["momentum_management"].get("resistance_rejection_level_ordinal")
+    if rejection_ordinal is not None and (type(rejection_ordinal) is not int or rejection_ordinal < 1):
+        raise ValueError("resistance_rejection_level_ordinal must be a positive integer")
     if "normalized_macd_threshold_bps" in parameters:
         threshold = float(parameters["normalized_macd_threshold_bps"])
         if not isfinite(threshold) or threshold <= 0 or revision < 44:
@@ -6824,7 +6827,10 @@ def _matching_momentum_management_route(
                   if int(row.get("side") or 0) < 0
                   and _level_is_entry_quality(row, parameters.get("structural_entry", {}),
                                              observed_at=observation.observed_at)]
-        rejection = breakout_confirmation.resistance_rejection(state, observation, levels)
+        rejection = breakout_confirmation.resistance_rejection(
+            state, observation, levels,
+            level_ordinal=settings.get("resistance_rejection_level_ordinal"),
+        )
         if rejection is not None:
             return rejection
     if slope_exit is not None:

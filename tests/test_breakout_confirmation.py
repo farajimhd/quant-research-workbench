@@ -135,3 +135,42 @@ def test_rejection_state_resets_with_geometry_removal_and_new_position():
             state['entry_at']=(NOW+timedelta(seconds=1)).isoformat()
             state['entry_reference_price']=100.5
         assert B.resistance_rejection(state,bar(1,close=100.99),levels) is None
+
+
+def test_second_resistance_ignores_first_and_keeps_target_after_removal():
+    levels = [dict(row(p), band_lower=p-.2, band_upper=p+.2) for p in (103, 101, 102)]
+    state = {'entry_at': NOW.isoformat(), 'entry_reference_price': 100}
+    for second, price in enumerate((100, 101, 100.7, 102)):
+        assert B.resistance_rejection(state, bar(second, close=price), levels, level_ordinal=2) is None
+        state = json.loads(json.dumps(state))
+    assert state['resistance_rejection_state']['target_level_id'] == '102'
+    route = B.resistance_rejection(state, bar(4, close=101.7), [levels[0], levels[2]], level_ordinal=2)
+    assert route['evidence']['unified_level_id'] == '102'
+    assert route['evidence']['level_ordinal'] == 2
+
+
+def test_second_resistance_requires_two_levels_and_resets_for_new_entry():
+    levels = [dict(row(p), band_lower=p-.2, band_upper=p+.2) for p in (101, 102, 103)]
+    state = {'entry_at': NOW.isoformat(), 'entry_reference_price': 100}
+    for second, price in enumerate((100, 101, 100.7)):
+        assert B.resistance_rejection(state, bar(second, close=price), levels[:1], level_ordinal=2) is None
+    B.resistance_rejection(state, bar(3, close=102), levels, level_ordinal=2)
+    state.update(entry_at=(NOW+timedelta(seconds=4)).isoformat(), entry_reference_price=101)
+    assert B.resistance_rejection(state, bar(4, close=101.7), levels, level_ordinal=2) is None
+    assert state['resistance_rejection_state']['target_level_id'] == '103'
+
+
+def test_engine_second_resistance_counts_only_qualified_resistances():
+    p = policy()
+    p['momentum_management'].update(resistance_rejection_level_ordinal=2, histogram_slope_exit={'enabled':False})
+    p['momentum_management']['downside_loss_guard']['below_vwap'] = False
+    levels = tuple(dict(row(price,side=side), band_lower=price-.2,band_upper=price+.2,
+                        load_contract='merged-point-minmax-v1',p_norm=score,minimum_p_norm=.9)
+                   for price,side,score in ((100.5,-1,.89),(100.7,1,1),(101,-1,.9),(102,-1,1),(103,-1,1)))
+    state = {'entry_at':NOW.isoformat(),'entry_reference_price':100}
+    for second, price in enumerate((100,101,100.7,102)):
+        obs = replace(bar(second,close=price),structural_resistance_levels=levels,macd_line=.4,macd_signal=.2)
+        assert S._matching_momentum_management_route(p,obs,state,gain_pct=1,side='long') is None
+    route = S._matching_momentum_management_route(p,replace(obs,price=101.7,observed_at=NOW+timedelta(seconds=4)),state,gain_pct=1,side='long')
+    assert route['mechanism']=='resistance_rejection'
+    assert route['evidence']['unified_level_id']=='102'
