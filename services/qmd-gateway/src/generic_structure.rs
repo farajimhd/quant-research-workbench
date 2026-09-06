@@ -192,6 +192,8 @@ pub struct UnifiedStructureSource {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct UnifiedStructureLevel {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact: Option<crate::structure_prominence::CompactLevelState>,
     pub unified_level_id: u64,
     pub side: i8,
     pub price: f64,
@@ -600,6 +602,7 @@ struct TickerRelativeQualityBaseline {
 
 #[derive(Clone, Debug)]
 pub struct GenericStructureEngine {
+    compact_book: Option<crate::structure_prominence::CompactBookState>,
     sym: String,
     last_ts: Option<DateTime<Utc>>,
     replayed_through: Option<DateTime<Utc>>,
@@ -636,6 +639,8 @@ pub struct GenericStructureEngine {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct GenericStructureCheckpoint {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_book: Option<crate::structure_prominence::CompactBookState>,
     pub algorithm_version: u16,
     pub sym: String,
     pub updated_at: Option<DateTime<Utc>>,
@@ -777,6 +782,7 @@ impl GenericStructureEngine {
     }
     pub fn new(sym: impl Into<String>) -> Self {
         Self {
+            compact_book: None,
             sym: sym.into().to_ascii_uppercase(),
             last_ts: None,
             replayed_through: None,
@@ -811,6 +817,31 @@ impl GenericStructureEngine {
             last_event: None,
             applied_split_adjustments: Vec::new(),
         }
+    }
+
+    /// Opt-in output/scoring contract. Must start cold or restore a checkpoint
+    /// that already contains this state; historical scores cannot be invented.
+    pub fn enable_compact_book(&mut self) -> Result<(), String> {
+        if self.last_ts.is_some() || !self.unified_tracks.is_empty() {
+            return Err("compact book must be enabled before processing events".into());
+        }
+        self.compact_book = Some(Default::default());
+        Ok(())
+    }
+
+    /// Narrow output, avoiding snapshot cloning of unbounded source evidence.
+    pub fn compact_levels(&self) -> Vec<serde_json::Value> {
+        self.unified_tracks.iter().filter(|t| t.lifecycle.visible()).map(|t| {
+            let l=&t.level;
+            serde_json::json!({"level_id":l.unified_level_id,"price":l.price,
+                "lower":l.lower,"upper":l.upper,"side":l.side,"lifecycle":l.lifecycle,
+                "pending_side":l.pending_side,"created_ms":l.created_at_ms,
+                "confirmed_ms":l.confirmed_at_ms,
+                "episode_id":l.compact.as_ref().map(|s| s.episode_id),
+                "observed_from_ms":l.compact.as_ref().map(|s| s.observed_from_ms),
+                "prominence":l.compact.as_ref().map(|s| s.reaction.score()),
+                "score_revision":crate::structure_prominence::PROMINENCE_REVISION})
+        }).collect()
     }
 
     /// Applies a corporate-action boundary to the complete persistent book.
@@ -938,6 +969,9 @@ impl GenericStructureEngine {
                     0.0
                 };
                 let aggressor = self.classify_aggressor(trade.price);
+                if let Some(book) = &mut self.compact_book {
+                    book.current_range = book.volatility.observe(ts.timestamp_millis(), trade.price);
+                }
                 if self.last_trade_price > 0.0 {
                     self.rolling_abs_trade_move = ewma(
                         self.rolling_abs_trade_move,
@@ -962,6 +996,21 @@ impl GenericStructureEngine {
                 // trade; lifecycle acceptance above still remains event-native.
                 if !emitted.is_empty() {
                     stage!("refresh_unified_tracks", self.refresh_unified_level_tracks(ts, trade.price));
+                }
+                if let Some(book) = &mut self.compact_book {
+                    for track in &mut self.unified_tracks {
+                        if track.level.compact.is_none() {
+                            book.next_episode_id += 1;
+                            let mut state=crate::structure_prominence::CompactLevelState {
+                                episode_id:book.next_episode_id, observed_from_ms:ts.timestamp_millis(),
+                                ..Default::default()
+                            };
+                            state.reaction.observe(trade.price, track.level.lower, track.level.upper,
+                                track.level.side, book.current_range,
+                                matches!(track.lifecycle, LevelLifecycle::Active), false);
+                            track.level.compact=Some(state);
+                        }
+                    }
                 }
                 self.last_trade_price = trade.price;
             }
@@ -1472,6 +1521,7 @@ impl GenericStructureEngine {
         for track in &mut self.unified_tracks {
             let lower = track.level.lower;
             let upper = track.level.upper;
+            let previous_breaks = track.level.break_count;
             let matching_key = (track.level.side, track.level.pending_side, track.lifecycle.visible());
             let tick = price_tick(track.level.price);
             let relation = if price < lower {
@@ -1604,6 +1654,12 @@ impl GenericStructureEngine {
                 LevelLifecycle::Retired => {}
             }
             track.last_relation = relation;
+            if let Some(state) = &mut track.level.compact {
+                state.reaction.observe(price, lower, upper, track.level.side,
+                    self.compact_book.as_ref().and_then(|s| s.current_range),
+                    matches!(track.lifecycle, LevelLifecycle::Active | LevelLifecycle::Crossed { .. }),
+                    track.level.break_count > previous_breaks);
+            }
             track.level.lifecycle = track.lifecycle.label().to_string();
             track.level.pending_side = match track.lifecycle {
                 LevelLifecycle::AwaitingRetest { direction, .. }
@@ -2098,6 +2154,7 @@ impl GenericStructureEngine {
 
     pub fn checkpoint(&self) -> GenericStructureCheckpoint {
         GenericStructureCheckpoint {
+            compact_book: self.compact_book.clone(),
             algorithm_version: GENERIC_STRUCTURE_ALGORITHM_VERSION,
             sym: self.sym.clone(),
             updated_at: self.last_ts,
@@ -2135,6 +2192,7 @@ impl GenericStructureEngine {
         if checkpoint.algorithm_version != GENERIC_STRUCTURE_ALGORITHM_VERSION {
             return;
         }
+        self.compact_book = checkpoint.compact_book.clone();
         self.sym = checkpoint.sym.clone();
         self.last_ts = checkpoint.updated_at;
         self.replayed_through = checkpoint.replayed_through.or(checkpoint.updated_at);
@@ -2224,6 +2282,10 @@ impl GenericStructureCheckpoint {
         }
         let price_factor = adjustment.split_from / adjustment.split_to;
         let share_factor = adjustment.split_to / adjustment.split_from;
+        if let Some(book) = &mut self.compact_book {
+            book.volatility.apply_split(price_factor);
+            book.current_range = book.current_range.map(|v| v*price_factor);
+        }
         scale_price(&mut self.last_reference_price, price_factor);
         scale_price(&mut self.last_trade_price, price_factor);
         scale_price(&mut self.rolling_abs_trade_move, price_factor);
@@ -2371,6 +2433,7 @@ fn scale_timeframe_swing(swing: &mut TimeframeSwing, price_factor: f64, share_fa
 }
 
 fn scale_unified_level(level: &mut UnifiedStructureLevel, price_factor: f64, share_factor: f64) {
+    if let Some(state) = &mut level.compact { state.reaction.apply_split(price_factor); }
     scale_price(&mut level.price, price_factor);
     scale_price(&mut level.lower, price_factor);
     scale_price(&mut level.upper, price_factor);
@@ -2864,6 +2927,7 @@ fn unified_structure_level(
         .unwrap_or_default();
     let unified_level_id = stable_hash(&format!("{sym}|unified-book|{anchor_level_id}"));
     let mut level = UnifiedStructureLevel {
+        compact: None,
         unified_level_id,
         side,
         price,
@@ -4193,6 +4257,56 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn compact_scoring_preserves_structure_and_restores_exactly() {
+        fn structural(mut value: serde_json::Value) -> serde_json::Value {
+            value.as_object_mut().unwrap().remove("compact_book");
+            for track in value["unified_tracks"].as_array_mut().unwrap() {
+                track["level"].as_object_mut().unwrap().remove("compact");
+            }
+            value
+        }
+        let start=new_york_ms(2026,8,20,9,30,0);
+        let mut plain=GenericStructureEngine::new("TEST");
+        let mut scored=GenericStructureEngine::new("TEST");
+        scored.enable_compact_book().unwrap();
+        for i in 0..1800 {
+            if i==900 {
+                let adjustment=StructureSplitAdjustment {
+                    execution_date:NaiveDate::from_ymd_opt(2026,8,20).unwrap(),
+                    effective_at:Utc.timestamp_millis_opt(start+i*1000).unwrap(),
+                    split_from:75.,split_to:1.,
+                    source_inserted_at:Utc.timestamp_millis_opt(start).unwrap(),
+                };
+                let before:Vec<_>=scored.compact_levels().iter().map(|v|v["prominence"].clone()).collect();
+                plain.apply_split_adjustment(&adjustment).unwrap();
+                scored.apply_split_adjustment(&adjustment).unwrap();
+                assert!(!scored.apply_split_adjustment(&adjustment).unwrap());
+                let after:Vec<_>=scored.compact_levels().iter().map(|v|v["prominence"].clone()).collect();
+                assert_eq!(before,after);
+            }
+            let factor=if i>=900 {75.} else {1.};
+            let event=trade(start+i*1000,(5.+((i%53) as f64)*0.01)*factor,(100.+i as f64)/factor,i as u64+1);
+            let expected=plain.apply_event_without_snapshot(&event,TradeUpdateRule::regular());
+            let actual=scored.apply_event_without_snapshot(&event,TradeUpdateRule::regular());
+            assert_eq!(serde_json::to_value(expected).unwrap(),serde_json::to_value(actual).unwrap());
+            if i%300==0 {
+                assert_eq!(serde_json::to_value(plain.checkpoint()).unwrap(),
+                    structural(serde_json::to_value(scored.checkpoint()).unwrap()));
+                let json=serde_json::to_string(&scored.checkpoint()).unwrap();
+                let checkpoint=crate::structure_checkpoint_json::decode_checkpoint(&json).unwrap();
+                let mut restored=GenericStructureEngine::new("TEST");
+                restored.seed_checkpoint(&checkpoint);
+                assert_eq!(serde_json::to_value(scored.checkpoint()).unwrap(),serde_json::to_value(restored.checkpoint()).unwrap());
+                scored=restored;
+            }
+        }
+        assert!(scored.unified_tracks.iter().all(|t| t.level.compact.is_some()));
+        let ids: std::collections::HashSet<_>=scored.unified_tracks.iter().map(|t|t.level.compact.as_ref().unwrap().episode_id).collect();
+        assert_eq!(ids.len(),scored.unified_tracks.len());
+        assert!(!ids.is_empty());
+    }
+
+    #[test]
     fn profiling_observer_preserves_events_and_resumed_checkpoint() {
         let mut plain=GenericStructureEngine::new("TEST");
         let start=new_york_ms(2026,8,20,9,30,0);
@@ -4385,6 +4499,7 @@ mod tests {
 
     fn unified_test_level(id: u64, side: i8, lower: f64, upper: f64) -> UnifiedStructureLevel {
         UnifiedStructureLevel {
+            compact: None,
             unified_level_id: id,
             side,
             price: (lower + upper) * 0.5,

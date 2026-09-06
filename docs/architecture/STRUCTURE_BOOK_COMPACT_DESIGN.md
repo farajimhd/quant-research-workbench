@@ -1,6 +1,7 @@
 # Compact historical structure book: design and feasibility contract
 
-Status: design/prototype only. No production authority or consumer is changed.
+Status: design/prototype with opt-in streaming score and interval primitives.
+No production authority or consumer is changed; a full new JUNS build is pending.
 Scope: user-approved steps 1–3, September 6, 2026; JUNS from January 2025
 through the latest certified canonical source day. Full reconstruction, live
 activation, and backtest integration remain later approval gates.
@@ -182,6 +183,60 @@ using ordered canonical/live events and the matching calculation contract.
 Developing higher-timeframe state may load; future-confirmed levels may not.
 Strategies never receive future `valid_to` or later scores. A late canonical
 correction publishes a new build; reproducing an earlier backtest pins its build.
+
+## Reaction prominence and split versioning implementation
+
+The user selected a single reaction-prominence score instead of carrying the
+old hold/relative-quality projections into the new compact book. This is an
+output contract change; existing strategy filters are not silently redirected.
+
+`structure_prominence.rs` implements `reaction-prominence-1`. The denominator
+is the mean true range of up to 14 completed populated one-minute buckets,
+floored by the tick at contact. At least one completed bucket is required.
+Current-minute prices do not enter their own denominator. Missing minutes are
+not fabricated; the completed-bucket queue carries across sessions. A split
+scales that queue, the previous close and an active encounter's frozen range.
+
+An observed trade inside the band begins an encounter when a denominator is
+available. The favorable excursion is measured from the appropriate band edge.
+Its running maximum divided by the frozen range contributes provisionally.
+A departure of at least one frozen range qualifies a subsequent band return
+to finalize the old encounter and begin a new one. Subthreshold contact noise
+does not create additional encounters. An engine-accepted break or role change
+finalizes the current contribution. A tentative cross alone does not finalize it.
+The score is `ln(1 + completed_contributions + current_best_contribution)`.
+It ranks evidence; it never removes levels or changes v18 construction.
+
+The shared engine enables this through `enable_compact_book()` before the first
+event. Opt-in continuation and per-level score state serialize with checkpoints;
+disabled fields are omitted, preserving the old checkpoint representation.
+Sequential episode identities distinguish separate tracks that share a v18 ID.
+The counter is part of continuation state and must be scoped by immutable build
+and security identity in storage. On consolidation the retained track retains
+its score; incoming track scores are not summed because their encounters may
+overlap. Source membership is still uncapped. Scoring starts at observed level
+creation, not retrospectively at an earlier pivot timestamp.
+
+`scripts/structure_prominence_sql.py` implements the same transition function
+using a bounded ordered ClickHouse fold. It consumes ordered encounter inputs,
+including lifecycle acceptance and causal volatility; it does not discover the
+entire book or produce these inputs from raw events by itself. Synthetic SQL
+prefixes are compared against the actual shared Rust scorer using
+`structure_score_fixture`. These are equivalence fixtures, not a JUNS benchmark.
+
+`structure_book_intervals.rs` provides closing-row coalescing and split updates.
+At the effective boundary it closes original survivor rows and opens adjusted
+versions with the same episode identities. Scores stay unchanged. It records
+split identity, effective timestamp, ratio, affected count and canonical
+before/after hashes. Reapplication is a no-op only when identity and terms
+agree. Changed terms or a late split require rebuilding the affected history.
+Updates are prepared on a copy to avoid leaving partly adjusted state on error.
+These are shared persistence primitives; the database publisher and full-run
+repair orchestration are not yet wired to them.
+
+End-of-day output does not suffice for exact engine continuation. V18 source
+arrays remain in its working state; this implementation does not claim that
+they have been replaced with sufficient compact aggregates.
 
 ## Repair contract
 
