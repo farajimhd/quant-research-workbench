@@ -1,7 +1,7 @@
 import { ArrowLeft, CheckCircle2, CircleStop, Gauge, Pause, Play, RefreshCcw, Square, TriangleAlert, X, Zap } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
-import { api } from "../api/client";
+import { api, type ApiError } from "../api/client";
 import "./HistoricalWorkspace.css";
 import { TradingLaunchEvidence, TradingModeLaunch, TradingModeSelectField } from "../app/components/TradingModeLaunch";
 import { usePollingTask } from "../app/hooks/usePollingTask";
@@ -92,6 +92,25 @@ type IndicatorWarmupBatch = {
   tickers: string[];
 };
 
+const BACKTEST_RUN_KEY = "backtest.active-run.v1";
+
+function readSelectedRun(): string {
+  const fromUrl = new URL(window.location.href).searchParams.get("backtest_run");
+  if (fromUrl) return fromUrl;
+  try { return sessionStorage.getItem(BACKTEST_RUN_KEY) || ""; } catch { return ""; }
+}
+
+function persistSelectedRun(runId: string) {
+  const url = new URL(window.location.href);
+  if (runId) url.searchParams.set("backtest_run", runId);
+  else url.searchParams.delete("backtest_run");
+  window.history.replaceState(window.history.state, "", url);
+  try {
+    if (runId) sessionStorage.setItem(BACKTEST_RUN_KEY, runId);
+    else sessionStorage.removeItem(BACKTEST_RUN_KEY);
+  } catch { /* The URL remains the reload authority when storage is disabled. */ }
+}
+
 export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [sessionDate, setSessionDate] = useState(previousWeekdayIsoDate);
   const [initialCash, setInitialCash] = useState(10_000);
@@ -113,6 +132,9 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [creating, setCreating] = useState(false);
   const [run, setRun] = useState<BacktestRun | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState(readSelectedRun);
+  const [restoreError, setRestoreError] = useState("");
+  const [restoreAttempt, setRestoreAttempt] = useState(0);
   const [results, setResults] = useState<BacktestResults | null>(null);
   const [comparison, setComparison] = useState<BacktestComparison | null>(null);
   const [comparisonError, setComparisonError] = useState("");
@@ -135,6 +157,34 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     ? configurationOptions.available_run_plans.find((plan) => plan.run_plan_id === runPlanId) : undefined;
   const setupKey = JSON.stringify([candidateId, runPlanId, sessionDate, startTime, endTime, normalizedTickers, refreshKey]);
   const currentPreflight = checkedSetupKey === setupKey && preflight?.configuration_revision_id === candidateId && preflight.run_plan_id === runPlanId;
+
+  useEffect(() => {
+    if (!selectedRunId) return;
+    persistSelectedRun(selectedRunId);
+    if (run?.run_id === selectedRunId) return;
+    const controller = new AbortController();
+    setRestoreError("");
+    const restore = async () => {
+      const path = `/api/trading/backtest/runs/${encodeURIComponent(selectedRunId)}`;
+      try {
+        return await api<BacktestRun>(path, { signal: controller.signal, timeoutMs: 20_000 });
+      } catch (reason) {
+        if ((reason as ApiError)?.status !== 404 || controller.signal.aborted) throw reason;
+        // Rehydrate saved results only; never create or resume an execution.
+        return api<BacktestRun>(`${path}/review`, { method: "POST", signal: controller.signal, timeoutMs: 60_000 });
+      }
+    };
+    void restore().then((value) => { if (!controller.signal.aborted) setRun(value); })
+      .catch((reason) => { if (!controller.signal.aborted) setRestoreError(reason instanceof Error ? reason.message : String(reason)); });
+    return () => controller.abort();
+  }, [selectedRunId, restoreAttempt]);
+
+  function returnToSetup() {
+    persistSelectedRun("");
+    setSelectedRunId("");
+    setRun(null);
+    setRestoreError("");
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -232,7 +282,15 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     restartKey: run?.run_id,
     task: async (signal) => {
       if (!run) return;
-      setRun(await api<BacktestRun>(`/api/trading/backtest/runs/${encodeURIComponent(run.run_id)}`, { signal, timeoutMs: 20_000 }));
+      const update = await api<BacktestRun>(`/api/trading/backtest/runs/${encodeURIComponent(run.run_id)}?compact=true`, { signal, timeoutMs: 20_000 });
+      if (!signal.aborted) {
+        // The pinned profile is immutable. Preserve its object identity so a
+        // progress tick does not rebuild and persist the whole workspace.
+        setRun((current) => current?.run_id === update.run_id
+          ? { ...current, ...update, canvas_profile: current.canvas_profile }
+          : update);
+        setError("");
+      }
     },
   });
 
@@ -276,6 +334,8 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       setComparison(null);
       setComparisonError("");
       setRun(created);
+      persistSelectedRun(created.run_id);
+      setSelectedRunId(created.run_id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -331,15 +391,24 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       canvasId="main"
       manager={false}
       modeControls={<div className="historical-canvas-run-state historical-backtest-progress">
-        <div className="historical-backtest-progress-actions"><button aria-label="Return to Backtest setup" className="button secondary compact" onClick={() => setRun(null)} type="button"><ArrowLeft size={14} /> Setup</button>{!terminal ? <><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void commandRun(run.status === "paused" ? "play" : "pause")} type="button">{run.status === "paused" ? <Play size={14} /> : <Pause size={14} />}{run.status === "paused" ? "Resume" : "Pause"}</button><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void stopRun()} type="button"><Square size={14} /> Stop</button></> : null}</div>
+        <div className="historical-backtest-progress-actions"><button aria-label="Return to Backtest setup" className="button secondary compact" onClick={returnToSetup} type="button"><ArrowLeft size={14} /> Setup</button>{!terminal ? <><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void commandRun(run.status === "paused" ? "play" : "pause")} type="button">{run.status === "paused" ? <Play size={14} /> : <Pause size={14} />}{run.status === "paused" ? "Resume" : "Pause"}</button><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void stopRun()} type="button"><Square size={14} /> Stop</button></> : null}</div>
         <div className="historical-backtest-progress-heading"><strong>Backtest {run.status.replaceAll("_", " ")}</strong><b>{Math.round(run.progress * 100)}%</b></div>
         <div aria-label={`Backtest ${Math.round(run.progress * 100)} percent complete`} aria-valuemax={100} aria-valuemin={0} aria-valuenow={Math.round(run.progress * 100)} className="historical-backtest-progress-track" role="progressbar"><span style={{ width: `${Math.max(0, Math.min(100, run.progress * 100))}%` }} /></div>
         <div className="historical-backtest-progress-facts"><span>{new Intl.NumberFormat("en-US").format(run.processed_events || 0)} exact events</span><span>Through {formatReplayTime(run.current_time)} ET</span><span>{runScope}</span><span><Zap aria-hidden="true" size={11} /> Accelerated causal engine</span></div>
+        {error ? <div className="canvas-inline-error" role="alert">{error}</div> : null}
       </div>}
       replayRun={run}
       runtimeWorkspaceId="main"
     />;
   }
+
+  if (selectedRunId) return <div className="canvas-config-page">
+    <div className={restoreError ? "canvas-inline-error" : "historical-canvas-run-state"} role={restoreError ? "alert" : "status"}>
+      {restoreError ? `Could not reconnect to backtest: ${restoreError}` : "Reconnecting to your backtest…"}
+      {restoreError ? <button className="button secondary compact" onClick={() => setRestoreAttempt((value) => value + 1)} type="button">Retry connection</button> : null}
+      <button className="button secondary compact" onClick={returnToSetup} type="button">Return to setup</button>
+    </div>
+  </div>;
 
   const warmupCheck: HistoricalCheck = {
     id: "indicator_warmup",

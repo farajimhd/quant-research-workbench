@@ -408,6 +408,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   const liveClockInstant = useWallClock(1_000, liveMode);
   const livePreviewRefreshMs = useWallClock(15_000, liveMode);
   const [preview, setPreview] = useState<CanvasPreview | null>(null);
+  const loadedPreviewRevisionRef = useRef("");
   const [contextReady, setContextReady] = useState(Boolean(replayRun || liveMode));
   const [contextError, setContextError] = useState("");
   const [workspaceState, setWorkspaceState] = useState<CanvasWorkspaceState | null>(initialCanvasState);
@@ -669,15 +670,19 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   usePollingTask({
     enabled: Boolean(contextReady && replayRun && replayRuntimeReady && previewContainerKey),
     initialDelayMs: 0,
-    intervalMs: 250,
-    pauseWhenHidden: false,
+    intervalMs: runtimeMode === "backtest" ? 1_000 : 250,
+    // Let the one final read finish even if its tab is hidden. A single-shot
+    // polling task otherwise treats a visibility abort as completion.
+    pauseWhenHidden: Boolean(replayRun && !isTerminalReplayStatus(replayRun.status)),
     repeat: !replayRun || !isTerminalReplayStatus(replayRun.status),
     restartKey: `${replayRun?.run_id}:${activeSymbol}:${previewContainerKey}:${Boolean(replayRun && isTerminalReplayStatus(replayRun.status))}`,
     onError: (reason) => { setError(reason instanceof Error ? reason.message : String(reason)); setLoading(false); },
     task: async (signal) => {
       if (!replayRun) return;
+      const revision = `${replayRun.run_id}:${activeSymbol}:${previewContainerKey}:${replayRun.updated_at}:${replayRun.status}`;
+      if (loadedPreviewRevisionRef.current === revision) return;
       const payload = await api<CanvasPreview>(`/api/trading/${runtimeMode}/runs/${encodeURIComponent(replayRun.run_id)}/canvas${query({ symbol: activeSymbol })}`, { signal, timeoutMs: 60000 });
-      if (!signal.aborted) { setPreview(payload); setLoading(false); setError(""); }
+      if (!signal.aborted) { loadedPreviewRevisionRef.current = revision; setPreview(payload); setLoading(false); setError(""); }
     },
   });
 
@@ -1342,7 +1347,7 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
             ? <div className="canvas-inline-error">{liveMode ? "Live" : "Historical"} watchlist unavailable: {scannerError}</div>
             : <WatchUniverseContainer asOf={new Date(chartCutoffMs).toISOString()} live={liveMode} onSettingsChange={(change) => updateSettings((state) => ({ ...state, watchlist: { ...state.watchlist, ...(typeof change === "function" ? change(state.watchlist) : change) } }))} onTickerSelect={onTickerWorkspaceOpen} runtime={replayWatchlistRuntime ?? scannerSnapshot?.watchlist_runtime ?? null} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.watchlist} />
       : definition.id === "strategy_activity"
-        ? <StrategyActivityContainer loadAllHistory={runtimeMode === "backtest_debug" || runtimeMode === "backtest" || (readOnly && Boolean(signalStreamRunId))} asOf={new Date(chartCutoffMs).toISOString()} focusSequence={strategyActivityFocusSequence} historicalPage={signalStreamRunId ? preview?.trading.strategy_activity_page : undefined} historicalRows={signalStreamRunId ? preview?.trading.strategy_activity ?? [] : undefined} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, strategy_activity: { ...state.strategy_activity, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} runId={signalStreamRunId} settings={settings.strategy_activity} />
+        ? <StrategyActivityContainer loadAllHistory={runtimeMode === "backtest" ? isTerminalReplayStatus(preview?.run?.status ?? "") : runtimeMode === "backtest_debug" || (readOnly && Boolean(signalStreamRunId))} asOf={new Date(chartCutoffMs).toISOString()} focusSequence={strategyActivityFocusSequence} historicalPage={signalStreamRunId ? preview?.trading.strategy_activity_page : undefined} historicalRows={signalStreamRunId ? preview?.trading.strategy_activity ?? [] : undefined} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, strategy_activity: { ...state.strategy_activity, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} runId={signalStreamRunId} settings={settings.strategy_activity} />
       : loading && !preview
         ? <LoadingState fill label={`Loading ${definition.title.toLowerCase()}`} />
         : renderPreview(definition.id, preview, settings, linkGroup, onLinkContextChange, onTickerWorkspaceOpen)}</div>

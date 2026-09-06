@@ -2430,6 +2430,8 @@ def capture(args: argparse.Namespace) -> int:
                         canvas_query += f"&runtime_mode={args.canvas_runtime_mode}"
                 elif args.seed_core_containers and scenario["page"] == "replay-trading":
                     canvas_query = "?historicalWorkspace=replay"
+                elif args.historical_run_id and scenario["page"] == "backtest-trading":
+                    canvas_query = f"?backtest_run={args.historical_run_id}"
                 elif args.seed_core_containers and scenario["page"] == "backtest-trading":
                     canvas_query = "?historicalWorkspace=backtest"
                 result = {**scenario, "url": f"{base_url}/{canvas_query}#{scenario['page']}"}
@@ -2441,7 +2443,7 @@ def capture(args: argparse.Namespace) -> int:
                     page.locator(".app-shell").wait_for(
                         state="visible", timeout=args.timeout_ms,
                     )
-                    if args.historical_run_id:
+                    if args.historical_run_id and scenario["page"] == "canvas-focus":
                         page.get_by_role("button", name=args.canvas_chart_timeframe, exact=True).click(timeout=args.timeout_ms)
                     page.wait_for_timeout(args.settle_ms)
                     metrics = page.evaluate("""() => {
@@ -2607,7 +2609,7 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("--url", default="http://127.0.0.1:5173")
     result.add_argument("--canvas-id", help="open trading routes directly in the named child canvas")
-    result.add_argument("--historical-run-id", help="review a portable Backtest Canvas link without local focus storage")
+    result.add_argument("--historical-run-id", help="review a portable Backtest Canvas or restore the main Backtest page by run ID")
     result.add_argument("--canvas-session-date", help="seed a deterministic Canvas preview session date (YYYY-MM-DD)")
     result.add_argument("--canvas-preview-time", default="09:45", help="preview time paired with --canvas-session-date (HH:MM)")
     result.add_argument("--canvas-runtime-mode", choices=("live", "paper"), help="open Canvas focus review under the selected real-time runtime authority")
