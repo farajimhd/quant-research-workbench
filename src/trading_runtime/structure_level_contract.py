@@ -2,7 +2,7 @@
 from math import isfinite
 
 BOOK_VERSION = 'clickhouse-closing-book-1'
-STRATEGY_CONTRACT = 'clickhouse-point-level-prominence-4-v1'
+STRATEGY_CONTRACT = 'clickhouse-merged-point-pnorm-v1'
 MINIMUM_PROMINENCE = 4.0
 
 
@@ -15,7 +15,14 @@ def qualifies(row, observed_at=None):
         return False
     try:
         score, price = float(row['prominence']), float(row['price'])
-        if not isfinite(score) or score < MINIMUM_PROMINENCE or not isfinite(price) or price <= 0:
+        if row.get('load_contract') == 'merged-point-minmax-v1':
+            score = float(row['p_norm'])
+            threshold = float(row.get('minimum_p_norm', .5))
+            if not 0 <= score <= 1 or not 0 <= threshold <= 1 or score < threshold:
+                return False
+        elif score < MINIMUM_PROMINENCE:
+            return False
+        if not isfinite(score) or not isfinite(price) or price <= 0:
             return False
         if row.get('side') not in (-1, 1):
             return False
@@ -29,8 +36,9 @@ def qualifies(row, observed_at=None):
         return False
 
 
-def strategy_snapshot(snapshot, observed_at):
+def strategy_snapshot(snapshot, observed_at, minimum_p_norm=.5):
     """Keep bands as audit data; all strategy boundaries use the exact price."""
+    rows = [dict(row, minimum_p_norm=minimum_p_norm) if row.get('load_contract') else row for row in snapshot['unified_levels']]
     return {'unified_levels': [dict(row, band_lower=row['lower'], band_upper=row['upper'],
         lower=row['price'], upper=row['price'], strategy_level_contract=STRATEGY_CONTRACT)
-        for row in snapshot['unified_levels'] if qualifies(row, observed_at)]}
+        for row in rows if qualifies(row, observed_at)]}

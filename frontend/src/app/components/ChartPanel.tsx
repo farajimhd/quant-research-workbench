@@ -206,6 +206,8 @@ type PriceZone = {
   holdObservationCount?: number;
   holdQualityScore?: number;
   prominence?: number;
+  p_norm?: number | null;
+  loadContract?: string;
   levelPrice?: number;
   tickerRelativeQualityDistributionHash?: string;
   tickerRelativeQualityPopulationSize?: number;
@@ -346,6 +348,8 @@ type LegendSeriesSettings = {
   bandOpacity?: number;
   priceOpacity?: number;
   minimumProminence?: number;
+  minimumPNorm?: number;
+  supportsPNormFilter?: boolean;
   minimumHoldQualityScore?: number;
   /** Legacy persisted key. Its value already represented conservative quality. */
   minimumHoldProbability?: number;
@@ -2428,6 +2432,8 @@ type LegendItem = {
   bandOpacity?: number;
   priceOpacity?: number;
   minimumProminence?: number;
+  minimumPNorm?: number;
+  supportsPNormFilter?: boolean;
   minimumHoldQualityScore?: number;
   minimumPressureMagnitude?: number;
   minimumTickerRelativeQualityScore?: number;
@@ -2789,7 +2795,16 @@ function LegendEditor({
           </span>
         </label>
       ) : null}
-      {item.itemKind === "zone" && item.supportsProminenceFilter ? (
+      {item.itemKind === "zone" && item.supportsPNormFilter ? (
+        <fieldset className="legend-unified-filters"><legend>Normalized prominence</legend>
+          <label className="legend-filter-control">
+            <span className="legend-filter-control-copy"><span>Minimum p_norm</span><small>Display only. Set the strategy threshold in the Backtest launch form.</small></span>
+            <span className="legend-range-control"><input aria-label="Minimum p_norm" type="range" min={0} max={1} step={0.01}
+              value={item.minimumPNorm ?? 0.5} onChange={(event) => onUpdate({ minimumPNorm: Number(event.target.value) })} />
+              <output>{(item.minimumPNorm ?? 0.5).toFixed(2)}</output></span>
+          </label>
+        </fieldset>
+      ) : item.itemKind === "zone" && item.supportsProminenceFilter ? (
         <fieldset className="legend-unified-filters">
           <legend>Prominence</legend>
           <label className="legend-filter-control">
@@ -4386,6 +4401,8 @@ function buildPriceZoneLegendItems(
       bandOpacity: settings.bandOpacity,
       priceOpacity: settings.priceOpacity,
       minimumProminence: settings.minimumProminence,
+      minimumPNorm: settings.minimumPNorm,
+      supportsPNormFilter: itemZones.some((zone) => Boolean(zone.loadContract)),
       minimumHoldQualityScore: settings.minimumHoldQualityScore,
       minimumPressureMagnitude: settings.minimumPressureMagnitude,
       minimumTickerRelativeQualityScore: settings.minimumTickerRelativeQualityScore,
@@ -4995,6 +5012,8 @@ function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettin
     bandOpacity: 0.05,
     priceOpacity: 0.1,
     minimumProminence: 4,
+    minimumPNorm: 0.5,
+    supportsPNormFilter: false,
     minimumHoldQualityScore: 0,
     minimumHoldProbability: 0,
     minimumPressureMagnitude: 0,
@@ -5035,6 +5054,7 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
     bandOpacity: clampNumber(stored.bandOpacity, 0, 1, 0.05),
     priceOpacity: clampNumber(stored.priceOpacity, 0, 1, 0.1),
     minimumProminence: clampNumber(stored.minimumProminence, 0, Number.MAX_VALUE, 4),
+    minimumPNorm: clampNumber(stored.minimumPNorm, 0, 1, 0.5),
     minimumHoldQualityScore: clampNumber(stored.minimumHoldQualityScore ?? stored.minimumHoldProbability, 0, 1, defaults.minimumHoldQualityScore),
     minimumHoldProbability: defaults.minimumHoldProbability,
     minimumPressureMagnitude: clampNumber(stored.minimumPressureMagnitude, 0, 1, defaults.minimumPressureMagnitude),
@@ -5045,6 +5065,7 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
     showAxisLabel: stored.showAxisLabel ?? defaults.showAxisLabel,
     showHistoricalLabels: stored.showHistoricalLabels ?? defaults.showHistoricalLabels,
     showLabels: stored.showLabels ?? defaults.showLabels,
+    supportsPNormFilter: stored.supportsPNormFilter ?? false,
     showUnifiedActive: stored.showUnifiedActive ?? defaults.showUnifiedActive,
     showUnifiedBroken: stored.showUnifiedBroken ?? defaults.showUnifiedBroken,
     showUnifiedQualityLabel: stored.showUnifiedQualityLabel ?? stored.showUnifiedHoldProbability ?? defaults.showUnifiedQualityLabel,
@@ -5072,6 +5093,7 @@ type ResolvedPriceZoneLegendSettings = {
   bandOpacity: number;
   priceOpacity: number;
   minimumProminence: number;
+  minimumPNorm: number;
   minimumHoldQualityScore: number;
   minimumPressureMagnitude: number;
   minimumTickerRelativeQualityScore: number;
@@ -5106,6 +5128,7 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
     bandOpacity: clampNumber(stored.bandOpacity, 0, 1, 0.05),
     priceOpacity: clampNumber(stored.priceOpacity, 0, 1, 0.1),
     minimumProminence: clampNumber(stored.minimumProminence, 0, Number.MAX_VALUE, 4),
+    minimumPNorm: clampNumber(stored.minimumPNorm, 0, 1, 0.5),
     minimumHoldQualityScore: clampNumber(stored.minimumHoldQualityScore ?? stored.minimumHoldProbability, 0, 1, 0),
     minimumPressureMagnitude: clampNumber(stored.minimumPressureMagnitude, 0, 1, 0),
     minimumTickerRelativeQualityScore: clampNumber(stored.minimumTickerRelativeQualityScore, 0, 1, 0),
@@ -5135,6 +5158,8 @@ function priceZoneMeetsUnifiedFilters(zone: PriceZone, settings: ResolvedPriceZo
   const roleVisible = zone.tone === "buy" ? settings.showUnifiedSupport : settings.showUnifiedResistance;
   const stateVisible = zone.latest ? settings.showUnifiedActive : settings.showUnifiedBroken;
   const flipVisible = !(Number(zone.roleFlipCount) > 0) || settings.showUnifiedRoleFlipped;
+  if (zone.loadContract) return roleVisible && stateVisible && flipVisible
+    && Number.isFinite(zone.p_norm) && Number(zone.p_norm) >= settings.minimumPNorm;
   if (Number.isFinite(zone.prominence)) return roleVisible && stateVisible && flipVisible
     && Number(zone.prominence) >= settings.minimumProminence;
   return roleVisible && stateVisible && flipVisible
@@ -6673,7 +6698,7 @@ function drawPriceZonePrimitiveLabels(
       ) {
         drawUnifiedQualityLabel(
           context,
-          Number.isFinite(zone.prominence) ? `P${Number(zone.prominence).toFixed(2)}` : Number.isFinite(zone.tickerRelativeQualityScore)
+          zone.loadContract ? `p_norm ${Number.isFinite(zone.p_norm) ? Number(zone.p_norm).toFixed(2) : "-"}` : Number.isFinite(zone.prominence) ? `P${Number(zone.prominence).toFixed(2)}` : Number.isFinite(zone.tickerRelativeQualityScore)
             ? `TQ${Math.round(clampNumber(zone.tickerRelativeQualityScore, 0, 1, 0) * 100)}%`
             : "TQ —",
           span,

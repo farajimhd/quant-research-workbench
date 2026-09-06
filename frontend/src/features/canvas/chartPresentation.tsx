@@ -925,8 +925,8 @@ function pushUnifiedStructureLevels(
         compactLabel: `${support ? "S" : "R"} · P${Number(level.prominence ?? 0).toFixed(2)}`,
         label: `${support ? "Support" : "Resistance"} · ${level.lifecycle.replaceAll("_", " ")} · reaction prominence ${Number(level.prominence ?? 0).toFixed(2)} · Experimental ClickHouse`,
         legendLabel: "Experimental ClickHouse level book", displayItemId: "indicator.qmd_unified_structure",
-        settingsId: "indicator.qmd_unified_structure.clickhouse-v1", defaultVisible: true,
-        prominence: level.prominence, levelPrice: level.price,
+        settingsId: level.load_contract ? "indicator.qmd_unified_structure.merged-pnorm-v1" : "indicator.qmd_unified_structure.clickhouse-v1", defaultVisible: true,
+        prominence: level.prominence, p_norm: level.p_norm, loadContract: level.load_contract, levelPrice: level.price,
         start, end, latest, extendToRightEdge: latest, lower: level.lower, upper: level.upper,
         minPixelHeight: 3, renderMode: "zone", fillOpacity: 0.08, borderWidth: 1,
         historicalLabelsDefault: false, historyBarsDefault: 0,
@@ -1019,7 +1019,11 @@ function unifiedStructureSegments(rows: HistoricalIndicator[], chartEnd: number)
   const upsertLevel = (level: QmdUnifiedStructureLevel, time: number) => {
     const key = `${level.unified_level_id}:${level.side}`;
     const existing = active.get(key);
-    if (existing) {
+    if (existing && level.load_contract) {
+      if (JSON.stringify(existing.level) === JSON.stringify(level)) return;
+      closeSegment(key, time);
+    }
+    if (existing && !level.load_contract) {
       // Evidence changes reinforce the same causal level episode. Only an
       // explicit removal (accepted break) or a side change closes its box.
       // The backend keeps episode geometry fixed, so updating the evidence
@@ -1034,7 +1038,7 @@ function unifiedStructureSegments(rows: HistoricalIndicator[], chartEnd: number)
     // row (for example a prior-day checkpoint). Preserve that causal start;
     // the chart clips it to its loaded boundary. Anchoring to `time` made
     // every historical level falsely begin at 04:00 on each session.
-    const causalStart = Number.isFinite(confirmed) && confirmed > 0
+    const causalStart = level.load_contract ? time : Number.isFinite(confirmed) && confirmed > 0
       ? confirmed
       : Number.isFinite(created) && created > 0
         ? created
@@ -1077,7 +1081,7 @@ function unifiedStructureSegments(rows: HistoricalIndicator[], chartEnd: number)
 function isQmdUnifiedStructureLevel(value: unknown): value is QmdUnifiedStructureLevel {
   if (!value || typeof value !== "object") return false;
   const row = value as Partial<QmdUnifiedStructureLevel>;
-  return Number.isFinite(Number(row.unified_level_id))
+  return (Number.isFinite(Number(row.unified_level_id)) || (row.load_contract === "merged-point-minmax-v1" && /^merged:[a-f0-9]{24}$/.test(String(row.unified_level_id))))
     && (Number(row.side) === 1 || Number(row.side) === -1)
     && Number(row.lower) > 0
     && Number(row.upper) >= Number(row.lower)

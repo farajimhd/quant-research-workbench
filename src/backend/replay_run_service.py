@@ -396,6 +396,7 @@ class ReplayRunDefinition:
     simulation_profile: str = "baseline"
     experimental_structure_book: str = ""
     experimental_structure_fingerprint: str = ""
+    minimum_p_norm: float = .5
     historical_frame_cache: dict[tuple[str, str, str, str], Any] | None = field(
         default=None,
         repr=False,
@@ -408,6 +409,8 @@ class ReplayRunDefinition:
     )
 
     def __post_init__(self) -> None:
+        if not 0 <= self.minimum_p_norm <= 1:
+            raise ValueError('minimum_p_norm must be between zero and one')
         normalized_tickers = tuple(dict.fromkeys(
             _ticker(value) for value in self.tickers if str(value).strip()
         ))
@@ -507,6 +510,7 @@ class ReplayRunDefinition:
             "initial_cash": self.initial_cash,
             "simulation_profile": self.simulation_profile,
             "experimental_structure_book": self.experimental_structure_book,
+            "minimum_p_norm": self.minimum_p_norm,
             "experimental_structure_fingerprint": self.experimental_structure_fingerprint,
             "assignment_ids": list(self.assignment_ids),
             "tickers": list(self.tickers),
@@ -1757,6 +1761,7 @@ class ReplayRunController:
                 "frame_cursor": deepcopy(self._frame_cursor),
                 "processed_frames": self._processed_frames,
                 "experimental_session_highs": deepcopy(getattr(self, "_experimental_session_highs", {})),
+                "level_load_contract": "merged-point-minmax-v1",
                 "previous_vwap": [
                     {
                         "ticker": ticker,
@@ -2682,8 +2687,8 @@ class ReplayRunController:
         runtime = state.get("runtime")
         if not isinstance(controller, dict) or not isinstance(runtime, dict):
             raise ValueError("Historical restart checkpoint omitted runtime state")
-        if self.definition.experimental_structure_book and "experimental_session_highs" not in controller:
-            raise ValueError("Experimental backtest checkpoint predates the point-level/session-high contract; start a new run")
+        if self.definition.experimental_structure_book and controller.get("level_load_contract") != "merged-point-minmax-v1":
+            raise ValueError("Experimental backtest checkpoint predates the merged p_norm/session-high contract; start a new run")
         current_time = _optional_checkpoint_time(controller.get("current_time"))
         last_event_time = _optional_checkpoint_time(runtime.get("last_event_time"))
         self.current_time = current_time
@@ -3449,9 +3454,9 @@ class ReplayRunController:
         return True
 
     async def _experimental_structure_snapshot(self, ticker, as_of, lane, sequence=None):
-        from src.backend.experimental_structure_book import BookCursor
+        from src.backend.experimental_structure_book import NormalizedBookCursor as BookCursor
         from src.trading_runtime.structure_level_contract import (
-            MINIMUM_PROMINENCE, STRATEGY_CONTRACT, strategy_snapshot,
+            STRATEGY_CONTRACT, strategy_snapshot,
         )
         cursors = getattr(self, '_experimental_cursors', {})
         self._experimental_cursors = cursors
@@ -3465,11 +3470,15 @@ class ReplayRunController:
                 'fingerprint': self.definition.experimental_structure_fingerprint,
                 'continuation': 'completed-second causal observations; independent frame/event cursors',
                 'strategy_level_contract': STRATEGY_CONTRACT,
-                'minimum_prominence': MINIMUM_PROMINENCE, 'price_authority': 'price',
+                'minimum_p_norm': self.definition.minimum_p_norm, 'price_authority': 'merged mean price',
+                'load_contract': 'merged-point-minmax-v1',
                 'session_high_authority': 'causal canonical one-second highs and price-eligible trades',
                 'legacy_probability_scores': 'not used by this versioned contract'})
         snapshot = await asyncio.to_thread(cursors[key].snapshot, as_of, sequence)
-        return strategy_snapshot(snapshot, as_of)
+        if snapshot.get('normalization'):
+            self._record_data_authority(f'level_normalization:{ticker}:{snapshot["normalization"]["frozen_at"]}',
+                                        snapshot['normalization'])
+        return strategy_snapshot(snapshot, as_of, self.definition.minimum_p_norm)
 
     async def _event_structure_context(self, event: TradeEvent) -> dict[str, Any]:
         """Advance the shared producer through this exact canonical event.
@@ -6499,6 +6508,7 @@ def _definition_from_manifest(
         debug_fixture=fixture,
         simulation_profile=str(definition.get("simulation_profile") or "baseline"),
         experimental_structure_book=str(definition.get('experimental_structure_book') or ''),
+        minimum_p_norm=float(definition.get('minimum_p_norm', .5)),
         experimental_structure_fingerprint=str(definition.get('experimental_structure_fingerprint') or ''),
     )
 

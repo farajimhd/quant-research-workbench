@@ -186,7 +186,7 @@ The chart requests the selected run's provider and clamps levels to the run
 cursor. It uses the same continuation, emits an initial snapshot plus deltas,
 and preserves UInt64 identities as strings. Prominence labels are `P…`; legacy
 probability/relative-quality labels and filters are not applied to those zones.
-The experimental strategy contract is `clickhouse-point-level-prominence-4-v1`.
+The initial experimental strategy contract was `clickhouse-point-level-prominence-4-v1` (superseded for new runs by the load-time contract below).
 Only causally confirmed levels with prominence >= 4 enter strategy observations.
 Entry, support stops and resistance targets use exact `price` and producer role;
 overlapping shading bands do not merge distinct identities. This version replaces
@@ -230,3 +230,31 @@ Status remains `built_pending_quality_acceptance`. Live streaming detection and
 persistence, retention and score-policy decisions, automatic repair and a
 production consumer cutover remain unfinished. Use only the explicit
 experimental Backtest selection for visual acceptance.
+
+
+### Load-time merge and normalized prominence proof of concept
+
+New experimental backtests use `merged-point-minmax-v1`; persisted source tables
+are unchanged. The loader sorts supports and resistances separately and merges
+transitively overlapping bounds. Each group retains the union bounds, arithmetic
+mean of every original price and prominence, a deterministic member/role hash,
+and member count. Opposite roles never merge. This intentionally has no maximum
+width cap; chain width is a quality diagnostic for this proof of concept.
+
+The population is merged before filtering by representative price into
+`[max(0, C-r*C), C+r*C]`, with r=1 and C the preceding certified session's last
+completed regular-session observation (through 16:00 New York), translated to
+the current causal split basis. The prior-session book at 04:00 sets frozen
+min/max prominence bounds. Current causal snapshots are merged again as the
+source advances; p_norm is clamped min-max normalization using those frozen
+bounds. Equal bounds yield 0.5. An empty seed yields null p_norm and cannot
+qualify for strategy selection; missing prior close fails closed.
+
+The Backtest launch form exposes `Strategy minimum p_norm` (0-1, default 0.5).
+This run-scoped value is persisted in the definition and attached to strategy
+levels; raw prominence 4 is not an additional gate for this contract. The chart
+indicator form exposes an independent `Minimum p_norm` display filter. Merged
+identities and score changes form causal chart segments; a later score does not
+rewrite an earlier segment. Old experimental checkpoints require a new run.
+This is a backtest/load-time experiment, not a Live producer or persistence
+migration. Relative normalized scores are not calibrated success probabilities.

@@ -65,6 +65,8 @@ export type QmdUnifiedStructureSource = {
 export type QmdUnifiedStructureLevel = {
   unified_level_id: number | string;
   prominence?: number;
+  p_norm?: number | null;
+  load_contract?: string;
   book_version?: string;
   side: number;
   price: number;

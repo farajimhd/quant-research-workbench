@@ -96,6 +96,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [sessionDate, setSessionDate] = useState(previousWeekdayIsoDate);
   const [initialCash, setInitialCash] = useState(10_000);
   const [structureBook, setStructureBook] = useState("");
+  const [minimumPNorm, setMinimumPNorm] = useState(0.5);
   const [structureBooks, setStructureBooks] = useState<Array<{ id: string; ticker: string; start: string; end: string }>>([]);
   useEffect(() => { let active = true; api<{ items: typeof structureBooks }>("/api/trading/backtest/structure-books")
     .then((value) => { if (active) setStructureBooks(value.items); }).catch(() => { if (active) setError("Experimental level books could not be loaded."); });
@@ -263,6 +264,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
           session_count: 1,
           simulation_profile: simulationProfile,
           experimental_structure_book: structureBook,
+          minimum_p_norm: minimumPNorm,
           start_time: startTime,
           end_time: endTime,
           tickers: normalizedTickers,
@@ -400,9 +402,10 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
               <label className="configuration-field"><span>Start time · ET</span><input aria-label="Start time" max="19:59:59" min="04:00:00" onChange={(event) => { setPeriodPreset("custom"); setStartTime(normalizeClockInput(event.target.value)); }} step="1" type="time" value={startTime} /><small>No new strategy actions are admitted before this time.</small></label>
               <label className="configuration-field"><span>End time · ET</span><input aria-label="End time" max="20:00:00" min="04:00:01" onChange={(event) => { setPeriodPreset("custom"); setEndTime(normalizeClockInput(event.target.value)); }} step="1" type="time" value={endTime} /><small>The run stops at this exact New York boundary.</small></label>
               <label className="configuration-field"><span>Initial cash</span><input max={1_000_000_000} min={1_000} onChange={(event) => setInitialCash(Math.max(1_000, Number(event.target.value) || 1_000))} step={1_000} type="number" value={initialCash} /><small>Applied to the isolated simulated account for the full run.</small></label>
-              <TradingModeSelectField label="Level book" help="Experimental books advance causally during the session. The strategy uses exact level prices and prominence ≥ 4 for entry, support stops and resistance targets. The chart threshold is independent."
+              <TradingModeSelectField label="Level book" help={structureBook ? "Overlapping same-role levels merge causally. The strategy uses p_norm for entry, support stops and resistance targets. The chart threshold is independent." : "Uses the current v18 structural level contract. Select an Experimental ClickHouse book to test merged levels and normalized prominence."}
                 value={structureBook} onChange={(value) => { setStructureBook(value); const book = structureBooks.find((row) => row.id === value); if (book) setTickerInput(book.ticker); }}
                 options={[{ label: "Current v18", value: "" }, ...structureBooks.map((row) => ({ label: `Experimental ClickHouse · ${row.ticker} · through ${row.end}`, value: row.id }))]} />
+              {structureBook ? <label className="configuration-field"><span>Strategy minimum p_norm</span><input aria-label="Strategy minimum p_norm" type="range" min={0} max={1} step={0.01} value={minimumPNorm} onChange={(event) => setMinimumPNorm(Number(event.target.value))} /><output>{minimumPNorm.toFixed(2)}</output><small>Applies to entry, support stops and resistance targets. Frozen prior-session normalization; default price range is 0 to twice the prior close.</small></label> : null}
               <TradingModeSelectField help="Both use $0.005 per share with a $1 minimum commission. Approval requires positive stress results." label="Execution realism" onChange={(value) => setSimulationProfile(value as "baseline" | "stress")} options={[{ label: "Baseline · 25% participation · 5 bps slippage", value: "baseline" }, { label: "Stress · 10% participation · 10 bps slippage", value: "stress" }]} value={simulationProfile} />
               <div className="historical-accelerated-engine-note"><Zap aria-hidden="true" size={17} /><div><strong>Accelerated causal engine</strong><span>{selectedPlan ? `Strategy revision ${selectedPlan.strategy_revision} · candidate ${configurationOptions?.candidates.find((row) => row.candidate_id === candidateId)?.candidate_revision}.` : "Select a strategy above."} Launch checks require current execution code and strategy. Results open in Charts &amp; Quotes with MACD, positions, lifecycle activity, and performance.</span></div></div>
     </TradingModeLaunch>

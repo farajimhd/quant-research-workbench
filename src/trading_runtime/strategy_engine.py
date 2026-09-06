@@ -1536,7 +1536,7 @@ def _compact_structural_level_reference(row: Mapping[str, Any] | None) -> dict[s
         return {}
     scalar_fields = (
         "unified_level_id",
-        "book_version", "prominence", "strategy_level_contract", "band_lower", "band_upper", "lifecycle",
+        "book_version", "prominence", "p_norm", "minimum_p_norm", "load_contract", "member_count", "strategy_level_contract", "band_lower", "band_upper", "lifecycle",
         "side",
         "price",
         "lower",
@@ -7302,7 +7302,8 @@ def _initial_stop(
                     and structural_stop is not None and selected != round(structural_stop, 4)
                 ),
                 "uncapped_structural_stop": round(structural_stop, 4) if structural_stop is not None else None,
-                **({"strategy_level_contract": STRATEGY_CONTRACT, "minimum_prominence": MINIMUM_PROMINENCE}
+                **({"strategy_level_contract": STRATEGY_CONTRACT,
+                    **({"minimum_p_norm": rows[0].get("minimum_p_norm", .5)} if rows and rows[0].get("load_contract") else {"minimum_prominence": MINIMUM_PROMINENCE})}
                    if any(is_point_level(row) for row in rows) else
                    {**quality_threshold_evidence, "minimum_hold_observations": minimum_observations}),
                 "support_level_ordinal": ordinal,
@@ -7477,7 +7478,7 @@ def _profit_level_score(
     """Rank by the quality authority selected by the revisioned policy."""
 
     if is_point_level(row):
-        return _level_metric(row, "prominence")
+        return _level_metric(row, "p_norm" if row.get("load_contract") else "prominence")
     if "minimum_ticker_relative_quality_score" in (policy or {}):
         return _level_metric(row, "ticker_relative_quality_score")
     return _level_metric(row, "hold_quality_score", "hold_probability")

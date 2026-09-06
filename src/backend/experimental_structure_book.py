@@ -229,7 +229,7 @@ def context(snapshot, price=0):
     return result
 
 
-def chart_rows(build_id, ticker, start, end, fingerprint=None):
+def raw_chart_rows(build_id, ticker, start, end, fingerprint=None):
     if end < start or start.astimezone(NY).date() != end.astimezone(NY).date():
         raise ValueError('Experimental chart requires one session and a valid causal window')
     cursor = BookCursor(build_id, ticker, fingerprint)
@@ -256,4 +256,69 @@ def chart_rows(build_id, ticker, start, end, fingerprint=None):
             row['qmd_structure_unified_level_delta'] = {'upserts': levels, 'removed': removed}
         output.append(row)
         previous, previous_visible = projected.copy(), visible.copy()
+    return output
+
+@lru_cache(maxsize=32)
+def session_normalization(build_id, ticker, session, fingerprint, ratio=1.0):
+    from src.trading_runtime.normalized_level_book import calibration
+    build = resolve(build_id)
+    manifest = json.loads((Path(build['runtime'])/'source_manifest.json').read_text())
+    dates = [row['source_date'] for row in manifest[0]]
+    index = dates.index(session)
+    if index == 0:
+        raise ValueError('Normalized book requires a certified preceding session close')
+    prior = dates[index-1]
+    close_us = micros(datetime.combine(datetime.fromisoformat(prior).date(), time(16), NY))
+    opening_us = micros(datetime.combine(datetime.fromisoformat(prior).date(), time(9,30), NY))
+    prices = rows(f"SELECT price FROM {build_id}.observations FINAL WHERE session_date='{prior}' AND known_us>{opening_us} AND known_us<={close_us} ORDER BY known_us DESC LIMIT 1")
+    if not prices:
+        raise ValueError('Previous regular-session close is unavailable; normalization cannot proceed')
+    at = datetime.combine(datetime.fromisoformat(session).date(), time(4), NY)
+    seed = BookCursor(build_id, ticker, fingerprint)
+    snapshot = seed.snapshot(at, -1)
+    basis = calibration([r for r in snapshot['unified_levels'] if r['confirmed_at_ms'] < at.timestamp()*1000], float(prices[0]['price'])*seed.factor, ratio)
+    return dict(basis, prior_session=prior, frozen_at=at.isoformat(), close_authority='last completed regular-session observation')
+
+
+class NormalizedBookCursor(BookCursor):
+    def snapshot(self, cutoff, sequence=None):
+        from src.trading_runtime.normalized_level_book import transform
+        with self.lock:
+            raw = super().snapshot(cutoff, sequence)
+            if getattr(self, '_normalized_raw', None) is raw:
+                return self._normalized_value
+            basis = session_normalization(self.build['id'], self.ticker, self.session, self.build['fingerprint'])
+            self._normalized_value = transform(raw['unified_levels'], basis)
+            self._normalized_raw = raw
+            return self._normalized_value
+
+
+def chart_rows(build_id, ticker, start, end, fingerprint=None):
+    from src.trading_runtime.normalized_level_book import transform
+    build = resolve(build_id)
+    basis = session_normalization(build_id, ticker, start.astimezone(NY).date().isoformat(),
+                                  fingerprint or build['fingerprint'])
+    raw, previous, output = {}, None, []
+    # Reuse the vectorized state-change projection. Rebuilding thousands of
+    # unchanged raw rows at every observation needlessly slows chart review.
+    for source in raw_chart_rows(build_id, ticker, start, end, fingerprint):
+        if 'qmd_structure_unified_levels' in source:
+            raw = {r['unified_level_id']: r for r in source['qmd_structure_unified_levels']}
+        else:
+            delta = source['qmd_structure_unified_level_delta']
+            for row in delta['removed']:
+                raw.pop(row['unified_level_id'], None)
+            raw.update((r['unified_level_id'], r) for r in delta['upserts'])
+        current = {r['unified_level_id']:r for r in transform(list(raw.values()), basis)['unified_levels']}
+        row = {'bar_start': source['bar_start'], 'bar_end': source['bar_end']}
+        if previous is None:
+            row['qmd_structure_unified_levels'] = list(current.values())
+        else:
+            upserts = [r for key,r in current.items() if previous.get(key)!=r]
+            removed = [dict(unified_level_id=key,side=r['side']) for key,r in previous.items() if key not in current]
+            if not upserts and not removed:
+                continue
+            row['qmd_structure_unified_level_delta'] = dict(upserts=upserts,removed=removed)
+        output.append(row)
+        previous = current
     return output
