@@ -1,5 +1,5 @@
 import { ArrowLeft, CheckCircle2, CircleStop, Gauge, Pause, Play, RefreshCcw, Square, TriangleAlert, X, Zap } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api, type ApiError } from "../api/client";
 import "./HistoricalWorkspace.css";
@@ -141,6 +141,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [controlBusy, setControlBusy] = useState("");
   const [runPlanId, setRunPlanId] = useState("");
   const [candidateId, setCandidateId] = useState("");
+  const resolvedOptionsRequest = useRef<string | null>(null);
   const [configurationOptions, setConfigurationOptions] = useState<BacktestConfigurationOptions | null>(null);
   const [loadingOptions, setLoadingOptions] = useState(true);
   const [optionsError, setOptionsError] = useState("");
@@ -187,6 +188,12 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   }
 
   useEffect(() => {
+    const requestKey = `${candidateId}:${refreshKey}`;
+    if (resolvedOptionsRequest.current === requestKey) {
+      resolvedOptionsRequest.current = null;
+      setLoadingOptions(false);
+      return;
+    }
     let cancelled = false;
     const controller = new AbortController();
     setLoadingOptions(true);
@@ -194,6 +201,9 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     api<BacktestConfigurationOptions>(`/api/trading/backtest/configuration-options?candidate_id=${encodeURIComponent(candidateId)}`, { signal: controller.signal, timeoutMs: 60_000 })
       .then((payload) => {
         if (cancelled) return;
+        if (payload.candidate_id !== candidateId) {
+          resolvedOptionsRequest.current = `${payload.candidate_id}:${refreshKey}`;
+        }
         setConfigurationOptions(payload);
         setCandidateId(payload.candidate_id);
         setRunPlanId((current) => payload.available_run_plans.some((plan) => plan.run_plan_id === current) ? current : payload.run_plan_id);

@@ -419,11 +419,17 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ), patch(
             "src.backend.trading_configuration_service._validate_draft",
         ), patch(
-            "src.backend.trading_configuration_service.resolve_runtime_configurations",
-            return_value=runtimes,
-        ):
-            snapshot = approved_runtime_configuration_snapshot("backtest", run_plan_id="plan-b")
+            "src.backend.trading_configuration_service._available_run_plans",
+            return_value=[{"run_plan_id": r["run_plan"]["run_plan_id"]} for r in runtimes],
+        ), patch(
+            "src.backend.trading_configuration_service._resolve_runtime_configuration",
+            return_value=runtimes[1],
+        ) as resolve:
+            with patch("src.backend.trading_configuration_service._eligible_strategy_deployments",
+                       return_value=[{"run_plan_id": "plan-b", "strategy_deployment_id": "deployment-b"}]):
+                snapshot = approved_runtime_configuration_snapshot("backtest", run_plan_id="plan-b")
 
+        resolve.assert_called_once_with(approved["payload"], mode="backtest", deployment_id="deployment-b")
         self.assertEqual(snapshot["run_plan_id"], "plan-b")
         self.assertEqual(snapshot["payload"]["strategy"]["strategy_id"], "strategy-b")
         self.assertEqual(

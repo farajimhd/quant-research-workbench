@@ -76,6 +76,7 @@ _CONFIGURATION_BASE_CACHE_LOCK = threading.RLock()
 _CONFIGURATION_BASE_CACHE: tuple[str, float, dict[str, Any] | None] = ("", 0.0, None)
 _RUNTIME_SNAPSHOT_CACHE_LOCK = threading.RLock()
 _RUNTIME_SNAPSHOT_CACHE: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+_CANDIDATE_MODEL_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
 _MARKET_DISCOVERY_RUNTIME_CACHE_LOCK = threading.RLock()
 _MARKET_DISCOVERY_RUNTIME_CACHE: tuple[float, dict[str, Any] | None] = (0.0, None)
 CONFIGURATION_SECTIONS = {
@@ -404,11 +405,14 @@ def backtest_configuration_options(candidate_id: str = "") -> dict[str, Any]:
         return result
     result["candidate_id"] = selected["candidate_id"]
     try:
-        snapshot = backtest_configuration_snapshot(candidate_id=selected["candidate_id"])
-        plans = snapshot["available_run_plans"]
-        active_profile = dict(snapshot["configuration_model"].get("strategy") or {}).get("active_profile_id")
+        candidate = configuration_candidate(selected["candidate_id"], required=True)
+        model = _validated_candidate_model(candidate)
+        plans = _available_run_plans(model, "backtest")
+        if not plans:
+            raise ValueError("No enabled Strategy Run Plan supports backtest")
+        active_profile = dict(model.get("strategy") or {}).get("active_profile_id")
         preferred = next((plan for plan in plans if plan["profile_id"] == active_profile), None)
-        result.update(available_run_plans=plans, run_plan_id=preferred["run_plan_id"] if preferred else snapshot["run_plan_id"])
+        result.update(available_run_plans=plans, run_plan_id=preferred["run_plan_id"] if preferred else plans[0]["run_plan_id"])
     except (KeyError, TypeError, ValueError) as exc:
         # Keep candidate selection usable when an older saved model is invalid.
         result["error"] = str(exc)
@@ -761,6 +765,51 @@ def backtest_debug_configuration_snapshot(
     return approved_runtime_configuration_snapshot("backtest_debug", run_plan_id=run_plan_id)
 
 
+def _validated_candidate_model(candidate: dict[str, Any]) -> dict[str, Any]:
+    """Internal read-only model, validated once per immutable candidate hash."""
+    key = (str(candidate["candidate_id"]), str(candidate["content_hash"]))
+    with _RUNTIME_SNAPSHOT_CACHE_LOCK:
+        cached = _CANDIDATE_MODEL_CACHE.get(key)
+        if cached is not None:
+            return cached
+        model = deepcopy(candidate["payload"])
+        if int(model.get("schema_version") or 0) == CONFIGURATION_SCHEMA_VERSION:
+            # Validate the saved current-schema contract before migration can
+            # supply defaults; preserve the original fail-closed boundary.
+            _validate_draft(model)
+            model = _migrate_draft(model)
+        else:
+            model = _migrate_draft(model)
+            _validate_draft(model)
+        if len(_CANDIDATE_MODEL_CACHE) >= 4:
+            _CANDIDATE_MODEL_CACHE.pop(next(iter(_CANDIDATE_MODEL_CACHE)))
+        _CANDIDATE_MODEL_CACHE[key] = model
+        return model
+
+
+def _eligible_strategy_deployments(model: dict[str, Any], mode: str) -> list[dict[str, Any]]:
+    sessions = model["sessions"]
+    route_ids = {str(row.get("execution_route_id") or "")
+                 for row in sessions.get("execution_routes") or [] if row.get("enabled", True)}
+    return sorted((row for row in sessions.get("strategy_deployments") or []
+                   if row.get("enabled", True) and mode in set(row.get("modes") or [])
+                   and route_ids.intersection(str(value) for value in row.get("execution_route_ids") or [])),
+                  key=lambda row: str(row.get("strategy_deployment_id") or ""))
+
+
+def _available_run_plans(model: dict[str, Any], mode: str) -> list[dict[str, Any]]:
+    plans = {row["run_plan_id"]: row for row in model["run_plans"]["plans"]}
+    profiles = {row["profile_id"]: row for row in model["strategy"]["profiles"]}
+    result = []
+    for deployment in _eligible_strategy_deployments(model, mode):
+        plan = plans[deployment["run_plan_id"]]
+        profile = profiles[plan["profile_id"]]
+        result.append({"run_plan_id": str(plan["run_plan_id"]), "name": str(plan.get("name") or ""),
+                       "strategy_id": str(profile["definition_id"]), "strategy_revision": int(profile["definition_revision"]),
+                       "profile_id": str(profile["profile_id"])})
+    return result
+
+
 def candidate_runtime_configuration_snapshot(
     mode: str, *, candidate_id: str = "", run_plan_id: str = ""
 ) -> dict[str, Any]:
@@ -829,28 +878,21 @@ def _runtime_configuration_snapshot(
 ) -> dict[str, Any]:
     if mode not in SUPPORTED_MODES:
         raise ValueError(f"Unsupported trading configuration mode: {mode}")
-    payload = dict(release["payload"])
-    model = (
-        deepcopy(payload)
-        if release_state == "test_candidate"
-        and int(payload.get("schema_version") or 0) == CONFIGURATION_SCHEMA_VERSION
-        else _migrate_draft(deepcopy(payload))
-    )
-    _validate_draft(model)
-    runtimes = resolve_runtime_configurations(model, mode=mode)
-    if not runtimes:
+    if release_state == "test_candidate":
+        model = _validated_candidate_model(release)
+    else:
+        model = _migrate_draft(deepcopy(release["payload"]))
+        _validate_draft(model)
+    plans = _available_run_plans(model, mode)
+    if not plans:
         raise ValueError(f"No enabled Strategy Run Plan supports {mode}")
-    selected = next(
-        (
-            runtime
-            for runtime in runtimes
-            if str(runtime["run_plan"].get("run_plan_id") or "") == run_plan_id
-        ),
-        runtimes[0] if not run_plan_id else None,
-    )
-    if selected is None:
+    selected_id = run_plan_id or plans[0]["run_plan_id"]
+    if not any(plan["run_plan_id"] == selected_id for plan in plans):
         raise ValueError(f"No enabled Strategy Run Plan named {run_plan_id} supports {mode}")
-    runtime_payload = deepcopy(selected)
+    deployment = next(row for row in _eligible_strategy_deployments(model, mode)
+                      if str(row["run_plan_id"]) == selected_id)
+    runtime_payload = _resolve_runtime_configuration(model, mode=mode,
+        deployment_id=str(deployment["strategy_deployment_id"]))
     if dict(model.get("canvas") or {}).get("profile"):
         # Returned for optional presentation attachment only.
         runtime_payload["canvas"] = deepcopy(model["canvas"])
@@ -865,17 +907,13 @@ def _runtime_configuration_snapshot(
         "schema_version": CONFIGURATION_SCHEMA_VERSION,
         "mode": mode,
         "run_plan_id": runtime_payload["run_plan"]["run_plan_id"],
-        "available_run_plans": [
-            {
-                "run_plan_id": str(runtime["run_plan"]["run_plan_id"]),
-                "name": str(runtime["run_plan"].get("name") or ""),
-                "strategy_id": str(runtime["strategy"]["strategy_id"]),
-                "strategy_revision": int(runtime["strategy"]["revision"]),
-                "profile_id": str(runtime["strategy"].get("profile_id") or ""),
-            }
-            for runtime in runtimes
-        ],
-        "configuration_model": model,
+        "available_run_plans": plans,
+        # Preserve the immutable saved model exposed to callers; migration is
+        # an internal resolution detail, not a rewrite of candidate metadata.
+        "configuration_model": (deepcopy(release["payload"])
+                                if release_state == "test_candidate"
+                                and int(release["payload"].get("schema_version") or 0) == CONFIGURATION_SCHEMA_VERSION
+                                else model),
         "payload": runtime_payload,
     }
 
@@ -941,31 +979,10 @@ def resolve_runtime_configurations(
     resolve_broker_ids: bool = True,
 ) -> list[dict[str, Any]]:
     migrated = _migrate_draft(model)
-    enabled_route_ids = {
-        str(row.get("execution_route_id") or "")
-        for row in dict(migrated["sessions"]).get("execution_routes") or []
-        if bool(row.get("enabled", True))
-    }
-    eligible = [
-        row
-        for row in dict(migrated["sessions"]).get("strategy_deployments") or []
-        if bool(row.get("enabled", True))
-        and mode in set(row.get("modes") or [])
-        and bool({str(value) for value in row.get("execution_route_ids") or []} & enabled_route_ids)
-    ]
-    eligible.sort(
-        key=lambda row: (
-            str(row.get("strategy_deployment_id") or ""),
-        )
-    )
     return [
-        resolve_runtime_configuration(
-            migrated,
-            mode=mode,
-            deployment_id=str(row["strategy_deployment_id"]),
-            resolve_broker_ids=resolve_broker_ids,
-        )
-        for row in eligible
+        _resolve_runtime_configuration(migrated, mode=mode,
+            deployment_id=str(row["strategy_deployment_id"]), resolve_broker_ids=resolve_broker_ids)
+        for row in _eligible_strategy_deployments(migrated, mode)
     ]
 
 
@@ -1076,7 +1093,15 @@ def resolve_runtime_configuration(
 ) -> dict[str, Any]:
     """Resolve a Strategy Deployment through its Session Profile and Execution Routes."""
 
-    model = _migrate_draft(model)
+    return _resolve_runtime_configuration(_migrate_draft(model), mode=mode,
+        run_plan_id=run_plan_id, deployment_id=deployment_id, resolve_broker_ids=resolve_broker_ids)
+
+
+def _resolve_runtime_configuration(
+    model: dict[str, Any], *, mode: str, run_plan_id: str = "",
+    deployment_id: str = "", resolve_broker_ids: bool = True,
+) -> dict[str, Any]:
+    """Resolve one deployment from an already migrated model without mutating it."""
     sessions = dict(model["sessions"])
     enabled_route_ids = {
         str(row.get("execution_route_id") or "")
