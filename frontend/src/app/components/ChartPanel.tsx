@@ -206,6 +206,7 @@ type PriceZone = {
   holdObservationCount?: number;
   holdQualityScore?: number;
   prominence?: number;
+  levelPrice?: number;
   tickerRelativeQualityDistributionHash?: string;
   tickerRelativeQualityPopulationSize?: number;
   tickerRelativeQualityReferenceSession?: string;
@@ -342,6 +343,8 @@ type LegendSeriesSettings = {
   maximumBreakProbability?: number;
   minimumHoldEvidenceReliability?: number;
   minimumHoldObservations?: number;
+  bandOpacity?: number;
+  priceOpacity?: number;
   minimumProminence?: number;
   minimumHoldQualityScore?: number;
   /** Legacy persisted key. Its value already represented conservative quality. */
@@ -2422,6 +2425,8 @@ type LegendItem = {
   maximumBreakProbability?: number;
   minimumHoldEvidenceReliability?: number;
   minimumHoldObservations?: number;
+  bandOpacity?: number;
+  priceOpacity?: number;
   minimumProminence?: number;
   minimumHoldQualityScore?: number;
   minimumPressureMagnitude?: number;
@@ -2865,6 +2870,15 @@ function LegendEditor({
           </span>
         </fieldset>
       ) : null}
+      {item.supportsProminenceFilter ? (
+        <fieldset className="legend-unified-filters">
+          <legend>Price line and band</legend>
+          <ScoreThresholdControl label="Price line opacity" description="Line at the exact level price. Shape and width above apply to this line."
+            value={item.priceOpacity ?? 0.4} onChange={(priceOpacity) => onUpdate({ priceOpacity })} />
+          <ScoreThresholdControl label="Band opacity" description="Shading between the lower and upper boundaries."
+            value={item.bandOpacity ?? 0.25} onChange={(bandOpacity) => onUpdate({ bandOpacity })} />
+        </fieldset>
+      ) : (
       <label>
         Opacity
         <span className="legend-range-control">
@@ -2880,6 +2894,8 @@ function LegendEditor({
           <output>{Math.round(item.opacity * 100)}%</output>
         </span>
       </label>
+      )}
+
       {item.itemKind === "zone" ? (
         <>
           {item.supportsAxisLabel ? (
@@ -4366,6 +4382,8 @@ function buildPriceZoneLegendItems(
       maximumBreakProbability: settings.maximumBreakProbability,
       minimumHoldEvidenceReliability: settings.minimumHoldEvidenceReliability,
       minimumHoldObservations: settings.minimumHoldObservations,
+      bandOpacity: settings.bandOpacity,
+      priceOpacity: settings.priceOpacity,
       minimumProminence: settings.minimumProminence,
       minimumHoldQualityScore: settings.minimumHoldQualityScore,
       minimumPressureMagnitude: settings.minimumPressureMagnitude,
@@ -4973,6 +4991,8 @@ function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettin
     maximumBreakProbability: 1,
     minimumHoldEvidenceReliability: 0,
     minimumHoldObservations: 0,
+    bandOpacity: 0.25,
+    priceOpacity: 0.4,
     minimumProminence: 0,
     minimumHoldQualityScore: 0,
     minimumHoldProbability: 0,
@@ -5011,6 +5031,8 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
     maximumBreakProbability: clampNumber(stored.maximumBreakProbability, 0, 1, defaults.maximumBreakProbability),
     minimumHoldEvidenceReliability: clampNumber(stored.minimumHoldEvidenceReliability, 0, 1, defaults.minimumHoldEvidenceReliability),
     minimumHoldObservations: Math.max(0, Math.round(stored.minimumHoldObservations ?? defaults.minimumHoldObservations)),
+    bandOpacity: clampNumber(stored.bandOpacity, 0, 1, 0.25),
+    priceOpacity: clampNumber(stored.priceOpacity, 0, 1, 0.4),
     minimumProminence: clampNumber(stored.minimumProminence, 0, Number.MAX_VALUE, 0),
     minimumHoldQualityScore: clampNumber(stored.minimumHoldQualityScore ?? stored.minimumHoldProbability, 0, 1, defaults.minimumHoldQualityScore),
     minimumHoldProbability: defaults.minimumHoldProbability,
@@ -5046,6 +5068,8 @@ type ResolvedPriceZoneLegendSettings = {
   maximumBreakProbability: number;
   minimumHoldEvidenceReliability: number;
   minimumHoldObservations: number;
+  bandOpacity: number;
+  priceOpacity: number;
   minimumProminence: number;
   minimumHoldQualityScore: number;
   minimumPressureMagnitude: number;
@@ -5078,6 +5102,8 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
     maximumBreakProbability: clampNumber(stored.maximumBreakProbability, 0, 1, 1),
     minimumHoldEvidenceReliability: clampNumber(stored.minimumHoldEvidenceReliability, 0, 1, 0),
     minimumHoldObservations: Math.max(0, Math.round(stored.minimumHoldObservations ?? 0)),
+    bandOpacity: clampNumber(stored.bandOpacity, 0, 1, 0.25),
+    priceOpacity: clampNumber(stored.priceOpacity, 0, 1, 0.4),
     minimumProminence: clampNumber(stored.minimumProminence, 0, Number.MAX_VALUE, 0),
     minimumHoldQualityScore: clampNumber(stored.minimumHoldQualityScore ?? stored.minimumHoldProbability, 0, 1, 0),
     minimumPressureMagnitude: clampNumber(stored.minimumPressureMagnitude, 0, 1, 0),
@@ -6149,6 +6175,23 @@ function drawPriceZonePrimitiveGeometry(
       }
       if (span.width < 1 || zoneHeight < 1) return;
       const { borderColor, confidence, fillColor } = priceZonePresentationColors(zone, chartBackground, settings);
+      if (Number.isFinite(zone.levelPrice)) {
+        const priceY = priceSeries.priceToCoordinate(Number(zone.levelPrice));
+        context.save();
+        context.fillStyle = rgbaFromHex(fillColor, settings.bandOpacity);
+        context.fillRect(span.left, Math.min(upper, lower), span.width, Math.abs(lower - upper));
+        if (priceY !== null && settings.priceOpacity > 0) {
+          context.strokeStyle = rgbaFromHex(borderColor, settings.priceOpacity);
+          context.lineWidth = settings.lineWidth;
+          context.setLineDash(canvasLineDash(settings.lineStyle, settings.lineWidth));
+          context.beginPath();
+          context.moveTo(span.left, priceY);
+          context.lineTo(span.right, priceY);
+          context.stroke();
+        }
+        context.restore();
+        return;
+      }
       const lineOnly = zone.renderMode === "line" || isStructureBreakZone(zone);
       const baseFillOpacity = clampNumber(zone.fillOpacity, 0.02, 0.35, 0.08);
       const fillOpacity = lineOnly ? 0 : baseFillOpacity * (confidence === null ? 1 : 0.45 + 0.55 * confidence) * settings.opacity;

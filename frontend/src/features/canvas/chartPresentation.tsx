@@ -926,7 +926,7 @@ function pushUnifiedStructureLevels(
         label: `${support ? "Support" : "Resistance"} · ${level.lifecycle.replaceAll("_", " ")} · reaction prominence ${Number(level.prominence ?? 0).toFixed(2)} · Experimental ClickHouse`,
         legendLabel: "Experimental ClickHouse level book", displayItemId: "indicator.qmd_unified_structure",
         settingsId: "indicator.qmd_unified_structure.clickhouse-v1", defaultVisible: true,
-        prominence: level.prominence,
+        prominence: level.prominence, levelPrice: level.price,
         start, end, latest, extendToRightEdge: latest, lower: level.lower, upper: level.upper,
         minPixelHeight: 3, renderMode: "zone", fillOpacity: 0.08, borderWidth: 1,
         historicalLabelsDefault: false, historyBarsDefault: 0,
