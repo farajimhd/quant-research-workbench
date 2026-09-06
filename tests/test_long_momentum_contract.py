@@ -400,6 +400,9 @@ class PortfolioContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await engine.authorize_entry_reprice(approved, "A", 103, 99))
         self.assertFalse(await engine.authorize_entry_reprice(approved, "B", 100, 99))
         self.assertFalse(await engine.authorize_entry_reprice(approved, "A", float("nan"), 99))
+        before = dict(engine.reservations)
+        self.assertFalse(await engine.authorize_entry_reprice(approved, "A", 90, 99))
+        self.assertEqual(engine.reservations, before)
 
     async def test_partial_acquisition_does_not_shrink_its_original_risk_budget(self):
         from tests.test_portfolio_management import position

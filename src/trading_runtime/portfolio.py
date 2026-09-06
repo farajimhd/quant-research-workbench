@@ -1264,6 +1264,13 @@ class PortfolioManagementEngine:
                 return False
             repriced = replace(intent, reference_price=price, quantity=remaining,
                                metadata={**intent.metadata, "ask": price, "bid": price})
+            try:
+                planned_risk = _planned_loss(repriced, remaining) * fx
+            except ValueError as exc:
+                self._record("entry_reprice_rejected", intent, account_id,
+                             {"reason": "invalid_protection_at_reprice", "detail": str(exc),
+                              "price": price, "remaining_quantity": remaining})
+                return False
             # Exclude only this unfilled reservation while checking all normal
             # cash, exposure, account, competing mandate and group limits.
             self.reservations.pop(reservation_id)
@@ -1285,7 +1292,7 @@ class PortfolioManagementEngine:
             self._assert_active_admission_lease()
             updated = replace(reservation, reference_price=price,
                               reserved_notional=remaining * price * fx * self._entry_funding_factor(intent, policy),
-                              reserved_planned_risk=_planned_loss(repriced, remaining) * fx)
+                              reserved_planned_risk=planned_risk)
             self.reservations[reservation_id] = updated
             self._record("portfolio_reservation", reservation_id, account_id,
                          {"event": "entry_reprice_authorized", "price": price,

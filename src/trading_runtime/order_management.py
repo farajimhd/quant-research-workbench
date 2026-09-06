@@ -2197,6 +2197,15 @@ class OrderManagementEngine:
             requested_price = envelope.bound(side, _round_to_tick(
                 quote.ask if side == "BUY" else quote.bid, quote.tick_size, side,
             ))
+        stop = float(group.intent.invalidation_price or 0)
+        if stop > 0 and (
+            (group.intent.action in {"enter_long", "add_long"} and requested_price <= stop)
+            or (group.intent.action in {"enter_short", "add_short"} and requested_price >= stop)
+        ):
+            # A tighter point support can be crossed during partial acquisition.
+            # Cancel the remainder; never move the structural stop to fund it.
+            await self._cancel_open_entry_roots(group, "entry_stop_crossed")
+            return False
         if group.current_limit_price is not None and math.isclose(
             requested_price,
             group.current_limit_price,

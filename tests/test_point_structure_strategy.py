@@ -75,3 +75,25 @@ class PointBookTests(unittest.TestCase):
         supports=tuple(dict(row(price,1,score),confirmed_at_ms=at.timestamp()*1000) for price,score in ((104,3.99),(103,4),(102,4)))
         obs=confirmed_observation(price=105,observed_at=at,structural_support_levels=supports)
         self.assertEqual(S._ratcheted_stop(obs,p,state,side='long'),102)
+
+class PointStopRepriceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_crossed_entry_stop_cancels_remainder_before_reauthorization(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock, AsyncMock
+        from src.trading_runtime.order_management import OrderManagementEngine, OrderManagementState, BrokerCommunicationPolicy, ExecutionQuote
+        from src.trading_runtime.execution_policies import ExecutionPolicy, ExecutionPolicyName
+        from dataclasses import replace
+        from tests.test_order_management import intent
+        manager=object.__new__(OrderManagementEngine)
+        quote=ExecutionQuote(bid=9.39,ask=9.4,tick_size=.01,observed_at=NOW)
+        manager._execution_quote=Mock(return_value=quote)
+        manager._cancel_open_entry_roots=AsyncMock(return_value=True)
+        manager.enforce_wall_clock_quote_freshness=False
+        manager.policy=BrokerCommunicationPolicy()
+        request=replace(intent(),invalidation_price=9.5,
+            execution_policy=ExecutionPolicy(policy_id='test',name=ExecutionPolicyName.ADAPTIVE_URGENT),
+            metadata={'entry_completion_quote':'ask'})
+        group=SimpleNamespace(intent=request,tactic=SimpleNamespace(side='BUY',quote=quote),
+            filled_quantity=1,state=OrderManagementState.PARTIALLY_FILLED,reprice_count=0)
+        self.assertFalse(await manager._attempt_reprice(group,record_time=NOW))
+        manager._cancel_open_entry_roots.assert_awaited_once_with(group,'entry_stop_crossed')
