@@ -787,7 +787,7 @@ def resolve_long_momentum_parameters(
             parameters["phase_policy"]["initial_entry"]["add_steps"] = []
         parameters["reentry"]["target_replenishment"]["enabled"] = False
         if parameters["protection"]["trailing"].get("mode") not in {
-            "qualified_support", "support_distance", "third_resistance_below_session_high"
+            "qualified_support", "support_distance", "third_resistance_below_session_high", "first_resistance_below_session_high"
         }:
             raise ValueError("Unsupported structural trailing mode")
     if revision >= 38:
@@ -883,7 +883,7 @@ def resolve_long_momentum_parameters(
         "volatility",
         "hybrid",
         "ordinal_qualified_support",
-        "third_resistance_below_session_high",
+        "third_resistance_below_session_high", "first_resistance_below_session_high",
     }:
         raise ValueError("Unsupported protective stop method")
     stop = parameters["protection"]["stop"]
@@ -3165,10 +3165,12 @@ class LongMomentumStrategyEngine:
         entry_macd_open, entry_macd_evidence = _exact_positive_open_macd(
             observation,
             "1s",
-            require_positive_signal=self.revision == 26,
+            require_positive_signal=self.revision == 26 or bool(parameters.get("require_positive_macd_signal_for_entry")),
         )
         normalized_macd = _normalized_macd_regime(parameters, observation)
         bypass_gap = bool(normalized_macd and normalized_macd["entry_gap_bypassed"] and not (unified_trigger or {}).get("recovery_level"))
+        if parameters.get("require_positive_macd_signal_for_entry"):
+            bypass_gap = bypass_gap and entry_macd_open
         if normalized_macd is not None:
             entry_macd_evidence["normalized_regime"] = normalized_macd
             entry_macd_open = entry_macd_open or bypass_gap
@@ -3348,7 +3350,7 @@ class LongMomentumStrategyEngine:
                                          "selected_stop": stop}
         if stop <= 0:
             return self._result(
-                assignment, observation, "wait", ("third_resistance_stop_unavailable" if parameters["protection"]["stop"]["method"] == "third_resistance_below_session_high" else "qualified_support_unavailable"), 0.0, 1.0,
+                assignment, observation, "wait", ("first_resistance_stop_unavailable" if parameters["protection"]["stop"]["method"] == "first_resistance_below_session_high" else "third_resistance_stop_unavailable" if parameters["protection"]["stop"]["method"] == "third_resistance_below_session_high" else "qualified_support_unavailable"), 0.0, 1.0,
                 state, assignment.status,
                 metadata={"protective_stop_selection": protective_stop_selection},
             )
@@ -3938,9 +3940,9 @@ class LongMomentumStrategyEngine:
 
         stop_replacement = None
         if (self.revision >= 37 and stop > previous_stop > 0
-                and parameters["protection"]["trailing"].get("mode") in {"qualified_support", "third_resistance_below_session_high"}):
+                and parameters["protection"]["trailing"].get("mode") in {"qualified_support", "third_resistance_below_session_high", "first_resistance_below_session_high"}):
             stop_replacement = self._result(
-                assignment, observation, "replace_protective_stop", ("highest_broken_level_advanced" if parameters.get("broken_level_stop_only") else "third_resistance_advanced" if parameters["protection"]["trailing"].get("mode") == "third_resistance_below_session_high" else "qualified_support_advanced"),
+                assignment, observation, "replace_protective_stop", ("highest_broken_level_advanced" if parameters.get("broken_level_stop_only") else "first_resistance_advanced" if parameters["protection"]["trailing"].get("mode") == "first_resistance_below_session_high" else "third_resistance_advanced" if parameters["protection"]["trailing"].get("mode") == "third_resistance_below_session_high" else "qualified_support_advanced"),
                 observation.qmd_score, 1.0, state, AssignmentStatus.MANAGING,
                 quantity=observation.position_quantity, invalidation_price=stop,
                 metadata={"previous_stop": previous_stop,
@@ -5378,7 +5380,7 @@ def _protection_profile_from_phase(
         trailing_rule = TrailingRuleType(
             str(trailing_raw.pop("rule_type", TrailingRuleType.NONE))
         )
-        if parameters["protection"]["trailing"].get("mode") in {"qualified_support", "third_resistance_below_session_high"}:
+        if parameters["protection"]["trailing"].get("mode") in {"qualified_support", "third_resistance_below_session_high", "first_resistance_below_session_high"}:
             trailing_rule = TrailingRuleType.NONE
             trailing_raw = {}
         if trailing_rule == TrailingRuleType.BROKER_AMOUNT and not trailing_raw.get("amount"):
@@ -7466,17 +7468,18 @@ def _initial_stop(
     maximum_risk = observation.price * (
         1 + direction * maximum_risk_pct / 100
     )
-    if method == "third_resistance_below_session_high":
+    if method in {"third_resistance_below_session_high", "first_resistance_below_session_high"}:
         rows = _qualified_resistances_below_session_high(observation, parameters["structural_entry"]) if side == "long" else []
-        selected = rows[2] if len(rows) >= 3 else None
+        ordinal = 1 if method == "first_resistance_below_session_high" else 3
+        selected = rows[ordinal - 1] if len(rows) >= ordinal else None
         price = float(selected["price"]) if selected else 0.0
         valid = 0 < price < observation.price
         if selection_evidence is not None:
             selection_evidence.update(selection_mode=method, session_high=observation.structural_session_high,
-                                      resistance_level_ordinal=3, qualified_level_count=len(rows),
-                                      qualified_levels=rows[:3], selected_resistance_level=selected,
+                                      resistance_level_ordinal=ordinal, qualified_level_count=len(rows),
+                                      qualified_levels=rows[:ordinal], selected_resistance_level=selected,
                                       selected_stop=round(price, 4) if valid else 0.0,
-                                      reason="selected" if valid else "third_resistance_missing_or_not_protective")
+                                      reason="selected" if valid else "first_resistance_missing_or_not_protective" if ordinal == 1 else "third_resistance_missing_or_not_protective")
         return round(price, 4) if valid else 0.0
     if method == "ordinal_qualified_support":
         relative_threshold = float(
@@ -7652,7 +7655,7 @@ def _trailing_amount(
     stop: float | None = None,
 ) -> float | None:
     trailing = parameters["protection"]["trailing"]
-    if trailing.get("mode") in {"qualified_support", "third_resistance_below_session_high"}:
+    if trailing.get("mode") in {"qualified_support", "third_resistance_below_session_high", "first_resistance_below_session_high"}:
         return None
     if not trailing["enabled"]:
         return None
@@ -7709,7 +7712,7 @@ def _ratcheted_stop(
         return current
     if not trailing["enabled"] or gain_pct < float(trailing["activation_gain_pct"]):
         return current
-    if trailing.get("mode") == "third_resistance_below_session_high":
+    if trailing.get("mode") in {"third_resistance_below_session_high", "first_resistance_below_session_high"}:
         evidence: dict[str, Any] = {}
         candidate = _initial_stop(observation, parameters, None, side=side, selection_evidence=evidence, entry_placement=False)
         if side == "long" and candidate > current:

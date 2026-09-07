@@ -136,3 +136,55 @@ def test_default_p_norm_is_inclusive_point_eight_and_saved_threshold_is_preserve
     rows=[dict(row(100+i),load_contract='merged-point-minmax-v1',p_norm=score) for i,score in enumerate((.799,.8,.9))]
     assert len(strategy_snapshot({'unified_levels':rows},NOW)['unified_levels'])==2
     assert len(strategy_snapshot({'unified_levels':rows},NOW,minimum_p_norm=.9)['unified_levels'])==1
+
+
+@pytest.mark.parametrize('reentry', [False, True])
+@pytest.mark.parametrize('price,line,signal,closed,enters', [
+    (103.3,.4,.2,True,True), (103.2,.4,.2,True,False),
+    (102.3,.4,.2,True,False), (103.3,.4,.2,False,False),
+    (103.3,.4,0,True,False), (103.3,.4,-.1,True,False),
+    (103.3,.4,.4,True,False), (103.3,.4,.5,True,False),
+    (103.3,.20001,.2,True,True),
+])
+def test_completed_r1_entry_requires_positive_open_macd(price,line,signal,closed,enters,reentry):
+    p=policy()
+    p.update(strict_green_entry=True,completed_macd_setup=True,
+             require_open_macd_for_entry=True,require_positive_macd_signal_for_entry=True)
+    p['structural_entry'].update(entry_level_ordinal_below_high=1,accept_live_price_above_entry_level=False)
+    p['entry_candle_confirmation'].update(require_closed_bar=True,evaluate_macd_intrabar=False,
+        minimum_macd_open_gap_bps=0,minimum_reentry_macd_gap_bps=0)
+    p['reentry']['require_new_confirmation']=False
+    sources={'indicator.flow_structure.score@100ms':{'value':.7},
+        'indicator.flow_structure.confidence@100ms':{'value':.8},
+        'indicator.macd.line@5s':{'value':.4},'indicator.macd.signal@5s':{'value':.2},
+        'indicator.macd.histogram@5s':{'value':.2}}
+    for value in sources.values():
+        value["observed_at"]=NOW.isoformat()
+    p["protection"]["stop"]["method"]="first_resistance_below_session_high"
+    obs=replace(observation(price),bar_open=103.1,macd_line=line,macd_signal=signal,
+        macd_histogram=line-signal,source_values=sources,source_timeframe='1s' if closed else '',
+        evaluation_events=('bar_close',) if closed else ('market_data_update',))
+    state={'reentries':1,'last_exit_at':(NOW-timedelta(seconds=3)).isoformat()} if reentry else {}
+    state['completed_entry_macd']={'observed_at':NOW.isoformat(),'line':line,'signal':signal,'histogram':line-signal}
+    result=S.LongMomentumStrategyEngine(revision=47).evaluate(assignment(strategy_revision=47,parameters=p,state=state),obs)
+    assert any(i.action=='enter_long' for i in result.evaluation.intents)==enters, [s.reason for s in result.evaluation.signals]
+
+
+def test_r1_stop_trails_up_and_engine_replaces_protection():
+    p=policy()
+    p['protection']['stop']['method']='first_resistance_below_session_high'
+    p['protection']['trailing'].update(enabled=True,mode='first_resistance_below_session_high',activation_gain_pct=0)
+    p=S.resolve_long_momentum_parameters(p,revision=47)
+    assert S._initial_stop(observation(103.3),p,None,side='long')==103
+    state={'entry_at':NOW.isoformat(),'entry_reference_price':102.3,'initial_stop':101,'active_stop':101,'high_water_price':103.3}
+    p['phase_policy']={'exit':{'mode':'automatic','rule_sets':[]}}
+    result=S.LongMomentumStrategyEngine(revision=47).evaluate(
+        assignment(strategy_revision=47,parameters=p,status=S.AssignmentStatus.MANAGING,state=state),
+        replace(observation(103.3),position_quantity=10,macd_line=.4,macd_signal=.2))
+    stops=[i for i in result.evaluation.intents if i.action=='replace_protective_stop']
+    assert len(stops)==1
+    assert stops[0].invalidation_price==103
+    assert stops[0].reason=='first_resistance_advanced'
+    state['active_stop']=103.1
+    assert S._ratcheted_stop(observation(103.3),p,state,side='long')==103.1
+    assert S._ratcheted_stop(replace(observation(103.3),structural_resistance_levels=()),p,state,side='long')==103.1
