@@ -2943,9 +2943,10 @@ class LongMomentumStrategyEngine:
                 (*observation.structural_resistance_levels, *observation.structural_support_levels)
                 if identity and str(row.get("unified_level_id") or "") == identity), None)
             if current is not None:
-                boundary = _level_metric(current, "price", "entry_boundary")
+                boundary = breakout_confirmation.entry_boundary(current, parameters["structural_entry"])
+                threshold = boundary * (1 + float(parameters["structural_entry"].get("acceptance_buffer_bps") or 0) / 10_000)
                 valid = (_level_passes_configured_quality(current, parameters["structural_entry"])
-                         and observation.price > boundary > 0)
+                         and boundary > 0 and observation.price > threshold)
             else:
                 valid = False
             if not valid:
@@ -2954,7 +2955,7 @@ class LongMomentumStrategyEngine:
                     0.0, 1.0, state, AssignmentStatus.WATCHING,
                     metadata={"request_id": pending_capital["request_id"]})
             unified_trigger = {**witness, "passed": True, "level": current,
-                "reference_price": boundary, "threshold_price": boundary,
+                "reference_price": boundary, "threshold_price": threshold,
                 "reason": "pending_capital_breakout_revalidated",
                 "original_cross_at": pending_capital["requested_at"],
                 "revalidated_at": observation.observed_at.isoformat()}

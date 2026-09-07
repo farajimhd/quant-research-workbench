@@ -32,3 +32,26 @@ def test_real_entry_and_exit_strict_signed_gap(line,signal,enters,exits,reentry)
         assert route['mechanism']=='macd_histogram_gap_below_threshold'
     assert S._matching_momentum_management_route(p,replace(obs,evaluation_events=('market_data_update',)),
         {'entry_at':NOW.isoformat()},gain_pct=1,side='long') is None
+
+
+@pytest.mark.parametrize('price,enters', [(103.1, False), (103.2, False), (103.3, True)])
+def test_deferred_capital_rechecks_upper_band_not_mean_price(price, enters):
+    p = policy()
+    p.update(macd_histogram_gate_bps=5, require_completed_entry_candle=True)
+    p['structural_entry'].update(entry_level_ordinal_below_high=1, break_above_upper_bound=True)
+    sources = {key: {'value': value, 'observed_at': NOW.isoformat()} for key, value in {
+        'indicator.flow_structure.score@100ms': .7, 'indicator.flow_structure.confidence@100ms': .8,
+        'indicator.macd.line@5s': .4, 'indicator.macd.signal@5s': .2,
+        'indicator.macd.histogram@5s': .2}.items()}
+    obs = replace(observation(price), bar_open=103.0, macd_line=.4, macd_signal=.2, source_values=sources)
+    level = next(row for row in obs.structural_resistance_levels if row['price'] == 103)
+    state = {'pending_capital_request': {'request_id': 'deferred-test', 'requested_at': NOW.isoformat(),
+             'trigger': {'level': level, 'passed': True, 'reference_price': 103.2}}}
+    result = S.LongMomentumStrategyEngine(revision=47).evaluate(
+        assignment(strategy_revision=47, parameters=p, state=state), obs)
+    assert any(i.action == 'enter_long' for i in result.evaluation.intents) == enters
+    if not enters:
+        assert 'pending_capital_request' not in result.state
+        assert result.evaluation.signals[0].reason == 'capital_request_structure_invalidated'
+    else:
+        assert result.evaluation.intents[0].metadata['trigger_threshold_price'] == 103.2
