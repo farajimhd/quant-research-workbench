@@ -2581,6 +2581,36 @@ class LongMomentumStrategyEngine:
             assignment.parameters,
             revision=self.revision,
         )
+        if parameters.get("completed_macd_setup"):
+            closed = "bar_close" in observation.evaluation_events and observation.source_timeframe in {"", "1s"}
+            if closed:
+                state["completed_entry_macd"] = {
+                    "observed_at": observation.observed_at.isoformat(),
+                    **{name: _numeric_source_value(observation, f"indicator.macd.{name}", "1s")
+                       for name in ("line", "signal", "histogram")},
+                }
+            sample = dict(state.get("completed_entry_macd") or {})
+            stamp = _optional_aware_datetime(sample.get("observed_at"))
+            fresh = bool(stamp and 0 <= (observation.observed_at - stamp).total_seconds() <= 2)
+            values = dict(observation.source_values)
+            for name in ("line", "signal", "histogram"):
+                source = {"value": sample.get(name) if fresh else None, "observed_at": sample.get("observed_at")}
+                values[f"indicator.macd.{name}@1s"] = source
+                values[f"indicator.macd.{name}"] = source
+            observation = replace(observation, source_values=values,
+                                  macd_line=sample.get("line") if fresh else None,
+                                  macd_signal=sample.get("signal") if fresh else None,
+                                  macd_histogram=sample.get("histogram") if fresh else None)
+        if parameters.get("require_breakout_reset"):
+            if observation.position_quantity > 0:
+                level = dict(state.get("last_entry_resistance") or {})
+                if level:
+                    state["breakout_reset_required"] = level
+            elif observation.pending_exit_quantity <= 0:
+                level = dict(state.get("breakout_reset_required") or {})
+                boundary = _level_metric(level, "band_upper", "upper", "price")
+                if boundary > 0 and observation.price < boundary:
+                    state.pop("breakout_reset_required", None)
         flatten_due = bool(
             observation.position_quantity > 0
             and _at_or_after_session_time(
@@ -3048,6 +3078,10 @@ class LongMomentumStrategyEngine:
             )
 
         candle_policy = dict(parameters.get("entry_candle_confirmation") or {})
+        if parameters.get("require_breakout_reset") and state.get("breakout_reset_required"):
+            return self._result(assignment, observation, "wait", "waiting_for_resistance_breakout_reset",
+                                0.0, 1.0, state, AssignmentStatus.WATCHING,
+                                metadata={"reset_resistance": state["breakout_reset_required"]})
         entry_timeframe = str(candle_policy.get("timeframe") or "1s").lower()
         closed_entry_frame = (
             "bar_close" in observation.evaluation_events
@@ -3185,7 +3219,7 @@ class LongMomentumStrategyEngine:
                 bar_open is not None
                 and bar_open > 0
                 and (
-                    observation.price >= bar_open
+                    (observation.price > bar_open if parameters.get("strict_green_entry") else observation.price >= bar_open)
                     if side == "long"
                     else observation.price <= bar_open
                 )
@@ -3213,7 +3247,7 @@ class LongMomentumStrategyEngine:
                             "side": side,
                             "open": bar_open,
                             "close": observation.price,
-                            "required": "close >= open" if side == "long" else "close <= open",
+                            "required": ("price > open" if parameters.get("strict_green_entry") else "close >= open") if side == "long" else "close <= open",
                         },
                     },
                 )
@@ -3574,11 +3608,12 @@ class LongMomentumStrategyEngine:
                             "open": observation.bar_open,
                             "close": observation.price,
                             "required": (
-                                "close >= open"
+                                ("price > open" if parameters.get("strict_green_entry") else "close >= open")
                                 if side == "long"
                                 else "close <= open"
                             ),
                             "passed": True,
+                            "is_closed": "bar_close" in observation.evaluation_events,
                         }
                     }
                     if bool(candle_policy.get("enabled", True))
@@ -6870,7 +6905,7 @@ def _matching_momentum_management_route(
         signal = _source_value(observation, "indicator.macd.signal", downside_timeframe)
         gap_bps = _macd_gap_bps(observation.price, line, signal)
         normalized_macd = _normalized_macd_regime(parameters, observation, downside_timeframe)
-        if bool(downside.get("macd_closed", True)) and (
+        if bool(downside.get("macd_closed", True)) and (not parameters.get("completed_macd_setup") or "bar_close" in observation.evaluation_events) and (
             normalized_macd["exit_confirmed"] if normalized_macd is not None else (
             line is not None
             and signal is not None
@@ -7026,6 +7061,8 @@ def _matching_momentum_management_route(
     normalized_macd = _normalized_macd_regime(parameters, observation, timeframe)
     if normalized_macd is not None:
         macd_closed = normalized_macd["exit_confirmed"]
+    if parameters.get("completed_macd_setup") and "bar_close" not in observation.evaluation_events:
+        macd_closed = False
     if observation.source_timeframe in {"", timeframe}:
         if macd_closed:
             if not state.get("macd_closed_since"):
