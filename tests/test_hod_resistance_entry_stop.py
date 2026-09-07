@@ -148,7 +148,7 @@ def test_default_p_norm_is_inclusive_point_eight_and_saved_threshold_is_preserve
 ])
 def test_completed_r1_entry_requires_positive_open_macd(price,line,signal,closed,enters,reentry):
     p=policy()
-    p.update(strict_green_entry=True,completed_macd_setup=True,
+    p.update(strict_green_entry=True,completed_macd_setup=True,require_completed_entry_candle=True,
              require_open_macd_for_entry=True,require_positive_macd_signal_for_entry=True)
     p['structural_entry'].update(entry_level_ordinal_below_high=1,accept_live_price_above_entry_level=False)
     p['entry_candle_confirmation'].update(require_closed_bar=True,evaluate_macd_intrabar=False,
@@ -188,3 +188,16 @@ def test_r1_stop_trails_up_and_engine_replaces_protection():
     state['active_stop']=103.1
     assert S._ratcheted_stop(observation(103.3),p,state,side='long')==103.1
     assert S._ratcheted_stop(replace(observation(103.3),structural_resistance_levels=()),p,state,side='long')==103.1
+
+
+def test_completed_entry_policy_survives_resolution_and_blocks_latched_intrabar():
+    p=policy();p.update(require_completed_entry_candle=True)
+    p['structural_entry']['entry_level_ordinal_below_high']=1
+    p=S.resolve_long_momentum_parameters(p,revision=47)
+    assert not p['entry_candle_confirmation']['evaluate_macd_intrabar']
+    assert not p['structural_entry']['accept_live_price_above_entry_level']
+    state={}
+    assert S._prior_completed_frame_resistance_trigger(observation(103.3),p['structural_entry'],state)['passed']
+    obs=replace(observation(103.4),bar_open=103.1,evaluation_events=('market_data_update',),source_timeframe='')
+    result=S.LongMomentumStrategyEngine(revision=47).evaluate(assignment(strategy_revision=47,parameters=p,state=state),obs)
+    assert not any(i.action=='enter_long' for i in result.evaluation.intents)
