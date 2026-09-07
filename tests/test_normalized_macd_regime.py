@@ -111,3 +111,19 @@ def test_real_engine_exits_above_30bps_with_new_policy():
     result=S.LongMomentumStrategyEngine(revision=47).evaluate(current,obs)
     assert any(i.action=='exit' for i in result.evaluation.intents)
     assert result.state['last_exit_reason']=='macd_signal_crossed_above_line'
+
+
+@pytest.mark.parametrize('reentry',[False,True])
+@pytest.mark.parametrize('line,signal,enters',[(49,49.2,False),(38,47,False),(32,32,False),(32,31.9,True)])
+def test_open_macd_required_even_when_strong(line,signal,enters,reentry):
+    p=parameters();p.update(require_open_macd_for_entry=True,macd_exit_ignore_strength_threshold=True)
+    p['reentry']['require_new_confirmation']=False
+    p['structural_entry']['break_above_upper_bound']=False
+    state={'reentries':1,'last_exit_at':(NOW-timedelta(seconds=3)).isoformat()} if reentry else {}
+    sources={'indicator.flow_structure.score@100ms':{'value':.7},
+        'indicator.flow_structure.confidence@100ms':{'value':.8},
+        'indicator.macd.line@5s':{'value':.4},'indicator.macd.signal@5s':{'value':.2},
+        'indicator.macd.histogram@5s':{'value':.2}}
+    obs=bar(macd_line=line*101.2/10000,macd_signal=signal*101.2/10000,source_values=sources)
+    result=S.LongMomentumStrategyEngine(revision=47).evaluate(assignment(strategy_revision=47,parameters=p,state=state),obs)
+    assert any(i.action=='enter_long' for i in result.evaluation.intents)==enters, [s.reason for s in result.evaluation.signals]

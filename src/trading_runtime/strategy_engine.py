@@ -1238,7 +1238,9 @@ def _normalized_macd_regime(parameters, observation, timeframe="1s"):
     valid = line_bps is not None and signal_bps is not None
     return {
         "threshold_bps": threshold, "macd_line_bps": line_bps, "macd_signal_bps": signal_bps,
-        "entry_gap_bypassed": bool(valid and line_bps > threshold + 1e-12),
+        "entry_gap_bypassed": bool(valid and line_bps > threshold + 1e-12 and (
+            not parameters.get("require_open_macd_for_entry") or line > signal
+        )),
         "exit_confirmed": bool(valid and signal > line and (
             parameters.get("macd_exit_ignore_strength_threshold")
             or max(line_bps, signal_bps) < threshold - 1e-12
