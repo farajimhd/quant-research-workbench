@@ -75,3 +75,24 @@ def test_stop_remains_immediate_and_position_records_reset_level():
     result=evaluate(replace(tick(),position_quantity=10),state)
     assert any(s.reason=='protective_stop' for s in result.evaluation.signals)
     assert result.state['breakout_reset_required']['band_upper']==102.2
+
+
+@pytest.mark.parametrize('old_id,old_price,old_upper,allowed', [
+    ('older',101,101.2,True),
+    ('102',101,101.2,False),
+    ('older',103,103.2,False),
+    ('older',102,102.2,False),
+    ('',101,101.2,False),
+])
+def test_new_higher_resistance_can_enter_without_old_reset(old_id,old_price,old_upper,allowed):
+    p=parameters();p['breakout_reset_allow_higher_resistance']=True
+    state={**sample(),'breakout_reset_required':{'unified_level_id':old_id,'price':old_price,'band_upper':old_upper}}
+    # Keep price above both levels, so the old lock has not reset.
+    obs=tick(103.4,103.3)
+    engine=S.LongMomentumStrategyEngine(revision=47)
+    result=engine.evaluate(assignment(strategy_revision=47,parameters=p,state=state),obs)
+    assert enters(result)==allowed
+    assert result.state['breakout_reset_required']==state['breakout_reset_required']
+    assert not enters(evaluate(obs,state))  # Candidate 80 retains its original policy.
+    if allowed:
+        assert not enters(engine.evaluate(assignment(strategy_revision=47,parameters=p,state=sample(.1,.2)|{'breakout_reset_required':state['breakout_reset_required']}),obs))

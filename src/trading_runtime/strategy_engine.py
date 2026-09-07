@@ -3078,7 +3078,18 @@ class LongMomentumStrategyEngine:
             )
 
         candle_policy = dict(parameters.get("entry_candle_confirmation") or {})
-        if parameters.get("require_breakout_reset") and state.get("breakout_reset_required"):
+        reset_level = dict(state.get("breakout_reset_required") or {})
+        current_entry_level = dict((unified_trigger or {}).get("level") or {})
+        higher_breakout = bool(
+            parameters.get("breakout_reset_allow_higher_resistance")
+            and reset_level.get("unified_level_id")
+            and current_entry_level.get("unified_level_id")
+            and current_entry_level["unified_level_id"] != reset_level["unified_level_id"]
+            and _level_metric(current_entry_level, "price") > _level_metric(reset_level, "price")
+            and _level_metric(current_entry_level, "band_upper", "upper", "price")
+                > _level_metric(reset_level, "band_upper", "upper", "price")
+        )
+        if parameters.get("require_breakout_reset") and reset_level and not higher_breakout:
             return self._result(assignment, observation, "wait", "waiting_for_resistance_breakout_reset",
                                 0.0, 1.0, state, AssignmentStatus.WATCHING,
                                 metadata={"reset_resistance": state["breakout_reset_required"]})
