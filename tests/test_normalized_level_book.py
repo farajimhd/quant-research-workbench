@@ -53,3 +53,19 @@ class NormalizedBookTests(unittest.TestCase):
         p=S.resolve_long_momentum_parameters(revision=47)
         self.assertEqual(S._initial_stop(obs,p,100,side='long'),97)
         self.assertEqual(S._structural_profit_targets(obs,p,stop=97,side='long',luld_target=None),[104])
+
+
+class ProximityMergeTests(unittest.TestCase):
+    def test_midpoint_bps_gap_and_opposite_roles(self):
+        rows=[level('a',6.50,6.54,6.52,2),level('b',6.56,6.60,6.58,4),level('r',6.56,6.60,6.58,9,-1)]
+        merged=merge_levels(rows)
+        self.assertEqual(len(merged),2)
+        support=next(r for r in merged if r['side']==1)
+        self.assertAlmostEqual(support['price'],6.55)
+        self.assertEqual(support['prominence'],3)
+        self.assertEqual(support['merge_gap_bps'],35)
+        self.assertEqual(len(merge_levels(rows,proximity_bps=30)),3)
+        self.assertEqual(len(merge_levels([level('a',1,1,1,1),level('b',1.01,1.01,1.01,1)])),2)
+    def test_price_scale_invariance(self):
+        for scale in (.01,1,100):
+            self.assertEqual(len(merge_levels([level('a',6.5*scale,6.54*scale,6.52*scale,2),level('b',6.56*scale,6.6*scale,6.58*scale,4)])),1)

@@ -955,6 +955,8 @@ class TradingJournal:
         limit: int = 2000,
         offset: int = 0,
         consequential_only: bool = False,
+        after_sequence: int = 0,
+        through_sequence: int | None = None,
     ) -> list[JournalRecord]:
         """Return newest-first durable strategy events across ticker campaigns.
 
@@ -969,6 +971,12 @@ class TradingJournal:
             "'strategy', 'strategy_decision', 'order_management')"
         ]
         values: list[Any] = []
+        if after_sequence:
+            clauses.append("sequence > ?")
+            values.append(after_sequence)
+        if through_sequence is not None:
+            clauses.append("sequence <= ?")
+            values.append(through_sequence)
         if record_id:
             clauses.append("record_id = ?")
             values.append(record_id)

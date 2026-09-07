@@ -6245,6 +6245,7 @@ def trading_canvas_live_chart_history(
     mode: str = Query(default="live", pattern="^(live|replay|backtest|debug)$"),
     full_session: bool = False,
     run_id: str | None = None,
+    structure_after: str | None = None,
     days: int = Query(default=1, ge=1, le=1),
     row_limit: int = Query(default=20_000, ge=1, le=50_000),
 ) -> dict[str, Any]:
@@ -6278,8 +6279,12 @@ def trading_canvas_live_chart_history(
                 day = date.fromisoformat(session_date) if session_date else cutoff.astimezone(NY).date()
                 start = datetime.combine(day, session_time(4), tzinfo=NY)
                 end = min(cutoff, datetime.combine(day, session_time(20), tzinfo=NY))
+                after = datetime.fromisoformat(structure_after.replace('Z', '+00:00')) if structure_after else None
+                if after is not None and (after.tzinfo is None or not start <= after <= end):
+                    raise ValueError('Structure delta cursor must be inside the causal session window')
                 timeline = chart_rows(build_id, ticker, start, end,
-                    controller.definition.experimental_structure_fingerprint)
+                    controller.definition.experimental_structure_fingerprint, **({'after': after} if after else {}),
+                    **({'contract': controller.level_load_contract} if hasattr(controller, 'level_load_contract') else {}))
                 extra_columns = [column for column in projected_columns if column not in {'bar_start','qmd_structure_unified_levels'}]
                 base = _canvas_live_chart_history(ticker=ticker, timeframe=timeframe, before=before,
                     session_date=session_date, as_of=cutoff.isoformat(), before_bar=before_bar,

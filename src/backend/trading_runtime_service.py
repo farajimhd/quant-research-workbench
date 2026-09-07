@@ -508,11 +508,12 @@ def strategy_activity_payload(
     offset: int = 0,
     include_decision_evidence: bool = True,
     consequential_only: bool = False,
+    _records=None,
 ) -> dict[str, Any]:
     """Project the durable strategy journal into an operator-facing event list."""
     requested_limit = max(1, min(int(limit), 50_000))
     requested_offset = max(0, int(offset))
-    records = (journal or trading_journal()).strategy_activity_records(
+    records = _records if _records is not None else (journal or trading_journal()).strategy_activity_records(
         record_id=record_id.strip(),
         strategy_id=strategy_id.strip(),
         run_id=run_id.strip(),

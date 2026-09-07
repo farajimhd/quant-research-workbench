@@ -838,6 +838,11 @@ def resolve_long_momentum_parameters(
     rejection_ordinal = parameters["momentum_management"].get("resistance_rejection_level_ordinal")
     if rejection_ordinal is not None and (type(rejection_ordinal) is not int or rejection_ordinal < 1):
         raise ValueError("resistance_rejection_level_ordinal must be a positive integer")
+    if "macd_histogram_gate_bps" in parameters:
+        gap = float(parameters["macd_histogram_gate_bps"])
+        if not isfinite(gap) or gap <= 0:
+            raise ValueError("MACD histogram gate must be finite positive basis points")
+        parameters["macd_histogram_gate_bps"] = gap
     if "normalized_macd_threshold_bps" in parameters:
         threshold = float(parameters["normalized_macd_threshold_bps"])
         if not isfinite(threshold) or threshold <= 0 or revision < 44:
@@ -1231,7 +1236,8 @@ def _macd_gap_bps(price: float, line: Any, signal: Any) -> float | None:
 
 def _normalized_macd_regime(parameters, observation, timeframe="1s"):
     """Causal price-relative line strength; absence preserves earlier candidates."""
-    threshold = parameters.get("normalized_macd_threshold_bps")
+    gap_threshold = parameters.get("macd_histogram_gate_bps")
+    threshold = gap_threshold if gap_threshold is not None else parameters.get("normalized_macd_threshold_bps")
     if threshold is None:
         return None
     line = _numeric_source_value(observation, "indicator.macd.line", timeframe)
@@ -1239,6 +1245,14 @@ def _normalized_macd_regime(parameters, observation, timeframe="1s"):
     line_bps = _macd_gap_bps(observation.price, line, 0)
     signal_bps = _macd_gap_bps(observation.price, signal, 0)
     valid = line_bps is not None and signal_bps is not None
+    if gap_threshold is not None:
+        gap = _macd_gap_bps(observation.price, line, signal)
+        return {
+            "threshold_bps": float(gap_threshold), "macd_line_bps": line_bps, "macd_signal_bps": signal_bps,
+            "histogram_bps": gap, "entry_gap_bypassed": False,
+            "entry_confirmed": bool(valid and line > 0 and gap > float(gap_threshold) + 1e-12),
+            "exit_confirmed": bool(valid and gap < float(gap_threshold) - 1e-12),
+        }
     return {
         "threshold_bps": threshold, "macd_line_bps": line_bps, "macd_signal_bps": signal_bps,
         "entry_gap_bypassed": bool(valid and line_bps > threshold + 1e-12 and (
@@ -3177,6 +3191,8 @@ class LongMomentumStrategyEngine:
         if normalized_macd is not None:
             entry_macd_evidence["normalized_regime"] = normalized_macd
             entry_macd_open = entry_macd_open or bypass_gap
+            if parameters.get("macd_histogram_gate_bps") is not None:
+                entry_macd_open = normalized_macd["entry_confirmed"]
         if not entry_macd_open and not observation.force_entry:
             return self._result(
                 assignment,
@@ -6956,6 +6972,13 @@ def _matching_momentum_management_route(
     settings = dict(parameters.get("momentum_management") or {})
     if not settings or side != "long":
         return None
+    if parameters.get("macd_histogram_gate_bps") is not None:
+        regime = _normalized_macd_regime(parameters, observation)
+        if ("bar_close" in observation.evaluation_events and observation.source_timeframe in {"", "1s"}
+                and regime["exit_confirmed"]):
+            return {"route_id": "macd-histogram-gap-below-threshold", "name": "One-second MACD gap below threshold",
+                    "mechanism": "macd_histogram_gap_below_threshold", "position_fraction": 1.0,
+                    "evidence": {"histogram_bps": regime["histogram_bps"], "normalized_regime": regime}}
     slope_exit = histogram_slope.exit_route(settings.get("histogram_slope_exit", {}), state, observation)
     if settings.get("resistance_rejection_exit"):
         levels = [row for row in observation.structural_resistance_levels

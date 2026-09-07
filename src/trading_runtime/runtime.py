@@ -938,6 +938,16 @@ class TradingRuntime:
                     account_id=account_id, event_time=event_time, payload=position.to_cpapi(),
                 )
 
+    def projected_snapshot(self):
+        """Read the engine-owned broker projection without reconciliation or writes.
+
+        Presentation must never change trading state. Preserve its actual as-of
+        timestamp; market ticks do not imply a new broker position snapshot.
+        """
+        if self._canonical_session is None:
+            raise RuntimeError("The configured broker does not expose canonical Replay state")
+        return self._canonical_session.projector.snapshot()
+
     async def canonical_snapshot(self, *, as_of: datetime | None = None):
         """Return the freshest canonical broker projection for UI and recovery consumers."""
         if self._canonical_session is not None:

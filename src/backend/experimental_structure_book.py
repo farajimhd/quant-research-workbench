@@ -14,6 +14,7 @@ from threading import RLock
 from zoneinfo import ZoneInfo
 
 import numpy as np
+from src.trading_runtime.normalized_level_book import CONTRACT
 
 from research.mlops.clickhouse import (ClickHouseHttpClient, default_clickhouse_url,
     default_clickhouse_user, default_clickhouse_password)
@@ -259,7 +260,7 @@ def raw_chart_rows(build_id, ticker, start, end, fingerprint=None):
     return output
 
 @lru_cache(maxsize=32)
-def session_normalization(build_id, ticker, session, fingerprint, ratio=1.0):
+def session_normalization(build_id, ticker, session, fingerprint, ratio=1.0, *, contract=CONTRACT):
     from src.trading_runtime.normalized_level_book import calibration
     build = resolve(build_id)
     manifest = json.loads((Path(build['runtime'])/'source_manifest.json').read_text())
@@ -276,7 +277,7 @@ def session_normalization(build_id, ticker, session, fingerprint, ratio=1.0):
     at = datetime.combine(datetime.fromisoformat(session).date(), time(4), NY)
     seed = BookCursor(build_id, ticker, fingerprint)
     snapshot = seed.snapshot(at, -1)
-    basis = calibration([r for r in snapshot['unified_levels'] if r['confirmed_at_ms'] < at.timestamp()*1000], float(prices[0]['price'])*seed.factor, ratio)
+    basis = calibration([r for r in snapshot['unified_levels'] if r['confirmed_at_ms'] < at.timestamp()*1000], float(prices[0]['price'])*seed.factor, ratio, contract=contract)
     return dict(basis, prior_session=prior, frozen_at=at.isoformat(), close_authority='last completed regular-session observation')
 
 
@@ -293,7 +294,7 @@ class NormalizedBookCursor(BookCursor):
             return self._normalized_value
 
 
-def chart_rows(build_id, ticker, start, end, fingerprint=None):
+def uncached_chart_rows(build_id, ticker, start, end, fingerprint=None):
     from src.trading_runtime.normalized_level_book import transform
     build = resolve(build_id)
     basis = session_normalization(build_id, ticker, start.astimezone(NY).date().isoformat(),
@@ -322,3 +323,8 @@ def chart_rows(build_id, ticker, start, end, fingerprint=None):
         output.append(row)
         previous = current
     return output
+
+
+def chart_rows(build_id, ticker, start, end, fingerprint=None, *, after=None, contract=CONTRACT):
+    from src.backend.structure_chart_timeline import chart_rows as cached_rows
+    return cached_rows(build_id, ticker, start, end, fingerprint, after=after, contract=contract)

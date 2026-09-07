@@ -1,6 +1,6 @@
 """Versioned strategy interpretation of the experimental point-price book."""
 from math import isfinite
-from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD
+from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD, CONTRACT
 
 BOOK_VERSION = 'clickhouse-closing-book-1'
 STRATEGY_CONTRACT = 'clickhouse-merged-point-pnorm-v1'
@@ -16,7 +16,7 @@ def qualifies(row, observed_at=None):
         return False
     try:
         score, price = float(row['prominence']), float(row['price'])
-        if row.get('load_contract') == 'merged-point-minmax-v1':
+        if row.get('load_contract') in {'merged-point-minmax-v1', CONTRACT}:
             score = float(row['p_norm'])
             threshold = float(row.get('minimum_p_norm', DEFAULT_THRESHOLD))
             if not 0 <= score <= 1 or not 0 <= threshold <= 1 or score < threshold:

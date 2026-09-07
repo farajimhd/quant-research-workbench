@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD
+from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD, CONTRACT as LEVEL_LOAD_CONTRACT
 
 import asyncio
 import hashlib
@@ -965,6 +965,9 @@ class ReplayRunController:
         self._source_native_signal_episodes: dict[str, ReplaySignalEvent] = {}
         self._next_source_native_signal_refresh_at: datetime | None = None
         self._canvas_state_cache: tuple[float, dict[str, Any]] | None = None
+        self._canvas_build_lock = asyncio.Lock()
+        self._activity_index = None
+        self.level_load_contract = LEVEL_LOAD_CONTRACT
         self._runtime_finished = False
         self._stream_tickers: tuple[str, ...] = ()
         self._pace_event_anchor: datetime | None = None
@@ -1763,7 +1766,7 @@ class ReplayRunController:
                 "frame_cursor": deepcopy(self._frame_cursor),
                 "processed_frames": self._processed_frames,
                 "experimental_session_highs": deepcopy(getattr(self, "_experimental_session_highs", {})),
-                "level_load_contract": "merged-point-minmax-v1",
+                "level_load_contract": LEVEL_LOAD_CONTRACT,
                 "previous_vwap": [
                     {
                         "ticker": ticker,
@@ -1861,6 +1864,11 @@ class ReplayRunController:
         }
 
     async def canvas_payload(self, symbol: str = "AAPL") -> dict[str, Any]:
+        # One presentation build per controller, shared by concurrent charts.
+        async with self._canvas_build_lock:
+            return await self._canvas_payload_unlocked(symbol)
+
+    async def _canvas_payload_unlocked(self, symbol: str) -> dict[str, Any]:
         if self._runtime is None or self._journal is None:
             raise ValueError("Replay trading state is not ready")
         now = time.monotonic()
@@ -1870,13 +1878,15 @@ class ReplayRunController:
         ):
             trading = self._canvas_state_cache[1]
         else:
-            trading = trading_state_payload(
-                await self._runtime.canonical_snapshot(
-                    as_of=self.current_time or self.definition.requested_start,
-                ),
+            # Capture immutable engine state on its owning loop; serialization
+            # and journal projection happen off-loop and cannot reconcile or
+            # mutate portfolio/broker state as a side effect of an HTTP read.
+            snapshot = self._runtime.projected_snapshot()
+            trading = await asyncio.to_thread(
+                trading_state_payload, snapshot,
                 include_strategy_activity=False,
             )
-            activity_page = self.strategy_activity_snapshot(
+            activity_page = await asyncio.to_thread(self.strategy_activity_snapshot,
                 as_of=self.current_time or self.definition.requested_start,
                 limit=2_000,
                 include_decision_evidence=False,
@@ -1894,13 +1904,13 @@ class ReplayRunController:
             }
             self._canvas_state_cache = (now, trading)
         ticker = _ticker(symbol)
-        chart_activity_rows = self.strategy_activity_snapshot(
+        chart_activity_rows = (await asyncio.to_thread(self.strategy_activity_snapshot,
             as_of=self.current_time or self.definition.requested_start,
             ticker=ticker,
             limit=50_000,
             include_decision_evidence=False,
             consequential_only=True,
-        )["rows"]
+        ))["rows"]
         # Chart overlays need every consequential lifecycle decision, while
         # the operator table deliberately remains a rolling 2,000-row window.
         # Keep this symbol-scoped projection separate so a long session cannot
@@ -2027,6 +2037,14 @@ class ReplayRunController:
         if self._journal is None:
             raise ValueError("Replay Strategy Activity is not ready")
         from src.backend.trading_runtime_service import strategy_activity_payload
+
+        if not record_id and not include_decision_evidence:
+            from src.backend.replay_activity_index import ReplayActivityIndex
+            if self._activity_index is None:
+                self._activity_index = ReplayActivityIndex(self._journal, self.run_id)
+            return self._activity_index.payload(as_of=as_of, strategy_id=strategy_id,
+                ticker=ticker, event_type=event_type, limit=limit, offset=offset,
+                consequential_only=consequential_only)
 
         return strategy_activity_payload(
             journal=self._journal,
@@ -2689,7 +2707,8 @@ class ReplayRunController:
         runtime = state.get("runtime")
         if not isinstance(controller, dict) or not isinstance(runtime, dict):
             raise ValueError("Historical restart checkpoint omitted runtime state")
-        if self.definition.experimental_structure_book and controller.get("level_load_contract") != "merged-point-minmax-v1":
+        self.level_load_contract = controller.get("level_load_contract", LEVEL_LOAD_CONTRACT)
+        if self.definition.experimental_structure_book and self.level_load_contract != LEVEL_LOAD_CONTRACT and not review_only:
             raise ValueError("Experimental backtest checkpoint predates the merged p_norm/session-high contract; start a new run")
         current_time = _optional_checkpoint_time(controller.get("current_time"))
         last_event_time = _optional_checkpoint_time(runtime.get("last_event_time"))
@@ -3478,7 +3497,7 @@ class ReplayRunController:
                 'continuation': 'completed-second causal observations; independent frame/event cursors',
                 'strategy_level_contract': STRATEGY_CONTRACT,
                 'minimum_p_norm': self.definition.minimum_p_norm, 'price_authority': 'merged mean price',
-                'load_contract': 'merged-point-minmax-v1',
+                'load_contract': LEVEL_LOAD_CONTRACT,
                 'session_high_authority': 'causal canonical one-second highs and price-eligible trades',
                 'legacy_probability_scores': 'not used by this versioned contract'})
         snapshot = await asyncio.to_thread(cursors[key].snapshot, as_of, sequence)

@@ -500,7 +500,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
         }));
       }
       if (unifiedStructureSelected) {
-        requests.push(api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, run_id: runId, full_session: true, include_market_signals: false, include_structure: false, indicator_columns: unifiedStructureColumns, row_limit: chartFullSessionPageSize(UNIFIED_STRUCTURE_TIMEFRAME), stage: "full", timeframe: UNIFIED_STRUCTURE_TIMEFRAME })}`, {
+        requests.push(api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, run_id: runId, structure_after: historicalMode === "backtest" && !replacingRewind && Number.isFinite(loadedCutoffRef.current) ? new Date(loadedCutoffRef.current).toISOString() : undefined, full_session: true, include_market_signals: false, include_structure: false, indicator_columns: unifiedStructureColumns, row_limit: chartFullSessionPageSize(UNIFIED_STRUCTURE_TIMEFRAME), stage: "full", timeframe: UNIFIED_STRUCTURE_TIMEFRAME })}`, {
           signal,
           timeoutMs: historyTimeoutMs,
         }).then((payload) => {
