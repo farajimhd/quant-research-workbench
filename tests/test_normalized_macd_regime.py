@@ -85,3 +85,29 @@ def test_invalid_threshold_rejected(value):
     p=policy();p['normalized_macd_threshold_bps']=value
     with pytest.raises(ValueError):
         S.resolve_long_momentum_parameters(p,revision=47)
+
+
+@pytest.mark.parametrize('line,signal,exits', [(29,30,True),(31,32,True),(100,110,True),(32,31,False),(32,32,False)])
+@pytest.mark.parametrize('gain', [-1,1])
+def test_exit_strength_exemption_removed_but_only_on_completed_bars(line,signal,exits,gain):
+    p=parameters();p.update(macd_exit_ignore_strength_threshold=True,completed_macd_setup=True)
+    p['momentum_management']['downside_loss_guard']['below_vwap']=False
+    obs=replace(bar(),macd_line=line*101.2/10000,macd_signal=signal*101.2/10000)
+    state={'entry_at':NOW.isoformat()}
+    assert bool(S._matching_momentum_management_route(p,obs,state,gain_pct=gain,side='long'))==exits
+    intrabar=replace(obs,evaluation_events=('market_data_update',))
+    assert S._matching_momentum_management_route(p,intrabar,state,gain_pct=gain,side='long') is None
+    assert S._normalized_macd_regime(p,obs)['entry_gap_bypassed']==S._normalized_macd_regime(parameters(),obs)['entry_gap_bypassed']
+
+
+def test_real_engine_exits_above_30bps_with_new_policy():
+    p=parameters();p.update(macd_exit_ignore_strength_threshold=True,completed_macd_setup=True)
+    p['protection']['trailing']['enabled']=False
+    p['phase_policy']={'exit':{'mode':'automatic','rule_sets':[]}}
+    current=assignment(strategy_revision=47,parameters=p,status=S.AssignmentStatus.MANAGING,
+        state={'entry_at':NOW.isoformat(),'entry_reference_price':100,'active_stop':90,'initial_stop':90,'high_water_price':101.2})
+    obs=replace(bar(),macd_line=.4,macd_signal=.5,position_quantity=10,
+                structural_support_levels=(),structural_resistance_levels=())
+    result=S.LongMomentumStrategyEngine(revision=47).evaluate(current,obs)
+    assert any(i.action=='exit' for i in result.evaluation.intents)
+    assert result.state['last_exit_reason']=='macd_signal_crossed_above_line'
