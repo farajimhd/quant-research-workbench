@@ -842,6 +842,18 @@ def resolve_long_momentum_parameters(
         parameters["normalized_macd_threshold_bps"] = threshold
         parameters["momentum_management"]["histogram_slope_exit"] = {"enabled": False}
         candle["slope_reentry_break_previous_high"] = False
+    if parameters.get("broken_level_stop_only"):
+        for setting in parameters["momentum_management"].values():
+            if isinstance(setting, dict) and "enabled" in setting:
+                setting["enabled"] = False
+        parameters["protection"]["profit_ladder"]["enabled"] = False
+        parameters["protection"]["luld_profit_target"]["enabled"] = False
+        parameters["profit_pocket"]["enabled"] = False
+        for route in parameters.get("exit_routes", []):
+            if route.get("mechanism") != "protective_stop":
+                route["enabled"] = False
+        if "exit" in parameters.get("phase_policy", {}):
+            parameters["phase_policy"]["exit"]["rule_sets"] = []
     for section, key in ((candle, "slope_reentry_break_previous_high"),
                          (parameters["momentum_management"], "resistance_rejection_exit"),
                          (parameters["structural_entry"], "break_above_upper_bound")):
@@ -2358,6 +2370,12 @@ def _prior_completed_frame_resistance_trigger(
             r3 = current_levels[-1] if current_levels else None
         else:
             r3 = current_levels[2] if len(current_levels) >= 3 else None
+        recovery = state.get("stopped_level_recovery") if policy.get("recover_stopped_level") and observation.position_quantity <= 0 else None
+        if recovery:
+            r3 = next((dict(row, entry_boundary=_level_metric(row, "band_upper", "upper", "price"))
+                       for row in (*observation.structural_support_levels, *observation.structural_resistance_levels)
+                       if row.get("unified_level_id") == recovery.get("unified_level_id")
+                       and _level_is_entry_quality(row, policy, observed_at=observation.observed_at)), None)
         missing_reason = ("waiting_for_qualified_entry_resistance" if use_available
                           else "waiting_for_three_qualified_entry_resistances")
         if entry_ordinal is not None:
@@ -2409,6 +2427,9 @@ def _prior_completed_frame_resistance_trigger(
         if entry_ordinal is not None:
             result["entry_level_ordinal_below_high"] = entry_ordinal
             result["reason"] = result["reason"].replace("r3", f"r{entry_ordinal}")
+        if recovery:
+            result["recovery_level"] = dict(recovery)
+            result["reason"] = "stopped_level_recovered" if passed else "waiting_for_stopped_level_recovery"
     state["latest_structural_entry_trigger"] = result
     return result
 
@@ -3145,7 +3166,7 @@ class LongMomentumStrategyEngine:
             require_positive_signal=self.revision == 26,
         )
         normalized_macd = _normalized_macd_regime(parameters, observation)
-        bypass_gap = bool(normalized_macd and normalized_macd["entry_gap_bypassed"])
+        bypass_gap = bool(normalized_macd and normalized_macd["entry_gap_bypassed"] and not (unified_trigger or {}).get("recovery_level"))
         if normalized_macd is not None:
             entry_macd_evidence["normalized_regime"] = normalized_macd
             entry_macd_open = entry_macd_open or bypass_gap
@@ -3316,6 +3337,13 @@ class LongMomentumStrategyEngine:
             side=side,
             selection_evidence=protective_stop_selection,
         )
+        if parameters.get("broken_level_stop_only") and (unified_trigger or {}).get("recovery_level"):
+            recovered = dict(unified_trigger.get("level") or {})
+            stop = _level_metric(recovered, "price")
+            if not 0 < stop < observation.price:
+                stop = 0.0
+            protective_stop_selection = {"selection_mode": "recovered_level", "selected_level": recovered,
+                                         "selected_stop": stop}
         if stop <= 0:
             return self._result(
                 assignment, observation, "wait", ("third_resistance_stop_unavailable" if parameters["protection"]["stop"]["method"] == "third_resistance_below_session_high" else "qualified_support_unavailable"), 0.0, 1.0,
@@ -3360,11 +3388,14 @@ class LongMomentumStrategyEngine:
         )
         if profit_targets:
             target = profit_targets[0]
-        elif self.revision >= 37:
+        elif self.revision >= 37 and not parameters.get("broken_level_stop_only"):
             return self._result(
                 assignment, observation, "wait", "qualified_target_unavailable", 0.0, 1.0,
                 state, assignment.status, metadata={"profit_target_selection": profit_target_selection},
             )
+        if parameters.get("broken_level_stop_only"):
+            target = None
+            profit_targets = []
         profit_policy = dict(parameters["protection"].get("profit_ladder") or {})
         minimum_entry_target_gap_bps = max(
             0.0,
@@ -3557,6 +3588,9 @@ class LongMomentumStrategyEngine:
                 ) if entry_level_ids else 1,
             }
         )
+        if parameters.get("broken_level_stop_only"):
+            state["initial_stop_selection"] = protective_stop_selection
+            state.pop("trailing_support_selection", None)
         if self.revision >= 42:
             state["target_resistance_snapshot"] = [
                 _compact_structural_level_reference(row)
@@ -3710,7 +3744,7 @@ class LongMomentumStrategyEngine:
         target_liquidation_required = bool(
             state.pop("profit_target_liquidation_required", False)
         )
-        if target_liquidation_required:
+        if target_liquidation_required and not parameters.get("broken_level_stop_only"):
             incomplete_target_policy = dict(
                 dict(parameters.get("protection") or {})
                 .get("profit_ladder", {})
@@ -3762,6 +3796,8 @@ class LongMomentumStrategyEngine:
                 "mechanism": "protective_stop",
                 "position_fraction": 1.0,
             }
+        elif parameters.get("broken_level_stop_only"):
+            exit_route = None
         elif exit_automatic:
             exit_route = _matching_momentum_management_route(
                 parameters,
@@ -3838,6 +3874,11 @@ class LongMomentumStrategyEngine:
             ):
                 state["disable_after_exit"] = True
             state["last_exit_reason"] = reason
+            if parameters.get("broken_level_stop_only") and reason == "protective_stop":
+                selection = dict(state.get("trailing_support_selection") or state.get("initial_stop_selection") or {})
+                level = selection.get("selected_level") or selection.get("selected_resistance_level")
+                if level:
+                    state["stopped_level_recovery"] = dict(level)
             histogram_slope.arm_after_exit(
                 parameters.get("momentum_management", {}).get("histogram_slope_exit", {}),
                 state, observation, reason,
@@ -3897,7 +3938,7 @@ class LongMomentumStrategyEngine:
         if (self.revision >= 37 and stop > previous_stop > 0
                 and parameters["protection"]["trailing"].get("mode") in {"qualified_support", "third_resistance_below_session_high"}):
             stop_replacement = self._result(
-                assignment, observation, "replace_protective_stop", ("third_resistance_advanced" if parameters["protection"]["trailing"].get("mode") == "third_resistance_below_session_high" else "qualified_support_advanced"),
+                assignment, observation, "replace_protective_stop", ("highest_broken_level_advanced" if parameters.get("broken_level_stop_only") else "third_resistance_advanced" if parameters["protection"]["trailing"].get("mode") == "third_resistance_below_session_high" else "qualified_support_advanced"),
                 observation.qmd_score, 1.0, state, AssignmentStatus.MANAGING,
                 quantity=observation.position_quantity, invalidation_price=stop,
                 metadata={"previous_stop": previous_stop,
@@ -3940,7 +3981,7 @@ class LongMomentumStrategyEngine:
         if structural_add is not None:
             return structural_add
 
-        target_replacement = self._structural_target_replacement_result(
+        target_replacement = None if parameters.get("broken_level_stop_only") else self._structural_target_replacement_result(
             assignment,
             observation,
             parameters,
@@ -4074,6 +4115,7 @@ class LongMomentumStrategyEngine:
         if (
             assignment.permissions.reduce
             and pocket["enabled"]
+            and not parameters.get("broken_level_stop_only")
             and not executor_owned_partial
             and favorable_pct
             and pocket_triggered
@@ -5252,6 +5294,14 @@ def _protection_profile_from_phase(
         if isinstance(value, (int, float)) and float(value) > 0
     ]
     configured_slices = [dict(raw) for raw in configured.get("slices") or []]
+    if parameters.get("broken_level_stop_only"):
+        # One fully protected position, with no attached fixed-profit order.
+        configured_slices = [dict(configured_slices[0])] if configured_slices else []
+        for raw in configured_slices:
+            raw["quantity_fraction"] = 1.0
+            for key in ("strategy_profit_target_index", "profit_target_price", "use_strategy_profit_target"):
+                raw.pop(key, None)
+        profit_target_price = None
     has_indexed_slices = any(
         raw.get("strategy_profit_target_index") is not None
         for raw in configured_slices
@@ -5902,6 +5952,11 @@ class AssignedLongMomentumStrategy:
                 status = AssignmentStatus.MANAGING
             elif action in {"exit", "take_profit", "cover"}:
                 fill_role = str(getattr(snapshot, "fill_role", "") or "")
+                if assignment.parameters.get("broken_level_stop_only") and fill_role in {"protective_stop", "trailing_stop", "protective_exit"}:
+                    selection = dict(state.get("trailing_support_selection") or state.get("initial_stop_selection") or {})
+                    level = selection.get("selected_level") or selection.get("selected_resistance_level")
+                    if level:
+                        state["stopped_level_recovery"] = dict(level)
                 if (assignment.strategy_revision >= 40 and incremental_fill > 0
                         and not state.get("liquidation_origin_fill_role")):
                     # The first sell owns the liquidation cause. A managed
@@ -7631,6 +7686,25 @@ def _ratcheted_stop(
         else (entry / observation.price - 1) * 100
     ) if entry > 0 else 0
     trailing = parameters["protection"]["trailing"]
+    if parameters.get("broken_level_stop_only") and side == "long":
+        previous = state.get("previous_observed_price")
+        if previous is None:
+            return current
+        crossed = []
+        for row in (*observation.structural_support_levels, *observation.structural_resistance_levels):
+            boundary = _level_metric(row, "band_upper", "upper", "price")
+            price = _level_metric(row, "price")
+            if (int(row.get("side") or 0) in {-1, 1} and current < price < observation.price
+                    and 0 < boundary and float(previous) <= boundary < observation.price
+                    and _level_is_entry_quality(row, parameters["structural_entry"], observed_at=observation.observed_at)):
+                crossed.append(row)
+        if crossed:
+            level = max(crossed, key=lambda row: (_level_metric(row, "price"), str(row.get("unified_level_id"))))
+            state["trailing_support_selection"] = {"selection_mode": "highest_broken_level",
+                "selected_level": dict(level), "selected_stop": _level_metric(level, "price"),
+                "crossed_at": observation.observed_at.isoformat()}
+            return _level_metric(level, "price")
+        return current
     if not trailing["enabled"] or gain_pct < float(trailing["activation_gain_pct"]):
         return current
     if trailing.get("mode") == "third_resistance_below_session_high":
