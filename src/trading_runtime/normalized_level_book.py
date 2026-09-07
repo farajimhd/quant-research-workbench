@@ -2,8 +2,8 @@
 from hashlib import sha256
 from math import fsum, isfinite
 
-CONTRACT = 'merged-point-minmax-v2'
-MERGE_GAP_BPS = 35.0
+CONTRACT = 'merged-point-minmax-v3'
+MERGE_GAP_BPS = 20.0
 DEFAULT_THRESHOLD = 0.80
 
 
@@ -36,7 +36,7 @@ def merge_levels(levels, proximity_bps=MERGE_GAP_BPS, contract=CONTRACT):
                 confirmed_at_ms=max(r['confirmed_at_ms'] for r in members),
                 lifecycle='active' if all(r['lifecycle']=='active' for r in members) else 'mixed',
                 member_count=len(members), load_contract=contract,
-                **({'merge_gap_bps': proximity_bps} if contract == CONTRACT else {}),
+                **({'merge_gap_bps': proximity_bps} if contract != 'merged-point-minmax-v1' else {}),
                 timeframes=sorted({t for r in members for t in r.get('timeframes', [])})))
     return sorted(output, key=lambda r: (r['price'], r['side'], r['unified_level_id']))
 
@@ -45,7 +45,7 @@ def calibration(seed, close, ratio=1.0, *, contract=CONTRACT):
     if not isfinite(close) or close <= 0 or not isfinite(ratio) or ratio < 0:
         raise ValueError('Normalization requires a positive prior close and nonnegative range ratio')
     lower, upper = max(0, close*(1-ratio)), close*(1+ratio)
-    proximity_bps = 0.0 if contract == 'merged-point-minmax-v1' else MERGE_GAP_BPS
+    proximity_bps = {'merged-point-minmax-v1': 0.0, 'merged-point-minmax-v2': 35.0}.get(contract, MERGE_GAP_BPS)
     scores = [r['prominence'] for r in merge_levels(seed, proximity_bps, contract) if lower <= r['price'] <= upper]
     return dict(prior_close=close, range_ratio=ratio, lower=lower, upper=upper,
                 p_min=min(scores) if scores else None, p_max=max(scores) if scores else None,

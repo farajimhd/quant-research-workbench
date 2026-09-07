@@ -1081,7 +1081,7 @@ function unifiedStructureSegments(rows: HistoricalIndicator[], chartEnd: number)
 function isQmdUnifiedStructureLevel(value: unknown): value is QmdUnifiedStructureLevel {
   if (!value || typeof value !== "object") return false;
   const row = value as Partial<QmdUnifiedStructureLevel>;
-  return (Number.isFinite(Number(row.unified_level_id)) || (["merged-point-minmax-v1", "merged-point-minmax-v2"].includes(String(row.load_contract)) && /^merged:[a-f0-9]{24}$/.test(String(row.unified_level_id))))
+  return (Number.isFinite(Number(row.unified_level_id)) || (["merged-point-minmax-v1", "merged-point-minmax-v2", "merged-point-minmax-v3"].includes(String(row.load_contract)) && /^merged:[a-f0-9]{24}$/.test(String(row.unified_level_id))))
     && (Number(row.side) === 1 || Number(row.side) === -1)
     && Number(row.lower) > 0
     && Number(row.upper) >= Number(row.lower)

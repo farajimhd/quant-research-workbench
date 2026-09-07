@@ -58,7 +58,8 @@ class NormalizedBookTests(unittest.TestCase):
 class ProximityMergeTests(unittest.TestCase):
     def test_midpoint_bps_gap_and_opposite_roles(self):
         rows=[level('a',6.50,6.54,6.52,2),level('b',6.56,6.60,6.58,4),level('r',6.56,6.60,6.58,9,-1)]
-        merged=merge_levels(rows)
+        self.assertEqual(len(merge_levels(rows)),3)
+        merged=merge_levels(rows,proximity_bps=35)
         self.assertEqual(len(merged),2)
         support=next(r for r in merged if r['side']==1)
         self.assertAlmostEqual(support['price'],6.55)
@@ -68,4 +69,13 @@ class ProximityMergeTests(unittest.TestCase):
         self.assertEqual(len(merge_levels([level('a',1,1,1,1),level('b',1.01,1.01,1.01,1)])),2)
     def test_price_scale_invariance(self):
         for scale in (.01,1,100):
-            self.assertEqual(len(merge_levels([level('a',6.5*scale,6.54*scale,6.52*scale,2),level('b',6.56*scale,6.6*scale,6.58*scale,4)])),1)
+            self.assertEqual(len(merge_levels([level('a',6.5*scale,6.54*scale,6.52*scale,2),level('b',6.55*scale,6.6*scale,6.58*scale,4)])),1)
+
+    def test_new_sessions_use_20_bps_and_old_reviews_keep_35(self):
+        rows=[level('a',6.50,6.54,6.52,2),level('b',6.56,6.60,6.58,4)]
+        current=transform(rows,calibration(rows,6.5))
+        prior=transform(rows,calibration(rows,6.5,contract='merged-point-minmax-v2'))
+        self.assertEqual(len(current['unified_levels']),2)
+        self.assertEqual(current['normalization']['merge_gap_bps'],20)
+        self.assertEqual(len(prior['unified_levels']),1)
+        self.assertEqual(prior['unified_levels'][0]['merge_gap_bps'],35)
