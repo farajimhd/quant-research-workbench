@@ -330,8 +330,11 @@ def evaluate(host, a, o, p, state):
                 # A red breakout remains pending until a non-red close confirms
                 # it, or a completed close falls back through its frozen band.
                 del target_breaks[key]
-                selected = target_selection(d['prior_rows'],r,max(o.price,o.ask),s,tick,
+                selected = target_selection(d['prior_rows'],active['target']['level'],max(o.price,o.ask),s,tick,
                     minimum_target=target)
+                if selected:
+                    selected.update(triggering_breakout=deepcopy(r),
+                        selection_method='resistance_nearest_five_percent_above_current_target_resistance')
                 if selected and selected['price'] >= active.get('desired_target',{}).get('price',target):
                     active['desired_target'] = selected
             if len(target_breaks)>4096:
@@ -362,10 +365,13 @@ def evaluate(host, a, o, p, state):
                 metadata={'previous_stop':stop,'active_stop':proposed}))
         selection = active.get('desired_target')
         if fresh and o.price >= o.bar_open and selection and selection['price'] > target and selection['price'] > max(o.price,o.ask):
+            previous_selection = deepcopy(active['target'])
+            active['target'] = deepcopy(selection)
             state['structural_profit_targets'] = [selection['price']]
             replacements.append(result('replace_profit_target','resistance_break_target_advance',Status.MANAGING,
                 quantity=o.position_quantity,invalidation_price=state['active_stop'],profit_target_price=selection['price'],
-                metadata={'previous_profit_target':target,'profit_target':selection['price'],'profit_target_selection':selection}))
+                metadata={'previous_profit_target':target,'profit_target':selection['price'],'profit_target_selection':selection,
+                    'previous_historical_hod_target':previous_selection}))
         if replacements:
             return replace(replacements[-1], evaluation=replace(replacements[-1].evaluation,
                 signals=tuple(signal for r in replacements for signal in r.evaluation.signals),

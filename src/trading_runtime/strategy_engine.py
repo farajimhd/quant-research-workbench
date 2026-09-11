@@ -1,4 +1,5 @@
 from __future__ import annotations
+from copy import deepcopy
 
 from src.trading_runtime import breakout_confirmation
 
@@ -6063,6 +6064,11 @@ class AssignedLongMomentumStrategy:
                 previous = float(intent.metadata.get("previous_profit_target") or 0)
                 if previous > 0:
                     state["structural_profit_targets"] = [previous]
+                previous_hod_target = intent.metadata.get("previous_historical_hod_target")
+                if isinstance(previous_hod_target, Mapping) and state.get("historical_hod_entry"):
+                    state["historical_hod_entry"] = {
+                        **state["historical_hod_entry"], "target": deepcopy(previous_hod_target)
+                    }
                 previous_frontier = intent.metadata.get(
                     "previous_profit_target_frontier"
                 )

@@ -162,13 +162,13 @@ def test_target_advances_on_break_while_stop_waits_one_more_close():
         if i==3:
             intent,=r.evaluation.intents
             assert intent.action=='replace_profit_target'
-            assert intent.profit_target_price==pytest.approx(10.94)
-            assert intent.metadata['profit_target_selection']['reference']==pytest.approx(10.41*1.05)
+            assert intent.profit_target_price==pytest.approx(10.98)
+            assert intent.metadata['profit_target_selection']['reference']==pytest.approx(10.56*1.05)
         a=replace(a,state=r.state,status=r.status)
     assert r.evaluation.intents[0].action=='replace_protective_stop'
     assert r.state['active_stop']==pytest.approx(10.39)
     assert r.evaluation.intents[0].metadata['previous_stop']==pytest.approx(9.99)
-    assert r.state['structural_profit_targets']==pytest.approx([10.94])
+    assert r.state['structural_profit_targets']==pytest.approx([10.98])
 
 
 def test_target_does_not_skip_nearest_resistance_to_force_an_advance():
@@ -176,6 +176,26 @@ def test_target_does_not_skip_nearest_resistance_to_force_an_advance():
     selected=H.target_selection(rows(),rows()[1],10.43,H.DEFAULTS,.01,minimum_target=10.94)
     assert selected is None
     assert H.target_selection(rows(),rows()[1],10.43,H.DEFAULTS,.01,minimum_target=11.49) is None
+
+
+def test_target_advance_uses_latest_target_once_per_candle_and_rolls_back_on_rejection():
+    import asyncio
+    host,a,_=acquired()
+    original=deepcopy(a.state['historical_hod_entry']['target'])
+    # Cross two resistances in one candle: calculate one step from the current target.
+    r=host.evaluate(a,candle(3,10.58,position_quantity=100))
+    target=next(v for v in r.evaluation.intents if v.action=='replace_profit_target')
+    assert target.profit_target_price==pytest.approx(10.98)
+    advanced=replace(a,state=r.state,status=r.status)
+    r2=host.evaluate(advanced,candle(4,11.,position_quantity=100))
+    next_target=next(v for v in r2.evaluation.intents if v.action=='replace_profit_target')
+    assert next_target.metadata['profit_target_selection']['reference']==pytest.approx(10.96*1.05)
+    assert next_target.profit_target_price==pytest.approx(11.49)
+    assigned=S.AssignedLongMomentumStrategy([advanced])
+    asyncio.run(assigned.on_intent_rejected(target,reasons=('broker rejected',),event_time=NOW))
+    restored=assigned.assignments()[0].state
+    assert restored['historical_hod_entry']['target']==original
+    assert restored['structural_profit_targets']==[original['price']]
 
 
 def test_red_close_and_intrabar_events_cannot_advance_target_or_apply_old_proposal():
@@ -200,7 +220,7 @@ def test_current_day_break_and_stop_advance_can_update_both_orders_together():
     assert [i.action for i in r.evaluation.intents]==['replace_protective_stop','replace_profit_target']
     assert r.state['active_stop']==pytest.approx(10.1)
     assert r.evaluation.intents[-1].profit_target_price==pytest.approx(10.98)
-    assert r.evaluation.intents[-1].metadata['profit_target_selection']['broken_level']['lower']==10.55
+    assert r.evaluation.intents[-1].metadata['profit_target_selection']['triggering_breakout']['lower']==10.55
 
 
 def test_red_breakout_advances_target_on_later_non_red_holding_close():
@@ -211,8 +231,8 @@ def test_red_breakout_advances_target_on_later_non_red_holding_close():
         a=replace(a,state=r.state,status=r.status)
     r=host.evaluate(a,candle(5,10.45,opened=10.44,position_quantity=100))
     target=next(v for v in r.evaluation.intents if v.action=='replace_profit_target')
-    assert target.profit_target_price==pytest.approx(10.94)
-    assert target.metadata['profit_target_selection']['broken_level']['upper']==10.42
+    assert target.profit_target_price==pytest.approx(10.98)
+    assert target.metadata['profit_target_selection']['triggering_breakout']['upper']==10.42
     assert not r.state['historical_hod_entry']['target_breaks']
 
 
@@ -232,10 +252,11 @@ def test_pending_red_breakout_is_cancelled_by_failure_or_missing_candle(failure)
 def test_sugp_041042_red_break_then_041043_green_confirmation():
     host,a,_=acquired()
     levels=tuple(dict(level(-1,low,high),oldest_member_confirmed_at_ms=(NOW.timestamp()-86400)*1000)
-        for low,high in ((3.68,3.71),(3.83,3.85),(3.89,3.91)))
+        for low,high in ((3.68,3.71),(3.83,3.85),(3.89,3.91),(4.0081982,4.0098018)))
     # Recorded SUGP prices; the position already has a $3.82 target.
     a.state.update(active_stop=3.61,structural_profit_targets=[3.82])
-    a.state['historical_hod_entry'].update(stop=3.61,initial_risk=.04,best_close=3.6995,
+    a.state['historical_hod_entry'].update(target={'price':3.82,'level':levels[1]},
+        stop=3.61,initial_risk=.04,best_close=3.6995,
         management_base={'lower':3.61,'tolerance':.01})
     a.state['historical_hod_state'].update(close=3.6995,rows=levels)
     r=host.evaluate(a,replace(candle(3,3.72,opened=3.7293,position_quantity=100),
@@ -245,7 +266,8 @@ def test_sugp_041042_red_break_then_041043_green_confirmation():
     r=host.evaluate(a,replace(candle(4,3.75,opened=3.7007,position_quantity=100),
         structural_resistance_levels=levels))
     target=next(v for v in r.evaluation.intents if v.action=='replace_profit_target')
-    assert target.profit_target_price==pytest.approx(3.88)
+    assert target.profit_target_price==pytest.approx(4.02)
+    assert target.metadata['profit_target_selection']['reference']==pytest.approx(3.84*1.05)
 
 
 def test_unfilled_old_target_does_not_block_advance_but_flat_position_does():
