@@ -2702,6 +2702,7 @@ class LongMomentumStrategyEngine:
         if revision not in {*HISTORICAL_STRATEGY_REVISIONS, STRATEGY_REVISION}:
             raise ValueError(f"Unsupported Long Momentum Strategy revision: {revision}")
         self.revision = revision
+        self._historical_parameters_cache = None
 
     def evaluate(self, assignment: StrategyAssignment, observation: StrategyObservation) -> StrategyEngineResult:
         if assignment.parameters.get('macd_r3_contract'):
@@ -2751,10 +2752,21 @@ class LongMomentumStrategyEngine:
             raise ValueError("Observation ticker does not match strategy assignment")
         state = dict(assignment.state)
         status = assignment.status
-        parameters = resolve_long_momentum_parameters(
-            assignment.parameters,
-            revision=self.revision,
-        )
+        if assignment.parameters.get('historical_hod_contract'):
+            # This policy reads resolved settings without mutating them. Keep
+            # one bounded compiled configuration, invalidating even for nested
+            # in-place edits by comparing against a detached source copy.
+            cached = self._historical_parameters_cache
+            if cached is None or cached[0] != assignment.parameters:
+                source = deepcopy(assignment.parameters)
+                resolved = resolve_long_momentum_parameters(deepcopy(source), revision=self.revision)
+                cached = self._historical_parameters_cache = (source, resolved)
+            parameters = cached[1]
+        else:
+            parameters = resolve_long_momentum_parameters(
+                assignment.parameters,
+                revision=self.revision,
+            )
         if parameters.get('historical_hod_contract'):
             from .historical_hod import evaluate
             return evaluate(self, assignment, observation, parameters, state)

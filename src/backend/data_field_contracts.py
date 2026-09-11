@@ -610,6 +610,12 @@ def project_data_field_outputs(
     This is a projection only; multi-row calculations remain owned by QMD Live
     or the historical vectorized executor.
     """
+    return project_prepared_data_field_outputs(rows, prepare_data_field_outputs(
+        data_fields, field_refs=field_refs, field_instances=field_instances))
+
+
+def prepare_data_field_outputs(data_fields, *, field_refs=None, field_instances=None):
+    """Compile a pinned catalog once, independently of producer row values."""
 
     selected_refs = (
         {str(value) for value in field_refs if str(value)}
@@ -675,6 +681,11 @@ def project_data_field_outputs(
             default_function,
             dict(execution.get("aggregation_runtime_fields") or {}),
         ))
+    return tuple(prepared_outputs)
+
+
+def project_prepared_data_field_outputs(rows, prepared_outputs):
+    """Apply a prepared catalog without changing its interval/freshness rules."""
     projected: list[dict[str, Any]] = []
     for row in rows:
         result = dict(row)

@@ -615,5 +615,25 @@ class DataFieldContractTests(unittest.TestCase):
         self.assertEqual(instance["instance_ref"], field_instance_ref(output["field_ref"], "3m", "max"))
 
 
+def test_prepared_projection_preserves_other_intervals_and_input_rows():
+    from copy import deepcopy
+    from src.backend.data_field_contracts import prepare_data_field_outputs, project_prepared_data_field_outputs, field_instance_ref
+    ref='data.indicator.test_close@1:value'
+    fields=[dict(context={'available_intervals':['1s','5s']},execution={},
+        outputs=[dict(field_ref=ref,runtime_field='close',source_id='indicator.test_close')])]
+    plan=prepare_data_field_outputs(fields,field_refs=[ref],
+        field_instances=[dict(field_ref=ref,interval=tf) for tf in ('1s','5s')])
+    frozen=deepcopy(plan)
+    first={'indicator_interval':'1s','close':10.}
+    a,=project_prepared_data_field_outputs([first],plan)
+    second={**a,'indicator_interval':'5s','close':11.}
+    b,=project_prepared_data_field_outputs([second],plan)
+    assert a[field_instance_ref(ref,'1s','')]==10.
+    assert b[field_instance_ref(ref,'1s','')]==10.
+    assert b[field_instance_ref(ref,'5s','')]==11.
+    assert first=={'indicator_interval':'1s','close':10.}
+    assert plan==frozen
+
+
 if __name__ == "__main__":
     unittest.main()

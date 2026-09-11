@@ -60,6 +60,33 @@ def test_entry_close_non_red_and_complete_broker_protection():
     assert not host.evaluate(a,replace(o,price=10.02,bar_high=10.1)).evaluation.intents
 
 
+def test_compiled_settings_invalidate_on_nested_changes_and_validate_again():
+    from unittest.mock import patch
+    host,a,o=ready()
+    with patch.object(S,'resolve_long_momentum_parameters',wraps=S.resolve_long_momentum_parameters) as resolve:
+        host.evaluate(a,o)
+        assert resolve.call_count==0
+        a.parameters['historical_hod']['stop_buffer_bps']=20.
+        assert host.evaluate(a,o).evaluation.intents[0].invalidation_price==pytest.approx(9.97)
+        assert resolve.call_count==1
+        a.parameters['historical_hod']['stop_buffer_bps']=-1.
+        with pytest.raises(ValueError,match='finite and positive'):
+            host.evaluate(a,o)
+
+
+def test_market_evidence_and_prior_states_remain_unchanged_across_observations():
+    host,a,o=acquired()
+    retained=[]
+    for index,price in ((3,10.44),(4,10.45),(5,10.58),(6,10.54),(7,10.52)):
+        obs=candle(index,price,position_quantity=100,average_price=10.04)
+        retained.append((a.state,deepcopy(a.state)))
+        frozen=deepcopy(obs.structural_detector_state)
+        r=host.evaluate(a,obs)
+        assert obs.structural_detector_state==frozen
+        a=replace(a,state=r.state,status=r.status)
+    assert all(state==frozen for state,frozen in retained)
+
+
 def test_historical_priority_merged_ancestry_and_fallbacks():
     r=list(rows());session='2026-08-21'
     r.append(dict(level(-1,10.2,10.22),oldest_member_confirmed_at_ms=NOW.timestamp()*1000))
@@ -584,7 +611,7 @@ def test_replay_passive_adapter_observes_both_clocks_before_assignment():
     from tests.test_structural_recovery import BOOK
     _,a,_=ready()
     fake=SimpleNamespace(definition=SimpleNamespace(configuration_revision={'payload':{'strategy':{'parameters':a.parameters}}},
-        experimental_structure_book=BOOK['id']),_candle_detector_states={},
+        experimental_structure_book=BOOK['id']),_candle_detector_states={},_structural_market_streams={},
         _experimental_session_high=lambda ticker,at:10.3,
         _experimental_structure_snapshot=AsyncMock(return_value={'unified_levels':list(rows())}))
     with patch('src.backend.experimental_structure_book.resolve',return_value=BOOK):
@@ -596,6 +623,10 @@ def test_replay_passive_adapter_observes_both_clocks_before_assignment():
     stream=fake._candle_detector_states['TEST']['structural_recovery']
     assert stream['row']['contract']=='structural-candle-detector-10'
     assert stream['row']['sequence']==2
+    persisted=ReplayRunController._checkpoint_candle_detectors(fake)['TEST']['structural_recovery']
+    assert persisted['historical_hod_observation']==stream['historical_hod_observation']
+    from src.trading_runtime.structural_recovery import MarketStream
+    assert MarketStream(persisted).checkpoint()==persisted
     passive=stream['historical_hod_observation']
     assert passive['macd_at']==(NOW+timedelta(seconds=5)).timestamp()
     assert passive['body_high']==10.1 and passive['hod']==10.3
@@ -641,8 +672,8 @@ def test_historical_candidate_requires_certified_v6_ticker():
         assert ReplayRunDefinition(**args,experimental_structure_book=BOOK['id']).experimental_structure_fingerprint==BOOK['fingerprint']
 
 
-@pytest.mark.parametrize('cash_tranches',[False,True])
-def test_runtime_places_broker_stop_and_full_target(tmp_path,cash_tranches):
+@pytest.mark.parametrize('cash_tranches,add_quote_size',[(False,10000),(True,10000),(True,100)])
+def test_runtime_places_broker_stop_and_full_target(tmp_path,cash_tranches,add_quote_size):
     import asyncio
     from tests import test_long_momentum_strategy as T
     from src.trading_runtime.journal import TradingJournal
@@ -673,10 +704,22 @@ def test_runtime_places_broker_stop_and_full_target(tmp_path,cash_tranches):
                 for index,price in [(3,10.44),(4,10.58)]:
                     obs=candle(index,price,position_quantity=quantities[-1])
                     stamp=obs.observed_at-timedelta(milliseconds=1)
-                    await broker.on_market_event(T.QuoteEvent(ask_exchange=11,ask_price=obs.ask,ask_size=10000,
+                    await broker.on_market_event(T.QuoteEvent(ask_exchange=11,ask_price=obs.ask,ask_size=add_quote_size,
                         bid_exchange=12,bid_price=obs.bid,bid_size=10000,conditions=(),indicators=(),
                         ingest_ts=stamp,raw={'conid':123},sequence=index,source='test',tape=3,ticker='TEST',ts=stamp))
                     await runtime.process_strategy_observation(obs)
+                    # Acquire the remaining tranche in separate causal quote
+                    # updates while earlier tranches retain their protection.
+                    for part in range(1,100):
+                        entries=[order for order in await broker.live_orders()
+                            if order.side=='BUY' and order.order_status not in {'Filled','Cancelled'}]
+                        if not entries:
+                            break
+                        stamp=obs.observed_at+timedelta(milliseconds=part)
+                        await runtime.process_event(T.QuoteEvent(ask_exchange=11,ask_price=obs.ask,ask_size=add_quote_size,
+                            bid_exchange=12,bid_price=obs.bid,bid_size=10000,conditions=(),indicators=(),
+                            ingest_ts=stamp,raw={'conid':123},sequence=index*100+part,source='test',tape=3,ticker='TEST',ts=stamp),
+                            evaluate_strategy=False)
                     quantities.append(sum(lot.quantity for lot in runtime.portfolio.allocations.values()))
                     working=[order for order in await broker.live_orders() if order.order_status not in {'Filled','Cancelled','Inactive'}]
                     stops=[order for order in working if order.orderType=='STP']
@@ -687,6 +730,23 @@ def test_runtime_places_broker_stop_and_full_target(tmp_path,cash_tranches):
                     assert sum(order.remainingQuantity for order in targets)==quantities[-1]
                 assert quantities[0] < quantities[1] < quantities[2]
                 assert len(runtime.portfolio.allocations)==1
+                if add_quote_size==100:
+                    # One broker match can execute several tranche stops before
+                    # OMS consumes each order-state message. Never repair shares
+                    # already sold by that same match.
+                    bid=min(order.auxPrice for order in stops)-.01
+                    for offset,size in ((1,1100),(2,10000)):
+                        stamp=obs.observed_at+timedelta(seconds=offset)
+                        await runtime.process_event(T.QuoteEvent(ask_exchange=11,ask_price=bid+.01,ask_size=10000,
+                            bid_exchange=12,bid_price=bid,bid_size=size,conditions=(),indicators=(),
+                            ingest_ts=stamp,raw={'conid':123},sequence=1000+offset,source='test',tape=3,ticker='TEST',ts=stamp),
+                            evaluate_strategy=False)
+                        held=sum(float(pos.position) for pos in await broker.positions('sim'))
+                        working=[order for order in await broker.live_orders()
+                            if order.order_status not in {'Filled','Cancelled','Inactive'}]
+                        assert sum(order.remainingQuantity for order in working if order.orderType=='STP')==held
+                        assert sum(order.remainingQuantity for order in working if order.side=='SELL' and order.orderType=='LMT')==held
+                    assert held==0
         finally:
             journal.close()
     asyncio.run(run())

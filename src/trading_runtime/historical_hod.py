@@ -260,8 +260,10 @@ def observe(o, d, s):
         return False, macd_closed
     contiguous = now-d.get('closed_at',0) == 1
     d['prior_close'] = d.get('close') if contiguous else None
-    d['prior_bar'] = deepcopy(d.get('bar')) if contiguous else None
-    d['prior_rows'] = deepcopy(d.get('rows', [])) if contiguous else []
+    # Completed bars and certified level snapshots are read-only evidence.
+    # Advance their references; only the episode's scalar fields change.
+    d['prior_bar'] = d.get('bar') if contiguous else None
+    d['prior_rows'] = d.get('rows', []) if contiguous else []
     d['prior_hod'] = d.get('hod')
     d['prior_body_high'] = d.get('body_high',0.)
     if d.get('episode') is not None:
@@ -285,7 +287,7 @@ def observe(o, d, s):
 def observe_frame(frame, saved, parameters, snapshot=None):
     """Maintain episode history before discovery creates a trade assignment."""
     from types import SimpleNamespace
-    d = deepcopy(saved)
+    d = dict(saved)
     session = frame.as_of.astimezone(NY).date().isoformat()
     if d.get('session') != session:
         d = {'session':session}
@@ -335,7 +337,12 @@ def confirm_failed_attempt(active, o):
 def evaluate(host, a, o, p, state):
     from .strategy_engine import AssignmentStatus as Status, _at_or_after_session_time
     from .signals import CapitalRequest, StrategyIntent
-    state = deepcopy(state)
+    # Copy mutable position-management state, but retain the completed market
+    # evidence. Copying both full level books on every quote is unnecessary;
+    # observe() replaces these snapshots and never mutates their members.
+    previous_market = state.get('historical_hod_state', {})
+    state = deepcopy({k:v for k,v in state.items() if k!='historical_hod_state'})
+    state['historical_hod_state'] = dict(previous_market)
     s = p['historical_hod']; tick = p['execution']['tick_size']; now = o.observed_at.timestamp()
     d = state.setdefault('historical_hod_state', {})
     session = o.observed_at.astimezone(NY).date().isoformat()
@@ -347,7 +354,7 @@ def evaluate(host, a, o, p, state):
         macd_closed = (o.source_timeframe == '5s' and passive.get('macd_at',0) > d.get('macd_at',0)
             and passive.get('macd_valid') and not passive.get('macd_positive'))
         used = d.get('used_episode',False) if d.get('episode') == passive.get('episode') else False
-        d = deepcopy(passive)
+        d = dict(passive)
         d['used_episode'] = used
         # Use the runtime's resolved execution VWAP for the current 1s candle.
         if fresh:

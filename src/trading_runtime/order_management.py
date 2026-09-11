@@ -2862,11 +2862,24 @@ class OrderManagementEngine:
             None,
         )
         position_quantity = float(position.position) if position is not None else 0.0
-        initial_entry_group = str(group.intent.action) in {"enter_long", "enter_short"}
+        # Every acquisition owns only its filled shares, including adds to an
+        # existing position. Position-wide repair here can steal an earlier
+        # tranche's stop capacity while leaving its target outstanding.
+        initial_entry_group = str(group.intent.action) in {"enter_long", "enter_short", "add_long", "add_short"}
         mandatory_target = bool(group.intent.metadata.get('mandatory_broker_target'))
+        live_orders = await self.broker.live_orders()
+        observed_fills = dict(group.filled_by_broker_order)
+        # A broker match can execute several stops before its individual order
+        # messages reach this ledger. Respect already reported exits when
+        # computing this acquisition's remaining exposure; otherwise repair
+        # recreates sell capacity against shares held by another tranche.
+        for order in live_orders:
+            order_id = str(order.orderId)
+            if group.broker_order_roles.get(order_id) in {'profit_target','protective_stop','trailing_stop'}:
+                observed_fills[order_id] = max(observed_fills.get(order_id,0.),float(order.filledQuantity))
         group_exit_quantity = sum(
             quantity
-            for order_id, quantity in group.filled_by_broker_order.items()
+            for order_id, quantity in observed_fills.items()
             if group.broker_order_roles.get(order_id)
             in {"profit_target", "protective_stop", "trailing_stop"}
         )
@@ -2884,7 +2897,6 @@ class OrderManagementEngine:
             if initial_entry_group
             else abs(position_quantity)
         )
-        live_orders = await self.broker.live_orders()
         processed_entry_parent_quantities = {
             group.orders[request_index].cOID: float(filled)
             for broker_order_id, filled in group.filled_by_broker_order.items()

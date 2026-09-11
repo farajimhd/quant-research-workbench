@@ -80,6 +80,31 @@ def test_real_detector_to_protected_entry_without_macd():
     assert o.macd_line is None
 
 
+def test_market_stream_matches_candle_checkpoints_across_resets_and_recovery():
+    import math
+    stream = R.MarketStream()
+    saved = {}
+    published = []
+    for index in range(120):
+        # Exercise oscillating swings, a missing candle and a book revision.
+        end = NOW.timestamp() + index + 1 + (index >= 60)
+        opening = 10 + math.sin(index / 4) * .2
+        close = 10 + math.sin((index + 1) / 4) * .2
+        bar = dict(time=end-1,end=end,open=opening,close=close,
+            low=min(opening,close)-.01,high=max(opening,close)+.01,volume=1000+index)
+        book = dict(BOOK,fingerprint='successor' if index >= 90 else BOOK['fingerprint'])
+        levels = [level(1,9.85,9.87),level(-1,10.13,10.15)]
+        saved = R.observe_market(bar,levels,book,saved)
+        row = stream.observe(bar,levels,book)
+        assert row == {k:v for k,v in saved.items() if k!='checkpoint'}
+        assert stream.checkpoint() == saved
+        published.append((row,deepcopy(row)))
+        if index == 45:
+            stream = R.MarketStream(json.loads(json.dumps(stream.checkpoint())))
+        assert stream.observe(bar,levels,book) == row
+    assert all(row == frozen for row,frozen in published)
+
+
 def test_no_future_or_non_v6_authority_and_no_chased_entry():
     host,a,o,saved=ready()
     bad=deepcopy(o.structural_detector_state);bad['book']['version']='causal-swing-closing-book-5'
@@ -199,7 +224,7 @@ def test_replay_passive_stream_populates_independent_detector():
     frame=SimpleNamespace(timeframe='1s',ticker='TEST',as_of=NOW+timedelta(seconds=1),
         bar={'open':10.,'high':10.1,'low':10.,'close':10.1,'volume':1000})
     fake=SimpleNamespace(definition=SimpleNamespace(configuration_revision={'payload':{'strategy':{'parameters':parameters()}}},
-        experimental_structure_book=BOOK['id']),_candle_detector_states={},
+        experimental_structure_book=BOOK['id']),_candle_detector_states={},_structural_market_streams={},
         _experimental_structure_snapshot=AsyncMock(return_value={'unified_levels':[level(1,9.9,10.),level(-1,11.,11.1)]}))
     with patch('src.backend.experimental_structure_book.resolve',return_value=BOOK):
         asyncio.run(ReplayRunController._observe_episode_candle(fake,frame))

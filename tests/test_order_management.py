@@ -1268,6 +1268,31 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
             await manager.close()
             journal.close()
 
+    async def test_fill_batch_does_not_repair_an_already_exited_acquisition(self):
+        exited = LiveOrder(account='DU1', orderId='101', conid=123, ticker='TEST', side='SELL',
+            orderType='STP', tif='DAY', totalSize=10, filledQuantity=10,
+            remainingQuantity=0, avgPrice=9.8, order_status=OrderStatus.FILLED,
+            cOID='strategy-1-v1-first-stop',parentId='strategy-1-v1-first-entry')
+        broker = ReconciliationRaceBroker(position_quantity=20., live_orders=[exited])
+        with tempfile.TemporaryDirectory() as directory:
+            manager,journal = await self._manager(directory,broker,policy=BrokerCommunicationPolicy())
+            try:
+                broker._positions['DU1'][123]=_Position(conid=123,ticker='TEST',quantity=20.,avg_cost=10.)
+                request=OrderRequest(acctId='DU1',conid=123,cOID='strategy-1-v1-first-entry',ticker='TEST',
+                    orderType='LMT',side='BUY',quantity=10,price=10.01)
+                group=_ManagedOrderGroup(group_id='exited-before-ledger-update',intent=intent(quantity=10),
+                    account_id='DU1',plan=StrategyOrderPlan((request,)),state=OrderManagementState.FILLED,
+                    created_at=NOW,updated_at=NOW,orders=[request],broker_order_ids=['100','101'],
+                    broker_order_request_indexes={'100':0},broker_order_roles={'100':'entry','101':'protective_stop'},
+                    filled_by_broker_order={'100':10.},filled_quantity=10.,remaining_quantity=0.)
+                manager._groups[group.group_id]=group
+                result=await manager.reconcile_protection(group)
+                assert result['required_quantity']==0
+                assert result['actions']==[]
+            finally:
+                await manager.close()
+                journal.close()
+
     async def test_mixed_runner_repair_preserves_target_quantity(self):
         broker = ReconciliationRaceBroker(position_quantity=10., live_orders=[])
         with tempfile.TemporaryDirectory() as directory:

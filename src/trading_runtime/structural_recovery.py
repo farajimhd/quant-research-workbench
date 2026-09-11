@@ -63,20 +63,52 @@ def configure(p):
 
 def observe_market(bar, levels, book, saved, settings=None):
     """Passive stream, independent of assignment/position; caller persists saved."""
+    stream = MarketStream(saved)
+    stream.observe(bar, levels, book, settings)
+    return stream.checkpoint()
+
+
+class MarketStream:
+    """Own one detector in memory; export JSON only at persistence boundaries."""
+
+    def __init__(self, saved=None):
+        self.saved = {k:v for k,v in (saved or {}).items() if k!='checkpoint'}
+        self._checkpoint = (saved or {}).get('checkpoint')
+        self.engine = None
+
+    def observe(self, bar, levels, book, settings=None):
+        _validate_market(bar, levels, book)
+        saved = self.saved
+        if saved.get('row', {}).get('effective_at', 0) >= bar['end']:
+            return saved
+        session = datetime.fromtimestamp(bar['time'], NY).date().isoformat()
+        reset = (saved.get('session') != session or saved.get('book') != book
+                 or saved.get('row', {}).get('effective_at') != bar['time'])
+        if reset:
+            self.engine = StructuralDetector(DetectorSettings(**(settings or {})))
+        elif self.engine is None:
+            self.engine = restore(self._checkpoint)
+        self._checkpoint = None
+        # Published observations must not alias the detector's mutable state.
+        row = deepcopy(self.engine.observe(bar, levels, 'available'))
+        self.saved = dict(session=session, book=deepcopy(book), row=row, reset=reset)
+        return self.saved
+
+    def checkpoint(self):
+        saved = deepcopy(self.saved)
+        if self.engine is not None:
+            saved['checkpoint'] = checkpoint(self.engine)
+        elif self._checkpoint is not None:
+            saved['checkpoint'] = deepcopy(self._checkpoint)
+        return saved
+
+
+def _validate_market(bar, levels, book):
     if book.get('version') != BOOK_VERSION or not book.get('fingerprint') or not book.get('id'):
         raise ValueError('Structural recovery requires a pinned certified V6 book')
     if any(l.get('book_version') != BOOK_VERSION or l.get('confirmed_at_ms') is None
            or l['confirmed_at_ms'] > bar['end']*1000 for l in levels):
         raise ValueError('Invalid or future V6 level evidence')
-    if saved.get('row', {}).get('effective_at', 0) >= bar['end']:
-        return saved
-    session = datetime.fromtimestamp(bar['time'], NY).date().isoformat()
-    reset = (saved.get('session') != session or saved.get('book') != book
-             or saved.get('row', {}).get('effective_at') != bar['time'])
-    engine = StructuralDetector(DetectorSettings(**(settings or {}))) if reset else restore(saved['checkpoint'])
-    row = engine.observe(bar, levels, 'available')
-    return dict(session=session, book=deepcopy(book), row=row,
-                checkpoint=checkpoint(engine), reset=reset)
 
 
 def _source(o, key, age):

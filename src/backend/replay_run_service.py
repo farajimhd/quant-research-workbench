@@ -28,7 +28,8 @@ from websockets.exceptions import ConnectionClosedError
 from src.backend.data_field_contracts import (
     field_instance_ref,
     interval_expression,
-    project_data_field_outputs,
+    prepare_data_field_outputs,
+    project_prepared_data_field_outputs,
 )
 from src.backend.canonical_trading_service import trading_state_payload
 from src.backend.lifecycle_contract import lifecycle_projection
@@ -1047,6 +1048,9 @@ class ReplayRunController:
         self._data_authority: dict[str, dict[str, Any]] = {}
         self._resume_state = deepcopy(resume_state) if resume_state is not None else None
         self._candle_detector_states = deepcopy((resume_state or {}).get('candle_detector_states') or {})
+        self._structural_market_streams = {}
+        self._signal_field_projection = None
+        self._signal_catalogs = None
         self._source_cursor: dict[str, Any] = {}
         self._frame_cursor: dict[str, Any] = {}
         self._stage_timings = {}
@@ -1872,9 +1876,15 @@ class ReplayRunController:
                 assignment.payload() for assignment in self._strategy.assignments()
             ] if self._strategy is not None else [
             ],
-            "candle_detector_states": deepcopy(self._candle_detector_states),
+            "candle_detector_states": self._checkpoint_candle_detectors(),
             "broker": broker_checkpoint(),
         }
+
+    def _checkpoint_candle_detectors(self):
+        states = deepcopy(self._candle_detector_states)
+        for ticker, stream in self._structural_market_streams.items():
+            states[ticker]['structural_recovery'] = stream.checkpoint()
+        return states
 
     def _save_restart_checkpoint(self, event_time: datetime) -> None:
         if self._journal is None or self._runtime is None:
@@ -3034,7 +3044,7 @@ class ReplayRunController:
                 market.get('historical_hod_observation', {}), parameters)
             return
         if frame.timeframe == '1s' and (parameters.get('structural_recovery_contract') or historical_hod):
-            from src.trading_runtime.structural_recovery import observe_market, BOOK_VERSION
+            from src.trading_runtime.structural_recovery import MarketStream, BOOK_VERSION
             from src.backend.experimental_structure_book import resolve
             if not self.definition.experimental_structure_book:
                 raise ValueError('Structural strategy requires an explicitly selected certified V6 swing book')
@@ -3048,8 +3058,11 @@ class ReplayRunController:
             bar = dict(time=end-1, end=end, **{k:frame.bar[k] for k in ('open','high','low','close')},
                        volume=frame.bar.get('volume'))
             saved = self._candle_detector_states.get(frame.ticker, {}).get('structural_recovery') or {}
-            market = observe_market(bar, snapshot['unified_levels'], self._recovery_book_identity,
-                                    saved, parameters.get('structural_detector_settings'))
+            stream = self._structural_market_streams.get(frame.ticker)
+            if stream is None:
+                stream = self._structural_market_streams[frame.ticker] = MarketStream(saved)
+            market = stream.observe(bar, snapshot['unified_levels'], self._recovery_book_identity,
+                                    parameters.get('structural_detector_settings'))
             if historical_hod:
                 from src.trading_runtime.historical_hod import observe_frame
                 market['historical_hod_observation'] = observe_frame(frame,
@@ -3340,7 +3353,9 @@ class ReplayRunController:
             # Signal-stream projections must be part of the immutable
             # observation evaluated below.  Copying first left veto and
             # confirmation signals one frame behind the source cache.
-            source_values=deepcopy(source_cache),
+            # Cache entries are replaced, not edited; retain their original
+            # timestamps and frozen evidence without copying every level book.
+            source_values=dict(source_cache),
         )
         ticker_assignments = tuple(
             assignment
@@ -3467,7 +3482,7 @@ class ReplayRunController:
                         }
                     )
                 ),
-                source_values=deepcopy(source_cache),
+                source_values=dict(source_cache),
             )
         if frame.ticker in getattr(self, '_candle_detector_states', {}):
             detector_stream = self._candle_detector_states[frame.ticker]
@@ -3478,8 +3493,10 @@ class ReplayRunController:
                     'observed_at': quote.ts.isoformat() if quote else '',
                     'value': (quote.ask_price-quote.bid_price)/quote.midpoint*10000
                         if quote and quote.midpoint > 0 else None}
-                base = replace(base, structural_detector_state=deepcopy(
-                    {k:v for k,v in market.items() if k != 'checkpoint'}),source_values=values)
+                # MarketStream publishes detached rows; subsequent candles
+                # replace them. Subsecond frames can share that frozen evidence.
+                base = replace(base, structural_detector_state=
+                    {k:v for k,v in market.items() if k != 'checkpoint'},source_values=values)
             else:
                 base = replace(base, candle_detector_state=deepcopy(detector_stream['continuation_detector']))
         self._latest_strategy_observations[frame.ticker] = base
@@ -4305,12 +4322,12 @@ class ReplayRunController:
                 ticker=frame.ticker,
                 as_of_us=int(frame.as_of.timestamp() * 1_000_000),
             ))
-        projected = project_data_field_outputs(
-            [raw],
-            activation.get("data_fields") or [],
-            field_refs=list(plan.get("field_refs") or []),
-            field_instances=list(plan.get("field_instances") or []),
-        )
+        if self._signal_field_projection is None:
+            self._signal_field_projection = prepare_data_field_outputs(
+                activation.get("data_fields") or [],
+                field_refs=list(plan.get("field_refs") or []),
+                field_instances=list(plan.get("field_instances") or []))
+        projected = project_prepared_data_field_outputs([raw], self._signal_field_projection)
         return dict(projected[0]) if projected else {}
 
     def _apply_historical_signal_streams(
@@ -4329,14 +4346,15 @@ class ReplayRunController:
             # Do not rebuild the complete rule/column catalog for every candle
             # when no synthetic stream can use it.
             return
-        rules = {
-            str(row.get("rule_set_id") or ""): dict(row)
-            for row in activation.get("rule_sets") or []
-        }
-        columns = {
-            str(row.get("column_id") or ""): dict(row)
-            for row in activation.get("column_catalog") or []
-        }
+        if self._signal_catalogs is None:
+            # The run pins this configuration revision. Rules still evaluate
+            # every frame; only the invariant catalog lookup is prepared once.
+            self._signal_catalogs = (
+                {str(row.get("rule_set_id") or ""): dict(row)
+                 for row in activation.get("rule_sets") or []},
+                {str(row.get("column_id") or ""): dict(row)
+                 for row in activation.get("column_catalog") or []})
+        rules, columns = self._signal_catalogs
         eligible = self._historical_signal_eligible_tickers(run_plan)
         for stream in streams:
             stream_id = str(stream.get("signal_stream_id") or "")
