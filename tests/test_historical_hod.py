@@ -394,7 +394,7 @@ def test_failed_resistance_exit_requires_second_consecutive_red_second():
 def test_rejection_monitor_resets_on_green_or_doji(reset_open,reset_close):
     _,_,o=ready()
     active={'pending_failed_attempt':dict(at_ms=round(o.observed_at.timestamp()*1000),trigger_close=10.38),
-        'failed_resistance_exit':{}}
+        'failed_resistance_exit':{'level':rows()[0]}}
     def bar(ms,opened,close):
         return replace(o,source_timeframe='1s',observed_at=o.observed_at+timedelta(milliseconds=ms),bar_open=opened,price=close)
     assert not H.confirm_failed_attempt(active,bar(1000,reset_open,reset_close))
@@ -407,7 +407,7 @@ def test_rejection_monitor_resets_on_green_or_doji(reset_open,reset_close):
 def test_missing_second_breaks_consecutive_rejection_confirmation():
     _,_,o=ready()
     active={'pending_failed_attempt':dict(at_ms=round(o.observed_at.timestamp()*1000),trigger_close=10.38),
-        'failed_resistance_exit':{}}
+        'failed_resistance_exit':{'level':rows()[0]}}
     later=replace(o,source_timeframe='1s',observed_at=o.observed_at+timedelta(seconds=2),bar_open=10.38,price=10.37)
     assert not H.confirm_failed_attempt(active,later)
     assert H.confirm_failed_attempt(active,replace(later,observed_at=later.observed_at+timedelta(seconds=1)))
@@ -421,13 +421,13 @@ def test_red_lower_close_without_a_resistance_attempt_is_not_this_exit():
     assert not any(v.reason=='red_close_below_attempt_open' for v in r.evaluation.intents)
 
 
-def test_losing_entry_hod_exits_on_first_red_close_below_previous_open():
+def test_hod_without_historical_ancestry_cannot_arm_rejection_exit():
     active={'level':{'reference_kind':'hod','price':3.57,'lower':3.57,'upper':3.57},
         'confirmed_at':1,'management_base':{'lower':3.57,'tolerance':.01}}
     previous=dict(time=2,end=3,open=3.60,high=3.60,low=3.59,close=3.59)
     bar=dict(time=3,end=4,open=3.58,high=3.58,low=3.55,close=3.5562)
-    assert H.management({},active,bar,H.DEFAULTS,.01,previous_bar=previous)=='red_close_below_attempt_open'
-    assert active['failed_resistance_exit']['reference_kind']=='entry_hod'
+    assert H.management({},active,bar,H.DEFAULTS,.01,previous_bar=previous)!='red_close_below_attempt_open'
+    assert 'failed_resistance_exit' not in active
     for changed in (dict(bar,close=3.575),dict(bar,open=3.55),dict(bar,time=4,end=5)):
         assert H.management({},deepcopy(active),changed,H.DEFAULTS,.01,previous_bar=previous)!='red_close_below_attempt_open'
 
@@ -439,29 +439,29 @@ def test_losing_entry_hod_exits_on_first_red_close_below_previous_open():
 ])
 def test_sugp_recorded_failed_attempt_closes(lower,upper,previous,bar,expected):
     def completed(values, start):
-        return dict(zip(('open','high','low','close'),values),time=start,end=start+1)
-    active={'confirmed_at':1,'management_base':{'lower':3.,'tolerance':.01}}
-    resistance=dict(side='resistance',lower=lower,upper=upper,confirmed_at=1,level_id=1)
+        return dict(zip(('open','high','low','close'),values),time=NOW.timestamp()+start,end=NOW.timestamp()+start+1)
+    active={'confirmed_at':NOW.timestamp()+1,'management_base':{'lower':3.,'tolerance':.01}}
+    resistance=dict(side='resistance',lower=lower,upper=upper,confirmed_at=NOW.timestamp()+1,level_id=1,oldest_member_confirmed_at_ms=(NOW.timestamp()-86400)*1000)
     reason=H.management({},active,completed(bar,3),H.DEFAULTS,.01,
         previous_bar=completed(previous,2),resistance_levels=[resistance])
     assert (reason=='red_close_below_attempt_open') == expected
 
 
 def test_retest_tracks_frozen_band_until_actual_failure():
-    active={'confirmed_at':1,'management_base':{'lower':3.,'tolerance':.01}}
-    level=dict(side='resistance',lower=3.94,upper=3.9662931,confirmed_at=1,level_id=1)
-    previous=dict(time=2,end=3,open=4.,high=4.,low=3.96,close=3.98)
-    retest=dict(time=3,end=4,open=3.99,high=4.,low=3.94,close=3.95)
+    active={'confirmed_at':NOW.timestamp()+1,'management_base':{'lower':3.,'tolerance':.01}}
+    level=dict(side='resistance',lower=3.94,upper=3.9662931,confirmed_at=NOW.timestamp()+1,level_id=1,oldest_member_confirmed_at_ms=(NOW.timestamp()-86400)*1000)
+    previous=dict(time=NOW.timestamp()+2,end=NOW.timestamp()+3,open=4.,high=4.,low=3.96,close=3.98)
+    retest=dict(time=NOW.timestamp()+3,end=NOW.timestamp()+4,open=3.99,high=4.,low=3.94,close=3.95)
     assert H.management({},active,retest,H.DEFAULTS,.01,previous_bar=previous,resistance_levels=[level])==''
     # A changed/absent projection must not rewrite the encountered band's floor.
     changed=dict(level,lower=3.96,upper=3.98)
-    holding=dict(time=4,end=5,open=3.95,high=3.96,low=3.94,close=3.94)
+    holding=dict(time=NOW.timestamp()+4,end=NOW.timestamp()+5,open=3.95,high=3.96,low=3.94,close=3.94)
     assert H.management({},active,holding,H.DEFAULTS,.01,previous_bar=retest,resistance_levels=[changed])==''
-    failed=dict(time=5,end=6,open=3.94,high=3.95,low=3.92,close=3.93)
+    failed=dict(time=NOW.timestamp()+5,end=NOW.timestamp()+6,open=3.94,high=3.95,low=3.92,close=3.93)
     assert H.management({},active,failed,H.DEFAULTS,.01,previous_bar=holding)=='red_close_below_attempt_open'
     assert active['failed_resistance_exit']['level']==level
     assert active['failed_resistance_exit']['attempt_kind']=='failed_breakout'
-    gap=dict(failed,time=6,end=7)
+    gap=dict(failed,time=NOW.timestamp()+6,end=NOW.timestamp()+7)
     assert H.management({},active,gap,H.DEFAULTS,.01,previous_bar=holding)==''
 
 
@@ -574,20 +574,20 @@ def test_point_projection_restores_bands_and_missing_lineage_fails_closed():
 
 
 def test_rejection_requires_failed_recovery_and_volume_warning_alone_holds():
-    active={'confirmed_at':1,'management_base':{'lower':9.,'tolerance':.02}}
-    bar={'close':10.9,'low':10.85,'high':11.1,'end':2}
-    rejection={'state':'rejection','level':{'side':'resistance','lower':11.,'upper':11.02}}
+    active={'confirmed_at':NOW.timestamp()+1,'management_base':{'lower':9.,'tolerance':.02}}
+    bar={'close':10.9,'low':10.85,'high':11.1,'end':NOW.timestamp()+2}
+    rejection={'state':'rejection','level':{'side':'resistance','lower':11.,'upper':11.02,'oldest_member_confirmed_at_ms':(NOW.timestamp()-86400)*1000}}
     assert H.management({'global_events':[rejection]},active,bar,H.DEFAULTS,.01)==''
-    bar.update(end=3,close=10.8,low=10.7)
+    bar.update(end=NOW.timestamp()+3,close=10.8,low=10.7)
     assert H.management({},active,bar,H.DEFAULTS,.01)==''
-    bar.update(end=4,close=10.85,low=10.8)
-    recovery={'state':'lower_high_confirmed','level':{'price':10.9,'pivot_at':3.5,'confirmed_at':4}}
+    bar.update(end=NOW.timestamp()+4,close=10.85,low=10.8)
+    recovery={'state':'lower_high_confirmed','level':{'price':10.9,'pivot_at':NOW.timestamp()+3.5,'confirmed_at':NOW.timestamp()+4}}
     assert H.management({'local_events':[recovery]},active,bar,H.DEFAULTS,.01)==''
-    bar.update(end=5,close=10.68,low=10.68)
+    bar.update(end=NOW.timestamp()+5,close=10.68,low=10.68)
     assert H.management({},active,bar,H.DEFAULTS,.01)=='resistance_rejection_failed_recovery'
     assert H.management({'volume_analysis':{'reversal_outcomes':[{'direction':'bearish',
         'outcome':'structural_reversal_confirmation'}]}},
-        {'confirmed_at':1,'management_base':{'lower':10.,'tolerance':.02}},bar,H.DEFAULTS,.01)==''
+        {'confirmed_at':NOW.timestamp()+1,'management_base':{'lower':10.,'tolerance':.02}},bar,H.DEFAULTS,.01)==''
 
 
 def test_replay_passive_adapter_observes_both_clocks_before_assignment():
@@ -766,3 +766,23 @@ def test_stop_ratchet_uses_historical_ancestry_not_latest_confirmation(merged):
         o=replace(candle(index,10.43,position_quantity=100),structural_resistance_levels=tuple(levels))
         r=host.evaluate(a,o);a=replace(a,state=r.state,status=r.status)
     assert (a.state['active_stop']==pytest.approx(10.39))==merged
+
+
+@pytest.mark.parametrize('merged',[False,True])
+def test_juns_current_day_rejection_requires_historical_ancestry(merged):
+    previous=dict(time=1787311285.,end=1787311286.,open=7.2906,high=7.47,low=7.23,close=7.39)
+    bar=dict(time=1787311286.,end=1787311287.,open=7.3099,high=7.39,low=7.21,close=7.21)
+    resistance=dict(side=-1,lower=7.29,upper=7.31,price=7.30,confirmed_at_ms=1787310869000,
+        oldest_member_confirmed_at_ms=1787310869000-(86400000 if merged else 0),unified_level_id='juns-level')
+    active={'confirmed_at':1787311284.,'management_base':{'lower':6.88,'tolerance':.01}}
+    reason=H.management({},active,bar,H.DEFAULTS,.01,previous_bar=previous,resistance_levels=[resistance])
+    assert (reason=='red_close_below_attempt_open')==merged
+
+
+def test_restored_current_day_rejection_cannot_confirm_exit():
+    _,_,o=ready()
+    active={'pending_failed_attempt':{'at_ms':round(o.observed_at.timestamp()*1000),'trigger_close':10.38},
+        'failed_resistance_exit':{'level':dict(rows()[0],oldest_member_confirmed_at_ms=NOW.timestamp()*1000)}}
+    red=replace(o,observed_at=o.observed_at+timedelta(seconds=1),bar_open=10.38,price=10.37)
+    assert not H.confirm_failed_attempt(active,red)
+    assert 'pending_failed_attempt' not in active

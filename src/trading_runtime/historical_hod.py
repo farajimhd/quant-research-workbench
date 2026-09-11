@@ -176,21 +176,15 @@ def resistance_attempts(active, bar, previous_bar, levels):
 def management(row, active, bar, s, tick, *, previous_bar=None, resistance_levels=()):
     """Warnings need subsequent price failure; the broker stop is independent."""
     events = row.get('local_events', [])+row.get('global_events', [])
+    session = datetime.fromtimestamp(bar['end'], NY).date().isoformat()
     attempts = resistance_attempts(active, bar, previous_bar,
-        (*resistance_levels, *row.get('local_swings', [])))
+        [level for level in resistance_levels if historical(level, session)])
     if (previous_bar and previous_bar['end'] == bar['time']
             and bar['close'] < bar['open'] and bar['close'] < previous_bar['open']):
-        entry_level = active.get('level',{})
-        if (entry_level.get('reference_kind') == 'hod'
-                and previous_bar['close'] > entry_level['upper']
-                and bar['close'] < entry_level['lower']):
-            active['failed_resistance_exit'] = dict(level=deepcopy(entry_level),
-                previous_bar=deepcopy(previous_bar),exit_bar=deepcopy(bar),reference_kind='entry_hod')
-            return 'red_close_below_attempt_open'
         for attempt in attempts:
             level = attempt['level']
             # A close inside the band is a retest, not a failed resistance.
-            if bar['close'] < level['lower']:
+            if historical(level, session) and bar['close'] < level['lower']:
                 active['failed_resistance_exit'] = dict(level=deepcopy(level),
                     previous_bar=deepcopy(previous_bar),exit_bar=deepcopy(bar),
                     attempt_kind='failed_breakout' if attempt['broken'] else 'rejection')
@@ -212,7 +206,7 @@ def management(row, active, bar, s, tick, *, previous_bar=None, resistance_level
             for e in row.get('volume_analysis',{}).get('reversal_outcomes', [])):
         return 'confirmed_structural_reversal'
     rejection = active.get('rejection')
-    if rejection and bar['close'] > rejection['upper']:
+    if rejection and (not historical(rejection.get('level', {}), session) or bar['close'] > rejection['upper']):
         active.pop('rejection',None)
         rejection = None
     if rejection:
@@ -229,9 +223,9 @@ def management(row, active, bar, s, tick, *, previous_bar=None, resistance_level
     if not rejection:
         for e in events:
             level = e.get('level', {})
-            if (e.get('state') in ('rejection','failed_breakout') and resistance(level)
+            if (e.get('state') in ('rejection','failed_breakout') and resistance(level) and historical(level, session)
                     and level.get('upper',0) >= bar['close'] and bar['high'] >= level.get('lower',float('inf'))):
-                active['rejection'] = dict(at=bar['end'],upper=level['upper'],reaction_low=bar['low'],
+                active['rejection'] = dict(level=deepcopy(level),at=bar['end'],upper=level['upper'],reaction_low=bar['low'],
                     tolerance=max(tick,s['management_tolerance_atr']*atr))
                 break
     return ''
@@ -309,6 +303,10 @@ def confirm_failed_attempt(active, o):
     """Confirm a failed encounter with two consecutive completed red 1s bars."""
     pending = active.get('pending_failed_attempt')
     if not pending or o.source_timeframe != '1s' or 'bar_close' not in o.evaluation_events:
+        return False
+    session = o.observed_at.astimezone(NY).date().isoformat()
+    if not historical(active.get('failed_resistance_exit', {}).get('level', {}), session):
+        active.pop('pending_failed_attempt', None)
         return False
     now_ms = round(o.observed_at.timestamp()*1000)
     if now_ms <= pending.get('last_bar_ms', pending['at_ms']):
