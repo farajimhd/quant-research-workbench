@@ -11,7 +11,7 @@ from tests.test_structural_recovery import parameters, observation, level, NOW
 
 def rows():
     return tuple(dict(level(-1,x,x+.02),oldest_member_confirmed_at_ms=
-        (NOW.timestamp()-86400 if x in (10.,10.4) else NOW.timestamp()-10)*1000)
+        (NOW.timestamp()-86400)*1000)
         for x in (10.,10.4,10.55,10.95,11.5))
 
 
@@ -147,16 +147,16 @@ def test_sugp_entry_accepts_fresh_ask_above_old_close_based_cap():
 
 def test_target_placement_switches_at_five_percent_reference():
     broken={'price':10.,'upper':10.01}
-    near=dict(level(-1,10.39,10.413),price=10.4)
-    far=dict(level(-1,10.59,10.61),price=10.6)
-    selected=H.target_selection([near],broken,10.1,H.DEFAULTS,.01)
+    near=dict(level(-1,10.39,10.413),price=10.4,oldest_member_confirmed_at_ms=(NOW.timestamp()-86400)*1000)
+    far=dict(level(-1,10.59,10.61),price=10.6,oldest_member_confirmed_at_ms=(NOW.timestamp()-86400)*1000)
+    selected=H.target_selection([near],broken,10.1,H.DEFAULTS,.01,session='2026-08-21')
     assert selected['price']==pytest.approx(10.43)
     assert selected['placement']=='above_upper_band'
-    selected=H.target_selection([far],broken,10.1,H.DEFAULTS,.01)
+    selected=H.target_selection([far],broken,10.1,H.DEFAULTS,.01,session='2026-08-21')
     assert selected['price']==pytest.approx(10.58)
     assert selected['placement']=='below_lower_band'
     # Eligibility must use the actual upper-band placement, not the old lower-band price.
-    assert H.target_selection([near],broken,10.40,H.DEFAULTS,.01)['price']==pytest.approx(10.43)
+    assert H.target_selection([near],broken,10.40,H.DEFAULTS,.01,session='2026-08-21')['price']==pytest.approx(10.43)
 
 
 def test_only_completed_5s_macd_ends_episode():
@@ -240,9 +240,9 @@ def test_entry_resistance_is_counted_and_recrossing_it_does_not_move_initial_sto
 
 def test_target_does_not_skip_nearest_resistance_to_force_an_advance():
     # The mathematically closest level may still be the old target's level.
-    selected=H.target_selection(rows(),rows()[1],10.43,H.DEFAULTS,.01,minimum_target=10.94)
+    selected=H.target_selection(rows(),rows()[1],10.43,H.DEFAULTS,.01,session='2026-08-21',minimum_target=10.94)
     assert selected is None
-    assert H.target_selection(rows(),rows()[1],10.43,H.DEFAULTS,.01,minimum_target=11.49) is None
+    assert H.target_selection(rows(),rows()[1],10.43,H.DEFAULTS,.01,session='2026-08-21',minimum_target=11.49) is None
 
 
 def test_target_advance_uses_latest_target_once_per_candle_and_rolls_back_on_rejection():
@@ -279,10 +279,10 @@ def test_red_close_and_intrabar_events_cannot_advance_target_or_apply_old_propos
     assert not any(i.action=='replace_profit_target' for i in r.evaluation.intents)
 
 
-def test_current_day_break_and_stop_advance_can_update_both_orders_together():
+def test_historical_target_and_stop_advance_can_update_both_orders_together():
     host,a,_=acquired()
     a.state['historical_hod_entry']['desired_stop']=10.1
-    # A current-day level, with no historical hold condition on its target.
+    # Target selection is restricted to levels with historical ancestry.
     r=host.evaluate(a,candle(3,10.58,position_quantity=100))
     assert [i.action for i in r.evaluation.intents]==['replace_protective_stop','replace_profit_target']
     assert r.state['active_stop']==pytest.approx(10.1)
@@ -741,3 +741,28 @@ def test_runtime_places_broker_stop_and_full_target(tmp_path,cash_tranches,add_q
         finally:
             journal.close()
     asyncio.run(run())
+
+
+def test_target_excludes_current_day_but_accepts_merged_historical_ancestry():
+    historical=rows()[2]
+    today=dict(historical,price=10.50,lower=10.49,upper=10.51,
+        oldest_member_confirmed_at_ms=NOW.timestamp()*1000,confirmed_at_ms=NOW.timestamp()*1000)
+    merged=dict(historical,confirmed_at_ms=NOW.timestamp()*1000)
+    broken=dict(price=10.,upper=10.02)
+    selected=H.target_selection([today,merged],broken,10.1,H.DEFAULTS,.01,session='2026-08-21')
+    assert selected['level']==merged
+    assert H.target_selection([today],broken,10.1,H.DEFAULTS,.01,session='2026-08-21') is None
+    assert H.target_selection([dict(today,oldest_member_confirmed_at_ms=None)],broken,10.1,H.DEFAULTS,.01,session='2026-08-21') is None
+
+
+@pytest.mark.parametrize('merged',[False,True])
+def test_stop_ratchet_uses_historical_ancestry_not_latest_confirmation(merged):
+    host,a,_=acquired()
+    levels=list(rows())
+    levels[1]=dict(levels[1],confirmed_at_ms=NOW.timestamp()*1000,
+        oldest_member_confirmed_at_ms=(NOW.timestamp()-(86400 if merged else 0))*1000)
+    a.state['historical_hod_state']['rows']=levels
+    for index in (3,4):
+        o=replace(candle(index,10.43,position_quantity=100),structural_resistance_levels=tuple(levels))
+        r=host.evaluate(a,o);a=replace(a,state=r.state,status=r.status)
+    assert (a.state['active_stop']==pytest.approx(10.39))==merged

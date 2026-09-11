@@ -117,13 +117,13 @@ def initial_swing_low(row, boundary, now):
     return deepcopy(max(candidates,key=lambda l:(l['pivot_at'],l['confirmed_at'],l['price']))) if candidates else None
 
 
-def target_selection(rows, broken, price, s, tick, *, minimum_target=0.):
+def target_selection(rows, broken, price, s, tick, *, session, minimum_target=0.):
     reference = broken['price']*(1+s['target_distance_fraction'])
     def placement(r):
         offset = s['target_offset_ticks']*tick
         return (ceil((r['upper']+offset)/tick-1e-9)*tick if r['price'] < reference
             else floor((r['lower']-offset)/tick+1e-9)*tick)
-    eligible = [r for r in rows if resistance(r) and r['lower'] > broken['upper']
+    eligible = [r for r in rows if resistance(r) and historical(r,session) and r['lower'] > broken['upper']
         and placement(r) > price]
     if not eligible:
         return None
@@ -457,7 +457,7 @@ def evaluate(host, a, o, p, state):
                 # it, or a completed close falls back through its frozen band.
                 del target_breaks[key]
                 selected = target_selection(d['prior_rows'],active['target']['level'],max(o.price,o.ask),s,tick,
-                    minimum_target=target)
+                    session=session,minimum_target=target)
                 if selected:
                     selected.update(triggering_breakout=deepcopy(r),
                         selection_method='resistance_nearest_five_percent_above_current_target_resistance')
@@ -579,7 +579,7 @@ def evaluate(host, a, o, p, state):
         return result('wait','red_breakout_candle')
     if not previous <= threshold < o.price:
         return result('wait','waiting_for_fresh_body_high_break' if require_body_high else 'waiting_for_fresh_resistance_break')
-    selected = target_selection(d['prior_rows'],boundary,max(o.ask,o.price),s,tick)
+    selected = target_selection(d['prior_rows'],boundary,max(o.ask,o.price),s,tick,session=session)
     if not selected:
         return result('wait','qualified_target_unavailable')
     swing = initial_swing_low(row,boundary,now)
