@@ -49,6 +49,29 @@ def official_band(o,upper=10.8,lower=9.):
         effective_at_ms=o.observed_at.timestamp()*1000,available_at_ms=o.observed_at.timestamp()*1000)
 
 
+def test_backtest_estimate_enters_and_promotes_target_without_official_bands():
+    from src.trading_runtime.estimated_luld import reference_from_indicator
+    host,a,o=ready();a.parameters['historical_hod']['regular_luld_enabled']=1
+    a.parameters['historical_hod']['backtest_luld_estimation_enabled']=1
+    o=replace(o,previous_close=2.,backtest_luld_reference=reference_from_indicator(
+        dict(qmd_structure_luld_lower=9.,qmd_structure_luld_upper=11.),o.observed_at))
+    a.parameters['historical_hod']['backtest_luld_estimation_enabled']=0
+    assert host.evaluate(a,o).evaluation.signals[0].reason=='official_luld_unavailable'
+    a.parameters['historical_hod']['backtest_luld_estimation_enabled']=1
+    r=host.evaluate(a,o)
+    assert r.evaluation.intents[0].action=='enter_long'
+    assert r.evaluation.intents[0].profit_target_price==pytest.approx(11.97)
+    assert r.state['historical_hod_entry']['target']['selection_method']=='estimated_luld'
+    a=replace(a,state=r.state,status=S.AssignmentStatus.MANAGING)
+    obs=candle(35,10.1,opened=10.2,position_quantity=100,source_timeframe='100ms',previous_close=2.)
+    obs=replace(obs,backtest_luld_reference=reference_from_indicator(
+        dict(qmd_structure_luld_lower=9.9,qmd_structure_luld_upper=12.1),obs.observed_at))
+    r=host.evaluate(a,obs)
+    target=next(i for i in r.evaluation.intents if i.action=='replace_profit_target')
+    assert target.reason=='estimated_luld_target_update'
+    assert target.profit_target_price==pytest.approx(13.16)
+
+
 @pytest.mark.parametrize('prior,reason',[(None,'regular_previous_close_unavailable'),(.7499,'regular_previous_close_below_minimum'),(.75,'historical_hod_entry')])
 def test_regular_luld_entry_and_prior_close_filter(prior,reason):
     host,a,o=ready()

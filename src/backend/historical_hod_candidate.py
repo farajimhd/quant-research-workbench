@@ -16,7 +16,7 @@ def build(base):
     for key in ('structural_recovery_contract','structural_recovery'):
         p.pop(key,None)
     p.update(historical_hod_contract=CONTRACT,historical_hod=dict(DEFAULTS))
-    p['historical_hod'].update(sizing_mode='cash_tranches',cash_fraction=.9,tranche_count=3,entry_breakout_offset=.01,regular_luld_enabled=1)
+    p['historical_hod'].update(sizing_mode='cash_tranches',cash_fraction=.9,tranche_count=3,entry_breakout_offset=.01,regular_luld_enabled=1,backtest_luld_estimation_enabled=1)
     # The recovery template narrows mandates to its 0.5% risk-sizing budget.
     # Cash tranches inherit the original mandate instead; account limits still apply.
     source_mandates = {m['mandate_id']:m for m in base['portfolio']['mandates']}

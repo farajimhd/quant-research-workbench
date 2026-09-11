@@ -20,7 +20,7 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     confirmation_lifetime_ms=1000., maximum_chase_bps=15.,
     minimum_candle_volume=1., risk_fraction=.005, maximum_quantity=10000.,
     sizing_mode='risk_fraction',cash_fraction=.9,tranche_count=3,
-    regular_luld_enabled=0,minimum_regular_previous_close=.75,
+    regular_luld_enabled=0,backtest_luld_estimation_enabled=0,minimum_regular_previous_close=.75,
     luld_buffer_bps=25.,luld_buffer_ticks=2,luld_maximum_age_ms=60000.)
 
 
@@ -38,9 +38,9 @@ def configure(p):
     s = dict(DEFAULTS, **raw)
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('entry_breakout_offset','regular_luld_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
         raise ValueError('Historical HOD settings must be finite and positive')
-    if s['regular_luld_enabled'] not in (0,1) or int(s['luld_buffer_ticks']) != s['luld_buffer_ticks']:
+    if s['regular_luld_enabled'] not in (0,1) or s['backtest_luld_estimation_enabled'] not in (0,1) or int(s['luld_buffer_ticks']) != s['luld_buffer_ticks']:
         raise ValueError('Invalid regular LULD policy')
     if not 0 < s['cash_fraction'] <= 1 or type(s['tranche_count']) is not int or not 2 <= s['tranche_count'] <= 20:
         raise ValueError('Invalid cash fraction or tranche count')
@@ -65,12 +65,12 @@ def configure(p):
     p['momentum_management']['macd_backstop']['enabled'] = False
 
 
-def regular_luld(o, s, tick):
-    """Only timestamped official SIP evidence can authorize this protection.
+def regular_luld(o, s, tick, estimate_state=None):
+    """Prefer official SIP evidence; backtests may supply a research estimate.
 
     The producer supplies the original effective time and availability time;
     projecting an old band into a new candle must not refresh either timestamp.
-    Estimated QMD indicator bands deliberately do not satisfy this contract.
+    Live observation adapters never supply the backtest reference input.
     """
     band = o.official_luld_band
     now = o.observed_at.timestamp()*1000
@@ -82,14 +82,19 @@ def regular_luld(o, s, tick):
             or not 0 < band['lower'] < band['upper']
             or not band['effective_at_ms'] <= band['available_at_ms'] <= now
             or not 0 <= now-band['effective_at_ms'] <= s['luld_maximum_age_ms']):
-        return None
+        if estimate_state is None:
+            return None
+        from .estimated_luld import estimate
+        band = estimate(o, estimate_state)
+        if not band:
+            return None
     buffer = max(band['upper']*s['luld_buffer_bps']/10000,
         tick*s['luld_buffer_ticks'],max(0.,o.ask-o.bid))
     lower_buffer = max(band['lower']*s['luld_buffer_bps']/10000,
         tick*s['luld_buffer_ticks'],max(0.,o.ask-o.bid))
     return dict(price=floor((band['upper']-buffer)/tick+1e-9)*tick,
         lower_exit=ceil((band['lower']+lower_buffer)/tick-1e-9)*tick,
-        selection_method='official_luld',band=deepcopy(band),buffer=buffer)
+        selection_method='estimated_luld' if band['source'] == 'estimated' else 'official_luld',band=deepcopy(band),buffer=buffer)
 
 
 def historical(level, session):
@@ -409,7 +414,7 @@ def evaluate(host, a, o, p, state):
     acquired = o.position_quantity > 0
     local_clock = o.observed_at.astimezone(NY)
     regular = bool(s['regular_luld_enabled']) and (9,30) <= (local_clock.hour,local_clock.minute) < (16,0)
-    luld = regular_luld(o,s,tick) if regular else None
+    luld = regular_luld(o,s,tick,state.setdefault('backtest_luld_estimate',{}) if s['backtest_luld_estimation_enabled'] else None) if regular else None
     prior_close = o.previous_close
     regular_block = ('regular_previous_close_unavailable' if prior_close is None or not isfinite(prior_close) or prior_close <= 0
         else 'regular_previous_close_below_minimum' if prior_close < s['minimum_regular_previous_close']
@@ -571,7 +576,7 @@ def evaluate(host, a, o, p, state):
             if luld:
                 active['desired_target'] = luld
                 active['desired_stop'] = max(active.get('desired_stop',0),luld['lower_exit'])
-        elif fresh and active['target'].get('selection_method') == 'official_luld':
+        elif fresh and active['target'].get('selection_method') in ('official_luld','estimated_luld'):
             anchor = next_historical_resistance(d['rows'],max(o.price,o.ask),session)
             active['desired_target'] = target_selection(d['rows'],anchor,max(o.price,o.ask),s,tick,session=session) if anchor else None
         proposed = active.get('desired_stop',0)
@@ -583,12 +588,12 @@ def evaluate(host, a, o, p, state):
                 metadata={'previous_stop':stop,'active_stop':proposed,
                     'last_cleared_resistance':deepcopy(active['last_cleared_resistance'])}))
         selection = active.get('desired_target')
-        switching = active['target'].get('selection_method') == 'official_luld' and not regular
+        switching = active['target'].get('selection_method') in ('official_luld','estimated_luld') and not regular
         if (regular or (fresh and o.price >= o.bar_open)) and selection and (selection['price'] > target or ((regular or switching) and selection['price'] != target)) and selection['price'] > max(o.price,o.ask):
             previous_selection = deepcopy(active['target'])
             active['target'] = deepcopy(selection)
             state['structural_profit_targets'] = [selection['price']]
-            replacements.append(result('replace_profit_target','official_luld_target_update' if regular else 'resistance_break_target_advance',Status.MANAGING,
+            replacements.append(result('replace_profit_target',selection['selection_method']+'_target_update' if regular else 'resistance_break_target_advance',Status.MANAGING,
                 quantity=o.position_quantity,invalidation_price=state['active_stop'],profit_target_price=selection['price'],
                 metadata={'previous_profit_target':target,'profit_target':selection['price'],'profit_target_selection':selection,
                     'previous_historical_hod_target':previous_selection}))

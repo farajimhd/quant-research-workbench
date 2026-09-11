@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from src.trading_runtime.market_pressure import PressureTracker
+from src.trading_runtime.estimated_luld import reference_from_indicator as _backtest_luld_reference
 
 from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD, CONTRACT as LEVEL_LOAD_CONTRACT
 
@@ -125,7 +126,8 @@ RESTART_CHECKPOINT_SCHEMA_VERSION = 3
 # 4 adds exact prepared-bar trade counts and dollar volume. The shared bar
 # artifact can carry zero spread when built from trade-only persisted bars, so
 # current execution quality continues to prefer the causal raw quote stream.
-PREPARED_FRAME_CACHE_SCHEMA_VERSION = 6
+# 7 preserves causal estimated-LULD inputs; older prepared frames omit them.
+PREPARED_FRAME_CACHE_SCHEMA_VERSION = 7
 _PREPARED_FRAME_CACHE_LOCKS: WeakValueDictionary[str, asyncio.Lock] = (
     WeakValueDictionary()
 )
@@ -783,6 +785,8 @@ class ReplayFrameSpool:
 
 _STRATEGY_BAR_FIELDS = frozenset(
     {
+        "estimated_luld_reference_price",
+        "estimated_luld_active",
         "bar_end",
         "bar_start",
         "close",
@@ -803,6 +807,8 @@ _STRATEGY_BAR_FIELDS = frozenset(
 _STRATEGY_INDICATOR_FIELDS = frozenset(
     {
         "official_luld_band",
+        "qmd_structure_luld_upper",
+        "qmd_structure_luld_lower",
         "atr_14",
         "bar_end",
         "bar_start",
@@ -955,6 +961,7 @@ class ReplayRunController:
         self._manifest_write_pending = False
         self._runtime: TradingRuntime | None = None
         self._runtime_inputs_ready = False
+        self._luld_previous_closes: dict[str, dict[str, Any]] = {}
         self._preparation_stage = "created"
         self._preparation_completed_units = 0
         self._preparation_total_units = 0
@@ -1797,6 +1804,7 @@ class ReplayRunController:
                 ),
             },
             "controller": {
+                "luld_previous_closes": deepcopy(self._luld_previous_closes),
                 "current_time": self.current_time.isoformat() if self.current_time else None,
                 "processed_events": self.processed_events,
                 "warmup_events": self.warmup_events,
@@ -2807,6 +2815,7 @@ class ReplayRunController:
             ticker: _strategy_observation_from_checkpoint(value, ticker=ticker, current_time=current_time)
             for ticker, value in controller.get('latest_strategy_observations', {}).items()}
         self.processed_events = int(controller.get("processed_events") or 0)
+        self._luld_previous_closes = deepcopy(controller.get('luld_previous_closes') or {})
         self.warmup_events = int(controller.get("warmup_events") or 0)
         self._source_cursor = dict(controller.get("source_cursor") or {})
         self._frame_cursor = dict(controller.get("frame_cursor") or {})
@@ -3178,6 +3187,17 @@ class ReplayRunController:
                          'qmd_structure_session_high': self._experimental_session_high(frame.ticker, frame.as_of),
                          'qmd_structure_unified_levels': snapshot['unified_levels']}
         bar = frame.bar
+        previous_close = _optional_positive(indicator.get('previous_close') or indicator.get('prev_close'))
+        parameters = self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {})
+        if (self.definition.mode == RunMode.BACKTEST
+                and parameters.get('historical_hod', {}).get('regular_luld_enabled')
+                and _backtest_luld_reference(indicator, frame.as_of, bar)):
+            from src.backend.backtest_luld_reference import previous_regular_close
+            session = frame.as_of.astimezone(NEW_YORK).date()
+            key = f'{frame.ticker}:{session}'
+            if key not in self._luld_previous_closes:
+                self._luld_previous_closes[key] = await asyncio.to_thread(previous_regular_close, frame.ticker, session)
+            previous_close = _optional_positive(self._luld_previous_closes[key].get('price'))
         direction = int(indicator.get("structure_choch_direction") or 0)
         structure_event = "choch" if direction else ""
         if not direction:
@@ -3232,9 +3252,7 @@ class ReplayRunController:
             bar_high=_optional_positive(bar.get("high")),
             bid=float(quote.bid_price if quote else 0),
             ask=float(quote.ask_price if quote else 0),
-            previous_close=_optional_positive(
-                indicator.get("previous_close") or indicator.get("prev_close")
-            ),
+            previous_close=previous_close,
             previous_high=_optional_positive(indicator.get("previous_high")),
             swing_high=_optional_positive(
                 structural_indicator.get("structure_swing_high")
@@ -3317,6 +3335,10 @@ class ReplayRunController:
             volatility=float(indicator.get("atr_14") or 0),
             upper_luld_price=_optional_positive(indicator.get("structure_luld_upper")),
             official_luld_band=deepcopy(indicator.get("official_luld_band") or {}),
+            backtest_luld_reference=(
+                _backtest_luld_reference(indicator, frame.as_of, bar)
+                if self.definition.mode in {RunMode.BACKTEST, RunMode.BACKTEST_DEBUG} else {}
+            ),
             # `market_open` is the strategy's tradability gate, not an RTH-only
             # label. US equities are routable in the configured extended-hours
             # session; order intents separately mark outside-RTH routing.
@@ -5386,7 +5408,7 @@ class ReplayRunController:
                 return spool
         indicator_columns = (
             tuple(sorted(field for field in _STRATEGY_INDICATOR_FIELDS
-                         if field != "official_luld_band" and (not structural_recovery or not field.startswith(("qmd_structure_", "structure_", "flow_structure_")))))
+                         if field != "official_luld_band" and (field in {"qmd_structure_luld_upper", "qmd_structure_luld_lower"} or not structural_recovery or not field.startswith(("qmd_structure_", "structure_", "flow_structure_")))))
             if prepared_activation
             else None
         )

@@ -951,6 +951,8 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                     "close": 102.0,
                     "vwap": 101.5,
                     "price_change_1_bar_pct": 0.1,
+                    "qmd_structure_luld_lower": 90.,
+                    "qmd_structure_luld_upper": 110.,
                 },
             },),
         )
@@ -981,6 +983,7 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                 )
                 observation = process.await_args.args[0]
                 self.assertEqual(observation.acceleration, 0.1)
+                self.assertEqual(observation.backtest_luld_reference['reference_price'], 100.)
                 self.assertEqual(observation.bar_high, 102.4)
                 self.assertEqual(observation.bar_open, 101.8)
             finally:
