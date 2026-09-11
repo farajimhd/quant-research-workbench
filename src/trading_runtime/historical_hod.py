@@ -306,20 +306,24 @@ def observe_frame(frame, saved, parameters, snapshot=None):
 
 
 def confirm_failed_attempt(active, o):
-    """Keep a failed encounter armed until a subsequent completed red 100ms bar."""
+    """Confirm a failed encounter with two consecutive completed red 1s bars."""
     pending = active.get('pending_failed_attempt')
-    if not pending or o.source_timeframe != '100ms' or 'bar_close' not in o.evaluation_events:
+    if not pending or o.source_timeframe != '1s' or 'bar_close' not in o.evaluation_events:
         return False
     now_ms = round(o.observed_at.timestamp()*1000)
     if now_ms <= pending.get('last_bar_ms', pending['at_ms']):
         return False
     if not all(isfinite(v) and v > 0 for v in (o.price, o.bar_open)):
         return False
+    previous_ms = pending.get('last_bar_ms', pending['at_ms'])
+    count = pending.get('red_closes', 1) if now_ms - previous_ms == 1000 else 0
     pending['last_bar_ms'] = now_ms
-    if o.price >= o.bar_open:
+    pending['red_closes'] = count + 1 if o.price < o.bar_open else 0
+    if pending['red_closes'] < 2:
         return False
     active.pop('pending_failed_attempt', None)
-    active['failed_resistance_exit']['intrabar_confirmation'] = dict(
+    active['failed_resistance_exit']['candle_confirmation'] = dict(
+        timeframe='1s', consecutive_red_closes=2,
         trigger_at_ms=pending['at_ms'], trigger_close=pending['trigger_close'],
         open=o.bar_open, close=o.price, confirmed=True, confirmed_at_ms=now_ms)
     return True

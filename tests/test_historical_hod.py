@@ -373,7 +373,7 @@ def test_swing_tolerance_is_management_only_and_requires_two_closes():
     assert r.evaluation.intents[0].reason=='protective_stop'
 
 
-def test_failed_resistance_exit_survives_bounce_and_exits_on_red_intrabar():
+def test_failed_resistance_exit_requires_second_consecutive_red_second():
     host,a,_=acquired()
     r=host.evaluate(a,replace(candle(3,10.40,opened=10.39,position_quantity=100),bar_high=10.43))
     a=replace(a,state=r.state,status=r.status)
@@ -381,32 +381,36 @@ def test_failed_resistance_exit_survives_bounce_and_exits_on_red_intrabar():
     r=host.evaluate(a,o)
     assert r.state['historical_hod_entry']['pending_failed_attempt']
     a=replace(a,state=r.state,status=r.status)
-    for ms,opened,close in [(100,10.38,10.39),(200,10.39,10.39),(1400,10.39,10.385)]:
-        intrabar=replace(o,source_timeframe='100ms',observed_at=o.observed_at+timedelta(milliseconds=ms),
-            bar_open=opened,price=close)
-        r=host.evaluate(a,intrabar)
-        if ms<1400:
-            assert not r.evaluation.intents
-            assert r.state['historical_hod_entry']['pending_failed_attempt']
-        a=replace(a,state=r.state,status=r.status)
+    early=replace(o,source_timeframe='100ms',observed_at=o.observed_at+timedelta(milliseconds=100),price=10.37)
+    assert not host.evaluate(a,early).evaluation.intents
+    r=host.evaluate(a,candle(5,10.37,opened=10.38,position_quantity=100))
     intent,=r.evaluation.intents
     assert intent.reason=='red_close_below_attempt_open'
     assert intent.quantity==100
-    assert intent.metadata['failed_resistance_exit']['intrabar_confirmation']['close']==10.385
+    assert intent.metadata['failed_resistance_exit']['candle_confirmation']['consecutive_red_closes']==2
 
 
-def test_intrabar_monitor_ignores_duplicates_quotes_and_missing_intervals():
+@pytest.mark.parametrize('reset_open,reset_close',[(10.38,10.39),(10.39,10.39)])
+def test_rejection_monitor_resets_on_green_or_doji(reset_open,reset_close):
     _,_,o=ready()
     active={'pending_failed_attempt':dict(at_ms=round(o.observed_at.timestamp()*1000),trigger_close=10.38),
         'failed_resistance_exit':{}}
-    first=replace(o,source_timeframe='100ms',observed_at=o.observed_at+timedelta(milliseconds=200),
-        bar_open=10.38,price=10.39)
-    assert not H.confirm_failed_attempt(active,first)
-    assert not H.confirm_failed_attempt(active,replace(first,price=10.37))
-    red=replace(first,observed_at=o.observed_at+timedelta(milliseconds=500),price=10.37)
-    assert not H.confirm_failed_attempt(active,replace(red,evaluation_events=('market_data_update',)))
-    assert H.confirm_failed_attempt(active,red)
-    assert 'pending_failed_attempt' not in active
+    def bar(ms,opened,close):
+        return replace(o,source_timeframe='1s',observed_at=o.observed_at+timedelta(milliseconds=ms),bar_open=opened,price=close)
+    assert not H.confirm_failed_attempt(active,bar(1000,reset_open,reset_close))
+    assert not H.confirm_failed_attempt(active,bar(2000,10.39,10.38))
+    assert not H.confirm_failed_attempt(active,bar(2000,10.39,10.37))
+    assert not H.confirm_failed_attempt(active,replace(bar(3000,10.38,10.37),evaluation_events=('market_data_update',)))
+    assert H.confirm_failed_attempt(active,bar(3000,10.38,10.37))
+
+
+def test_missing_second_breaks_consecutive_rejection_confirmation():
+    _,_,o=ready()
+    active={'pending_failed_attempt':dict(at_ms=round(o.observed_at.timestamp()*1000),trigger_close=10.38),
+        'failed_resistance_exit':{}}
+    later=replace(o,source_timeframe='1s',observed_at=o.observed_at+timedelta(seconds=2),bar_open=10.38,price=10.37)
+    assert not H.confirm_failed_attempt(active,later)
+    assert H.confirm_failed_attempt(active,replace(later,observed_at=later.observed_at+timedelta(seconds=1)))
 
 
 def test_red_lower_close_without_a_resistance_attempt_is_not_this_exit():
