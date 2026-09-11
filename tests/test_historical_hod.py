@@ -213,13 +213,13 @@ def test_target_advances_on_break_while_stop_waits_one_more_close():
         if i==3:
             intent,=r.evaluation.intents
             assert intent.action=='replace_profit_target'
-            assert intent.profit_target_price==pytest.approx(11.49)
-            assert intent.metadata['profit_target_selection']['reference']==pytest.approx(10.96*1.05)
+            assert intent.profit_target_price==pytest.approx(10.98)
+            assert intent.metadata['profit_target_selection']['reference']==pytest.approx(10.56*1.05)
         a=replace(a,state=r.state,status=r.status)
     assert r.evaluation.intents[0].action=='replace_protective_stop'
     assert r.state['active_stop']==pytest.approx(10.39)
     assert r.evaluation.intents[0].metadata['previous_stop']==pytest.approx(9.98)
-    assert r.state['structural_profit_targets']==pytest.approx([11.49])
+    assert r.state['structural_profit_targets']==pytest.approx([10.98])
     assert r.state['historical_hod_entry']['last_cleared_resistance']['upper']==10.42
 
 
@@ -245,11 +245,11 @@ def test_target_does_not_skip_nearest_resistance_to_force_an_advance():
     assert H.target_selection(rows(),rows()[1],10.43,H.DEFAULTS,.01,session='2026-08-21',minimum_target=11.49) is None
 
 
-def test_target_advance_uses_latest_target_once_per_candle_and_rolls_back_on_rejection():
+def test_target_advance_uses_next_historical_once_per_candle_and_rolls_back_on_rejection():
     import asyncio
     host,a,_=acquired()
     original=deepcopy(a.state['historical_hod_entry']['target'])
-    # Cross two resistances in one candle: calculate one step from the current target.
+    # Cross two resistances in one candle: use the first historical still above it.
     r=host.evaluate(a,candle(3,10.58,position_quantity=100))
     target=next(v for v in r.evaluation.intents if v.action=='replace_profit_target')
     assert target.profit_target_price==pytest.approx(11.49)
@@ -298,7 +298,7 @@ def test_red_breakout_advances_target_on_later_non_red_holding_close():
         a=replace(a,state=r.state,status=r.status)
     r=host.evaluate(a,candle(5,10.45,opened=10.44,position_quantity=100))
     target=next(v for v in r.evaluation.intents if v.action=='replace_profit_target')
-    assert target.profit_target_price==pytest.approx(11.49)
+    assert target.profit_target_price==pytest.approx(10.98)
     assert target.metadata['profit_target_selection']['triggering_breakout']['upper']==10.42
     assert not r.state['historical_hod_entry']['target_breaks']
 
@@ -832,6 +832,27 @@ def test_initial_target_uses_first_historical_above_entry_and_frozen_trigger():
     promoted=next(i for i in r.evaluation.intents if i.action=='replace_profit_target')
     selection=promoted.metadata['profit_target_selection']
     assert selection['triggering_breakout']['lower']==10.4
-    assert selection['trigger_level']['lower']==10.95
-    assert selection['reference']==pytest.approx(10.96*1.05)
-    assert selection['level']['lower']==11.5
+    assert selection['trigger_level']['lower']==10.55
+    assert selection['reference']==pytest.approx(10.56*1.05)
+    assert selection['level']['lower']==10.95
+
+
+@pytest.mark.parametrize('next_available', [True,False])
+def test_multilevel_close_rebases_above_close_not_old_target(next_available):
+    host,a,_=acquired()
+    # A current-day level above the close must not displace the historical base.
+    today=dict(level(-1,11.1,11.12),oldest_member_confirmed_at_ms=NOW.timestamp()*1000,
+        confirmed_at_ms=NOW.timestamp()*1000)
+    levels=(*rows(),today) if next_available else tuple(r for r in rows() if r['upper']<11.)
+    r=host.evaluate(a,replace(candle(3,11.,position_quantity=100),structural_resistance_levels=levels))
+    targets=[v for v in r.evaluation.intents if v.action=='replace_profit_target']
+    if not next_available:
+        assert not targets
+        assert r.state['structural_profit_targets']==[10.94]
+        return
+    target,=targets
+    selection=target.metadata['profit_target_selection']
+    assert selection['trigger_level']['lower']==11.5
+    assert selection['reference']==pytest.approx(11.51*1.05)
+    assert selection['level']['lower']==12.
+    assert target.profit_target_price==pytest.approx(12.03)
