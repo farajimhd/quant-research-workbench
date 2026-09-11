@@ -13,7 +13,7 @@ from research.mlops.env import discover_env_files,load_env_files
 from src.backend.experimental_structure_book import resolve
 from src.backend.swing_book_cursor import inputs
 from src.backend.swing_book_source import session_bounds
-from src.market_engine.swing_book_v6 import StreamingSwingBookV6,VERSION,FIELDS
+from src.market_engine.swing_book_v6 import StreamingSwingBookV6,VERSION,FIELDS,LEGACY_FIELDS,matches_checkpoint
 
 
 def validate(book,client,sessions):
@@ -28,11 +28,11 @@ def validate(book,client,sessions):
             by_stamp[int(row['valid_from_us'])].append(json.loads(row['state_json']))
         for marker in batch:
             levels=by_stamp[int(marker['closed_at']*1e6)]
-            if any(set(r)!=set(FIELDS) for r in levels):raise ValueError('Non-survivor fields persisted')
+            if any(set(r) not in (set(FIELDS),set(LEGACY_FIELDS)) for r in levels):raise ValueError('Non-survivor fields persisted')
             seed=dict(version=VERSION,closed_at=float(marker['closed_at']),sequence=int(marker['sequence']),levels=levels)
             if P.digest(seed)!=marker['state_hash']:raise ValueError('Checkpoint integrity mismatch')
             restored=StreamingSwingBookV6(seed,seed['closed_at'])
-            if restored.closing_state(seed['closed_at'])!=seed:raise ValueError('Survivor checkpoint not stable after restore')
+            if not matches_checkpoint(restored.closing_state(seed['closed_at']),seed):raise ValueError('Survivor checkpoint not stable after restore')
             if len(restored.snapshot()['unified_levels'])!=len(levels):raise ValueError('Restored survivor is not qualified or is redundant')
             expected[marker['session_date']]=seed;levels_checked+=len(levels)
     replays=[]
@@ -44,7 +44,7 @@ def validate(book,client,sessions):
         engine=StreamingSwingBookV6(seed,opening.timestamp(),factor)
         start=perf_counter()
         for bar in bars:engine.observe(*bar)
-        if engine.closing_state(closing.timestamp())!=expected[session]:raise ValueError('Causal replay does not match persisted close')
+        if not matches_checkpoint(engine.closing_state(closing.timestamp()),expected[session]):raise ValueError('Causal replay does not match persisted close')
         replays.append(dict(session=session,bars=len(bars),compute_seconds=perf_counter()-start))
     return dict(book=book,ticker=build['ticker'],status='passed',checkpoints=len(markers),survivor_rows=levels_checked,replays=replays)
 

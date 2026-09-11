@@ -3,11 +3,11 @@ import pytest
 from src.market_engine.swing_book_v6 import StreamingSwingBookV6, VERSION, FIELDS
 
 
-def found(e, price, side, qualified=True, scale='major'):
-    e._found({'scale':scale},(price,1.,.3),side,2.)
+def found(e, price, side, qualified=True, scale='major', confirmed_at=2.):
+    e._found({'scale':scale},(price,confirmed_at-1,.3),side,confirmed_at)
     r=e.active[e.sequence]
     if qualified and scale=='major':r['best_departure']=r['history_threshold'];e._level_updated(r)
-    e.last_time=3.
+    e.last_time=confirmed_at+1
     return r
 
 
@@ -62,18 +62,74 @@ def test_merged_area_preserves_oldest_member_confirmation(side):
     found(historical,10.,side)
     seed=historical.closing_state(10.)
     current=StreamingSwingBookV6(seed,100.)
-    new=found(current,10.04,side)
-    new.update(pivot_at=101.,confirmed_at=102.,formed_at=102.)
-    current.last_time=103.
-    current._level_updated(new)
+    new=found(current,10.04,side,confirmed_at=102.)
     merged=current.snapshot()['unified_levels']
     assert len(merged)==1 and merged[0]['member_count']==2
     assert merged[0]['oldest_member_confirmed_at_ms']==2000
     assert merged[0]['confirmed_at_ms']==102000
-    # After the historical member leaves, current-only membership is new.
+    # The surviving member permanently inherits the historical origin.
     del current.active[seed['levels'][0]['level_id']]
     current.selection_dirty=True
-    assert current.snapshot()['unified_levels'][0]['oldest_member_confirmed_at_ms']==102000
+    assert current.snapshot()['unified_levels'][0]['oldest_member_confirmed_at_ms']==2000
+    new.update(confirmed_at=104.,last_role_change_at=104.,side='support' if side=='resistance' else 'resistance',role_retests=2)
+    current.last_time=105.
+    current._level_updated(new)
+    assert new['origin_confirmed_at']==2.
+    closed=current.closing_state(106.)
+    assert closed['levels'][0]['origin_confirmed_at']==2.
+    resumed=StreamingSwingBookV6(json.loads(json.dumps(closed)),200.)
+    assert resumed.snapshot()['unified_levels'][0]['oldest_member_confirmed_at_ms']==2000
+
+
+def test_legacy_seed_upgrades_without_mutating_certified_input():
+    e=StreamingSwingBookV6(opening=0.)
+    found(e,10.,'resistance')
+    seed=e.closing_state(10.)
+    seed['levels'][0].pop('origin_confirmed_at')
+    original=json.dumps(seed,sort_keys=True)
+    loaded=StreamingSwingBookV6(seed,100.)
+    assert loaded.snapshot()['unified_levels'][0]['oldest_member_confirmed_at_ms']==2000
+    assert json.dumps(seed,sort_keys=True)==original
+    seed['levels'][0]['origin_confirmed_at']=float('nan')
+    with pytest.raises(ValueError,match='survivor origin'):
+        StreamingSwingBookV6(seed,100.)
+
+
+def test_checkpoint_validation_is_exact_for_the_persisted_format():
+    from copy import deepcopy
+    from src.market_engine.swing_book_v6 import matches_checkpoint
+    e=StreamingSwingBookV6(opening=0.)
+    found(e,10.,'resistance')
+    current=e.closing_state(10.)
+    legacy=deepcopy(current)
+    legacy['levels'][0].pop('origin_confirmed_at')
+    assert matches_checkpoint(current,current)
+    assert matches_checkpoint(current,legacy)
+    wrong=deepcopy(current);wrong['levels'][0]['origin_confirmed_at']=1.
+    assert not matches_checkpoint(wrong,current)
+    wrong=deepcopy(current);wrong['levels'][0]['upper']+=.01
+    assert not matches_checkpoint(wrong,legacy)
+    wrong=deepcopy(current);wrong['levels'][0]['unexpected']=1
+    assert not matches_checkpoint(wrong,legacy)
+
+
+def test_merge_ancestry_is_independent_of_snapshot_polling_and_transitive():
+    from copy import deepcopy
+    seed_engine=StreamingSwingBookV6(opening=0.)
+    old=found(seed_engine,10.,'resistance')
+    seed=seed_engine.closing_state(10.)
+    a=StreamingSwingBookV6(seed,100.)
+    new=found(a,10.04,'resistance',confirmed_at=102.)
+    b=deepcopy(a)
+    a.snapshot()  # b has no chart consumer.
+    for e in (a,b):
+        e.observe(104.,11.,11.,11.)
+        e.active.pop(old['level_id']);e._level_removed(old['level_id'])
+        newest=found(e,10.06,'resistance',confirmed_at=105.)
+        e.observe(107.,11.,11.,11.)
+        assert newest['origin_confirmed_at']==2.
+        assert e.active[new['level_id']]['origin_confirmed_at']==2.
+    assert a.snapshot()==b.snapshot()
 
 
 def test_pruning_an_oversize_separator_finishes_merging_before_persistence():
