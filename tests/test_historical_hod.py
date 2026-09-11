@@ -122,19 +122,17 @@ def test_failed_breakout_is_observed_passively_and_resets_next_macd_episode():
     assert not d['failed_breakout'] and d['breakout_upper'] is None
 
 
-def test_target_advances_on_break_while_historical_stop_waits_three_closes():
+def test_target_advances_on_break_while_stop_waits_one_more_close():
     host,a,_=acquired()
-    for i,price in ((3,10.43),(4,10.44),(5,10.45)):
+    for i,price in ((3,10.43),(4,10.44)):
         r=host.evaluate(a,candle(i,price,position_quantity=100))
-        if i<5:
+        if i==3:
             assert r.state['active_stop']==pytest.approx(9.99)
         if i==3:
             intent,=r.evaluation.intents
             assert intent.action=='replace_profit_target'
             assert intent.profit_target_price==pytest.approx(10.94)
             assert intent.metadata['profit_target_selection']['reference']==pytest.approx(10.41*1.05)
-        if i==4:
-            assert not r.evaluation.intents
         a=replace(a,state=r.state,status=r.status)
     assert r.evaluation.intents[0].action=='replace_protective_stop'
     assert r.state['active_stop']==pytest.approx(10.39)
@@ -142,12 +140,25 @@ def test_target_advances_on_break_while_historical_stop_waits_three_closes():
     assert r.state['structural_profit_targets']==pytest.approx([10.94])
 
 
-def test_target_advance_selects_a_new_higher_resistance_nearest_five_percent():
+def test_target_does_not_skip_nearest_resistance_to_force_an_advance():
     # The mathematically closest level may still be the old target's level.
     selected=H.target_selection(rows(),rows()[1],10.43,H.DEFAULTS,.01,minimum_target=10.94)
-    assert selected['price']==pytest.approx(11.49)
-    assert selected['reference']==pytest.approx(10.41*1.05)
+    assert selected is None
     assert H.target_selection(rows(),rows()[1],10.43,H.DEFAULTS,.01,minimum_target=11.49) is None
+
+
+def test_red_close_and_intrabar_events_cannot_advance_target_or_apply_old_proposal():
+    host,a,_=acquired()
+    r=host.evaluate(a,candle(3,10.43,opened=10.44,position_quantity=100))
+    assert not any(i.action=='replace_profit_target' for i in r.evaluation.intents)
+    a.state['historical_hod_entry']['desired_target']={'price':11.49}
+    a.state['historical_hod_entry']['desired_stop']=10.1
+    for o in (replace(candle(3,10.43,position_quantity=100),evaluation_events=('market_data_update',)),
+              candle(3,10.43,position_quantity=100,source_timeframe='5s')):
+        r=host.evaluate(a,o)
+        assert not any(i.action.startswith('replace_') for i in r.evaluation.intents)
+    r=host.evaluate(a,candle(3,10.43,opened=10.44,position_quantity=100))
+    assert not any(i.action=='replace_profit_target' for i in r.evaluation.intents)
 
 
 def test_current_day_break_and_stop_advance_can_update_both_orders_together():
@@ -290,7 +301,7 @@ def test_pending_acquisition_expires_and_rejected_replacement_retries():
     expired=host.evaluate(pending,candle(3,10.04))
     assert expired.evaluation.intents[0].action=='cancel_entry'
     a=replace(pending,status=S.AssignmentStatus.MANAGING)
-    for i,p in ((3,10.43),(4,10.44),(5,10.45)):
+    for i,p in ((3,10.43),(4,10.44)):
         r=host.evaluate(a,candle(i,p,position_quantity=100));a=replace(a,state=r.state,status=r.status)
     # The shared rejection path restores this value; desired state must survive.
     a.state['active_stop']=r.evaluation.intents[0].metadata['previous_stop']

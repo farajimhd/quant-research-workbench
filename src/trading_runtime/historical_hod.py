@@ -15,7 +15,7 @@ CONTRACT = 'historical-hod-1s-macd-5s-1'
 BOOK_VERSION = 'causal-swing-closing-book-6'
 NY = ZoneInfo('America/New_York')
 DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_fraction=.05,
-    management_tolerance_atr=.1, management_failure_closes=2, historical_hold_closes=3,
+    management_tolerance_atr=.1, management_failure_closes=2, historical_hold_closes=2,
     maximum_macd_age_ms=5000., maximum_source_age_ms=2000., maximum_quote_age_ms=1000.,
     confirmation_lifetime_ms=1000., maximum_chase_bps=15.,
     minimum_candle_volume=1., risk_fraction=.005, maximum_quantity=10000.)
@@ -102,12 +102,13 @@ def stop_below(value, s, tick):
 def target_selection(rows, broken, price, s, tick, *, minimum_target=0.):
     reference = broken['price']*(1+s['target_distance_fraction'])
     eligible = [r for r in rows if resistance(r) and r['lower'] > broken['upper']
-        and r['lower']-s['target_offset_ticks']*tick > price
-        and floor((r['lower']-s['target_offset_ticks']*tick)/tick+1e-9)*tick > minimum_target+tick/2]
+        and r['lower']-s['target_offset_ticks']*tick > price]
     if not eligible:
         return None
     level = min(eligible, key=lambda r:(abs(r['price']-reference),r['price']))
     target = floor((level['lower']-s['target_offset_ticks']*tick)/tick+1e-9)*tick
+    if target <= minimum_target+tick/2:
+        return None
     return dict(price=target, level=deepcopy(level), reference=reference, broken_level=deepcopy(broken),
         selection_method='resistance_nearest_five_percent_above_broken_level')
 
@@ -304,16 +305,16 @@ def evaluate(host, a, o, p, state):
             active['initial_risk'] = o.average_price-active['stop']
             active['fill_risk_frozen'] = True
         if fresh:
+            active.pop('desired_target',None)
             previous = d.get('prior_close')
             crossed = [r for r in d.get('prior_rows',[]) if resistance(r) and previous is not None and previous <= r['upper'] < o.price]
             pending_levels = active.setdefault('hold_levels',{})
             for r in sorted(crossed,key=lambda level:level['upper']):
-                # TP follows every completed resistance break immediately.
-                # Only historical stop advances require a three-close hold.
+                # Stop confirmation includes the breakout close itself.
                 if historical(r,session):
                     pending_levels[str(r['unified_level_id'])] = dict(level=r,count=0)
-                selected = target_selection(d['rows'],r,max(o.price,o.ask),s,tick,
-                    minimum_target=target)
+                selected = (target_selection(d['prior_rows'],r,max(o.price,o.ask),s,tick,
+                    minimum_target=target) if o.price >= o.bar_open else None)
                 if selected and selected['price'] >= active.get('desired_target',{}).get('price',target):
                     active['desired_target'] = selected
             if not d['contiguous']:
@@ -335,13 +336,13 @@ def evaluate(host, a, o, p, state):
                 active['desired_stop'] = max(active.get('desired_stop',0),trailing)
         proposed = active.get('desired_stop',0)
         replacements = []
-        if stop < proposed < o.bid:
+        if fresh and stop < proposed < o.bid:
             state['active_stop'] = proposed
             replacements.append(result('replace_protective_stop','historical_hold_or_initial_risk_trail',Status.MANAGING,
                 quantity=o.position_quantity,invalidation_price=proposed,profit_target_price=target,
                 metadata={'previous_stop':stop,'active_stop':proposed}))
         selection = active.get('desired_target')
-        if selection and selection['price'] > target and selection['price'] > max(o.price,o.ask):
+        if fresh and o.price >= o.bar_open and selection and selection['price'] > target and selection['price'] > max(o.price,o.ask):
             state['structural_profit_targets'] = [selection['price']]
             replacements.append(result('replace_profit_target','resistance_break_target_advance',Status.MANAGING,
                 quantity=o.position_quantity,invalidation_price=state['active_stop'],profit_target_price=selection['price'],

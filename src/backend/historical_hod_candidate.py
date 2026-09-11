@@ -18,7 +18,7 @@ def build(base):
     p.update(historical_hod_contract=CONTRACT,historical_hod=dict(DEFAULTS))
     profile['description'] = ('Non-red completed 1s breakout of historical resistance below HOD, '
         'then current-day resistance or HOD fallback; price above VWAP and completed bullish 5s MACD. '
-        'Historical three-close stop advances, initial-risk trailing fallback, structural episode management, '
+        'Historical stop advances after a breakout close plus one holding close, initial-risk trailing fallback, structural episode management, '
         'and resistance targets nearest 5% above each broken level. Same-episode prior body-high reentry.')
     observe = next(r for r in payload['market_discovery']['rule_sets']
         if r['rule_set_id']==PROFILE_ID+'-observe')
