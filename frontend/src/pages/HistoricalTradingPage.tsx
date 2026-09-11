@@ -9,7 +9,7 @@ import { TradingLaunchEvidence, TradingModeLaunch, TradingModeSelectField } from
 import { usePollingTask } from "../app/hooks/usePollingTask";
 import type { CanvasReplayRun } from "../app/replayRun";
 import { CanvasWorkspaceSurface } from "./CanvasConfigurationPage";
-import { DEFAULT_BACKTEST_DATE, presetTickers, tickerWindow, v6BookFor, type BacktestTickerPreset } from './backtestPresets';
+import { DEFAULT_BACKTEST_DATE, presetTickers, v6BookFor, type BacktestTickerPreset } from './backtestPresets';
 
 type HistoricalCheck = {
   action?: { hash?: string; label?: string };
@@ -74,7 +74,7 @@ type BacktestComparison = {
   warnings: Array<{ code: string; detail: string; run_id: string }>;
 };
 
-type BacktestPeriodPreset = "premarket" | "regular" | "extended" | "custom";
+type BacktestPeriodPreset = "premarket" | "regular" | "after_hours" | "extended" | "custom";
 
 type IndicatorWarmup = {
   bars: Array<{ bar_start: string; close: number }>;
@@ -140,11 +140,6 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   }, [tickerPreset, sessionDate, structureBooks]);
   function chooseTickerPreset(value: string) {
     setTickerPreset(value as BacktestTickerPreset);
-    if (value === 'custom') return;
-    const window = tickerWindow(value);
-    setPeriodPreset('custom');
-    setStartTime(window.start);
-    setEndTime(value === 'both' || value === 'all' ? '07:30:00' : window.end);
   }
   const [preflight, setPreflight] = useState<HistoricalPreflight | null>(null);
   const [checking, setChecking] = useState(true);
@@ -353,7 +348,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     setError("");
     try {
       const jobs = batchPreset ? normalizedTickers.map(ticker => ({tickers:[ticker],
-        book:v6BookFor(ticker,sessionDate,structureBooks)?.id ?? '', ...tickerWindow(ticker)}))
+        book:v6BookFor(ticker,sessionDate,structureBooks)?.id ?? '', start:startTime,end:endTime}))
         : [{tickers:normalizedTickers,book:structureBook,start:startTime,end:endTime}];
       if (tickerPreset !== 'custom' && jobs.some(job => !job.book)) throw Error('A matching V6 book is required for every preset ticker.');
       const createdRuns: BacktestRun[] = [];
@@ -499,7 +494,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   return (
     <TradingModeLaunch
       actionLabel={batchPreset ? `Run ${normalizedTickers.length} Backtests` : 'Run Backtest'}
-      actionSummary={batchPreset ? `Creates one separate portfolio run per ticker on ${sessionDate}, each with its V6 book. SUGP: 04:00–04:30 ET; JUNS: 07:00–07:30 ET; other covered tickers: 04:00–04:30 ET.` : launchReady ? <><strong>{normalizedTickers.join(", ")}</strong> will run together on <strong>{sessionDate}</strong> from <strong>{startTime.slice(0, 5)}–{endTime.slice(0, 5)} ET</strong> using one shared simulated portfolio and strategy revision <strong>{selectedPlan?.strategy_revision}</strong> (candidate {preflight?.configuration_revision}).</> : !tickerReady ? parsedTickers.invalid.length ? `Remove invalid ticker${parsedTickers.invalid.length === 1 ? "" : "s"}: ${parsedTickers.invalid.join(", ")}.` : "Enter at least one valid ticker before starting." : warmingIndicators ? "Preparing persisted 1-second indicator warm-ups." : !periodReady ? "Choose a valid period inside 04:00–20:00 ET." : preflight && !resolvedSessionMatches ? "The selected date is not an exchange session. Choose a trading day." : "Resolve each required readiness item before starting."}
+      actionSummary={batchPreset ? `Creates one separate portfolio run per ticker on ${sessionDate}, each with its V6 book. Every ticker uses ${startTime.slice(0,5)}–${endTime.slice(0,5)} ET.` : launchReady ? <><strong>{normalizedTickers.join(", ")}</strong> will run together on <strong>{sessionDate}</strong> from <strong>{startTime.slice(0, 5)}–{endTime.slice(0, 5)} ET</strong> using one shared simulated portfolio and strategy revision <strong>{selectedPlan?.strategy_revision}</strong> (candidate {preflight?.configuration_revision}).</> : !tickerReady ? parsedTickers.invalid.length ? `Remove invalid ticker${parsedTickers.invalid.length === 1 ? "" : "s"}: ${parsedTickers.invalid.join(", ")}.` : "Enter at least one valid ticker before starting." : warmingIndicators ? "Preparing persisted 1-second indicator warm-ups." : !periodReady ? "Choose a valid period inside 04:00–20:00 ET." : preflight && !resolvedSessionMatches ? "The selected date is not an exchange session. Choose a trading day." : "Resolve each required readiness item before starting."}
       busy={creating}
       checking={checking || warmingIndicators || loadingOptions}
       checkingLabel={loadingOptions ? "Loading strategy settings…" : warmingIndicators ? "Preparing indicators…" : "Checking strategy and services…"}
@@ -531,14 +526,14 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
               <TradingModeSelectField label="Ticker preset" searchable value={tickerPreset} onChange={chooseTickerPreset}
                 options={[{value:'SUGP',label:'SUGP'},{value:'JUNS',label:'JUNS'},
                   {value:'both',label:'SUGP and JUNS'},{value:'all',label:'All tickers',description:'All tickers with a published V6 book for this date'},
-                  {value:'custom',label:'Custom tickers'}]} help={batchPreset ? 'Separate runs use the individual ticker windows and books listed below.' : 'Select a ticker to fill its time window and V6 book automatically.'} />
+                  {value:'custom',label:'Custom tickers'}]} help={batchPreset ? 'Separate runs use the selected period and a V6 book for each ticker.' : 'Select a ticker to load its V6 book; the selected period is preserved.'} />
               {tickerPreset === 'custom' ? <label className="configuration-field"><span>Tickers</span><textarea aria-label="Tickers" value={tickerInput} onChange={event => setTickerInput(event.target.value.toUpperCase())} /><small>Up to 100 symbols, separated by commas or spaces.</small></label> : null}
-              {batchPreset ? <div className="configuration-help">{normalizedTickers.map(ticker => <p key={ticker}>{ticker} · {tickerWindow(ticker).start.slice(0,5)}–{tickerWindow(ticker).end.slice(0,5)} ET · {v6BookFor(ticker,sessionDate,structureBooks) ? 'V6 book selected' : 'V6 book unavailable'}</p>)}</div> : null}
+              {batchPreset ? <div className="configuration-help">{normalizedTickers.map(ticker => <p key={ticker}>{ticker} · {startTime.slice(0,5)}–{endTime.slice(0,5)} ET · {v6BookFor(ticker,sessionDate,structureBooks) ? 'V6 book selected' : 'V6 book unavailable'}</p>)}</div> : null}
               {batchRuns.length ? <div className="configuration-help">Created runs: {batchRuns.map(item => <button type="button" className="button secondary compact" key={item.run_id} onClick={() => {setSelectedRunId(item.run_id);persistSelectedRun(item.run_id);}}>{item.tickers?.join(', ')} · {item.run_id.slice(0,8)}</button>)}</div> : null}
               <label className="configuration-field"><span>Trading date</span><input onChange={(event) => setSessionDate(event.target.value)} type="date" value={sessionDate} /><small>Must be an exchange trading session; weekends and holidays fail closed.</small></label>
-              <TradingModeSelectField disabled={batchPreset} help="Presets bound the decision window while retaining causal warm-up evidence." label="Time period" onChange={(value) => applyPeriodPreset(value as BacktestPeriodPreset, setPeriodPreset, setStartTime, setEndTime)} options={[{ label: "Premarket · 04:00–09:30 ET", value: "premarket" }, { label: "Regular session · 09:30–16:00 ET", value: "regular" }, { label: "Whole extended session · 04:00–20:00 ET", value: "extended" }, { label: "Custom period", value: "custom" }]} value={periodPreset} />
-              <label className="configuration-field"><span>Start time · ET</span><input disabled={batchPreset} aria-label="Start time" max="19:59:59" min="04:00:00" onChange={(event) => { setPeriodPreset("custom"); setStartTime(normalizeClockInput(event.target.value)); }} step="1" type="time" value={startTime} /><small>No new strategy actions are admitted before this time.</small></label>
-              <label className="configuration-field"><span>End time · ET</span><input disabled={batchPreset} aria-label="End time" max="20:00:00" min="04:00:01" onChange={(event) => { setPeriodPreset("custom"); setEndTime(normalizeClockInput(event.target.value)); }} step="1" type="time" value={endTime} /><small>The run stops at this exact New York boundary.</small></label>
+              <TradingModeSelectField help="Presets bound the decision window while retaining causal warm-up evidence." label="Time period" onChange={(value) => applyPeriodPreset(value as BacktestPeriodPreset, setPeriodPreset, setStartTime, setEndTime)} options={[{ label: "Premarket · 04:00–09:30 ET", value: "premarket" }, { label: "Regular session · 09:30–16:00 ET", value: "regular" }, { label: "After hours · 16:00–20:00 ET", value: "after_hours" }, { label: "Whole extended session · 04:00–20:00 ET", value: "extended" }, { label: "Custom period", value: "custom" }]} value={periodPreset} />
+              <label className="configuration-field"><span>Start time · ET</span><input aria-label="Start time" max="19:59:59" min="04:00:00" onChange={(event) => { setPeriodPreset("custom"); setStartTime(normalizeClockInput(event.target.value)); }} step="1" type="time" value={startTime} /><small>No new strategy actions are admitted before this time.</small></label>
+              <label className="configuration-field"><span>End time · ET</span><input aria-label="End time" max="20:00:00" min="04:00:01" onChange={(event) => { setPeriodPreset("custom"); setEndTime(normalizeClockInput(event.target.value)); }} step="1" type="time" value={endTime} /><small>The run stops at this exact New York boundary.</small></label>
               <label className="configuration-field"><span>Initial cash</span><input max={1_000_000_000} min={1_000} onChange={(event) => setInitialCash(Math.max(1_000, Number(event.target.value) || 1_000))} step={1_000} type="number" value={initialCash} /><small>Applied to the isolated simulated account for the full run.</small></label>
               <TradingModeSelectField disabled={batchPreset} label="Level book" help={batchPreset ? "Each run loads its ticker’s date-covered V6 book and advances it causally." : structureBook ? "Loads the preceding closing book and advances it causally during the session. V5/V6 grade both support and resistance areas; V6 carries only selected daily survivors. Chart filters are independent of strategy rules." : "Uses the current v18 structural level contract. Select a validation book to review the new swing levels."}
                 value={structureBook} onChange={(value) => { setTickerPreset('custom'); setStructureBook(value); const book = structureBooks.find((row) => row.id === value); if (book) setTickerInput(book.ticker); }}
@@ -664,6 +659,7 @@ function applyPeriodPreset(
   const period = {
     premarket: ["04:00:00", "09:30:00"],
     regular: ["09:30:00", "16:00:00"],
+    after_hours: ["16:00:00", "20:00:00"],
     extended: ["04:00:00", "20:00:00"],
   }[preset];
   setStart(period[0]);

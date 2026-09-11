@@ -356,6 +356,7 @@ class StrategyObservation:
     volatility: float = 0.0
     acceleration: float = 0.0
     upper_luld_price: float | None = None
+    official_luld_band: dict[str, Any] = field(default_factory=dict)
     market_open: bool = True
     manual_entry_request: bool = False
     force_entry: bool = False

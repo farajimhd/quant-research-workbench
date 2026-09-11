@@ -802,6 +802,7 @@ _STRATEGY_BAR_FIELDS = frozenset(
 )
 _STRATEGY_INDICATOR_FIELDS = frozenset(
     {
+        "official_luld_band",
         "atr_14",
         "bar_end",
         "bar_start",
@@ -3315,6 +3316,7 @@ class ReplayRunController:
             acceleration=float(indicator.get("price_change_1_bar_pct") or 0),
             volatility=float(indicator.get("atr_14") or 0),
             upper_luld_price=_optional_positive(indicator.get("structure_luld_upper")),
+            official_luld_band=deepcopy(indicator.get("official_luld_band") or {}),
             # `market_open` is the strategy's tradability gate, not an RTH-only
             # label. US equities are routable in the configured extended-hours
             # session; order intents separately mark outside-RTH routing.
@@ -5384,7 +5386,7 @@ class ReplayRunController:
                 return spool
         indicator_columns = (
             tuple(sorted(field for field in _STRATEGY_INDICATOR_FIELDS
-                         if not structural_recovery or not field.startswith(("qmd_structure_", "structure_", "flow_structure_"))))
+                         if field != "official_luld_band" and (not structural_recovery or not field.startswith(("qmd_structure_", "structure_", "flow_structure_")))))
             if prepared_activation
             else None
         )

@@ -233,6 +233,7 @@ def strategy_observation_from_market_row(
         macd_histogram=_optional_numeric(row.get("macd_histogram")),
         volatility=float(row.get("atr_14") or 0),
         upper_luld_price=_positive_numeric(row.get("structure_luld_upper")),
+        official_luld_band=dict(row.get("official_luld_band") or {}),
         market_open=session_phase not in {"closed", "overnight"},
         evaluation_events=("market_data_update",),
         changed_source_ids=tuple(sorted(str(key) for key in source_values)),

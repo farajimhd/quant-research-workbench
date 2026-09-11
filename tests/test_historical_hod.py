@@ -44,6 +44,81 @@ def acquired():
     return host,replace(a,state=r.state,status=S.AssignmentStatus.MANAGING),o
 
 
+def official_band(o,upper=10.8,lower=9.):
+    return dict(source='sip',session_date='2026-08-21',upper=upper,lower=lower,
+        effective_at_ms=o.observed_at.timestamp()*1000,available_at_ms=o.observed_at.timestamp()*1000)
+
+
+@pytest.mark.parametrize('prior,reason',[(None,'regular_previous_close_unavailable'),(.7499,'regular_previous_close_below_minimum'),(.75,'historical_hod_entry')])
+def test_regular_luld_entry_and_prior_close_filter(prior,reason):
+    host,a,o=ready()
+    a.parameters['historical_hod']['regular_luld_enabled']=1
+    o=replace(o,previous_close=prior,official_luld_band=official_band(o))
+    r=host.evaluate(a,o)
+    assert r.evaluation.signals[0].reason==reason
+    if prior==.75:
+        assert r.evaluation.intents[0].profit_target_price==pytest.approx(10.77)
+
+
+@pytest.mark.parametrize('patch',[{'source':'estimated'},{'effective_at_ms':0},
+    {'available_at_ms':NOW.timestamp()*1000+100000},{'session_date':'2026-08-20'},{'lower':11.}])
+def test_regular_luld_rejects_invalid_band(patch):
+    host,a,o=ready();a.parameters['historical_hod']['regular_luld_enabled']=1
+    o=replace(o,previous_close=1.,official_luld_band=dict(official_band(o),**patch))
+    assert host.evaluate(a,o).evaluation.signals[0].reason=='official_luld_unavailable'
+
+
+def test_regular_luld_updates_intrabar_on_red_candles_and_can_move_down():
+    host,a,o=ready();a.parameters['historical_hod']['regular_luld_enabled']=1
+    o=replace(o,previous_close=1.,official_luld_band=official_band(o))
+    r=host.evaluate(a,o);a=replace(a,state=r.state,status=S.AssignmentStatus.MANAGING)
+    for i,upper in ((3,11.),(4,10.7)):
+        obs=candle(i,10.1,opened=10.2,position_quantity=100,source_timeframe='100ms',previous_close=1.)
+        obs=replace(obs,official_luld_band=official_band(obs,upper))
+        r=host.evaluate(a,obs)
+        target=next(x for x in r.evaluation.intents if x.action=='replace_profit_target')
+        assert target.profit_target_price==pytest.approx(upper-.03)
+        a=replace(a,state=r.state,status=r.status)
+
+
+def test_regular_luld_exit_at_buffer_and_missing_data_preserves_position():
+    host,a,o=acquired();a.parameters['historical_hod']['regular_luld_enabled']=1
+    obs=candle(3,10.4,position_quantity=100,source_timeframe='100ms')
+    assert not host.evaluate(a,obs).evaluation.intents
+    obs=replace(obs,official_luld_band=official_band(obs,upper=10.42))
+    assert host.evaluate(a,obs).evaluation.signals[0].reason=='luld_buffer_reached'
+
+
+@pytest.mark.parametrize('hour',[8,21])
+def test_extended_hours_do_not_use_luld_policy(hour):
+    host,a,o=ready();a.parameters['historical_hod']['regular_luld_enabled']=1
+    obs=replace(o,observed_at=o.observed_at.replace(hour=hour),official_luld_band={})
+    r=host.evaluate(a,obs)
+    assert 'regular_session_policy' not in r.evaluation.signals[0].metadata
+
+
+@pytest.mark.parametrize('hour,minute,expected_luld',[(13,29,True),(19,59,False)])
+def test_open_position_changes_target_policy_at_session_boundary(monkeypatch,hour,minute,expected_luld):
+    import sys
+    from tests import test_structural_recovery as fixtures
+    at=NOW.replace(hour=hour,minute=minute,second=57)
+    monkeypatch.setattr(fixtures,'NOW',at)
+    monkeypatch.setattr(sys.modules[__name__],'NOW',at)
+    host,a,o=ready()
+    a.parameters['historical_hod']['regular_luld_enabled']=1
+    a.parameters['strategy_behavior'].update(eligible_sessions=['premarket','regular','after_hours'],entry_cutoff_time='19:45:00',flatten_time='19:55:00')
+    o=replace(o,previous_close=1.,official_luld_band=official_band(o))
+    r=host.evaluate(a,o)
+    assert r.evaluation.intents[0].action=='enter_long'
+    a=replace(a,state=r.state,status=S.AssignmentStatus.MANAGING)
+    obs=candle(3,10.1,position_quantity=100,previous_close=1.)
+    obs=replace(obs,official_luld_band=official_band(obs))
+    r=host.evaluate(a,obs)
+    target=next(x for x in r.evaluation.intents if x.action=='replace_profit_target')
+    assert (target.reason=='official_luld_target_update')==expected_luld
+    assert (r.state['historical_hod_entry']['target'].get('selection_method')=='official_luld')==expected_luld
+
+
 def test_entry_close_non_red_and_complete_broker_protection():
     host,a,o=ready();r=host.evaluate(a,o)
     intent,=r.evaluation.intents

@@ -19,7 +19,9 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     maximum_macd_age_ms=5000., maximum_source_age_ms=2000., maximum_quote_age_ms=1000.,
     confirmation_lifetime_ms=1000., maximum_chase_bps=15.,
     minimum_candle_volume=1., risk_fraction=.005, maximum_quantity=10000.,
-    sizing_mode='risk_fraction',cash_fraction=.9,tranche_count=3)
+    sizing_mode='risk_fraction',cash_fraction=.9,tranche_count=3,
+    regular_luld_enabled=0,minimum_regular_previous_close=.75,
+    luld_buffer_bps=25.,luld_buffer_ticks=2,luld_maximum_age_ms=60000.)
 
 
 def configure(p):
@@ -36,8 +38,10 @@ def configure(p):
     s = dict(DEFAULTS, **raw)
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k == 'entry_breakout_offset' else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('entry_breakout_offset','regular_luld_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
         raise ValueError('Historical HOD settings must be finite and positive')
+    if s['regular_luld_enabled'] not in (0,1) or int(s['luld_buffer_ticks']) != s['luld_buffer_ticks']:
+        raise ValueError('Invalid regular LULD policy')
     if not 0 < s['cash_fraction'] <= 1 or type(s['tranche_count']) is not int or not 2 <= s['tranche_count'] <= 20:
         raise ValueError('Invalid cash fraction or tranche count')
     if s['risk_fraction'] > 1 or s['confirmation_lifetime_ms'] > 1000 or s['maximum_macd_age_ms'] > 5000:
@@ -59,6 +63,33 @@ def configure(p):
     p['protection']['trailing']['enabled'] = False
     p['protection']['profit_ladder'].update(enabled=True, fixed_at_entry=False)
     p['momentum_management']['macd_backstop']['enabled'] = False
+
+
+def regular_luld(o, s, tick):
+    """Only timestamped official SIP evidence can authorize this protection.
+
+    The producer supplies the original effective time and availability time;
+    projecting an old band into a new candle must not refresh either timestamp.
+    Estimated QMD indicator bands deliberately do not satisfy this contract.
+    """
+    band = o.official_luld_band
+    now = o.observed_at.timestamp()*1000
+    session = o.observed_at.astimezone(NY).date().isoformat()
+    if (not isinstance(band,dict) or band.get('source') != 'sip'
+            or band.get('session_date') != session
+            or any(type(band.get(k)) not in (int,float) or not isfinite(band[k])
+                for k in ('lower','upper','effective_at_ms','available_at_ms'))
+            or not 0 < band['lower'] < band['upper']
+            or not band['effective_at_ms'] <= band['available_at_ms'] <= now
+            or not 0 <= now-band['effective_at_ms'] <= s['luld_maximum_age_ms']):
+        return None
+    buffer = max(band['upper']*s['luld_buffer_bps']/10000,
+        tick*s['luld_buffer_ticks'],max(0.,o.ask-o.bid))
+    lower_buffer = max(band['lower']*s['luld_buffer_bps']/10000,
+        tick*s['luld_buffer_ticks'],max(0.,o.ask-o.bid))
+    return dict(price=floor((band['upper']-buffer)/tick+1e-9)*tick,
+        lower_exit=ceil((band['lower']+lower_buffer)/tick-1e-9)*tick,
+        selection_method='official_luld',band=deepcopy(band),buffer=buffer)
 
 
 def historical(level, session):
@@ -376,9 +407,19 @@ def evaluate(host, a, o, p, state):
     stop = float(state.get('active_stop') or 0)
     target = float((state.get('structural_profit_targets') or [0])[0])
     acquired = o.position_quantity > 0
+    local_clock = o.observed_at.astimezone(NY)
+    regular = bool(s['regular_luld_enabled']) and (9,30) <= (local_clock.hour,local_clock.minute) < (16,0)
+    luld = regular_luld(o,s,tick) if regular else None
+    prior_close = o.previous_close
+    regular_block = ('regular_previous_close_unavailable' if prior_close is None or not isfinite(prior_close) or prior_close <= 0
+        else 'regular_previous_close_below_minimum' if prior_close < s['minimum_regular_previous_close']
+        else 'official_luld_unavailable' if not luld else
+        'inside_luld_buffer' if not luld['lower_exit'] < o.bid <= o.ask < luld['price'] else '') if regular else ''
     pending = a.status == Status.ENTRY_PENDING or bool(state.get('pending_capital_request'))
     evidence = dict(contract=CONTRACT,macd=dict(timeframe='5s',observed_at=d.get('macd_at'),
         line=d.get('macd_line'),signal=d.get('macd_signal'),episode=d.get('episode')))
+    if regular:
+        evidence['regular_session_policy'] = dict(previous_close=prior_close,block_reason=regular_block,luld=luld)
     def result(action, reason, status=None, **kw):
         metadata = dict(evidence, **kw.pop('metadata', {}))
         if action == 'exit':
@@ -410,6 +451,8 @@ def evaluate(host, a, o, p, state):
     if acquired or pending:
         reason = ('session_flatten' if flatten else 'protective_stop' if stop and o.price <= stop
             else 'manual_exit' if state.get('manual_exit_requested') else 'macd_episode_ended' if macd_closed else '')
+        if not reason and luld and (o.bid >= luld['price'] or o.bid <= luld['lower_exit']):
+            reason = 'luld_buffer_reached'
         if not reason and acquired and active and confirm_failed_attempt(active,o,previous_bar=d.get('prior_bar')):
             reason = 'red_close_below_attempt_open'
         if not reason and acquired and active and detector_fresh:
@@ -441,7 +484,7 @@ def evaluate(host, a, o, p, state):
     quality_p = dict(p,structural_recovery=dict(QUALITY_DEFAULTS,**{k:v for k,v in s.items() if k in QUALITY_DEFAULTS}))
     ready, quality = tradability(o,quality_p,dict(effective_at=d.get('closed_at',0),candle=d.get('bar',{})),state,producer_freshness=True)
     evidence['liquidity_admission'] = quality
-    if pending and state.get('pending_capital_request') and (not active or not ready or not macd_ready or o.price <= (d.get('vwap') or float('inf'))
+    if pending and (state.get('pending_capital_request') or regular_block) and (regular_block or not active or not ready or not macd_ready or o.price <= (d.get('vwap') or float('inf'))
             or now-active.get('confirmed_at',0) >= s['confirmation_lifetime_ms']/1000
             or o.ask > active.get('maximum_buy_price',0)):
         state.pop('pending_capital_request',None)
@@ -480,8 +523,10 @@ def evaluate(host, a, o, p, state):
                         and r['price'] > cleared['price']):
                     pending_levels[str(r['unified_level_id'])] = dict(level=r,count=0)
             trigger = active['target'].get('trigger_level')
-            if d['contiguous'] and trigger and historical(trigger, session) and o.price > trigger['upper']:
+            if not regular and d['contiguous'] and trigger and historical(trigger, session) and o.price > trigger['upper']:
                 target_breaks[str(trigger['unified_level_id'])] = deepcopy(trigger)
+            if regular:
+                target_breaks.clear()
             for key,r in sorted(list(target_breaks.items()),key=lambda item:item[1]['upper']):
                 if o.price <= r['upper']:
                     del target_breaks[key]; continue
@@ -521,24 +566,33 @@ def evaluate(host, a, o, p, state):
             if not any(historical(r,session) and r['upper'] < o.price for r in d['rows']):
                 trailing = floor((active['best_close']-active['initial_risk'])/tick+1e-9)*tick
                 active['desired_stop'] = max(active.get('desired_stop',0),trailing)
+        if regular:
+            active.pop('desired_target',None)
+            if luld:
+                active['desired_target'] = luld
+                active['desired_stop'] = max(active.get('desired_stop',0),luld['lower_exit'])
+        elif fresh and active['target'].get('selection_method') == 'official_luld':
+            anchor = next_historical_resistance(d['rows'],max(o.price,o.ask),session)
+            active['desired_target'] = target_selection(d['rows'],anchor,max(o.price,o.ask),s,tick,session=session) if anchor else None
         proposed = active.get('desired_stop',0)
         replacements = []
-        if fresh and stop < proposed < o.bid:
+        if (fresh or luld) and stop < proposed < o.bid:
             state['active_stop'] = proposed
             replacements.append(result('replace_protective_stop','historical_hold_or_initial_risk_trail',Status.MANAGING,
                 quantity=o.position_quantity,invalidation_price=proposed,profit_target_price=target,
                 metadata={'previous_stop':stop,'active_stop':proposed,
                     'last_cleared_resistance':deepcopy(active['last_cleared_resistance'])}))
         selection = active.get('desired_target')
-        if fresh and o.price >= o.bar_open and selection and selection['price'] > target and selection['price'] > max(o.price,o.ask):
+        switching = active['target'].get('selection_method') == 'official_luld' and not regular
+        if (regular or (fresh and o.price >= o.bar_open)) and selection and (selection['price'] > target or ((regular or switching) and selection['price'] != target)) and selection['price'] > max(o.price,o.ask):
             previous_selection = deepcopy(active['target'])
             active['target'] = deepcopy(selection)
             state['structural_profit_targets'] = [selection['price']]
-            replacements.append(result('replace_profit_target','resistance_break_target_advance',Status.MANAGING,
+            replacements.append(result('replace_profit_target','official_luld_target_update' if regular else 'resistance_break_target_advance',Status.MANAGING,
                 quantity=o.position_quantity,invalidation_price=state['active_stop'],profit_target_price=selection['price'],
                 metadata={'previous_profit_target':target,'profit_target':selection['price'],'profit_target_selection':selection,
                     'previous_historical_hod_target':previous_selection}))
-        if (s['sizing_mode'] == 'cash_tranches' and fresh and detector_fresh and d['contiguous']
+        if (not regular_block and s['sizing_mode'] == 'cash_tranches' and fresh and detector_fresh and d['contiguous']
                 and not pending and a.permissions.add and ready and macd_ready and o.price > (d.get('vwap') or float('inf'))
                 and o.price >= o.bar_open and not active.get('pending_failed_attempt')
                 and active.get('tranches_requested',1) < s['tranche_count']):
@@ -597,6 +651,8 @@ def evaluate(host, a, o, p, state):
         return result('wait','outside_entry_session')
     if not fresh or not macd_ready:
         return result('wait','waiting_for_completed_1s_and_bullish_5s_macd')
+    if regular_block:
+        return result('wait',regular_block)
     if not ready:
         return result('wait','tradability_incomplete')
     if not detector_fresh:
@@ -625,12 +681,16 @@ def evaluate(host, a, o, p, state):
     target_anchor = next_historical_resistance(d['rows'],max(o.ask,o.price),session)
     selected = (target_selection(d['rows'],target_anchor,max(o.ask,o.price),s,tick,session=session)
         if target_anchor else None)
+    if regular:
+        selected = luld
     if not selected:
         return result('wait','qualified_target_unavailable')
     swing = initial_swing_low(row,boundary,now)
     if swing is None:
         return result('wait','confirmed_local_swing_low_unavailable')
     stop = stop_below(swing['lower'],s,tick)
+    if luld:
+        stop = max(stop,luld['lower_exit'])
     # Bound execution slippage from the executable quote, not the last trade.
     ceiling = min(o.ask*(1+s['maximum_chase_bps']/10000),selected['price']-tick)
     if not 0 < stop < o.bid <= o.ask <= ceiling:

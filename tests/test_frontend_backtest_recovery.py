@@ -16,6 +16,48 @@ from urllib.parse import quote
 
 @unittest.skipUnless(os.environ.get("BACKTEST_RECOVERY_RUN_ID"), "opt-in browser regression")
 class BacktestRecoveryBrowserTests(unittest.TestCase):
+    def test_batch_launch_submits_the_selected_period(self) -> None:
+        from playwright.sync_api import sync_playwright
+        base = os.environ.get("BACKTEST_RECOVERY_URL", "http://127.0.0.1:5173").rstrip("/")
+        submitted = []
+        plan = dict(run_plan_id='plan',name='Test plan',profile_id='profile',strategy_id='strategy',strategy_revision=47)
+        def handle(route):
+            path = route.request.url.split('?')[0]
+            if path.endswith('/structure-books'):
+                data = dict(items=[dict(id=t,ticker=t,version='causal-swing-closing-book-6',start='2026-08-01',end='2026-08-31') for t in ('SUGP','JUNS')])
+            elif path.endswith('/configuration-options'):
+                data = dict(candidate_id='candidate',run_plan_id='plan',available_run_plans=[plan],error='',candidates=[dict(candidate_id='candidate',candidate_revision=192,label='Test',content_hash='hash')])
+            elif path.endswith('/indicator-warmup'):
+                data = dict(status='ready',items=[],ready_count=2,ticker_count=2,tickers=['SUGP','JUNS'])
+            elif path.endswith('/historical-preflight'):
+                data = dict(strategy_run_ready=True,configuration_revision_id='candidate',run_plan_id='plan',configuration_revision=192,checks=[],window=dict(sessions=['2026-08-21']))
+            elif path.endswith('/backtest/runs') and route.request.method=='POST':
+                submitted.append(route.request.post_data_json)
+                route.fulfill(status=409,json=dict(detail='Intercepted launch for browser test'))
+                return
+            else:
+                route.continue_()
+                return
+            route.fulfill(json=data)
+        with sync_playwright() as playwright:
+            browser=playwright.chromium.launch(headless=True)
+            try:
+                page=browser.new_page()
+                page.route('**/api/trading/**',handle)
+                page.goto(base+'/#backtest-trading')
+                page.get_by_role('button',name='Ticker preset',exact=True).click()
+                page.get_by_role('option',name='SUGP and JUNS',exact=True).click()
+                page.get_by_role('button',name='Time period',exact=True).click()
+                page.get_by_role('option',name='After hours · 16:00–20:00 ET',exact=True).click()
+                page.get_by_role('button',name='Run 2 Backtests',exact=True).click(timeout=30000)
+                page.get_by_text('Intercepted launch for browser test',exact=True).wait_for()
+                self.assertEqual(len(submitted),1)
+                self.assertEqual(submitted[0]['start_time'],'16:00:00')
+                self.assertEqual(submitted[0]['end_time'],'20:00:00')
+                self.assertEqual(submitted[0]['tickers'],['SUGP'])
+            finally:
+                browser.close()
+
     def test_existing_run_does_not_launch_setup_requests(self) -> None:
         from playwright.sync_api import sync_playwright
         base = os.environ.get("BACKTEST_RECOVERY_URL", "http://127.0.0.1:5173").rstrip("/")
