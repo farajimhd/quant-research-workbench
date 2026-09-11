@@ -7475,7 +7475,7 @@ def _validate_strategy_lifecycle(
     _validate_order_intent(dict(reentry.get("order_intent") or {}), "Reentry")
     routes = list(dict(lifecycle["exit"]).get("rule_sets") or [])
     _unique_ids(routes, "rule_set_id", "Strategy exit rule set")
-    if not routes and engine_parameters.get('structural_recovery_contract') != 'v6-structural-recovery-1' and engine_parameters.get('macd_hod_contract') != 'macd-hod-100ms-1' and engine_parameters.get('macd_threshold_contract') != 'macd-threshold-100ms-1' and engine_parameters.get('macd_r3_contract') != 'macd-r3-100ms-1':
+    if not routes and engine_parameters.get('historical_hod_contract') != 'historical-hod-1s-macd-5s-1' and engine_parameters.get('structural_recovery_contract') != 'v6-structural-recovery-1' and engine_parameters.get('macd_hod_contract') != 'macd-hod-100ms-1' and engine_parameters.get('macd_threshold_contract') != 'macd-threshold-100ms-1' and engine_parameters.get('macd_r3_contract') != 'macd-r3-100ms-1':
         raise ValueError("Strategy exit requires at least one rule set")
     for route in routes:
         if str(route.get("action") or "") not in {"close", "reduce"}:

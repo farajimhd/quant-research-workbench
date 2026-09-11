@@ -219,6 +219,8 @@ def strategy_rule_timeframes(parameters: dict[str, Any]) -> set[str]:
 
     if parameters.get('macd_threshold_contract') or parameters.get('macd_r3_contract'):
         return {'100ms', '1s'}  # 1s produces rolling liquidity; MACD uses only 100ms.
+    if parameters.get('historical_hod_contract'):
+        return {'1s', '5s'}
     timeframes: set[str] = {'100ms', '1s'} if parameters.get('macd_hod_contract') else set()
     for stage in dict(parameters.get("entry_rules") or {}).values():
         if isinstance(stage, dict):
@@ -873,6 +875,9 @@ def resolve_long_momentum_parameters(
         v5_breakout.configure(parameters)
     if parameters.get('structural_recovery_contract'):
         from .structural_recovery import configure
+        configure(parameters)
+    if parameters.get('historical_hod_contract'):
+        from .historical_hod import configure
         configure(parameters)
     if parameters.get('macd_hod_contract'):
         from .macd_hod import configure
@@ -2749,6 +2754,9 @@ class LongMomentumStrategyEngine:
             assignment.parameters,
             revision=self.revision,
         )
+        if parameters.get('historical_hod_contract'):
+            from .historical_hod import evaluate
+            return evaluate(self, assignment, observation, parameters, state)
         if parameters.get('macd_hod_contract'):
             from .macd_hod import evaluate
             return evaluate(self, assignment, observation, parameters, state)
@@ -5408,13 +5416,14 @@ class LongMomentumStrategyEngine:
             intents = tuple(replace(i, execution_policy=replace(i.resolved_execution_policy(),
                 envelope=replace(i.resolved_execution_policy().envelope, maximum_buy_price=ceiling)),
                 metadata={**i.metadata, 'gap_entry_ceiling': ceiling}) for i in intents)
-        if action == 'enter_long' and assignment.parameters.get('macd_hod_contract') and intents:
-            entry = state['macd_hod_entry']
+        if action == 'enter_long' and (assignment.parameters.get('macd_hod_contract') or assignment.parameters.get('historical_hod_contract')) and intents:
+            policy = 'historical_hod' if assignment.parameters.get('historical_hod_contract') else 'macd_hod'
+            entry = state[policy + '_entry']
             intents = tuple(replace(i, reference_price=observation.ask,
                 execution_policy=replace(i.resolved_execution_policy(),
                     envelope=replace(i.resolved_execution_policy().envelope,
                         maximum_buy_price=entry['maximum_buy_price'], persist_until_cancelled=False,
-                        deadline_ms=max(1,int(assignment.parameters['macd_hod']['confirmation_lifetime_ms']
+                        deadline_ms=max(1,int(assignment.parameters[policy]['confirmation_lifetime_ms']
                             - (observation.observed_at.timestamp()-entry['confirmed_at'])*1000)))),
                 metadata={**i.metadata, 'mandatory_broker_target': True}) for i in intents)
         if action == 'enter_long' and assignment.parameters.get('structural_recovery_contract') and intents:
@@ -5646,7 +5655,7 @@ def _protection_profile_from_phase(
         dict(parameters.get("protection_profile_catalog") or {}).get(reference)
         or {}
     )
-    mandatory_target = bool(parameters.get('macd_hod_contract') or parameters.get('structural_recovery_contract') or
+    mandatory_target = bool(parameters.get('historical_hod_contract') or parameters.get('macd_hod_contract') or parameters.get('structural_recovery_contract') or
         (parameters.get('episode_management') or {}).get('position_structure_enabled', False))
     if mandatory_target and action in {'enter_long', 'add_long'} and not configured:
         raise ValueError('Position structure requires an explicit broker protection profile')
@@ -5662,7 +5671,7 @@ def _protection_profile_from_phase(
         if isinstance(value, (int, float)) and float(value) > 0
     ]
     configured_slices = [dict(raw) for raw in configured.get("slices") or []]
-    if parameters.get('macd_hod_contract') or parameters.get('swing_gap_contract') or v5_breakout.enabled(parameters) or parameters.get('structural_recovery_contract'):
+    if parameters.get('historical_hod_contract') or parameters.get('macd_hod_contract') or parameters.get('swing_gap_contract') or v5_breakout.enabled(parameters) or parameters.get('structural_recovery_contract'):
         configured_slices = [dict(configured_slices[0])] if configured_slices else []
         for raw in configured_slices:
             raw.update(quantity_fraction=1., strategy_profit_target_index=0,
@@ -6332,6 +6341,8 @@ class AssignedLongMomentumStrategy:
                 return
             if action in {"enter_long", "add_long", "enter_short", "add_short"}:
                 if action == 'enter_long' and incremental_fill > 0:
+                    if assignment.parameters.get('historical_hod_contract'):
+                        state['historical_hod_state'] = dict(state.get('historical_hod_state') or {}, used_episode=True)
                     if assignment.parameters.get('macd_r3_contract'):
                         state['r3_ever_filled'] = True
                     episode = (state.get('v5_entry_selection') or {}).get('episode_started_at')

@@ -424,6 +424,7 @@ class ReplayRunDefinition:
         recovery = (self.configuration_revision.get('payload', {}).get('strategy', {})
                     .get('parameters', {}).get('structural_recovery_contract'))
         recovery = recovery or self.configuration_revision.get('payload', {}).get('strategy', {}).get('parameters', {}).get('macd_hod_contract')
+        recovery = recovery or self.configuration_revision.get('payload', {}).get('strategy', {}).get('parameters', {}).get('historical_hod_contract')
         recovery = recovery or self.configuration_revision.get('payload', {}).get('strategy', {}).get('parameters', {}).get('macd_r3_contract')
         if recovery and not self.experimental_structure_book:
             raise ValueError('Structural recovery requires an explicitly selected certified V6 swing book')
@@ -2354,6 +2355,9 @@ class ReplayRunController:
                             await self._process_external_signal_event(signal_event)
                             external_index += 1
                         if frame.as_of < self.definition.requested_start:
+                            if (self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {}).get('historical_hod_contract')
+                                    and frame.as_of.astimezone(NEW_YORK).date() == self.definition.session_date):
+                                await self._observe_episode_candle(frame)
                             self._remember_strategy_frame(frame)
                         else:
                             self._apply_historical_watchlist_membership(frame.as_of)
@@ -3021,11 +3025,19 @@ class ReplayRunController:
     async def _observe_episode_candle(self, frame: ReplayDerivedFrame) -> None:
         configuration = self.definition.configuration_revision['payload'].get('strategy') or {}
         parameters = configuration.get('parameters') or {}
-        if frame.timeframe == '1s' and parameters.get('structural_recovery_contract'):
+        historical_hod = bool(parameters.get('historical_hod_contract'))
+        if historical_hod and frame.timeframe == '5s':
+            from src.trading_runtime.historical_hod import observe_frame
+            stream = self._candle_detector_states.setdefault(frame.ticker, {})
+            market = stream.setdefault('structural_recovery', {})
+            market['historical_hod_observation'] = observe_frame(frame,
+                market.get('historical_hod_observation', {}), parameters)
+            return
+        if frame.timeframe == '1s' and (parameters.get('structural_recovery_contract') or historical_hod):
             from src.trading_runtime.structural_recovery import observe_market, BOOK_VERSION
             from src.backend.experimental_structure_book import resolve
             if not self.definition.experimental_structure_book:
-                raise ValueError('Candidate 180 requires an explicitly selected certified V6 swing book')
+                raise ValueError('Structural strategy requires an explicitly selected certified V6 swing book')
             if not getattr(self, '_recovery_book_identity', None):
                 build = resolve(self.definition.experimental_structure_book)
                 if build['version'] != BOOK_VERSION:
@@ -3038,6 +3050,11 @@ class ReplayRunController:
             saved = self._candle_detector_states.get(frame.ticker, {}).get('structural_recovery') or {}
             market = observe_market(bar, snapshot['unified_levels'], self._recovery_book_identity,
                                     saved, parameters.get('structural_detector_settings'))
+            if historical_hod:
+                from src.trading_runtime.historical_hod import observe_frame
+                market['historical_hod_observation'] = observe_frame(frame,
+                    saved.get('historical_hod_observation', {}), parameters,
+                    dict(snapshot, session_high=self._experimental_session_high(frame.ticker,frame.as_of)))
             self._candle_detector_states[frame.ticker] = {'structural_recovery':market}
             return
         if frame.timeframe != '1s' or not (parameters.get('episode_management') or {}).get('detector_candle_states_enabled'):
@@ -3518,6 +3535,7 @@ class ReplayRunController:
                         if provisional_macd else None)
         if ticker_assignments and all(
             not assignment.parameters.get('structural_recovery_contract')
+            and not assignment.parameters.get('historical_hod_contract')
             and assignment.status
             in {AssignmentStatus.WATCHING, AssignmentStatus.REENTRY_COOLDOWN}
             and str(
@@ -3683,6 +3701,9 @@ class ReplayRunController:
         if previous is not None and previous[0] is snapshot and previous[1] == self.definition.minimum_p_norm:
             return previous[2]
         projected = strategy_snapshot(snapshot, as_of, self.definition.minimum_p_norm)
+        if self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {}).get('historical_hod_contract'):
+            from src.trading_runtime.historical_hod import band_levels
+            projected = dict(projected, unified_levels=band_levels(projected['unified_levels']))
         cache[key] = (snapshot, self.definition.minimum_p_norm, projected)
         return projected
 
@@ -5295,6 +5316,7 @@ class ReplayRunController:
         structural_recovery = bool(self.definition.configuration_revision["payload"].get(
             "strategy", {}).get("parameters", {}).get("structural_recovery_contract") or self.definition.configuration_revision["payload"].get(
             "strategy", {}).get("parameters", {}).get("macd_hod_contract") or self.definition.configuration_revision["payload"].get(
+            "strategy", {}).get("parameters", {}).get("historical_hod_contract") or self.definition.configuration_revision["payload"].get(
             "strategy", {}).get("parameters", {}).get("macd_threshold_contract") or self.definition.configuration_revision["payload"].get(
             "strategy", {}).get("parameters", {}).get("macd_r3_contract"))
         # Both paths already own their causal signal stream. Structural
@@ -8102,6 +8124,7 @@ def _uses_source_native_identity_preparation(configuration: dict[str, Any], has_
     return bool(has_events and streams
                 and all(str(row.get("occurrence_source") or "").strip() for row in streams)
                 and not configuration.get("strategy", {}).get("parameters", {}).get("structural_recovery_contract")
+                and not configuration.get("strategy", {}).get("parameters", {}).get("historical_hod_contract")
                 and configuration.get("run_plan", {}).get("activation", {}).get("watchlist_policy") == "not_required")
 
 
@@ -8109,7 +8132,7 @@ def _structural_recovery_projection_tickers(
     configuration: dict[str, Any], tickers: tuple[str, ...],
 ) -> list[str] | None:
     parameters = configuration.get("strategy", {}).get("parameters", {})
-    if not (parameters.get("structural_recovery_contract") or parameters.get("macd_hod_contract") or parameters.get("macd_threshold_contract") or parameters.get("macd_r3_contract")):
+    if not (parameters.get("historical_hod_contract") or parameters.get("structural_recovery_contract") or parameters.get("macd_hod_contract") or parameters.get("macd_threshold_contract") or parameters.get("macd_r3_contract")):
         return None
     selected = sorted({ticker.strip().upper() for ticker in tickers if ticker.strip()})
     if not selected:
