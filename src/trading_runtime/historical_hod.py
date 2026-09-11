@@ -382,6 +382,14 @@ def evaluate(host, a, o, p, state):
     row = market.get('row', {})
     detector_fresh = (fresh and market.get('book',{}).get('version') == BOOK_VERSION
         and bool(market.get('book',{}).get('fingerprint')) and row.get('effective_at') == now)
+    if acquired and active and fresh:
+        # Track the completed sequence before a resistance failure arms an exit.
+        sequence = active.setdefault('red_candle_sequence', {})
+        bar = d['bar']
+        if bar['end'] > sequence.get('end', 0):
+            consecutive = sequence.get('end') == bar['time'] and not row.get('gap_before')
+            sequence.update(end=bar['end'], count=(sequence.get('count', 0) + 1 if consecutive else 1)
+                if bar['close'] < bar['open'] else 0)
     if acquired or pending:
         reason = ('session_flatten' if flatten else 'protective_stop' if stop and o.price <= stop
             else 'manual_exit' if state.get('manual_exit_requested') else 'macd_episode_ended' if macd_closed else '')
@@ -394,9 +402,17 @@ def evaluate(host, a, o, p, state):
                 reason = management(row,active,d['bar'],s,tick,
                     previous_bar=d.get('prior_bar'),resistance_levels=d.get('prior_rows',[]))
                 if reason == 'red_close_below_attempt_open':
-                    active.setdefault('pending_failed_attempt', dict(at_ms=round(now*1000),
-                        trigger_close=d['bar']['close']))
-                    reason = ''
+                    count = active.get('red_candle_sequence', {}).get('count', 0)
+                    if count >= 2:
+                        active.pop('pending_failed_attempt', None)
+                        active['failed_resistance_exit']['candle_confirmation'] = dict(
+                            timeframe='1s', consecutive_red_closes=count,
+                            confirmed=True, confirmed_at_ms=round(now*1000),
+                            open=d['bar']['open'], close=d['bar']['close'])
+                    else:
+                        active.setdefault('pending_failed_attempt', dict(at_ms=round(now*1000),
+                            trigger_close=d['bar']['close'], red_closes=count))
+                        reason = ''
         if reason:
             state.update(last_exit_reason=reason,entry_acquisition_exit_latched=True)
             state.pop('pending_capital_request',None)
