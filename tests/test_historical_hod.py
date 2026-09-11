@@ -346,6 +346,30 @@ def test_swing_tolerance_is_management_only_and_requires_two_closes():
     assert r.evaluation.intents[0].reason=='protective_stop'
 
 
+def test_failed_resistance_red_close_below_previous_open_exits_immediately():
+    host,a,_=acquired()
+    r=host.evaluate(a,replace(candle(3,10.40,opened=10.39,position_quantity=100),bar_high=10.43))
+    a=replace(a,state=r.state,status=r.status)
+    o=candle(4,10.38,opened=10.40,position_quantity=100)
+    r=host.evaluate(a,o)
+    intent,=r.evaluation.intents
+    assert intent.action=='exit' and intent.reason=='red_close_below_attempt_open'
+    assert intent.quantity==100
+    assert intent.metadata['failed_resistance_exit']['previous_bar']['open']==10.39
+    assert not host.evaluate(a,replace(o,evaluation_events=('market_data_update',))).evaluation.intents
+    # Equality, a non-red candle, and a gap do not satisfy this immediate rule.
+    for changed in (replace(o,price=10.39),replace(o,bar_open=10.37),candle(5,10.38,opened=10.40,position_quantity=100)):
+        assert not any(v.reason=='red_close_below_attempt_open' for v in host.evaluate(a,changed).evaluation.intents)
+
+
+def test_red_lower_close_without_a_resistance_attempt_is_not_this_exit():
+    host,a,_=acquired()
+    r=host.evaluate(a,candle(3,10.2,opened=10.15,position_quantity=100))
+    a=replace(a,state=r.state,status=r.status)
+    r=host.evaluate(a,candle(4,10.14,opened=10.2,position_quantity=100))
+    assert not any(v.reason=='red_close_below_attempt_open' for v in r.evaluation.intents)
+
+
 def test_reentry_uses_prior_body_high_excludes_wicks_and_current_candle():
     host,a,_=acquired()
     r=host.evaluate(a,replace(candle(3,10.2,position_quantity=100),bar_high=10.29))

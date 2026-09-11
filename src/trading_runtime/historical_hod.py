@@ -131,9 +131,20 @@ def target_selection(rows, broken, price, s, tick, *, minimum_target=0.):
         selection_method='resistance_nearest_five_percent_above_broken_level')
 
 
-def management(row, active, bar, s, tick):
+def management(row, active, bar, s, tick, *, previous_bar=None, resistance_levels=()):
     """Warnings need subsequent price failure; the broker stop is independent."""
     events = row.get('local_events', [])+row.get('global_events', [])
+    if (previous_bar and previous_bar['end'] == bar['time']
+            and bar['close'] < bar['open'] and bar['close'] < previous_bar['open']):
+        for level in (*resistance_levels, *row.get('local_swings', [])):
+            known = level.get('confirmed_at',level.get('confirmed_at_ms',float('inf'))/1000)
+            if (resistance(level) and known <= previous_bar['end']
+                    and previous_bar['high'] >= level['lower']
+                    and previous_bar['low'] <= level['upper']
+                    and bar['close'] <= level['upper']):
+                active['failed_resistance_exit'] = dict(level=deepcopy(level),
+                    previous_bar=deepcopy(previous_bar),exit_bar=deepcopy(bar))
+                return 'red_close_below_attempt_open'
     atr = row.get('qualification', {}).get('atr') or 0.
     base = active['management_base']
     for event in row.get('local_events', []):
@@ -199,6 +210,7 @@ def observe(o, d, s):
         return False, macd_closed
     contiguous = now-d.get('closed_at',0) == 1
     d['prior_close'] = d.get('close') if contiguous else None
+    d['prior_bar'] = deepcopy(d.get('bar')) if contiguous else None
     d['prior_rows'] = deepcopy(d.get('rows', [])) if contiguous else []
     d['prior_hod'] = d.get('hod')
     d['prior_body_high'] = d.get('body_high',0.)
@@ -298,11 +310,13 @@ def evaluate(host, a, o, p, state):
             if not d['contiguous'] or row.get('gap_before'):
                 active['failure_closes'] = 0; active.pop('rejection',None)
             else:
-                reason = management(row,active,d['bar'],s,tick)
+                reason = management(row,active,d['bar'],s,tick,
+                    previous_bar=d.get('prior_bar'),resistance_levels=d.get('prior_rows',[]))
         if reason:
             state.update(last_exit_reason=reason,entry_acquisition_exit_latched=True)
             state.pop('pending_capital_request',None)
-            return result('exit',reason,Status.EXIT_PENDING,quantity=o.position_quantity,invalidation_price=stop)
+            return result('exit',reason,Status.EXIT_PENDING,quantity=o.position_quantity,invalidation_price=stop,
+                metadata={'failed_resistance_exit':active.get('failed_resistance_exit')} if reason=='red_close_below_attempt_open' else {})
     macd_ready = (d.get('macd_valid') and d.get('macd_positive') and d.get('episode') is not None
         and 0 <= (now-d.get('macd_at',0))*1000 <= s['maximum_macd_age_ms'])
     quality_p = dict(p,structural_recovery=dict(QUALITY_DEFAULTS,**{k:v for k,v in s.items() if k in QUALITY_DEFAULTS}))
