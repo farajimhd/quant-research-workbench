@@ -52,7 +52,7 @@ def test_entry_close_non_red_and_complete_broker_protection():
     assert intent.profit_target_price==pytest.approx(10.54)
     assert len(intent.protection_profile.slices)==1
     assert intent.metadata['mandatory_broker_target']
-    assert intent.resolved_execution_policy().envelope.deadline_ms==1000
+    assert intent.resolved_execution_policy().envelope.deadline_ms==0
     assert S.strategy_rule_timeframes(a.parameters)=={'100ms','1s','5s'}
     assert host.evaluate(a,replace(o,bar_open=10.06)).evaluation.signals[0].reason=='red_breakout_candle'
     assert host.evaluate(a,replace(o,bar_open=o.price)).evaluation.signals[0].action=='enter_long'
@@ -373,57 +373,39 @@ def test_swing_tolerance_is_management_only_and_requires_two_closes():
     assert r.evaluation.intents[0].reason=='protective_stop'
 
 
-def test_failed_resistance_exit_waits_for_two_completed_100ms_candles():
+def test_failed_resistance_exit_survives_bounce_and_exits_on_red_intrabar():
     host,a,_=acquired()
     r=host.evaluate(a,replace(candle(3,10.40,opened=10.39,position_quantity=100),bar_high=10.43))
     a=replace(a,state=r.state,status=r.status)
     o=candle(4,10.38,opened=10.40,position_quantity=100)
     r=host.evaluate(a,o)
-    assert not any(v.action=='exit' for v in r.evaluation.intents)
-    armed=replace(a,state=r.state,status=r.status)
-    stopped=host.evaluate(armed,replace(o,price=r.state['active_stop']-.01,
-        observed_at=o.observed_at+timedelta(milliseconds=50),evaluation_events=('market_data_update',)))
-    assert stopped.evaluation.intents[0].reason=='protective_stop'
-    first=replace(o,source_timeframe='100ms',observed_at=o.observed_at+timedelta(milliseconds=100),price=10.37)
-    r=host.evaluate(armed,first)
-    assert not any(v.action=='exit' for v in r.evaluation.intents)
-    armed=replace(armed,state=r.state,status=r.status)
-    second=replace(first,observed_at=o.observed_at+timedelta(milliseconds=200),price=10.36)
-    r=host.evaluate(armed,second)
+    assert r.state['historical_hod_entry']['pending_failed_attempt']
+    a=replace(a,state=r.state,status=r.status)
+    for ms,opened,close in [(100,10.38,10.39),(200,10.39,10.39),(1400,10.39,10.385)]:
+        intrabar=replace(o,source_timeframe='100ms',observed_at=o.observed_at+timedelta(milliseconds=ms),
+            bar_open=opened,price=close)
+        r=host.evaluate(a,intrabar)
+        if ms<1400:
+            assert not r.evaluation.intents
+            assert r.state['historical_hod_entry']['pending_failed_attempt']
+        a=replace(a,state=r.state,status=r.status)
     intent,=r.evaluation.intents
-    assert intent.action=='exit' and intent.reason=='red_close_below_attempt_open'
+    assert intent.reason=='red_close_below_attempt_open'
     assert intent.quantity==100
-    assert intent.metadata['failed_resistance_exit']['previous_bar']['open']==10.39
-    assert intent.metadata['failed_resistance_exit']['intrabar_confirmation']['closes']==[10.37,10.36]
-    assert not host.evaluate(a,replace(o,evaluation_events=('market_data_update',))).evaluation.intents
-    # Equality, a non-red candle, and a gap must not arm this rule.
-    for changed in (replace(o,price=10.39),replace(o,bar_open=10.37),candle(5,10.38,opened=10.40,position_quantity=100)):
-        checked=host.evaluate(a,changed)
-        assert not checked.state['historical_hod_entry'].get('pending_failed_attempt')
+    assert intent.metadata['failed_resistance_exit']['intrabar_confirmation']['close']==10.385
 
 
-@pytest.mark.parametrize('closes,expected', [([10.37,10.36],True),([10.37,10.375],False),
-    ([10.39,10.37],False),([10.37,10.37],False)])
-def test_intrabar_failed_attempt_direction_and_recovery(closes,expected):
+def test_intrabar_monitor_ignores_duplicates_quotes_and_missing_intervals():
     _,_,o=ready()
-    active={'pending_failed_attempt':dict(at_ms=round(o.observed_at.timestamp()*1000),trigger_close=10.38,closes=[]),
+    active={'pending_failed_attempt':dict(at_ms=round(o.observed_at.timestamp()*1000),trigger_close=10.38),
         'failed_resistance_exit':{}}
-    first=replace(o,source_timeframe='100ms',observed_at=o.observed_at+timedelta(milliseconds=100),price=closes[0])
-    assert not H.confirm_failed_attempt(active,replace(first,evaluation_events=('market_data_update',)))
+    first=replace(o,source_timeframe='100ms',observed_at=o.observed_at+timedelta(milliseconds=200),
+        bar_open=10.38,price=10.39)
     assert not H.confirm_failed_attempt(active,first)
-    assert not H.confirm_failed_attempt(active,first)  # Duplicate cannot count twice.
-    second=replace(first,observed_at=o.observed_at+timedelta(milliseconds=200),price=closes[1])
-    assert H.confirm_failed_attempt(active,second)==expected
-    assert 'pending_failed_attempt' not in active
-
-
-def test_intrabar_failed_attempt_cannot_use_missing_or_late_candles():
-    _,_,o=ready()
-    active={'pending_failed_attempt':dict(at_ms=round(o.observed_at.timestamp()*1000),trigger_close=10.38,closes=[]),
-        'failed_resistance_exit':{}}
-    second=replace(o,source_timeframe='100ms',observed_at=o.observed_at+timedelta(milliseconds=200),price=10.36)
-    assert not H.confirm_failed_attempt(active,second)
-    assert not H.confirm_failed_attempt(active,replace(second,observed_at=o.observed_at+timedelta(milliseconds=300)))
+    assert not H.confirm_failed_attempt(active,replace(first,price=10.37))
+    red=replace(first,observed_at=o.observed_at+timedelta(milliseconds=500),price=10.37)
+    assert not H.confirm_failed_attempt(active,replace(red,evaluation_events=('market_data_update',)))
+    assert H.confirm_failed_attempt(active,red)
     assert 'pending_failed_attempt' not in active
 
 
@@ -546,7 +528,7 @@ def test_cash_tranches_add_once_per_higher_breakout_with_shared_protection():
     assert addition.metadata['cash_tranche']['index']==1
     assert addition.invalidation_price==r.state['active_stop']
     assert addition.profit_target_price==r.state['structural_profit_targets'][0]
-    assert addition.resolved_execution_policy().envelope.deadline_ms==1000
+    assert addition.resolved_execution_policy().envelope.deadline_ms==0
     assert r.state['historical_hod_entry']['initial_stop_selection']==initial_stop
     a=replace(a,state=r.state,status=r.status)
     assert not any(i.action=='add_long' for i in host.evaluate(a,candle(3,10.44,position_quantity=1000)).evaluation.intents)
@@ -632,11 +614,16 @@ def test_replay_passive_adapter_observes_both_clocks_before_assignment():
     assert passive['body_high']==10.1 and passive['hod']==10.3
 
 
-def test_pending_acquisition_expires_and_rejected_replacement_retries():
+def test_submitted_acquisition_persists_and_rejected_replacement_retries():
     host,a,o=ready();r=host.evaluate(a,o)
     pending=replace(a,state=r.state,status=r.status)
     expired=host.evaluate(pending,candle(3,10.04))
-    assert expired.evaluation.intents[0].action=='cancel_entry'
+    assert not expired.evaluation.intents
+    envelope=r.evaluation.intents[0].resolved_execution_policy().envelope
+    assert envelope.persist_until_cancelled and envelope.maximum_buy_price is None
+    stopped=host.evaluate(pending,replace(candle(3,9.97),evaluation_events=('market_data_update',)))
+    assert stopped.evaluation.intents[0].action=='exit'
+    assert stopped.evaluation.intents[0].metadata['cancel_entry_acquisition']
     a=replace(pending,status=S.AssignmentStatus.MANAGING)
     for i,p in ((3,10.43),(4,10.44)):
         r=host.evaluate(a,candle(i,p,position_quantity=100));a=replace(a,state=r.state,status=r.status)

@@ -5429,8 +5429,8 @@ class LongMomentumStrategyEngine:
             intents = tuple(replace(i, execution_policy=replace(i.resolved_execution_policy(),
                 envelope=replace(i.resolved_execution_policy().envelope, maximum_buy_price=ceiling)),
                 metadata={**i.metadata, 'gap_entry_ceiling': ceiling}) for i in intents)
-        if action == 'enter_long' and (assignment.parameters.get('macd_hod_contract') or assignment.parameters.get('historical_hod_contract')) and intents:
-            policy = 'historical_hod' if assignment.parameters.get('historical_hod_contract') else 'macd_hod'
+        if action == 'enter_long' and assignment.parameters.get('macd_hod_contract') and intents:
+            policy = 'macd_hod'
             entry = state[policy + '_entry']
             intents = tuple(replace(i, reference_price=observation.ask,
                 execution_policy=replace(i.resolved_execution_policy(),
@@ -5439,13 +5439,14 @@ class LongMomentumStrategyEngine:
                         deadline_ms=max(1,int(assignment.parameters[policy]['confirmation_lifetime_ms']
                             - (observation.observed_at.timestamp()-entry['confirmed_at'])*1000)))),
                 metadata={**i.metadata, 'mandatory_broker_target': True}) for i in intents)
-        if action == 'add_long' and assignment.parameters.get('historical_hod_contract') and intents:
-            confirmation = state['historical_hod_entry']['add_confirmation']
-            intents = tuple(replace(i,reference_price=observation.ask,
-                execution_policy=replace(i.resolved_execution_policy(),envelope=replace(
-                    i.resolved_execution_policy().envelope,maximum_buy_price=confirmation['maximum_buy_price'],
-                    persist_until_cancelled=False,deadline_ms=1000)),
-                metadata={**i.metadata,'entry_completion_quote':'ask','mandatory_broker_target':True}) for i in intents)
+        if action in {'enter_long', 'add_long'} and assignment.parameters.get('historical_hod_contract') and intents:
+            # Admission remains candle-gated; submitted acquisition follows fresh
+            # asks until filled or explicitly cancelled by position management.
+            intents = tuple(replace(i, reference_price=observation.ask,
+                execution_policy=replace(i.resolved_execution_policy(), envelope=replace(
+                    i.resolved_execution_policy().envelope, maximum_buy_price=None,
+                    persist_until_cancelled=True, deadline_ms=0)),
+                metadata={**i.metadata, 'entry_completion_quote': 'ask', 'mandatory_broker_target': True}) for i in intents)
         if action == 'enter_long' and assignment.parameters.get('structural_recovery_contract') and intents:
             ceiling = state['recovery_entry']['maximum_buy_price']
             intents = tuple(replace(i, reference_price=observation.ask,

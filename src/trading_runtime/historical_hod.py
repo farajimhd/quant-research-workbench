@@ -306,32 +306,23 @@ def observe_frame(frame, saved, parameters, snapshot=None):
 
 
 def confirm_failed_attempt(active, o):
-    """Only the next two completed 100ms candles can confirm the armed exit."""
+    """Keep a failed encounter armed until a subsequent completed red 100ms bar."""
     pending = active.get('pending_failed_attempt')
-    if not pending:
+    if not pending or o.source_timeframe != '100ms' or 'bar_close' not in o.evaluation_events:
         return False
     now_ms = round(o.observed_at.timestamp()*1000)
-    elapsed = now_ms-pending['at_ms']
-    if elapsed > 200:
-        active.pop('pending_failed_attempt',None)
+    if now_ms <= pending.get('last_bar_ms', pending['at_ms']):
         return False
-    if o.source_timeframe != '100ms' or 'bar_close' not in o.evaluation_events:
+    if not all(isfinite(v) and v > 0 for v in (o.price, o.bar_open)):
         return False
-    closes = pending['closes']
-    if elapsed != 100*(len(closes)+1):
+    pending['last_bar_ms'] = now_ms
+    if o.price >= o.bar_open:
         return False
-    if not isfinite(o.price) or o.price <= 0:
-        active.pop('pending_failed_attempt',None)
-        return False
-    closes.append(o.price)
-    if len(closes) < 2:
-        return False
-    active.pop('pending_failed_attempt',None)
-    confirmed = closes[1] < closes[0] < pending['trigger_close']
+    active.pop('pending_failed_attempt', None)
     active['failed_resistance_exit']['intrabar_confirmation'] = dict(
-        trigger_at_ms=pending['at_ms'],trigger_close=pending['trigger_close'],
-        closes=list(closes),confirmed=confirmed,confirmed_at_ms=now_ms)
-    return confirmed
+        trigger_at_ms=pending['at_ms'], trigger_close=pending['trigger_close'],
+        open=o.bar_open, close=o.price, confirmed=True, confirmed_at_ms=now_ms)
+    return True
 
 
 def evaluate(host, a, o, p, state):
@@ -401,8 +392,8 @@ def evaluate(host, a, o, p, state):
                 reason = management(row,active,d['bar'],s,tick,
                     previous_bar=d.get('prior_bar'),resistance_levels=d.get('prior_rows',[]))
                 if reason == 'red_close_below_attempt_open':
-                    active['pending_failed_attempt'] = dict(at_ms=round(now*1000),
-                        trigger_close=d['bar']['close'],closes=[])
+                    active.setdefault('pending_failed_attempt', dict(at_ms=round(now*1000),
+                        trigger_close=d['bar']['close']))
                     reason = ''
         if reason:
             state.update(last_exit_reason=reason,entry_acquisition_exit_latched=True)
@@ -414,7 +405,7 @@ def evaluate(host, a, o, p, state):
     quality_p = dict(p,structural_recovery=dict(QUALITY_DEFAULTS,**{k:v for k,v in s.items() if k in QUALITY_DEFAULTS}))
     ready, quality = tradability(o,quality_p,dict(effective_at=d.get('closed_at',0),candle=d.get('bar',{})),state,producer_freshness=True)
     evidence['liquidity_admission'] = quality
-    if pending and (not active or not ready or not macd_ready or o.price <= (d.get('vwap') or float('inf'))
+    if pending and state.get('pending_capital_request') and (not active or not ready or not macd_ready or o.price <= (d.get('vwap') or float('inf'))
             or now-active.get('confirmed_at',0) >= s['confirmation_lifetime_ms']/1000
             or o.ask > active.get('maximum_buy_price',0)):
         state.pop('pending_capital_request',None)
