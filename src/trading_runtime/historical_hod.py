@@ -99,15 +99,16 @@ def stop_below(value, s, tick):
     return floor((value-max(tick,value*s['stop_buffer_bps']/10000))/tick+1e-9)*tick
 
 
-def target_selection(rows, broken, price, s, tick):
+def target_selection(rows, broken, price, s, tick, *, minimum_target=0.):
     reference = broken['price']*(1+s['target_distance_fraction'])
     eligible = [r for r in rows if resistance(r) and r['lower'] > broken['upper']
-        and r['lower']-s['target_offset_ticks']*tick > price]
+        and r['lower']-s['target_offset_ticks']*tick > price
+        and floor((r['lower']-s['target_offset_ticks']*tick)/tick+1e-9)*tick > minimum_target+tick/2]
     if not eligible:
         return None
     level = min(eligible, key=lambda r:(abs(r['price']-reference),r['price']))
     target = floor((level['lower']-s['target_offset_ticks']*tick)/tick+1e-9)*tick
-    return dict(price=target, level=deepcopy(level), reference=reference,
+    return dict(price=target, level=deepcopy(level), reference=reference, broken_level=deepcopy(broken),
         selection_method='resistance_nearest_five_percent_above_broken_level')
 
 
@@ -296,8 +297,15 @@ def evaluate(host, a, o, p, state):
             previous = d.get('prior_close')
             crossed = [r for r in d.get('prior_rows',[]) if resistance(r) and previous is not None and previous <= r['upper'] < o.price]
             pending_levels = active.setdefault('hold_levels',{})
-            for r in crossed:
-                pending_levels[str(r['unified_level_id'])] = dict(level=r,count=0)
+            for r in sorted(crossed,key=lambda level:level['upper']):
+                # TP follows every completed resistance break immediately.
+                # Only historical stop advances require a three-close hold.
+                if historical(r,session):
+                    pending_levels[str(r['unified_level_id'])] = dict(level=r,count=0)
+                selected = target_selection(d['rows'],r,max(o.price,o.ask),s,tick,
+                    minimum_target=target)
+                if selected and selected['price'] >= active.get('desired_target',{}).get('price',target):
+                    active['desired_target'] = selected
             if not d['contiguous']:
                 pending_levels.clear()
             for key, item in list(pending_levels.items()):
@@ -308,9 +316,6 @@ def evaluate(host, a, o, p, state):
                 if item['count'] >= s['historical_hold_closes']:
                     if historical(r,session):
                         active['desired_stop'] = max(active.get('desired_stop',0),stop_below(r['lower'],s,tick))
-                    selected = target_selection(d['rows'],r,max(o.price,o.ask),s,tick)
-                    if selected and selected['price'] > max(target,active.get('desired_target',{}).get('price',0)):
-                        active['desired_target'] = selected
                     del pending_levels[key]
             if len(pending_levels)>4096:
                 raise ValueError('Historical stop confirmation capacity exceeded')
@@ -319,17 +324,22 @@ def evaluate(host, a, o, p, state):
                 trailing = floor((active['best_close']-active['initial_risk'])/tick+1e-9)*tick
                 active['desired_stop'] = max(active.get('desired_stop',0),trailing)
         proposed = active.get('desired_stop',0)
+        replacements = []
         if stop < proposed < o.bid:
             state['active_stop'] = proposed
-            return result('replace_protective_stop','historical_hold_or_initial_risk_trail',Status.MANAGING,
+            replacements.append(result('replace_protective_stop','historical_hold_or_initial_risk_trail',Status.MANAGING,
                 quantity=o.position_quantity,invalidation_price=proposed,profit_target_price=target,
-                metadata={'previous_stop':stop,'active_stop':proposed})
+                metadata={'previous_stop':stop,'active_stop':proposed}))
         selection = active.get('desired_target')
-        if selection and selection['price'] > target and o.price < target:
+        if selection and selection['price'] > target and selection['price'] > max(o.price,o.ask):
             state['structural_profit_targets'] = [selection['price']]
-            return result('replace_profit_target','resistance_break_target_advance',Status.MANAGING,
-                quantity=o.position_quantity,invalidation_price=stop,profit_target_price=selection['price'],
-                metadata={'previous_profit_target':target,'profit_target':selection['price'],'profit_target_selection':selection})
+            replacements.append(result('replace_profit_target','resistance_break_target_advance',Status.MANAGING,
+                quantity=o.position_quantity,invalidation_price=state['active_stop'],profit_target_price=selection['price'],
+                metadata={'previous_profit_target':target,'profit_target':selection['price'],'profit_target_selection':selection}))
+        if replacements:
+            return replace(replacements[-1], evaluation=replace(replacements[-1].evaluation,
+                signals=tuple(signal for r in replacements for signal in r.evaluation.signals),
+                intents=tuple(intent for r in replacements for intent in r.evaluation.intents)))
         return result('hold','structure_valid' if detector_fresh else 'awaiting_completed_structure',Status.MANAGING,
             invalidation_price=stop,profit_target_price=target)
     def enter(entry, reason):

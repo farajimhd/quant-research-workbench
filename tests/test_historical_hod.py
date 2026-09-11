@@ -88,20 +88,51 @@ def test_only_completed_5s_macd_ends_episode():
     assert r.evaluation.intents[0].metadata['reentry_after_fill']
 
 
-def test_historical_stop_needs_three_consecutive_closes_and_target_advances():
+def test_target_advances_on_break_while_historical_stop_waits_three_closes():
     host,a,_=acquired()
     for i,price in ((3,10.43),(4,10.44),(5,10.45)):
         r=host.evaluate(a,candle(i,price,position_quantity=100))
         if i<5:
-            assert not r.evaluation.intents
             assert r.state['active_stop']==pytest.approx(9.99)
+        if i==3:
+            intent,=r.evaluation.intents
+            assert intent.action=='replace_profit_target'
+            assert intent.profit_target_price==pytest.approx(10.94)
+            assert intent.metadata['profit_target_selection']['reference']==pytest.approx(10.41*1.05)
+        if i==4:
+            assert not r.evaluation.intents
         a=replace(a,state=r.state,status=r.status)
     assert r.evaluation.intents[0].action=='replace_protective_stop'
     assert r.state['active_stop']==pytest.approx(10.39)
     assert r.evaluation.intents[0].metadata['previous_stop']==pytest.approx(9.99)
-    r=host.evaluate(a,candle(6,10.46,position_quantity=100))
-    assert r.evaluation.intents[0].action=='replace_profit_target'
-    assert r.evaluation.intents[0].profit_target_price==pytest.approx(10.94)
+    assert r.state['structural_profit_targets']==pytest.approx([10.94])
+
+
+def test_target_advance_selects_a_new_higher_resistance_nearest_five_percent():
+    # The mathematically closest level may still be the old target's level.
+    selected=H.target_selection(rows(),rows()[1],10.43,H.DEFAULTS,.01,minimum_target=10.94)
+    assert selected['price']==pytest.approx(11.49)
+    assert selected['reference']==pytest.approx(10.41*1.05)
+    assert H.target_selection(rows(),rows()[1],10.43,H.DEFAULTS,.01,minimum_target=11.49) is None
+
+
+def test_current_day_break_and_stop_advance_can_update_both_orders_together():
+    host,a,_=acquired()
+    a.state['historical_hod_entry']['desired_stop']=10.1
+    # A current-day level, with no historical hold condition on its target.
+    r=host.evaluate(a,candle(3,10.58,position_quantity=100))
+    assert [i.action for i in r.evaluation.intents]==['replace_protective_stop','replace_profit_target']
+    assert r.state['active_stop']==pytest.approx(10.1)
+    assert r.evaluation.intents[-1].profit_target_price==pytest.approx(10.94)
+    assert r.evaluation.intents[-1].metadata['profit_target_selection']['broken_level']['lower']==10.55
+
+
+def test_unfilled_old_target_does_not_block_advance_but_flat_position_does():
+    host,a,_=acquired()
+    r=host.evaluate(a,candle(3,10.58,position_quantity=100))
+    assert any(i.action=='replace_profit_target' for i in r.evaluation.intents)
+    flat=host.evaluate(a,candle(3,10.58))
+    assert not any(i.action=='replace_profit_target' for i in flat.evaluation.intents)
 
 
 def test_failed_hold_does_not_raise_stop():
