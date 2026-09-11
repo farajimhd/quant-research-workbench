@@ -172,6 +172,51 @@ def test_current_day_break_and_stop_advance_can_update_both_orders_together():
     assert r.evaluation.intents[-1].metadata['profit_target_selection']['broken_level']['lower']==10.55
 
 
+def test_red_breakout_advances_target_on_later_non_red_holding_close():
+    host,a,_=acquired()
+    for i,price,opened in ((3,10.43,10.44),(4,10.44,10.45)):
+        r=host.evaluate(a,candle(i,price,opened=opened,position_quantity=100))
+        assert not any(v.action=='replace_profit_target' for v in r.evaluation.intents)
+        a=replace(a,state=r.state,status=r.status)
+    r=host.evaluate(a,candle(5,10.45,opened=10.44,position_quantity=100))
+    target=next(v for v in r.evaluation.intents if v.action=='replace_profit_target')
+    assert target.profit_target_price==pytest.approx(10.94)
+    assert target.metadata['profit_target_selection']['broken_level']['upper']==10.42
+    assert not r.state['historical_hod_entry']['target_breaks']
+
+
+@pytest.mark.parametrize('failure', ['below','gap'])
+def test_pending_red_breakout_is_cancelled_by_failure_or_missing_candle(failure):
+    host,a,_=acquired()
+    r=host.evaluate(a,candle(3,10.43,opened=10.44,position_quantity=100))
+    a=replace(a,state=r.state,status=r.status)
+    if failure=='below':
+        r=host.evaluate(a,candle(4,10.41,position_quantity=100))
+    else:
+        r=host.evaluate(a,candle(5,10.45,position_quantity=100))
+    assert not any(v.action=='replace_profit_target' for v in r.evaluation.intents)
+    assert not r.state['historical_hod_entry']['target_breaks']
+
+
+def test_sugp_041042_red_break_then_041043_green_confirmation():
+    host,a,_=acquired()
+    levels=tuple(dict(level(-1,low,high),oldest_member_confirmed_at_ms=(NOW.timestamp()-86400)*1000)
+        for low,high in ((3.68,3.71),(3.83,3.85),(3.89,3.91)))
+    # Recorded SUGP prices; the position already has a $3.82 target.
+    a.state.update(active_stop=3.61,structural_profit_targets=[3.82])
+    a.state['historical_hod_entry'].update(stop=3.61,initial_risk=.04,best_close=3.6995,
+        management_base={'lower':3.61,'tolerance':.01})
+    a.state['historical_hod_state'].update(close=3.6995,rows=levels)
+    r=host.evaluate(a,replace(candle(3,3.72,opened=3.7293,position_quantity=100),
+        structural_resistance_levels=levels))
+    assert not any(v.action=='replace_profit_target' for v in r.evaluation.intents)
+    a=replace(a,state=r.state,status=r.status)
+    r=host.evaluate(a,replace(candle(4,3.75,opened=3.7007,position_quantity=100),
+        structural_resistance_levels=levels))
+    target=next(v for v in r.evaluation.intents if v.action=='replace_profit_target')
+    assert target.profit_target_price==pytest.approx(3.88)
+
+
 def test_unfilled_old_target_does_not_block_advance_but_flat_position_does():
     host,a,_=acquired()
     r=host.evaluate(a,candle(3,10.58,position_quantity=100))

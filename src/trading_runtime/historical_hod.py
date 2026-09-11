@@ -309,14 +309,28 @@ def evaluate(host, a, o, p, state):
             previous = d.get('prior_close')
             crossed = [r for r in d.get('prior_rows',[]) if resistance(r) and previous is not None and previous <= r['upper'] < o.price]
             pending_levels = active.setdefault('hold_levels',{})
+            target_breaks = active.setdefault('target_breaks',{})
+            if not d['contiguous']:
+                target_breaks.clear()
             for r in sorted(crossed,key=lambda level:level['upper']):
                 # Stop confirmation includes the breakout close itself.
                 if historical(r,session):
                     pending_levels[str(r['unified_level_id'])] = dict(level=r,count=0)
-                selected = (target_selection(d['prior_rows'],r,max(o.price,o.ask),s,tick,
-                    minimum_target=target) if o.price >= o.bar_open else None)
+                target_breaks[str(r['unified_level_id'])] = deepcopy(r)
+            for key,r in sorted(list(target_breaks.items()),key=lambda item:item[1]['upper']):
+                if o.price <= r['upper']:
+                    del target_breaks[key]; continue
+                if o.price < o.bar_open:
+                    continue
+                # A red breakout remains pending until a non-red close confirms
+                # it, or a completed close falls back through its frozen band.
+                del target_breaks[key]
+                selected = target_selection(d['prior_rows'],r,max(o.price,o.ask),s,tick,
+                    minimum_target=target)
                 if selected and selected['price'] >= active.get('desired_target',{}).get('price',target):
                     active['desired_target'] = selected
+            if len(target_breaks)>4096:
+                raise ValueError('Target breakout confirmation capacity exceeded')
             if not d['contiguous']:
                 pending_levels.clear()
             for key, item in list(pending_levels.items()):
