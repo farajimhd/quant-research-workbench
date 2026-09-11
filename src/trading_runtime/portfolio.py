@@ -208,6 +208,11 @@ class PortfolioReservation:
     admission_epoch: int = 0
     admission_owner: str = ""
     reserved_entry_fees: float = 0.0
+    cash_tranche_key: str = ""
+    cash_tranche_size: float = 0.0
+    cash_tranche_count: int = 0
+    cash_tranche_next: int = 0
+    cash_tranche_budget: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -702,6 +707,15 @@ class PortfolioManagementEngine:
             {"event": "reservation_released", "reason": reason, **asdict(self.reservations[reservation.reservation_id])},
         )
         self._persist_state(self._state(reservation.account_id))
+        if not reservation.cash_tranche_key and reservation.action == 'enter_long':
+            self._release_cash_holds(reservation,reason)
+
+    def _release_cash_holds(self, reservation: PortfolioReservation, reason: str) -> None:
+        for hold in list(self.reservations.values()):
+            if (hold.cash_tranche_key and hold.status == 'reserved'
+                    and hold.account_id == reservation.account_id and hold.strategy_id == reservation.strategy_id
+                    and hold.assignment_id == reservation.assignment_id and hold.ticker == reservation.ticker):
+                self.release_intent(hold.intent_id,reason=reason)
 
     def on_order_group_update(self, snapshot: OrderGroupSnapshot) -> None:
         reservation = next(
@@ -733,6 +747,8 @@ class PortfolioManagementEngine:
             entry_update and snapshot.entry_submission_closed
         )
         terminal = terminal or entry_submission_closed
+        if terminal and entry_update and filled <= 0 and reservation.action == 'enter_long':
+            self._release_cash_holds(reservation,'initial_tranche_unfilled')
         status = (
             OrderManagementState.FILLED.value
             if entry_submission_closed
@@ -942,6 +958,18 @@ class PortfolioManagementEngine:
         requested = float(intent.quantity)
         reasons: list[str] = []
         entry = intent.action in ENTRY_ACTIONS
+        tranche = intent.metadata.get('cash_tranche') if entry else None
+        tranche_hold = None
+        if tranche:
+            if (intent.action not in {'enter_long','add_long'} or not isinstance(tranche, dict)
+                    or not isinstance(tranche.get('key'), str) or not tranche['key']
+                    or type(tranche.get('count')) is not int or not 2 <= tranche['count'] <= 20
+                    or type(tranche.get('index')) is not int or not 0 <= tranche['index'] < tranche['count']):
+                raise ValueError('Invalid cash tranche request')
+            tranche_hold = next((r for r in self.reservations.values()
+                if r.account_id == state.profile.account_id and r.cash_tranche_key == tranche['key']
+                and r.assignment_id == str(intent.metadata.get('assignment_id') or '')
+                and r.ticker == intent.ticker.upper()), None)
         existing_request = next((row for row in self.reservations.values()
             if row.account_id == state.profile.account_id and row.intent_id == intent.intent_id), None)
         if entry and existing_request is not None:
@@ -962,6 +990,11 @@ class PortfolioManagementEngine:
             )
         if entry and intent.capital_request is not None:
             requested = self._capital_request_quantity(intent, state)
+        if tranche and ((tranche['index'] == 0 and (tranche_hold or intent.action != 'enter_long'))
+                or (tranche['index'] > 0 and (not tranche_hold or intent.action != 'add_long'
+                    or tranche_hold.status != 'reserved' or tranche_hold.cash_tranche_next != tranche['index']
+                    or tranche_hold.cash_tranche_count != tranche['count']))):
+            reasons.append('cash_tranche_sequence_invalid')
         if not state.profile.enabled or control_mode == PortfolioControlMode.DISABLED:
             reasons.append("account_disabled")
         if entry and control_mode in {PortfolioControlMode.ENTRIES_PAUSED, PortfolioControlMode.REDUCE_ONLY}:
@@ -1068,6 +1101,14 @@ class PortfolioManagementEngine:
             intent = replace(intent, metadata={**intent.metadata,
                 "entry_funding_price": price * (1 + buffer / 10_000)})
         base_price = price * fx_to_base
+        if tranche and not tranche_hold:
+            if intent.capital_request is None or intent.capital_request.mode != 'mandate_fraction':
+                raise ValueError('Initial cash tranche requires a cash fraction request')
+            requested = min(requested,self._broker_cash_capacity(state)*intent.capital_request.value /
+                (base_price*self._entry_funding_factor(intent,policy))) if base_price > 0 else 0.
+        if tranche_hold:
+            requested = min(tranche_hold.cash_tranche_size, tranche_hold.reserved_notional /
+                (base_price * self._entry_funding_factor(intent, policy))) if base_price > 0 else 0.
         if (entry and requested <= 0 and price > 0 and intent.metadata.get("wait_for_capital")
                 and intent.capital_request is not None):
             return self._decision(intent, state, PortfolioDecisionStatus.DEFERRED,
@@ -1104,7 +1145,16 @@ class PortfolioManagementEngine:
             if approved <= 0:
                 reasons.append("no_broker_position_to_protect")
         else:
-            approved, capacity_reasons = self._entry_capacity(intent, state, requested, base_price)
+            # The next slice consumes its own reservation, not fresh cash.
+            # Exclude that hold only during the fenced capacity calculation.
+            if tranche_hold:
+                self.reservations[tranche_hold.reservation_id] = replace(tranche_hold,
+                    reserved_notional=0.,reserved_planned_risk=0.,reserved_entry_fees=0.)
+            try:
+                approved, capacity_reasons = self._entry_capacity(intent, state, requested, base_price)
+            finally:
+                if tranche_hold:
+                    self.reservations[tranche_hold.reservation_id] = tranche_hold
             reasons.extend(capacity_reasons)
         if approved <= 0:
             proposal = self._propose_rebalance(intent, state, requested, now)
@@ -1155,6 +1205,14 @@ class PortfolioManagementEngine:
                 now,
             )
             return decision, None
+        total_approved = approved
+        if tranche and tranche['index'] == 0:
+            reasons.append('cash_budget_split_into_tranches')
+            approved = float(math.floor(approved / tranche['count']))
+            if approved < 1:
+                return self._decision(intent,state,PortfolioDecisionStatus.REJECTED,requested,0.,0.,'',
+                    ['cash_budget_below_tranche_count'],metrics_before,metrics_before,now),None
+            total_approved = approved * tranche['count']
         notional = approved * base_price * self._entry_funding_factor(intent, policy)
         planned_loss = _reserved_entry_loss(intent, approved) * fx_to_base
         decision_id = str(uuid4())
@@ -1191,6 +1249,29 @@ class PortfolioManagementEngine:
             admission_owner=str((self._active_admission_lease or {}).get("owner_id") or ""),
         )
         self.reservations[reservation_id] = reservation
+        if tranche:
+            if tranche_hold:
+                tranche_hold = replace(tranche_hold,
+                    reserved_notional=max(0.,tranche_hold.reserved_notional-notional),
+                    reserved_planned_risk=max(0.,tranche_hold.reserved_planned_risk-planned_loss),
+                    reserved_entry_fees=max(0.,tranche_hold.reserved_entry_fees-reservation.reserved_entry_fees),
+                    cash_tranche_next=tranche['index']+1)
+                if tranche_hold.cash_tranche_next == tranche_hold.cash_tranche_count:
+                    tranche_hold = replace(tranche_hold,status='released',reserved_notional=0.,
+                        reserved_planned_risk=0.,reserved_entry_fees=0.,remaining_quantity=0.)
+            else:
+                multiplier = total_approved/approved-1
+                tranche_hold = replace(reservation,reservation_id=str(uuid4()),
+                    intent_id=intent.intent_id+':cash-hold',quantity=0.,remaining_quantity=0.,
+                    reserved_notional=notional*multiplier,reserved_planned_risk=planned_loss*multiplier,
+                    reserved_entry_fees=reservation.reserved_entry_fees*multiplier,
+                    cash_tranche_key=tranche['key'],cash_tranche_size=approved,
+                    cash_tranche_count=tranche['count'],cash_tranche_next=1,
+                    cash_tranche_budget=notional*(multiplier+1))
+            self.reservations[tranche_hold.reservation_id] = tranche_hold
+            self._record('portfolio_reservation',tranche_hold.reservation_id,reservation.account_id,
+                {'event':'cash_tranche_budget_reserved',**asdict(tranche_hold)})
+            metrics_after = self._metrics(state)
         decision = self._decision(
             intent,
             state,
@@ -1216,6 +1297,9 @@ class PortfolioManagementEngine:
                 "portfolio_policy": policy.identity,
                 "portfolio_reservation_id": reservation_id,
                 "requested_quantity": requested,
+                **({'cash_tranche_allocation':dict(budget=tranche_hold.cash_tranche_budget,
+                    tranche_size=tranche_hold.cash_tranche_size,count=tranche_hold.cash_tranche_count,
+                    index=tranche['index'],remaining_budget=tranche_hold.reserved_notional)} if tranche else {}),
                 "portfolio_fx_to_base": fx_to_base,
                 "correlation_id": _intent_correlation(self.run_id, intent),
                 "causation_id": decision.decision_id,
@@ -1829,6 +1913,7 @@ class PortfolioManagementEngine:
             else 0.0
         )
         if effective_action in REDUCTION_ACTIONS:
+            self._release_cash_holds(reservation,'position_reduction_started')
             if previous_quantity > 0:
                 signed = -min(abs(signed), previous_quantity)
             elif previous_quantity < 0:

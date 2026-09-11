@@ -5427,6 +5427,13 @@ class LongMomentumStrategyEngine:
                         deadline_ms=max(1,int(assignment.parameters[policy]['confirmation_lifetime_ms']
                             - (observation.observed_at.timestamp()-entry['confirmed_at'])*1000)))),
                 metadata={**i.metadata, 'mandatory_broker_target': True}) for i in intents)
+        if action == 'add_long' and assignment.parameters.get('historical_hod_contract') and intents:
+            confirmation = state['historical_hod_entry']['add_confirmation']
+            intents = tuple(replace(i,reference_price=observation.ask,
+                execution_policy=replace(i.resolved_execution_policy(),envelope=replace(
+                    i.resolved_execution_policy().envelope,maximum_buy_price=confirmation['maximum_buy_price'],
+                    persist_until_cancelled=False,deadline_ms=1000)),
+                metadata={**i.metadata,'entry_completion_quote':'ask','mandatory_broker_target':True}) for i in intents)
         if action == 'enter_long' and assignment.parameters.get('structural_recovery_contract') and intents:
             ceiling = state['recovery_entry']['maximum_buy_price']
             intents = tuple(replace(i, reference_price=observation.ask,
@@ -6053,6 +6060,12 @@ class AssignedLongMomentumStrategy:
             state = dict(assignment.state)
             if str(intent.action) in {"enter_long", "enter_short"}:
                 state.pop("pending_capital_request", None)
+            if str(intent.action) == 'add_long' and intent.metadata.get('cash_tranche'):
+                active = deepcopy(state.get('historical_hod_entry') or {})
+                active['tranches_requested'] = int(intent.metadata['cash_tranche']['index'])
+                state['historical_hod_entry'] = active
+                self._assignments[key] = replace(assignment,state=state,updated_at=event_time)
+                return
             if str(intent.action) == "replace_protective_stop":
                 state["active_stop"] = float(intent.metadata["previous_stop"])
                 state["trailing_support_selection"] = intent.metadata.get("previous_support_selection")

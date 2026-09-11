@@ -171,6 +171,60 @@ class PortfolioManagementTests(unittest.IsolatedAsyncioTestCase):
             groups=groups or [],
         )
 
+    async def test_cash_tranche_budget_survives_restart_and_caps_rising_price_adds(self):
+        policy=PortfolioPolicy(maximum_position_fraction=1.,maximum_ticker_fraction=1.,
+            maximum_planned_risk_fraction=.5,maximum_open_risk_fraction=.5,entry_fee_buffer_bps=0.)
+        profile=PortfolioAccountProfile('cash','C1','replay','simulated',policy)
+        engine=self.engine([profile])
+        def sync(cash,quantity,price):
+            engine.synchronize_snapshot('C1',summary=summary('C1',equity=10000,available=cash),
+                ledger=ledger('C1',cash=cash),positions=[position('C1','AAPL',quantity,price)] if quantity else [])
+        def request(index,price):
+            base=intent('slice-'+str(index),action='enter_long' if index==0 else 'add_long',price=price,invalidation=2.99)
+            return replace(base,capital_request=CapitalRequest(mode='mandate_fraction',value=.9),
+                metadata={**base.metadata,'entry_completion_quote':'ask',
+                    'cash_tranche':dict(key='position-1',index=index,count=3)})
+        def fill(index,quantity):
+            engine.on_order_group_update(OrderGroupSnapshot(group_id=str(index),intent_id='slice-'+str(index),
+                account_id='C1',ticker='AAPL',action='enter_long' if index==0 else 'add_long',
+                state=OrderManagementState.FILLED,client_order_ids=(),broker_order_ids=(),
+                submitted_at=datetime.now(timezone.utc),updated_at=datetime.now(timezone.utc),
+                filled_quantity=quantity,remaining_quantity=0,warning_message_ids=(),rejection_reason='',
+                decision_to_submit_ms=0,policy_version=1,reentry_after_fill=False,assignment_id='assignment-AAPL'))
+        sync(10000,0,3.)
+        first,approved=await engine.approve(request(0,3.),account_id='C1')
+        self.assertEqual(approved.quantity,1000)
+        self.assertEqual(sum(r.reserved_notional for r in engine.reservations.values()),9000)
+        competing,other=await engine.approve(intent('competing',ticker='MSFT',price=1.,invalidation=.99,quantity=5000),account_id='C1')
+        self.assertEqual(other.quantity,1000)
+        engine.release_intent('competing',reason='test_complete')
+        fill(0,1000);sync(7000,1000,3.)
+        engine=self.engine([profile]);sync(7000,1000,3.)
+        hold=next(r for r in engine.reservations.values() if r.cash_tranche_key)
+        self.assertEqual(hold.reserved_notional,6000)
+        duplicate,_=await engine.approve(replace(request(0,3.),intent_id='duplicate-initial'),account_id='C1')
+        self.assertIn('cash_tranche_sequence_invalid',duplicate.reasons)
+        second,approved=await engine.approve(request(1,3.3),account_id='C1')
+        self.assertEqual(approved.quantity,1000)
+        fill(1,1000);sync(3700,2000,3.15)
+        third,approved=await engine.approve(request(2,3.6),account_id='C1')
+        self.assertEqual(approved.quantity,750)
+        fill(2,750)
+        self.assertEqual(sum(r.reserved_notional for r in engine.reservations.values() if r.status=='reserved'),0)
+        self.assertEqual(next(iter(engine.allocations.values())).quantity,2750)
+
+    async def test_unfilled_initial_cash_tranche_releases_future_budget(self):
+        profile=PortfolioAccountProfile('cash','C1','replay','simulated',PortfolioPolicy())
+        engine=self.engine([profile])
+        engine.synchronize_snapshot('C1',summary=summary('C1'),ledger=ledger('C1'),positions=[])
+        base=intent('unfilled-cash',price=3.,invalidation=2.99)
+        request=replace(base,capital_request=CapitalRequest(mode='mandate_fraction',value=.9),
+            metadata={**base.metadata,'cash_tranche':dict(key='unfilled',index=0,count=3)})
+        _,approved=await engine.approve(request,account_id='C1')
+        self.assertIsNotNone(approved)
+        engine.release_intent(request.intent_id,reason='broker_rejected')
+        self.assertTrue(all(r.status=='released' for r in engine.reservations.values()))
+
     async def test_account_policies_size_the_same_request_independently(self) -> None:
         conservative = PortfolioPolicy(
             policy_id="cash",

@@ -16,10 +16,12 @@ def build(base):
     for key in ('structural_recovery_contract','structural_recovery'):
         p.pop(key,None)
     p.update(historical_hod_contract=CONTRACT,historical_hod=dict(DEFAULTS))
+    p['historical_hod'].update(sizing_mode='cash_tranches',cash_fraction=.9,tranche_count=3)
     profile['description'] = ('Non-red completed 1s breakout of historical resistance below HOD, '
         'then current-day resistance or HOD fallback; price above VWAP and completed bullish 5s MACD. '
         'Historical stop advances after a breakout close plus one holding close, initial-risk trailing fallback, structural episode management, '
-        'and resistance targets nearest 5% above each broken level. Same-episode prior body-high reentry.')
+        'and resistance targets nearest 5% above each broken level. Same-episode prior body-high reentry. '
+        'Reserve up to 90% cash for three tranches; add once per higher resistance breakout with shared protection.')
     observe = next(r for r in payload['market_discovery']['rule_sets']
         if r['rule_set_id']==PROFILE_ID+'-observe')
     observe['conditions'].extend([

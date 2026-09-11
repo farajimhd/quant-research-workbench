@@ -494,7 +494,36 @@ def test_candidate_compiles_as_backtest_only():
         canvas_profile=canvas['profile'],run_plan_id=plan,strategy_profile_id=C.PROFILE_ID)
     profile=next(p for p in validated['strategy']['profiles'] if p['profile_id']==C.PROFILE_ID)
     assert profile['parameters']['historical_hod_contract']==H.CONTRACT
+    assert profile['parameters']['historical_hod']['sizing_mode']=='cash_tranches'
     assert next(p for p in validated['run_plans']['plans'] if p['run_plan_id']==plan)['allowed_environments']==['backtest']
+
+
+def test_cash_tranches_add_once_per_higher_breakout_with_shared_protection():
+    host,a,o=ready()
+    p=deepcopy(a.parameters);p['historical_hod']['sizing_mode']='cash_tranches'
+    a=replace(a,parameters=p,permissions=replace(a.permissions,add=True))
+    r=host.evaluate(a,o);initial=r.evaluation.intents[0]
+    assert initial.capital_request.mode=='mandate_fraction'
+    assert initial.capital_request.value==.9
+    assert initial.metadata['cash_tranche']['index']==0
+    initial_stop=r.state['historical_hod_entry']['initial_stop_selection']
+    a=replace(a,state=r.state,status=S.AssignmentStatus.MANAGING)
+    red=host.evaluate(a,candle(3,10.44,opened=10.5,position_quantity=1000))
+    assert not any(i.action=='add_long' for i in red.evaluation.intents)
+    r=host.evaluate(a,candle(3,10.44,position_quantity=1000))
+    addition=next(i for i in r.evaluation.intents if i.action=='add_long')
+    assert addition.metadata['cash_tranche']['index']==1
+    assert addition.invalidation_price==r.state['active_stop']
+    assert addition.profit_target_price==r.state['structural_profit_targets'][0]
+    assert addition.resolved_execution_policy().envelope.deadline_ms==1000
+    assert r.state['historical_hod_entry']['initial_stop_selection']==initial_stop
+    a=replace(a,state=r.state,status=r.status)
+    assert not any(i.action=='add_long' for i in host.evaluate(a,candle(3,10.44,position_quantity=1000)).evaluation.intents)
+    r=host.evaluate(a,candle(4,10.58,position_quantity=2000))
+    assert next(i for i in r.evaluation.intents if i.action=='add_long').metadata['cash_tranche']['index']==2
+    a=replace(a,state=r.state,status=r.status)
+    r=host.evaluate(a,candle(5,11.,position_quantity=3000))
+    assert not any(i.action=='add_long' for i in r.evaluation.intents)
 
 
 def test_point_projection_restores_bands_and_missing_lineage_fails_closed():
@@ -588,12 +617,16 @@ def test_historical_candidate_requires_certified_v6_ticker():
         assert ReplayRunDefinition(**args,experimental_structure_book=BOOK['id']).experimental_structure_fingerprint==BOOK['fingerprint']
 
 
-def test_runtime_places_broker_stop_and_full_target(tmp_path):
+@pytest.mark.parametrize('cash_tranches',[False,True])
+def test_runtime_places_broker_stop_and_full_target(tmp_path,cash_tranches):
     import asyncio
     from tests import test_long_momentum_strategy as T
     from src.trading_runtime.journal import TradingJournal
     async def run():
         _,a,o=ready()
+        if cash_tranches:
+            p=deepcopy(a.parameters);p['historical_hod']['sizing_mode']='cash_tranches'
+            a=replace(a,parameters=p,permissions=replace(a.permissions,add=True))
         journal=TradingJournal(tmp_path/'journal.sqlite3')
         broker=T.SimulatedBrokerAdapter(['sim'],mode=T.TradingMode.BACKTEST)
         runtime=T.TradingRuntime(T.RunConfig(mode=T.RunMode.BACKTEST,strategy_id=S.STRATEGY_ID,
@@ -611,6 +644,25 @@ def test_runtime_places_broker_stop_and_full_target(tmp_path):
             orders=await broker.live_orders()
             assert len([r for r in orders if r.orderType=='STP'])==1
             assert len([r for r in orders if r.orderType=='LMT' and r.parentId])==1
+            if cash_tranches:
+                quantities=[sum(lot.quantity for lot in runtime.portfolio.allocations.values())]
+                for index,price in [(3,10.44),(4,10.58)]:
+                    obs=candle(index,price,position_quantity=quantities[-1])
+                    stamp=obs.observed_at-timedelta(milliseconds=1)
+                    await broker.on_market_event(T.QuoteEvent(ask_exchange=11,ask_price=obs.ask,ask_size=10000,
+                        bid_exchange=12,bid_price=obs.bid,bid_size=10000,conditions=(),indicators=(),
+                        ingest_ts=stamp,raw={'conid':123},sequence=index,source='test',tape=3,ticker='TEST',ts=stamp))
+                    await runtime.process_strategy_observation(obs)
+                    quantities.append(sum(lot.quantity for lot in runtime.portfolio.allocations.values()))
+                    working=[order for order in await broker.live_orders() if order.order_status not in {'Filled','Cancelled','Inactive'}]
+                    stops=[order for order in working if order.orderType=='STP']
+                    targets=[order for order in working if order.orderType=='LMT' and order.side=='SELL']
+                    assert len({order.auxPrice for order in stops})==1
+                    assert len({order.price for order in targets})==1
+                    assert sum(order.remainingQuantity for order in stops)==quantities[-1]
+                    assert sum(order.remainingQuantity for order in targets)==quantities[-1]
+                assert quantities[0] < quantities[1] < quantities[2]
+                assert len(runtime.portfolio.allocations)==1
         finally:
             journal.close()
     asyncio.run(run())

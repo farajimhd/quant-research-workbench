@@ -18,7 +18,8 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     management_tolerance_atr=.1, management_failure_closes=2, historical_hold_closes=2,
     maximum_macd_age_ms=5000., maximum_source_age_ms=2000., maximum_quote_age_ms=1000.,
     confirmation_lifetime_ms=1000., maximum_chase_bps=15.,
-    minimum_candle_volume=1., risk_fraction=.005, maximum_quantity=10000.)
+    minimum_candle_volume=1., risk_fraction=.005, maximum_quantity=10000.,
+    sizing_mode='risk_fraction',cash_fraction=.9,tranche_count=3)
 
 
 def configure(p):
@@ -33,8 +34,12 @@ def configure(p):
     if set(raw)-set(DEFAULTS):
         raise ValueError('Unknown historical HOD setting')
     s = dict(DEFAULTS, **raw)
-    if any(type(v) not in (int,float) or not isfinite(v) or v <= 0 for v in s.values()):
+    if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
+        raise ValueError('Unknown historical HOD sizing mode')
+    if any(type(v) not in (int,float) or not isfinite(v) or v <= 0 for k,v in s.items() if k != 'sizing_mode'):
         raise ValueError('Historical HOD settings must be finite and positive')
+    if not 0 < s['cash_fraction'] <= 1 or type(s['tranche_count']) is not int or not 2 <= s['tranche_count'] <= 20:
+        raise ValueError('Invalid cash fraction or tranche count')
     if s['risk_fraction'] > 1 or s['confirmation_lifetime_ms'] > 1000 or s['maximum_macd_age_ms'] > 5000:
         raise ValueError('Invalid risk or completed-candle freshness limit')
     if any(int(s[k]) != s[k] for k in ('management_failure_closes','historical_hold_closes','target_offset_ticks')):
@@ -484,6 +489,27 @@ def evaluate(host, a, o, p, state):
                 quantity=o.position_quantity,invalidation_price=state['active_stop'],profit_target_price=selection['price'],
                 metadata={'previous_profit_target':target,'profit_target':selection['price'],'profit_target_selection':selection,
                     'previous_historical_hod_target':previous_selection}))
+        if (s['sizing_mode'] == 'cash_tranches' and fresh and detector_fresh and d['contiguous']
+                and not pending and a.permissions.add and ready and macd_ready and o.price > (d.get('vwap') or float('inf'))
+                and o.price >= o.bar_open and not active.get('pending_failed_attempt')
+                and active.get('tranches_requested',1) < s['tranche_count']):
+            frontier = active.get('last_add_level',active['level'])
+            new = [r for r in crossed if r['upper'] > frontier['upper'] and r['price'] > frontier['price']]
+            current_target = active['target']['price']
+            ceiling = min(o.ask*(1+s['maximum_chase_bps']/10000),current_target-tick)
+            if new and 0 < state['active_stop'] < o.bid <= o.ask <= ceiling:
+                broken = max(new,key=lambda r:r['upper'])
+                index = active.get('tranches_requested',1)
+                active['tranches_requested'] = index+1
+                active['last_add_level'] = deepcopy(broken)
+                active['add_confirmation'] = dict(confirmed_at=now,maximum_buy_price=ceiling)
+                replacements.append(result('add_long','higher_resistance_cash_tranche',Status.MANAGING,
+                    invalidation_price=state['active_stop'],profit_target_price=current_target,
+                    capital_request=CapitalRequest(mode='fixed_quantity',value=1),
+                    order_intent={'execution_policy':'adaptive_urgent','protection_profile':'structural-single-target'},
+                    metadata={'cash_tranche':dict(key=active['cash_tranche_key'],index=index,count=s['tranche_count']),
+                        'tranche_breakout':deepcopy(broken),'mandatory_broker_target':True,
+                        'maximum_buy_price':ceiling,'wait_for_capital':False}))
         if replacements:
             return replace(replacements[-1], evaluation=replace(replacements[-1].evaluation,
                 signals=tuple(signal for r in replacements for signal in r.evaluation.signals),
@@ -492,9 +518,13 @@ def evaluate(host, a, o, p, state):
             invalidation_price=stop,profit_target_price=target)
     def enter(entry, reason):
         return result('enter_long',reason,Status.ENTRY_PENDING,invalidation_price=entry['stop'],profit_target_price=entry['target']['price'],
-            capital_request=CapitalRequest(mode='risk_fraction',value=s['risk_fraction'],maximum_quantity=s['maximum_quantity'],allow_replacement=False),
+            capital_request=CapitalRequest(mode='mandate_fraction' if s['sizing_mode']=='cash_tranches' else 'risk_fraction',
+                value=s['cash_fraction'] if s['sizing_mode']=='cash_tranches' else s['risk_fraction'],
+                maximum_quantity=s['maximum_quantity'],allow_replacement=False),
             order_intent={'execution_policy':'adaptive_urgent','protection_profile':'structural-single-target'},
             metadata={'initial_stop':entry['stop'],'active_stop':entry['stop'],'profit_targets':[entry['target']['price']],
+                **({'cash_tranche':dict(key=entry['cash_tranche_key'],index=0,count=s['tranche_count'])}
+                    if s['sizing_mode']=='cash_tranches' else {}),
                 'profit_target':entry['target']['price'],'mandatory_broker_target':True,'maximum_buy_price':entry['maximum_buy_price'],
                 'initial_stop_selection':entry['initial_stop_selection'],
                 'entry_selection':entry['level'],'profit_target_selection':entry['target'],
@@ -545,6 +575,8 @@ def evaluate(host, a, o, p, state):
         return result('wait','invalid_stop_or_entry_price')
     atr = row.get('qualification',{}).get('atr') or 0.
     entry = dict(confirmed_at=now,level=boundary,hod=hod,stop=stop,target=selected,maximum_buy_price=ceiling,
+        cash_tranche_key=f'{a.assignment_id}:{o.observed_at.isoformat()}',tranches_requested=1,
+        last_add_level=deepcopy(boundary),
         initial_stop_selection=swing,
         last_cleared_resistance=deepcopy(boundary),
         initial_risk=o.ask-stop,best_close=o.price,episode=d['episode'],
