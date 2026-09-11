@@ -44,6 +44,30 @@ def acquired():
     return host,replace(a,state=r.state,status=S.AssignmentStatus.MANAGING),o
 
 
+@pytest.mark.parametrize('failure',[None,'retired','lost','expired','bid_below'])
+def test_recent_breakout_can_wait_for_macd_but_must_remain_valid(failure):
+    host,a,o=ready()
+    a.parameters['historical_hod']['recent_breakout_seconds']=3 if failure=='expired' else 30
+    a.state['historical_hod_state'].update(episode=None,macd_positive=False)
+    for i in range(2,7):
+        price=10.01 if failure=='lost' and i==3 else 10.05
+        obs=candle(i,price,opened=10.10 if failure=='lost' and i==4 else price-.01)
+        r=host.evaluate(a,obs);a=replace(a,state=r.state,status=r.status)
+        assert not r.evaluation.intents
+    r=host.evaluate(a,candle(6,10.05,source_timeframe='5s'))
+    a=replace(a,state=r.state,status=r.status)
+    obs=candle(7,10.05)
+    if failure=='retired':
+        a.state['historical_hod_state']['rows']=[]
+    if failure=='bid_below': obs=replace(obs,bid=10.01,ask=10.05)
+    r=host.evaluate(a,obs)
+    if failure in (None,'retired'):
+        assert r.evaluation.intents[0].action=='enter_long'
+        assert r.evaluation.signals[0].metadata['entry_breakout_confirmation']['breakout']['at']==(NOW+timedelta(seconds=2)).timestamp()
+    else:
+        assert not r.evaluation.intents
+
+
 def official_band(o,upper=10.8,lower=9.):
     return dict(source='sip',session_date='2026-08-21',upper=upper,lower=lower,
         effective_at_ms=o.observed_at.timestamp()*1000,available_at_ms=o.observed_at.timestamp()*1000)

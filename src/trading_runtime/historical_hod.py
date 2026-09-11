@@ -20,6 +20,7 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     confirmation_lifetime_ms=1000., maximum_chase_bps=15.,
     minimum_candle_volume=1., risk_fraction=.005, maximum_quantity=10000.,
     sizing_mode='risk_fraction',cash_fraction=.9,tranche_count=3,
+    recent_breakout_seconds=30.,
     regular_luld_enabled=0,backtest_luld_estimation_enabled=0,minimum_regular_previous_close=.75,
     luld_buffer_bps=25.,luld_buffer_ticks=2,luld_maximum_age_ms=60000.)
 
@@ -303,6 +304,21 @@ def observe(o, d, s):
     d['prior_rows'] = d.get('rows', []) if contiguous else []
     d['prior_hod'] = d.get('hod')
     d['prior_body_high'] = d.get('body_high',0.)
+    # Observe the price event even while MACD/admission is closed. Retain only
+    # the current selected boundary and invalidate it on loss of its threshold.
+    recent = d.get('recent_breakout')
+    if recent and (not contiguous or now-recent['at'] > s.get('recent_breakout_seconds',30.)
+            or (o.price < recent['threshold'] if recent['inclusive'] else o.price <= recent['threshold'])):
+        d.pop('recent_breakout',None)
+    if contiguous and d.get('prior_hod'):
+        boundary = entry_level(d['prior_rows'],d['prior_hod'],d['session'])
+        offset = s['entry_breakout_offset']
+        threshold = round(boundary['upper']+offset,9) if offset else boundary['upper']
+        crossed = (round(d['prior_close'],9) < threshold <= round(o.price,9) if offset
+            else d['prior_close'] <= threshold < o.price)
+        if crossed and o.price >= o.bar_open and boundary.get('unified_level_id'):
+            d['recent_breakout'] = dict(at=now,level_id=boundary.get('unified_level_id'),
+                level=deepcopy(boundary),threshold=threshold,inclusive=bool(offset))
     if d.get('episode') is not None:
         # Observe attempts before admission gates, including before assignment.
         # A rejected excursion cannot become a new first entry at the old band.
@@ -641,6 +657,7 @@ def evaluate(host, a, o, p, state):
                 'profit_target':entry['target']['price'],'mandatory_broker_target':True,'maximum_buy_price':entry['maximum_buy_price'],
                 'initial_stop_selection':entry['initial_stop_selection'],
                 'entry_selection':entry['level'],'profit_target_selection':entry['target'],
+                'entry_breakout_confirmation':entry.get('breakout_confirmation'),
                 'unified_structural_trigger':{'current_snapshot':{'levels':[entry['level']], 'session_high':entry['hod'],
                     'selected_at':o.observed_at.isoformat(),'frozen_at_entry':True}}})
     if pending:
@@ -671,6 +688,19 @@ def evaluate(host, a, o, p, state):
     failed_breakout = bool(d.get('failed_breakout'))
     require_body_high = reentry or failed_breakout
     offset = s['entry_breakout_offset']
+    recent = d.get('recent_breakout') or {}
+    # The book may retire/flip a cleared resistance before MACD opens. Its
+    # confirmed snapshot remains the entry anchor while the breakout holds.
+    if (not require_body_high and recent.get('level')
+            and 0 <= now-recent['at'] <= s.get('recent_breakout_seconds',30.)
+            and recent['level']['upper'] <= hod
+            and (min(o.price,o.bid) >= recent['threshold'] if recent['inclusive']
+                 else min(o.price,o.bid) > recent['threshold'])):
+        current_threshold = round(boundary['upper']+offset,9) if offset else boundary['upper']
+        current_cross = (round(previous,9) < current_threshold <= round(o.price,9) if offset
+            else previous <= current_threshold < o.price)
+        if not current_cross:
+            boundary = deepcopy(recent['level'])
     # Round only binary floating-point noise, preserving sub-cent bands.
     resistance_threshold = round(boundary['upper'] + offset, 9) if offset else boundary['upper']
     threshold = max(resistance_threshold,d['prior_body_high']) if require_body_high else resistance_threshold
@@ -681,7 +711,12 @@ def evaluate(host, a, o, p, state):
     inclusive = bool(offset) and (not require_body_high or resistance_threshold > d['prior_body_high'])
     crossed = (round(previous,9) < threshold <= round(o.price,9) if inclusive
         else previous <= threshold < o.price)
-    if not crossed:
+    recent_held = (not require_body_high and bool(recent) and recent.get('level_id') == boundary.get('unified_level_id')
+        and recent.get('threshold') == resistance_threshold
+        and 0 <= now-recent.get('at',0) <= s.get('recent_breakout_seconds',30.)
+        and (min(o.price,o.bid) >= threshold if inclusive else min(o.price,o.bid) > threshold))
+    evidence['entry_selection']['recent_breakout'] = deepcopy(recent) if recent_held else None
+    if not crossed and not recent_held:
         return result('wait','waiting_for_fresh_body_high_break' if require_body_high else 'waiting_for_fresh_resistance_break')
     target_anchor = next_historical_resistance(d['rows'],max(o.ask,o.price),session)
     selected = (target_selection(d['rows'],target_anchor,max(o.ask,o.price),s,tick,session=session)
@@ -702,6 +737,8 @@ def evaluate(host, a, o, p, state):
         return result('wait','invalid_stop_or_entry_price')
     atr = row.get('qualification',{}).get('atr') or 0.
     entry = dict(confirmed_at=now,level=boundary,hod=hod,stop=stop,target=selected,maximum_buy_price=ceiling,
+        breakout_confirmation=dict(recent=bool(recent_held and not crossed),
+            breakout=deepcopy(recent) if recent_held else None,validated_at=now),
         cash_tranche_key=f'{a.assignment_id}:{o.observed_at.isoformat()}',tranches_requested=1,
         last_add_level=deepcopy(boundary),
         initial_stop_selection=swing,
