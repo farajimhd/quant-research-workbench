@@ -7,6 +7,21 @@ each year.
 
 ## 2026
 
+### [2026-09-09 16:14 PDT - Structural strategy, causal signals and clock recovery](docs/codex/chat-summaries/2026/CHAT-20260909-1614-structural-strategy-clock-validation.md)
+
+- Chat/task ID: `01a08873-ca5b-7653-a100-5caf07a4e10c`
+- Related tasks: `TASK-0014`, `TASK-0207`, `TASK-0208`, `TASK-0209`
+- Summary written: 2026-09-11 07:40 PDT
+
+Records V6/100ms strategy iteration, actionable causal signal presentation,
+position-management failures, campaign repairs and exact historical clock recovery.
+The repaired SUGP/JUNS authority preserves rollback tables. Cost-aware forward
+full-session experiments remain negative; no strategy is accepted. A pre-period
+unseen-instrument population is frozen, but its common-stock successor is an
+untested draft. Preserves source boundaries, failed experiments, sealed-holdout
+criteria and the next concrete entry/management evaluation, with partial early
+source coverage explicitly identified.
+
 ### [2026-09-08 16:16 PDT - Strategy, independent candle detector and V6 campaigns](docs/codex/chat-summaries/2026/CHAT-20260908-1616-strategy-detector-v6-campaign.md)
 
 - Chat/task ID: `01a0834e-a0f6-7551-8c40-025356273ee8`
