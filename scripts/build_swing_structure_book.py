@@ -123,7 +123,8 @@ def run(ticker, args):
         engine_type=StreamingSwingBookV6
         project_level=project_survivor
     root = validate_runtime_root(args.runtime)
-    folder = root / ticker.lower()
+    from swing_book_paths import ticker_directory
+    folder = root / ticker_directory(ticker, lowercase=True)
     folder.mkdir(parents=True, exist_ok=True)
     client = P.Client(args.env_file, args.threads)
     started = time.perf_counter()
@@ -135,6 +136,7 @@ def run(ticker, args):
         from swing_reader_upgrade import UPGRADE_PATHS, build_identity, verify
         from src.backend.swing_book_indexed_source import read_session as indexed_read, READER_VERSION
         code_paths.extend(Path(p).resolve() for p in UPGRADE_PATHS)
+        code_paths.append(Path('scripts/swing_book_paths.py').resolve())
     hashes = {str(p.relative_to(Path(__file__).resolve().parents[1])):sha256(p.read_bytes()).hexdigest() for p in code_paths}
     execution_code = P.digest(hashes)
     report_path = folder/'report.json'

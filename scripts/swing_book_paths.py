@@ -1,9 +1,19 @@
 """Explicit operational destinations for historical swing-book builders."""
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+import re
 
 from src.runtime_paths import LAPTOP_RUNTIME_ROOT, WORKSTATION_RUNTIME_ROOT
 
 WORKSTATION_ENV_FILE = WORKSTATION_RUNTIME_ROOT.parent / 'secrets' / '.env'
+
+
+def ticker_directory(ticker: str, *, lowercase=False) -> str:
+    """Keep existing safe paths; encode unsafe Windows names without collisions."""
+    if not re.fullmatch(r'[A-Z][A-Z0-9.-]{0,19}', ticker):
+        raise ValueError('Unsupported canonical ticker syntax')
+    if PureWindowsPath(ticker).is_reserved() or ticker.endswith('.'):
+        return '_ticker_' + ticker.encode('ascii').hex()
+    return ticker.lower() if lowercase else ticker
 
 
 def validate_runtime_root(destination: Path) -> Path:

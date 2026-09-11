@@ -91,6 +91,31 @@ The campaign directory contains `manifest.json`, planning profiles and
 The manifest records per-ticker elapsed seconds, database, status and failure
 reason. No full-universe runtime estimate is certified from the two-ticker test.
 
+## Windows ticker path repair
+
+Windows reserves names such as `CON`, including when they have an extension.
+Workers and book outputs now use a collision-free encoded directory for those
+tickers (for example `_ticker_434f4e`); ticker identity and all safe existing
+directory names remain unchanged. Existing stopped campaigns must opt in once:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B scripts/build_swing_book_campaign.py run --runtime '\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes\structure-validation\v6-all-df562ae5' --upgrade-paths --workers 8 --threads 2 --progress-seconds 1 --env-file 'D:\TradingML\secrets\.env'
+```
+
+Use the synchronized `quant-research-workbench-043b71b3` checkout on the
+workstation. The migration accepts only the exact prior path/controller code
+with unchanged engine and source files, journals path changes in the manifest,
+and retains database fingerprints and checkpoint verification. It is idempotent;
+later resumes may omit `--upgrade-paths`. Do not run `plan` on the existing runtime.
+
+Completed tickers skip. Interrupted tickers automatically requeue and resume
+their verified daily prefixes. Queued tickers start normally. Deferred tickers
+remain deferred until their identity/syntax/source-history reasons are resolved;
+`--retry-failed` does not resolve them. Failed tickers require `--retry-failed`.
+Controller dispatch/render errors now append their timestamp and traceback to
+`controller-errors.jsonl` and preserve the stop reason in `manifest.json`.
+
 ## Indexed reader migration
 
 After synchronizing validated source, resume a stopped legacy campaign with:

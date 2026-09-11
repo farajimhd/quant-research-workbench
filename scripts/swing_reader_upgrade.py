@@ -27,6 +27,26 @@ UPGRADE_PATHS = (
     'scripts/prototype_structure_book_clickhouse.py',
 )
 
+# Exact pre-path-repair bytes. Every engine/source file outside this set must
+# match. Path changes preserve old book identities and retain checkpoint parity.
+PATH_BASELINE = {
+    'scripts/build_swing_book_campaign.py': ('d9c1b3396873d4e6f8eb74dc1dc9966e575c53c50832adbb60d16cc046614b95', '65247006f47109b8fd422d6ea39479c08cb136579e96503469f82a4e121e18be'),
+    'scripts/build_swing_structure_book.py': ('d87b5bd53ac8b01e49b1a68a3cbd1016d99941cb9b1740e46f92e775fc573138', 'cedfdecac05f4bb19611a79ba2dee119f37542320f67e1baf488069229d38f5a',
+        '9fbdba2ac9b37debc327dd6364d6faf89b97e40b36f8bfa090fbd59dc4100234'),  # deployed mixed line endings; identical normalized source
+    'scripts/swing_book_paths.py': ('789eb42cc7a8970859d43cd9029250e3e95b6103b8f624f845a80b7713645730', '6af290dad31bf8035f6593afd673aabe6fa59aa26929af5747ec8e3fe81cfea1'),
+    'scripts/swing_reader_upgrade.py': ('55ad90cee68f824fe9160d6a5beebe3918fa976e1b63797fd4948d78af9f5cbc', '78be0b0e61ce36b2e1d68cea62c5110adb19ce72e5786aabb586a113b0882f89'),
+}
+
+
+def path_baselines(hashes):
+    baseline = dict(hashes)
+    if not any(k.replace('\\', '/') == 'scripts/build_swing_book_campaign.py' for k in hashes):
+        # The old standalone builder did not hash its path helper.
+        baseline = {k:v for k,v in baseline.items() if k.replace('\\','/') != 'scripts/swing_book_paths.py'}
+    keys = [k for k in baseline if k.replace('\\', '/') in PATH_BASELINE]
+    for values in product(*(PATH_BASELINE[k.replace('\\', '/')] for k in keys)):
+        yield dict(baseline, **dict(zip(keys, values)))
+
 # Exact pre-transport-fix files, LF/CRLF. All algorithm, reader and source
 # identities outside this small set must match; daily parity remains mandatory.
 TRANSPORT_BASELINE = {
@@ -87,6 +107,9 @@ def build_identity(hashes, previous, *, indexed):
         # Retain the database/source fingerprint. The caller MUST run verify()
         # before any new book/session writes, even on subsequent resumptions.
         return prior
+    if indexed and any(prior == digest(old) or legacy_hash_matches(prior, old)
+                       or transport_hash_matches(prior, old) for old in path_baselines(hashes)):
+        return prior  # verify() remains mandatory before new session writes.
     raise ValueError('Unsupported build code change; preserve the existing runtime')
 
 
