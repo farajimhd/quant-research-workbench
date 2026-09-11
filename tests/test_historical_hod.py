@@ -381,6 +381,48 @@ def test_losing_entry_hod_exits_on_first_red_close_below_previous_open():
         assert H.management({},deepcopy(active),changed,H.DEFAULTS,.01,previous_bar=previous)!='red_close_below_attempt_open'
 
 
+@pytest.mark.parametrize('lower,upper,previous,bar,expected', [
+    (3.83,3.85,(3.83,3.89,3.83,3.88),(3.82,3.86,3.81,3.8156),True),
+    (3.94,3.9662931,(4.,4.,3.96,3.98),(3.99,4.,3.94,3.95),False),
+    (4.09918,4.110822,(4.1,4.12,4.05,4.1),(4.1,4.13,4.0743,4.09),True),
+])
+def test_sugp_recorded_failed_attempt_closes(lower,upper,previous,bar,expected):
+    def completed(values, start):
+        return dict(zip(('open','high','low','close'),values),time=start,end=start+1)
+    active={'confirmed_at':1,'management_base':{'lower':3.,'tolerance':.01}}
+    resistance=dict(side='resistance',lower=lower,upper=upper,confirmed_at=1,level_id=1)
+    reason=H.management({},active,completed(bar,3),H.DEFAULTS,.01,
+        previous_bar=completed(previous,2),resistance_levels=[resistance])
+    assert (reason=='red_close_below_attempt_open') == expected
+
+
+def test_retest_tracks_frozen_band_until_actual_failure():
+    active={'confirmed_at':1,'management_base':{'lower':3.,'tolerance':.01}}
+    level=dict(side='resistance',lower=3.94,upper=3.9662931,confirmed_at=1,level_id=1)
+    previous=dict(time=2,end=3,open=4.,high=4.,low=3.96,close=3.98)
+    retest=dict(time=3,end=4,open=3.99,high=4.,low=3.94,close=3.95)
+    assert H.management({},active,retest,H.DEFAULTS,.01,previous_bar=previous,resistance_levels=[level])==''
+    # A changed/absent projection must not rewrite the encountered band's floor.
+    changed=dict(level,lower=3.96,upper=3.98)
+    holding=dict(time=4,end=5,open=3.95,high=3.96,low=3.94,close=3.94)
+    assert H.management({},active,holding,H.DEFAULTS,.01,previous_bar=retest,resistance_levels=[changed])==''
+    failed=dict(time=5,end=6,open=3.94,high=3.95,low=3.92,close=3.93)
+    assert H.management({},active,failed,H.DEFAULTS,.01,previous_bar=holding)=='red_close_below_attempt_open'
+    assert active['failed_resistance_exit']['level']==level
+    assert active['failed_resistance_exit']['attempt_kind']=='failed_breakout'
+    gap=dict(failed,time=6,end=7)
+    assert H.management({},active,gap,H.DEFAULTS,.01,previous_bar=holding)==''
+
+
+def test_engine_keeps_position_on_red_close_inside_broken_band():
+    host,a,_=acquired()
+    r=host.evaluate(a,replace(candle(3,10.44,opened=10.43,position_quantity=100),bar_low=10.41))
+    a=replace(a,state=r.state,status=r.status)
+    r=host.evaluate(a,candle(4,10.41,opened=10.44,position_quantity=100))
+    assert not any(v.action=='exit' for v in r.evaluation.intents)
+    assert r.state['historical_hod_entry']['resistance_attempts']['levels']
+
+
 def test_reentry_uses_prior_body_high_excludes_wicks_and_current_candle():
     host,a,_=acquired()
     r=host.evaluate(a,replace(candle(3,10.2,position_quantity=100),bar_high=10.29))

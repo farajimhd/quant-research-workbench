@@ -131,9 +131,48 @@ def target_selection(rows, broken, price, s, tick, *, minimum_target=0.):
         selection_method='resistance_nearest_five_percent_above_broken_level')
 
 
+def resistance_attempts(active, bar, previous_bar, levels):
+    """Freeze bands for contiguous candle encounters, including multi-bar retests."""
+    contiguous = previous_bar and previous_bar['end'] == bar['time']
+    saved = active.get('resistance_attempts', {})
+    previous = saved.get('levels', []) if contiguous and saved.get('at') == previous_bar['end'] else []
+    def key(level):
+        return (level.get('unified_level_id'), level.get('level_id'), level.get('scale'),
+                level.get('pivot_at')) if level.get('unified_level_id') or level.get('level_id') is not None else (
+                    level['lower'], level['upper'])
+    frozen = {key(a['level']): deepcopy(a) for a in previous}
+    if contiguous:
+        for level in levels:
+            known = level.get('confirmed_at', level.get('confirmed_at_ms', float('inf'))/1000)
+            if (resistance(level) and known <= previous_bar['end']
+                    and previous_bar['high'] >= level['lower'] and previous_bar['low'] <= level['upper']):
+                frozen.setdefault(key(level), dict(level=deepcopy(level), broken=False))
+        for attempt in frozen.values():
+            attempt['broken'] |= previous_bar['close'] > attempt['level']['upper']
+    attempts = list(frozen.values()) if contiguous else []
+    # Keep only the encounter still touching this candle. Departed levels cannot
+    # turn an unrelated later red candle into a failed attempt.
+    ongoing = {}
+    for attempt in attempts:
+        level = attempt['level']
+        if bar['high'] >= level['lower'] and bar['low'] <= level['upper']:
+            updated = deepcopy(attempt)
+            updated['broken'] |= bar['close'] > level['upper']
+            ongoing[key(level)] = updated
+    for level in levels:
+        known = level.get('confirmed_at', level.get('confirmed_at_ms', float('inf'))/1000)
+        if (resistance(level) and known <= bar['end']
+                and bar['high'] >= level['lower'] and bar['low'] <= level['upper']):
+            ongoing.setdefault(key(level), dict(level=deepcopy(level),broken=bar['close'] > level['upper']))
+    active['resistance_attempts'] = dict(at=bar['end'], levels=list(ongoing.values()))
+    return attempts
+
+
 def management(row, active, bar, s, tick, *, previous_bar=None, resistance_levels=()):
     """Warnings need subsequent price failure; the broker stop is independent."""
     events = row.get('local_events', [])+row.get('global_events', [])
+    attempts = resistance_attempts(active, bar, previous_bar,
+        (*resistance_levels, *row.get('local_swings', [])))
     if (previous_bar and previous_bar['end'] == bar['time']
             and bar['close'] < bar['open'] and bar['close'] < previous_bar['open']):
         entry_level = active.get('level',{})
@@ -143,14 +182,13 @@ def management(row, active, bar, s, tick, *, previous_bar=None, resistance_level
             active['failed_resistance_exit'] = dict(level=deepcopy(entry_level),
                 previous_bar=deepcopy(previous_bar),exit_bar=deepcopy(bar),reference_kind='entry_hod')
             return 'red_close_below_attempt_open'
-        for level in (*resistance_levels, *row.get('local_swings', [])):
-            known = level.get('confirmed_at',level.get('confirmed_at_ms',float('inf'))/1000)
-            if (resistance(level) and known <= previous_bar['end']
-                    and previous_bar['high'] >= level['lower']
-                    and previous_bar['low'] <= level['upper']
-                    and bar['close'] <= level['upper']):
+        for attempt in attempts:
+            level = attempt['level']
+            # A close inside the band is a retest, not a failed resistance.
+            if bar['close'] < level['lower']:
                 active['failed_resistance_exit'] = dict(level=deepcopy(level),
-                    previous_bar=deepcopy(previous_bar),exit_bar=deepcopy(bar))
+                    previous_bar=deepcopy(previous_bar),exit_bar=deepcopy(bar),
+                    attempt_kind='failed_breakout' if attempt['broken'] else 'rejection')
                 return 'red_close_below_attempt_open'
     atr = row.get('qualification', {}).get('atr') or 0.
     base = active['management_base']
