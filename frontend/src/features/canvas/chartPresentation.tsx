@@ -895,7 +895,7 @@ export function historicalMarketLevelZones(
     );
   }
   if (visibleIndicators.includes("indicator.qmd_unified_structure")) {
-    pushUnifiedStructureLevels(zones, rows, chartEnd);
+    pushUnifiedStructureLevels(zones, rows, chartEnd, STRUCTURE_SESSION_DATE_FORMATTER.format(new Date(bars[bars.length - 1].bar_start)));
   }
   if (visibleIndicators.includes("indicator.qmd_level_footprint")) {
     pushLevelVolumeFootprint(
@@ -914,25 +914,37 @@ export function historicalMarketLevelZones(
   return zones;
 }
 
+const STRUCTURE_SESSION_DATE_FORMATTER = new Intl.DateTimeFormat('en-CA', {timeZone: 'America/New_York'});
+
 function pushUnifiedStructureLevels(
   zones: NonNullable<ChartPayload["price_zones"]>,
   rows: HistoricalIndicator[],
   chartEnd: number,
+  chartSessionDate?: string,
 ) {
   const segments = unifiedStructureSegments(rows, chartEnd);
+  const sessionDate = chartSessionDate || STRUCTURE_SESSION_DATE_FORMATTER.format(new Date((chartEnd - 1) * 1000));
   let latestRank = 0;
   segments.forEach(({ end, latest, level, start }) => {
     if (!Number.isFinite(start) || !(start > 0) || !(chartEnd > start)) return;
     if (["clickhouse-closing-book-1", "causal-swing-closing-book-1", "causal-swing-closing-book-2", "causal-swing-closing-book-3", "causal-swing-closing-book-4", "causal-swing-closing-book-5", "causal-swing-closing-book-6"].includes(String(level.book_version))) {
       const support = level.side > 0;
+      // A selected area is new when its newest member becomes confirmed.
+      // Compare with the displayed session, never the operator's wall clock.
+      const originMs = Math.max(Number(level.created_at_ms), Number(level.confirmed_at_ms));
+      const originDate = Number.isFinite(originMs) && originMs > 0
+        ? STRUCTURE_SESSION_DATE_FORMATTER.format(new Date(originMs)) : '';
+      const v6Category = level.book_version === 'causal-swing-closing-book-6' && originDate
+        ? `${originDate < String(sessionDate) ? 'historical' : 'current'}${support ? 'Support' : 'Resistance'}` as const : undefined;
+      const originLabel = v6Category ? (originDate < String(sessionDate) ? 'Historical' : 'Current day') : '';
       const v5 = ['causal-swing-closing-book-5','causal-swing-closing-book-6'].includes(String(level.book_version));
       const selectedBookLabel = level.book_version === 'causal-swing-closing-book-6' ? 'Swing level book v6' : 'Swing level book v5';
       const graded = v5 && (!support || level.load_contract === 'symmetric-level-evidence-selection-2');
       const bookLabel = ["causal-swing-closing-book-1", "causal-swing-closing-book-2", "causal-swing-closing-book-3", "causal-swing-closing-book-4", "causal-swing-closing-book-5", "causal-swing-closing-book-6"].includes(String(level.book_version)) ? "Swing level book" : "Experimental ClickHouse level book";
-      zones.push({ annotationKind: "unified-structure-level", axisLabelDefault: latest && latestRank++ < 4,
+      zones.push({ v6Category, annotationKind: "unified-structure-level", axisLabelDefault: latest && latestRank++ < 4,
         color: support ? "var(--success)" : "var(--danger)",
         compactLabel: `${support ? "S" : "R"} · ${graded ? 'Score ' : 'P'}${Number(level.prominence ?? 0).toFixed(2)}`,
-        label: `${support ? "Support" : "Resistance"} · ${level.lifecycle.replaceAll("_", " ")} · ${graded ? 'evidence score' : 'prominence'} ${Number(level.prominence ?? 0).toFixed(2)} · ${v5 ? selectedBookLabel : bookLabel}`,
+        label: `${originLabel ? originLabel + " " : ""}${support ? "Support" : "Resistance"} · ${level.lifecycle.replaceAll("_", " ")} · ${graded ? 'evidence score' : 'prominence'} ${Number(level.prominence ?? 0).toFixed(2)} · ${v5 ? selectedBookLabel : bookLabel}`,
         legendLabel: v5 ? selectedBookLabel : bookLabel, displayItemId: "indicator.qmd_unified_structure",
         settingsId: v5 ? 'indicator.qmd_unified_structure.v5' : level.load_contract ? "indicator.qmd_unified_structure.merged-pnorm-v1" : "indicator.qmd_unified_structure.clickhouse-v1", defaultVisible: true,
         prominence: level.prominence, p_norm: level.p_norm, loadContract: v5 ? undefined : level.load_contract, evidenceGraded: graded, levelPrice: level.price,

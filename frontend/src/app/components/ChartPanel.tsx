@@ -182,6 +182,7 @@ type StrategyPresentationSettings = {
 type StrategyPresentationSettingsUpdate = StrategyPresentationSettings | ((current: StrategyPresentationSettings) => StrategyPresentationSettings);
 type ChartPreset = "micro" | "tactical" | "context" | "axis-history" | "swing-rails";
 type PriceZone = {
+  v6Category?: V6Category;
   annotationKind?: "band" | "bos" | "choch" | "level-footprint" | "swing-footprint" | "structure-break" | "level" | "luld-line" | "liquidity-resistance" | "liquidity-support" | "signal-episode-rail" | "signal-episode-range" | "swing-high" | "swing-low" | "unified-structure-level";
   axisLabelDefault?: boolean;
   borderColor?: string;
@@ -346,7 +347,21 @@ type PriceZoneAxisLineRuntime = {
 type CanvasBox = { bottom: number; left: number; right: number; top: number };
 type HorizontalSpan = { left: number; right: number; width: number };
 type LegendLineStyle = "solid" | "dashed" | "dotted";
+type V6Category = 'historicalSupport' | 'currentSupport' | 'historicalResistance' | 'currentResistance';
+type V6Colors = Record<V6Category, string>;
+const v6ColorLabels: Record<V6Category, string> = {
+  historicalResistance: 'Historical resistance', currentResistance: 'Current-day resistance',
+  historicalSupport: 'Historical support', currentSupport: 'Current-day support',
+};
+function resolveV6Colors(stored?: Partial<V6Colors>): V6Colors {
+  return Object.fromEntries(Object.keys(v6ColorLabels).map(key => [key,
+    validHexColor(stored?.[key as V6Category], resolveChartColor(`var(--chart-v6-${key})`)),
+  ])) as V6Colors;
+}
+
 type LegendSeriesSettings = {
+  v6Hidden?: V6Category[];
+  v6Colors?: V6Colors;
   currentLevelCount?: number;
   color?: string;
   downColor?: string;
@@ -2576,6 +2591,8 @@ function ChartPeriodSelect({
 }
 
 type LegendItem = {
+  v6Hidden?: V6Category[];
+  v6Colors?: V6Colors;
   settingsId?: string;
   color: string;
   configurable: boolean;
@@ -2843,8 +2860,17 @@ function LegendEditor({
         </button>
       </div>
       <label>
-        Color
-        {item.semanticColor ? (
+        {item.v6Colors ? 'Visibility & color' : 'Color'}
+        {item.v6Colors ? (
+          <span className="legend-v6-controls">
+            {(Object.keys(v6ColorLabels) as V6Category[]).map(key => <span key={key}>
+              <input aria-label={`Show ${v6ColorLabels[key].toLowerCase()}`} type="checkbox" checked={!item.v6Hidden?.includes(key)}
+                onChange={event => onUpdate({v6Hidden: event.target.checked ? (item.v6Hidden ?? []).filter(value => value !== key) : [...(item.v6Hidden ?? []), key]})}/>
+              <input aria-label={v6ColorLabels[key]} type="color" value={item.v6Colors![key]}
+                onChange={event => onUpdate({v6Colors: {...item.v6Colors!, [key]: event.target.value}})}/>{v6ColorLabels[key]}
+            </span>)}
+          </span>
+        ) : item.semanticColor ? (
           item.supportsSemanticColorEditing ? (
             <span className="legend-semantic-color-inputs">
               <span><input aria-label={item.label.includes("footprint") ? "Buyer color" : "Bullish color"} type="color" value={item.semanticColors.up} onChange={(event) => onUpdate({ upColor: event.target.value })} />{item.label.includes("footprint") ? "Buyer" : "Bullish"}</span>
@@ -4575,6 +4601,8 @@ function buildPriceZoneLegendItems(
       ? summarizeTickerRelativeQuality(itemZones)
       : undefined;
     return {
+      v6Hidden: settings.v6Hidden,
+      v6Colors: itemZones.some(zone => zone.v6Category) ? settings.v6Colors : undefined,
       color: settings.color,
       configurable: true,
       currentLevelCount: settings.currentLevelCount,
@@ -5170,12 +5198,12 @@ function mixHexColors(background: string, foreground: string, foregroundWeight: 
 function priceZonePresentationColors(
   zone: PriceZone,
   chartBackground: string,
-  settings?: Pick<ResolvedPriceZoneLegendSettings, "color" | "downColor" | "upColor">,
+  settings?: Pick<ResolvedPriceZoneLegendSettings, "color" | "downColor" | "upColor" | "v6Colors">,
 ) {
   const confidence = typeof zone.confidence === "number" && Number.isFinite(zone.confidence)
     ? clampNumber(zone.confidence, 0, 1, 0)
     : null;
-  const configuredToneColor = zone.tone === "buy"
+  const configuredToneColor = zone.v6Category ? settings?.v6Colors[zone.v6Category] : zone.tone === "buy"
     ? settings?.upColor
     : zone.tone === "sell"
       ? settings?.downColor
@@ -5195,6 +5223,8 @@ function priceZonePresentationColors(
 
 function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettings> {
   return {
+    v6Hidden: [],
+    v6Colors: resolveV6Colors(),
     color: resolveChartColor(series.color),
     downColor: resolveChartColor("var(--danger)"),
     currentLevelCount: 3,
@@ -5237,6 +5267,8 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
   const defaults = defaultLegendSettings(series);
   const stored = settingsMap[key] ?? {};
   return {
+    v6Hidden: Array.isArray(stored.v6Hidden) ? stored.v6Hidden.filter(key => key in v6ColorLabels) : [],
+    v6Colors: resolveV6Colors(stored.v6Colors),
     color: resolveChartColor(stored.color || defaults.color),
     downColor: validHexColor(stored.downColor, defaults.downColor),
     currentLevelCount: Math.max(1, Math.min(6, Math.round(stored.currentLevelCount ?? defaults.currentLevelCount))),
@@ -5276,6 +5308,8 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
 }
 
 type ResolvedPriceZoneLegendSettings = {
+  v6Hidden: V6Category[];
+  v6Colors: V6Colors;
   color: string;
   currentLevelCount: number;
   downColor: string;
@@ -5311,6 +5345,8 @@ type ResolvedPriceZoneLegendSettings = {
 function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: string, zone?: PriceZone): ResolvedPriceZoneLegendSettings {
   const stored = settingsMap[key] ?? {};
   return {
+    v6Hidden: Array.isArray(stored.v6Hidden) ? stored.v6Hidden.filter(key => key in v6ColorLabels) : [],
+    v6Colors: resolveV6Colors(stored.v6Colors),
     color: validHexColor(stored.color, resolveChartColor(zone?.color || "var(--muted-foreground)")),
     currentLevelCount: Math.max(1, Math.min(6, Math.round(stored.currentLevelCount ?? 3))),
     downColor: validHexColor(stored.downColor, resolveChartColor("var(--danger)")),
@@ -5350,6 +5386,7 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
 }
 
 function priceZoneMeetsUnifiedFilters(zone: PriceZone, settings: ResolvedPriceZoneLegendSettings) {
+  if (zone.v6Category && settings.v6Hidden.includes(zone.v6Category)) return false;
   if (zone.annotationKind !== "unified-structure-level") return true;
   const roleVisible = zone.tone === "buy" ? settings.showUnifiedSupport : settings.showUnifiedResistance;
   const stateVisible = zone.latest ? settings.showUnifiedActive : settings.showUnifiedBroken;

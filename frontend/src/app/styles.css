@@ -16242,3 +16242,8 @@ button {
 .structure-gap-navigation { display: grid; grid-template-columns: 28px minmax(80px, 140px) 28px; gap: 6px; align-items: center; }
 .structure-gap-navigation input { width: 100%; min-width: 0; }
 .hindsight-details .hindsight-apply { width: auto; height: auto; min-height: 30px; padding: 6px 12px; justify-self: end; white-space: nowrap; }
+
+.legend-v6-controls { display: grid; gap: .4rem; min-width: 0; }
+.legend-v6-controls > span { display: flex; align-items: center; gap: .4rem; }
+.chart-legend-editor .legend-v6-controls input[type="color"] { flex: 0 0 2rem; width: 2rem; }
+.chart-legend-editor .legend-v6-controls input[type="checkbox"] { width: auto; }
