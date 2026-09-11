@@ -17,6 +17,15 @@ def build(base):
         p.pop(key,None)
     p.update(historical_hod_contract=CONTRACT,historical_hod=dict(DEFAULTS))
     p['historical_hod'].update(sizing_mode='cash_tranches',cash_fraction=.9,tranche_count=3)
+    # The recovery template narrows mandates to its 0.5% risk-sizing budget.
+    # Cash tranches inherit the original mandate instead; account limits still apply.
+    source_mandates = {m['mandate_id']:m for m in base['portfolio']['mandates']}
+    for mandate in payload['portfolio']['mandates']:
+        if mandate.get('run_plan_id') == plan:
+            source = source_mandates.get(mandate['mandate_id'].removeprefix(plan+'-'))
+            if source is None:
+                raise ValueError('Cash tranche mandate must retain its source risk authority')
+            mandate['maximum_planned_risk_fraction'] = source['maximum_planned_risk_fraction']
     profile['description'] = ('Non-red completed 1s breakout of historical resistance below HOD, '
         'then current-day resistance or HOD fallback; price above VWAP and completed bullish 5s MACD. '
         'Historical stop advances after a breakout close plus one holding close, initial-risk trailing fallback, structural episode management, '

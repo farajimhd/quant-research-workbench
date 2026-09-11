@@ -495,6 +495,10 @@ def test_candidate_compiles_as_backtest_only():
     profile=next(p for p in validated['strategy']['profiles'] if p['profile_id']==C.PROFILE_ID)
     assert profile['parameters']['historical_hod_contract']==H.CONTRACT
     assert profile['parameters']['historical_hod']['sizing_mode']=='cash_tranches'
+    original={m['mandate_id']:m for m in configuration_base()['portfolio']['mandates']}
+    for mandate in payload['portfolio']['mandates']:
+        if mandate.get('run_plan_id')==plan:
+            assert mandate['maximum_planned_risk_fraction']==original[mandate['mandate_id'].removeprefix(plan+'-')]['maximum_planned_risk_fraction']
     assert next(p for p in validated['run_plans']['plans'] if p['run_plan_id']==plan)['allowed_environments']==['backtest']
 
 
@@ -523,6 +527,26 @@ def test_cash_tranches_add_once_per_higher_breakout_with_shared_protection():
     assert next(i for i in r.evaluation.intents if i.action=='add_long').metadata['cash_tranche']['index']==2
     a=replace(a,state=r.state,status=r.status)
     r=host.evaluate(a,candle(5,11.,position_quantity=3000))
+    assert not any(i.action=='add_long' for i in r.evaluation.intents)
+
+
+def test_cash_add_confirms_red_break_on_next_non_red_close_without_skipping_level():
+    host,a,o=ready()
+    p=deepcopy(a.parameters);p['historical_hod']['sizing_mode']='cash_tranches'
+    a=replace(a,parameters=p,permissions=replace(a.permissions,add=True))
+    r=host.evaluate(a,o);a=replace(a,state=r.state,status=S.AssignmentStatus.MANAGING)
+    r=host.evaluate(a,candle(3,10.44,opened=10.45,position_quantity=1000))
+    assert not any(i.action=='add_long' for i in r.evaluation.intents)
+    a=replace(a,state=r.state,status=r.status)
+    r=host.evaluate(a,candle(4,10.58,opened=10.44,position_quantity=1000))
+    addition=next(i for i in r.evaluation.intents if i.action=='add_long')
+    assert addition.metadata['tranche_breakout']['lower']==10.4
+    assert addition.metadata['cash_tranche']['index']==1
+    # A blocked non-red confirmation must not become a delayed add later.
+    blocked=host.evaluate(a,replace(candle(4,10.48,position_quantity=1000),bid=10.,ask=10.5))
+    assert not any(i.action=='add_long' for i in blocked.evaluation.intents)
+    a=replace(a,state=blocked.state,status=blocked.status)
+    r=host.evaluate(a,candle(5,10.49,position_quantity=1000))
     assert not any(i.action=='add_long' for i in r.evaluation.intents)
 
 

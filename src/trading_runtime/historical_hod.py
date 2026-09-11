@@ -425,6 +425,16 @@ def evaluate(host, a, o, p, state):
             active.pop('desired_target',None)
             previous = d.get('prior_close')
             crossed = [r for r in d.get('prior_rows',[]) if resistance(r) and previous is not None and previous <= r['upper'] < o.price]
+            add_breaks = active.setdefault('add_breaks',{})
+            if not d['contiguous']:
+                add_breaks.clear()
+            frontier = active.get('last_add_level',active['level'])
+            for r in crossed:
+                if r['upper'] > frontier['upper'] and r['price'] > frontier['price']:
+                    add_breaks[str(r['unified_level_id'])] = deepcopy(r)
+            for key,r in list(add_breaks.items()):
+                if o.price <= r['upper'] or r['upper'] <= frontier['upper']:
+                    del add_breaks[key]
             pending_levels = active.setdefault('hold_levels',{})
             cleared = active.setdefault('last_cleared_resistance',deepcopy(active['level']))
             target_breaks = active.setdefault('target_breaks',{})
@@ -494,11 +504,12 @@ def evaluate(host, a, o, p, state):
                 and o.price >= o.bar_open and not active.get('pending_failed_attempt')
                 and active.get('tranches_requested',1) < s['tranche_count']):
             frontier = active.get('last_add_level',active['level'])
-            new = [r for r in crossed if r['upper'] > frontier['upper'] and r['price'] > frontier['price']]
+            new = [r for r in active.get('add_breaks',{}).values()
+                if r['upper'] > frontier['upper'] and r['price'] > frontier['price']]
             current_target = active['target']['price']
             ceiling = min(o.ask*(1+s['maximum_chase_bps']/10000),current_target-tick)
             if new and 0 < state['active_stop'] < o.bid <= o.ask <= ceiling:
-                broken = max(new,key=lambda r:r['upper'])
+                broken = min(new,key=lambda r:r['upper'])
                 index = active.get('tranches_requested',1)
                 active['tranches_requested'] = index+1
                 active['last_add_level'] = deepcopy(broken)
@@ -510,6 +521,10 @@ def evaluate(host, a, o, p, state):
                     metadata={'cash_tranche':dict(key=active['cash_tranche_key'],index=index,count=s['tranche_count']),
                         'tranche_breakout':deepcopy(broken),'mandatory_broker_target':True,
                         'maximum_buy_price':ceiling,'wait_for_capital':False}))
+        # A non-red close consumes this confirmation opportunity even when
+        # acquisition gates block it. Never replay old gate failures later.
+        if fresh and o.price >= o.bar_open:
+            active.pop('add_breaks',None)
         if replacements:
             return replace(replacements[-1], evaluation=replace(replacements[-1].evaluation,
                 signals=tuple(signal for r in replacements for signal in r.evaluation.signals),
