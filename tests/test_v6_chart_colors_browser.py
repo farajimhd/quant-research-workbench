@@ -31,6 +31,10 @@ class V6ChartColorsTests(unittest.TestCase):
                   const zones=historicalMarketLevelZones(indicators,bars,[],[],['indicator.qmd_unified_structure'],'1s');
                   const expected=['historicalSupport','currentSupport','historicalResistance','currentResistance'];
                   if(JSON.stringify(zones.map(z=>z.v6Category))!==JSON.stringify(expected))throw Error('New York origin classification');
+                  const merged=historicalMarketLevelZones([{...indicators[0],qmd_structure_unified_levels:levels.map(l=>({...l,
+                    created_at_ms:Date.parse('2026-08-21T11:18:12Z'),confirmed_at_ms:Date.parse('2026-08-21T11:18:27Z'),
+                    oldest_member_confirmed_at_ms:l.confirmed_at_ms}))}],bars,[],[],['indicator.qmd_unified_structure'],'1s');
+                  if(JSON.stringify(merged.map(z=>z.v6Category))!==JSON.stringify(expected))throw Error('Merged historical provenance lost');
                   const next=historicalMarketLevelZones(indicators,bars.map(b=>({...b,bar_start:b.bar_start.replace('2026-08-21','2026-08-24'),bar_end:b.bar_end.replace('2026-08-21','2026-08-24')})),[],[],['indicator.qmd_unified_structure'],'1s');
                   if(next.some(z=>!z.v6Category.startsWith('historical')))throw Error('Replay session classification');
                   const legacy=historicalMarketLevelZones([{...indicators[0],qmd_structure_unified_levels:levels.map(l=>({...l,book_version:'causal-swing-closing-book-5'}))}],bars,[],[],['indicator.qmd_unified_structure'],'1s');

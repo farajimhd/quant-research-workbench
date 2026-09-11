@@ -68,6 +68,7 @@ export type QmdUnifiedStructureLevel = {
   p_norm?: number | null;
   load_contract?: string;
   book_version?: string;
+  oldest_member_confirmed_at_ms?: number;
   side: number;
   price: number;
   lower: number;

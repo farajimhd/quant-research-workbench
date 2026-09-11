@@ -52,7 +52,13 @@ class StreamingSwingBookV6(StreamingSwingBookV5):
 
     def snapshot(self):
         value=super().snapshot()
-        for row in value['unified_levels']:row['book_version']=VERSION
+        for row in value['unified_levels']:
+            row['book_version']=VERSION
+            # Presentation lineage is distinct from the newest confirmation,
+            # which still controls when the merged area becomes available.
+            row['oldest_member_confirmed_at_ms']=int(min(
+                self.active[int(key)]['confirmed_at'] for key in row['selection_members']
+            )*1000)
         return value
 
 

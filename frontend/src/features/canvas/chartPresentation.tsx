@@ -929,9 +929,10 @@ function pushUnifiedStructureLevels(
     if (!Number.isFinite(start) || !(start > 0) || !(chartEnd > start)) return;
     if (["clickhouse-closing-book-1", "causal-swing-closing-book-1", "causal-swing-closing-book-2", "causal-swing-closing-book-3", "causal-swing-closing-book-4", "causal-swing-closing-book-5", "causal-swing-closing-book-6"].includes(String(level.book_version))) {
       const support = level.side > 0;
-      // A selected area is new when its newest member becomes confirmed.
-      // Compare with the displayed session, never the operator's wall clock.
-      const originMs = Math.max(Number(level.created_at_ms), Number(level.confirmed_at_ms));
+      // Any inherited member keeps a merged area historical. The newest
+      // confirmation remains the causal availability time, not its origin.
+      const originMs = level.oldest_member_confirmed_at_ms
+        ?? Math.max(Number(level.created_at_ms), Number(level.confirmed_at_ms));
       const originDate = Number.isFinite(originMs) && originMs > 0
         ? STRUCTURE_SESSION_DATE_FORMATTER.format(new Date(originMs)) : '';
       const v6Category = level.book_version === 'causal-swing-closing-book-6' && originDate

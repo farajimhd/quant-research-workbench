@@ -56,6 +56,26 @@ def test_rejects_candidate_checkpoint():
         StreamingSwingBookV6(dict(version='causal-swing-closing-book-4'),10.)
 
 
+@pytest.mark.parametrize('side', ['support', 'resistance'])
+def test_merged_area_preserves_oldest_member_confirmation(side):
+    historical=StreamingSwingBookV6(opening=0.)
+    found(historical,10.,side)
+    seed=historical.closing_state(10.)
+    current=StreamingSwingBookV6(seed,100.)
+    new=found(current,10.04,side)
+    new.update(pivot_at=101.,confirmed_at=102.,formed_at=102.)
+    current.last_time=103.
+    current._level_updated(new)
+    merged=current.snapshot()['unified_levels']
+    assert len(merged)==1 and merged[0]['member_count']==2
+    assert merged[0]['oldest_member_confirmed_at_ms']==2000
+    assert merged[0]['confirmed_at_ms']==102000
+    # After the historical member leaves, current-only membership is new.
+    del current.active[seed['levels'][0]['level_id']]
+    current.selection_dirty=True
+    assert current.snapshot()['unified_levels'][0]['oldest_member_confirmed_at_ms']==102000
+
+
 def test_pruning_an_oversize_separator_finishes_merging_before_persistence():
     e=StreamingSwingBookV6(opening=0.)
     a=found(e,10.,'support');separator=found(e,20.,'support',False);b=found(e,30.,'support')
