@@ -136,6 +136,13 @@ def management(row, active, bar, s, tick, *, previous_bar=None, resistance_level
     events = row.get('local_events', [])+row.get('global_events', [])
     if (previous_bar and previous_bar['end'] == bar['time']
             and bar['close'] < bar['open'] and bar['close'] < previous_bar['open']):
+        entry_level = active.get('level',{})
+        if (entry_level.get('reference_kind') == 'hod'
+                and previous_bar['close'] > entry_level['upper']
+                and bar['close'] < entry_level['lower']):
+            active['failed_resistance_exit'] = dict(level=deepcopy(entry_level),
+                previous_bar=deepcopy(previous_bar),exit_bar=deepcopy(bar),reference_kind='entry_hod')
+            return 'red_close_below_attempt_open'
         for level in (*resistance_levels, *row.get('local_swings', [])):
             known = level.get('confirmed_at',level.get('confirmed_at_ms',float('inf'))/1000)
             if (resistance(level) and known <= previous_bar['end']

@@ -370,6 +370,17 @@ def test_red_lower_close_without_a_resistance_attempt_is_not_this_exit():
     assert not any(v.reason=='red_close_below_attempt_open' for v in r.evaluation.intents)
 
 
+def test_losing_entry_hod_exits_on_first_red_close_below_previous_open():
+    active={'level':{'reference_kind':'hod','price':3.57,'lower':3.57,'upper':3.57},
+        'confirmed_at':1,'management_base':{'lower':3.57,'tolerance':.01}}
+    previous=dict(time=2,end=3,open=3.60,high=3.60,low=3.59,close=3.59)
+    bar=dict(time=3,end=4,open=3.58,high=3.58,low=3.55,close=3.5562)
+    assert H.management({},active,bar,H.DEFAULTS,.01,previous_bar=previous)=='red_close_below_attempt_open'
+    assert active['failed_resistance_exit']['reference_kind']=='entry_hod'
+    for changed in (dict(bar,close=3.575),dict(bar,open=3.55),dict(bar,time=4,end=5)):
+        assert H.management({},deepcopy(active),changed,H.DEFAULTS,.01,previous_bar=previous)!='red_close_below_attempt_open'
+
+
 def test_reentry_uses_prior_body_high_excludes_wicks_and_current_candle():
     host,a,_=acquired()
     r=host.evaluate(a,replace(candle(3,10.2,position_quantity=100),bar_high=10.29))
