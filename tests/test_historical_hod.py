@@ -193,6 +193,22 @@ def test_target_advances_on_break_while_stop_waits_one_more_close():
     assert r.state['active_stop']==pytest.approx(10.39)
     assert r.evaluation.intents[0].metadata['previous_stop']==pytest.approx(9.98)
     assert r.state['structural_profit_targets']==pytest.approx([10.98])
+    assert r.state['historical_hod_entry']['last_cleared_resistance']['upper']==10.42
+
+
+def test_entry_resistance_is_counted_and_recrossing_it_does_not_move_initial_stop():
+    host,a,_=acquired()
+    assert a.state['historical_hod_entry']['last_cleared_resistance']==a.state['historical_hod_entry']['level']
+    for i,price in ((3,10.01),(4,10.04),(5,10.05)):
+        r=host.evaluate(a,candle(i,price,position_quantity=100))
+        assert not any(v.action=='replace_protective_stop' for v in r.evaluation.intents)
+        assert r.state['active_stop']==pytest.approx(9.98)
+        a=replace(a,state=r.state,status=r.status)
+    for i,price in ((6,10.43),(7,10.44)):
+        r=host.evaluate(a,candle(i,price,position_quantity=100))
+        a=replace(a,state=r.state,status=r.status)
+    assert r.state['active_stop']==pytest.approx(10.39)
+    assert r.state['historical_hod_entry']['last_cleared_resistance']['upper']==10.42
 
 
 def test_target_does_not_skip_nearest_resistance_to_force_an_advance():

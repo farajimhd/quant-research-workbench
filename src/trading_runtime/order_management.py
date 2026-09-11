@@ -2548,7 +2548,9 @@ class OrderManagementEngine:
             index = group.broker_order_request_indexes.get(str(order.orderId))
             if index is None:
                 continue
-            request = group.orders[index]
+            # OCA reductions after partial target fills change the broker-held
+            # stop quantity. A price amendment must not restore the stale size.
+            request = replace(group.orders[index], quantity=float(order.filledQuantity)+float(order.remainingQuantity))
             if desired <= max(float(request.auxPrice or 0), float(order.auxPrice or 0)):
                 # Recover an amendment whose acknowledgement was lost. The
                 # repair contract must retain the stop actually held by the

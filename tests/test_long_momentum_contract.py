@@ -691,6 +691,40 @@ class OmsContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(repaired)
         self.assertTrue(all(row.auxPrice == 10.2 for row in repaired))
 
+    async def test_stop_price_amendment_preserves_oca_reduced_quantity_after_target_fill(self):
+        from src.market_engine.events import QuoteEvent
+        from src.trading_runtime.execution_policies import ProtectionProfile, ProtectionSlice, StopRule, StopRuleType
+        from src.trading_runtime.domain import InstrumentContract
+        from src.trading_runtime.strategy_orders import IbkrStrategyOrderPlanner
+        planner = IbkrStrategyOrderPlanner()
+        self.manager.planner = lambda request, account, event: planner.plan(
+            account_id=account, instrument=InstrumentContract('TEST',123,'TEST','STK','USD'),
+            intent=request,strategy_id='long',strategy_revision=37)
+        profile=ProtectionProfile('support',1,(ProtectionSlice('position',1.,
+            StopRule(StopRuleType.FIXED_PRICE,price=9.8),profit_target_price=11.),))
+        request=replace(oms_helpers.intent(),event_time=NOW,protection_profile=profile,profit_target_price=11.,
+            metadata={**oms_helpers.intent().metadata,'quote_observed_at':NOW.isoformat(),'assignment_id':'test'})
+        submitted=await self.manager.submit_intent(oms_helpers.portfolio_approved(self.journal,request),account_id='DU1',event=None)
+        for seq,bid,ask,size in ((1,9.98,9.99,4000),(2,11.,11.01,10)):
+            at=NOW+timedelta(milliseconds=100*seq)
+            await self.broker.on_market_event(QuoteEvent(1,ask,size,1,bid,size,(),(),at,
+                raw={'conid':123},sequence=seq,ticker='TEST',ts=at))
+            await self.manager.reconcile()
+        stop=next(o for o in await self.broker.live_orders() if o.orderType=='STP' and o.remainingQuantity>0)
+        remaining=stop.remainingQuantity
+        self.assertGreater(remaining,0)
+        self.assertLess(remaining,100)
+        group=self.manager._groups[submitted.group_id]
+        index=group.broker_order_request_indexes[str(stop.orderId)]
+        self.assertGreater(group.orders[index].quantity,remaining)
+        advance=replace(request,intent_id='after-partial-target',action='replace_protective_stop',
+            invalidation_price=10.5,reference_price=11.,quantity=remaining)
+        await self.manager._replace_protective_stop(advance,account_id='DU1')
+        updated=next(o for o in await self.broker.live_orders() if str(o.orderId)==str(stop.orderId))
+        self.assertEqual(updated.auxPrice,10.5)
+        self.assertEqual(updated.remainingQuantity,remaining)
+        self.assertEqual(group.orders[index].quantity,remaining)
+
     async def test_recovery_does_not_duplicate_effective_protection(self):
         await self.test_stop_and_target_amendments_preserve_oca_and_repair_contract()
         from src.trading_runtime.order_management import OrderManagementEngine

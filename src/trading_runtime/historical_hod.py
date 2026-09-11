@@ -327,12 +327,14 @@ def evaluate(host, a, o, p, state):
             previous = d.get('prior_close')
             crossed = [r for r in d.get('prior_rows',[]) if resistance(r) and previous is not None and previous <= r['upper'] < o.price]
             pending_levels = active.setdefault('hold_levels',{})
+            cleared = active.setdefault('last_cleared_resistance',deepcopy(active['level']))
             target_breaks = active.setdefault('target_breaks',{})
             if not d['contiguous']:
                 target_breaks.clear()
             for r in sorted(crossed,key=lambda level:level['upper']):
                 # Stop confirmation includes the breakout close itself.
-                if historical(r,session):
+                if (historical(r,session) and r['upper'] > cleared['upper']
+                        and r['price'] > cleared['price']):
                     pending_levels[str(r['unified_level_id'])] = dict(level=r,count=0)
                 target_breaks[str(r['unified_level_id'])] = deepcopy(r)
             for key,r in sorted(list(target_breaks.items()),key=lambda item:item[1]['upper']):
@@ -354,14 +356,16 @@ def evaluate(host, a, o, p, state):
                 raise ValueError('Target breakout confirmation capacity exceeded')
             if not d['contiguous']:
                 pending_levels.clear()
-            for key, item in list(pending_levels.items()):
+            for key, item in sorted(list(pending_levels.items()),key=lambda pair:pair[1]['level']['upper']):
                 r = item['level']
-                if o.price <= r['upper']:
+                if o.price <= r['upper'] or r['upper'] <= cleared['upper'] or r['price'] <= cleared['price']:
                     del pending_levels[key]; continue
                 item['count'] += 1
                 if item['count'] >= s['historical_hold_closes']:
                     if historical(r,session):
                         active['desired_stop'] = max(active.get('desired_stop',0),stop_below(r['lower'],s,tick))
+                        cleared = deepcopy(r)
+                        active['last_cleared_resistance'] = cleared
                     del pending_levels[key]
             if len(pending_levels)>4096:
                 raise ValueError('Historical stop confirmation capacity exceeded')
@@ -375,7 +379,8 @@ def evaluate(host, a, o, p, state):
             state['active_stop'] = proposed
             replacements.append(result('replace_protective_stop','historical_hold_or_initial_risk_trail',Status.MANAGING,
                 quantity=o.position_quantity,invalidation_price=proposed,profit_target_price=target,
-                metadata={'previous_stop':stop,'active_stop':proposed}))
+                metadata={'previous_stop':stop,'active_stop':proposed,
+                    'last_cleared_resistance':deepcopy(active['last_cleared_resistance'])}))
         selection = active.get('desired_target')
         if fresh and o.price >= o.bar_open and selection and selection['price'] > target and selection['price'] > max(o.price,o.ask):
             previous_selection = deepcopy(active['target'])
@@ -447,6 +452,7 @@ def evaluate(host, a, o, p, state):
     atr = row.get('qualification',{}).get('atr') or 0.
     entry = dict(confirmed_at=now,level=boundary,hod=hod,stop=stop,target=selected,maximum_buy_price=ceiling,
         initial_stop_selection=swing,
+        last_cleared_resistance=deepcopy(boundary),
         initial_risk=o.ask-stop,best_close=o.price,episode=d['episode'],
         management_base=dict(lower=boundary['lower'],tolerance=max(tick,s['management_tolerance_atr']*atr)),hold_levels={})
     state.update(historical_hod_entry=entry,initial_stop=stop,active_stop=stop,structural_profit_targets=[selected['price']],
