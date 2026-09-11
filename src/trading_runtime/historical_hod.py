@@ -132,6 +132,7 @@ def target_selection(rows, broken, price, s, tick, *, session, minimum_target=0.
     if target <= minimum_target+tick/2:
         return None
     return dict(price=target, level=deepcopy(level), reference=reference, broken_level=deepcopy(broken),
+        trigger_level=deepcopy(broken),
         placement='above_upper_band' if level['price'] < reference else 'below_lower_band',
         selection_method='resistance_nearest_five_percent_above_broken_level')
 
@@ -462,7 +463,9 @@ def evaluate(host, a, o, p, state):
                 if (historical(r,session) and r['upper'] > cleared['upper']
                         and r['price'] > cleared['price']):
                     pending_levels[str(r['unified_level_id'])] = dict(level=r,count=0)
-                target_breaks[str(r['unified_level_id'])] = deepcopy(r)
+            trigger = active['target'].get('trigger_level')
+            if d['contiguous'] and trigger and historical(trigger, session) and o.price > trigger['upper']:
+                target_breaks[str(trigger['unified_level_id'])] = deepcopy(trigger)
             for key,r in sorted(list(target_breaks.items()),key=lambda item:item[1]['upper']):
                 if o.price <= r['upper']:
                     del target_breaks[key]; continue
@@ -471,7 +474,7 @@ def evaluate(host, a, o, p, state):
                 # A red breakout remains pending until a non-red close confirms
                 # it, or a completed close falls back through its frozen band.
                 del target_breaks[key]
-                selected = target_selection(d['prior_rows'],active['target']['level'],max(o.price,o.ask),s,tick,
+                selected = target_selection(d['rows'],active['target']['level'],max(o.price,o.ask),s,tick,
                     session=session,minimum_target=target)
                 if selected:
                     selected.update(triggering_breakout=deepcopy(r),
@@ -594,7 +597,11 @@ def evaluate(host, a, o, p, state):
         return result('wait','red_breakout_candle')
     if not previous <= threshold < o.price:
         return result('wait','waiting_for_fresh_body_high_break' if require_body_high else 'waiting_for_fresh_resistance_break')
-    selected = target_selection(d['prior_rows'],boundary,max(o.ask,o.price),s,tick,session=session)
+    above_entry = [r for r in d['rows'] if resistance(r) and historical(r, session)
+        and r['lower'] > max(o.ask, o.price)]
+    target_anchor = min(above_entry, key=lambda r:(r['lower'],r['price'])) if above_entry else None
+    selected = (target_selection(d['rows'],target_anchor,max(o.ask,o.price),s,tick,session=session)
+        if target_anchor else None)
     if not selected:
         return result('wait','qualified_target_unavailable')
     swing = initial_swing_low(row,boundary,now)
