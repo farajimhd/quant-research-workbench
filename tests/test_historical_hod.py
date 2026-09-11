@@ -74,6 +74,24 @@ def test_compiled_settings_invalidate_on_nested_changes_and_validate_again():
             host.evaluate(a,o)
 
 
+@pytest.mark.parametrize('close,expected', [(10.0299,False),(10.03,True),(10.04,True)])
+def test_buffered_entry_accepts_exact_offset(close,expected):
+    host,a,o=ready()
+    a.parameters['historical_hod']['entry_breakout_offset']=.01
+    r=host.evaluate(a,replace(o,price=close,bar_open=10.02))
+    assert bool(r.evaluation.intents)==expected
+    assert not host.evaluate(a,replace(o,price=close,bar_open=close+.01)).evaluation.intents
+
+
+def test_buffered_entry_can_cross_after_unbuffered_band_was_cleared():
+    host,a,o=ready()
+    a.parameters['historical_hod']['entry_breakout_offset']=.01
+    r=host.evaluate(a,replace(o,price=10.025,bar_open=10.02))
+    assert not r.evaluation.intents
+    a=replace(a,state=r.state,status=r.status)
+    assert host.evaluate(a,candle(3,10.03)).evaluation.intents
+
+
 def test_market_evidence_and_prior_states_remain_unchanged_across_observations():
     host,a,o=acquired()
     retained=[]
@@ -502,12 +520,15 @@ def test_engine_keeps_position_on_red_close_inside_broken_band():
     assert r.state['historical_hod_entry']['resistance_attempts']['levels']
 
 
-def test_reentry_uses_prior_body_high_excludes_wicks_and_current_candle():
+@pytest.mark.parametrize('offset',[0.,.01])
+def test_reentry_uses_prior_body_high_excludes_wicks_and_current_candle(offset):
     host,a,_=acquired()
+    a.parameters['historical_hod']['entry_breakout_offset']=offset
     r=host.evaluate(a,replace(candle(3,10.2,position_quantity=100),bar_high=10.29))
     a=replace(a,state=r.state,status=S.AssignmentStatus.WATCHING)
     r=host.evaluate(a,candle(4,10.19));assert not r.evaluation.intents
     a=replace(a,state=r.state,status=r.status)
+    assert not host.evaluate(a,candle(5,10.2)).evaluation.intents
     r=host.evaluate(a,candle(5,10.23))
     assert r.evaluation.signals[0].action=='enter_long'
     assert r.evaluation.signals[0].metadata['entry_selection']['lower']==10.
@@ -535,6 +556,7 @@ def test_candidate_compiles_as_backtest_only():
         canvas_profile=canvas['profile'],run_plan_id=plan,strategy_profile_id=C.PROFILE_ID)
     profile=next(p for p in validated['strategy']['profiles'] if p['profile_id']==C.PROFILE_ID)
     assert profile['parameters']['historical_hod_contract']==H.CONTRACT
+    assert profile['parameters']['historical_hod']['entry_breakout_offset']==.01
     assert profile['parameters']['historical_hod']['sizing_mode']=='cash_tranches'
     original={m['mandate_id']:m for m in configuration_base()['portfolio']['mandates']}
     for mandate in payload['portfolio']['mandates']:

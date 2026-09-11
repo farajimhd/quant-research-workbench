@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from threading import RLock
 import json
 
+MAX_INDEX_BYTES = 32 * 1024 * 1024
+MAX_INDEX_ROWS = 50_000
 
 class ReplayActivityIndex:
     def __init__(self, journal, run_id):
@@ -23,14 +25,16 @@ class ReplayActivityIndex:
             self.queries.move_to_end(key)
             while len(self.queries) > 8:
                 self.queries.popitem(last=False)
+            if index.get('paged'):
+                return strategy_activity_payload(journal=self.journal, run_id=self.run_id, **options)
             fence = self.journal.latest_sequence(self.run_id)
             if fence > index['sequence']:
                 records = self.journal.strategy_activity_records(run_id=self.run_id,
-                    after_sequence=index['sequence'], through_sequence=fence, limit=50_001, compact=True, **filters)
-                if len(records) + len(index['items']) > 50_000:
+                    after_sequence=index['sequence'], through_sequence=fence, limit=MAX_INDEX_ROWS+1, compact=True, **filters)
+                if len(records) + len(index['items']) > MAX_INDEX_ROWS:
                     # Large histories retain the authoritative paged SQL path.
                     # No records are dropped or falsely marked complete.
-                    self.queries.pop(key, None)
+                    index.update(items=[], bytes=0, paged=True)
                     return strategy_activity_payload(journal=self.journal, run_id=self.run_id, **options)
                 for record in records:
                     payload = strategy_activity_payload(journal=self.journal, run_id=self.run_id,
@@ -38,6 +42,11 @@ class ReplayActivityIndex:
                     row = payload['rows'][0] if payload['rows'] else None
                     index['items'].append((record.event_time, record.recorded_at, record.sequence, row))
                     index['bytes'] += len(json.dumps(row, separators=(',', ':')))
+                    if index['bytes'] > MAX_INDEX_BYTES:
+                        # Keep a bounded marker so the next poll does not rebuild
+                        # an index already known to exceed the memory budget.
+                        index.update(items=[], bytes=0, paged=True)
+                        return strategy_activity_payload(journal=self.journal, run_id=self.run_id, **options)
                 index['items'].sort(key=lambda item: item[:3], reverse=True)
                 index['sequence'] = fence
             cutoff = options.get('as_of') or datetime.max.replace(tzinfo=timezone.utc)
@@ -60,6 +69,8 @@ class ReplayActivityIndex:
                           next_offset=None if len(items) <= offset+limit else offset+len(selected))
             for name, field in [('strategies', 'strategy_id'), ('runs', 'run_id'), ('tickers', 'ticker')]:
                 result['catalog'][name] = sorted({row[field] for row in rows if row[field]})
-            while self.queries and sum(i['bytes'] for i in self.queries.values()) > 32*1024*1024:
-                self.queries.popitem(last=False)
+            for cached in self.queries.values():
+                if sum(i['bytes'] for i in self.queries.values()) <= MAX_INDEX_BYTES:
+                    break
+                cached.update(items=[], bytes=0, paged=True)
             return result

@@ -16,6 +16,7 @@ from src.backend.app import (
     trading_backtest_debug_run_canvas,
     trading_backtest_debug_run_create,
     trading_backtest_run_create,
+    trading_backtest_run,
     trading_backtest_run_canvas,
     trading_backtest_run_command,
     trading_backtest_indicator_warmup,
@@ -25,6 +26,15 @@ from src.trading_runtime.runtime import RunMode
 
 
 class BacktestCanvasContractTests(unittest.IsolatedAsyncioTestCase):
+    def test_status_compact_does_not_serialize_assignments(self) -> None:
+        controller = MagicMock()
+        controller.stream_snapshot.return_value = {"status": "running", "assignment_count": 1}
+        controller.snapshot.return_value = {"assignments": [{"parameters": "full evidence"}]}
+        with patch("src.backend.app.backtest_run_service.get", return_value=controller):
+            self.assertEqual(trading_backtest_run("run-1", compact=True), controller.stream_snapshot.return_value)
+            controller.snapshot.assert_not_called()
+            self.assertEqual(trading_backtest_run("run-1"), controller.snapshot.return_value)
+
     async def test_indicator_warmup_accepts_and_reports_multiple_tickers(self) -> None:
         request = IndicatorWarmupSubmit(
             session_date=date(2026, 7, 28),

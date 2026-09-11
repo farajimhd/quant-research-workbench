@@ -14,7 +14,7 @@ from .structural_recovery import DEFAULTS as QUALITY_DEFAULTS, LIQUIDITY_181, tr
 CONTRACT = 'historical-hod-1s-macd-5s-1'
 BOOK_VERSION = 'causal-swing-closing-book-6'
 NY = ZoneInfo('America/New_York')
-DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_fraction=.05,
+DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_fraction=.05, entry_breakout_offset=0.,
     management_tolerance_atr=.1, management_failure_closes=2, historical_hold_closes=2,
     maximum_macd_age_ms=5000., maximum_source_age_ms=2000., maximum_quote_age_ms=1000.,
     confirmation_lifetime_ms=1000., maximum_chase_bps=15.,
@@ -36,7 +36,7 @@ def configure(p):
     s = dict(DEFAULTS, **raw)
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or v <= 0 for k,v in s.items() if k != 'sizing_mode'):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k == 'entry_breakout_offset' else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
         raise ValueError('Historical HOD settings must be finite and positive')
     if not 0 < s['cash_fraction'] <= 1 or type(s['tranche_count']) is not int or not 2 <= s['tranche_count'] <= 20:
         raise ValueError('Invalid cash fraction or tranche count')
@@ -609,12 +609,18 @@ def evaluate(host, a, o, p, state):
     reentry = bool(d.get('used_episode'))
     failed_breakout = bool(d.get('failed_breakout'))
     require_body_high = reentry or failed_breakout
-    threshold = max(boundary['upper'],d['prior_body_high']) if require_body_high else boundary['upper']
+    offset = s['entry_breakout_offset']
+    # Round only binary floating-point noise, preserving sub-cent bands.
+    resistance_threshold = round(boundary['upper'] + offset, 9) if offset else boundary['upper']
+    threshold = max(resistance_threshold,d['prior_body_high']) if require_body_high else resistance_threshold
     evidence['entry_selection'] = dict(level=boundary,prior_hod=hod,threshold=threshold,reentry=reentry,
-        failed_breakout=failed_breakout)
+        failed_breakout=failed_breakout,entry_breakout_offset=offset)
     if o.price < o.bar_open:
         return result('wait','red_breakout_candle')
-    if not previous <= threshold < o.price:
+    inclusive = bool(offset) and (not require_body_high or resistance_threshold > d['prior_body_high'])
+    crossed = (round(previous,9) < threshold <= round(o.price,9) if inclusive
+        else previous <= threshold < o.price)
+    if not crossed:
         return result('wait','waiting_for_fresh_body_high_break' if require_body_high else 'waiting_for_fresh_resistance_break')
     target_anchor = next_historical_resistance(d['rows'],max(o.ask,o.price),session)
     selected = (target_selection(d['rows'],target_anchor,max(o.ask,o.price),s,tick,session=session)

@@ -11,6 +11,13 @@ from src.backend.workload_budget import (
 
 
 class WorkloadClassificationTests(unittest.TestCase):
+    def test_existing_run_status_is_independent_of_simulation_work(self) -> None:
+        for mode in ("backtest", "replay"):
+            path = f"/api/trading/{mode}/runs/run-1"
+            self.assertEqual(classify_workload("GET", path), "runtime_state")
+            self.assertEqual(classify_workload("GET", path + "/canvas"), "simulation")
+            self.assertEqual(classify_workload("POST", path + "/review"), "simulation")
+
     def test_routes_are_assigned_to_isolated_lanes(self) -> None:
         self.assertEqual(classify_workload("POST", "/api/trading/replay/runs"), "simulation")
         self.assertEqual(classify_workload("GET", "/api/market-data/chart"), "charts")

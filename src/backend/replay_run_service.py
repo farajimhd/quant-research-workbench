@@ -2048,19 +2048,19 @@ class ReplayRunController:
             # refresh for every open chart.
             "assignments": ticker_assignments,
             "signals": [
-                _compact_strategy_chart_activity_row(row)
+                _compact_strategy_chart_activity_row(row, include_chart_plan=False)
                 for row in strategy_records
                 if row.get("event_type") == "signal"
                 and str(row.get("ticker") or "").upper() == ticker
             ],
             "decisions": [
-                _compact_strategy_chart_activity_row(row)
+                _compact_strategy_chart_activity_row(row, include_chart_plan=False)
                 for row in strategy_records
                 if row.get("event_type") == "decision"
                 and str(row.get("ticker") or "").upper() == ticker
             ],
             "order_management": [
-                _compact_strategy_chart_activity_row(row)
+                _compact_strategy_chart_activity_row(row, include_chart_plan=False)
                 for row in strategy_records
                 if row.get("event_type") == "order"
             ],
@@ -2076,9 +2076,9 @@ class ReplayRunController:
             # Repeating them at the Canvas root doubled multi-part-fill runs in
             # the browser without serving any current Canvas consumer.
             "fills": [],
-            "journal": [
-                _compact_strategy_chart_activity_row(row) for row in strategy_records
-            ],
+            # Activity and chart plans have one authority under ``trading``.
+            # No Canvas consumer reads this legacy duplicate collection.
+            "journal": [],
             "news": [],
             "orders": [],
             "portfolio": trading.get("portfolio", {}),
@@ -9106,7 +9106,7 @@ def _check(
     }
 
 
-def _compact_strategy_chart_activity_row(row: Mapping[str, Any]) -> dict[str, Any]:
+def _compact_strategy_chart_activity_row(row: Mapping[str, Any], *, include_chart_plan: bool = True) -> dict[str, Any]:
     """Retain chart/action identity without retransmitting gate evidence."""
 
     compact = {
@@ -9140,7 +9140,7 @@ def _compact_strategy_chart_activity_row(row: Mapping[str, Any]) -> dict[str, An
         )
         if row.get(key) is not None
     }
-    chart_plan = _compact_strategy_chart_plan(row.get("gate_snapshot"))
+    chart_plan = _compact_strategy_chart_plan(row.get("gate_snapshot")) if include_chart_plan else None
     if chart_plan:
         compact["chart_plan"] = chart_plan
     management_event = row.get("management_event")

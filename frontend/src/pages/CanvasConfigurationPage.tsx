@@ -663,7 +663,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   usePollingTask({
     enabled: Boolean(contextReady && replayRun && replayRuntimeReady && previewContainerKey),
     initialDelayMs: 0,
-    intervalMs: 250,
+    intervalMs: runtimeMode === "backtest" ? 1_000 : 250,
     // Let the one final read finish even if its tab is hidden. A single-shot
     // polling task otherwise treats a visibility abort as completion.
     pauseWhenHidden: Boolean(replayRun && !isTerminalReplayStatus(replayRun.status)),

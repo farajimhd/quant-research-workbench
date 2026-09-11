@@ -16,6 +16,28 @@ from urllib.parse import quote
 
 @unittest.skipUnless(os.environ.get("BACKTEST_RECOVERY_RUN_ID"), "opt-in browser regression")
 class BacktestRecoveryBrowserTests(unittest.TestCase):
+    def test_existing_run_does_not_launch_setup_requests(self) -> None:
+        from playwright.sync_api import sync_playwright
+        base = os.environ.get("BACKTEST_RECOVERY_URL", "http://127.0.0.1:5173").rstrip("/")
+        run_id = os.environ["BACKTEST_RECOVERY_RUN_ID"]
+        setup_requests = []
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                def block_setup(route):
+                    setup_requests.append(route.request.url)
+                    route.fulfill(status=409, json={"detail": "Monitoring must not launch setup work"})
+                for endpoint in ("backtest/configuration-options", "backtest/indicator-warmup",
+                                 "historical-preflight", "backtest/structure-books"):
+                    page.route(f"**/api/trading/{endpoint}*", block_setup)
+                page.goto(f"{base}/?backtest_run={run_id}#backtest-trading")
+                page.get_by_role("button", name="Load next 2,000 older events").wait_for(timeout=60000)
+                page.wait_for_timeout(2000)
+                self.assertEqual(setup_requests, [])
+            finally:
+                browser.close()
+
     def test_failed_run_reports_cause_without_review_or_retry(self) -> None:
         from playwright.sync_api import sync_playwright
 

@@ -51,6 +51,13 @@ def workload_limits() -> dict[str, int]:
 def classify_workload(method: str, path: str) -> str:
     normalized_method = method.strip().upper()
     normalized_path = "/" + path.strip().lower().lstrip("/")
+    parts = normalized_path.strip("/").split("/")
+    if (normalized_method == "GET" and len(parts) == 5
+            and parts[:2] == ["api", "trading"]
+            and parts[2] in {"backtest", "replay"} and parts[3] == "runs"):
+        # Reading an existing controller's status must remain possible while
+        # warm-ups and Canvas projections occupy simulation capacity.
+        return "runtime_state"
     if any(token in normalized_path for token in ("/replay/", "/backtest/", "/simulation/")):
         return "simulation"
     if normalized_path.endswith("/market-discovery/configuration/materialize"):

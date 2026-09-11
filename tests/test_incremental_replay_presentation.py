@@ -110,8 +110,35 @@ class CanvasReadTests(unittest.IsolatedAsyncioTestCase):
                     assert all(call.kwargs['as_of'] == publication_time for call in activity.call_args_list)
                 await controller.canvas_payload('SUGP')
                 assert first['trading']['accounts']
+                assert first['journal'] == []
                 assert session.projector.snapshot()==before
                 assert controller._journal.latest_sequence(controller.run_id)==count
                 runtime.canonical_snapshot.assert_not_awaited()
             finally:
                 controller._journal.close()
+
+
+def test_oversized_activity_index_does_not_rebuild_on_each_poll():
+    from src.backend import replay_activity_index as module
+    at=datetime(2026,8,21,8,tzinfo=timezone.utc)
+    with TemporaryDirectory() as directory:
+        journal=TradingJournal(Path(directory)/'journal.sqlite3')
+        try:
+            for i in range(5):
+                journal.append(run_id='test',category='strategy_decision',entity_type='signal',
+                    entity_id=str(i),event_time=at+timedelta(seconds=i),
+                    payload=dict(ticker='SUGP',strategy_id='strategy',action='wait'))
+            options=dict(as_of=at+timedelta(seconds=5),limit=2,include_decision_evidence=False)
+            expected=strategy_activity_payload(journal=journal,run_id='test',**options)
+            for limits in ({'MAX_INDEX_BYTES':1},{'MAX_INDEX_ROWS':2}):
+                index=ReplayActivityIndex(journal,'test')
+                with patch.multiple(module,**limits), patch.object(journal,'strategy_activity_records',wraps=journal.strategy_activity_records) as query:
+                    assert index.payload(**options)==expected
+                    query.reset_mock()
+                    assert index.payload(**options)==expected
+                    assert index.payload(**options)==expected
+                    assert len(query.call_args_list)==2
+                    assert all(call.kwargs['limit']==3 for call in query.call_args_list)
+                    assert all(not call.kwargs.get('after_sequence') for call in query.call_args_list)
+        finally:
+            journal.close()

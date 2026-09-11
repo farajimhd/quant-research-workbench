@@ -115,6 +115,7 @@ function persistSelectedRun(runId: string) {
 }
 
 export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
+  const [selectedRunId, setSelectedRunId] = useState(readSelectedRun);
   const [sessionDate, setSessionDate] = useState(DEFAULT_BACKTEST_DATE);
   const [tickerPreset, setTickerPreset] = useState<BacktestTickerPreset>('SUGP');
   const [batchRuns, setBatchRuns] = useState<BacktestRun[]>([]);
@@ -122,10 +123,10 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [structureBook, setStructureBook] = useState("");
   const [minimumPNorm, setMinimumPNorm] = useState(0.80);
   const [structureBooks, setStructureBooks] = useState<Array<{ id: string; ticker: string; start: string; end: string; version: string; selection_contract?: string }>>([]);
-  useEffect(() => { let active = true; api<{ items: typeof structureBooks }>("/api/trading/backtest/structure-books")
+  useEffect(() => { if (selectedRunId) return; let active = true; api<{ items: typeof structureBooks }>("/api/trading/backtest/structure-books")
     .then((value) => { if (active) setStructureBooks(value.items); }).catch(() => { if (active) setError("Experimental level books could not be loaded."); });
     return () => { active = false; };
-  }, []);
+  }, [selectedRunId]);
   const [simulationProfile, setSimulationProfile] = useState<"baseline" | "stress">("baseline");
   const [periodPreset, setPeriodPreset] = useState<BacktestPeriodPreset>("custom");
   const [startTime, setStartTime] = useState("04:00:00");
@@ -151,7 +152,6 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [creating, setCreating] = useState(false);
   const [run, setRun] = useState<BacktestRun | null>(null);
-  const [selectedRunId, setSelectedRunId] = useState(readSelectedRun);
   const [restoreError, setRestoreError] = useState("");
   const [restoreFailed, setRestoreFailed] = useState(false);
   const [restoreAttempt, setRestoreAttempt] = useState(0);
@@ -210,6 +210,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   }
 
   useEffect(() => {
+    if (selectedRunId) return;
     const requestKey = `${candidateId}:${refreshKey}`;
     if (resolvedOptionsRequest.current === requestKey) {
       resolvedOptionsRequest.current = null;
@@ -238,9 +239,10 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
         .finally(() => { if (!cancelled) setLoadingOptions(false); });
     }, 0);
     return () => { cancelled = true; window.clearTimeout(timer); controller.abort(); };
-  }, [candidateId, refreshKey]);
+  }, [candidateId, refreshKey, selectedRunId]);
 
   useEffect(() => {
+    if (selectedRunId) return;
     if (!tickerReady) {
       setIndicatorWarmup(null);
       setWarmingIndicators(false);
@@ -261,9 +263,10 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
         .finally(() => { if (!cancelled) setWarmingIndicators(false); });
     }, 450);
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [normalizedTickers, refreshKey, sessionDate, tickerReady]);
+  }, [normalizedTickers, refreshKey, sessionDate, tickerReady, selectedRunId]);
 
   useEffect(() => {
+    if (selectedRunId) return;
     if (!candidateId || !selectedPlan || loadingOptions || optionsError || !tickerReady || indicatorWarmup?.status !== "ready") {
       setChecking(false);
       setPreflight(null);
@@ -309,7 +312,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [anchorDate, candidateId, endTime, indicatorWarmup?.status, loadingOptions, mode, normalizedTickers, optionsError, refreshKey, runPlanId, selectedPlan, setupKey, startTime, tickerReady]);
+  }, [anchorDate, candidateId, endTime, indicatorWarmup?.status, loadingOptions, mode, normalizedTickers, optionsError, refreshKey, runPlanId, selectedPlan, setupKey, startTime, tickerReady, selectedRunId]);
 
   usePollingTask({
     enabled: Boolean(run && !["completed", "stopped", "failed"].includes(run.status)),
