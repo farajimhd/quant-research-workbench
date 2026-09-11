@@ -167,7 +167,8 @@ def observe(o, d, s):
         positive = valid and o.macd_line > o.macd_signal
         was_open = d.get('episode') is not None
         if positive and not was_open:
-            d.update(episode=now,body_high=0.,used_episode=False)
+            d.update(episode=now,body_high=0.,used_episode=False,
+                breakout_upper=None,failed_breakout=False)
         elif valid and not positive:
             d['episode'] = None
         d.update(macd_at=now,macd_valid=valid,macd_positive=positive,
@@ -183,6 +184,15 @@ def observe(o, d, s):
     d['prior_hod'] = d.get('hod')
     d['prior_body_high'] = d.get('body_high',0.)
     if d.get('episode') is not None:
+        # Observe attempts before admission gates, including before assignment.
+        # A rejected excursion cannot become a new first entry at the old band.
+        upper = d.get('breakout_upper')
+        if upper is not None and o.price <= upper:
+            d['failed_breakout'] = True
+        if contiguous and d.get('prior_hod'):
+            boundary = entry_level(d['prior_rows'],d['prior_hod'],d['session'])
+            if d['prior_close'] <= boundary['upper'] < o.price and o.price >= o.bar_open:
+                d['breakout_upper'] = boundary['upper']
         d['body_high'] = max(d.get('body_high',0.),o.bar_open,o.price)
     d['hod'] = max(d.get('hod',0.),o.bar_high,o.structural_session_high or 0.)
     d.update(closed_at=now,close=o.price,rows=selected_levels(o,s,now),contiguous=contiguous,
@@ -374,12 +384,15 @@ def evaluate(host, a, o, p, state):
         return result('wait','hod_history_or_vwap_gate')
     boundary = entry_level(d['prior_rows'],hod,session)
     reentry = bool(d.get('used_episode'))
-    threshold = max(boundary['upper'],d['prior_body_high']) if reentry else boundary['upper']
-    evidence['entry_selection'] = dict(level=boundary,prior_hod=hod,threshold=threshold,reentry=reentry)
+    failed_breakout = bool(d.get('failed_breakout'))
+    require_body_high = reentry or failed_breakout
+    threshold = max(boundary['upper'],d['prior_body_high']) if require_body_high else boundary['upper']
+    evidence['entry_selection'] = dict(level=boundary,prior_hod=hod,threshold=threshold,reentry=reentry,
+        failed_breakout=failed_breakout)
     if o.price < o.bar_open:
         return result('wait','red_breakout_candle')
     if not previous <= threshold < o.price:
-        return result('wait','waiting_for_fresh_body_high_break' if reentry else 'waiting_for_fresh_resistance_break')
+        return result('wait','waiting_for_fresh_body_high_break' if require_body_high else 'waiting_for_fresh_resistance_break')
     selected = target_selection(d['prior_rows'],boundary,max(o.ask,o.price),s,tick)
     if not selected:
         return result('wait','qualified_target_unavailable')

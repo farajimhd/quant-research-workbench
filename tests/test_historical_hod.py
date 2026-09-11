@@ -88,6 +88,40 @@ def test_only_completed_5s_macd_ends_episode():
     assert r.evaluation.intents[0].metadata['reentry_after_fill']
 
 
+def test_spread_blocked_breakout_failure_requires_episode_body_high_without_fill():
+    host,a,_=ready()
+    for i,price in ((2,10.2),(3,10.01)):
+        o=replace(candle(i,price),ask=price+.2,bid=price-.2)
+        r=host.evaluate(a,o)
+        assert r.evaluation.signals[0].reason=='tradability_incomplete'
+        a=replace(a,state=r.state,status=r.status)
+    r=host.evaluate(a,candle(4,10.04))
+    assert r.evaluation.signals[0].reason=='waiting_for_fresh_body_high_break'
+    assert r.evaluation.signals[0].metadata['entry_selection']['failed_breakout']
+    assert not r.state['historical_hod_state']['used_episode']
+    a=replace(a,state=r.state,status=r.status)
+    r=host.evaluate(a,candle(5,10.21))
+    assert r.evaluation.signals[0].action=='enter_long'
+
+
+def test_failed_breakout_is_observed_passively_and_resets_next_macd_episode():
+    host,a,_=ready();saved={}
+    for i,price,tf in ((0,10.,'5s'),(1,10.01,'1s'),(2,10.2,'1s'),
+                       (3,10.01,'1s'),(4,10.04,'1s')):
+        obs=candle(i,price,source_timeframe=tf)
+        frame=SimpleNamespace(as_of=obs.observed_at,timeframe=tf,bar=dict(open=obs.bar_open,
+            high=obs.bar_high,low=obs.bar_low,close=obs.price,volume=1000),
+            indicator=dict(macd_line=.01,macd_signal=0,execution_vwap=9.8))
+        saved=H.observe_frame(frame,saved,a.parameters,{'unified_levels':rows(),'session_high':10.3})
+    market=deepcopy(obs.structural_detector_state);market['historical_hod_observation']=saved
+    r=host.evaluate(replace(a,state={}),replace(obs,structural_detector_state=market))
+    assert r.evaluation.signals[0].reason=='waiting_for_fresh_body_high_break'
+    d=deepcopy(r.state['historical_hod_state'])
+    H.observe(replace(candle(5,10.01,source_timeframe='5s'),macd_line=-.01),d,H.DEFAULTS)
+    H.observe(candle(10,10.01,source_timeframe='5s'),d,H.DEFAULTS)
+    assert not d['failed_breakout'] and d['breakout_upper'] is None
+
+
 def test_target_advances_on_break_while_historical_stop_waits_three_closes():
     host,a,_=acquired()
     for i,price in ((3,10.43),(4,10.44),(5,10.45)):
