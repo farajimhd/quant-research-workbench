@@ -298,6 +298,35 @@ def observe_frame(frame, saved, parameters, snapshot=None):
     return d
 
 
+def confirm_failed_attempt(active, o):
+    """Only the next two completed 100ms candles can confirm the armed exit."""
+    pending = active.get('pending_failed_attempt')
+    if not pending:
+        return False
+    now_ms = round(o.observed_at.timestamp()*1000)
+    elapsed = now_ms-pending['at_ms']
+    if elapsed > 200:
+        active.pop('pending_failed_attempt',None)
+        return False
+    if o.source_timeframe != '100ms' or 'bar_close' not in o.evaluation_events:
+        return False
+    closes = pending['closes']
+    if elapsed != 100*(len(closes)+1):
+        return False
+    if not isfinite(o.price) or o.price <= 0:
+        active.pop('pending_failed_attempt',None)
+        return False
+    closes.append(o.price)
+    if len(closes) < 2:
+        return False
+    active.pop('pending_failed_attempt',None)
+    confirmed = closes[1] < closes[0] < pending['trigger_close']
+    active['failed_resistance_exit']['intrabar_confirmation'] = dict(
+        trigger_at_ms=pending['at_ms'],trigger_close=pending['trigger_close'],
+        closes=list(closes),confirmed=confirmed,confirmed_at_ms=now_ms)
+    return confirmed
+
+
 def evaluate(host, a, o, p, state):
     from .strategy_engine import AssignmentStatus as Status, _at_or_after_session_time
     from .signals import CapitalRequest, StrategyIntent
@@ -351,12 +380,18 @@ def evaluate(host, a, o, p, state):
     if acquired or pending:
         reason = ('session_flatten' if flatten else 'protective_stop' if stop and o.price <= stop
             else 'manual_exit' if state.get('manual_exit_requested') else 'macd_episode_ended' if macd_closed else '')
+        if not reason and acquired and active and confirm_failed_attempt(active,o):
+            reason = 'red_close_below_attempt_open'
         if not reason and acquired and active and detector_fresh:
             if not d['contiguous'] or row.get('gap_before'):
                 active['failure_closes'] = 0; active.pop('rejection',None)
             else:
                 reason = management(row,active,d['bar'],s,tick,
                     previous_bar=d.get('prior_bar'),resistance_levels=d.get('prior_rows',[]))
+                if reason == 'red_close_below_attempt_open':
+                    active['pending_failed_attempt'] = dict(at_ms=round(now*1000),
+                        trigger_close=d['bar']['close'],closes=[])
+                    reason = ''
         if reason:
             state.update(last_exit_reason=reason,entry_acquisition_exit_latched=True)
             state.pop('pending_capital_request',None)

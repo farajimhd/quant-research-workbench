@@ -221,7 +221,7 @@ def strategy_rule_timeframes(parameters: dict[str, Any]) -> set[str]:
     if parameters.get('macd_threshold_contract') or parameters.get('macd_r3_contract'):
         return {'100ms', '1s'}  # 1s produces rolling liquidity; MACD uses only 100ms.
     if parameters.get('historical_hod_contract'):
-        return {'1s', '5s'}
+        return {'100ms', '1s', '5s'}
     timeframes: set[str] = {'100ms', '1s'} if parameters.get('macd_hod_contract') else set()
     for stage in dict(parameters.get("entry_rules") or {}).values():
         if isinstance(stage, dict):
