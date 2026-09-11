@@ -394,23 +394,51 @@ def test_failed_resistance_exit_requires_second_consecutive_red_second():
 def test_rejection_monitor_resets_on_green_or_doji(reset_open,reset_close):
     _,_,o=ready()
     active={'pending_failed_attempt':dict(at_ms=round(o.observed_at.timestamp()*1000),trigger_close=10.38),
-        'failed_resistance_exit':{'level':rows()[0]}}
+        'failed_resistance_exit':{'level':rows()[1]}}
     def bar(ms,opened,close):
         return replace(o,source_timeframe='1s',observed_at=o.observed_at+timedelta(milliseconds=ms),bar_open=opened,price=close)
     assert not H.confirm_failed_attempt(active,bar(1000,reset_open,reset_close))
     assert not H.confirm_failed_attempt(active,bar(2000,10.39,10.38))
     assert not H.confirm_failed_attempt(active,bar(2000,10.39,10.37))
     assert not H.confirm_failed_attempt(active,replace(bar(3000,10.38,10.37),evaluation_events=('market_data_update',)))
-    assert H.confirm_failed_attempt(active,bar(3000,10.38,10.37))
+    assert H.confirm_failed_attempt(active,replace(bar(3000,10.38,10.37),bar_low=10.36),
+        previous_bar=dict(end=o.observed_at.timestamp()+2,open=10.39,low=10.37))
 
 
 def test_missing_second_breaks_consecutive_rejection_confirmation():
     _,_,o=ready()
     active={'pending_failed_attempt':dict(at_ms=round(o.observed_at.timestamp()*1000),trigger_close=10.38),
-        'failed_resistance_exit':{'level':rows()[0]}}
+        'failed_resistance_exit':{'level':rows()[1]}}
     later=replace(o,source_timeframe='1s',observed_at=o.observed_at+timedelta(seconds=2),bar_open=10.38,price=10.37)
     assert not H.confirm_failed_attempt(active,later)
-    assert H.confirm_failed_attempt(active,replace(later,observed_at=later.observed_at+timedelta(seconds=1)))
+    assert H.confirm_failed_attempt(active,replace(later,observed_at=later.observed_at+timedelta(seconds=1),bar_low=10.35),
+        previous_bar=dict(end=later.observed_at.timestamp(),open=10.38,low=10.36))
+
+
+def test_sugp_reclaimed_failure_cannot_exit_later_red_sequence():
+    _,_,o=ready()
+    at=o.observed_at.timestamp()
+    active={'pending_failed_attempt':dict(at_ms=round(at*1000),trigger_close=3.8156),
+        'failed_resistance_exit':{'level':dict(rows()[0],lower=3.83,upper=3.85)}}
+    # Reclaiming even the lower part of the band cancels the old failure.
+    recovered=replace(o,observed_at=o.observed_at+timedelta(seconds=1),price=3.84,bar_open=3.82,bar_low=3.82)
+    assert not H.confirm_failed_attempt(active,recovered)
+    assert 'pending_failed_attempt' not in active
+    # Recorded closes at 04:10:53 and 04:10:54 have rising lows and remain above 3.83.
+    for seconds,close,low in ((7,3.9714,3.9401),(8,3.98,3.96)):
+        red=replace(o,observed_at=o.observed_at+timedelta(seconds=seconds),price=close,bar_open=4.,bar_low=low)
+        assert not H.confirm_failed_attempt(active,red,
+            previous_bar=dict(end=at+seconds-1,open=4.,low=3.9401))
+
+
+@pytest.mark.parametrize('close,low,expected',[(10.38,10.36,True),(10.38,10.375,False),(10.40,10.36,False)])
+def test_pending_failure_rechecks_floor_and_lower_low(close,low,expected):
+    _,_,o=ready()
+    active={'pending_failed_attempt':dict(at_ms=round(o.observed_at.timestamp()*1000),trigger_close=10.38),
+        'failed_resistance_exit':{'level':rows()[1]}}
+    red=replace(o,observed_at=o.observed_at+timedelta(seconds=1),price=close,bar_open=10.41,bar_low=low)
+    assert H.confirm_failed_attempt(active,red,
+        previous_bar=dict(end=o.observed_at.timestamp(),open=10.41,low=10.37))==expected
 
 
 def test_red_lower_close_without_a_resistance_attempt_is_not_this_exit():
@@ -435,7 +463,7 @@ def test_hod_without_historical_ancestry_cannot_arm_rejection_exit():
 @pytest.mark.parametrize('lower,upper,previous,bar,expected', [
     (3.83,3.85,(3.83,3.89,3.83,3.88),(3.82,3.86,3.81,3.8156),True),
     (3.94,3.9662931,(4.,4.,3.96,3.98),(3.99,4.,3.94,3.95),False),
-    (4.09918,4.110822,(4.1,4.12,4.05,4.1),(4.1,4.13,4.0743,4.09),True),
+    (4.09918,4.110822,(4.1,4.12,4.05,4.1),(4.1,4.13,4.0743,4.09),False),
 ])
 def test_sugp_recorded_failed_attempt_closes(lower,upper,previous,bar,expected):
     def completed(values, start):

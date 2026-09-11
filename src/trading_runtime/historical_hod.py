@@ -186,7 +186,8 @@ def management(row, active, bar, s, tick, *, previous_bar=None, resistance_level
     attempts = resistance_attempts(active, bar, previous_bar,
         [level for level in resistance_levels if historical(level, session)])
     if (previous_bar and previous_bar['end'] == bar['time']
-            and bar['close'] < bar['open'] and bar['close'] < previous_bar['open']):
+            and bar['close'] < bar['open'] and bar['close'] < previous_bar['open']
+            and bar['low'] < previous_bar['low']):
         for attempt in attempts:
             level = attempt['level']
             # A close inside the band is a retest, not a failed resistance.
@@ -305,13 +306,14 @@ def observe_frame(frame, saved, parameters, snapshot=None):
     return d
 
 
-def confirm_failed_attempt(active, o):
+def confirm_failed_attempt(active, o, *, previous_bar=None):
     """Confirm a failed encounter with two consecutive completed red 1s bars."""
     pending = active.get('pending_failed_attempt')
     if not pending or o.source_timeframe != '1s' or 'bar_close' not in o.evaluation_events:
         return False
     session = o.observed_at.astimezone(NY).date().isoformat()
-    if not historical(active.get('failed_resistance_exit', {}).get('level', {}), session):
+    level = active.get('failed_resistance_exit', {}).get('level', {})
+    if not historical(level, session):
         active.pop('pending_failed_attempt', None)
         return False
     now_ms = round(o.observed_at.timestamp()*1000)
@@ -319,11 +321,20 @@ def confirm_failed_attempt(active, o):
         return False
     if not all(isfinite(v) and v > 0 for v in (o.price, o.bar_open)):
         return False
+    # Reclaiming the failed band's floor cancels the encounter, rather than
+    # letting an unrelated later red sequence confirm an obsolete failure.
+    if o.price >= level['lower']:
+        active.pop('pending_failed_attempt', None)
+        active.pop('failed_resistance_exit', None)
+        return False
     previous_ms = pending.get('last_bar_ms', pending['at_ms'])
     count = pending.get('red_closes', 1) if now_ms - previous_ms == 1000 else 0
     pending['last_bar_ms'] = now_ms
     pending['red_closes'] = count + 1 if o.price < o.bar_open else 0
-    if pending['red_closes'] < 2:
+    if (pending['red_closes'] < 2 or not previous_bar
+            or previous_bar['end'] != o.observed_at.timestamp()-1
+            or not isfinite(o.bar_low) or o.bar_low <= 0
+            or o.bar_low >= previous_bar['low'] or o.price >= previous_bar['open']):
         return False
     active.pop('pending_failed_attempt', None)
     active['failed_resistance_exit']['candle_confirmation'] = dict(
@@ -399,7 +410,7 @@ def evaluate(host, a, o, p, state):
     if acquired or pending:
         reason = ('session_flatten' if flatten else 'protective_stop' if stop and o.price <= stop
             else 'manual_exit' if state.get('manual_exit_requested') else 'macd_episode_ended' if macd_closed else '')
-        if not reason and acquired and active and confirm_failed_attempt(active,o):
+        if not reason and acquired and active and confirm_failed_attempt(active,o,previous_bar=d.get('prior_bar')):
             reason = 'red_close_below_attempt_open'
         if not reason and acquired and active and detector_fresh:
             if not d['contiguous'] or row.get('gap_before'):
