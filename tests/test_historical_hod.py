@@ -788,7 +788,7 @@ def test_restored_current_day_rejection_cannot_confirm_exit():
     assert 'pending_failed_attempt' not in active
 
 
-@pytest.mark.parametrize('interrupt',[None,'green','flat','gap'])
+@pytest.mark.parametrize('interrupt',[None,'green','flat','gap','new_projection'])
 def test_red_sequence_before_historical_failure_is_not_restarted(interrupt):
     host,a,_=acquired()
     # Three red closes remain in the historical 10.40--10.42 band.
@@ -799,10 +799,13 @@ def test_red_sequence_before_historical_failure_is_not_restarted(interrupt):
         r=host.evaluate(a,candle(index,close,opened=opened,position_quantity=100))
         assert not any(i.action=='exit' for i in r.evaluation.intents)
         a=replace(a,state=r.state,status=r.status)
+    if interrupt=='new_projection':
+        a.state['historical_hod_state']['rows']=[r for r in rows() if r['lower']!=10.4]
+        a.state['historical_hod_entry']['resistance_attempts']={}
     index=7 if interrupt=='gap' else 6
     r=host.evaluate(a,candle(index,10.38,opened=10.41,position_quantity=100))
     exits=[i for i in r.evaluation.intents if i.action=='exit']
-    if interrupt:
+    if interrupt in ('green','flat','gap'):
         assert not exits
     else:
         assert len(exits)==1 and exits[0].reason=='red_close_below_attempt_open'

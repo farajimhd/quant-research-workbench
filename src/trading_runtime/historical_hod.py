@@ -400,7 +400,8 @@ def evaluate(host, a, o, p, state):
                 active['failure_closes'] = 0; active.pop('rejection',None)
             else:
                 reason = management(row,active,d['bar'],s,tick,
-                    previous_bar=d.get('prior_bar'),resistance_levels=d.get('prior_rows',[]))
+                    previous_bar=d.get('prior_bar'),
+                    resistance_levels=(*d.get('prior_rows',[]), *d.get('rows',[])))
                 if reason == 'red_close_below_attempt_open':
                     count = active.get('red_candle_sequence', {}).get('count', 0)
                     if count >= 2:
