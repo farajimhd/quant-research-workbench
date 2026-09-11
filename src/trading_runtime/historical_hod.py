@@ -99,6 +99,19 @@ def stop_below(value, s, tick):
     return floor((value-max(tick,value*s['stop_buffer_bps']/10000))/tick+1e-9)*tick
 
 
+def initial_swing_low(row, boundary, now):
+    candidates = []
+    for level in row.get('local_swings',[]) + row.get('confirmed_swings',[]):
+        if (level.get('side') not in (1,'support') or level.get('state','active') != 'active'
+                or any(type(level.get(k)) not in (int,float) or not isfinite(level[k])
+                       for k in ('lower','price','upper','pivot_at','confirmed_at'))):
+            continue
+        if (0 < level['lower'] <= level['price'] <= level['upper'] < boundary['lower']
+                and 0 < level['pivot_at'] <= level['confirmed_at'] <= now):
+            candidates.append(level)
+    return deepcopy(max(candidates,key=lambda l:(l['pivot_at'],l['confirmed_at'],l['price']))) if candidates else None
+
+
 def target_selection(rows, broken, price, s, tick, *, minimum_target=0.):
     reference = broken['price']*(1+s['target_distance_fraction'])
     def placement(r):
@@ -384,6 +397,7 @@ def evaluate(host, a, o, p, state):
             order_intent={'execution_policy':'adaptive_urgent','protection_profile':'structural-single-target'},
             metadata={'initial_stop':entry['stop'],'active_stop':entry['stop'],'profit_targets':[entry['target']['price']],
                 'profit_target':entry['target']['price'],'mandatory_broker_target':True,'maximum_buy_price':entry['maximum_buy_price'],
+                'initial_stop_selection':entry['initial_stop_selection'],
                 'entry_selection':entry['level'],'profit_target_selection':entry['target'],
                 'unified_structural_trigger':{'current_snapshot':{'levels':[entry['level']], 'session_high':entry['hod'],
                     'selected_at':o.observed_at.isoformat(),'frozen_at_entry':True}}})
@@ -422,13 +436,17 @@ def evaluate(host, a, o, p, state):
     selected = target_selection(d['prior_rows'],boundary,max(o.ask,o.price),s,tick)
     if not selected:
         return result('wait','qualified_target_unavailable')
-    stop = stop_below(boundary['lower'],s,tick)
+    swing = initial_swing_low(row,boundary,now)
+    if swing is None:
+        return result('wait','confirmed_local_swing_low_unavailable')
+    stop = stop_below(swing['lower'],s,tick)
     # Bound execution slippage from the executable quote, not the last trade.
     ceiling = min(o.ask*(1+s['maximum_chase_bps']/10000),selected['price']-tick)
     if not 0 < stop < o.bid <= o.ask <= ceiling:
         return result('wait','invalid_stop_or_entry_price')
     atr = row.get('qualification',{}).get('atr') or 0.
     entry = dict(confirmed_at=now,level=boundary,hod=hod,stop=stop,target=selected,maximum_buy_price=ceiling,
+        initial_stop_selection=swing,
         initial_risk=o.ask-stop,best_close=o.price,episode=d['episode'],
         management_base=dict(lower=boundary['lower'],tolerance=max(tick,s['management_tolerance_atr']*atr)),hold_levels={})
     state.update(historical_hod_entry=entry,initial_stop=stop,active_stop=stop,structural_profit_targets=[selected['price']],

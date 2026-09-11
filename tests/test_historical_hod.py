@@ -17,8 +17,12 @@ def rows():
 
 def candle(i,price,opened=None,**kw):
     o,_ = observation(i,price-.01 if opened is None else opened,price)
+    market=deepcopy(o.structural_detector_state)
+    market['row']['local_swings']=[dict(side='support',lower=9.99,price=9.992,upper=9.995,
+        pivot_at=NOW.timestamp()-10,confirmed_at=NOW.timestamp()-5)]
     return replace(o,bar_volume=1000,execution_vwap=9.8,macd_line=.01,macd_signal=0.,
-        structural_session_high=10.3,structural_support_levels=(),structural_resistance_levels=rows(),**kw)
+        structural_session_high=10.3,structural_support_levels=(),structural_resistance_levels=rows(),
+        structural_detector_state=market,**kw)
 
 
 def ready():
@@ -44,7 +48,7 @@ def test_entry_close_non_red_and_complete_broker_protection():
     host,a,o=ready();r=host.evaluate(a,o)
     intent,=r.evaluation.intents
     assert intent.action=='enter_long'
-    assert intent.invalidation_price==pytest.approx(9.99)
+    assert intent.invalidation_price==pytest.approx(9.98)
     assert intent.profit_target_price==pytest.approx(10.54)
     assert len(intent.protection_profile.slices)==1
     assert intent.metadata['mandatory_broker_target']
@@ -66,6 +70,24 @@ def test_historical_priority_merged_ancestry_and_fallbacks():
     assert H.entry_level([],10.3,session)['reference_kind']=='hod'
 
 
+def test_initial_stop_uses_latest_confirmed_local_low_and_waits_when_missing():
+    host,a,o=ready()
+    old=dict(side='support',lower=9.9,price=9.91,upper=9.92,pivot_at=NOW.timestamp()-8,confirmed_at=NOW.timestamp()-4)
+    latest=dict(old,lower=9.8,price=9.81,upper=9.82,pivot_at=NOW.timestamp()-3,confirmed_at=o.observed_at.timestamp())
+    row=o.structural_detector_state['row']
+    row.update(local_swings=[old],confirmed_swings=[latest])
+    r=host.evaluate(a,o)
+    assert r.evaluation.intents[0].invalidation_price==pytest.approx(9.79)
+    assert r.evaluation.intents[0].metadata['initial_stop_selection']==latest
+    # Management still starts at the broken resistance; this is an initial-stop change only.
+    assert r.state['historical_hod_entry']['management_base']['lower']==10.
+    row.update(local_swings=[],confirmed_swings=[])
+    assert host.evaluate(a,o).evaluation.signals[0].reason=='confirmed_local_swing_low_unavailable'
+    row['confirmed_swings']=[dict(latest,confirmed_at=o.observed_at.timestamp()+1),
+        dict(latest,lower=10.1,price=10.11,upper=10.12),dict(latest,side='resistance')]
+    assert host.evaluate(a,o).evaluation.signals[0].reason=='confirmed_local_swing_low_unavailable'
+
+
 def test_fresh_cross_vwap_liquidity_and_stale_macd():
     host,a,o=ready()
     for changed in (replace(o,execution_vwap=o.price),replace(o,source_values={}),
@@ -85,6 +107,8 @@ def test_sugp_entry_accepts_fresh_ask_above_old_close_based_cap():
     a.state['historical_hod_state'].update(close=4.26,rows=levels,hod=4.34)
     o=replace(candle(2,4.3003,opened=4.27),bid=4.30,ask=4.31,execution_vwap=4.,
         structural_session_high=4.34,structural_resistance_levels=levels)
+    o.structural_detector_state['row']['local_swings']=[dict(side='support',lower=4.25,price=4.255,
+        upper=4.26,pivot_at=NOW.timestamp()-10,confirmed_at=NOW.timestamp()-5)]
     r=host.evaluate(a,o)
     intent,=r.evaluation.intents
     assert intent.action=='enter_long'
@@ -158,7 +182,7 @@ def test_target_advances_on_break_while_stop_waits_one_more_close():
     for i,price in ((3,10.43),(4,10.44)):
         r=host.evaluate(a,candle(i,price,position_quantity=100))
         if i==3:
-            assert r.state['active_stop']==pytest.approx(9.99)
+            assert r.state['active_stop']==pytest.approx(9.98)
         if i==3:
             intent,=r.evaluation.intents
             assert intent.action=='replace_profit_target'
@@ -167,7 +191,7 @@ def test_target_advances_on_break_while_stop_waits_one_more_close():
         a=replace(a,state=r.state,status=r.status)
     assert r.evaluation.intents[0].action=='replace_protective_stop'
     assert r.state['active_stop']==pytest.approx(10.39)
-    assert r.evaluation.intents[0].metadata['previous_stop']==pytest.approx(9.99)
+    assert r.evaluation.intents[0].metadata['previous_stop']==pytest.approx(9.98)
     assert r.state['structural_profit_targets']==pytest.approx([10.98])
 
 
@@ -282,15 +306,15 @@ def test_failed_hold_does_not_raise_stop():
     host,a,_=acquired()
     for i,price in ((3,10.43),(4,10.41),(5,10.44)):
         r=host.evaluate(a,candle(i,price,position_quantity=100));a=replace(a,state=r.state,status=r.status)
-    assert r.state['active_stop']==pytest.approx(9.99)
+    assert r.state['active_stop']==pytest.approx(9.98)
 
 
 def test_trailing_uses_frozen_actual_entry_risk_when_historical_unavailable():
     host,a,_=acquired()
     o=replace(candle(3,10.2,position_quantity=100,average_price=10.05),structural_resistance_levels=rows()[2:])
     r=host.evaluate(a,o)
-    assert r.state['historical_hod_entry']['initial_risk']==pytest.approx(.06)
-    assert r.state['active_stop']==pytest.approx(10.14)
+    assert r.state['historical_hod_entry']['initial_risk']==pytest.approx(.07)
+    assert r.state['active_stop']==pytest.approx(10.13)
 
 
 def test_swing_tolerance_is_management_only_and_requires_two_closes():
@@ -302,7 +326,7 @@ def test_swing_tolerance_is_management_only_and_requires_two_closes():
     assert H.management(row,active,bar,H.DEFAULTS,.01)==''
     assert H.management(row,active,bar,H.DEFAULTS,.01)=='protective_swing_failed'
     host,a,_=acquired()
-    r=host.evaluate(a,replace(candle(3,9.985,position_quantity=100),source_values={}))
+    r=host.evaluate(a,replace(candle(3,9.975,position_quantity=100),source_values={}))
     assert r.evaluation.intents[0].reason=='protective_stop'
 
 
