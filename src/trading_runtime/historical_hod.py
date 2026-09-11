@@ -6,7 +6,7 @@ Position management never grants permission to acquire additional shares.
 from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime
-from math import floor, isfinite
+from math import ceil, floor, isfinite
 from zoneinfo import ZoneInfo
 
 from .structural_recovery import DEFAULTS as QUALITY_DEFAULTS, LIQUIDITY_181, tradability
@@ -101,15 +101,20 @@ def stop_below(value, s, tick):
 
 def target_selection(rows, broken, price, s, tick, *, minimum_target=0.):
     reference = broken['price']*(1+s['target_distance_fraction'])
+    def placement(r):
+        offset = s['target_offset_ticks']*tick
+        return (ceil((r['upper']+offset)/tick-1e-9)*tick if r['price'] < reference
+            else floor((r['lower']-offset)/tick+1e-9)*tick)
     eligible = [r for r in rows if resistance(r) and r['lower'] > broken['upper']
-        and r['lower']-s['target_offset_ticks']*tick > price]
+        and placement(r) > price]
     if not eligible:
         return None
     level = min(eligible, key=lambda r:(abs(r['price']-reference),r['price']))
-    target = floor((level['lower']-s['target_offset_ticks']*tick)/tick+1e-9)*tick
+    target = placement(level)
     if target <= minimum_target+tick/2:
         return None
     return dict(price=target, level=deepcopy(level), reference=reference, broken_level=deepcopy(broken),
+        placement='above_upper_band' if level['price'] < reference else 'below_lower_band',
         selection_method='resistance_nearest_five_percent_above_broken_level')
 
 
@@ -412,7 +417,8 @@ def evaluate(host, a, o, p, state):
     if not selected:
         return result('wait','qualified_target_unavailable')
     stop = stop_below(boundary['lower'],s,tick)
-    ceiling = min(o.price*(1+s['maximum_chase_bps']/10000),selected['price']-tick)
+    # Bound execution slippage from the executable quote, not the last trade.
+    ceiling = min(o.ask*(1+s['maximum_chase_bps']/10000),selected['price']-tick)
     if not 0 < stop < o.bid <= o.ask <= ceiling:
         return result('wait','invalid_stop_or_entry_price')
     atr = row.get('qualification',{}).get('atr') or 0.

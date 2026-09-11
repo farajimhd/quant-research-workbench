@@ -77,6 +77,37 @@ def test_fresh_cross_vwap_liquidity_and_stale_macd():
     assert host.evaluate(replace(a,state=no_target),o).evaluation.signals[0].reason=='qualified_target_unavailable'
 
 
+def test_sugp_entry_accepts_fresh_ask_above_old_close_based_cap():
+    host,a,_=ready()
+    levels=tuple(dict(level(-1,low,high),price=price,
+        oldest_member_confirmed_at_ms=(NOW.timestamp()-86400)*1000)
+        for low,price,high in ((4.2736451,4.2745,4.290858),(4.4061186,4.44,4.440888)))
+    a.state['historical_hod_state'].update(close=4.26,rows=levels,hod=4.34)
+    o=replace(candle(2,4.3003,opened=4.27),bid=4.30,ask=4.31,execution_vwap=4.,
+        structural_session_high=4.34,structural_resistance_levels=levels)
+    r=host.evaluate(a,o)
+    intent,=r.evaluation.intents
+    assert intent.action=='enter_long'
+    assert intent.metadata['maximum_buy_price']==pytest.approx(4.31*1.0015)
+    assert intent.profit_target_price==pytest.approx(4.46)
+    assert intent.metadata['profit_target_selection']['placement']=='above_upper_band'
+    assert not host.evaluate(a,replace(o,ask=4.40)).evaluation.intents
+
+
+def test_target_placement_switches_at_five_percent_reference():
+    broken={'price':10.,'upper':10.01}
+    near=dict(level(-1,10.39,10.413),price=10.4)
+    far=dict(level(-1,10.59,10.61),price=10.6)
+    selected=H.target_selection([near],broken,10.1,H.DEFAULTS,.01)
+    assert selected['price']==pytest.approx(10.43)
+    assert selected['placement']=='above_upper_band'
+    selected=H.target_selection([far],broken,10.1,H.DEFAULTS,.01)
+    assert selected['price']==pytest.approx(10.58)
+    assert selected['placement']=='below_lower_band'
+    # Eligibility must use the actual upper-band placement, not the old lower-band price.
+    assert H.target_selection([near],broken,10.40,H.DEFAULTS,.01)['price']==pytest.approx(10.43)
+
+
 def test_only_completed_5s_macd_ends_episode():
     host,a,_=acquired()
     bearish=replace(candle(3,10.1,position_quantity=100),macd_line=-.1)
@@ -168,7 +199,7 @@ def test_current_day_break_and_stop_advance_can_update_both_orders_together():
     r=host.evaluate(a,candle(3,10.58,position_quantity=100))
     assert [i.action for i in r.evaluation.intents]==['replace_protective_stop','replace_profit_target']
     assert r.state['active_stop']==pytest.approx(10.1)
-    assert r.evaluation.intents[-1].profit_target_price==pytest.approx(10.94)
+    assert r.evaluation.intents[-1].profit_target_price==pytest.approx(10.98)
     assert r.evaluation.intents[-1].metadata['profit_target_selection']['broken_level']['lower']==10.55
 
 
