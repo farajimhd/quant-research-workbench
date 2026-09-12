@@ -56,6 +56,51 @@ def test_rejects_candidate_checkpoint():
         StreamingSwingBookV6(dict(version='causal-swing-closing-book-4'),10.)
 
 
+@pytest.mark.parametrize('side', ['support','resistance'])
+@pytest.mark.parametrize('change', ['flip','remove','republish'])
+def test_merged_pending_area_retains_qualified_survivor(side,change):
+    e=StreamingSwingBookV6(opening=0.)
+    old=found(e,10.,side)
+    new=found(e,10.04,side,confirmed_at=3.)
+    merged=e.snapshot()['unified_levels'][0]
+    assert merged['member_count']==2
+    for r in (old,new):
+        r.update(state='retest_contact',accepted_crossings=1)
+        e._level_updated(r)
+    e.snapshot()
+    if change=='remove':
+        del e.active[new['level_id']];e._level_removed(new['level_id'])
+    else:
+        new.update(state='active',accepted_crossings=0)
+        if change=='flip':
+            new.update(side='support' if side=='resistance' else 'resistance',last_role_change_at=4.,role_retests=0)
+        e._level_updated(new)
+    e.last_time=5.
+    result=e.snapshot()['unified_levels']
+    retained=next(r for r in result if r.get('retained_qualified_'+side))
+    assert retained['selection_members']==[str(old['level_id'])]
+    assert retained['lower']==old['lower'] and retained['upper']==old['upper']
+    assert retained['unified_level_id']!=merged['unified_level_id']
+    assert retained['selection_score']==40.
+    assert retained['oldest_member_confirmed_at_ms']==2000
+    assert len([k for r in result for k in r['selection_members']])==len({k for r in result for k in r['selection_members']})
+    old.update(state='active',side='support' if side=='resistance' else 'resistance',last_role_change_at=6.,role_retests=0)
+    e._level_updated(old)
+    assert not any(r.get('retained_qualified_'+side) for r in e.snapshot()['unified_levels'])
+
+
+def test_split_does_not_transfer_departed_members_qualification():
+    e=StreamingSwingBookV6(opening=0.)
+    weak=found(e,10.,'resistance',qualified=False)
+    strong=found(e,10.04,'resistance')
+    assert e.snapshot()['unified_levels'][0]['member_count']==2
+    for r in (weak,strong):
+        r['state']='retest_contact';e._level_updated(r)
+    e.snapshot()
+    del e.active[strong['level_id']];e._level_removed(strong['level_id'])
+    assert not e.snapshot()['unified_levels']
+
+
 @pytest.mark.parametrize('side', ['support', 'resistance'])
 def test_merged_area_preserves_oldest_member_confirmation(side):
     historical=StreamingSwingBookV6(opening=0.)

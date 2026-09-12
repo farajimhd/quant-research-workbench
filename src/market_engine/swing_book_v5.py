@@ -1,5 +1,6 @@
 """Causal v5 projection over the shared v4 detector; no market I/O on update."""
 from copy import deepcopy
+from types import SimpleNamespace
 from .swing_book import SwingBook, INTRADAY_VERSION, project
 from .resistance_selection import select_areas
 
@@ -40,6 +41,7 @@ class StreamingSwingBookV5(SwingBook):
         self.minimum_score, self.maximum_width_bps = minimum_score, maximum_width_bps
         self._selection = None
         self._qualified_references = {}
+        self._qualified_members = {}
         super().__init__(seed, opening, split_factor, version=INTRADAY_VERSION)
         if opening is not None:
             self.last_time = opening
@@ -75,19 +77,32 @@ class StreamingSwingBookV5(SwingBook):
             current = self._selection['unified_levels']
             active_members = {k for row in current for k in row.get('selection_members', [])}
             by_id = {str(r['level_id']): r for r in self.active.values()}
+            # Selection reads scalar fields only; a shallow copy freezes them
+            # without deep-copying every candidate on each completed second.
+            qualified_members = {k:dict(by_id[k]) for k in active_members}
             for key, row in self._qualified_references.items():
-                members = [by_id.get(k) for k in row['selection_members']]
                 side='resistance' if row['side']==-1 else 'support'
-                if (members and all(r and r['side']==side and
-                        r['state'] in ('active','awaiting_retest','retest_contact') for r in members)
-                        and not active_members.intersection(row['selection_members'])
-                        and any(r['state']!='active' for r in members)):
-                    lifecycle = ('retest_contact' if any(r['state']=='retest_contact' for r in members)
-                                 else 'awaiting_retest')
-                    retained=dict(row,lifecycle=lifecycle)
+                surviving = [k for k in row['selection_members'] if k in by_id and k not in active_members
+                    and by_id[k]['side']==side and by_id[k]['state'] in ('active','awaiting_retest','retest_contact')]
+                if not surviving or not any(by_id[k]['state']!='active' for k in surviving):
+                    continue
+                # Split mixed-role areas using evidence frozen when qualified.
+                # Do not inherit a departed member's score, geometry or identity.
+                retained_rows = [row] if surviving==row['selection_members'] else projection(
+                    SimpleNamespace(active={k:self._qualified_members[k] for k in surviving}),
+                    self.last_time,self.minimum_score,self.maximum_width_bps,self.selection_contract)['unified_levels']
+                for retained in retained_rows:
+                    ids=retained['selection_members']
+                    if not any(by_id[k]['state']!='active' for k in ids):
+                        continue
+                    lifecycle = 'retest_contact' if any(by_id[k]['state']=='retest_contact' for k in ids) else 'awaiting_retest'
+                    retained=dict(retained,lifecycle=lifecycle)
                     retained['retained_qualified_'+side]=True
                     current.append(retained)
+                    active_members.update(ids)
+                    qualified_members.update((k,self._qualified_members[k]) for k in ids)
             self._qualified_references = {r['unified_level_id']:dict(r) for r in current if 'selection_members' in r}
+            self._qualified_members = qualified_members
             self.selection_dirty = False
 
     def snapshot(self):
