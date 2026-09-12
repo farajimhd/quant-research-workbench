@@ -457,7 +457,7 @@ def green_stop_candidate(d, tick):
 
 
 def early_green_stop(active, d, tick):
-    """Three rising green closes; bodies may overlap. Retire at next break."""
+    """Arm on three rising greens; activate on the first completed red."""
     bar = d['bar']
     if active.get('early_green_graduated'):
         return
@@ -468,9 +468,17 @@ def early_green_stop(active, d, tick):
         return
     if active.get('early_green_stop'):
         return
-    candidate = green_stop_candidate(d,tick)
-    if candidate:
-        active['early_green_stop'] = candidate
+    if not d.get('contiguous'):
+        active.pop('early_green_pending', None)
+    if not active.get('early_green_pending'):
+        candidate = green_stop_candidate(d,tick)
+        if candidate:
+            active['early_green_pending'] = candidate
+    candidate = active.get('early_green_pending')
+    if candidate and bar['close'] < bar['open']:
+        active.pop('early_green_pending')
+        active['early_green_stop'] = dict(candidate, activated_at=d['closed_at'],
+            activation_candle=deepcopy(bar))
         active['desired_stop'] = max(active.get('desired_stop', 0), candidate['price'])
 
 
@@ -903,7 +911,7 @@ def evaluate(host, a, o, p, state):
         # Reclaim continues the initial protection phase of this episode; it
         # must not discard the remembered stop for the older local swing low.
         initial_green = deepcopy(saved_reentry['early_green_stop'])
-    if initial_green:
+    if reclaim:
         stop = max(stop,initial_green['price'])
     if luld:
         stop = max(stop,luld['lower_exit'])
@@ -923,8 +931,11 @@ def evaluate(host, a, o, p, state):
         initial_risk=o.ask-stop,best_close=o.price,episode=d['episode'],
         management_base=dict(lower=boundary['lower'],tolerance=max(tick,s['management_tolerance_atr']*atr)),hold_levels={})
     if initial_green:
-        entry['early_green_stop'] = initial_green
-        entry['initial_stop_selection'] = dict(swing,early_green_stop=deepcopy(initial_green))
+        if reclaim:
+            entry['early_green_stop'] = initial_green
+            entry['initial_stop_selection'] = dict(swing,early_green_stop=deepcopy(initial_green))
+        else:
+            entry['early_green_pending'] = initial_green
     state.update(historical_hod_entry=entry,initial_stop=stop,active_stop=stop,structural_profit_targets=[selected['price']],
         entry_reference_price=o.ask,entry_at=o.observed_at.isoformat(),entries=state.get('entries',0)+1,
         last_exit_reason='',entry_acquisition_exit_latched=False)
