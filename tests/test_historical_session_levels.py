@@ -82,7 +82,8 @@ def test_chart_serializes_same_authoritative_levels_for_every_timeframe():
     assert '</script><script>alert(1)' not in render(result,bars,profile)
 
 
-def test_source_volume_reconciliation_and_utc_year_boundary(monkeypatch):
+@pytest.mark.parametrize('window_hours',[2,16])
+def test_source_volume_reconciliation_and_utc_year_boundary(monkeypatch,window_hours):
     from src.backend import historical_session_level_source as source
     rules=[dict(token_id=1,modifier_int=0,update_last=1,update_high_low=1,update_volume=1)]
     monkeypatch.setattr(source,'source_metadata',lambda *a,**kw:({'token':'fixed'},rules))
@@ -93,7 +94,8 @@ def test_source_volume_reconciliation_and_utc_year_boundary(monkeypatch):
             return [dict(t=len(sqls)*2,open=10.,high=10.,low=10.,close=10.,volume=10.,trades=1,last_count=1,extrema_count=1),
                 dict(t=len(sqls)*2+1,volume=5.,trades=1,last_count=0,extrema_count=0)]
         return [dict(price=10.,volume=15.)]
-    bars,profile,audit=source.load('TEST','2026-12-31',query=query)
+    bars,profile,audit=source.load('TEST','2026-12-31',query=query,window_hours=window_hours)
+    assert len(audit['audit'])==16//window_hours
     assert sum(p['volume'] for p in profile)==sum(b['volume'] for b in bars)+sum(a['price_unavailable_volume'] for a in audit['audit'])
     assert any('events_(2026|2027)' in s for s in sqls)
     assert all('market_sip_compact' in s and 'file(' not in s for s in sqls)
@@ -101,4 +103,4 @@ def test_source_volume_reconciliation_and_utc_year_boundary(monkeypatch):
         result=query(sql)
         if 'GROUP BY t' not in sql:result[0]['volume']=100.
         return result
-    with pytest.raises(ValueError,match='disagree'):source.load('TEST','2026-12-31',query=bad)
+    with pytest.raises(ValueError,match='disagree'):source.load('TEST','2026-12-31',query=bad,window_hours=window_hours)

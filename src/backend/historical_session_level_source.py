@@ -13,7 +13,9 @@ def _query(sql):
     return [json.loads(line) for line in client.execute(sql+' FORMAT JSONEachRow').splitlines() if line]
 
 
-def load(ticker,session,query=_query,progress=None):
+def load(ticker,session,query=_query,progress=None,*,window_hours=2):
+    if window_hours not in (2,4,8,16):
+        raise ValueError('Canonical aggregation window must divide the 16-hour session')
     revision,rules=source_metadata(ticker,session,query,policy=HISTORICAL_POLICY)
     start,end=session_bounds(session)
     tokens=lambda pred:'['+','.join(str(r['token_id']) for r in rules if pred(r))+']'
@@ -40,8 +42,9 @@ def load(ticker,session,query=_query,progress=None):
           WHERE ticker='{ticker}' AND sip_timestamp_us>={int(left.timestamp()*1e6)} AND sip_timestamp_us<{int(right.timestamp()*1e6)}
           AND bitAnd(event_meta,1)=1 AND price_primary_int>0 AND size_primary>0"""
     bars=[];profile={};audit=[]
-    for i in range(8):
-        left=start+timedelta(hours=2*i);right=left+timedelta(hours=2)
+    windows=16//window_hours
+    for i in range(windows):
+        left=start+timedelta(hours=window_hours*i);right=left+timedelta(hours=window_hours)
         sql=source(left,right)
         rows=query(f"""SELECT intDiv(sip_timestamp_us,1000000)+1 AS t,
           argMinIf(price,tuple(sip_timestamp_us,ordinal),last_ok) AS open,
@@ -59,7 +62,7 @@ def load(ticker,session,query=_query,progress=None):
             price_unavailable_seconds=skipped,price_unavailable_volume=skipped_volume))
         for r in query(f'SELECT price,sumIf(size,volume_ok) AS volume FROM ({sql}) GROUP BY price HAVING volume>0 ORDER BY price'):
             price=float(r['price']);profile[price]=profile.get(price,0.)+float(r['volume'])
-        if progress:progress(i+1,8)
+        if progress:progress(i+1,windows)
     if source_metadata(ticker,session,query,policy=HISTORICAL_POLICY)[0]['token']!=revision['token']:
         raise ValueError('Canonical session changed during extraction')
     if not isclose(sum(profile.values()),sum(b['volume'] for b in bars)+sum(r['price_unavailable_volume'] for r in audit),rel_tol=1e-10,abs_tol=1e-4):
