@@ -67,6 +67,15 @@ def test_corrupt_checkpoint_and_wrong_input_fail_closed():
     with pytest.raises(ValueError,match='input hash'):consolidate(old,second,bars,profile)
 
 
+def test_new_geometry_cannot_silently_extend_an_old_wide_book():
+    first,_,_=day('2026-08-21');old=seed(first)
+    old.pop('source_extraction_version')
+    old['checkpoint_hash']=digest({k:v for k,v in old.items() if k!='checkpoint_hash'})
+    second,bars,profile=day('2026-08-24')
+    with pytest.raises(ValueError,match='rebuild a separate book'):
+        consolidate(old,second,bars,profile)
+
+
 def test_weakening_is_explicit_and_untouched_day_does_not_restore_strength():
     row=dict(contributions=[dict(session='2026-08-21',encounters=[{}],support_rejections=1,
         resistance_rejections=0,accepted_crossings=4,profile_volume=100)])

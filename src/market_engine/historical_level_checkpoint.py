@@ -62,6 +62,7 @@ def seed(extraction,policy=Policy(),*,reaction_inputs=None):
             update_center(row,extraction['session'],extraction['available_at'],extraction['settings']['tick'])
     result=dict(version=VERSION,ticker=extraction['ticker'],session=extraction['session'],available_at=extraction['available_at'],
         prior_checkpoint_hash=None,source_extraction_hash=digest(extraction),policy=asdict(policy),split_audit=[],
+        source_extraction_version=extraction['version'],
         counts=dict(prior=0,carried=0,matched_zones=0,new=len(rows),weakened=sum(r['strength_status']=='weakened' for r in rows)),levels=rows)
     if reaction_inputs is not None:result['reaction_center_config']=CENTER_CONFIG.copy()
     result['checkpoint_hash']=digest(result)
@@ -74,6 +75,8 @@ def consolidate(prior,extraction,bars,profile,*,split_factor=1.,split_evidence=(
         raise ValueError('Prior checkpoint integrity mismatch')
     if prior['version']!=VERSION or prior['ticker']!=extraction['ticker']:
         raise ValueError('Checkpoint identity mismatch')
+    if prior.get('source_extraction_version','historical-session-reaction-zones-1')!=extraction['version']:
+        raise ValueError('Extraction geometry version changed; rebuild a separate book from its seed')
     centers='reaction_center_config' in prior
     if centers and prior['reaction_center_config']!=CENTER_CONFIG:
         raise ValueError('Reaction center model version mismatch')
@@ -136,6 +139,7 @@ def consolidate(prior,extraction,bars,profile,*,split_factor=1.,split_evidence=(
     added=seed(dict(extraction,levels=fresh),policy,reaction_inputs=(bars,profile) if centers else None)['levels'];rows.extend(added)
     result=dict(version=VERSION,ticker=extraction['ticker'],session=extraction['session'],available_at=end,
         prior_checkpoint_hash=prior['checkpoint_hash'],source_extraction_hash=digest(extraction),policy=asdict(policy),
+        source_extraction_version=extraction['version'],
         split_audit=[*prior['split_audit'],dict(session=extraction['session'],price_factor=split_factor,evidence=list(split_evidence))],
         counts=dict(prior=len(prior['levels']),carried=len(prior['levels']),matched_zones=sum(map(len,matched.values())),
             new=len(added),weakened=sum(r['strength_status']=='weakened' for r in rows)),levels=sorted(rows,key=lambda r:(r['price'],r['id'])))

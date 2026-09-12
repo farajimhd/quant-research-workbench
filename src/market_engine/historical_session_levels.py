@@ -6,7 +6,7 @@ import json
 import numpy as np
 from scipy.signal import find_peaks
 
-VERSION = 'historical-session-reaction-zones-1'
+VERSION = 'historical-session-reaction-zones-2'
 
 
 def role_timeline(encounters, session_end, *, initial_role=None, session_start=None):
@@ -45,6 +45,7 @@ class Settings:
     tick: float = .01
     noise_multiple: float = 6.
     range_fraction: float = .05
+    band_noise_multiple: float = 1.
     reaction_seconds: int = 180
     maximum_gap_seconds: int = 60
     minimum_rejections: int = 2
@@ -84,12 +85,22 @@ def encounter_evidence(bars, lower, upper, prominence, half, settings):
         hits=np.flatnonzero(rejection|acceptance)
         j=i+1+int(hits[0]) if len(hits) else end-1
         outcome=('rejection' if rejection[hits[0]] else 'acceptance') if len(hits) else 'unresolved'
+        reason=None
+        if outcome=='rejection':
+            turning=float(h[i:j+1].max() if role=='resistance' else l[i:j+1].min())
+            # Traversing a band on the way to a different turning price is not
+            # evidence that this band caused the reversal. Retain the encounter
+            # without awarding the same reaction to a staircase of candidates.
+            tolerance=max(1.,abs(lower),abs(upper))*1e-12
+            if turning<lower-tolerance or turning>upper+tolerance:
+                outcome='unresolved';reason='turning_extreme_outside_band'
         # Time-window baseline includes empty seconds; no future baseline.
         prior=int(np.searchsorted(t,t[i]-60))
         baseline=float(v[prior:i].sum()/max(1,t[i]-max(t[0],t[i]-60)))
         duration=max(1,t[j]-t[i]+1)
         encounters.append(dict(at=float(t[i]),resolved_at=float(t[j]),role=role,outcome=outcome,
             volume=float(v[i:j+1].sum()),relative_volume=float(v[i:j+1].sum()/duration/baseline) if baseline>0 else None))
+        if reason is not None:encounters[-1]['reason']=reason
     return encounters
 
 def extract(bars, profile, *, ticker, session, available_at, source, settings=Settings()):
@@ -100,7 +111,7 @@ def extract(bars, profile, *, ticker, session, available_at, source, settings=Se
     chart-timeframe parameter, prior seed, or hidden top-N truncation exists.
     """
     s=settings
-    if (not all(np.isfinite(x) for x in asdict(s).values()) or s.tick<=0 or s.noise_multiple<=0 or s.range_fraction<=0
+    if (not all(np.isfinite(x) for x in asdict(s).values()) or s.tick<=0 or s.noise_multiple<=0 or s.range_fraction<=0 or s.band_noise_multiple<=0
             or s.reaction_seconds<=0 or s.maximum_gap_seconds<=0 or s.minimum_rejections<1
             or not 0<=s.minimum_role_rejection_fraction<=1):
         raise ValueError('Invalid extraction settings')
@@ -119,7 +130,9 @@ def extract(bars, profile, *, ticker, session, available_at, source, settings=Se
     ranges=h-l
     noise=float(np.median(ranges[ranges>0])) if np.any(ranges>0) else s.tick
     prominence=max(3*s.tick,s.noise_multiple*noise,(h.max()-l.min())*s.range_fraction)
-    half=max(s.tick,np.ceil(prominence/4/s.tick)*s.tick)
+    # Reaction magnitude selects significant moves; it is not price-location
+    # uncertainty. A distant session extreme must not widen every candidate.
+    half=max(s.tick,np.ceil(s.band_noise_multiple*noise/s.tick-1e-9)*s.tick)
     # Break the sequence at data gaps: no extrema or encounters bridge a gap.
     cuts=np.r_[0,np.flatnonzero(np.diff(t)>s.maximum_gap_seconds)+1,len(t)]
     proposals=[]
@@ -150,9 +163,13 @@ def extract(bars, profile, *, ticker, session, available_at, source, settings=Se
     for group in groups:
         prices=np.array([x[0] for x in group]);weights=np.array([x[1] for x in group])
         center=float(prices[np.searchsorted(np.cumsum(weights),weights.sum()/2)])
-        lower=round(np.floor((center-half)/s.tick+1e-9)*s.tick,8)
-        upper=round(np.ceil((center+half)/s.tick-1e-9)*s.tick,8)
-        center=round((lower+upper)/2,8)
+        # Snap the center first: rounding each edge of a fractional-tick center
+        # independently otherwise adds an unintended extra tick to the band.
+        center=round(np.floor(center/s.tick+.5)*s.tick,8)
+        lower=round(center-half,8)
+        upper=round(center+half,8)
+        if lower<=0:
+            raise ValueError('Band geometry reaches nonpositive prices; review tick and noise settings')
         encounters=encounter_evidence(bars,lower,upper,prominence,half,s)
         supports=sum(e['outcome']=='rejection' and e['role']=='support' for e in encounters)
         resistances=sum(e['outcome']=='rejection' and e['role']=='resistance' for e in encounters)
@@ -169,7 +186,11 @@ def extract(bars, profile, *, ticker, session, available_at, source, settings=Se
             profile_volume=profile_volume,role_rejection_fraction=role_quality,proposal_sources=sorted({x[2] for x in group}),
             closing_role='support' if c[-1]>upper else 'resistance' if c[-1]<lower else 'within_band',
             evidence_role='both' if supports and resistances else 'support' if supports else 'resistance' if resistances else 'unconfirmed',
-            available_at=available_at)
+            available_at=available_at,
+            geometry_evidence=dict(method='tick_rounded_noise_band',proposal_count=len(group),
+                proposal_min=float(prices.min()),proposal_max=float(prices.max()),
+                proposal_span=float(np.ptp(prices)),width_bps=(upper-lower)/center*10000,
+                uncertainty='not_calibrated'))
         row['role_segments']=role_timeline(encounters,available_at)
         row['first_confirmed_at']=row['role_segments'][0]['start'] if row['role_segments'] else None
         # Do not erase a proven reaction area merely because it was later crossed.

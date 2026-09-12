@@ -54,6 +54,46 @@ def test_reaction_zone_is_not_erased_by_final_crossing():
     assert zone['closing_role']=='support'
 
 
+def test_large_session_move_does_not_widen_bands():
+    bars,profile=example()
+    first=run(bars,profile)
+    for c in np.linspace(10,30,150):
+        bars.append(dict(t=bars[-1]['t']+1,open=float(c),high=float(c+.01),low=float(c-.01),close=float(c),volume=100.))
+    second=run(bars,profile)
+    assert second['geometry']['prominence']>first['geometry']['prominence']
+    assert second['geometry']['half_width']==first['geometry']['half_width']
+    assert second['input_sha256']!=first['input_sha256']
+
+
+def test_fractional_tick_proposals_do_not_add_an_extra_tick_of_width():
+    bars,profile=example()
+    for b in bars:
+        for key in ('open','high','low','close'):b[key]+=.004
+    result=run(bars,profile)
+    for zone in result['levels']+result['rejected']:
+        assert zone['upper']-zone['lower']==pytest.approx(2*result['geometry']['half_width'])
+        assert zone['geometry_evidence']['uncertainty']=='not_calibrated'
+        assert zone['geometry_evidence']['proposal_span']<=2*result['geometry']['half_width']+1e-9
+
+
+def test_reversal_elsewhere_does_not_qualify_a_traversed_band():
+    from src.market_engine.historical_session_levels import encounter_evidence
+    prices=[9.5,10.,10.5,9.5]
+    bars=[dict(t=i+1,open=p,high=p,low=p,close=p,volume=100.) for i,p in enumerate(prices)]
+    crossed=encounter_evidence(bars,9.99,10.01,.1,.01,Settings())
+    turning=encounter_evidence(bars,10.49,10.51,.1,.01,Settings())
+    assert crossed[0]['outcome']=='unresolved'
+    assert crossed[0]['reason']=='turning_extreme_outside_band'
+    assert turning[0]['outcome']=='rejection'
+
+
+@pytest.mark.parametrize('multiple',[0,-1,float('nan')])
+def test_invalid_band_noise_setting_fails_closed(multiple):
+    bars,profile=example()
+    with pytest.raises(ValueError,match='Invalid extraction settings'):
+        run(bars,profile,settings=Settings(band_noise_multiple=multiple))
+
+
 @pytest.mark.parametrize('kind',['nan','duplicate','ohlc','negative_volume'])
 def test_invalid_data_fails_closed(kind):
     bars,profile=example()

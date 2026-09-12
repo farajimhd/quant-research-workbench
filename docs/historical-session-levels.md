@@ -1,4 +1,24 @@
-# Whole-session historical levels, version 1
+# Whole-session historical levels, version 2
+
+Version 2 separates band geometry from reaction magnitude. Band half-width is
+the median nonzero canonical one-second range times `band_noise_multiple`
+(default 1), rounded upward to a whole tick, with a one-tick minimum. Session
+range still helps select significant reactions, but no longer broadens every
+band or its proposal-clustering tolerance. Centers are rounded before the edges
+are constructed, avoiding an accidental extra tick of width. These are explicit
+noise-based engineering bands, not calibrated confidence intervals; each level
+records proposal span, count, and width in basis points separately.
+
+A rejection qualifies only when the resistance high or support low between
+contact and resolution lies inside the band. An excursion that turns elsewhere
+is retained as unresolved with `turning_extreme_outside_band`, rather than
+crediting every traversed candidate for the same reversal.
+
+Rebuild into a new runtime directory from the original seed inputs. Consolidation
+rejects mixing extraction versions; it cannot repair wide old bands by appending
+a new session because historical geometry deliberately remains fixed. Existing
+trained models and their hash-pinned books are unchanged. The revised independent
+charts do not replace the book used by an existing model in Replay.
 
 This is an independent retrospective experiment, not a replacement for V6 or
 algorithm 18. It accepts one completed session and no past-level seed. Its
@@ -27,8 +47,9 @@ The fixed input resolution is one second, independent of chart settings:
    at least 8% of the maximum smoothed bin volume. This proposes zones; volume
    alone does not qualify a support or resistance.
 3. Cluster proposals with a bounded price span, rather than transitive chaining.
-   Use the prominence-weighted median and a tick-rounded half-width of at least
-   one tick or one quarter of the reaction prominence.
+   Use the prominence-weighted median, snap it to the nearest tick, and use the
+   noise-based half-width described above. Cluster span is at most twice that
+   half-width; a sequence of neighboring proposals cannot chain into a wide band.
 4. Study independent encounters. A zone rearms only after price departs by the
    reaction prominence. After a touch, evaluate up to 180 seconds, stopping at
    data gaps. A favorable close beyond the prominence is a rejection. Two
