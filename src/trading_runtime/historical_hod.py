@@ -590,6 +590,12 @@ def evaluate(host, a, o, p, state):
     target = float((state.get('structural_profit_targets') or [0])[0])
     acquired = o.position_quantity > 0
     local_clock = o.observed_at.astimezone(NY)
+    # TODO(paper-trading halt review): LULD buffers do not guarantee an exit
+    # before a halt. Add explicit halt/reopening handling across strategy, OMS
+    # and simulation after collecting paper-test evidence: outstanding entries,
+    # unfilled exits/protection, fresh reopening quotes/bands, and positions
+    # carried beyond the session cutoff. EXIT_PENDING is not a confirmed fill;
+    # estimated LULD currently does not reconstruct halt/reopening resets.
     regular = bool(s['regular_luld_enabled']) and (9,30) <= (local_clock.hour,local_clock.minute) < (16,0)
     luld = regular_luld(o,s,tick,state.setdefault('backtest_luld_estimate',{}) if s['backtest_luld_estimation_enabled'] else None) if regular else None
     prior_close = o.previous_close
