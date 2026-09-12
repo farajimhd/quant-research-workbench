@@ -183,6 +183,38 @@ def target_selection(rows, broken, price, s, tick, *, session, minimum_target=0.
         selection_method='resistance_nearest_five_percent_above_broken_level')
 
 
+def available_target(rows, price, s, tick, *, session, minimum_target=0., synthetic_base=None, reference_price=None):
+    """Keep real resistance priority; extend an exhausted ladder by 10% steps."""
+    anchor = next_historical_resistance(rows,price if reference_price is None else reference_price,session)
+    if anchor:
+        selected = target_selection(rows,anchor,price,s,tick,session=session,minimum_target=minimum_target)
+        if selected:
+            return selected
+        # A real candidate that cannot raise the target must not be skipped.
+        if target_selection(rows,anchor,price,s,tick,session=session):
+            return None
+        base = anchor['upper']
+    else:
+        base = synthetic_base if synthetic_base is not None else price
+        def step(value):
+            return ceil(value*1.10/tick-1e-9)*tick
+        value = step(base)
+        while value <= price:
+            value = step(value)
+        anchor = dict(price=value,lower=value,upper=value,side='resistance',
+            reference_kind='synthetic',unified_level_id=f'synthetic:{value:.10f}')
+        base = anchor['upper']
+    level_price = ceil(base*1.10/tick-1e-9)*tick
+    target = floor((level_price-s['target_offset_ticks']*tick)/tick+1e-9)*tick
+    if target <= max(price,minimum_target+tick/2):
+        return None
+    level = dict(price=level_price,lower=level_price,upper=level_price,side='resistance',
+        reference_kind='synthetic',unified_level_id=f'synthetic:{level_price:.10f}')
+    return dict(price=target,level=level,reference=level_price,broken_level=deepcopy(anchor),
+        trigger_level=deepcopy(anchor),placement='below_lower_band',synthetic_step_fraction=.10,
+        selection_method='synthetic_ten_percent_resistance_ladder')
+
+
 def resistance_attempts(active, bar, previous_bar, levels):
     """Freeze bands for contiguous candle encounters, including multi-bar retests."""
     contiguous = previous_bar and previous_bar['end'] == bar['time']
@@ -724,7 +756,7 @@ def evaluate(host, a, o, p, state):
                         and r['price'] > cleared['price']):
                     pending_levels[str(r['unified_level_id'])] = dict(level=r,count=0)
             trigger = active['target'].get('trigger_level')
-            if not regular and d['contiguous'] and trigger and historical(trigger, session) and o.price > trigger['upper']:
+            if not regular and d['contiguous'] and trigger and (historical(trigger, session) or trigger.get('reference_kind')=='synthetic') and o.price > trigger['upper']:
                 target_breaks[str(trigger['unified_level_id'])] = deepcopy(trigger)
             if regular:
                 target_breaks.clear()
@@ -738,12 +770,12 @@ def evaluate(host, a, o, p, state):
                 del target_breaks[key]
                 # Rebase above this completed close, including when it cleared
                 # several bands. The old target is not the next reference.
-                anchor = next_historical_resistance(d['rows'],o.price,session)
-                selected = (target_selection(d['rows'],anchor,max(o.price,o.ask),s,tick,
-                    session=session,minimum_target=target) if anchor else None)
+                selected = available_target(d['rows'],max(o.price,o.ask),s,tick,
+                    session=session,minimum_target=target,synthetic_base=r['upper'],reference_price=o.price)
                 if selected:
-                    selected.update(triggering_breakout=deepcopy(r),
-                        selection_method='resistance_nearest_five_percent_above_next_historical_resistance')
+                    selected['triggering_breakout'] = deepcopy(r)
+                    if 'synthetic_step_fraction' not in selected:
+                        selected['selection_method'] = 'resistance_nearest_five_percent_above_next_historical_resistance'
                 if selected and selected['price'] >= active.get('desired_target',{}).get('price',target):
                     active['desired_target'] = selected
             if len(target_breaks)>4096:
@@ -773,8 +805,7 @@ def evaluate(host, a, o, p, state):
                 active['desired_target'] = luld
                 active['desired_stop'] = max(active.get('desired_stop',0),luld['lower_exit'])
         elif fresh and active['target'].get('selection_method') in ('official_luld','estimated_luld'):
-            anchor = next_historical_resistance(d['rows'],max(o.price,o.ask),session)
-            active['desired_target'] = target_selection(d['rows'],anchor,max(o.price,o.ask),s,tick,session=session) if anchor else None
+            active['desired_target'] = available_target(d['rows'],max(o.price,o.ask),s,tick,session=session)
         proposed = active.get('desired_stop',0)
         replacements = []
         early = active.get('early_green_stop') or {}
@@ -901,9 +932,7 @@ def evaluate(host, a, o, p, state):
     evidence['entry_selection']['recent_breakout'] = deepcopy(recent) if recent_held else None
     if not crossed and not recent_held and not reclaim:
         return result('wait','waiting_for_fresh_body_high_break' if require_body_high else 'waiting_for_fresh_resistance_break')
-    target_anchor = next_historical_resistance(d['rows'],max(o.ask,o.price),session)
-    selected = (target_selection(d['rows'],target_anchor,max(o.ask,o.price),s,tick,session=session)
-        if target_anchor else None)
+    selected = available_target(d['rows'],max(o.ask,o.price),s,tick,session=session)
     if regular:
         selected = luld
     if not selected:

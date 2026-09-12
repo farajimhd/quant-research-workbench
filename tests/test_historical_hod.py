@@ -634,8 +634,97 @@ def test_fresh_cross_vwap_liquidity_and_stale_macd():
         assert not host.evaluate(a,changed).evaluation.intents
     state=deepcopy(a.state);state['historical_hod_state']['close']=10.03
     assert not host.evaluate(replace(a,state=state),o).evaluation.intents
-    no_target=deepcopy(a.state);no_target['historical_hod_state']['rows']=[rows()[0]]
-    assert host.evaluate(replace(a,state=no_target),replace(o,structural_resistance_levels=(rows()[0],))).evaluation.signals[0].reason=='qualified_target_unavailable'
+
+
+def synthetic_position():
+    host,a,o=ready()
+    a.state['historical_hod_state']['rows']=[rows()[0]]
+    o=replace(o,structural_resistance_levels=(rows()[0],))
+    r=host.evaluate(a,o)
+    intent,=r.evaluation.intents
+    assert intent.action=='enter_long'
+    assert intent.invalidation_price==pytest.approx(9.98)
+    selected=intent.metadata['profit_target_selection']
+    assert selected['selection_method']=='synthetic_ten_percent_resistance_ladder'
+    assert selected['trigger_level']['upper']==pytest.approx(11.05)
+    assert selected['price']==pytest.approx(12.15)
+    assert not H.historical(selected['level'],'2026-08-21')
+    return host,replace(a,state=r.state,status=S.AssignmentStatus.MANAGING)
+
+
+def test_missing_historical_targets_use_synthetic_ladder_with_swing_low_stop():
+    synthetic_position()
+
+
+def test_no_levels_uses_hod_entry_and_synthetic_target():
+    host,a,_=ready()
+    a.state['historical_hod_state']['rows']=[]
+    o=replace(candle(2,10.32),structural_resistance_levels=())
+    r=host.evaluate(a,o)
+    intent,=r.evaluation.intents
+    assert intent.action=='enter_long'
+    assert r.state['historical_hod_entry']['level']['reference_kind']=='hod'
+    assert intent.invalidation_price==pytest.approx(9.98)
+    assert intent.metadata['profit_target_selection']['level']['reference_kind']=='synthetic'
+
+
+def test_regular_luld_keeps_priority_without_historical_targets():
+    host,a,o=ready()
+    a.parameters['historical_hod']['regular_luld_enabled']=1
+    a.state['historical_hod_state']['rows']=[rows()[0]]
+    o=replace(o,previous_close=1.,official_luld_band=official_band(o),structural_resistance_levels=(rows()[0],))
+    r=host.evaluate(a,o)
+    intent,=r.evaluation.intents
+    assert intent.metadata['profit_target_selection']['selection_method']=='official_luld'
+
+
+def test_synthetic_promotion_requires_completed_non_red_close_and_keeps_grid():
+    host,a=synthetic_position()
+    original_rows=deepcopy(a.state['historical_hod_state']['rows'])
+    def obs(i,price,**kw):
+        return replace(candle(i,price,position_quantity=100,**kw),structural_resistance_levels=(rows()[0],))
+    for o in (replace(obs(3,11.07),evaluation_events=('market_data_update',)),
+              obs(3,11.07,opened=11.08)):
+        r=host.evaluate(a,o)
+        assert not any(v.action=='replace_profit_target' for v in r.evaluation.intents)
+    r=host.evaluate(a,obs(3,11.07))
+    target=next(v for v in r.evaluation.intents if v.action=='replace_profit_target')
+    selected=target.metadata['profit_target_selection']
+    assert selected['trigger_level']['upper']==pytest.approx(12.16)
+    assert target.profit_target_price==pytest.approx(13.37)
+    assert r.state['historical_hod_state']['rows']==original_rows
+    assert r.state['historical_hod_entry']['last_cleared_resistance']['upper']==pytest.approx(10.02)
+    a=replace(a,state=r.state,status=r.status)
+    r=host.evaluate(a,obs(4,12.18))
+    target=next(v for v in r.evaluation.intents if v.action=='replace_profit_target')
+    assert target.metadata['profit_target_selection']['trigger_level']['upper']==pytest.approx(13.38)
+    assert target.profit_target_price==pytest.approx(14.71)
+
+
+def test_synthetic_gap_advance_and_return_to_real_historical_targets():
+    selected=H.available_target([],13.,H.DEFAULTS,.01,session='2026-08-21',synthetic_base=11.05,minimum_target=12.15)
+    assert selected['trigger_level']['upper']==pytest.approx(13.38)
+    assert selected['price']==pytest.approx(14.71)
+    real=H.available_target(rows(),10.43,H.DEFAULTS,.01,session='2026-08-21',synthetic_base=10.,minimum_target=10.5)
+    assert H.historical(real['level'],'2026-08-21')
+    assert real['trigger_level']==rows()[2]
+
+
+def test_synthetic_target_preserves_sparse_and_distant_historical_levels():
+    session='2026-08-21'
+    # Even a distant real ladder keeps the original selection exactly.
+    distant=[dict(r,lower=r['lower']*10,upper=r['upper']*10,price=r['price']*10) for r in rows()]
+    expected=H.target_selection(distant,distant[0],10.05,H.DEFAULTS,.01,session=session)
+    assert H.available_target(distant,10.05,H.DEFAULTS,.01,session=session)==expected
+    # One remaining real level stays the trigger, with synthetic extension above it.
+    selected=H.available_target([rows()[1]],10.05,H.DEFAULTS,.01,session=session)
+    assert selected['trigger_level']==rows()[1]
+    assert selected['price']==pytest.approx(11.46)
+    # A historical target that cannot advance is not bypassed by synthetic levels.
+    assert H.available_target(rows(),10.43,H.DEFAULTS,.01,session=session,minimum_target=12.03) is None
+    # Promotion anchors use the close even when the ask lies above that band.
+    expected=H.target_selection(rows(),rows()[1],10.44,H.DEFAULTS,.01,session=session)
+    assert H.available_target(rows(),10.44,H.DEFAULTS,.01,session=session,reference_price=10.39)==expected
 
 
 def test_sugp_entry_accepts_fresh_ask_above_old_close_based_cap():
@@ -1391,8 +1480,12 @@ def test_multilevel_close_rebases_above_close_not_old_target(next_available):
     r=host.evaluate(a,replace(candle(3,11.,position_quantity=100),structural_resistance_levels=levels))
     targets=[v for v in r.evaluation.intents if v.action=='replace_profit_target']
     if not next_available:
-        assert not targets
-        assert r.state['structural_profit_targets']==[10.94]
+        target,=targets
+        selected=target.metadata['profit_target_selection']
+        assert selected['selection_method']=='synthetic_ten_percent_resistance_ladder'
+        assert selected['trigger_level']['upper'] > 11.
+        assert target.profit_target_price > selected['trigger_level']['upper']
+        assert r.state['structural_profit_targets']==[target.profit_target_price]
         return
     target,=targets
     selection=target.metadata['profit_target_selection']
