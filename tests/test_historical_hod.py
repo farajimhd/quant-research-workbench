@@ -44,6 +44,28 @@ def acquired():
     return host,replace(a,state=r.state,status=S.AssignmentStatus.MANAGING),o
 
 
+@pytest.mark.parametrize('value',[None,0.,-1.,float('nan'),float('inf'),float('-inf')])
+def test_invalid_execution_vwap_cannot_authorize_entry(value):
+    host,a,o=ready()
+    r=host.evaluate(a,replace(o,execution_vwap=value))
+    assert not r.evaluation.intents
+
+
+@pytest.mark.parametrize('value',[None,0.,-1.,float('nan'),float('inf'),float('-inf'),'bad',''])
+def test_vwap_adapter_rejects_invalid_numbers(value):
+    from src.backend.replay_run_service import _optional_positive
+    from src.trading_runtime.strategy_activation import _positive_numeric
+    assert _optional_positive(value) is None
+    assert _positive_numeric(value) is None
+
+
+def test_vwap_adapters_preserve_valid_value_without_rounding():
+    from src.backend.replay_run_service import _optional_positive
+    from src.trading_runtime.strategy_activation import _positive_numeric
+    value=4.123456789
+    assert _optional_positive(value)==_positive_numeric(value)==value
+
+
 def green_stop_position():
     host,a,_=acquired()
     a.parameters['historical_hod']['early_green_stop_enabled']=1

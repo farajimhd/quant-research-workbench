@@ -1813,7 +1813,7 @@ function formatLevelPrice(value: number) {
   return value >= 1 ? `$${value.toFixed(2)}` : `$${value.toFixed(4)}`;
 }
 
-function historicalIndicatorSeries(rows: HistoricalIndicator[], target: "oscillator" | "price", visibleIndicators: string[]): ChartPayload["overlay_series"] {
+export function historicalIndicatorSeries(rows: HistoricalIndicator[], target: "oscillator" | "price", visibleIndicators: string[]): ChartPayload["overlay_series"] {
   const visible = new Set(visibleIndicators);
   const latestComposite = [...rows].reverse().find((row) => Number.isFinite(Number(row.flow_structure_composite_score)));
   const latestAnchoredFlow = [...rows].reverse().find((row) => Number.isFinite(Number(row.microstructure_cumulative_level1_ofi)) && Number.isFinite(Number(row.microstructure_cumulative_signed_volume_delta)));
@@ -1824,7 +1824,7 @@ function historicalIndicatorSeries(rows: HistoricalIndicator[], target: "oscilla
     color: spec.color,
     ...( "colorMode" in spec ? { colorMode: spec.colorMode } : {}),
     column: spec.column,
-    data: rows.map((row) => indicatorSeriesPoint(row, spec.column, "colorMode" in spec ? spec.colorMode : undefined)).filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value)),
+    data: rows.map((row) => indicatorSeriesPoint(row, spec.column, "colorMode" in spec ? spec.colorMode : undefined)).filter((point) => Number.isFinite(point.time)),
     ...( "defaultVisible" in spec ? { defaultVisible: Boolean(spec.defaultVisible) } : {}),
     displayItemId: spec.displayItemId,
     label: spec.column === "flow_structure_composite_score"
@@ -1844,6 +1844,9 @@ function historicalIndicatorSeries(rows: HistoricalIndicator[], target: "oscilla
 
 function indicatorSeriesPoint(row: HistoricalIndicator, column: string, colorMode?: string) {
   const time = Date.parse(String(row.bar_start)) / 1000;
+  const raw = row[column];
+  const numeric = raw === null || raw === undefined || raw === "" ? Number.NaN : Number(raw);
+  const value = Number.isFinite(numeric) && (column !== "execution_vwap" || numeric > 0) ? numeric : Number.NaN;
   if (column === "microstructure_anchored_flow_relationship") {
     const relationship = anchoredFlowRelationship(String(row.microstructure_anchored_flow_relationship || "neutral"), Number(row.microstructure_anchored_flow_relationship_score));
     return { color: relationship.color, time, value: relationship.value };
@@ -1856,7 +1859,7 @@ function indicatorSeriesPoint(row: HistoricalIndicator, column: string, colorMod
         ? { tone: microstructureValueTone(Number(row[column])) }
         : {}),
     time,
-    value: Number(row[column]),
+    value,
   };
 }
 

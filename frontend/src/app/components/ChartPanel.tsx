@@ -5438,6 +5438,19 @@ function applySeriesSettings(renderer: AnySeriesApi, source: ChartSeries, settin
 }
 
 function syncRendererData(renderer: AnySeriesApi, data: RendererDatum[], styleKey: string) {
+  // Preserve unavailable indicator timestamps as whitespace, never as zero or
+  // a line interpolated across missing observations.
+  data = data.map((point) => "value" in point && !Number.isFinite(point.value)
+    ? { time: point.time } : point);
+  if (renderer.seriesType() === "Line") {
+    // Lightweight Charts connects values across whitespace. Hide the segment
+    // leaving the last valid point so an unavailable interval stays a gap.
+    let priorValue = -1;
+    data.forEach((point, index) => {
+      if ("value" in point) priorValue = index;
+      else if (priorValue >= 0) data[priorValue] = { ...data[priorValue], color: "transparent" };
+    });
+  }
   const previous = rendererDataCache.get(renderer as object);
   if (!previous || previous.styleKey !== styleKey || !canIncrementallyApply(previous.data, data)) {
     renderer.setData(data as never);

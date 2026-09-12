@@ -9401,5 +9401,8 @@ def _positive(value: Any) -> float:
 
 
 def _optional_positive(value: Any) -> float | None:
-    number = _positive(value)
-    return number or None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number > 0 else None

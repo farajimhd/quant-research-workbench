@@ -872,7 +872,7 @@ def evaluate(host, a, o, p, state):
         row = reclaim['row']
     hod = d.get('prior_hod'); previous = d.get('prior_close')
     vwap = d.get('vwap')
-    if not hod or previous is None or vwap is None or not isfinite(vwap) or o.price <= vwap:
+    if not hod or previous is None or vwap is None or not isfinite(vwap) or vwap <= 0 or o.price <= vwap:
         return result('wait','hod_history_or_vwap_gate')
     boundary = deepcopy(saved_reentry['level']) if reclaim else reference['level']
     reentry = True if reclaim else reference['reentry']

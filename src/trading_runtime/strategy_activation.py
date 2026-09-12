@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from math import isfinite
 from typing import Any, Iterable, Mapping
 from zoneinfo import ZoneInfo
 
@@ -251,7 +252,7 @@ def _optional_numeric(value: Any) -> float | None:
 
 def _positive_numeric(value: Any) -> float | None:
     number = _optional_numeric(value)
-    return number if number is not None and number > 0 else None
+    return number if number is not None and isfinite(number) and number > 0 else None
 
 
 def _enablement_accepts(enablement: Mapping[str, Any], event_time: datetime) -> bool:
