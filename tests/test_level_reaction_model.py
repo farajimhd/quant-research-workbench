@@ -97,3 +97,23 @@ def test_split_adjustment_preserves_previous_book_and_estimate_snapshot(monkeypa
     assert book==saved
     assert updated['levels'][0]['price']==49.5
     assert updated['levels'][0]['reaction_center']['roles']['support']['scale']==.05
+
+
+def test_quote_query_uses_both_utc_year_partitions(monkeypatch):
+    from pathlib import Path
+    from research.reaction_levels.v1 import source
+    captured=[]
+    monkeypatch.setattr(source,'source_metadata',lambda *a,**k:({'token':'fixed'},[]))
+    monkeypatch.setattr(source,'load',lambda *a,**k:([],[],{'revision':{'token':'fixed'}}))
+    monkeypatch.setattr(source,'_query',lambda sql:captured.append(sql) or [])
+    monkeypatch.setattr(source,'write_json',lambda *a,**k:None)
+    source.session_inputs(Path('nonexistent-test-reaction-source'),'TEST','2026-12-31')
+    assert len(captured)==1 and 'events_(2026|2027)' in captured[0]
+    assert 'bitAnd(event_meta,4)' in captured[0]
+
+
+def test_recent_baseline_uses_only_supplied_calibration_counts():
+    from research.reaction_levels.v1.audit import frequency_baseline
+    p=frequency_baseline([1,2,3,4])
+    np.testing.assert_allclose(p,np.array([2,3,4,5])/14)
+    with pytest.raises(ValueError):frequency_baseline([1,-1,2,3])

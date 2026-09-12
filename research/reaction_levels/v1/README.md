@@ -76,8 +76,9 @@ same schema. Multinomial logistic calibration uses only the reserved last five
 training-period sessions. Do not tune parameters using August 21. Compare against
 the fit-period class-frequency baseline with log loss, multiclass Brier score,
 balanced accuracy, confusion matrix, and conditional resolved-contact log loss.
-Report target-side/session-period breakdowns plus first-prediction-per-contact
-metrics. These do not turn correlated forecasts into independent trades; one
+Report target-side/session-period breakdowns plus first-prediction-per-touch-timestamp
+metrics. A touch timestamp while inside a band is not an independent encounter.
+These do not turn correlated forecasts into independent trades; one
 test session cannot establish robust performance or profitable execution.
 August 21 was visually inspected in earlier historical-level research, so it is
 a held-out date for this fit, not a previously unseen research holdout.
@@ -98,3 +99,14 @@ Queries use two threads and a 512MiB query limit. Dataset creation processes one
 session at a time; training matrices are float32 memory maps; fitting uses four
 CPU threads. The canonical reader caps candidate counts rather than truncating.
 No operational database tables, services, V6 campaign, or live consumer change.
+
+Run `scripts/audit_level_reaction.py --runtime <completed-run>` for the recent
+calibration-frequency baseline and one-per-minute-per-side diagnostics, without
+refitting or changing predictions. This writes `evaluation-audit.json` and the
+readable report. Minute spacing removes same-side overlapping label horizons;
+it does not remove cross-side or market dependence.
+
+The completed initial AAPL run pins training source commit `45d025a1` and retains
+`source-snapshot.zip` with verified per-file hashes. Later reporting and UTC
+quote-year-boundary fixes do not change its model. Reproduce that exact run with
+its pinned source; changed source requires a new runtime, not a manifest override.

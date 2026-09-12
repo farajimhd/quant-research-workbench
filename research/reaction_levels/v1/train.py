@@ -194,15 +194,15 @@ def main():
                 mask=mask&valid
                 if mask.any():evaluation['by_session_period'][name]=metrics(test.loc[mask,'label'],prob[mask])
             contacts=test[valid&(test.touch_time>=0)].drop_duplicates(['level_id','target_upper','touch_time'])
-            evaluation['distinct_contact_keys']=len(contacts)
-            if len(contacts):evaluation['first_prediction_per_contact']=metrics(contacts.label,contacts[['p_'+s for s in CONTRACT['labels']]].to_numpy())
+            evaluation['distinct_touch_timestamp_keys']=len(contacts)
+            if len(contacts):evaluation['first_prediction_per_touch_timestamp']=metrics(contacts.label,contacts[['p_'+s for s in CONTRACT['labels']]].to_numpy())
             # Single-row path timing, not confused with batch throughput.
             sample=test[features].iloc[:1].to_numpy(dtype='float32');latencies=[]
             for _ in range(100):
                 started=time.perf_counter();predict(model,calibration,sample);latencies.append(time.perf_counter()-started)
             evaluation['single_row_model_latency_ms']=dict(median=float(np.median(latencies)*1000),p95=float(np.quantile(latencies,.95)*1000))
             write_json(root/'evaluation.json',evaluation)
-        report=['# AAPL causal level-reaction study','',f"Fit: {fit_days[0]} to {fit_days[-1]}; calibration: {cal_days[0]} to {cal_days[-1]}; test: {args.test_day}.",'',
+        report=[f'# {args.ticker} causal level-reaction study','',f"Fit: {fit_days[0]} to {fit_days[-1]}; calibration: {cal_days[0]} to {cal_days[-1]}; test: {args.test_day}.",'',
                 f"Seed book: {seed_day}. One-second inference, 60-second horizon. Historical geometry only; future gaps censored.",'',
                 '| Metric | Model | Training-frequency baseline |','|---|---:|---:|']
         for key in ('log_loss','brier','accuracy','balanced_accuracy','resolved_contact_log_loss'):

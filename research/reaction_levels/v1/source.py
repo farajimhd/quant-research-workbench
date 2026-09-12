@@ -1,5 +1,5 @@
 """Read-once canonical partitions, with source-revision and content verification."""
-from datetime import timedelta
+from datetime import timedelta,timezone
 import json
 import os
 from pathlib import Path
@@ -28,7 +28,8 @@ def session_inputs(root,ticker,day):
     start,end=session_bounds(day);quotes=[]
     for i in range(1):
         left=start;right=end
-        years='|'.join(str(y) for y in range(left.year,right.year+1))
+        years='|'.join(str(y) for y in range(left.astimezone(timezone.utc).year,
+                      (right-timedelta(microseconds=1)).astimezone(timezone.utc).year+1))
         rows=_query(f"""SELECT intDiv(sip_timestamp_us,1000000)+1 AS t,
             argMax(tuple(toFloat64(price_primary_int)/if(bitAnd(event_meta,2)>0,10000.,100.),
                          toFloat64(price_secondary_int)/if(bitAnd(event_meta,4)>0,10000.,100.),
