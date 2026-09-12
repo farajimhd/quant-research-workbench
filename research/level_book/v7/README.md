@@ -1,9 +1,11 @@
 # V7 historical and causal streaming books
 
 Independent of trained reaction models, Swing Level Book v6, and strategy orders.
-The historical algorithm is `historical-session-reaction-zones-2`; the causal
-stream is `causal-level-book-v7-1`. Both use canonical one-second price bars,
-noise-sized bands, confirmed rejections, and immutable historical geometry.
+The historical algorithm is `historical-session-reaction-mle-1`; the causal
+stream is `causal-level-book-v7-mle-1`. Both use canonical one-second price bars
+and per-level Student-t maximum likelihood geometry. Confirmed independent
+turning prices fit the center and scale; the central 80% fitted interval defines
+the lower and upper boundaries. There is no session-noise band-width fallback.
 Chart timeframe changes only presentation, never the level calculation.
 
 ## Historical build
@@ -14,25 +16,26 @@ $env:PYTHONDONTWRITEBYTECODE='1'
   --tickers JUNS SUGP --start 2025-01-01 --end 2026-08-20 --test-day 2026-08-21
 ```
 
-Outputs: `D:\TradingML\runtimes\level-book-v7\jan2025-aug2026-v1\{ticker}`.
+Outputs: `D:\TradingML\runtimes\level-book-v7\jan2025-aug2026-v2-mle\{ticker}`.
 Each ticker is sequential; at most two ticker workers and two query threads per
 canonical aggregation are used. Certified imported SIP is the sole market-data
 authority. Verified cached canonical inputs can avoid a new aggregation. Quotes
 and prediction-model features are not needed. Split actions are applied once at
 each effective boundary and retained in the checkpoint audit.
 
-`plan.json` pins the dates, settings and splits. Compressed `inputs`, `extractions`
-and `books` retain complete evidence. Daily `receipts` pin input, parent and output
+`plan.json` pins the dates, settings, fit configuration and splits. Compressed
+`inputs` and `books` retain observations and fitted geometry. Daily `receipts` pin input, parent and output
 hashes; `status.json` exposes active date, completion, empty sessions and failures.
 The ready manifest is published only after all historical dates and the test
 input are ready. Rerun the same command to verify and resume; changed immutable
 inputs/plans/checkpoints fail. Ctrl+C stops at a session checkpoint boundary.
 
-The full-session extractor is retrospective and only available after session
-end. Optimization shares canonical arrays across candidates and visits touch
-indices rather than scanning Python rows for every level. It preserves existing
-encounter and consolidation outcomes; it does not downsample prices or discard
-levels for speed. Checkpoint geometry is not silently upgraded between versions.
+Historical discovery uses full-session noise and range and is retrospective,
+available only after session end. The shared engine processes observations in
+time order. Noise determines reversal discovery and candidate association only;
+it does not determine displayed width. Fits are cached by exact observations and
+resolution. Canonical inputs are reused only after source and content validation.
+Old noise-band checkpoints are not accepted by the MLE streaming engine.
 
 ## Causal stream
 
@@ -40,20 +43,30 @@ levels for speed. Checkpoint geometry is not silently upgraded between versions.
 through `update(bar, observed_at=...)`. Bar `t` is the close timestamp. It rejects
 future, duplicate, invalid and out-of-session data. Noise uses a running median
 of observed nonzero bar ranges; reaction prominence uses only the observed
-session range. A confirmed directional reversal proposes a band. Unlike the
-historical extractor, it has no full-session extrema or volume profile.
+session range. A confirmed directional reversal supplies an observation even
+outside the current fitted band. It has no full-session extrema or volume profile.
 
-New bands require two resolved rejections meeting the configured rejection
-fraction. Their presentation begins when that evidence becomes available, never
-at a backdated pivot. Existing historical bands start at session opening, retain
-their geometry/identity, and change role only through observed acceptance/retest
-evidence. Matching day proposals remain historical; they cannot count the same
-rejection twice. Significant gaps reset incomplete encounters and swing tracking.
+New bands require at least three independent confirmed turning observations.
+Sparse candidates remain unpublished. Their presentation begins when the fit
+becomes available, never at a backdated pivot. Historical bands start at session
+opening. New observations can move their center and change width; every update
+appends a geometry segment, preserving the prior segments. Matching day proposals
+and split children retain historical identity. Contact outcomes use the geometry
+frozen at contact, not a subsequently updated band. Significant gaps reset
+incomplete encounters and swing tracking.
 Snapshot results contain only qualified levels, with separate candidate counts.
 
 Streaming is an estimator, not a claim of equality with retrospective extraction:
 candidate discovery and thresholds can differ because future data is absent.
-The noise-based bands are not calibrated confidence intervals.
+The fit uses fixed Student-t degrees of freedom 4, with a numerical scale floor
+of half the observation price resolution. Split adjustments scale observations,
+resolution, center and boundaries together. Distinct price modes can split when
+two fitted, nonoverlapping components improve mixture BIC by more than 10. The
+three largest eligible gaps supply candidate partitions; this is not a global
+mixture optimum. Role and timestamps remain attached to every observation.
+The 80% interval is distribution coverage, not a calibrated probability of a
+future reaction or a confidence interval for the center. A failed fit never
+silently substitutes a fixed-width band.
 
 `checkpoint()` / `restore()` preserve all pending evidence and incremental state,
 with a version and checksum. Market/strategy code can call this class directly

@@ -1,23 +1,24 @@
-from copy import deepcopy
 import json
 import os
 import pytest
-from src.market_engine.historical_level_checkpoint import seed,digest
+from src.market_engine.historical_level_checkpoint import digest
 from src.market_engine.streaming_level_book import StreamingLevelBook
-from tests.test_historical_level_checkpoint import day
 
 
 def engine(*,historical=False):
-    first,_,_=day('2026-08-20')
-    if not historical:first['levels']=[]
-    prior=seed(first)
+    from tests.test_reaction_band import empty
+    s=empty()
+    if historical:
+        for i,p in enumerate([10,10.001,9.999]):s._proposal(p,1100+i*10,'support',{'t':1102+i*10},.1)
+    prior=s.historical_checkpoint('fixture');prior['session']='2026-08-20'
+    prior['checkpoint_hash']=digest({k:v for k,v in prior.items() if k!='checkpoint_hash'})
     from src.backend.swing_book_source import session_bounds
     start,end=session_bounds('2026-08-21')
     return StreamingLevelBook(prior,ticker='TEST',session='2026-08-21',start=start.timestamp(),end=end.timestamp())
 
 
 def bars(stream):
-    prices=[10,10.04,10.08,10.12,10.08,10.04,10,10.04,10.08,10.12,10.08,10.04,10]
+    prices=[10,10.04,10.08,10.12,10.08,10.04,10,10.04,10.08,10.12,10.08,10.04,10]*2
     return [dict(t=stream.start+i+1,open=p,high=p,low=p,close=p,volume=100) for i,p in enumerate(prices)]
 
 
@@ -55,16 +56,16 @@ def test_future_invalid_and_out_of_order_bars_fail_before_mutation():
     with pytest.raises(ValueError):stream.update(dict(b,t=b['t']+1,close=float('nan')))
 
 
-def test_existing_historical_geometry_remains_fixed_and_matched_proposals_are_historical():
+def test_existing_historical_identity_survives_adaptive_refits():
     stream=engine(historical=True);geometry=[(r['id'],r['lower'],r['upper']) for r in stream.rows]
     sequence=bars(stream)
     for b in sequence:stream.update(b)
     for ident,lo,hi in geometry:
         row=next(r for r in stream.rows if r['id']==ident)
-        assert row['historical'] and (row['lower'],row['upper'])==(lo,hi)
+        assert row['historical'] and row['fit']['status']=='estimated'
     # A proposal at the exact historical center cannot create a day identity.
     before=len(stream.rows);r=stream.rows[0]
-    stream._proposal(r['price'],sequence[-1]['t'],'support',sequence[-1],.01,.06)
+    stream._proposal(r['price'],sequence[-1]['t'],'support',sequence[-1],.06)
     assert len(stream.rows)==before
 
 
@@ -75,7 +76,7 @@ def test_real_day_prefix_rewind_restore_and_full_day_capacity(ticker):
     from src.market_engine.level_book_store import read,verified_book
     from src.backend.swing_book_source import session_bounds
     from math import prod
-    book_id='jan2025-aug2026-v1';day='2026-08-21';root=feed.ROOT/book_id/ticker;m=read(root/'manifest.json')
+    book_id='jan2025-aug2026-v2-mle';day='2026-08-21';root=feed.ROOT/book_id/ticker;m=read(root/'manifest.json')
     first=feed.book_at(book_id,ticker,day,'07:10:46')
     later=feed.book_at(book_id,ticker,day,'07:30:00')
     assert feed.book_at(book_id,ticker,day,'07:10:46')==first
@@ -89,5 +90,9 @@ def test_real_day_prefix_rewind_restore_and_full_day_capacity(ticker):
     restored=StreamingLevelBook.restore(json.loads(json.dumps(stream.checkpoint())))
     for b in sequence[cut:]:stream.update(b);restored.update(b)
     assert stream.snapshot()==restored.snapshot()
+    # Advancing through the whole day must not redraw the earlier chart prefix.
+    def prefix_segments(snapshot):
+        return [dict(s,valid_to=min(s['valid_to'],first['as_of'])) for s in snapshot['segments'] if s['valid_from']<first['as_of']]
+    assert prefix_segments(stream.snapshot())==prefix_segments(first)
     assert stream.bars_processed==len(sequence)
     assert later['max_input_timestamp']<=later['as_of']

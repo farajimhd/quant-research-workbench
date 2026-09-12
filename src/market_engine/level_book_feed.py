@@ -16,6 +16,7 @@ def catalog():
     result=[]
     for path in sorted(ROOT.glob('*/*/manifest.json')):
         m=read(path)
+        if m.get('version')!='level-book-v7-mle-1':continue
         result.append(dict(id=path.parent.parent.name,ticker=m['ticker'],dates=m['dates'],ready=m['ready'],version=m['version']))
     return result
 
@@ -46,5 +47,10 @@ def book_at(book_id,ticker,session_date,time_et):
             cached['engine']=StreamingLevelBook(cached['prior'],**cached['kwargs']);cached['index']=0
         bars=cached['inputs']['bars'];engine=cached['engine']
         while cached['index']<len(bars) and bars[cached['index']]['t']<=stamp:
-            engine.update(bars[cached['index']],observed_at=stamp);cached['index']+=1
+            try:engine.update(bars[cached['index']],observed_at=stamp)
+            except Exception:
+                # An interrupted update cannot become a serving checkpoint.
+                _sessions.pop(key,None)
+                raise
+            cached['index']+=1
         return dict(engine.snapshot(stamp),book_id=book_id,input_hash=cached['inputs']['content_hash'],book_session=m['prior_session'])

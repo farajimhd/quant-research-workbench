@@ -13,10 +13,13 @@ from research.mlops.clickhouse import discover_clickhouse_env_files
 from src.backend.historical_session_level_source import load,_query
 from src.backend.swing_book_source import source_metadata,HISTORICAL_POLICY
 from scripts.build_structure_book_clickhouse import canonical_splits
-from src.market_engine.historical_session_levels import extract,VERSION,Settings
-from src.market_engine.historical_level_checkpoint import seed,consolidate,digest
+from src.market_engine.historical_session_levels import Settings
+from src.market_engine.historical_level_checkpoint import digest
 from src.market_engine.level_book_store import ROOT,read,write,verified_book
 from dataclasses import asdict
+import numpy as np
+from src.market_engine.streaming_level_book import StreamingLevelBook,EXTRACTION_VERSION
+from src.market_engine.reaction_band import CONFIG as BAND_CONFIG
 
 STOP=Event()
 
@@ -31,6 +34,7 @@ def inputs(root,ticker,day,cache_roots):
         return value,'resumed'
     for cache in cache_roots:
         candidate=cache/'inputs'/f'{day}.json'
+        if not candidate.exists():candidate=cache/'inputs'/f'{day}.json.gz'
         if not candidate.exists():continue
         manifest=read(cache/'manifest.json')
         if manifest.get('ticker')!=ticker:continue
@@ -51,9 +55,10 @@ def build(ticker,args):
     days=[d for d in dates if d<=args.end]
     if not days or args.test_day not in dates:raise ValueError(f'No certified build/test coverage for {ticker}')
     splits=canonical_splits(_query(f"SELECT execution_date,split_from,split_to,inserted_at FROM q_live.market_stock_split_v1 FINAL WHERE provider_ticker='{ticker}' AND execution_date>='{args.start}' AND execution_date<='{args.test_day}' ORDER BY execution_date"))
-    plan=dict(version='level-book-v7-1',extraction_version=VERSION,ticker=ticker,start=args.start,end=args.end,test_day=args.test_day,days=days,splits=splits,settings=asdict(Settings()),retrospective_history=True,streaming_test=True)
+    plan=dict(version='level-book-v7-mle-1',extraction_version=EXTRACTION_VERSION,band_config=BAND_CONFIG,ticker=ticker,start=args.start,end=args.end,test_day=args.test_day,days=days,splits=splits,settings=asdict(Settings()),retrospective_history=True,streaming_test=True)
     write(root/'plan.json',plan)
     cache_roots=[p.parent for p in Path(r'D:\TradingML\runtimes\reaction-level-model').glob('*/manifest.json')]
+    cache_roots.extend(p.parent for p in ROOT.glob('*/*/manifest.json') if p.parent!=root)
     prior=None;counts=dict(completed=0,resumed=0,empty=0,failed=0,total=len(days));timings=[]
     for day in days:
         if STOP.is_set():
@@ -76,13 +81,22 @@ def build(ticker,args):
             if not value['bars']:
                 record=dict(state='empty',reason='no_eligible_price_seconds',input_hash=value['content_hash'],prior_hash=prior_hash);counts['empty']+=1
             else:
-                result=extract(value['bars'],value['profile'],ticker=ticker,session=day,source=value['source'],available_at=datetime.fromisoformat(value['source']['end']).timestamp())
-                write(root/'extractions'/f'{day}.json.gz',result)
                 actions=[s for s in splits if prior and prior['session']<s['execution_date']<=day]
                 factor=prod(float(s['split_from'])/float(s['split_to']) for s in actions)
-                prior=consolidate(prior,result,value['bars'],value['profile'],split_factor=factor,split_evidence=actions) if prior else seed(result)
+                start=datetime.fromisoformat(value['source']['start']).timestamp();end=datetime.fromisoformat(value['source']['end']).timestamp()
+                initial=prior
+                if initial is None:
+                    initial=dict(ticker=ticker,session='0001-01-01',available_at=start,levels=[],source_extraction_version=EXTRACTION_VERSION,band_config=BAND_CONFIG)
+                    initial['checkpoint_hash']=digest(initial)
+                ranges=np.array([b['high']-b['low'] for b in value['bars']]);lo=min(b['low'] for b in value['bars']);hi=max(b['high'] for b in value['bars'])
+                tick=.0001 if lo<1 else .01;noise=float(np.median(ranges[ranges>0])) if np.any(ranges>0) else tick
+                prominence=max(3*tick,6*noise,(hi-lo)*.05)
+                engine=StreamingLevelBook(initial,ticker=ticker,session=day,start=start,end=end,split_factor=factor,split_evidence=actions,
+                    settings=Settings(tick=tick),discovery_prominence=prominence)
+                for bar in value['bars']:engine.update(bar,observed_at=bar['t'])
+                prior=engine.historical_checkpoint(value['content_hash'])
                 write(checkpoint,prior)
-                record=dict(state='complete',input_hash=value['content_hash'],prior_hash=prior_hash,checkpoint_hash=prior['checkpoint_hash'],levels=len(prior['levels']))
+                record=dict(state='complete',input_hash=value['content_hash'],prior_hash=prior_hash,checkpoint_hash=prior['checkpoint_hash'],levels=sum(r['qualified'] for r in prior['levels']))
             write(receipt,record)
         counts['completed']+=1;elapsed=time.perf_counter()-stage;timings.append(elapsed)
         print(f"{ticker} {counts['completed']}/{len(days)} {day} {mode} {elapsed:.2f}s levels={len(prior['levels']) if prior else 0} empty={counts['empty']}",flush=True)
@@ -91,13 +105,13 @@ def build(ticker,args):
     if not value['bars']:raise ValueError('Test session has no eligible price seconds')
     publish=dict(plan,ready=True,dates=[args.test_day],prior_session=prior['session'],prior_hash=prior['checkpoint_hash'],test_input_hash=value['content_hash'])
     write(root/'manifest.json',publish)
-    report=dict(state='complete',counts=counts,levels=len(prior['levels']),elapsed_seconds=time.perf_counter()-started,session_seconds=timings)
+    report=dict(state='complete',counts=counts,levels=sum(r['qualified'] for r in prior['levels']),candidates=sum(not r['qualified'] for r in prior['levels']),elapsed_seconds=time.perf_counter()-started,session_seconds=timings)
     write(root/'status.json',report,immutable=False);return report
 
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--tickers',nargs='+',default=['JUNS','SUGP']);p.add_argument('--start',default='2025-01-01');p.add_argument('--end',default='2026-08-20');p.add_argument('--test-day',default='2026-08-21');p.add_argument('--runtime',type=Path,default=ROOT/'jan2025-aug2026-v1')
+    p.add_argument('--tickers',nargs='+',default=['JUNS','SUGP']);p.add_argument('--start',default='2025-01-01');p.add_argument('--end',default='2026-08-20');p.add_argument('--test-day',default='2026-08-21');p.add_argument('--runtime',type=Path,default=ROOT/'jan2025-aug2026-v2-mle')
     args=p.parse_args()
     if len(set(args.tickers))!=len(args.tickers) or not 1<=len(args.tickers)<=2 or any(not re.fullmatch(r'[A-Z][A-Z0-9.\-]{0,19}',t) for t in args.tickers):raise ValueError('Choose one or two distinct ticker symbols')
     for d in (args.start,args.end,args.test_day):datetime.strptime(d,'%Y-%m-%d')

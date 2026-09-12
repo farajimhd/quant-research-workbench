@@ -10,7 +10,7 @@ import pytest
 def test_v7_chart_completed_clock_and_rewind(ticker,clock):
     from playwright.sync_api import sync_playwright
     from src.market_engine.level_book_store import ROOT,read
-    inputs=read(ROOT/'jan2025-aug2026-v1'/ticker/'inputs/2026-08-21.json.gz')
+    inputs=read(ROOT/'jan2025-aug2026-v2-mle'/ticker/'inputs/2026-08-21.json.gz')
     stamp=int(datetime.fromisoformat('2026-08-21T'+clock+'-04:00').timestamp())
     bars=[dict(bar_start=datetime.fromtimestamp(b['t']-1,timezone.utc).isoformat(),bar_end=datetime.fromtimestamp(b['t'],timezone.utc).isoformat(),session_date='2026-08-21',is_closed=True,**{k:b[k] for k in ('open','high','low','close','volume')}) for b in inputs['bars'] if stamp-240<b['t']<=stamp+20]
     with sync_playwright() as pw:
@@ -36,7 +36,14 @@ def test_v7_chart_completed_clock_and_rewind(ticker,clock):
             }""",dict(bars=bars,stamp=stamp,ticker=ticker))
             page.locator('.reaction-book-settings summary').filter(has_text='V7 ·').wait_for(timeout=30000)
             first=responses[-1];assert first['as_of']==stamp
-            assert first['historical_count']>0 and first['current_day_count']>0
+            assert first['book_version']=='causal-level-book-v7-mle-1'
+            assert first['historical_count']>0 and first['merged_proposals']>0
+            # Both windows reinforce historical levels; they must not be relabeled
+            # as current-day levels merely to demonstrate streaming activity.
+            fits={}
+            for s in first['segments']:
+                if s['historical']:fits.setdefault(s['id'],set()).add((s['lower'],s['upper'],s['fit']['count']))
+            assert any(len(versions)>1 for versions in fits.values()),'Historical MLE fits did not update'
             visible=[s for s in first['segments'] if min(b['low'] for b in bars)<=s['price']<=max(b['high'] for b in bars) and s['valid_to']>=stamp-240]
             assert visible,'No V7 levels in chart viewport'
             output=ROOT/'browser-prefix';output.mkdir(exist_ok=True)
