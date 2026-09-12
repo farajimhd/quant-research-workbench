@@ -54,25 +54,36 @@ class Settings:
 
 
 
-def encounter_evidence(bars, lower, upper, prominence, half, settings):
+class EncounterArrays:
+    """One shared canonical array conversion per session, not per band."""
+    def __init__(self,bars):
+        self.values=np.array([[b[k] for k in ('t','high','low','close','volume')] for b in bars],dtype=float).T
+
+
+def encounter_evidence(bars, lower, upper, prominence, half, settings, *, arrays=None):
     """Evaluate a fixed band against one session, including carried historical bands."""
     s=settings
-    t,h,l,c,v=np.array([[b[k] for k in ('t','high','low','close','volume')] for b in bars],dtype=float).T
-    encounters=[];armed=True;last_side=None
-    for i in range(1,len(t)):
-        if t[i]-t[i-1]>s.maximum_gap_seconds:
-            armed=True;last_side=None
+    t,h,l,c,v=(arrays or EncounterArrays(bars)).values
+    # Only touch seconds can start encounters. Vectorized departure/gap indices
+    # reproduce the per-second arming state without scanning Python rows per band.
+    gaps=np.flatnonzero(np.diff(t)>s.maximum_gap_seconds)+1
+    departures=np.flatnonzero((c[:-1]<lower-prominence)|(c[:-1]>upper+prominence))+1
+    departures=np.setdiff1d(departures,gaps,assume_unique=True)
+    touches=np.flatnonzero((h>=lower)&(l<=upper))
+    touches=np.setdiff1d(touches[touches>0],gaps,assume_unique=True)
+    gap_at=np.searchsorted(gaps,touches,side='right')-1
+    far_at=np.searchsorted(departures,touches,side='right')-1
+    encounters=[];last_trigger=-1
+    for i,gi,fi in zip(touches,gap_at,far_at):
+        gap_index=int(gaps[gi]) if gi>=0 else -1
+        far_index=int(departures[fi]) if fi>=0 else -1
+        if last_trigger>=max(gap_index,far_index) and last_trigger>=0:
             continue
-        # Rearm only after a meaningful excursion, avoiding repeated touches.
-        if c[i-1]<lower-prominence or c[i-1]>upper+prominence:
-            armed=True
-            last_side='resistance' if c[i-1]<lower else 'support'
-        if not armed or h[i]<lower or l[i]>upper:
-            continue
+        last_side=('resistance' if c[far_index-1]<lower else 'support') if far_index>gap_index else None
         role=last_side or ('resistance' if c[i-1]<lower else 'support' if c[i-1]>upper else None)
         if role is None:
             continue
-        armed=False
+        last_trigger=i
         end=min(len(t),int(np.searchsorted(t,t[i]+s.reaction_seconds,side='right')))
         gap=np.flatnonzero(np.diff(t[i:end])>s.maximum_gap_seconds)
         if len(gap):end=i+int(gap[0])+1
@@ -159,7 +170,7 @@ def extract(bars, profile, *, ticker, session, available_at, source, settings=Se
         groups[-1].append((price,weight,kind))
     if len(groups)>s.maximum_candidates:
         raise ValueError(f'{len(groups)} candidates exceed explicit capacity; no truncation performed')
-    levels=[];rejected=[]
+    levels=[];rejected=[];arrays=EncounterArrays(bars)
     for group in groups:
         prices=np.array([x[0] for x in group]);weights=np.array([x[1] for x in group])
         center=float(prices[np.searchsorted(np.cumsum(weights),weights.sum()/2)])
@@ -170,7 +181,7 @@ def extract(bars, profile, *, ticker, session, available_at, source, settings=Se
         upper=round(center+half,8)
         if lower<=0:
             raise ValueError('Band geometry reaches nonpositive prices; review tick and noise settings')
-        encounters=encounter_evidence(bars,lower,upper,prominence,half,s)
+        encounters=encounter_evidence(bars,lower,upper,prominence,half,s,arrays=arrays)
         supports=sum(e['outcome']=='rejection' and e['role']=='support' for e in encounters)
         resistances=sum(e['outcome']=='rejection' and e['role']=='resistance' for e in encounters)
         accepted=sum(e['outcome']=='acceptance' for e in encounters)

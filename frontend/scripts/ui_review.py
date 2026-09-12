@@ -2967,6 +2967,18 @@ def capture(args: argparse.Namespace) -> int:
                         page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__v5-settings.png')),full_page=True)
                         slider.fill('30');page.keyboard.press('Escape')
                         page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__v5-levels.png')),full_page=True)
+                    if args.level_book_v7:
+                        page.get_by_role('checkbox',name='Show reaction book',exact=True).check()
+                        summary=page.locator('.reaction-book-settings summary')
+                        summary.filter(has_text='V7 ·').wait_for(timeout=60000)
+                        summary.click()
+                        page.get_by_label('Level book source',exact=True).select_option('v7')
+                        page.get_by_text('Current-day confirmed levels',exact=True).wait_for()
+                        page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__v7-settings.png')),full_page=True)
+                        page.get_by_role('checkbox',name='Current-day confirmed levels',exact=True).uncheck()
+                        page.get_by_role('checkbox',name='Current-day confirmed levels',exact=True).check()
+                        summary.click()
+                        page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__v7-levels.png')),full_page=True)
                     if args.level_reaction_result or args.level_reaction_live:
                         page.get_by_role('button',name=args.canvas_chart_timeframe,exact=True).first.click()
                         toggle=page.get_by_role('checkbox',name='Show level reaction',exact=True).first
@@ -3260,7 +3272,7 @@ def capture(args: argparse.Namespace) -> int:
                         and scenario["scale"] == 1.0
                         and scenario["viewport_name"] == "normal"
                     ) else screenshot_path.with_name(f"{screenshot_path.stem}__chart-interaction.png") if scenario["page"] == "canvas-focus" else None
-                    if not args.level_reaction_result and not args.level_reaction_live and not args.hindsight_positions and not args.swing_structure_fixture and not args.structure_gaps_fixture and not args.structure_gaps and not args.resistance_selection_fixture and not args.resistance_selection and not args.swing_book_v5 and not args.staged_strategy_fixture and not args.structural_detector_fixture and not args.symmetric_swing_fixture:
+                    if not args.level_book_v7 and not args.level_reaction_result and not args.level_reaction_live and not args.hindsight_positions and not args.swing_structure_fixture and not args.structure_gaps_fixture and not args.structure_gaps and not args.resistance_selection_fixture and not args.resistance_selection and not args.swing_book_v5 and not args.staged_strategy_fixture and not args.structural_detector_fixture and not args.symmetric_swing_fixture:
                         issues.extend(validate_canvas_interactions(
                             page, scenario, interaction_screenshot,
                             args.canvas_chart_timeframe, args.chart_stress_cycles,
@@ -3342,6 +3354,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument('--resistance-selection-fixture', action='store_true', help='validate selection overlay, cutoff, sliders and reversible chart painting with a fixture')
     result.add_argument('--resistance-selection', action='store_true', help='calculate and inspect resistance selection on a real historical chart')
     result.add_argument('--level-reaction-live', action='store_true', help='validate model predictions and reaction book through actual backend endpoints')
+    result.add_argument('--level-book-v7', action='store_true', help='validate prepared V7 historical and causal streaming levels through backend endpoints')
     result.add_argument('--level-reaction-result', help='real candle-series response with canonical candles for indicator and hover validation')
     result.add_argument('--swing-book-v5', action='store_true', help='validate integrated v5 evidence-score controls on a real replay chart')
     result.add_argument('--symmetric-swing-fixture', help='canonical bars and V5 snapshots for support/resistance projection validation; no strategy run')

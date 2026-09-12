@@ -6,7 +6,7 @@ from hashlib import sha256
 import json
 from math import isfinite
 
-from .historical_session_levels import Settings,encounter_evidence,role_timeline
+from .historical_session_levels import Settings,EncounterArrays,encounter_evidence,role_timeline
 from .reaction_center import annotate,update as update_center,CONFIG as CENTER_CONFIG
 
 VERSION='historical-level-consolidation-1'
@@ -118,9 +118,10 @@ def consolidate(prior,extraction,bars,profile,*,split_factor=1.,split_evidence=(
             matched[winner['id']].append(zone)
         else:
             fresh.append(zone)
+    arrays=EncounterArrays(bars)
     for row in rows:
         events=encounter_evidence(bars,row['lower'],row['upper'],extraction['geometry']['prominence'],
-            max(s.tick,(row['upper']-row['lower'])/2),s)
+            max(s.tick,(row['upper']-row['lower'])/2),s,arrays=arrays)
         if centers:events=annotate(events,bars)
         day=dict(encounters=events,support_rejections=sum(e['role']=='support' and e['outcome']=='rejection' for e in events),
             resistance_rejections=sum(e['role']=='resistance' and e['outcome']=='rejection' for e in events),

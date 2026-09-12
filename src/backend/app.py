@@ -7,6 +7,7 @@ from src.backend.structure_gap_service import router as structure_gap_router
 from src.backend.structural_detector_service import router as structural_detector_router
 from src.backend.resistance_selection_service import router as resistance_selection_router
 from src.backend.level_reaction_service import router as level_reaction_router
+from src.backend.streaming_level_book_service import router as level_book_v7_router
 
 import asyncio
 import http.client
@@ -596,6 +597,7 @@ app.include_router(structure_gap_router)
 app.include_router(structural_detector_router)
 app.include_router(resistance_selection_router)
 app.include_router(level_reaction_router)
+app.include_router(level_book_v7_router)
 authority_policy = AuthorityPolicy.from_environment()
 
 
