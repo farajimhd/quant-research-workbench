@@ -8,6 +8,65 @@ turning prices fit the center and scale; the central 80% fitted interval defines
 the lower and upper boundaries. There is no session-noise band-width fallback.
 Chart timeframe changes only presentation, never the level calculation.
 
+## All-tradable historical campaign
+
+Launch on the laptop from the repository. The defaults freeze the September 12,
+2026 published tradable membership and request January 2025 through September 12.
+The certified source currently ends September 11 (September 12 is Saturday).
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+& C:\Users\g835l\miniconda3\envs\ml4t\python.exe -B scripts/build_level_book_v7_campaign.py run
+```
+
+`run` creates a frozen plan if absent; otherwise it resumes that exact plan.
+Defaults: four laptop processes and two ClickHouse query threads each, bounded
+by eight laptop processes / sixteen total query threads. `--workers` and
+`--threads` can change on resume; dates, universe, code and numerical-library
+versions cannot. Long tickers start first. There are no writes to ClickHouse.
+
+The workstation ClickHouse server filters certified canonical trades, applies
+historical SIP condition eligibility, orders trades and computes exact 1s OHLCV.
+Certified ticker/day ordinal ranges match its `(ticker, ordinal)` index. Only
+aggregated seconds cross the network; unused volume profiles and raw trade caches
+are not materialized. Persistent HTTP connections avoid per-query socket churn.
+Python runs the unchanged V7 turning-point and Student-t MLE state machine.
+
+The default output is
+`\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes\level-book-v7\all-tradable-20250101-20260912-mle-v1`.
+It requires that root; it never redirects to another drive. Compressed daily
+books, source plans, receipts and ready markers preserve source, parent and
+checkpoint hashes. Writes are fsynced and atomically replaced with bounded SMB
+retries. A runtime free-space guard stops new work below 10 GiB. A crash after a
+book write but before its receipt safely recomputes and compares that book.
+
+```powershell
+# Read progress from another terminal; the original run has a live monitor too.
+& C:\Users\g835l\miniconda3\envs\ml4t\python.exe -B scripts/build_level_book_v7_campaign.py monitor
+# Graceful stop (also Ctrl+C in the controller window).
+& C:\Users\g835l\miniconda3\envs\ml4t\python.exe -B scripts/build_level_book_v7_campaign.py stop
+# Resume, explicitly including failed ticker attempts.
+& C:\Users\g835l\miniconda3\envs\ml4t\python.exe -B scripts/build_level_book_v7_campaign.py run --retry-failed
+```
+
+Each worker owns one ticker and processes its sessions sequentially. Stop finishes
+the active session before exiting. Controller/worker locks prevent duplicate
+writers. The monitor has fixed worker rows, current session/stage, heartbeat age,
+durable session counts, rate, approximate ETA, retries and explicit deferred /
+failed / interrupted counts. Non-terminal output is periodic plain text. Full
+errors remain in `tickers/<ticker>/error.json` and `worker.log`.
+
+The population is the published tradable universe as of the pinned date, **not**
+a historical tradability decision for every backtest date. Ambiguous published
+identities, unsupported ticker mappings and absent certified history are recorded
+as deferred, never silently substituted. Historical ticker renames are not
+inferred or spliced together. This campaign builds symbol-keyed historical books;
+backtest admission still needs its own point-in-time identity/tradability gate.
+Historical SIP time is intentionally allowed. Current-day streaming must receive
+separately filtered completed candles; the campaign does not fix or reuse its
+historical input policy for streaming. These campaign outputs do not automatically
+change an existing strategy's V6 selection or the two-ticker chart catalog.
+
 ## Historical build
 
 ```powershell
