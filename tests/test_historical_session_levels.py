@@ -3,6 +3,24 @@ import numpy as np
 import pytest
 from src.market_engine.historical_session_levels import extract,Settings
 from src.backend.historical_session_level_chart import render
+from src.market_engine.historical_session_levels import role_timeline
+
+
+def test_role_segments_start_on_confirmation_and_require_retest_to_flip():
+    def event(at,end,role,outcome):return dict(at=at,resolved_at=end,role=role,outcome=outcome)
+    result=role_timeline([event(1,3,'resistance','unresolved'),event(4,6,'resistance','rejection'),
+        event(7,9,'resistance','acceptance'),event(10,12,'support','rejection'),
+        event(13,15,'support','rejection'),event(16,18,'support','acceptance'),
+        event(19,21,'support','rejection')],30)
+    assert [(r['start'],r['end'],r['role']) for r in result]==[
+        (6,9,'resistance'),(9,12,'transition'),(12,18,'support'),(18,21,'transition'),(21,30,'support')]
+    assert role_timeline([event(1,3,'resistance','acceptance')],30)==[]
+
+
+def test_late_resolution_of_old_encounter_does_not_override_new_role():
+    result=role_timeline([dict(at=1,resolved_at=10,role='resistance',outcome='rejection'),
+        dict(at=5,resolved_at=7,role='support',outcome='rejection')],30)
+    assert len(result)==1 and result[0]['role']=='support' and result[0]['start']==7
 
 
 def example():

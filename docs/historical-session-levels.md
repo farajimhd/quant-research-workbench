@@ -62,8 +62,11 @@ Dependencies are in `requirements.txt`. Runtime output defaults to
 
 The chart supports candle timeframes, pan/zoom, level visibility, evidence
 inspection and light/dark themes. Changing candle timeframe never recalculates
-the level book. Bands span the whole chart because this is a finalized historical
-view, not their causal availability during that day.
+the level book. Each band starts at its first confirmed rejection. Red and green
+segments show confirmed resistance and support; a dashed neutral segment after
+an accepted crossing awaits a confirmed retest. The inspector lists exact New
+York timestamps. These are evidence-time annotations on retrospectively extracted
+geometry, not a claim that the finalized zone was discoverable intraday.
 
 Before production adoption, compare against V6, test diversified subsequent
 sessions, and design a causal streaming estimator and a separate finalized-book

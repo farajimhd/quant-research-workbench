@@ -9,6 +9,33 @@ from scipy.signal import find_peaks
 VERSION = 'historical-session-reaction-zones-1'
 
 
+def role_timeline(encounters, session_end):
+    """Evidence-time segments; crossing alone does not confirm the other role."""
+    segments=[]
+    latest_contact=-float('inf')
+    for event in sorted(encounters,key=lambda e:(e['resolved_at'],e['at'])):
+        if event['outcome']=='unresolved' or event['at']<latest_contact:
+            continue
+        current=segments[-1]['role'] if segments else None
+        if event['outcome']=='rejection':
+            role=event['role']
+        elif current==event['role']:
+            role='transition'
+        else:
+            continue
+        latest_contact=event['at']
+        if role==current:
+            continue
+        at=event['resolved_at']
+        if segments:
+            segments[-1]['end']=at
+            if segments[-1]['start']==at:
+                segments.pop()
+        segments.append(dict(start=at,end=session_end,role=role,contact_at=event['at'],
+            reason='confirmed_rejection' if role!='transition' else 'accepted_crossing_awaiting_retest'))
+    return segments
+
+
 @dataclass(frozen=True)
 class Settings:
     tick: float = .01
@@ -131,6 +158,8 @@ def extract(bars, profile, *, ticker, session, available_at, source, settings=Se
             closing_role='support' if c[-1]>upper else 'resistance' if c[-1]<lower else 'within_band',
             evidence_role='both' if supports and resistances else 'support' if supports else 'resistance' if resistances else 'unconfirmed',
             available_at=available_at)
+        row['role_segments']=role_timeline(encounters,available_at)
+        row['first_confirmed_at']=row['role_segments'][0]['start'] if row['role_segments'] else None
         # Do not erase a proven reaction area merely because it was later crossed.
         if any(count>=s.minimum_rejections and role_quality[role]>=s.minimum_role_rejection_fraction
                 for role,count in (('support',supports),('resistance',resistances))):
