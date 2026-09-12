@@ -2265,7 +2265,7 @@ def capture(args: argparse.Namespace) -> int:
                             ],
                         },
                         "charts_quotes": {
-                            "main": {"showVolume": True, "symbol": args.canvas_symbol, "timeframe": args.canvas_chart_timeframe if args.historical_run_id else "10s", "visibleIndicators": []},
+                            "main": {"showVolume": True, "symbol": args.canvas_symbol, "timeframe": args.canvas_chart_timeframe if args.historical_run_id or args.level_reaction_result else "10s", "visibleIndicators": []},
                             "month": {"showVolume": True, "symbol": args.canvas_symbol, "timeframe": "1mo", "visibleIndicators": []},
                             "daily": {"showVolume": True, "symbol": args.canvas_symbol, "timeframe": "1d", "visibleIndicators": []},
                         },
@@ -2308,7 +2308,14 @@ def capture(args: argparse.Namespace) -> int:
                     reaction = json.loads(Path(args.level_reaction_result).read_text())
                     catalog = [dict(id=reaction['model_id'], ticker=reaction['ticker'], cutoff=reaction['cutoff'], dates=[args.canvas_session_date], ready=True, status=dict(stage='complete',completed=410,total=410))]
                     page.route('**/api/research/level-reaction/models', fulfill_json(json.dumps(catalog)))
-                    page.route('**/api/research/level-reaction/predict', fulfill_json(json.dumps(reaction)))
+                    def reaction_series(route):
+                        requested=route.request.post_data_json
+                        times=set(requested['close_times'])
+                        rows=[r for r in reaction['records'] if r['candle_close'] in times]
+                        payload={k:v for k,v in reaction.items() if k!='candles'}
+                        payload.update(records=rows,requested=len(times),available=sum(r['status']=='ready' for r in rows))
+                        route.fulfill(content_type='application/json',body=json.dumps(payload))
+                    page.route('**/api/research/level-reaction/series', reaction_series)
                 if args.resistance_selection_fixture:
                     base = datetime.fromisoformat(f"{args.canvas_session_date or '2026-08-20'}T10:00:00+00:00").timestamp()
                     book = dict(id='structure_book_000000000001', ticker=args.canvas_symbol, version='causal-swing-closing-book-4', start='2025-01-01', end='2026-09-04')
@@ -2391,17 +2398,16 @@ def capture(args: argparse.Namespace) -> int:
                     )
                 if args.stub_chart_history:
                     fixture_date = args.canvas_session_date or "2026-08-20"
-                    page.route(
-                        "**/api/trading/canvas-chart/history**",
-                        lambda route: route.fulfill(
-                            content_type="application/json",
-                            body=json.dumps(
-                                daily_chart_history_fixture(fixture_date)
-                                if "timeframe=1d" in route.request.url
-                                else chart_history_fixture(fixture_date)
-                            ),
-                        ),
-                    )
+                    def history_response(route):
+                        value=daily_chart_history_fixture(fixture_date) if 'timeframe=1d' in route.request.url else chart_history_fixture(fixture_date)
+                        if args.level_reaction_result:
+                            value['history']=[dict(bar_start=datetime.fromtimestamp(c['t']-1,timezone.utc).isoformat(),bar_end=datetime.fromtimestamp(c['t'],timezone.utc).isoformat(),
+                                **{k:c[k] for k in ('open','high','low','close','volume')},is_closed=True,session_date=fixture_date) for c in reaction['candles']]
+                            value['indicators']=[]
+                            value['structure_levels']=[]
+                            value['split_adjusted']=False
+                        route.fulfill(content_type='application/json',body=json.dumps(value))
+                    page.route('**/api/trading/canvas-chart/history**',history_response)
                 if args.stub_split_events:
                     split_date = (datetime.fromisoformat(args.canvas_session_date or "2026-08-20") - timedelta(days=5)).date().isoformat()
                     page.route(
@@ -2962,26 +2968,28 @@ def capture(args: argparse.Namespace) -> int:
                         slider.fill('30');page.keyboard.press('Escape')
                         page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__v5-levels.png')),full_page=True)
                     if args.level_reaction_result:
-                        page.get_by_role('button', name='Level reaction', exact=True).first.click()
-                        dialog = page.get_by_role('dialog', name=f'{args.canvas_symbol} · Level reaction', exact=True)
-                        dialog.get_by_label('Session', exact=True).fill(args.canvas_session_date)
-                        dialog.get_by_role('button', name='Run prediction', exact=True).click()
-                        dialog.get_by_role('img', name='Past-only price snapshot with upper and lower historical bands').wait_for()
-                        if dialog.locator('.level-reaction-results article').count() != len(reaction['results']):
-                            raise RuntimeError('Reaction probability panels missing')
-                        box=dialog.bounding_box()
-                        if not box or box['y']<0 or box['y']+box['height']>page.viewport_size['height']+1:
-                            raise RuntimeError('Reaction modal exceeds scaled viewport')
-                        page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__reaction.png')), full_page=True)
-                        dialog.locator('.level-reaction-results').scroll_into_view_if_needed()
-                        page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__reaction-probabilities.png')), full_page=True)
-                        dialog.get_by_label('Prediction time · ET').fill('07:11:46')
-                        if dialog.locator('.level-reaction-results').count():
-                            raise RuntimeError('Old prediction survived a time change')
-                        dialog.get_by_label('Session', exact=True).fill(reaction['cutoff'])
-                        if dialog.get_by_role('button', name='Run prediction', exact=True).is_enabled():
-                            raise RuntimeError('Model cutoff did not block earlier date')
-                        page.keyboard.press('Escape')
+                        page.get_by_role('button',name=args.canvas_chart_timeframe,exact=True).first.click()
+                        toggle=page.get_by_role('checkbox',name='Show level reaction',exact=True).first
+                        toggle.check()
+                        label=page.locator('.level-reaction-label').last
+                        label.wait_for(timeout=60000)
+                        for item in page.locator('.level-reaction-label').all():
+                            if not re.fullmatch(r'[↑↓] \d+%',item.inner_text()):
+                                raise RuntimeError('Reaction label contains unexpected text')
+                            if int(item.get_attribute('data-close'))>reaction['as_of']:
+                                raise RuntimeError('Future prediction rendered')
+                        page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__reaction-labels.png')),full_page=True)
+                        label.hover()
+                        tooltip=page.get_by_role('tooltip')
+                        tooltip.wait_for()
+                        if 'not reached' not in tooltip.inner_text() or 'Model and data provenance' not in tooltip.inner_text():
+                            raise RuntimeError('Reaction hover missing outcomes/provenance')
+                        page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__reaction-hover.png')),full_page=True)
+                        tooltip.locator('summary').click()
+                        if 'Model hash' not in tooltip.inner_text():
+                            raise RuntimeError('Reaction provenance cannot be expanded')
+                        toggle.uncheck()
+                        page.wait_for_function("document.querySelectorAll('.level-reaction-label').length===0")
                     if args.resistance_selection_fixture or args.resistance_selection:
                         toggle = page.get_by_role('button', name='Selected resistance', exact=True)
                         toggle.click()
@@ -3329,7 +3337,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument('--swing-structure-fixture', action='store_true', help='validate swing controls with synthetic segments; never calculate real levels')
     result.add_argument('--resistance-selection-fixture', action='store_true', help='validate selection overlay, cutoff, sliders and reversible chart painting with a fixture')
     result.add_argument('--resistance-selection', action='store_true', help='calculate and inspect resistance selection on a real historical chart')
-    result.add_argument('--level-reaction-result', help='real as-of inference response JSON for chart presentation and cutoff validation')
+    result.add_argument('--level-reaction-result', help='real candle-series response with canonical candles for indicator and hover validation')
     result.add_argument('--swing-book-v5', action='store_true', help='validate integrated v5 evidence-score controls on a real replay chart')
     result.add_argument('--symmetric-swing-fixture', help='canonical bars and V5 snapshots for support/resistance projection validation; no strategy run')
     result.add_argument('--staged-strategy-fixture', action='store_true', help='validate frozen R1-R4 and stop/target paths using synthetic journal evidence; no backtest')

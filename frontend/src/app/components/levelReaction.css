@@ -1,0 +1,14 @@
+.level-reaction-controls { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.level-reaction-controls label.toolbar-button { display: inline-flex; width: auto; flex: 0 0 auto; padding-inline: 8px; align-items: center; gap: 5px; white-space: nowrap; }
+.level-reaction-model { max-width: 145px; min-width: 70px; font: inherit; color: var(--foreground); background: var(--background); border: 1px solid var(--border); border-radius: 4px; }
+.level-reaction-controls .level-reaction-status { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.level-reaction-layer { position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 5; }
+.level-reaction-label { position: absolute; transform: translateX(-50%); padding: 1px 2px; border: 0; background: var(--background); border-radius: 3px; font: 600 11px/14px system-ui; white-space: nowrap; pointer-events: auto; cursor: help; }
+.level-reaction-label:focus-visible { outline: 2px solid var(--foreground); }
+.level-reaction-label[data-direction="up"] { color: var(--semantic-positive); }
+.level-reaction-label[data-direction="down"] { color: var(--semantic-negative); }
+.level-reaction-tooltip { position: absolute; max-width: min(460px, calc(100% - 16px)); max-height: calc(100% - 16px); overflow: auto; white-space: pre-line; overflow-wrap: anywhere; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); color: var(--foreground); font: 11px/1.4 system-ui; pointer-events: auto; z-index: 10; }
+
+.level-reaction-outcomes { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-block: 6px; }
+.level-reaction-tooltip p { margin: 4px 0; }
+.level-reaction-tooltip summary { cursor: pointer; }

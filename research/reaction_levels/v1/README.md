@@ -137,3 +137,48 @@ The completed initial AAPL run pins training source commit `45d025a1` and retain
 `source-snapshot.zip` with verified per-file hashes. Later reporting and UTC
 quote-year-boundary fixes do not change its model. Reproduce that exact run with
 its pinned source; changed source requires a new runtime, not a manifest override.
+
+## Candle indicator and strategy input
+
+Enable **Level reaction** on a Debug/Backtest chart with a prepared forward
+session. Each completed selected-timeframe candle gets `↑ 36%` or `↓ 42%` below
+it. This compares **upper broken** against **lower broken**, not rejection, and
+the probabilities are not complements. Upper wins exact ties. Hover or keyboard
+focus reveals both bands, all four outcomes, the fixed 60-second horizon, price
+age, and model/book/input provenance. Unavailable seconds receive no invented
+probability; the toolbar reports available/requested counts.
+
+Supported sampling frames: 1s, 5s, 10s, 30s, 1m, 5m, 1h. The trained features
+remain 1s at every sampling interval. Subsecond/daily charts are explicitly
+unsupported by this model. Labels become available at candle close and rewind
+hides later records immediately. The former manual prediction modal, separate
+snapshot, boundary overlays, and unfinished streaming-book presentation are
+removed. This model continues to use its frozen prior-session book.
+
+`research.reaction_levels.v1.inference.predict_series` owns the shared records;
+`POST /api/research/level-reaction/series` is only its HTTP projection. It verifies
+the frozen model, canonical inputs, prior book and split provenance. Two prepared
+sessions are cached, invalidated when any pinned artifact's file signature
+changes. Cached full-session **features** use only backward-looking transforms
+(tested against prefix inference); model predictions are computed only for
+requested closes through the as-of cursor. Future labels are never loaded.
+Each record has `candle_start`, `candle_close`, `available_at`, `status`, `reason`,
+`results`, and `winner`; the response carries the common provenance.
+
+The opt-in strategy adapter requires no browser, frontend, or HTTP:
+
+```python
+from src.trading_runtime.level_reaction import LevelReactionFeed
+
+feed = LevelReactionFeed(model_id)  # pin the selected trained artifact
+observation = feed.enrich(observation, candle_close, timeframe_seconds=1)
+prediction = observation.reaction_prediction
+# Require prediction['status'] == 'ready' before using its results/winner.
+```
+
+`enrich` returns a new real `StrategyObservation` containing the complete record
+and provenance. It rejects future/stale candles instead of reusing an earlier
+prediction. Existing strategy logic does not consume this field or change orders;
+the next strategy can explicitly opt in. Current serving supports **prepared
+historical sessions** after the model cutoff; unprepared/live sessions fail
+explicitly. A canonical live-input adapter is still required for live inference.

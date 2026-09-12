@@ -371,6 +371,8 @@ class StrategyObservation:
     candle_detector_state: dict[str, Any] | None = None
     structural_detector_state: dict[str, Any] | None = None
     bar_volume: float | None = None
+    # Opt-in shared model input; populated by LevelReactionFeed, never by the UI.
+    reaction_prediction: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.observed_at.tzinfo is None:
