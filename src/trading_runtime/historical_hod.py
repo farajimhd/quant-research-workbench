@@ -478,7 +478,10 @@ def record_early_stop_fill(state, filled_at, fill_role):
     """Only an actual fill of the still-active initial stop grants reentry."""
     active = state.get('historical_hod_entry') or {}
     early = active.get('early_green_stop') or {}
-    if (not early or active.get('early_green_graduated')
+    # Crossing a resistance retires pattern arming, not this stop's identity.
+    # A hold may fail (or a replacement be rejected), leaving the original
+    # three-candle stop in force and its reclaim permission still applicable.
+    if (not early
             or state.get('active_stop') != early['price']
             or not (fill_role in {'protective_stop', 'trailing_stop', 'protective_exit'}
                     or fill_role == 'managed_exit' and state.get('last_exit_reason') == 'protective_stop')):

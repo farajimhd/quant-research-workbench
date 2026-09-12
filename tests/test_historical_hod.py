@@ -140,7 +140,7 @@ def test_stop_fill_can_reclaim_without_previous_completed_close_below_level():
     assert r.evaluation.intents[0].reason=='stopped_level_reclaim'
 
 
-def test_next_resistance_retires_early_mode_without_waiting_for_hold():
+def test_next_resistance_retires_pattern_arming_without_waiting_for_hold():
     host,a,_=green_stop_position()
     r=host.evaluate(a,candle(6,10.43,opened=10.15,position_quantity=100))
     assert r.state['historical_hod_entry']['early_green_graduated']
@@ -149,6 +149,31 @@ def test_next_resistance_retires_early_mode_without_waiting_for_hold():
     assert r.state['active_stop']==pytest.approx(10.39)
     H.record_early_stop_fill(r.state,NOW+timedelta(seconds=7.1),'protective_stop')
     assert 'early_stop_reentry' not in r.state
+
+
+@pytest.mark.parametrize('replacement',['not_yet','accepted','rejected'])
+def test_resistance_cross_records_stop_hit_until_stop_actually_changes(replacement):
+    import asyncio
+    host,a,_=green_stop_position()
+    r=host.evaluate(a,candle(6,10.43,opened=10.15,position_quantity=100))
+    a=replace(a,state=r.state,status=r.status)
+    assert a.state['historical_hod_entry']['early_green_graduated']
+    assert a.state['active_stop']==pytest.approx(10.10)
+    if replacement!='not_yet':
+        r=host.evaluate(a,candle(7,10.45,opened=10.44,position_quantity=100))
+        a=replace(a,state=r.state,status=r.status)
+        assert a.state['active_stop']==pytest.approx(10.39)
+        if replacement=='rejected':
+            # Same restoration performed by the shared rejection callback.
+            a.state['active_stop']=r.evaluation.intents[0].metadata['previous_stop']
+    assigned=S.AssignedLongMomentumStrategy([a])
+    fill=SimpleNamespace(assignment_id=a.assignment_id,state='FILLED',action='exit',
+        fill_incremental_quantity=100.,filled_quantity=100.,updated_at=NOW+timedelta(seconds=7.2),
+        fill_role='protective_stop',reentry_after_fill=True)
+    asyncio.run(assigned.on_order_group_update(fill,aggregate_position_quantity=0.))
+    saved=assigned.assignments()[0].state.get('early_stop_reentry')
+    assert bool(saved)==(replacement!='accepted')
+    if saved:assert saved['price']==pytest.approx(10.10)
 
 
 @pytest.mark.parametrize('role,reason,remember',[
@@ -191,9 +216,11 @@ def test_reentry_record_clears_only_on_actual_acquisition_fill():
 
 
 @pytest.mark.parametrize('failure',[None,'open_equal','open_below','late','spread','episode_ended','new_episode'])
-def test_stopped_level_reentry_close_then_next_open_with_current_gates(failure):
+@pytest.mark.parametrize('graduated',[False,True])
+def test_stopped_level_reentry_close_then_next_open_with_current_gates(failure,graduated):
     import json
     host,a,_=green_stop_position()
+    a.state['historical_hod_entry']['early_green_graduated']=graduated
     H.record_early_stop_fill(a.state,NOW+timedelta(seconds=5.2),'protective_stop')
     # Checkpoint serialization must preserve remembered prices and episode identity.
     a=replace(a,state=json.loads(json.dumps(a.state)),status=S.AssignmentStatus.REENTRY_COOLDOWN)
