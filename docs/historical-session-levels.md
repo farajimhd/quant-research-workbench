@@ -72,3 +72,58 @@ Before production adoption, compare against V6, test diversified subsequent
 sessions, and design a causal streaming estimator and a separate finalized-book
 consumer contract. A visually persuasive historical fit does not establish
 next-session trading value or campaign-wide performance.
+
+## Daily consolidation
+
+`historical-level-consolidation-1` seeds a checkpoint from a reviewed extraction
+and carries it into the next certified session. This is a finalized historical
+book, not a streaming restart state. The current V6 and algorithm-18 campaigns
+and strategy consumers are not changed.
+
+- Validate the prior checkpoint hash, symbol, chronological availability and
+  exact next-session input hash. Reusing a date or skipping a certified session
+  in the runner fails. Checkpoints are immutable, hashed, and atomically written.
+- Query canonical split reference records for the interval; conflicting ratios
+  fail closed. Apply each effective split once to carried geometry, retaining
+  original geometry on prior-session chart segments. Volume contributions retain
+  their original reported share units.
+- Extract the new day independently with the seed extractor settings. Each new
+  zone can match only one old identity. The gap limit is the lesser of one quarter
+  of band width and reaction prominence; center separation cannot exceed 0.75
+  times the larger width. The full matched group cannot exceed 1.5 times that
+  width. Old identities never merge through a chain of new proposals.
+- Freeze historical geometry after split adjustment. Matched proposals extend
+  the ancestry list, but their encounter counts are not added to it. Instead,
+  evaluate every carried band directly against the day's canonical seconds,
+  including bands not rediscovered by today's independent extraction.
+- Append exactly one source-hashed contribution per band/session. Preserve the
+  oldest origin session and stable identity. Current-day members matched to an
+  old level are historical. Unmatched new zones receive new identities.
+- Carry untouched levels without decay or deletion. Over the last three touched
+  sessions, at least four accepted crossings and at least 75% acceptance among
+  resolved encounters mark a level `weakened`. Keep it in the checkpoint/chart;
+  subsequent rejection evidence may restore qualification. This is an explicit
+  first-version policy, not a validated trading filter.
+- Preserve past role segments exactly. New-day carried segments begin at 04:00
+  with the last confirmed role or pending transition. Incoming evidence changes
+  the role; new zones begin at their first confirmed rejection. The plotted
+  retrospective extraction still must not be used intraday for that same day.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+& C:\Users\g835l\miniconda3\envs\ml4t\python.exe scripts/consolidate_historical_session_levels.py `
+  --seed-directory D:\TradingML\runtimes\historical-session-levels\AAPL-2026-08-21 `
+  --next-session 2026-08-24 `
+  --runtime D:\TradingML\runtimes\historical-session-levels\AAPL-two-days
+```
+
+The runner saves both finalized checkpoints, the next-day inputs and independent
+extraction, matching/strength evidence, timings, and one combined chart. The
+chart compresses overnight/weekend gaps, labels dates, and uses thicker strokes
+for carried historical segments. A second day's updates never redraw the first
+day with its future geometry. On a same-input rerun, existing checkpoint content
+must match exactly; differing output requires a new runtime directory.
+
+To continue another day, use the preceding output directory as `--seed-directory`
+and pass its final JSON through `--prior-checkpoint`. The full accumulated history
+continues in the checkpoint; the chart shows the two requested adjacent sessions.

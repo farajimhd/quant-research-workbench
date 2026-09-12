@@ -9,9 +9,13 @@ from scipy.signal import find_peaks
 VERSION = 'historical-session-reaction-zones-1'
 
 
-def role_timeline(encounters, session_end):
+def role_timeline(encounters, session_end, *, initial_role=None, session_start=None):
     """Evidence-time segments; crossing alone does not confirm the other role."""
     segments=[]
+    if initial_role is not None:
+        if session_start is None or initial_role not in ('support','resistance','transition'):
+            raise ValueError('Invalid carried role')
+        segments.append(dict(start=session_start,end=session_end,role=initial_role,contact_at=None,reason='carried_checkpoint'))
     latest_contact=-float('inf')
     for event in sorted(encounters,key=lambda e:(e['resolved_at'],e['at'])):
         if event['outcome']=='unresolved' or event['at']<latest_contact:
@@ -47,6 +51,46 @@ class Settings:
     minimum_role_rejection_fraction: float = .6
     maximum_candidates: int = 512
 
+
+
+def encounter_evidence(bars, lower, upper, prominence, half, settings):
+    """Evaluate a fixed band against one session, including carried historical bands."""
+    s=settings
+    t,h,l,c,v=np.array([[b[k] for k in ('t','high','low','close','volume')] for b in bars],dtype=float).T
+    encounters=[];armed=True;last_side=None
+    for i in range(1,len(t)):
+        if t[i]-t[i-1]>s.maximum_gap_seconds:
+            armed=True;last_side=None
+            continue
+        # Rearm only after a meaningful excursion, avoiding repeated touches.
+        if c[i-1]<lower-prominence or c[i-1]>upper+prominence:
+            armed=True
+            last_side='resistance' if c[i-1]<lower else 'support'
+        if not armed or h[i]<lower or l[i]>upper:
+            continue
+        role=last_side or ('resistance' if c[i-1]<lower else 'support' if c[i-1]>upper else None)
+        if role is None:
+            continue
+        armed=False
+        end=min(len(t),int(np.searchsorted(t,t[i]+s.reaction_seconds,side='right')))
+        gap=np.flatnonzero(np.diff(t[i:end])>s.maximum_gap_seconds)
+        if len(gap):end=i+int(gap[0])+1
+        future=c[i+1:end]
+        rejection=future<lower-prominence if role=='resistance' else future>upper+prominence
+        beyond=future>upper+half if role=='resistance' else future<lower-half
+        acceptance=np.zeros(len(future),dtype=bool)
+        if len(future)>1:
+            acceptance[1:]=beyond[1:] & beyond[:-1] & (np.diff(t[i+1:end])==1)
+        hits=np.flatnonzero(rejection|acceptance)
+        j=i+1+int(hits[0]) if len(hits) else end-1
+        outcome=('rejection' if rejection[hits[0]] else 'acceptance') if len(hits) else 'unresolved'
+        # Time-window baseline includes empty seconds; no future baseline.
+        prior=int(np.searchsorted(t,t[i]-60))
+        baseline=float(v[prior:i].sum()/max(1,t[i]-max(t[0],t[i]-60)))
+        duration=max(1,t[j]-t[i]+1)
+        encounters.append(dict(at=float(t[i]),resolved_at=float(t[j]),role=role,outcome=outcome,
+            volume=float(v[i:j+1].sum()),relative_volume=float(v[i:j+1].sum()/duration/baseline) if baseline>0 else None))
+    return encounters
 
 def extract(bars, profile, *, ticker, session, available_at, source, settings=Settings()):
     """Bars have epoch-second end times and canonical OHLC/eligible volume.
@@ -109,39 +153,7 @@ def extract(bars, profile, *, ticker, session, available_at, source, settings=Se
         lower=round(np.floor((center-half)/s.tick+1e-9)*s.tick,8)
         upper=round(np.ceil((center+half)/s.tick-1e-9)*s.tick,8)
         center=round((lower+upper)/2,8)
-        encounters=[];armed=True;last_side=None
-        for i in range(1,len(t)):
-            if t[i]-t[i-1]>s.maximum_gap_seconds:
-                armed=True;last_side=None
-                continue
-            # Rearm only after a meaningful excursion, avoiding repeated touches.
-            if c[i-1]<lower-prominence or c[i-1]>upper+prominence:
-                armed=True
-                last_side='resistance' if c[i-1]<lower else 'support'
-            if not armed or h[i]<lower or l[i]>upper:
-                continue
-            role=last_side or ('resistance' if c[i-1]<lower else 'support' if c[i-1]>upper else None)
-            if role is None:
-                continue
-            armed=False
-            end=min(len(t),int(np.searchsorted(t,t[i]+s.reaction_seconds,side='right')))
-            gap=np.flatnonzero(np.diff(t[i:end])>s.maximum_gap_seconds)
-            if len(gap):end=i+int(gap[0])+1
-            future=c[i+1:end]
-            rejection=future<lower-prominence if role=='resistance' else future>upper+prominence
-            beyond=future>upper+half if role=='resistance' else future<lower-half
-            acceptance=np.zeros(len(future),dtype=bool)
-            if len(future)>1:
-                acceptance[1:]=beyond[1:] & beyond[:-1] & (np.diff(t[i+1:end])==1)
-            hits=np.flatnonzero(rejection|acceptance)
-            j=i+1+int(hits[0]) if len(hits) else end-1
-            outcome=('rejection' if rejection[hits[0]] else 'acceptance') if len(hits) else 'unresolved'
-            # Time-window baseline includes empty seconds; no future baseline.
-            prior=int(np.searchsorted(t,t[i]-60))
-            baseline=float(v[prior:i].sum()/max(1,t[i]-max(t[0],t[i]-60)))
-            duration=max(1,t[j]-t[i]+1)
-            encounters.append(dict(at=float(t[i]),resolved_at=float(t[j]),role=role,outcome=outcome,
-                volume=float(v[i:j+1].sum()),relative_volume=float(v[i:j+1].sum()/duration/baseline) if baseline>0 else None))
+        encounters=encounter_evidence(bars,lower,upper,prominence,half,s)
         supports=sum(e['outcome']=='rejection' and e['role']=='support' for e in encounters)
         resistances=sum(e['outcome']=='rejection' and e['role']=='resistance' for e in encounters)
         accepted=sum(e['outcome']=='acceptance' for e in encounters)
