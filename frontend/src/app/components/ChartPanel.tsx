@@ -1,4 +1,5 @@
 import { tradeGuideSpan } from "./tradeGuideGeometry";
+import { useLevelReaction } from "./LevelReaction";
 import { macdBpsPoints } from "./macdBps";
 import { HindsightPrimitive, useHindsightPositions } from "./HindsightPositions";
 import { SwingStructurePrimitive, useSwingStructure } from "./SwingStructure";
@@ -988,6 +989,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const [supervisionMenuOpen, setSupervisionMenuOpen] = useState(false);
   const [strategyPresentationOpen, setStrategyPresentationOpen] = useState(false);
   const hindsight = useHindsightPositions(ticker, hindsightSessionDate);
+  const levelReaction = useLevelReaction(ticker, hindsightSessionDate, indicatorAsOf);
   const hindsightRef = useRef(hindsight.positions);
   hindsightRef.current = hindsight.positions;
   const hindsightPrimitiveRef = useRef<HindsightPrimitive | null>(null);
@@ -2209,6 +2211,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         ) : null}
         <div className="toolbar-spacer" />
         {hindsight.controls}
+        {levelReaction.controls}
         {swingStructure.controls}
         {structureGaps.controls}
         {structuralDetector.controls}

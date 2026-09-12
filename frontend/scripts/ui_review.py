@@ -2304,6 +2304,11 @@ def capture(args: argparse.Namespace) -> int:
                     page.route('**/api/trading/backtest/structure-books',fulfill_json(json.dumps(dict(items=books))))
                     page.route('**/api/trading/backtest/indicator-warmup',fulfill_json(json.dumps(dict(status='ready',items=[],ready_count=2,ticker_count=2,tickers=['SUGP','JUNS']))))
                     page.route('**/api/trading/historical-preflight',fulfill_json(json.dumps(dict(strategy_run_ready=False,checks=[],window=dict(sessions=['2026-08-21'])))))
+                if args.level_reaction_result:
+                    reaction = json.loads(Path(args.level_reaction_result).read_text())
+                    catalog = [dict(id=reaction['model_id'], ticker=reaction['ticker'], cutoff=reaction['cutoff'], dates=[args.canvas_session_date], ready=True, status=dict(stage='complete',completed=410,total=410))]
+                    page.route('**/api/research/level-reaction/models', fulfill_json(json.dumps(catalog)))
+                    page.route('**/api/research/level-reaction/predict', fulfill_json(json.dumps(reaction)))
                 if args.resistance_selection_fixture:
                     base = datetime.fromisoformat(f"{args.canvas_session_date or '2026-08-20'}T10:00:00+00:00").timestamp()
                     book = dict(id='structure_book_000000000001', ticker=args.canvas_symbol, version='causal-swing-closing-book-4', start='2025-01-01', end='2026-09-04')
@@ -2956,6 +2961,27 @@ def capture(args: argparse.Namespace) -> int:
                         page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__v5-settings.png')),full_page=True)
                         slider.fill('30');page.keyboard.press('Escape')
                         page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__v5-levels.png')),full_page=True)
+                    if args.level_reaction_result:
+                        page.get_by_role('button', name='Level reaction', exact=True).first.click()
+                        dialog = page.get_by_role('dialog', name=f'{args.canvas_symbol} · Level reaction', exact=True)
+                        dialog.get_by_label('Session', exact=True).fill(args.canvas_session_date)
+                        dialog.get_by_role('button', name='Run prediction', exact=True).click()
+                        dialog.get_by_role('img', name='Past-only price snapshot with upper and lower historical bands').wait_for()
+                        if dialog.locator('.level-reaction-results article').count() != len(reaction['results']):
+                            raise RuntimeError('Reaction probability panels missing')
+                        box=dialog.bounding_box()
+                        if not box or box['y']<0 or box['y']+box['height']>page.viewport_size['height']+1:
+                            raise RuntimeError('Reaction modal exceeds scaled viewport')
+                        page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__reaction.png')), full_page=True)
+                        dialog.locator('.level-reaction-results').scroll_into_view_if_needed()
+                        page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__reaction-probabilities.png')), full_page=True)
+                        dialog.get_by_label('Prediction time · ET').fill('07:11:46')
+                        if dialog.locator('.level-reaction-results').count():
+                            raise RuntimeError('Old prediction survived a time change')
+                        dialog.get_by_label('Session', exact=True).fill(reaction['cutoff'])
+                        if dialog.get_by_role('button', name='Run prediction', exact=True).is_enabled():
+                            raise RuntimeError('Model cutoff did not block earlier date')
+                        page.keyboard.press('Escape')
                     if args.resistance_selection_fixture or args.resistance_selection:
                         toggle = page.get_by_role('button', name='Selected resistance', exact=True)
                         toggle.click()
@@ -3222,7 +3248,7 @@ def capture(args: argparse.Namespace) -> int:
                         and scenario["scale"] == 1.0
                         and scenario["viewport_name"] == "normal"
                     ) else screenshot_path.with_name(f"{screenshot_path.stem}__chart-interaction.png") if scenario["page"] == "canvas-focus" else None
-                    if not args.hindsight_positions and not args.swing_structure_fixture and not args.structure_gaps_fixture and not args.structure_gaps and not args.resistance_selection_fixture and not args.resistance_selection and not args.swing_book_v5 and not args.staged_strategy_fixture and not args.structural_detector_fixture and not args.symmetric_swing_fixture:
+                    if not args.level_reaction_result and not args.hindsight_positions and not args.swing_structure_fixture and not args.structure_gaps_fixture and not args.structure_gaps and not args.resistance_selection_fixture and not args.resistance_selection and not args.swing_book_v5 and not args.staged_strategy_fixture and not args.structural_detector_fixture and not args.symmetric_swing_fixture:
                         issues.extend(validate_canvas_interactions(
                             page, scenario, interaction_screenshot,
                             args.canvas_chart_timeframe, args.chart_stress_cycles,
@@ -3303,6 +3329,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument('--swing-structure-fixture', action='store_true', help='validate swing controls with synthetic segments; never calculate real levels')
     result.add_argument('--resistance-selection-fixture', action='store_true', help='validate selection overlay, cutoff, sliders and reversible chart painting with a fixture')
     result.add_argument('--resistance-selection', action='store_true', help='calculate and inspect resistance selection on a real historical chart')
+    result.add_argument('--level-reaction-result', help='real as-of inference response JSON for chart presentation and cutoff validation')
     result.add_argument('--swing-book-v5', action='store_true', help='validate integrated v5 evidence-score controls on a real replay chart')
     result.add_argument('--symmetric-swing-fixture', help='canonical bars and V5 snapshots for support/resistance projection validation; no strategy run')
     result.add_argument('--staged-strategy-fixture', action='store_true', help='validate frozen R1-R4 and stop/target paths using synthetic journal evidence; no backtest')

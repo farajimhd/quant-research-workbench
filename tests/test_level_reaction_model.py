@@ -117,3 +117,12 @@ def test_recent_baseline_uses_only_supplied_calibration_counts():
     p=frequency_baseline([1,2,3,4])
     np.testing.assert_allclose(p,np.array([2,3,4,5])/14)
     with pytest.raises(ValueError):frequency_baseline([1,-1,2,3])
+
+
+def test_empty_seed_keeps_schema_and_explicit_zero_example_partition():
+    inputs,book=example();_,expected,_,_=feature_rows(inputs,book)
+    book['levels']=[]
+    rows,names,audit,grid=feature_rows(inputs,book)
+    assert names==expected and rows.empty and audit['reason']=='no_historical_levels'
+    labeled=label_rows(rows,grid,[])
+    assert labeled.empty and 'label' in labeled

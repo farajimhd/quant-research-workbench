@@ -36,9 +36,36 @@ $env:PYTHONDONTWRITEBYTECODE='1'
   Initial warmup is 60 seconds; longer incomplete windows remain missing/partial.
   Volume reflects the existing price-eligible bar dataset: excluded-price-second
   volume is exposed in source audit, not invented in the grid.
-- Serving features are `data.feature_rows`; the labeler is separate. A streaming
-  adapter can run this same prefix transform, but no service is deployed here.
+- Serving features are `data.feature_rows`; the labeler is separate. The historical
+  presentation uses this same prefix transform through `/api/research/level-reaction/predict`.
   This is SIP event-time causality, not a simulation of feed availability latency.
+
+## Chart presentation
+
+The shared strategy/chart toolbar exposes **Level reaction**. Select a trained
+ticker model, prepared forward session and completed ET second, then run the
+prediction. The separate raw-session-price snapshot contains only the preceding
+30 minutes, with gaps in observations preserved. It avoids mixing split-adjusted
+chart coordinates with raw model bands. Changing ticker, model, date or time
+invalidates the previous result. **Use chart time** copies the replay cursor.
+
+The read-only endpoint verifies frozen model, input and prior-book hashes and
+uses only bars/quotes through the requested second. It never calls the labeler
+or extracts current-session levels. Requests before/within training are blocked;
+dates without prepared partitions are explicitly unavailable. It is a historical
+as-of research presentation, not a live trading decision or streaming adapter.
+Up/down retain not-reached/unresolved probability mass. Overlapping bands can
+produce different hypotheses while price is inside both; they are not a single
+mutually exclusive forecast across the pair. A missing side is not fabricated.
+
+SUGP run: `--ticker SUGP --start 2025-01-01 --train-end 2026-08-20
+--test-day 2026-08-21 --runtime D:\TradingML\runtimes\reaction-level-model\SUGP-2025-aug2026-v1-complete`.
+The daily checkpoints incorporate the deduplicated 10:1 reverse split on
+2025-08-25 and 5:1 reverse split on 2026-08-06. Empty initial books remain
+explicit zero-example partitions while subsequent completed sessions build the book.
+
+Run `tests/test_level_reaction_service.py` with `REACTION_TEST_MODEL` set to a
+completed runtime directory name to verify actual serving/batch parity.
 
 ## Input and target contract
 

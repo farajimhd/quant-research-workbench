@@ -5,6 +5,18 @@ import pandas as pd
 from .config import CONTRACT
 
 
+def level_feature_names(common):
+    result=list(common)
+    for name in ('upper','lower'):
+        result.append(name+'_present')
+        for attr in ('lower','upper','price'):
+            result.extend([name+'_'+attr+'_bps',name+'_'+attr+'_vol'])
+        result.extend(name+'_'+attr for attr in ('support_rejections','resistance_rejections','accepted_crossings','sessions','role','weakened','inside'))
+        for role in ('support','resistance'):
+            result.extend(name+'_'+role+'_'+attr for attr in ('center_bps','count','scale_vol'))
+    return result+['gap_bps','gap_position','target_upper']
+
+
 def feature_rows(inputs,book):
     start=int(datetime.fromisoformat(inputs['source']['start']).timestamp())
     end=int(datetime.fromisoformat(inputs['source']['end']).timestamp())
@@ -47,10 +59,15 @@ def feature_rows(inputs,book):
         for name in ('quote_age','spread_bps','size_imbalance','log_bid_size','log_ask_size'):common[name]=np.nan
         common['quote_valid']=0.
     levels=book['levels'];n=len(grid);p=close.to_numpy()
+    expected=level_feature_names(common.columns)
     # Edge lookup is deterministic even with overlapping bands.
     up=sorted(range(len(levels)),key=lambda i:(levels[i]['upper'],levels[i]['id']))
     down=sorted(range(len(levels)),key=lambda i:(levels[i]['lower'],levels[i]['id']))
-    if not levels:return pd.DataFrame(),[],dict(seconds=n,eligible=0,missing_both=n),df
+    if not levels:
+        empty=pd.DataFrame({name:pd.Series(dtype='float32') for name in expected})
+        for name in ('t','grid_index','level_index','margin'):empty[name]=pd.Series(dtype='float64')
+        for name in ('level_id','other_level_id'):empty[name]=pd.Series(dtype='str')
+        return empty,expected,dict(seconds=n,eligible=0,missing_both=n,reason='no_historical_levels'),df
     ui=np.searchsorted([levels[i]['upper'] for i in up],p,side='left')
     di=np.searchsorted([levels[i]['lower'] for i in down],p,side='right')-1
     indexes=[]
@@ -77,6 +94,7 @@ def feature_rows(inputs,book):
     common['gap_position']=-common.lower_upper_bps/common.gap_bps.where(common.gap_bps>0)
     common.replace([np.inf,-np.inf],np.nan,inplace=True)
     features=list(common.columns)+['target_upper']
+    if features!=expected:raise ValueError('Level feature schema drift')
     eligible=np.isfinite(p)&(age.to_numpy()<=CONTRACT['price_max_age_seconds'])&(elapsed>=CONTRACT['warmup_seconds'])&np.isfinite(scale)
     rows=[]
     for side,idx in zip((1,0),indexes):

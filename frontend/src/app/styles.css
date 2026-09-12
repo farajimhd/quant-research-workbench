@@ -16247,3 +16247,27 @@ button {
 .legend-v6-controls > span { display: flex; align-items: center; gap: .4rem; }
 .chart-legend-editor .legend-v6-controls input[type="color"] { flex: 0 0 2rem; width: 2rem; }
 .chart-legend-editor .legend-v6-controls input[type="checkbox"] { width: auto; }
+
+.modal-panel.level-reaction-modal { width: min(72rem, calc(var(--app-zoomed-viewport-width, 100vw) - 42px)); max-width: calc(var(--app-zoomed-viewport-width, 100vw) - 42px); max-height: calc(var(--app-zoomed-viewport-height, 100vh) - 42px); overflow: auto; }
+.toolbar-button.level-reaction-toggle, .level-reaction-form .toolbar-button { width: auto; flex: 0 0 auto; padding-inline: .75rem; white-space: nowrap; }
+.level-reaction-modal p { color: var(--muted-foreground); overflow-wrap: anywhere; }
+.level-reaction-form { display: flex; flex-wrap: wrap; gap: .75rem; align-items: end; }
+.level-reaction-form label { display: grid; gap: .3rem; min-width: 0; }
+.level-reaction-form label:first-child { flex: 1 1 20rem; }
+.level-reaction-form input, .level-reaction-form select { min-width: 0; max-width: 100%; padding: .5rem; background: var(--background); color: var(--foreground); border: 1px solid var(--border); border-radius: .35rem; }
+.level-reaction-snapshot { display: block; width: 100%; background: var(--background); border: 1px solid var(--border); border-radius: .5rem; }
+.level-reaction-snapshot text { fill: var(--foreground); font-size: 12px; }
+.reaction-grid { stroke: var(--border); }
+.reaction-price { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+.reaction-upper { color: var(--semantic-negative); }
+.reaction-lower { color: var(--semantic-positive); }
+.reaction-upper rect, .reaction-lower rect { fill: currentColor; opacity: .15; }
+.reaction-upper line, .reaction-lower line { stroke: currentColor; stroke-dasharray: 5 3; }
+.level-reaction-results { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(22rem, 100%), 1fr)); gap: 1rem; margin: 1rem 0; }
+.level-reaction-results article { padding: 1rem; border: 1px solid var(--border); border-radius: .5rem; min-width: 0; }
+.level-reaction-results h4 { margin: 0 0 .75rem; }
+.reaction-directions { display: flex; flex-wrap: wrap; gap: 1.5rem; font-size: 1.2rem; }
+.reaction-directions strong { font-variant-numeric: tabular-nums; }
+.level-reaction-results dl > div { display: flex; justify-content: space-between; gap: 1rem; padding: .25rem 0; }
+.level-reaction-results dt { text-transform: capitalize; }
+.level-reaction-results dd { margin: 0; font-variant-numeric: tabular-nums; }

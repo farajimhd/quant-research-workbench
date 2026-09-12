@@ -70,7 +70,6 @@ def prepare(root,ticker,day,book,splits):
         return read(checkpoint),meta,True
     effective=adjusted(book,factor);stage=time.perf_counter()
     rows,features,audit,grid=feature_rows(inputs,effective)
-    if rows.empty:raise ValueError(f'No eligible training examples for {day}')
     rows=label_rows(rows,grid,effective['levels'])
     rows['book_hash']=book['checkpoint_hash'];rows['session']=day
     parquet.parent.mkdir(parents=True,exist_ok=True)
