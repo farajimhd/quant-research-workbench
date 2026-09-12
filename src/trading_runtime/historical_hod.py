@@ -20,7 +20,7 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     confirmation_lifetime_ms=1000., maximum_chase_bps=15.,
     minimum_candle_volume=1., risk_fraction=.005, maximum_quantity=10000.,
     sizing_mode='risk_fraction',cash_fraction=.9,tranche_count=3,
-    recent_breakout_seconds=30., forming_macd_entry_enabled=1,
+    recent_breakout_seconds=30., forming_macd_entry_enabled=1, early_green_stop_enabled=1,
     regular_luld_enabled=0,backtest_luld_estimation_enabled=0,minimum_regular_previous_close=.75,
     luld_buffer_bps=25.,luld_buffer_ticks=2,luld_maximum_age_ms=60000.)
 
@@ -39,10 +39,12 @@ def configure(p):
     s = dict(DEFAULTS, **raw)
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
         raise ValueError('Historical HOD settings must be finite and positive')
     if s['forming_macd_entry_enabled'] not in (0,1):
         raise ValueError('Invalid forming MACD entry policy')
+    if s['early_green_stop_enabled'] not in (0,1):
+        raise ValueError('Invalid early green stop policy')
     if s['regular_luld_enabled'] not in (0,1) or s['backtest_luld_estimation_enabled'] not in (0,1) or int(s['luld_buffer_ticks']) != s['luld_buffer_ticks']:
         raise ValueError('Invalid regular LULD policy')
     if not 0 < s['cash_fraction'] <= 1 or type(s['tranche_count']) is not int or not 2 <= s['tranche_count'] <= 20:
@@ -343,6 +345,11 @@ def observe(o, d, s):
             macd_line=preview['line'],macd_signal=preview['signal'],macd_kind=preview['kind'])
     contiguous = now-d.get('closed_at',0) == 1
     d['prior_close'] = d.get('close') if contiguous else None
+    # Candle structure is continuous across MACD episode/entry boundaries.
+    # Replace the bounded list so passive snapshots remain immutable.
+    green = (contiguous and o.price > o.bar_open and o.price > d['prior_close'])
+    d['rising_green_run'] = ((d.get('rising_green_run', []) +
+        [dict(end=now,open=o.bar_open,close=o.price)])[-3:] if green else [])
     # Completed bars and certified level snapshots are read-only evidence.
     # Advance their references; only the episode's scalar fields change.
     d['prior_bar'] = d.get('bar') if contiguous else None
@@ -441,6 +448,72 @@ def confirm_failed_attempt(active, o, *, previous_bar=None):
     return True
 
 
+def green_stop_candidate(d, tick):
+    sequence = d.get('rising_green_run', [])
+    if len(sequence) != 3 or sequence[-1]['end'] != d.get('closed_at'):
+        return None
+    return dict(price=floor(sequence[1]['close']/tick+1e-9)*tick,
+        second_close=sequence[1]['close'],confirmed_at=sequence[-1]['end'],candles=deepcopy(sequence))
+
+
+def early_green_stop(active, d, tick):
+    """Three rising green closes; bodies may overlap. Retire at next break."""
+    bar = d['bar']
+    if active.get('early_green_graduated'):
+        return
+    if any(resistance(r) and r['upper'] > active['level']['upper']
+           and d.get('prior_close') is not None and d['prior_close'] <= r['upper'] < bar['close']
+           and bar['close'] >= bar['open'] for r in d.get('prior_rows', [])):
+        active['early_green_graduated'] = True
+        return
+    if active.get('early_green_stop'):
+        return
+    candidate = green_stop_candidate(d,tick)
+    if candidate:
+        active['early_green_stop'] = candidate
+        active['desired_stop'] = max(active.get('desired_stop', 0), candidate['price'])
+
+
+def record_early_stop_fill(state, filled_at, fill_role):
+    """Only an actual fill of the still-active initial stop grants reentry."""
+    active = state.get('historical_hod_entry') or {}
+    early = active.get('early_green_stop') or {}
+    if (not early or active.get('early_green_graduated')
+            or state.get('active_stop') != early['price']
+            or not (fill_role in {'protective_stop', 'trailing_stop', 'protective_exit'}
+                    or fill_role == 'managed_exit' and state.get('last_exit_reason') == 'protective_stop')):
+        return
+    state.setdefault('early_stop_reentry', dict(price=early['price'], episode=active['episode'],
+        stopped_at=filled_at.timestamp(), below_seen=True, level=deepcopy(active['level']),
+        early_green_stop=deepcopy(early)))
+
+
+def early_reentry_confirmation(saved, d, o, fresh, row, detector_fresh):
+    """Close-cross followed by the immediately next forming 1s candle's open."""
+    now = o.observed_at.timestamp()
+    if min(o.price,o.bid) <= saved['price']:
+        saved['below_seen'] = True
+    if fresh:
+        saved.pop('confirmation', None)
+        if (now > saved['stopped_at'] and detector_fresh and d.get('contiguous')
+                and saved.get('below_seen') and saved['price'] < o.price and o.price >= o.bar_open):
+            saved['confirmation'] = dict(at=now, close=o.price, row=deepcopy(row))
+            saved['below_seen'] = False
+        return None
+    confirmation = saved.get('confirmation')
+    if (not confirmation or 'market_data_update' not in o.evaluation_events
+            or o.bar_open is None or not isfinite(o.bar_open)):
+        return None
+    if not confirmation['at'] <= now < confirmation['at']+1:
+        saved.pop('confirmation', None)
+        return None
+    # Consume the opening opportunity even if price or other gates reject it.
+    saved.pop('confirmation', None)
+    if o.bar_open <= saved['price'] or min(o.price,o.bid) <= saved['price']:
+        return None
+    return dict(confirmation, next_open=o.bar_open, validated_at=now, stop_level=saved['price'])
+
+
 def entry_reference(d, o, s, session):
     """One selected boundary shared by entry evaluation and chart evidence."""
     hod, previous = d.get('prior_hod'), d.get('prior_close')
@@ -497,6 +570,10 @@ def evaluate(host, a, o, p, state):
         state['historical_hod_state'] = d
     else:
         fresh, macd_closed = observe(o,d,s)
+    saved_reentry = state.get('early_stop_reentry')
+    if saved_reentry and (not s['early_green_stop_enabled'] or saved_reentry['episode'] != d.get('episode')):
+        state.pop('early_stop_reentry', None)
+        saved_reentry = None
     active = state.get('historical_hod_entry') or {}
     stop = float(state.get('active_stop') or 0)
     target = float((state.get('structural_profit_targets') or [0])[0])
@@ -543,6 +620,8 @@ def evaluate(host, a, o, p, state):
     row = market.get('row', {})
     detector_fresh = (fresh and market.get('book',{}).get('version') == BOOK_VERSION
         and bool(market.get('book',{}).get('fingerprint')) and row.get('effective_at') == now)
+    reclaim = (early_reentry_confirmation(saved_reentry,d,o,fresh,row,detector_fresh)
+        if saved_reentry and not acquired and not pending else None)
     if acquired and active and fresh:
         # Track the completed sequence before a resistance failure arms an exit.
         sequence = active.setdefault('red_candle_sequence', {})
@@ -603,6 +682,8 @@ def evaluate(host, a, o, p, state):
             active['fill_risk_frozen'] = True
         if fresh:
             active.pop('desired_target',None)
+            if s['early_green_stop_enabled']:
+                early_green_stop(active,d,tick)
             previous = d.get('prior_close')
             crossed = [r for r in d.get('prior_rows',[]) if resistance(r) and previous is not None and previous <= r['upper'] < o.price]
             add_breaks = active.setdefault('add_breaks',{})
@@ -679,11 +760,24 @@ def evaluate(host, a, o, p, state):
             active['desired_target'] = target_selection(d['rows'],anchor,max(o.price,o.ask),s,tick,session=session) if anchor else None
         proposed = active.get('desired_stop',0)
         replacements = []
+        early = active.get('early_green_stop') or {}
+        if (fresh and not active.get('early_green_graduated') and early.get('price') == proposed
+                and stop < proposed and 0 < o.bid <= proposed):
+            # An already marketable new stop must protect now, not wait for a
+            # later candle to make the replacement guard's bid inequality pass.
+            state.update(active_stop=proposed,last_exit_reason='protective_stop',
+                entry_acquisition_exit_latched=True)
+            state.pop('pending_capital_request',None)
+            return result('exit','protective_stop',Status.EXIT_PENDING,quantity=o.position_quantity,
+                invalidation_price=proposed,metadata={'early_green_stop':deepcopy(early),
+                    'early_stop_marketable_at_confirmation':True})
         if (fresh or luld) and stop < proposed < o.bid:
             state['active_stop'] = proposed
-            replacements.append(result('replace_protective_stop','historical_hold_or_initial_risk_trail',Status.MANAGING,
+            early_reason = early.get('price') == proposed and not active.get('early_green_graduated')
+            replacements.append(result('replace_protective_stop','three_green_second_close' if early_reason else 'historical_hold_or_initial_risk_trail',Status.MANAGING,
                 quantity=o.position_quantity,invalidation_price=proposed,profit_target_price=target,
                 metadata={'previous_stop':stop,'active_stop':proposed,
+                    'early_green_stop':deepcopy(early) if early_reason else None,
                     'last_cleared_resistance':deepcopy(active['last_cleared_resistance'])}))
         selection = active.get('desired_target')
         switching = active['target'].get('selection_method') in ('official_luld','estimated_luld') and not regular
@@ -753,28 +847,32 @@ def evaluate(host, a, o, p, state):
     if (market_session not in p['strategy_behavior'].get('eligible_sessions',['premarket','regular']) or flatten
             or _at_or_after_session_time(o.observed_at,p['strategy_behavior'].get('entry_cutoff_time','15:45:00')) or not o.market_open):
         return result('wait','outside_entry_session')
-    if not fresh or not macd_ready:
+    if saved_reentry and not reclaim:
+        return result('wait','waiting_for_stopped_level_close_and_next_open')
+    if (not fresh and not reclaim) or not macd_ready:
         return result('wait','waiting_for_completed_1s_and_bullish_5s_macd')
     if regular_block:
         return result('wait',regular_block)
     if not ready:
         return result('wait','tradability_incomplete')
-    if not detector_fresh:
+    if not detector_fresh and not reclaim:
         return result('wait','certified_detector_unavailable')
+    if reclaim:
+        row = reclaim['row']
     hod = d.get('prior_hod'); previous = d.get('prior_close')
     vwap = d.get('vwap')
     if not hod or previous is None or vwap is None or not isfinite(vwap) or o.price <= vwap:
         return result('wait','hod_history_or_vwap_gate')
-    boundary = reference['level']
-    reentry = reference['reentry']
-    failed_breakout = reference['failed_breakout']
+    boundary = deepcopy(saved_reentry['level']) if reclaim else reference['level']
+    reentry = True if reclaim else reference['reentry']
+    failed_breakout = False if reclaim else reference['failed_breakout']
     require_body_high = reentry or failed_breakout
     offset = s['entry_breakout_offset']
     recent = d.get('recent_breakout') or {}
-    resistance_threshold = reference['resistance_threshold']
-    threshold = reference['threshold']
-    evidence['entry_selection'] = dict(reference)
-    if o.price < o.bar_open:
+    resistance_threshold = saved_reentry['price'] if reclaim else reference['resistance_threshold']
+    threshold = resistance_threshold if reclaim else reference['threshold']
+    evidence['entry_selection'] = dict(level=boundary,threshold=threshold,reentry=True) if reclaim else dict(reference)
+    if o.price < o.bar_open and not reclaim:
         return result('wait','red_breakout_candle')
     inclusive = bool(offset) and (not require_body_high or resistance_threshold > d['prior_body_high'])
     crossed = (round(previous,9) < threshold <= round(o.price,9) if inclusive
@@ -784,7 +882,7 @@ def evaluate(host, a, o, p, state):
         and 0 <= now-recent.get('at',0) <= s.get('recent_breakout_seconds',30.)
         and (min(o.price,o.bid) >= threshold if inclusive else min(o.price,o.bid) > threshold))
     evidence['entry_selection']['recent_breakout'] = deepcopy(recent) if recent_held else None
-    if not crossed and not recent_held:
+    if not crossed and not recent_held and not reclaim:
         return result('wait','waiting_for_fresh_body_high_break' if require_body_high else 'waiting_for_fresh_resistance_break')
     target_anchor = next_historical_resistance(d['rows'],max(o.ask,o.price),session)
     selected = (target_selection(d['rows'],target_anchor,max(o.ask,o.price),s,tick,session=session)
@@ -797,6 +895,13 @@ def evaluate(host, a, o, p, state):
     if swing is None:
         return result('wait','confirmed_local_swing_low_unavailable')
     stop = stop_below(swing['lower'],s,tick)
+    initial_green = green_stop_candidate(d,tick) if s['early_green_stop_enabled'] else None
+    if reclaim:
+        # Reclaim continues the initial protection phase of this episode; it
+        # must not discard the remembered stop for the older local swing low.
+        initial_green = deepcopy(saved_reentry['early_green_stop'])
+    if initial_green:
+        stop = max(stop,initial_green['price'])
     if luld:
         stop = max(stop,luld['lower_exit'])
     # Bound execution slippage from the executable quote, not the last trade.
@@ -806,14 +911,18 @@ def evaluate(host, a, o, p, state):
     atr = row.get('qualification',{}).get('atr') or 0.
     entry = dict(confirmed_at=now,level=boundary,hod=hod,stop=stop,target=selected,maximum_buy_price=ceiling,
         breakout_confirmation=dict(recent=bool(recent_held and not crossed),
-            breakout=deepcopy(recent) if recent_held else None,validated_at=now),
+            breakout=deepcopy(recent) if recent_held else None,validated_at=now,
+            stopped_level_reclaim={k:v for k,v in reclaim.items() if k!='row'} if reclaim else None),
         cash_tranche_key=f'{a.assignment_id}:{o.observed_at.isoformat()}',tranches_requested=1,
         last_add_level=deepcopy(boundary),
         initial_stop_selection=swing,
         last_cleared_resistance=deepcopy(boundary),
         initial_risk=o.ask-stop,best_close=o.price,episode=d['episode'],
         management_base=dict(lower=boundary['lower'],tolerance=max(tick,s['management_tolerance_atr']*atr)),hold_levels={})
+    if initial_green:
+        entry['early_green_stop'] = initial_green
+        entry['initial_stop_selection'] = dict(swing,early_green_stop=deepcopy(initial_green))
     state.update(historical_hod_entry=entry,initial_stop=stop,active_stop=stop,structural_profit_targets=[selected['price']],
         entry_reference_price=o.ask,entry_at=o.observed_at.isoformat(),entries=state.get('entries',0)+1,
         last_exit_reason='',entry_acquisition_exit_latched=False)
-    return enter(entry,'historical_hod_entry')
+    return enter(entry,'stopped_level_reclaim' if reclaim else 'historical_hod_entry')

@@ -28,7 +28,7 @@ def candle(i,price,opened=None,**kw):
 def ready():
     p=parameters()
     p.pop('structural_recovery_contract');p.pop('structural_recovery')
-    p.update(historical_hod_contract=H.CONTRACT,historical_hod=dict(H.DEFAULTS,forming_macd_entry_enabled=0))
+    p.update(historical_hod_contract=H.CONTRACT,historical_hod=dict(H.DEFAULTS,forming_macd_entry_enabled=0,early_green_stop_enabled=0))
     p=S.resolve_long_momentum_parameters(p,revision=47)
     a=S.StrategyAssignment('historical',S.STRATEGY_ID,47,'sim','TEST',123,S.AssignmentStatus.WATCHING,
         S.StrategyPermissions(enter=True,reenter=True),p)
@@ -42,6 +42,191 @@ def acquired():
     host,a,o=ready();r=host.evaluate(a,o)
     assert r.evaluation.signals[0].action=='enter_long'
     return host,replace(a,state=r.state,status=S.AssignmentStatus.MANAGING),o
+
+
+def green_stop_position():
+    host,a,_=acquired()
+    a.parameters['historical_hod']['early_green_stop_enabled']=1
+    a.state['historical_hod_state']['rising_green_run']=[]
+    for i,opened,close in ((3,10.05,10.07),(4,10.08,10.10),(5,10.11,10.14)):
+        r=host.evaluate(a,candle(i,close,opened=opened,position_quantity=100))
+        a=replace(a,state=r.state,status=r.status)
+    return host,a,r
+
+
+def test_three_green_stop_waits_for_third_close_and_uses_second_close():
+    host,a,r=green_stop_position()
+    stop,=r.evaluation.intents
+    assert stop.action=='replace_protective_stop'
+    assert stop.reason=='three_green_second_close'
+    assert stop.invalidation_price==pytest.approx(10.10)
+    assert len(stop.metadata['early_green_stop']['candles'])==3
+    # A longer run cannot ratchet this one-time initial stop on each candle.
+    r=host.evaluate(a,candle(6,10.18,opened=10.15,position_quantity=100))
+    assert r.state['active_stop']==pytest.approx(10.10)
+
+
+@pytest.mark.parametrize('interruption',['non_rising_close','red','gap','disabled'])
+def test_three_green_requires_rising_closes_and_contiguous_post_entry_bars(interruption):
+    host,a,_=acquired()
+    a.parameters['historical_hod']['early_green_stop_enabled']=int(interruption!='disabled')
+    a.state['historical_hod_state']['rising_green_run']=[]
+    for i,opened,close in ((3,10.05,10.07),(4,10.08,10.10),(5,10.11,10.14)):
+        if i==4 and interruption=='non_rising_close':opened,close=10.05,10.07
+        if i==4 and interruption=='red':opened=10.12
+        if i==4 and interruption=='gap':continue
+        r=host.evaluate(a,candle(i,close,opened=opened,position_quantity=100))
+        a=replace(a,state=r.state,status=r.status)
+    assert not a.state['historical_hod_entry'].get('early_green_stop')
+
+
+@pytest.mark.parametrize('overlap',[0.,.02])
+def test_three_green_allows_equal_opens_and_overlapping_bodies(overlap):
+    host,a,_=acquired()
+    a.parameters['historical_hod']['early_green_stop_enabled']=1
+    a.state['historical_hod_state']['rising_green_run']=[]
+    for i,previous,close in ((3,10.04,10.07),(4,10.07,10.10),(5,10.10,10.14)):
+        r=host.evaluate(a,candle(i,close,opened=previous-overlap,position_quantity=100))
+        a=replace(a,state=r.state,status=r.status)
+    assert r.state['active_stop']==pytest.approx(10.10)
+    assert r.evaluation.intents[0].reason=='three_green_second_close'
+
+
+def test_pattern_can_begin_before_entry_and_finish_after_it():
+    host,a,_=acquired()
+    a.parameters['historical_hod']['early_green_stop_enabled']=1
+    for i,close in ((3,10.07),(4,10.10)):
+        r=host.evaluate(a,candle(i,close,position_quantity=100))
+        a=replace(a,state=r.state,status=r.status)
+    assert r.state['active_stop']==pytest.approx(10.07)
+    assert r.state['historical_hod_entry']['early_green_stop']['candles'][0]['end']==(NOW+timedelta(seconds=2)).timestamp()
+
+
+def test_entry_uses_completed_pattern_across_macd_episode_start():
+    host,a,_=ready()
+    a.parameters['historical_hod']['early_green_stop_enabled']=1
+    a.state['historical_hod_state'].update(episode=None,macd_positive=False)
+    for obs in (candle(2,10.03),candle(3,10.05),candle(3,10.05,source_timeframe='5s')):
+        r=host.evaluate(a,obs);a=replace(a,state=r.state,status=r.status)
+    r=host.evaluate(a,candle(4,10.08))
+    entry,=r.evaluation.intents
+    assert entry.action=='enter_long' and entry.invalidation_price==pytest.approx(10.05)
+    early=r.state['historical_hod_entry']['early_green_stop']
+    assert early['candles'][0]['end']<r.state['historical_hod_entry']['episode']
+
+
+def test_already_marketable_new_stop_exits_at_pattern_confirmation():
+    host,a,_=acquired()
+    a.parameters['historical_hod']['early_green_stop_enabled']=1
+    for i,close in ((3,10.07),(4,10.10)):
+        obs=candle(i,close,position_quantity=100)
+        if i==4:obs=replace(obs,bid=10.07,ask=10.10)
+        r=host.evaluate(a,obs);a=replace(a,state=r.state,status=r.status)
+    exit,=r.evaluation.intents
+    assert exit.action=='exit' and exit.reason=='protective_stop'
+    assert exit.metadata['early_stop_marketable_at_confirmation']
+    assert exit.invalidation_price==pytest.approx(10.07)
+
+
+def test_stop_fill_can_reclaim_without_previous_completed_close_below_level():
+    host,a,_=green_stop_position()
+    H.record_early_stop_fill(a.state,NOW+timedelta(seconds=5.2),'protective_stop')
+    a=replace(a,status=S.AssignmentStatus.REENTRY_COOLDOWN)
+    for obs in (candle(5,10.14,source_timeframe='5s'),candle(6,10.15)):
+        r=host.evaluate(a,obs);a=replace(a,state=r.state,status=r.status)
+    obs=replace(candle(6,10.16,opened=10.16),observed_at=NOW+timedelta(seconds=6.1),
+        source_timeframe='',evaluation_events=('market_data_update',),bar_high=None)
+    r=host.evaluate(a,obs)
+    assert r.evaluation.intents[0].reason=='stopped_level_reclaim'
+
+
+def test_next_resistance_retires_early_mode_without_waiting_for_hold():
+    host,a,_=green_stop_position()
+    r=host.evaluate(a,candle(6,10.43,opened=10.15,position_quantity=100))
+    assert r.state['historical_hod_entry']['early_green_graduated']
+    a=replace(a,state=r.state,status=r.status)
+    r=host.evaluate(a,candle(7,10.45,opened=10.44,position_quantity=100))
+    assert r.state['active_stop']==pytest.approx(10.39)
+    H.record_early_stop_fill(r.state,NOW+timedelta(seconds=7.1),'protective_stop')
+    assert 'early_stop_reentry' not in r.state
+
+
+@pytest.mark.parametrize('role,reason,remember',[
+    ('protective_stop','',True),('managed_exit','protective_stop',True),
+    ('profit_target','',False),('managed_exit','red_close_below_attempt_open',False)])
+def test_execution_fill_records_only_initial_stop_hits(role,reason,remember):
+    import asyncio
+    _,a,_=green_stop_position()
+    a.state['last_exit_reason']=reason
+    assigned=S.AssignedLongMomentumStrategy([a])
+    fill=SimpleNamespace(assignment_id=a.assignment_id,state='FILLED',action='exit',
+        fill_incremental_quantity=100.,filled_quantity=100.,updated_at=NOW+timedelta(seconds=5.2),
+        fill_role=role,reentry_after_fill=True)
+    asyncio.run(assigned.on_order_group_update(fill,aggregate_position_quantity=0.))
+    state=assigned.assignments()[0].state
+    assert bool(state.get('early_stop_reentry'))==remember
+    if remember:assert state['early_stop_reentry']['price']==pytest.approx(10.10)
+
+
+def test_reentry_record_clears_only_on_actual_acquisition_fill():
+    import asyncio
+    host,a,_=green_stop_position()
+    H.record_early_stop_fill(a.state,NOW+timedelta(seconds=5.2),'protective_stop')
+    a=replace(a,status=S.AssignmentStatus.REENTRY_COOLDOWN)
+    for obs in (candle(5,10.09,source_timeframe='5s'),candle(6,10.09),candle(7,10.12)):
+        r=host.evaluate(a,obs);a=replace(a,state=r.state,status=r.status)
+    obs=replace(candle(7,10.12,opened=10.12),observed_at=NOW+timedelta(seconds=7.1),
+        source_timeframe='',evaluation_events=('market_data_update',),bar_high=None)
+    r=host.evaluate(a,obs)
+    assert r.evaluation.intents[0].action=='enter_long'
+    assigned=S.AssignedLongMomentumStrategy([replace(a,state=r.state,status=r.status)])
+    # A zero-quantity update cannot consume the remembered stop.
+    fill=SimpleNamespace(assignment_id=a.assignment_id,state='FILLED',action='enter_long',
+        fill_incremental_quantity=0.,filled_quantity=0.,updated_at=obs.observed_at)
+    asyncio.run(assigned.on_order_group_update(fill,aggregate_position_quantity=0.))
+    assert assigned.assignments()[0].state.get('early_stop_reentry')
+    fill.fill_incremental_quantity=100.;fill.filled_quantity=100.
+    asyncio.run(assigned.on_order_group_update(fill,aggregate_position_quantity=100.))
+    assert 'early_stop_reentry' not in assigned.assignments()[0].state
+
+
+@pytest.mark.parametrize('failure',[None,'open_equal','open_below','late','spread','episode_ended','new_episode'])
+def test_stopped_level_reentry_close_then_next_open_with_current_gates(failure):
+    import json
+    host,a,_=green_stop_position()
+    H.record_early_stop_fill(a.state,NOW+timedelta(seconds=5.2),'protective_stop')
+    # Checkpoint serialization must preserve remembered prices and episode identity.
+    a=replace(a,state=json.loads(json.dumps(a.state)),status=S.AssignmentStatus.REENTRY_COOLDOWN)
+    for obs in (candle(5,10.09,source_timeframe='5s'),candle(6,10.09),candle(7,10.12)):
+        r=host.evaluate(a,obs);a=replace(a,state=r.state,status=r.status)
+    assert not r.evaluation.intents  # The close alone cannot buy.
+    if failure in ('episode_ended','new_episode'):
+        obs=replace(candle(7,10.12,source_timeframe='5s'),macd_line=-.1)
+        r=host.evaluate(a,obs);a=replace(a,state=r.state,status=r.status)
+        if failure=='new_episode':
+            r=host.evaluate(a,candle(8,10.12,source_timeframe='5s'))
+            a=replace(a,state=r.state,status=r.status)
+        assert 'early_stop_reentry' not in a.state
+    opened=10.10 if failure=='open_equal' else 10.09 if failure=='open_below' else 10.12
+    obs=replace(candle(7,10.12,opened=opened),observed_at=NOW+timedelta(seconds=8.1 if failure=='late' else 7.1),
+        source_timeframe='',evaluation_events=('market_data_update',),bar_high=None)
+    if failure=='spread':obs=replace(obs,ask=10.30)
+    r=host.evaluate(a,obs)
+    if failure:
+        assert not r.evaluation.intents
+    else:
+        entry,=r.evaluation.intents
+        assert entry.action=='enter_long' and entry.reason=='stopped_level_reclaim'
+        assert entry.invalidation_price==pytest.approx(10.10)
+        assert r.state['historical_hod_entry']['early_green_stop']['price']==pytest.approx(10.10)
+        proof=entry.metadata['entry_breakout_confirmation']['stopped_level_reclaim']
+        assert proof['at']==(NOW+timedelta(seconds=7)).timestamp()
+        assert proof['next_open']==10.12
+        assert r.state['early_stop_reentry']['price']==pytest.approx(10.10)
+    if failure in ('open_equal','open_below','spread'):
+        a=replace(a,state=r.state,status=r.status)
+        r=host.evaluate(a,replace(obs,observed_at=NOW+timedelta(seconds=7.2),bar_open=10.12,ask=10.13))
+        assert not r.evaluation.intents  # Never replay a rejected opening later.
 
 
 def test_forming_macd_preserves_authoritative_ema_and_does_not_compound():

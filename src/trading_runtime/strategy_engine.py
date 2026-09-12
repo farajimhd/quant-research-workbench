@@ -6377,6 +6377,7 @@ class AssignedLongMomentumStrategy:
                 if action == 'enter_long' and incremental_fill > 0:
                     if assignment.parameters.get('historical_hod_contract'):
                         state['historical_hod_state'] = dict(state.get('historical_hod_state') or {}, used_episode=True)
+                        state.pop('early_stop_reentry', None)
                     if assignment.parameters.get('macd_r3_contract'):
                         state['r3_ever_filled'] = True
                     episode = (state.get('v5_entry_selection') or {}).get('episode_started_at')
@@ -6397,6 +6398,9 @@ class AssignedLongMomentumStrategy:
                 status = AssignmentStatus.MANAGING
             elif action in {"exit", "take_profit", "cover"}:
                 fill_role = str(getattr(snapshot, "fill_role", "") or "")
+                if assignment.parameters.get('historical_hod_contract') and incremental_fill > 0:
+                    from .historical_hod import record_early_stop_fill
+                    record_early_stop_fill(state, snapshot.updated_at, fill_role)
                 if (swing_gap.tracks_reclaims(assignment.parameters) and incremental_fill > 0
                         and (fill_role in {'protective_stop', 'trailing_stop', 'protective_exit'}
                              or fill_role == 'managed_exit' and state.get('last_exit_reason') == 'protective_stop')):
