@@ -78,7 +78,12 @@ def plan(args):
         missing=set(args.tickers)-grouped.keys()
         if missing:raise ValueError('Requested tickers absent from published tradable universe: '+', '.join(sorted(missing)))
         grouped={k:v for k,v in grouped.items() if k in args.tickers}
-    coverage={r['ticker']:r for r in query(coverage_sql(args.start,args.end))}
+    coverage={};names=sorted(grouped)
+    # Bound aggregate arrays while hashing source-day metadata. A universe-wide
+    # groupArray/sort can exceed the query budget before any worker starts.
+    for offset in range(0,len(names),128):
+        coverage.update({r['ticker']:r for r in query(coverage_sql(args.start,args.end,names[offset:offset+128]))})
+        if offset%512==0 or offset+128>=len(names):print(f'Planning certified coverage: {min(offset+128,len(names)):,}/{len(names):,} symbols',flush=True)
     rows=[]
     for ticker,identities in grouped.items():
         reason='';c=coverage.get(ticker)

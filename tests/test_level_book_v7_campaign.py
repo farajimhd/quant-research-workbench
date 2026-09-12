@@ -1,12 +1,32 @@
 from datetime import datetime,timezone
 from types import SimpleNamespace
 import io
+import re
 import pytest
 from rich.console import Console
 from research.level_book.v7 import campaign as c
 from research.level_book.v7.campaign_source import bars_sql,decode
 from research.level_book.v7.campaign_store import read,write
 from src.market_engine.historical_level_checkpoint import digest
+
+
+def test_planner_bounds_source_metadata_aggregation(tmp_path,monkeypatch):
+    universe=[dict(ticker=f'T{i}',symbol_id=str(i),massive_ticker=None) for i in range(300)]
+    batches=[]
+    def query(sql,threads=2):
+        if 'max(universe_date)' in sql:return [dict(day='2026-09-12')]
+        if 'feature_tradable_universe' in sql:return universe
+        if 'events_ordinal_continuity' in sql:
+            assert 'ticker IN (' in sql
+            names=re.findall(r"'(T\d+)'",sql);batches.append(names)
+            return [dict(ticker=t,days=1,events=1,first='2026-09-11',last='2026-09-11',signature='x') for t in names]
+        if 'hostName()' in sql:return [dict(host='fixture')]
+        if sql==c.RULE_SQL:return [dict(token_id=1)]
+        raise AssertionError(sql)
+    monkeypatch.setattr(c,'query',query)
+    p=c.plan(SimpleNamespace(runtime=tmp_path,start='2025-01-01',end='2026-09-12',tickers=None))
+    assert len(batches)==3 and max(map(len,batches))<=128
+    assert len(p['rows'])==300 and all(r['status']=='queued' for r in p['rows'])
 
 
 def test_indexed_source_preserves_historical_sip_and_eligibility_contract():
