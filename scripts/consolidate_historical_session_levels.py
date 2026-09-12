@@ -36,6 +36,7 @@ def main():
     p.add_argument('--seed-directory',type=Path,default=Path(r'D:\TradingML\runtimes\historical-session-levels\AAPL-2026-08-21'))
     p.add_argument('--next-session',default='2026-08-24')
     p.add_argument('--prior-checkpoint',type=Path,help='Continue an existing consolidated checkpoint instead of creating a seed')
+    p.add_argument('--reaction-centers',action='store_true',help='Estimate role-specific reaction centers; use a new runtime directory')
     p.add_argument('--runtime',type=Path,default=Path(r'D:\TradingML\runtimes\historical-session-levels\AAPL-two-days'))
     args=p.parse_args();allowed=Path(r'D:\TradingML\runtimes').resolve();out=args.runtime.resolve()
     if not allowed.is_dir() or not out.is_relative_to(allowed):raise ValueError('Required runtime root unavailable or invalid')
@@ -54,7 +55,11 @@ def main():
     split_rows=_query(f"SELECT execution_date,split_from,split_to,inserted_at FROM q_live.market_stock_split_v1 FINAL WHERE provider_ticker='{ticker}' AND execution_date>'{previous['session']}' AND execution_date<='{args.next_session}' ORDER BY execution_date")
     splits=canonical_splits(split_rows);factor=prod(float(s['split_from'])/float(s['split_to']) for s in splits)
     out.mkdir(parents=True,exist_ok=True)
-    initial=json.loads(args.prior_checkpoint.read_text(encoding='utf-8')) if args.prior_checkpoint else seed(previous)
+    start=time.perf_counter()
+    initial=json.loads(args.prior_checkpoint.read_text(encoding='utf-8')) if args.prior_checkpoint else seed(previous,reaction_inputs=(prior_input['bars'],prior_input['profile']) if args.reaction_centers else None)
+    seed_time=time.perf_counter()-start
+    if args.reaction_centers and 'reaction_center_config' not in initial:
+        raise ValueError('Prior checkpoint has no reaction observations; rebuild from the original seed with --reaction-centers')
     if initial['session']!=previous['session'] or initial['ticker']!=ticker:raise ValueError('Prior checkpoint does not match reviewed previous session')
     checkpoint(out/f"checkpoint-{previous['session']}.json",initial)
     print(f'{ticker}: seed {len(initial["levels"])} levels from {previous["session"]}; next {args.next_session}; split factor {factor}',flush=True)
@@ -76,7 +81,26 @@ def main():
     (out/'next-extraction.json').write_text(json.dumps(today,indent=2),encoding='utf-8')
     (out/'chart-book.json').write_text(json.dumps(combined,indent=2),encoding='utf-8')
     (out/'chart.html').write_text(render(combined,prior_input['bars']+bars,[dict(price=k,volume=v) for k,v in sorted(combined_profile.items())]),encoding='utf-8')
-    report=dict(counts=final['counts'],independent_extraction=today['counts'],timings=dict(read_seconds=read_time,extract_seconds=extract_time,consolidate_seconds=merge_time),
+    if 'reaction_center_config' in final:
+        centers=dict(config=final['reaction_center_config'],sessions=[dict(session=c['session'],available_at=c['available_at'],levels=[dict(id=r['id'],lower=r['lower'],upper=r['upper'],band_center=r['price'],estimate=r['reaction_center']) for r in c['levels']]) for c in (initial,final)])
+        (out/'reaction-centers.json').write_text(json.dumps(centers,indent=2,allow_nan=False),encoding='utf-8')
+        lines=['# Reaction-center estimates','',
+               'Retrospective role-specific estimates. Band geometry is unchanged; scale is dispersion, not uncertainty about the center.','']
+        for snapshot in centers['sessions']:
+            lines.extend([f"## {ticker} {snapshot['session']}",'',
+                          '| Band | Existing center | Support estimate (n) | Resistance estimate (n) |',
+                          '|---|---:|---:|---:|'])
+            for row in snapshot['levels']:
+                labels=[]
+                for role in ('support','resistance'):
+                    value=row['estimate']['roles'][role]
+                    labels.append(f"{value['center']:.4f} ({value['count']})" if value['center'] is not None else f"{value['status']} ({value['count']})")
+                lines.append(f"| {row['lower']:.2f}-{row['upper']:.2f} | {row['band_center']:.4f} | {labels[0]} | {labels[1]} |")
+            lines.append('')
+        (out/'reaction-centers.md').write_text('\n'.join(lines),encoding='utf-8')
+        fitted=sum(v['status']=='estimated' for r in final['levels'] for v in r['reaction_center']['roles'].values())
+        print(f'Reaction centers: {fitted}/{2*len(final["levels"])} role estimates fitted; details in reaction-centers.json',flush=True)
+    report=dict(counts=final['counts'],independent_extraction=today['counts'],timings=dict(seed_seconds=seed_time,read_seconds=read_time,extract_seconds=extract_time,consolidate_seconds=merge_time),
         seed_checkpoint_hash=initial['checkpoint_hash'],next_checkpoint_hash=final['checkpoint_hash'],split_factor=factor,chart=str(out/'chart.html'))
     (out/'validation.json').write_text(json.dumps(report,indent=2),encoding='utf-8');print(json.dumps(report),flush=True)
 

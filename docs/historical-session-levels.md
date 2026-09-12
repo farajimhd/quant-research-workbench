@@ -127,3 +127,39 @@ must match exactly; differing output requires a new runtime directory.
 To continue another day, use the preceding output directory as `--seed-directory`
 and pass its final JSON through `--prior-checkpoint`. The full accumulated history
 continues in the checkpoint; the chart shows the two requested adjacent sessions.
+
+## Reaction-center estimation
+
+Pass `--reaction-centers` when seeding and choose a new runtime directory, e.g.
+`--runtime D:\TradingML\runtimes\historical-session-levels\AAPL-reaction-centers`.
+Existing immutable checkpoints are not overwritten. Continuation automatically
+inherits the estimator configuration; an old checkpoint without observations
+must be rebuilt from its original seed, not partially upgraded.
+
+`reaction-center-student-t-1` adds estimates alongside fixed band geometry:
+
+- For each confirmed rejection, record the maximum 1s high (resistance) or minimum
+  1s low (support) from contact through resolution, inclusive. These are candle
+  extreme proxies, not exact tick ordering or observations censored to band edges.
+- Use equal weight per nonoverlapping rejection window, separately by role and
+  session. Keep excluded observations, overlap counts, crossing counts and missing
+  evidence counts for audit. Nonoverlap reduces repeated evidence; it does not
+  guarantee statistical independence.
+- Fit location and scale of a Student-t with fixed four degrees of freedom,
+  minimum three observations, scale floor half a tick, and deterministic multistart
+  optimization. Fixed degrees of freedom regularizes this small-sample model.
+  Numerical optimization is not a proof of the global maximum. A single location
+  per role also does not establish unimodality; no pooled support/resistance center
+  or calibrated probability/confidence interval is reported.
+- Store explicit `insufficient_evidence` or `fit_failed` with null estimates;
+  never substitute a band center or zero. Scale measures reaction dispersion.
+- Preserve raw observations in original price units. Accumulate audited split
+  factors on each contribution for the next fit, without changing past estimates.
+- Append a session-close `reaction_center_history` snapshot with availability time
+  and model configuration; keep earlier snapshots unchanged. Source hashes and
+  checkpoint hashes cover this evidence. Existing consumers and chart lines do not
+  move to the fitted centers.
+
+The runner saves `reaction-centers.json` and a readable `reaction-centers.md`
+comparison for both sessions. Its timing report separates seed creation, canonical
+data loading, daily extraction and consolidation (including center estimation).
