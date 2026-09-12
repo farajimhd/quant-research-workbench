@@ -1,3 +1,4 @@
+import {ReactionBookPrimitive,useReactionBook} from './ReactionBook';
 import { tradeGuideSpan } from "./tradeGuideGeometry";
 import { LevelReactionPrimitive, useLevelReaction } from "./LevelReaction";
 import { macdBpsPoints } from "./macdBps";
@@ -990,6 +991,10 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const [strategyPresentationOpen, setStrategyPresentationOpen] = useState(false);
   const hindsight = useHindsightPositions(ticker, hindsightSessionDate);
   const levelReaction = useLevelReaction(ticker, hindsightSessionDate, indicatorAsOf, timeframe, payload?.candles);
+  const reactionBook=useReactionBook(ticker,hindsightSessionDate,indicatorAsOf,levelReaction.modelId);
+  const reactionBookRef=useRef(reactionBook);reactionBookRef.current=reactionBook;
+  const reactionBookPrimitiveRef=useRef<ReactionBookPrimitive|null>(null);
+  useEffect(()=>{drawCurrentRegions();},[reactionBook.segments,reactionBook.end]);
   const levelReactionRef=useRef(levelReaction);levelReactionRef.current=levelReaction;
   const levelReactionPrimitiveRef=useRef<LevelReactionPrimitive|null>(null);
   useEffect(()=>{drawCurrentRegions();},[levelReaction.rows,levelReaction.data]);
@@ -1424,6 +1429,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     structuralDetectorPrimitiveRef.current = detectorPrimitive;
     const reactionPrimitive=new LevelReactionPrimitive();
     candleSeries.attachPrimitive(reactionPrimitive);levelReactionPrimitiveRef.current=reactionPrimitive;
+    const bookPrimitive=new ReactionBookPrimitive();candleSeries.attachPrimitive(bookPrimitive);reactionBookPrimitiveRef.current=bookPrimitive;
     const volume = priceChart.addSeries(HistogramSeries, {
       base: 0,
       lastValueVisible: false,
@@ -1870,6 +1876,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       time => xForAnnotationTime(chart, Math.max(timeline[0]?.time ?? 0, Math.min(time, timeline.at(-1)?.time ?? 0)), timeline),
       currentPayload.candles.at(-1)?.time ?? 0, timeline[0]?.time ?? 0);
     const swingDuration = estimateCandleDuration(timeline);
+    reactionBookPrimitiveRef.current?.setState(reactionBookRef.current.segments,
+      time=>xForAnnotationTime(chart,Math.max(timeline[0]?.time??0,Math.min(time,timeline.at(-1)?.time??0)),timeline,swingDuration),reactionBookRef.current.end);
     levelReactionPrimitiveRef.current?.setState(levelReactionRef.current.rows,levelReactionRef.current.data,currentPayload.candles,
       time=>xForAnnotationTime(chart,time,timeline,swingDuration));
     structuralDetectorPrimitiveRef.current?.setState(structuralDetectorRef.current.rows,
@@ -1990,6 +1998,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     structuralDetectorPrimitiveRef.current = null;
     if(levelReactionPrimitiveRef.current && candleRef.current)candleRef.current.detachPrimitive(levelReactionPrimitiveRef.current);
     levelReactionPrimitiveRef.current=null;
+    if(reactionBookPrimitiveRef.current && candleRef.current)candleRef.current.detachPrimitive(reactionBookPrimitiveRef.current);
+    reactionBookPrimitiveRef.current=null;
     supertrendRendererRef.current = null; // Native chart removal owns its series.
     if (structureGapPrimitiveRef.current && candleRef.current) candleRef.current.detachPrimitive(structureGapPrimitiveRef.current);
     structureGapPrimitiveRef.current = null;
@@ -2221,6 +2231,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         <div className="toolbar-spacer" />
         {hindsight.controls}
         {levelReaction.controls}
+        {reactionBook.controls}
         {swingStructure.controls}
         {structureGaps.controls}
         {structuralDetector.controls}

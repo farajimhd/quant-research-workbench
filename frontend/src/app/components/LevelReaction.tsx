@@ -1,4 +1,4 @@
-import {useEffect, useMemo, useState} from 'react';
+import {useEffect, useMemo, useRef, useState} from 'react';
 import type {IChartApi, ISeriesApi, ISeriesPrimitive, IPrimitivePaneView, Time} from 'lightweight-charts';
 import './levelReaction.css';
 
@@ -27,6 +27,8 @@ export function useLevelReaction(ticker:string, sessionDate:string|undefined, as
   const opening=Math.floor(cutoff)-(secondsET[0]*3600+secondsET[1]*60+secondsET[2])+4*3600;
   const closes=useMemo(()=>duration && Number.isFinite(cutoff) ? candles.map(c=>c.endTime??c.time+duration).filter(t=>Number.isInteger(t) && t>opening && t<=cutoff && (t-opening)%duration===0) : [],[candles,duration,cutoff]);
   const timesKey=JSON.stringify(closes);
+  const desired=useRef({closes,sessionDate,cutoff,modelId:model?.id,ticker,duration});
+  desired.current={closes,sessionDate,cutoff,modelId:model?.id,ticker,duration};
   useEffect(()=>{
     if(!enabled)return;
     const controller=new AbortController();
@@ -37,26 +39,32 @@ export function useLevelReaction(ticker:string, sessionDate:string|undefined, as
     return()=>controller.abort();
   },[enabled,ticker,sessionDate]);
   useEffect(()=>{
-    if(!enabled || !model || !duration || !closes.length || !sessionDate || !Number.isFinite(cutoff))return;
-    const controller=new AbortController();let retry:ReturnType<typeof setTimeout>|undefined;
-    setBusy(true);setError('');
+    if(!enabled || !model || !duration)return;
+    const controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined;let completed='';
     const run=async()=>{
+      const next=desired.current;
+      const signature=JSON.stringify(next.closes);
       try {
-        const response=await fetch('/api/research/level-reaction/series',{method:'POST',signal:controller.signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({model_id:model.id,ticker,session_date:sessionDate,time_et:et(Math.max(...closes)),close_times:closes,timeframe_seconds:duration})});
-        if(response.status===429){retry=setTimeout(()=>void run(),500);return;}
-        const data=await response.json();if(!response.ok)throw new Error(typeof data.detail==='string'?data.detail:'Prediction unavailable');
-        if(!controller.signal.aborted){setValue({key,data});setBusy(false);}
+        if(next.closes.length && next.sessionDate && Number.isFinite(next.cutoff) && signature!==completed){
+          setBusy(true);setError('');
+          const response=await fetch('/api/research/level-reaction/series',{method:'POST',signal:controller.signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({model_id:next.modelId,ticker:next.ticker,session_date:next.sessionDate,time_et:et(Math.max(...next.closes)),close_times:next.closes,timeframe_seconds:next.duration})});
+          if(response.status!==429){
+            const data=await response.json();if(!response.ok)throw new Error(typeof data.detail==='string'?data.detail:'Prediction unavailable');
+            if(!controller.signal.aborted){setValue({key,data});setBusy(false);completed=signature;}
+          }
+        }
       }catch(e){if(!controller.signal.aborted){setError(String(e));setValue(undefined);setBusy(false);}}
+      if(!controller.signal.aborted)timer=setTimeout(()=>void run(),300);
     };
-    // Coalesce chart renders; panning does not trigger another request.
-    const timer=setTimeout(()=>void run(),100);
-    return()=>{controller.abort();clearTimeout(timer);if(retry)clearTimeout(retry);};
-  },[enabled,key,timesKey]);
+    void run();
+    return()=>{controller.abort();if(timer)clearTimeout(timer);};
+  },[enabled,key]);
   const data=enabled && value?.key===key ? value.data : undefined;
   // Synchronous cutoff on rewind, even while a newer request is in flight.
   const rows=useMemo(()=>{const visible=new Set(closes);return data?.records.filter(r=>r.status==='ready' && r.available_at<=cutoff && visible.has(r.candle_close))??[];},[data,cutoff,timesKey]);
-  const status=!duration?'Requires a timeframe from 1s through 1h':!Number.isFinite(cutoff)?'Requires a Debug or Backtest cursor':!model?'No prepared forward model for this ticker/session':error || (busy?'Loading predictions…':data?`${data.available}/${data.requested} candles · 60s horizon`:'Waiting for completed candles');
-  return {rows,data,controls:<span className="level-reaction-controls"><label className="toolbar-button"><input type="checkbox" aria-label="Show level reaction" checked={enabled} onChange={e=>setEnabled(e.target.checked)}/>Level reaction</label>{enabled && <><select className="level-reaction-model" aria-label="Reaction model" value={model?.id??''} onChange={e=>setChosen(e.target.value)}>{!eligible.length && <option value="">No prepared model</option>}{eligible.map(m=><option key={m.id} value={m.id}>{m.id}</option>)}</select><span className="level-reaction-status" role="status" title={status}>{status}</span></>}</span>};
+  const cursorDay=Number.isFinite(cutoff)?new Date(cutoff*1000).toLocaleDateString('en-CA',{timeZone:'America/New_York'}):'';
+  const status=cursorDay && sessionDate && cursorDay!==sessionDate?'Chart cursor and candle session do not match':!duration?'Requires a timeframe from 1s through 1h':!Number.isFinite(cutoff)?'Requires a Debug or Backtest cursor':!model?'No prepared forward model for this ticker/session':error || (busy?'Loading predictions…':data?`${data.available}/${data.requested} candles · 60s horizon`:'Waiting for completed candles');
+  return {rows,data,modelId:model?.id,controls:<span className="level-reaction-controls"><label className="toolbar-button"><input type="checkbox" aria-label="Show level reaction" checked={enabled} onChange={e=>setEnabled(e.target.checked)}/>Level reaction</label>{enabled && <><select className="level-reaction-model" aria-label="Reaction model" value={model?.id??''} onChange={e=>setChosen(e.target.value)}>{!eligible.length && <option value="">No prepared model</option>}{eligible.map(m=><option key={m.id} value={m.id}>{m.id}</option>)}</select><span className="level-reaction-status" role="status" title={status}>{status}</span></>}</span>};
 }
 
 /** DOM labels are anchored by the native pane renderer. No price-scale changes. */
@@ -66,8 +74,10 @@ export class LevelReactionPrimitive implements ISeriesPrimitive<Time> {
   private candles=new Map<number,Candle>();private coordinate:(t:number)=>number|null=()=>null;
   private labels=new Map<number,HTMLButtonElement>();private tooltip?:HTMLDivElement;
   private selected?:number;private hideTimer?:ReturnType<typeof setTimeout>;
+  private paneHeight=0;
   private view:IPrimitivePaneView={zOrder:()=> 'top',renderer:()=>({draw:target=>target.useMediaCoordinateSpace(({mediaSize})=>{
     if(!this.host || !this.series)return;
+    this.paneHeight=mediaSize.height;
     const visible=new Set<number>();
     const range=this.chart?.timeScale().getVisibleRange();
     for(const row of this.rows){
@@ -117,7 +127,7 @@ export class LevelReactionPrimitive implements ISeriesPrimitive<Time> {
     provenance.append(summary,content);tip.append(heading,meaning,grid,provenance);
     this.host.appendChild(tip);this.tooltip=tip;this.positionTooltip();
   }
-  private positionTooltip(){if(!this.tooltip || !this.host)return;this.tooltip.style.left='8px';this.tooltip.style.top='8px';}
+  private positionTooltip(){if(!this.tooltip || !this.host)return;this.tooltip.style.left='8px';this.tooltip.style.top='8px';this.tooltip.style.maxHeight=`${Math.max(20,this.paneHeight-16)}px`;}
   attached({chart,series,requestUpdate}:Parameters<NonNullable<ISeriesPrimitive<Time>['attached']>>[0]){
     this.chart=chart;this.series=series as ISeriesApi<'Candlestick'>;this.update=requestUpdate;
     this.host=document.createElement('div');this.host.className='level-reaction-layer';chart.chartElement().appendChild(this.host);

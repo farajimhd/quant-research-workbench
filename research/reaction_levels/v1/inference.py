@@ -215,3 +215,62 @@ def calculate(request):
         causal = prefix(inputs, stamp)
     return dict(response, **record, max_input_timestamp=max(b['t'] for b in causal['bars']),
                 candles=[b for b in causal['bars'] if b['t'] > stamp-1800])
+
+
+def calculate_book(request):
+    """Exact model seed plus separately identified causal intraday observations.
+
+    Intraday swings never alter the trained model's frozen input geometry. A
+    swing overlapping a historical band reinforces that band's identity in the
+    presentation rather than becoming a second current-day band.
+    """
+    from src.market_engine.swing_structure import SwingStructure
+    response = predict_series(request, [])  # shared integrity/date validation
+    stamp = response['as_of']
+    with _lock:
+        session = _sessions[(str(ROOT), request.model_id, request.ticker.upper(), request.session_date)][1]
+        source = session['inputs']['source']
+        opening = int(datetime.fromisoformat(source['start']).timestamp())
+        levels = deepcopy(session['effective']['levels'])
+        bars = session['inputs']['bars']
+        if 'book_engine' not in session or stamp < session['book_last']:
+            session['book_engine'] = SwingStructure()
+            session['book_index'] = 0
+        engine = session['book_engine']
+        index = session['book_index']
+        while index < len(bars) and bars[index]['t'] <= stamp:
+            bar = bars[index]
+            engine.observe(bar['t'], bar['high'], bar['low'], bar['close'])
+            index += 1
+        session['book_index'], session['book_last'] = index, stamp
+        current_segments = deepcopy(engine.segments)
+        max_input = bars[index-1]['t'] if index else None
+    segments = []
+    for level in levels:
+        role = level['role_segments'][-1]['role'] if level['role_segments'] else level['evidence_role']
+        segments.append(dict(id=level['id'], lower=level['lower'], upper=level['upper'], price=level['price'],
+            role=role, historical=True, valid_from=opening, valid_to=stamp,
+            origin_session=level['origin_session'], state=level['strength_status'],
+            model_input=True, streaming_reinforcements=0))
+    merged = set()
+    for segment in current_segments:
+        if segment['scale'] != 'major':
+            continue
+        candidates = [s for s in segments if s['historical'] and
+                      segment['lower'] <= s['upper'] and segment['upper'] >= s['lower']]
+        if candidates:
+            target = min(candidates, key=lambda s: (abs(s['price']-segment['price']), s['id']))
+            identity = (target['id'], segment['level_id'])
+            if identity not in merged:
+                target['streaming_reinforcements'] += 1
+                merged.add(identity)
+            continue
+        segments.append(dict(id=f"day:{segment['level_id']}:{segment['valid_from']}",
+            lower=segment['lower'], upper=segment['upper'], price=segment['price'], role=segment['side'],
+            historical=False, valid_from=segment['valid_from'], valid_to=min(segment['valid_to'] or stamp,stamp),
+            origin_session=request.session_date.isoformat(), state=segment['state'], model_input=False,
+            pivot_at=segment['pivot_at'], streaming_reinforcements=0))
+    response.pop('records')
+    return dict(response, book_version=session['book']['version'], session_start=opening,
+        segments=segments, historical_count=len(levels), current_day_count=sum(not s['historical'] for s in segments),
+        max_input_timestamp=max_input)

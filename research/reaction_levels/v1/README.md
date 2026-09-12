@@ -151,9 +151,23 @@ probability; the toolbar reports available/requested counts.
 Supported sampling frames: 1s, 5s, 10s, 30s, 1m, 5m, 1h. The trained features
 remain 1s at every sampling interval. Subsecond/daily charts are explicitly
 unsupported by this model. Labels become available at candle close and rewind
-hides later records immediately. The former manual prediction modal, separate
-snapshot, boundary overlays, and unfinished streaming-book presentation are
-removed. This model continues to use its frozen prior-session book.
+hides later records immediately. The former manual prediction modal and separate
+snapshot are removed. Chart inference uses the chart's event-time cursor, never
+the broker snapshot's wall-clock `trading.as_of`. Requests run one at a time and
+then catch up to the latest cursor; rapid backtest updates do not cancel them.
+
+The separate **Reaction book** overlay shows the exact split-adjusted historical
+model seed as solid bands, with current-day major swing observations dashed.
+Its version is `historical-level-consolidation-1`, not Swing Book v6/v7. Historical
+lines start at the current session opening because they were already available
+then; current-day lines begin only at causal confirmation. Overlapping current
+swings reinforce the historical identity without moving its frozen geometry.
+Historical/current-day visibility can be controlled independently. Neutral bands
+have a transitional or mixed carried role. The `/book` endpoint shares integrity
+validation with inference and advances its streaming detector incrementally;
+rewind rebuilds only from the available prefix. No same-day finalized checkpoint
+is read. Predictions continue to use the frozen prior-session book: the current
+day layer is explicitly contextual, not an untrained change to model inputs.
 
 `research.reaction_levels.v1.inference.predict_series` owns the shared records;
 `POST /api/research/level-reaction/series` is only its HTTP projection. It verifies

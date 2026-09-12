@@ -3,9 +3,21 @@ from threading import Lock
 from fastapi import APIRouter, HTTPException
 from pydantic import Field
 from research.reaction_levels.v1.inference import (CONTRACT, ROOT, PredictionRequest,
-    read, prefix, calculate, predict_series)
+    read, prefix, calculate, predict_series, calculate_book)
 router = APIRouter(prefix='/api/research/level-reaction')
 _busy = Lock()
+
+
+@router.post('/book')
+def book(request: PredictionRequest):
+    if not _busy.acquire(False):
+        raise HTTPException(429, 'A model/book request is already running; retry shortly')
+    try:
+        return calculate_book(request)
+    except (ValueError, OSError, KeyError, IndexError, ImportError, RuntimeError) as exc:
+        raise HTTPException(422, f'Reaction book unavailable: {exc}') from exc
+    finally:
+        _busy.release()
 
 
 class SeriesRequest(PredictionRequest):

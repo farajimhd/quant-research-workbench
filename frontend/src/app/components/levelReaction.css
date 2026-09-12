@@ -12,3 +12,11 @@
 .level-reaction-outcomes { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-block: 6px; }
 .level-reaction-tooltip p { margin: 4px 0; }
 .level-reaction-tooltip summary { cursor: pointer; }
+
+.reaction-book-controls { display: inline-flex; align-items: center; gap: 6px; }
+.level-reaction-controls, .reaction-book-controls { flex: 0 0 auto; }
+.reaction-book-controls .toolbar-button { width: auto; flex: 0 0 auto; padding-inline: 8px; gap: 5px; white-space: nowrap; }
+.reaction-book-settings { position: relative; font-size: 11px; }
+.reaction-book-settings summary { cursor: pointer; }
+.reaction-book-settings > div { position: absolute; right: 0; width: min(360px, 70vw); max-height: 50vh; overflow: auto; padding: 10px; background: var(--background); color: var(--foreground); border: 1px solid var(--border); border-radius: 5px; z-index: 25; overflow-wrap: anywhere; }
+.reaction-book-settings label { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }

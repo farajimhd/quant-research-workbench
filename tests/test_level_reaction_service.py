@@ -122,3 +122,22 @@ def test_cached_features_match_real_prefix_and_artifact_change_fails_closed(monk
     monkeypatch.setattr(inference,'load_session',reject)
     with pytest.raises(ValueError,match='integrity'):
         inference.predict_series(request,[stamp])
+
+
+@pytest.mark.skipif(not os.environ.get('REACTION_TEST_MODEL'),reason='Requires completed model artifacts')
+def test_reaction_book_preserves_model_seed_and_rewinds_causally():
+    request=service.PredictionRequest(model_id=os.environ['REACTION_TEST_MODEL'],ticker='SUGP',session_date='2026-08-21',time_et='04:15:20')
+    early=inference.calculate_book(request)
+    late=inference.calculate_book(request.model_copy(update=dict(time_et='07:10:46')))
+    rewound=inference.calculate_book(request)
+    assert early['segments']==rewound['segments']
+    assert early['historical_count']==late['historical_count']==104
+    prior=[s for s in early['segments'] if s['historical']]
+    assert all(s['model_input'] and s['valid_from']==early['session_start'] for s in prior)
+    for segment in early['segments']:
+        assert segment['valid_from']<=segment['valid_to']<=early['as_of']
+        if not segment['historical']:
+            assert not segment['model_input'] and segment['valid_from']>segment['pivot_at']
+            assert not any(segment['lower']<=h['upper'] and segment['upper']>=h['lower'] for h in prior)
+    assert any(s['streaming_reinforcements']>0 for s in late['segments'] if s['historical'])
+    assert early['max_input_timestamp']<=early['as_of']
