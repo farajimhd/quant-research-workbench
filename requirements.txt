@@ -1,4 +1,6 @@
 polars
+numpy
+scipy
 fastapi
 uvicorn[standard]
 websockets
