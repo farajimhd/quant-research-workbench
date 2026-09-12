@@ -1062,6 +1062,8 @@ class TradingJournal:
         if consequential_only:
             clauses.append(
                 "(category = 'market_discovery_signal' OR "
+                "(category = 'strategy_decision' AND "
+                "json_extract(payload_json, '$.metadata.historical_hod_reference.changed') = 1) OR "
                 "(category IN ('strategy', 'strategy_decision') AND "
                 "entity_type <> 'strategy_assignment_state' AND "
                 "lower(coalesce(json_extract(payload_json, '$.action'), '')) "

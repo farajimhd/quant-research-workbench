@@ -551,7 +551,8 @@ class TradingRuntime:
             if action in {"wait", "hold"} and not evaluation.intents:
                 decision_key = (account_id, signal.ticker.upper())
                 signature = _wait_decision_signature(signal)
-                if self._last_wait_decision_signatures.get(decision_key) == signature:
+                reference_changed = bool((signal.metadata.get('historical_hod_reference') or {}).get('changed'))
+                if self._last_wait_decision_signatures.get(decision_key) == signature and not reference_changed:
                     continue
                 self._last_wait_decision_signatures[decision_key] = signature
             else:

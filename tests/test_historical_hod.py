@@ -28,7 +28,7 @@ def candle(i,price,opened=None,**kw):
 def ready():
     p=parameters()
     p.pop('structural_recovery_contract');p.pop('structural_recovery')
-    p.update(historical_hod_contract=H.CONTRACT,historical_hod=dict(H.DEFAULTS))
+    p.update(historical_hod_contract=H.CONTRACT,historical_hod=dict(H.DEFAULTS,forming_macd_entry_enabled=0))
     p=S.resolve_long_momentum_parameters(p,revision=47)
     a=S.StrategyAssignment('historical',S.STRATEGY_ID,47,'sim','TEST',123,S.AssignmentStatus.WATCHING,
         S.StrategyPermissions(enter=True,reenter=True),p)
@@ -42,6 +42,97 @@ def acquired():
     host,a,o=ready();r=host.evaluate(a,o)
     assert r.evaluation.signals[0].action=='enter_long'
     return host,replace(a,state=r.state,status=S.AssignmentStatus.MANAGING),o
+
+
+def test_forming_macd_preserves_authoritative_ema_and_does_not_compound():
+    fast,slow,signal=9.8,10.,-.12
+    d={}
+    for i,price in enumerate((10.1,10.2,10.4)):
+        fast=2/13*price+11/13*fast
+        slow=2/27*price+25/27*slow
+        line=fast-slow;signal=.2*line+.8*signal
+        o=replace(candle(i*5,price,source_timeframe='5s'),macd_line=line,macd_signal=signal)
+        H.forming_macd(o,d)
+        if i:
+            assert d['completed_macd']['slow']==pytest.approx(slow,abs=1e-12)
+            before=deepcopy(d)
+            for second,px in ((1,10.5),(2,10.6),(3,10.5)):
+                preview=H.forming_macd(candle(i*5+second,px),d)
+                expected=2/13*px+11/13*fast-(2/27*px+25/27*slow)
+                assert preview['line']==pytest.approx(expected,abs=1e-12)
+                assert preview['signal']==pytest.approx(.2*expected+.8*signal,abs=1e-12)
+                assert d==before
+            assert H.forming_macd(candle(i*5,price),d)['line']==line
+            assert H.forming_macd(candle(i*5+6,price),d)['line'] is None
+
+
+@pytest.mark.parametrize('failure',[None,'no_break','red','bearish','stale','no_base'])
+def test_forming_macd_and_confirmed_resistance_are_both_required(failure):
+    host,a,o=ready()
+    a.parameters['historical_hod']['forming_macd_entry_enabled']=1
+    d=a.state['historical_hod_state']
+    d.update(episode=None,macd_positive=False,completed_macd=dict(
+        at=NOW.timestamp(),slow=10.,line=-.001,signal=0.))
+    if failure=='no_break':o=candle(2,10.01)
+    if failure=='red':o=candle(2,10.04,opened=10.05)
+    if failure=='bearish':d['completed_macd']['signal']=.1
+    if failure=='stale':d['completed_macd']['at']-=5
+    if failure=='no_base':d['completed_macd'].pop('slow')
+    r=host.evaluate(a,o)
+    if failure:
+        assert not r.evaluation.intents
+    else:
+        assert r.evaluation.intents[0].action=='enter_long'
+        assert r.evaluation.signals[0].metadata['macd']['kind']=='forming'
+        assert r.state['historical_hod_state']['completed_macd']['line']<0
+
+
+def test_forming_reversal_does_not_exit_but_same_timestamp_completed_reversal_does():
+    host,a,o=acquired()
+    a.parameters['historical_hod']['forming_macd_entry_enabled']=1
+    a.state['historical_hod_state']['completed_macd']=dict(at=NOW.timestamp(),slow=10.,line=.01,signal=.2)
+    r=host.evaluate(a,candle(5,10.05,position_quantity=100))
+    assert not any(i.action=='exit' for i in r.evaluation.intents)
+    a=replace(a,state=r.state,status=r.status)
+    obs=replace(candle(5,10.05,source_timeframe='5s',position_quantity=100),macd_line=0.,macd_signal=.1)
+    r=host.evaluate(a,obs)
+    assert r.evaluation.signals[0].reason=='macd_episode_ended'
+
+
+def test_passive_forming_macd_matches_direct_observer_and_survives_checkpoint():
+    import json
+    _,a,_=ready()
+    a.parameters['historical_hod']['forming_macd_entry_enabled']=1
+    saved={};direct={'session':NOW.date().isoformat()}
+    observations=[replace(candle(0,10.,source_timeframe='5s'),macd_line=-.001,macd_signal=0.),
+        replace(candle(5,10.,source_timeframe='5s'),macd_line=-.001,macd_signal=0.),
+        candle(6,10.01),candle(7,10.04)]
+    for obs in observations:
+        frame=SimpleNamespace(as_of=obs.observed_at,timeframe=obs.source_timeframe,
+            bar=dict(open=obs.bar_open,high=obs.bar_high,low=obs.bar_low,close=obs.price,volume=obs.bar_volume),
+            indicator=dict(macd_line=obs.macd_line,macd_signal=obs.macd_signal,execution_vwap=obs.execution_vwap))
+        saved=H.observe_frame(frame,saved,a.parameters,{'unified_levels':rows(),'session_high':10.3})
+        saved=json.loads(json.dumps(saved))
+        H.observe(obs,direct,a.parameters['historical_hod'])
+        for key in ('macd_at','macd_line','macd_signal','macd_positive','episode','completed_macd'):
+            assert saved[key]==direct[key]
+    assert saved['macd_kind']=='forming' and saved['macd_positive']
+
+
+def test_chart_references_exist_before_macd_gate_and_match_entry_boundary():
+    host,a,o=ready()
+    a.state['historical_hod_state'].update(episode=None,macd_positive=False)
+    r=host.evaluate(a,o)
+    ref=r.evaluation.signals[0].metadata['historical_hod_reference']
+    assert ref['hod']==10.3 and ref['resistance_upper']==10.02 and ref['changed']
+    assert not r.evaluation.intents
+    a=replace(a,state=r.state,status=r.status)
+    r=host.evaluate(a,candle(3,10.04))
+    assert not r.evaluation.signals[0].metadata['historical_hod_reference']['changed']
+    host,a,o=ready();r=host.evaluate(a,o)
+    metadata=r.evaluation.signals[0].metadata
+    assert metadata['historical_hod_reference']['resistance_upper']==metadata['entry_selection']['upper']
+    assert metadata['unified_structural_trigger']['current_snapshot']['levels'][0]['entry_boundary']==10.02
 
 
 @pytest.mark.parametrize('failure',[None,'retired','lost','expired','bid_below'])

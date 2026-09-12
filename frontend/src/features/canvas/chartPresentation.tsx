@@ -1,5 +1,6 @@
 import { Activity } from "lucide-react";
 import { entryStructurePresentation } from "./entryStructurePresentation";
+import { strategyReferencePresentation } from "./strategyReferencePresentation";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { DetectorTimeline, detectorRows } from "./DetectorTimeline";
 import type { UTCTimestamp } from "lightweight-charts";
@@ -299,9 +300,11 @@ export function ChartPreview({
       regions: MACRO_TIMEFRAMES.has(timeframe) ? [] : extendedSessionRegions(liveChart.bars),
       execution_annotations: [],
       trade_annotations: tradeAnnotations,
+      strategy_references: strategyPresentationAvailable ? strategyReferencePresentation(
+        chartTrading?.strategy_chart_activity ?? [], linkContext.symbol, trading?.as_of || changeAsOf) : [],
       volume: chartSettings.showVolume ? liveChart.bars.map((bar) => ({ color: bar.close >= bar.open ? "var(--success)" : "var(--danger)", time: Date.parse(bar.bar_start) / 1000, value: bar.volume })) : [],
     };
-  }, [barGptForecastPalette.downBorder, barGptForecastPalette.downFill, barGptForecastPalette.downWick, barGptForecastPalette.upBorder, barGptForecastPalette.upFill, barGptForecastPalette.upWick, barGptForecasts, barGptOriginOptions, barGptOriginUs, barGptVersion, barGptView, chartSettings.showVolume, forecastLineComponents.join("|"), indicators, linkContext.symbol, liveChart.bars, liveChart.marketSignalEvents, liveChart.structureEvents, liveChart.structureLevelHistory, showForecastCandles, splitEvents.events, strategyDecisions, strategyPresentation, timeframe, tradeAnnotations, visibleIndicators]);
+  }, [barGptForecastPalette.downBorder, barGptForecastPalette.downFill, barGptForecastPalette.downWick, barGptForecastPalette.upBorder, barGptForecastPalette.upFill, barGptForecastPalette.upWick, barGptForecasts, barGptOriginOptions, barGptOriginUs, barGptVersion, barGptView, chartSettings.showVolume, forecastLineComponents.join("|"), indicators, linkContext.symbol, liveChart.bars, liveChart.marketSignalEvents, liveChart.structureEvents, liveChart.structureLevelHistory, showForecastCandles, splitEvents.events, strategyDecisions, strategyPresentation, timeframe, tradeAnnotations, visibleIndicators, strategyPresentationAvailable, chartTrading, trading?.as_of, changeAsOf]);
   function updateChart(symbol: string, nextTimeframe: CanvasChartTimeframe) {
     onChartSettingsChange({
       ...chartSettings,

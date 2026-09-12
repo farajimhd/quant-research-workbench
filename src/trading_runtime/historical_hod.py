@@ -1,4 +1,4 @@
-"""Independent 1s historical/HOD breakouts within completed 5s MACD episodes.
+"""Independent 1s historical/HOD breakouts with causal forming 5s MACD entry.
 
 The policy consumes certified V6 snapshots and passive detector observations.
 Position management never grants permission to acquire additional shares.
@@ -20,7 +20,7 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     confirmation_lifetime_ms=1000., maximum_chase_bps=15.,
     minimum_candle_volume=1., risk_fraction=.005, maximum_quantity=10000.,
     sizing_mode='risk_fraction',cash_fraction=.9,tranche_count=3,
-    recent_breakout_seconds=30.,
+    recent_breakout_seconds=30., forming_macd_entry_enabled=1,
     regular_luld_enabled=0,backtest_luld_estimation_enabled=0,minimum_regular_previous_close=.75,
     luld_buffer_bps=25.,luld_buffer_ticks=2,luld_maximum_age_ms=60000.)
 
@@ -39,8 +39,10 @@ def configure(p):
     s = dict(DEFAULTS, **raw)
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
         raise ValueError('Historical HOD settings must be finite and positive')
+    if s['forming_macd_entry_enabled'] not in (0,1):
+        raise ValueError('Invalid forming MACD entry policy')
     if s['regular_luld_enabled'] not in (0,1) or s['backtest_luld_estimation_enabled'] not in (0,1) or int(s['luld_buffer_ticks']) != s['luld_buffer_ticks']:
         raise ValueError('Invalid regular LULD policy')
     if not 0 < s['cash_fraction'] <= 1 or type(s['tranche_count']) is not int or not 2 <= s['tranche_count'] <= 20:
@@ -275,12 +277,45 @@ def management(row, active, bar, s, tick, *, previous_bar=None, resistance_level
     return ''
 
 
+def forming_macd(o, d):
+    """Preview one 12/26/9 EMA step without committing the forming candle.
+
+    Recover the hidden slow EMA from two consecutive authoritative MACD lines:
+    L[t] = (1-a_fast)*L[t-1] + (a_fast-a_slow)*(close[t]-slow[t-1]).
+    This preserves QMD's warmup rather than reseeding EMAs at strategy admission.
+    Only completed 5s samples replace the base; 1s previews never compound it.
+    """
+    now = o.observed_at.timestamp()
+    base = d.get('completed_macd') or {}
+    if o.source_timeframe == '5s':
+        current = dict(at=now,line=o.macd_line,signal=o.macd_signal)
+        if (now-base.get('at',0) == 5 and all(v is not None and isfinite(v)
+                for v in (base.get('line'),o.macd_line,o.macd_signal,o.price)) and o.price > 0):
+            af, slow_alpha = 2/13, 2/27
+            previous_slow = o.price-(o.macd_line-(1-af)*base['line'])/(af-slow_alpha)
+            current['slow'] = slow_alpha*o.price+(1-slow_alpha)*previous_slow
+        d['completed_macd'] = current
+        return
+    age = now-base.get('at',0)
+    if age == 0:
+        # At a shared close timestamp the completed 5s frame may arrive first.
+        return dict(at=now,line=base.get('line'),signal=base.get('signal'),kind='completed',base_at=now)
+    if not 0 < age <= 5 or 'slow' not in base or not isfinite(o.price) or o.price <= 0:
+        return dict(at=now,line=None,signal=None,kind='forming_unavailable',base_at=base.get('at'))
+    fast = 2/13*o.price+11/13*(base['slow']+base['line'])
+    slow = 2/27*o.price+25/27*base['slow']
+    line = fast-slow
+    signal = .2*line+.8*base['signal']
+    return dict(at=now,line=line,signal=signal,kind='forming',base_at=base['at'])
+
+
 def observe(o, d, s):
     now = o.observed_at.timestamp()
     if 'bar_close' not in o.evaluation_events:
         return False, False
     macd_closed = False
-    if o.source_timeframe == '5s' and now > d.get('macd_at',0):
+    if o.source_timeframe == '5s' and now > d.get('completed_macd',{}).get('at',0):
+        forming_macd(o,d)
         valid = all(v is not None and isfinite(v) for v in (o.macd_line,o.macd_signal))
         positive = valid and o.macd_line > o.macd_signal
         was_open = d.get('episode') is not None
@@ -289,13 +324,23 @@ def observe(o, d, s):
                 breakout_upper=None,failed_breakout=False)
         elif valid and not positive:
             d['episode'] = None
-        d.update(macd_at=now,macd_valid=valid,macd_positive=positive,
+        d.update(macd_at=now,macd_valid=valid,macd_positive=positive,macd_kind='completed',
             macd_line=o.macd_line,macd_signal=o.macd_signal)
         macd_closed = valid and not positive
     if o.source_timeframe != '1s' or now <= d.get('closed_at',0):
         return False, macd_closed
     if any(v is None or not isfinite(v) for v in (o.bar_open,o.bar_low,o.bar_high)):
         return False, macd_closed
+    if s.get('forming_macd_entry_enabled',1):
+        preview = forming_macd(o,d)
+        valid = all(v is not None and isfinite(v) for v in (preview['line'],preview['signal']))
+        positive = valid and preview['line'] > preview['signal']
+        if positive and d.get('episode') is None:
+            d.update(episode=now,body_high=0.,used_episode=False,
+                breakout_upper=None,failed_breakout=False)
+        # A forming reversal blocks entries but does not issue an early exit.
+        d.update(macd_at=now,macd_valid=valid,macd_positive=positive,
+            macd_line=preview['line'],macd_signal=preview['signal'],macd_kind=preview['kind'])
     contiguous = now-d.get('closed_at',0) == 1
     d['prior_close'] = d.get('close') if contiguous else None
     # Completed bars and certified level snapshots are read-only evidence.
@@ -396,6 +441,32 @@ def confirm_failed_attempt(active, o, *, previous_bar=None):
     return True
 
 
+def entry_reference(d, o, s, session):
+    """One selected boundary shared by entry evaluation and chart evidence."""
+    hod, previous = d.get('prior_hod'), d.get('prior_close')
+    if not hod or previous is None:
+        return None
+    boundary = entry_level(d['prior_rows'],hod,session)
+    require_body_high = bool(d.get('used_episode') or d.get('failed_breakout'))
+    offset = s['entry_breakout_offset']
+    recent = d.get('recent_breakout') or {}
+    if (not require_body_high and recent.get('level')
+            and 0 <= o.observed_at.timestamp()-recent['at'] <= s.get('recent_breakout_seconds',30.)
+            and recent['level']['upper'] <= hod
+            and (min(o.price,o.bid) >= recent['threshold'] if recent['inclusive']
+                 else min(o.price,o.bid) > recent['threshold'])):
+        current_threshold = round(boundary['upper']+offset,9) if offset else boundary['upper']
+        current_cross = (round(previous,9) < current_threshold <= round(o.price,9) if offset
+            else previous <= current_threshold < o.price)
+        if not current_cross:
+            boundary = deepcopy(recent['level'])
+    resistance_threshold = round(boundary['upper']+offset,9) if offset else boundary['upper']
+    threshold = max(resistance_threshold,d['prior_body_high']) if require_body_high else resistance_threshold
+    return dict(level=boundary,prior_hod=hod,threshold=threshold,
+        resistance_threshold=resistance_threshold,reentry=bool(d.get('used_episode')),
+        failed_breakout=bool(d.get('failed_breakout')),entry_breakout_offset=offset)
+
+
 def evaluate(host, a, o, p, state):
     from .strategy_engine import AssignmentStatus as Status, _at_or_after_session_time
     from .signals import CapitalRequest, StrategyIntent
@@ -413,11 +484,13 @@ def evaluate(host, a, o, p, state):
     passive = (o.structural_detector_state or {}).get('historical_hod_observation',{})
     if passive.get('observed_at') == now and passive.get('session') == session:
         fresh = o.source_timeframe == '1s' and passive.get('closed_at',0) > d.get('closed_at',0)
-        macd_closed = (o.source_timeframe == '5s' and passive.get('macd_at',0) > d.get('macd_at',0)
+        macd_closed = (o.source_timeframe == '5s' and passive.get('completed_macd',{}).get('at',0) > d.get('completed_macd',{}).get('at',0)
             and passive.get('macd_valid') and not passive.get('macd_positive'))
         used = d.get('used_episode',False) if d.get('episode') == passive.get('episode') else False
         d = dict(passive)
         d['used_episode'] = used
+        if 'chart_reference' in previous_market:
+            d['chart_reference'] = previous_market['chart_reference']
         # Use the runtime's resolved execution VWAP for the current 1s candle.
         if fresh:
             d['vwap'] = o.execution_vwap
@@ -438,7 +511,16 @@ def evaluate(host, a, o, p, state):
         'inside_luld_buffer' if not luld['lower_exit'] < o.bid <= o.ask < luld['price'] else '') if regular else ''
     pending = a.status == Status.ENTRY_PENDING or bool(state.get('pending_capital_request'))
     evidence = dict(contract=CONTRACT,macd=dict(timeframe='5s',observed_at=d.get('macd_at'),
-        line=d.get('macd_line'),signal=d.get('macd_signal'),episode=d.get('episode')))
+        line=d.get('macd_line'),signal=d.get('macd_signal'),episode=d.get('episode'),
+        kind=d.get('macd_kind'),completed_base_at=d.get('completed_macd',{}).get('at')))
+    reference = entry_reference(d,o,s,session) if fresh else None
+    if fresh:
+        chart_reference = dict(hod=reference['prior_hod'],
+            resistance_upper=reference['level']['upper'] if reference['level'].get('reference_kind')!='hod' else None,
+            threshold=reference['threshold'],level_id=reference['level'].get('unified_level_id')) if reference else dict(hod=None,resistance_upper=None,threshold=None,level_id=None)
+        prior_reference = previous_market.get('chart_reference')
+        d['chart_reference'] = chart_reference
+        evidence['historical_hod_reference'] = dict(chart_reference,at=now,changed=chart_reference!=prior_reference)
     if regular:
         evidence['regular_session_policy'] = dict(previous_close=prior_close,block_reason=regular_block,luld=luld)
     def result(action, reason, status=None, **kw):
@@ -658,7 +740,7 @@ def evaluate(host, a, o, p, state):
                 'initial_stop_selection':entry['initial_stop_selection'],
                 'entry_selection':entry['level'],'profit_target_selection':entry['target'],
                 'entry_breakout_confirmation':entry.get('breakout_confirmation'),
-                'unified_structural_trigger':{'current_snapshot':{'levels':[entry['level']], 'session_high':entry['hod'],
+                'unified_structural_trigger':{'current_snapshot':{'levels':[dict(entry['level'],entry_boundary=entry['level']['upper'])], 'session_high':entry['hod'],
                     'selected_at':o.observed_at.isoformat(),'frozen_at_entry':True}}})
     if pending:
         return enter(active,'historical_hod_entry') if state.get('pending_capital_request') else result('wait','entry_fill_pending',Status.ENTRY_PENDING)
@@ -683,29 +765,15 @@ def evaluate(host, a, o, p, state):
     vwap = d.get('vwap')
     if not hod or previous is None or vwap is None or not isfinite(vwap) or o.price <= vwap:
         return result('wait','hod_history_or_vwap_gate')
-    boundary = entry_level(d['prior_rows'],hod,session)
-    reentry = bool(d.get('used_episode'))
-    failed_breakout = bool(d.get('failed_breakout'))
+    boundary = reference['level']
+    reentry = reference['reentry']
+    failed_breakout = reference['failed_breakout']
     require_body_high = reentry or failed_breakout
     offset = s['entry_breakout_offset']
     recent = d.get('recent_breakout') or {}
-    # The book may retire/flip a cleared resistance before MACD opens. Its
-    # confirmed snapshot remains the entry anchor while the breakout holds.
-    if (not require_body_high and recent.get('level')
-            and 0 <= now-recent['at'] <= s.get('recent_breakout_seconds',30.)
-            and recent['level']['upper'] <= hod
-            and (min(o.price,o.bid) >= recent['threshold'] if recent['inclusive']
-                 else min(o.price,o.bid) > recent['threshold'])):
-        current_threshold = round(boundary['upper']+offset,9) if offset else boundary['upper']
-        current_cross = (round(previous,9) < current_threshold <= round(o.price,9) if offset
-            else previous <= current_threshold < o.price)
-        if not current_cross:
-            boundary = deepcopy(recent['level'])
-    # Round only binary floating-point noise, preserving sub-cent bands.
-    resistance_threshold = round(boundary['upper'] + offset, 9) if offset else boundary['upper']
-    threshold = max(resistance_threshold,d['prior_body_high']) if require_body_high else resistance_threshold
-    evidence['entry_selection'] = dict(level=boundary,prior_hod=hod,threshold=threshold,reentry=reentry,
-        failed_breakout=failed_breakout,entry_breakout_offset=offset)
+    resistance_threshold = reference['resistance_threshold']
+    threshold = reference['threshold']
+    evidence['entry_selection'] = dict(reference)
     if o.price < o.bar_open:
         return result('wait','red_breakout_candle')
     inclusive = bool(offset) and (not require_body_high or resistance_threshold > d['prior_body_high'])

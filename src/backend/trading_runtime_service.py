@@ -554,6 +554,7 @@ def strategy_activity_payload(
             key: metadata.get(key)
             for key in (
                 "continuation_detector",
+                "historical_hod_reference",
                 "entry_rules",
                 "execution_quality",
                 "liquidity_admission",

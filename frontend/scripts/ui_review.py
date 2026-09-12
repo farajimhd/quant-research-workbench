@@ -2805,6 +2805,12 @@ def capture(args: argparse.Namespace) -> int:
                                 preview.orders=preview.orders.map(o=>({...o,stop_price:o.stop_price?10.6:undefined,limit_price:o.limit_price?11.7:undefined}));
                                 preview.as_of=iso(66); trim=30; window.__openProtectionLabels=[]; render();
                             };
+                            window.__showStrategyReferences=()=>{
+                                preview.strategy_chart_activity.push(...[[1,10.5,10.21],[30,10.8,10.51],[40,11,10.71],[70,99,98]].map(([s,hod,resistance_upper])=>({
+                                    ticker:'TEST',event_time:iso(s),sequence:200+s,
+                                    chart_plan:{historical_hod_reference:{at:t+s,hod,resistance_upper,changed:true}}})));
+                                window.__openProtectionLabels=[];render();
+                            };
                         }""")
                         page.wait_for_timeout(args.settle_ms)
                         if page.get_by_text('Chart renderer stopped', exact=True).count():
@@ -2840,6 +2846,18 @@ def capture(args: argparse.Namespace) -> int:
                         if page.locator('.detector-timeline tbody tr').count() != 1:
                             raise RuntimeError('Detector period filter must retain the state spanning the period')
                         page.get_by_role('button', name='Full period', exact=True).click()
+                        page.evaluate('window.__showStrategyReferences()')
+                        page.wait_for_function("window.__openProtectionLabels.includes('HOD 11') && window.__openProtectionLabels.includes('Entry R 10.71')")
+                        if page.evaluate("window.__openProtectionLabels.some(x=>x==='HOD 99'||x==='Entry R 98')"):
+                            raise RuntimeError('Future strategy reference leaked into chart')
+                        presentation_button=page.locator('#staged-strategy-fixture').get_by_role('button',name=re.compile('Strategy Presentation'))
+                        presentation_button.click()
+                        for title in ('Strategy HOD line','Selected resistance line'):
+                            toggle=page.get_by_role('checkbox',name=re.compile('^'+title))
+                            toggle.uncheck()
+                            if toggle.is_checked():raise RuntimeError('Reference visibility toggle did not persist')
+                            toggle.check()
+                        presentation_button.click()
 
                     if args.structure_time_placement:
                         page.evaluate("""async () => {

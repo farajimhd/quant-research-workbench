@@ -9219,6 +9219,7 @@ def _compact_strategy_chart_plan(value: Any) -> dict[str, Any]:
     for key in (
         "unified_structural_trigger",
         "continuation_detector",
+        "historical_hod_reference",
         "profit_target_selection",
         "decision_values",
         "structural_level_snapshot",

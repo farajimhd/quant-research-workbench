@@ -412,6 +412,7 @@ type PriceZonePrimitiveState = {
 };
 
 type TradeAnnotationPrimitiveState = {
+  references?: Array<{ start: number; end: number; hod?: number; resistance?: number }>;
   candles: Candle[];
   executions: TradeFillAnnotation[];
   settings: StrategyPresentationSettings;
@@ -519,6 +520,7 @@ class TradeAnnotationPrimitive implements ISeriesPrimitive<Time> {
           this.state.candles,
           this.state.timeline,
           this.state.settings,
+          this.state.references,
         );
       });
     },
@@ -669,6 +671,7 @@ export type ChartPayload = {
   timeline_events?: ChartTimelineEvent[];
   execution_annotations?: TradeFillAnnotation[];
   trade_annotations?: TradeAnnotation[];
+  strategy_references?: TradeAnnotationPrimitiveState["references"];
   price_zones?: PriceZone[];
   options?: ChartOptions;
 };
@@ -1891,6 +1894,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       // already contains its canonical fills; unrelated executions must not leak in.
       executions: strategyPresentationEnabled ? [] : currentPayload.execution_annotations ?? [],
       settings: strategyPresentationSettingsRef.current,
+      references: currentPayload.strategy_references,
       // Autoscale logical indexes belong to the rendered series timeline;
       // raw candles omit explicit whitespace bars and are not index-compatible.
       timeline,
@@ -3537,7 +3541,7 @@ function StrategyPresentationSelect({
         </div>
         <label className="chart-setting-toggle strategy-presentation-master">
           <input checked={settings.visible} onChange={(event) => onChange((current) => ({ ...current, visible: event.target.checked }))} type="checkbox" />
-          <span><strong>Show strategy presentation</strong><small>Shows the selected position’s evidence. Configure individual elements below.</small></span>
+          <span><strong>Show strategy presentation</strong><small>Shows strategy references and the selected position’s evidence. Configure individual elements below.</small></span>
         </label>
         <section className="strategy-presentation-behavior" aria-label="Presentation behavior">
           <label><input checked={settings.avoidLabelCollisions} onChange={(event) => onChange((current) => ({ ...current, avoidLabelCollisions: event.target.checked }))} type="checkbox" /><span><strong>Avoid label collisions</strong><small>Moves labels to the nearest clear position while preserving their anchor.</small></span></label>
@@ -3581,10 +3585,10 @@ const strategyVisualElementDefinitions: StrategyVisualElementDefinition[] = [
   { key: "exitLabel", kind: "label", title: "Exit intent label", help: "The strategy-issued exit action at its decision reference price." },
   { key: "exitFillArrow", kind: "marker", title: "Exit final-fill arrow", help: "Last immutable execution completing each exit order." },
   { key: "exitFillLabel", kind: "label", title: "Exit final-fill label", help: "Cumulative quantity, truthful fill state, execution VWAP, and final realized P&L." },
-  { key: "highOfDayLine", kind: "line", title: "Entry high-of-day line", help: "HOD recorded with this entry selection. Solid black by default." },
-  { key: "highOfDayLabel", kind: "label", title: "Entry high-of-day label", help: "HOD price for the recorded entry selection." },
-  { key: "entryResistanceLine", kind: "line", title: "Entry R1–R3 lines", help: "The three selected resistances under entry HOD. Dashed black by default." },
-  { key: "entryResistanceLabel", kind: "label", title: "Entry R1–R3 labels", help: "R1 is nearest below HOD, then R2 and R3 downward; separate from profit targets." },
+  { key: "highOfDayLine", kind: "line", title: "Strategy HOD line", help: "Recorded HOD used by the strategy, including before entry. Solid black by default; older runs show the entry snapshot." },
+  { key: "highOfDayLabel", kind: "label", title: "Strategy HOD label", help: "Price of the recorded strategy HOD line." },
+  { key: "entryResistanceLine", kind: "line", title: "Selected resistance line", help: "Recorded upper bound of the selected entry resistance. Dashed black by default; older strategies retain their recorded entry references." },
+  { key: "entryResistanceLabel", kind: "label", title: "Selected resistance label", help: "Upper-bound price of the selected entry resistance; older strategies retain their recorded R labels." },
   { key: "levelLine", kind: "line", title: "Structural level lines", help: "Support, short-entry, and exit structural evidence." },
   { key: "levelLabel", kind: "label", title: "Structural level labels", help: "Support, short-entry, exit, and trigger identifiers." },
   { key: "stopLine", kind: "line", title: "Protective stop line", help: "Current or immutable entry-plan protection." },
@@ -7529,8 +7533,9 @@ function drawTradeAnnotationPrimitiveGeometry(
   candles: Candle[],
   timeline: Array<{ time: number }>,
   settings: StrategyPresentationSettings,
+  references: TradeAnnotationPrimitiveState["references"] = [],
 ) {
-  if (!settings.visible || !timeline.length || width < 1 || height < 1 || (!annotations.length && !executions.length)) return;
+  if (!settings.visible || !timeline.length || width < 1 || height < 1 || (!annotations.length && !executions.length && !references.length)) return;
   const elements = settings.elements;
   const chartBackground = validHexColor(readChartPalette().background, "#ffffff");
   const successColor = chartSemanticColor("--chart-strategy-target", "#00B84F");
@@ -7543,6 +7548,25 @@ function drawTradeAnnotationPrimitiveGeometry(
   context.globalCompositeOperation = "source-over";
   context.lineCap = "round";
   context.lineJoin = "round";
+  const visibleReferences = references.flatMap(reference => {
+    const left = xForAnnotationTime(chart, Math.max(timeline[0].time, reference.start), timeline);
+    const right = xForAnnotationTime(chart, Math.min(timeline[timeline.length-1].time, reference.end), timeline);
+    return left !== null && right !== null && right > 0 && left < width && right > left
+      ? [{ ...reference, left: Math.max(0,left), right: Math.min(width,right) }] : [];
+  });
+  visibleReferences.forEach((reference,index) => {
+    for (const kind of ["hod", "resistance"] as const) {
+      const price = reference[kind];
+      if (price === undefined) continue;
+      const y = priceSeries.priceToCoordinate(price);
+      if (y === null) continue;
+      const line = kind === "hod" ? elements.highOfDayLine : elements.entryResistanceLine;
+      const label = kind === "hod" ? elements.highOfDayLabel : elements.entryResistanceLabel;
+      drawCanvasTradeGuide(context, reference.left, reference.right, y, STRATEGY_ENTRY_REFERENCE_COLOR,
+        `${kind === "hod" ? "HOD" : "Entry R"} ${formatPrice(price)}`, chartBackground, width, height,
+        line, index === visibleReferences.length-1 ? label : { ...label, visible: false }, labelLayout, elements.connector, true);
+    }
+  });
   annotations.forEach((annotation) => {
     const firstTime = timeline[0].time;
     const lastTime = timeline[timeline.length - 1].time;
@@ -7688,13 +7712,13 @@ function drawTradeAnnotationPrimitiveGeometry(
     const referenceRight = Math.min(width, exitX);
     const resistanceLine = annotation.positionSide === "SHORT" ? elements.levelLine : elements.entryResistanceLine;
     const resistanceLabel = annotation.positionSide === "SHORT" ? elements.levelLabel : elements.entryResistanceLabel;
-    if (resistanceLine.visible || resistanceLabel.visible) {
+    if (!references.length && (resistanceLine.visible || resistanceLabel.visible)) {
       annotation.resistancePrices?.slice(0, 4).forEach((price, index) => {
         const y = priceSeries.priceToCoordinate(price);
         if (y !== null) drawCanvasTradeGuide(context, annotation.positionSide === "SHORT" ? guideSpan.left : referenceLeft, annotation.positionSide === "SHORT" ? guideSpan.right : referenceRight, y, resistanceColor, `R${index + 1} ${formatPrice(price)}`, chartBackground, width, height, resistanceLine, resistanceLabel, labelLayout, elements.connector, annotation.positionSide !== "SHORT");
       });
     }
-    if ((elements.highOfDayLine.visible || elements.highOfDayLabel.visible) && annotation.highOfDayPrice !== undefined) {
+    if (!references.length && (elements.highOfDayLine.visible || elements.highOfDayLabel.visible) && annotation.highOfDayPrice !== undefined) {
       const y = priceSeries.priceToCoordinate(annotation.highOfDayPrice);
       if (y !== null) drawCanvasTradeGuide(context, referenceLeft, referenceRight, y, STRATEGY_ENTRY_REFERENCE_COLOR, `HOD ${formatPrice(annotation.highOfDayPrice)}`, chartBackground, width, height, elements.highOfDayLine, elements.highOfDayLabel, labelLayout, elements.connector, true);
     }
@@ -8129,6 +8153,11 @@ function tradeAnnotationAutoscaleInfo(
   state.executions.forEach((fill) => {
     const logical = lowerBoundCandleTime(state.timeline, fill.time);
     if (logical >= visibleStart && logical <= visibleEnd) prices.push(fill.price);
+  });
+  state.references?.forEach(reference => {
+    if (reference.end < state.timeline[visibleStart]?.time || reference.start > state.timeline[visibleEnd]?.time) return;
+    if (reference.hod !== undefined) prices.push(reference.hod);
+    if (reference.resistance !== undefined) prices.push(reference.resistance);
   });
   const finitePrices = prices.filter((price) => Number.isFinite(price));
   if (!finitePrices.length) return null;
