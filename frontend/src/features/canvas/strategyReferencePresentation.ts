@@ -16,7 +16,7 @@ export function strategyReferencePresentation(rows: Row[], ticker: string, asOf:
     if (!Number.isFinite(time) || !Number.isFinite(published) || !Number.isFinite(cutoff)
         || time > cutoff || published > cutoff || time > published) continue;
     const last = result.at(-1);
-    const hod = positive(reference.hod), resistance = positive(reference.resistance_upper), zoneLower=positive(reference.zone_lower);
+    const hod = positive(reference.hod), resistance = positive(reference.resistance_center ?? reference.resistance_upper), zoneLower=positive(reference.zone_lower);
     if (last && last.hod === hod && last.resistance === resistance && last.zoneLower===zoneLower) continue;
     if (last) last.end = time;
     result.push({ start: time, end: cutoff, hod, resistance, ...(zoneLower===undefined?{}:{zoneLower}) });

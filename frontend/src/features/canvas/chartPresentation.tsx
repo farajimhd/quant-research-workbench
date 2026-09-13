@@ -613,15 +613,17 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
     ));
     const exitIntentActions = side === "SHORT" ? new Set(["reduce_short", "cover", "exit"]) : new Set(["reduce_long", "take_profit", "exit"]);
     const exitIntents = activity
-      .filter(({ row: event, time }) => String(event.event_type || "") === "decision" && exitIntentActions.has(String(event.action || "")) && time >= entryTime && time <= endTime)
+      .filter(({ row: event, time }) => String(event.event_type || "") === "decision" && exitIntentActions.has(String(event.action || "")) && time >= entryTime && time <= Math.min(endTime, asOfTime))
       .map(({ row: event, time }) => {
-        const label = exitIntentLabel(String(event.action || ""), String(event.reason || row.exit_reason || ""), side);
+        // Use the issued decision, never the position's later filled-exit reason.
+        const reason = shortExitReason(String(event.reason_code || event.reason || ""));
+        const label = exitIntentLabel(String(event.action || ""), side);
         const exitPlan = (event.chart_plan as PreviewRow | undefined) ?? (event.gate_snapshot as PreviewRow | undefined) ?? {};
         const exitStructure = (exitPlan.structural_level_snapshot as PreviewRow | undefined) ?? {};
         return {
           kind: "exit_intent" as const,
-          label: `${label} issued`,
-          labelParts: [{ text: label, tone: side === "SHORT" ? "exitShort" as const : "exitLong" as const }, { text: "issued", tone: "label" as const }],
+          label: `${label} issued · ${reason}`,
+          labelParts: [{ text: label, tone: side === "SHORT" ? "exitShort" as const : "exitLong" as const }, { text: "issued", tone: "label" as const }, { text: "·", tone: "separator" as const }, { text: reason, tone: "reason" as const }],
           price: decisionReferencePrice(event) ?? Number(exitPrice ?? entryPrice),
           side: openingSide === "BUY" ? "SELL" as const : "BUY" as const,
           time,
@@ -789,12 +791,26 @@ function positionExecutionActions(executions: PreviewRow[], positionSide: string
     .map(({ notional: _notional, ...action }) => action);
 }
 
-function exitIntentLabel(action: string, reason: string, positionSide: string): string {
+export function shortExitReason(reason: string): string {
+  const labels: Record<string, string> = {
+    protective_stop: "Stop hit", trailing_stop: "Trailing stop",
+    macd_episode_ended: "MACD ended", session_flatten: "Session end",
+    luld_buffer_reached: "LULD buffer", manual_exit: "Manual exit",
+    red_close_below_attempt_open: "Failed retest",
+    protective_swing_failed: "Swing low failed",
+    confirmed_structural_reversal: "Structure reversed",
+    resistance_rejection_failed_recovery: "Rejection failed",
+    exit_pending: "Exit pending", profit_target: "Target reached",
+  };
+  const key = reason.trim().toLowerCase();
+  return labels[key] ?? (key ? key.replaceAll("_", " ") : "Reason unavailable");
+}
+
+function exitIntentLabel(action: string, positionSide: string): string {
   if (action === "take_profit") return "Take profit";
   if (action === "reduce_long" || action === "reduce_short") return "Reduce";
   if (action === "cover") return "Cover";
-  if (reason.trim().toLowerCase().includes("target")) return "Target exit";
-  return positionExitLabel(reason, positionSide === "SHORT" ? "protective_exit" : "position_exit");
+  return positionSide === "SHORT" ? "Cover" : "Exit";
 }
 
 function normalizedExecutionRole(

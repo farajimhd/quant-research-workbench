@@ -7726,6 +7726,7 @@ function drawTradeAnnotationPrimitiveGeometry(
       size: elements.entrySizePart,
     };
     const exitLabelPartSettings: TradeLabelPartSettings = {
+      reason: annotation.positionSide === "SHORT" ? elements.exitShortReasonPart : elements.exitReasonPart,
       exitLong: elements.exitReasonPart,
       exitPriceLong: elements.exitPricePart,
       exitPriceShort: elements.exitShortPricePart,
