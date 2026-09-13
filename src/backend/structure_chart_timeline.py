@@ -91,6 +91,10 @@ def chart_rows(build_id, ticker, start, end, fingerprint=None, *, after=None, co
     build = resolve(build_id)
     if fingerprint is not None and fingerprint != build['fingerprint']:
         raise ValueError('Experimental book fingerprint changed')
+    if build['version']=='causal-level-book-v7-mle-1':
+        # V7 chart geometry comes from QMD's as-of segments endpoint. Legacy
+        # scalar chart rows must not replace that time-varying MLE projection.
+        return []
     key = (build_id, ticker, micros(start), build['fingerprint'], contract)
     with _LOCK:
         timeline = _CACHE.get(key)

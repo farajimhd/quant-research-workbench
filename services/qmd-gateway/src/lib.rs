@@ -24,6 +24,7 @@ pub mod indicator_reconciliation;
 pub mod indicators;
 pub mod intraday_bars;
 pub mod live_market_state;
+pub mod level_book_v7;
 pub mod maintenance;
 pub mod market_calendar;
 pub mod market_products;

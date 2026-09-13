@@ -1,30 +1,32 @@
 """HTTP projection only; causal book construction lives in market_engine."""
-from datetime import date
-from threading import Lock
+from datetime import date,datetime
+from typing import Literal
 from fastapi import APIRouter,HTTPException
 from pydantic import BaseModel,Field,ConfigDict
-from src.market_engine.level_book_feed import book_at,catalog
+from src.backend.qmd_gateway_client import qmd_level_book_v7,qmd_history_get_json
+from src.backend.swing_book_source import NY
 
 router=APIRouter(prefix='/api/research/level-book-v7')
-_busy=Lock()
 
 
 class BookRequest(BaseModel):
     model_config=ConfigDict(extra='forbid')
-    book_id:str=Field(pattern=r'^[A-Za-z0-9_-]{1,100}$')
-    ticker:str=Field(pattern=r'^[A-Z0-9.\-]{1,20}$')
+    book_id:Literal['level-book-v7']='level-book-v7'
+    ticker:str=Field(pattern=r'^[A-Z0-9.\- ]{1,30}$')
     session_date:date
     time_et:str=Field(pattern=r'^\d{2}:\d{2}:\d{2}$')
+    mode:Literal['history','live']='history'
 
 
 @router.get('/catalog')
 def books():
-    return catalog()
+    try:return qmd_history_get_json('/level-book-v7/catalog',timeout=30)
+    except Exception as exc:raise HTTPException(503,str(exc)) from exc
 
 
 @router.post('/book')
 def snapshot(request:BookRequest):
-    if not _busy.acquire(False):raise HTTPException(429,'V7 book is updating; retry shortly')
-    try:return book_at(request.book_id,request.ticker,request.session_date.isoformat(),request.time_et)
-    except (ValueError,OSError,KeyError,IndexError) as exc:raise HTTPException(422,f'V7 book unavailable: {exc}') from exc
-    finally:_busy.release()
+    try:
+        at=datetime.fromisoformat(request.session_date.isoformat()+'T'+request.time_et).replace(tzinfo=NY)
+        return qmd_level_book_v7(request.ticker,at,mode=request.mode,include_segments=True)
+    except Exception as exc:raise HTTPException(503,str(exc)) from exc

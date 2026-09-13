@@ -1,6 +1,6 @@
 """Independent 1s historical/HOD breakouts with causal forming 5s MACD entry.
 
-The policy consumes certified V6 snapshots and passive detector observations.
+The policy consumes certified V7 snapshots and passive detector observations.
 Position management never grants permission to acquire additional shares.
 """
 from copy import deepcopy
@@ -13,6 +13,7 @@ from .structural_recovery import DEFAULTS as QUALITY_DEFAULTS, LIQUIDITY_181, tr
 
 CONTRACT = 'historical-hod-1s-macd-5s-1'
 BOOK_VERSION = 'causal-swing-closing-book-6'
+BOOK_VERSIONS = (BOOK_VERSION, 'causal-level-book-v7-mle-1')
 NY = ZoneInfo('America/New_York')
 DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_fraction=.05, entry_breakout_offset=0.,
     management_tolerance_atr=.1, management_failure_closes=2, historical_hold_closes=2,
@@ -103,6 +104,8 @@ def regular_luld(o, s, tick, estimate_state=None):
 
 
 def historical(level, session):
+    if level.get('book_version')=='causal-level-book-v7-mle-1':
+        return level.get('historical') is True
     stamp = level.get('oldest_member_confirmed_at_ms')
     # V6 must publish member lineage; newest confirmation loses mixed ancestry.
     return stamp is not None and datetime.fromtimestamp(stamp/1000, NY).date().isoformat() < session
@@ -117,14 +120,14 @@ def band_levels(rows):
 def selected_levels(o, s, before):
     result = []
     for raw in band_levels((*o.structural_support_levels, *o.structural_resistance_levels)):
-        if (raw.get('book_version') != BOOK_VERSION or raw.get('lifecycle') not in ('active',None)
+        if (raw.get('book_version') not in BOOK_VERSIONS or raw.get('lifecycle') not in ('active',None)
                 or raw.get('confirmed_at_ms', float('inf')) > before*1000):
             continue
         if (not raw.get('unified_level_id') or any(type(raw.get(k)) not in (int,float)
                 or not isfinite(raw[k]) for k in ('lower','price','upper','confirmed_at_ms','oldest_member_confirmed_at_ms'))
                 or not 0 < raw['lower'] <= raw['price'] <= raw['upper']
                 or not 0 < raw['oldest_member_confirmed_at_ms'] <= raw['confirmed_at_ms']):
-            raise ValueError('Historical HOD requires valid V6 bands and historical member provenance')
+            raise ValueError('Historical HOD requires valid V7 bands and historical member provenance')
         result.append(deepcopy(raw))
     return result
 

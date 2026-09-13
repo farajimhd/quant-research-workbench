@@ -12,6 +12,14 @@ def is_point_level(row):
 
 
 def qualifies(row, observed_at=None, *, include_retained=False):
+    if row.get('book_version')=='causal-level-book-v7-mle-1':
+        try:
+            return (row.get('lifecycle')=='active' and row.get('side') in (-1,1)
+                and all(isfinite(float(row[k])) for k in ('lower','price','upper','confirmed_at_ms'))
+                and 0 < row['lower'] <= row['price'] <= row['upper']
+                and row.get('fit',{}).get('status')=='estimated'
+                and (observed_at is None or row['confirmed_at_ms']<=observed_at.timestamp()*1000))
+        except (KeyError,TypeError,ValueError):return False
     if not is_point_level(row):
         return False
     try:
@@ -50,6 +58,9 @@ def qualifies(row, observed_at=None, *, include_retained=False):
 
 def strategy_snapshot(snapshot, observed_at, minimum_p_norm=DEFAULT_THRESHOLD):
     """Default to point prices; retain bands for opt-in breakout/rejection rules."""
+    if snapshot.get('book_version')=='causal-level-book-v7-mle-1':
+        return dict(snapshot,unified_levels=[dict(row,strategy_level_contract='v7-mle-bands-1')
+            for row in snapshot['unified_levels'] if qualifies(row,observed_at)])
     rows = [dict(row, minimum_p_norm=minimum_p_norm) if row.get('load_contract') else row for row in snapshot['unified_levels']]
     return {'unified_levels': [dict(row, band_lower=row['lower'], band_upper=row['upper'],
         lower=row['price'], upper=row['price'], strategy_level_contract=STRATEGY_CONTRACT)

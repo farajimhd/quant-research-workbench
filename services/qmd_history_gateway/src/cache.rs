@@ -61,6 +61,7 @@ const INDICATOR_EMA_WARMUP_BARS: usize = 200;
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CacheProfile {
     Bars(String),
+    CausalBars(String),
     Derived(String),
     Structure(String),
     Products,
@@ -70,6 +71,7 @@ impl CacheProfile {
     fn key(&self) -> String {
         match self {
             Self::Bars(timeframe) => format!("bars:{timeframe}"),
+            Self::CausalBars(timeframe) => format!("causal-bars-v7:{timeframe}"),
             Self::Derived(timeframe) => format!("derived:{timeframe}"),
             Self::Structure(timeframe) => format!("structure:{timeframe}"),
             Self::Products => "products".to_string(),
@@ -1322,6 +1324,21 @@ impl HistoricalDerivedCache {
             .await
     }
 
+    pub async fn causal_seconds(&self, window: EventWindow, ticker: String) -> Result<(Vec<BarRow>, SourceRevision), String> {
+        let end = window.end;
+        let start = window.start;
+        let lease = self.acquire(window, ticker, CacheProfile::CausalBars("1s".into())).await?;
+        if !lease.source_revision.request_complete {
+            return Err("V7 requires a complete QMD source window".into());
+        }
+        lease.entry.wait_ready().await?;
+        let (frames, complete, error, _) = lease.entry.current_bars().await;
+        if let Some(error)=error { return Err(error); }
+        if !complete { return Err("Causal V7 seconds are incomplete".into()); }
+        Ok((frames.iter().filter(|frame| frame.bar.is_closed && frame.bar.timeframe == "1s"
+            && frame.bar.bar_end > start && frame.bar.bar_end <= end).map(|frame| frame.bar.clone()).collect(),lease.source_revision))
+    }
+
     pub async fn snapshot(
         &self,
         window: EventWindow,
@@ -1927,6 +1944,7 @@ impl HistoricalDerivedCache {
             .collect::<Vec<_>>();
         let requested_timeframe = match &profile {
             CacheProfile::Bars(timeframe)
+            | CacheProfile::CausalBars(timeframe)
             | CacheProfile::Derived(timeframe)
             | CacheProfile::Structure(timeframe) => Some(timeframe.clone()),
             CacheProfile::Products => None,
@@ -1938,7 +1956,7 @@ impl HistoricalDerivedCache {
         let structure_approximation = structure_only && structure_seed.is_none();
         let bars_only = matches!(&profile, CacheProfile::Bars(_));
         let derived_timeframes = match (&profile, &requested_timeframe) {
-            (CacheProfile::Bars(_), Some(timeframe)) => vec![timeframe.clone()],
+            (CacheProfile::Bars(_) | CacheProfile::CausalBars(_), Some(timeframe)) => vec![timeframe.clone()],
             (CacheProfile::Structure(_), Some(timeframe)) => vec![timeframe.clone()],
             (_, Some(timeframe)) if timeframe.eq_ignore_ascii_case("100ms") => {
                 vec![timeframe.clone()]
@@ -1946,7 +1964,7 @@ impl HistoricalDerivedCache {
             (_, Some(timeframe)) => vec!["100ms".to_string(), timeframe.clone()],
             (_, None) => Vec::new(),
         };
-        let bars = if bars_only || structure_only {
+        let bars = if bars_only || structure_only || matches!(&profile, CacheProfile::CausalBars(_)) {
             // A bars-stage request is the scalar closed-bar authority. Unified
             // Structural Levels are loaded through their checkpoint-backed
             // projection, so advancing the event-native level book here is
@@ -3859,6 +3877,7 @@ fn historical_requirement(
         ticker: ticker.to_ascii_uppercase(),
         timeframe: match profile {
             CacheProfile::Bars(timeframe)
+            | CacheProfile::CausalBars(timeframe)
             | CacheProfile::Derived(timeframe)
             | CacheProfile::Structure(timeframe) => Some(timeframe.clone()),
             CacheProfile::Products => None,

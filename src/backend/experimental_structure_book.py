@@ -24,7 +24,16 @@ ROOT = Path(r'D:\TradingML\runtimes\structure-validation')
 NY = ZoneInfo('America/New_York')
 
 
+@lru_cache(maxsize=1)
 def builds():
+    from src.backend.qmd_gateway_client import qmd_history_get_json
+    catalog=qmd_history_get_json('/level-book-v7/catalog',timeout=30)
+    if not isinstance(catalog,list) or any(row.get('version')!='causal-level-book-v7-mle-1' for row in catalog):
+        raise ValueError('QMD did not publish the V7 catalog')
+    return [dict(row,id='level-book-v7-'+row['ticker'],source_policy='qmd-causal-completed-seconds-v7') for row in catalog]
+
+
+def _archived_builds():
     result = []
     for path in sorted([*ROOT.glob('*/report.json'), *ROOT.glob('*/*/report.json')]):
         validation = path.with_name('validation.json')
@@ -48,9 +57,21 @@ def builds():
 
 
 def resolve(build_id):
+    if build_id=='level-book-v7':
+        rows=builds()
+        if not rows:raise ValueError('V7 catalog is empty')
+        return dict(rows[0],id=build_id,ticker='*',start=min(r['start'] for r in rows),end=max(r['end'] for r in rows))
+    if build_id.startswith('level-book-v7-'):
+        matches=[row for row in builds() if row['id']==build_id]
+        if len(matches)!=1:raise ValueError('V7 ticker book is not available')
+        return matches[0]
+    raise ValueError('Legacy level books are retired from the app; select Level book V7')
+
+
+def _resolve_archived(build_id):
     if not re.fullmatch(r'structure_book_[a-f0-9]{12}', build_id):
         raise ValueError('Invalid experimental book identifier')
-    matches = [row for row in builds() if row['id'] == build_id]
+    matches = [row for row in _archived_builds() if row['id'] == build_id]
     if len(matches) != 1:
         raise ValueError('Experimental book is missing or not validated')
     return matches[0]
@@ -145,6 +166,9 @@ def transition(state, eligible, price, volatility, lower, upper, tick, known_us)
 
 class BookCursor:
     def __new__(cls, build_id, ticker, fingerprint=None):
+        if build_id=='level-book-v7' or build_id.startswith('level-book-v7-'):
+            from .v7_book_cursor import V7BookCursor
+            return V7BookCursor(build_id,ticker,fingerprint)
         if resolve(build_id).get('version', VERSION) in ('causal-swing-closing-book-1', 'causal-swing-closing-book-2', 'causal-swing-closing-book-3', 'causal-swing-closing-book-4', 'causal-swing-closing-book-5', 'causal-swing-closing-book-6'):
             from .swing_book_cursor import SwingBookCursor
             return SwingBookCursor(build_id,ticker,fingerprint,normalized=cls.__name__=='NormalizedBookCursor')

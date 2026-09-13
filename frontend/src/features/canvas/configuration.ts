@@ -210,15 +210,13 @@ export const CHART_INDICATORS: ChartDisplayItem[] = [
     ],
     caveats: ["QMD observes consolidated Level-1 NBBO and eligible prints, not full venue depth or hidden liquidity.", "A local swing is unknowable at its pivot instant; it becomes causal only after the following timeframe bucket completes. Strategies must use confirmed_at, never pivot_at.", "Nearest means absolute distance from current price. Strongest combines causal strength and confidence; it does not necessarily mean closest or most likely to hold.", "The footprint classifies aggressor side from available trade and NBBO evidence and therefore cannot reveal hidden orders.", "BoS, CHoCH, support, and resistance are deterministic evidence states—not trade instructions or win probabilities."],
   }),
-  displayIndicator("indicator.qmd_unified_structure", "QMD Unified Structural Levels", "price_action", [
-    "qmd_structure_unified_levels",
-  ], "price", indicatorGuide(
-    "A causal, cross-session level book that preserves major support, resistance, breaks, and confirmed role reversals.",
-    "Clusters the persistent event-native level book with independent confirmed swings across 100 ms, 1 s, 5 s, 10 s, 30 s, 1 m, 5 m, and 1 h. Repeated tests, holds, accepted breaks, cross-timeframe pivots, and support/resistance flips contribute without counting the same pivot twice. At 04:00 ET, QMD freezes separate inherited support and resistance hold_quality_score distributions for the new session.",
-    "Green bands are levels currently confirmed as support. Chart tags show TQ: ticker_relative_quality_score as a percentage, or TQ — when unavailable. Tooltips expose both quality scores with their raw counts, reference-session population, provisional status, pivots, role flips, and executed pressure.",
-    "Red bands are levels currently confirmed as resistance. The band stops at an accepted break and can resume in green only after a causal retest confirms the role reversal.",
-    "The book is independent of the selected chart interval and survives session boundaries through QMD checkpoints. Changing chart timeframe changes candle display, not level identity or evidence.",
-    ["hold_quality_score is the conservative one-sided 90% Wilson lower bound. ticker_relative_quality_score is its same-role mid-rank percentile against the ticker distribution frozen at 04:00 ET; neither is a return forecast.", "Same-session levels are marked same_session_provisional and are never removed by the ticker_relative_quality_score filter. They join the reference population only at a later session boundary.", "Each shaded band begins only when its evidence is causally available, ends when that role breaks, and displays on all loaded bars by default.", "Overlapping timeframe observations from the same exact pivot count once toward pivot breadth, and the published projection is bounded to major levels per side."],
+  displayIndicator("indicator.qmd_unified_structure", "Level book V7", "price_action", [], "price", indicatorGuide(
+    "Historical MLE bands continued causally by QMD through the current session.",
+    "At 04:00 ET, QMD loads the verified preceding session checkpoint. Completed 1s candles confirm reactions and update Student-t MLE centers and adaptive bands. Late trade reports are excluded from streaming observations.",
+    "Support bands mark confirmed support. Historical and current-day support have separate colors and visibility controls.",
+    "Resistance bands mark confirmed resistance. A current-day level merged with historical evidence remains historical.",
+    "The book is independent of chart timeframe. Geometry changes begin at confirmation time; earlier chart segments do not repaint.",
+    ["Bands describe reaction-price dispersion, not calibrated trading probabilities.", "Missing or invalid V7 checkpoints are reported; older book versions are never substituted."],
   )),
   {
     ...displayIndicator("indicator.qmd_level_footprint", "QMD Level Volume Footprint", "price_action", [

@@ -114,7 +114,7 @@ def test_no_future_or_non_v6_authority_and_no_chased_entry():
     assert not host.evaluate(a,replace(o,bid=10.40,ask=10.41,price=10.405)).evaluation.intents
     near=level(-1,10.38,10.40)
     assert not host.evaluate(a,replace(o,structural_resistance_levels=(near,))).evaluation.intents
-    with pytest.raises(ValueError,match='V6'):
+    with pytest.raises(ValueError,match='V7'):
         R.observe_market(saved['row']['candle'],[],dict(BOOK,version='v5'),{})
 
 
@@ -282,21 +282,19 @@ def test_candidate_creation_uses_metadata_and_preserves_idempotent_payload(tmp_p
         journal.close()
 
 
-def test_historical_launch_requires_matching_certified_v6_book():
+def test_historical_launch_defaults_to_v7():
     from datetime import time
     from src.backend.replay_run_service import ReplayRunDefinition, RunMode
     args = dict(session_date=NOW.date(), start_time=time(9,30), mode=RunMode.BACKTEST,
         tickers=('TEST',), configuration_revision={'revision_id':'test-candidate', 'payload':{'strategy':{'parameters':parameters()}}})
-    with pytest.raises(ValueError, match='explicitly selected certified V6'):
-        ReplayRunDefinition(**args)
-    args['experimental_structure_book'] = BOOK['id']
-    book = dict(BOOK, ticker='TEST', start=NOW.date().isoformat(), end=NOW.date().isoformat())
+    args['experimental_structure_book'] = 'level-book-v7'
+    book = dict(BOOK, version='causal-level-book-v7-mle-1', ticker='TEST', start=NOW.date().isoformat(), end=NOW.date().isoformat())
     with patch('src.backend.experimental_structure_book.resolve', return_value=book):
         assert ReplayRunDefinition(**args).experimental_structure_fingerprint == BOOK['fingerprint']
         with pytest.raises(ValueError, match='single covered ticker'):
             ReplayRunDefinition(**dict(args, tickers=('OTHER',)))
     with patch('src.backend.experimental_structure_book.resolve', return_value=dict(book, version='causal-swing-closing-book-5')):
-        with pytest.raises(ValueError, match='swing book V6'):
+        with pytest.raises(ValueError, match='Level book V7'):
             ReplayRunDefinition(**args)
 
 

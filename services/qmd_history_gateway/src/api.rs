@@ -246,6 +246,9 @@ pub fn app(state: AppState) -> Router {
     let structure_checkpoint_request_max_bytes =
         state.config.structure_checkpoint_request_max_bytes;
     Router::new()
+        .route("/level-book-v7/catalog", get(qmd_core::level_book_v7::catalog))
+        .route("/level-book-v7/snapshot", post(qmd_core::level_book_v7::history_snapshot))
+        .route("/level-book-v7/seconds/{ticker}", get(level_book_v7_seconds))
         .route("/health", get(health))
         .route("/config", get(config))
         .route("/metrics", get(cache_snapshot))
@@ -1239,6 +1242,23 @@ async fn bar_snapshot(
 struct FormingChartQuery {
     timeframe: String,
     as_of: String,
+}
+
+async fn level_book_v7_seconds(
+    Path(ticker): Path<String>, Query(query): Query<BarsQuery>, State(state): State<Arc<AppState>>,
+) -> Result<Json<Value>, ApiError> {
+    let ticker = normalize_ticker(&ticker)?;
+    let window = window(&query.start, &query.end, vec![ticker.clone()])?;
+    if (window.end-window.start).num_seconds() > 57_600 {
+        return Err(bad_request("V7 seconds requests are limited to one 04:00-20:00 session"));
+    }
+    let (seconds,source_revision) = state.cache.causal_seconds(window, ticker.clone()).await.map_err(service_error)?;
+    let bars: Vec<Value> = seconds.iter().map(|bar| json!({
+        "sym":bar.sym,"timeframe":"1s","bar_end":bar.bar_end,"is_closed":true,
+        "open":bar.open,"high":bar.high,"low":bar.low,"close":bar.close,"volume":bar.volume
+    })).collect();
+    Ok(Json(json!({"ticker":ticker,"complete":true,"bars":bars,"source_revision":source_revision,
+        "late_trade_policy":"qmd-causal-seconds-excludes-delayed-reports"})))
 }
 
 async fn chart_forming_snapshot(

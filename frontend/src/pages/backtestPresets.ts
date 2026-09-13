@@ -3,7 +3,7 @@ export type ValidationBook = { id: string; ticker: string; start: string; end: s
 export const DEFAULT_BACKTEST_DATE = '2026-08-21';
 
 export function v6BookFor(ticker: string, date: string, books: ValidationBook[]) {
-  return books.filter(book => book.ticker === ticker && book.version === 'causal-swing-closing-book-6'
+  return books.filter(book => book.ticker === ticker && book.version === 'causal-level-book-v7-mle-1'
     && book.start <= date && date <= book.end)
     .sort((a,b) => b.end.localeCompare(a.end) || Number(b.selection_contract==='symmetric-level-evidence-selection-2')-Number(a.selection_contract==='symmetric-level-evidence-selection-2') || a.start.localeCompare(b.start) || a.id.localeCompare(b.id))[0];
 }

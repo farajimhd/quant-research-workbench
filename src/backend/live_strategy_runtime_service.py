@@ -388,49 +388,25 @@ class LiveStrategyRuntimeSupervisor:
         ticker = str(delivery.get("ticker") or "").upper()
         assignments = [row for row in state["strategy"].assignments() if row.ticker == ticker]
         market_row = dict(item.get("row") or {})
-        v5_ids={str(a.parameters.get('swing_book_v5')) for a in assignments if a.parameters.get('swing_book_v5')}
-        if len(v5_ids)>1:
-            raise ValueError('Live ticker must have one v5 book authority')
-        if v5_ids:
-            from src.backend.live_swing_book_v5 import LiveSwingBookV5
+        if any(bool(dict(a.parameters.get('structural_entry') or {}).get('enabled')) for a in assignments):
+            structure=await asyncio.to_thread(qmd_current_structure_snapshot,ticker,timeframe='1s')
+            observation_time=_aware_datetime(item.get('as_of'))
+            structure_time=_aware_datetime(structure.get('bar_end') or structure.get('observed_at'))
+            if observation_time is None or structure_time is None or structure_time>observation_time:
+                raise RuntimeError('Live structural observations require a causal timestamp')
+            # Preserve local swing/detector observations, never the old book.
+            market_row.update({key:deepcopy(value) for key,value in structure.items()
+                if str(key).startswith('qmd_structure_') and not any(part in str(key)
+                    for part in ('support','resistance','unified','active_levels'))})
+        if assignments:
+            from src.backend.qmd_gateway_client import qmd_level_book_v7
             from src.backend.experimental_structure_book import context
             at=_aware_datetime(item.get('as_of'))
-            if at is None:raise ValueError('Live v5 requires an event timestamp')
-            key=(ticker,next(iter(v5_ids)),at.astimezone(NEW_YORK).date())
-            cache=state.setdefault('swing_v5',{})
-            if key not in cache:
-                for old_key in list(cache):
-                    if old_key[0]==ticker:
-                        await asyncio.to_thread(cache[old_key].finish_session,at)
-                        del cache[old_key]
-                cache[key]=await asyncio.to_thread(LiveSwingBookV5,key[1],ticker,at)
-            snapshot=await asyncio.to_thread(cache[key].snapshot,at)
+            if at is None:raise ValueError('Live V7 requires an event timestamp')
+            snapshot=await asyncio.to_thread(qmd_level_book_v7,ticker,at,mode='live')
             market_row.update(context(snapshot,float(market_row.get('price') or market_row.get('last_price') or 0)))
             market_row['qmd_structure_unified_levels']=snapshot['unified_levels']
-        if not v5_ids and assignments and any(
-            bool(dict(assignment.parameters.get("structural_entry") or {}).get("enabled"))
-            for assignment in assignments
-        ):
-            structure = await asyncio.to_thread(
-                qmd_current_structure_snapshot,
-                ticker,
-                timeframe="1s",
-            )
-            observation_time = _aware_datetime(item.get("as_of"))
-            structure_time = _aware_datetime(
-                structure.get("bar_end") or structure.get("observed_at")
-            )
-            if observation_time is None or structure_time is None:
-                raise RuntimeError("Live structural strategy input omitted a causal timestamp")
-            if structure_time > observation_time:
-                raise RuntimeError(
-                    "Live structural strategy snapshot is newer than its market observation"
-                )
-            market_row.update({
-                key: deepcopy(value)
-                for key, value in structure.items()
-                if str(key).startswith("qmd_structure_")
-            })
+            market_row['qmd_level_book_version']=snapshot['book_version']
         for assignment in assignments:
             positions = await _cached_positions(state, assignment.account_id)
             position = next((row for row in positions if int(row.conid) == assignment.conid), None)

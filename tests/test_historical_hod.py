@@ -1281,7 +1281,7 @@ def test_entry_fill_marks_episode_used_before_next_price_observation():
     assert assigned.assignments()[0].state['historical_hod_state']['used_episode']
 
 
-def test_historical_candidate_requires_certified_v6_ticker():
+def test_historical_candidate_defaults_to_v7():
     from datetime import time
     from unittest.mock import patch
     from src.backend.replay_run_service import ReplayRunDefinition,RunMode
@@ -1289,11 +1289,10 @@ def test_historical_candidate_requires_certified_v6_ticker():
     _,a,_=ready()
     args=dict(session_date=NOW.date(),start_time=time(9,30),mode=RunMode.BACKTEST,tickers=('TEST',),
         configuration_revision={'revision_id':'historical-test','payload':{'strategy':{'parameters':a.parameters}}})
-    with pytest.raises(ValueError,match='explicitly selected certified V6'):
-        ReplayRunDefinition(**args)
-    book=dict(BOOK,ticker='TEST',start=NOW.date().isoformat(),end=NOW.date().isoformat())
+    book=dict(BOOK,version='causal-level-book-v7-mle-1',ticker='TEST',start=NOW.date().isoformat(),end=NOW.date().isoformat())
     with patch('src.backend.experimental_structure_book.resolve',return_value=book):
-        assert ReplayRunDefinition(**args,experimental_structure_book=BOOK['id']).experimental_structure_fingerprint==BOOK['fingerprint']
+        assert ReplayRunDefinition(**args).experimental_structure_book=='level-book-v7'
+        assert ReplayRunDefinition(**args,experimental_structure_book='level-book-v7').experimental_structure_fingerprint==BOOK['fingerprint']
 
 
 @pytest.mark.parametrize('cash_tranches,add_quote_size',[(False,10000),(True,10000),(True,100)])

@@ -10,6 +10,7 @@ from src.market_engine.structural_detector_checkpoint import checkpoint, restore
 
 CONTRACT = 'v6-structural-recovery-1'
 BOOK_VERSION = 'causal-swing-closing-book-6'
+BOOK_VERSIONS = (BOOK_VERSION, 'causal-level-book-v7-mle-1')
 NY = ZoneInfo('America/New_York')
 DEFAULTS = dict(warmup_candles=30, setup_lifetime_seconds=120, confirmation_lifetime_ms=1000,
     maximum_source_age_ms=2000, maximum_quote_age_ms=1000, maximum_chase_bps=15.,
@@ -104,11 +105,11 @@ class MarketStream:
 
 
 def _validate_market(bar, levels, book):
-    if book.get('version') != BOOK_VERSION or not book.get('fingerprint') or not book.get('id'):
-        raise ValueError('Structural recovery requires a pinned certified V6 book')
-    if any(l.get('book_version') != BOOK_VERSION or l.get('confirmed_at_ms') is None
+    if book.get('version') not in BOOK_VERSIONS or not book.get('fingerprint') or not book.get('id'):
+        raise ValueError('Structural recovery requires a pinned certified V7 book')
+    if any(l.get('book_version') != book.get('version') or l.get('confirmed_at_ms') is None
            or l['confirmed_at_ms'] > bar['end']*1000 for l in levels):
-        raise ValueError('Invalid or future V6 level evidence')
+        raise ValueError('Invalid or future V7 level evidence')
 
 
 def _source(o, key, age):
@@ -264,7 +265,7 @@ def evaluate(host, assignment, o, p, state):
     session = 'premarket' if local.hour < 9 or (local.hour==9 and local.minute<30) else 'regular' if local.hour<16 else 'after_hours'
     if not o.market_open or session not in behavior.get('eligible_sessions',['premarket','regular']) or flatten or _at_or_after_session_time(o.observed_at,behavior.get('entry_cutoff_time','15:45:00')):
         return result('wait','outside_entry_session',Status.WATCHING)
-    if book.get('version') != BOOK_VERSION or not book.get('fingerprint') or row.get('contract') != VERSION:
+    if book.get('version') not in BOOK_VERSIONS or not book.get('fingerprint') or row.get('contract') != VERSION:
         return result('wait','certified_v6_detector_unavailable',Status.WATCHING)
     if row.get('sequence',0) < s['warmup_candles']:
         return result('wait','structural_detector_warming_up',Status.WATCHING)
@@ -281,7 +282,7 @@ def evaluate(host, assignment, o, p, state):
     boundary = min(setup['support']['lower'],setup['low'])
     stop = floor((boundary-max(tick,boundary*s['stop_buffer_bps']/10000))/tick+1e-9)*tick
     levels = (*o.structural_support_levels,*o.structural_resistance_levels)
-    overhead = [l for l in levels if l.get('book_version')==BOOK_VERSION and l.get('side') in (-1,'resistance')
+    overhead = [l for l in levels if l.get('book_version')==book.get('version') and l.get('side') in (-1,'resistance')
         and l.get('confirmed_at_ms',float('inf')) <= o.observed_at.timestamp()*1000
         and l.get('lower',0) > max(o.price,o.ask)]
     if not overhead:

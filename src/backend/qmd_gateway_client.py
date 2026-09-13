@@ -1594,6 +1594,14 @@ def qmd_scanner_macro_bars(
     return projected
 
 
+def qmd_level_book_v7(ticker: str, as_of: datetime, *, mode: str = 'history', include_segments: bool = False, cursor_id: str = '') -> dict[str, Any]:
+    if as_of.tzinfo is None:raise ValueError('V7 as-of requires a timezone')
+    payload=dict(ticker=ticker.upper(),as_of=as_of.isoformat(),include_segments=include_segments,cursor_id=cursor_id)
+    if mode=='history':return qmd_history_post_json('/level-book-v7/snapshot',payload,timeout=180)
+    if mode=='live':return qmd_post_json('/level-book-v7/snapshot',payload,timeout=180)
+    raise ValueError('V7 mode must be history or live')
+
+
 def qmd_bars(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) -> dict[str, Any]:
     if not symbol.strip():
         raise ValueError("symbol is required for QMD bars.")

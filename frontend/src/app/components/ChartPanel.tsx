@@ -693,6 +693,7 @@ export type ChartPanelHandle = {
 };
 
 type ChartPanelProps = {
+  levelBookMode?: 'history' | 'live';
   hindsightSessionDate?: string;
   appearanceDefaults?: ChartAppearanceDefaults;
   baseHeight?: number;
@@ -887,6 +888,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   fillHeight = false,
   indicatorOptions,
   indicatorAsOf,
+  levelBookMode = 'history',
   indicatorSplitAdjusted = false,
   initialFitMode = "default",
   labelOptions = [],
@@ -991,7 +993,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const [strategyPresentationOpen, setStrategyPresentationOpen] = useState(false);
   const hindsight = useHindsightPositions(ticker, hindsightSessionDate);
   const levelReaction = useLevelReaction(ticker, hindsightSessionDate, indicatorAsOf, timeframe, payload?.candles);
-  const reactionBook=useReactionBook(ticker,hindsightSessionDate,indicatorAsOf,levelReaction.modelId);
+  const reactionBook=useReactionBook(ticker,hindsightSessionDate || periodEnd,indicatorAsOf,(visibleColumns ?? []).includes('indicator.qmd_unified_structure'),levelBookMode,settingsStorageKey || 'chart');
   const reactionBookRef=useRef(reactionBook);reactionBookRef.current=reactionBook;
   const reactionBookPrimitiveRef=useRef<ReactionBookPrimitive|null>(null);
   useEffect(()=>{drawCurrentRegions();},[reactionBook.segments,reactionBook.end]);
@@ -1877,7 +1879,15 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       currentPayload.candles.at(-1)?.time ?? 0, timeline[0]?.time ?? 0);
     const swingDuration = estimateCandleDuration(timeline);
     reactionBookPrimitiveRef.current?.setState(reactionBookRef.current.segments,
-      time=>xForAnnotationTime(chart,Math.max(timeline[0]?.time??0,Math.min(time,timeline.at(-1)?.time??0)),timeline,swingDuration),reactionBookRef.current.end);
+      time=>{
+        const last=timeline.at(-1);if(!last)return null;
+        if(time>=last.time){
+          const x=chart.timeScale().timeToCoordinate(last.time as Time);
+          const duration=chartTimeframeSeconds(timeframe) ?? swingDuration;
+          return x===null?null:x+Math.min(1,(time-last.time)/duration)*chart.timeScale().options().barSpacing;
+        }
+        return xForAnnotationTime(chart,Math.max(timeline[0].time,time),timeline,swingDuration);
+      },reactionBookRef.current.end);
     levelReactionPrimitiveRef.current?.setState(levelReactionRef.current.rows,levelReactionRef.current.data,currentPayload.candles,
       time=>xForAnnotationTime(chart,time,timeline,swingDuration));
     structuralDetectorPrimitiveRef.current?.setState(structuralDetectorRef.current.rows,
@@ -2232,8 +2242,6 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         {hindsight.controls}
         {levelReaction.controls}
         {reactionBook.controls}
-        {swingStructure.controls}
-        {structureGaps.controls}
         {structuralDetector.controls}
         {supertrendIndicator.controls}
         <button

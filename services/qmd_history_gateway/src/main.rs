@@ -64,6 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let _ = tokio::signal::ctrl_c().await;
     })
     .await?;
+    qmd_core::level_book_v7::shutdown();
     Ok(())
 }
 

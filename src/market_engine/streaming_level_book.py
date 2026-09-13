@@ -176,11 +176,11 @@ class StreamingLevelBook:
             self._proposal(self.low[0],self.low[1],'support',b,prominence);self.trend=1;self.high=(h,t);self.low=(l,t)
         self.previous=b;self.as_of=t;self.bars_processed+=1
 
-    def snapshot(self,as_of=None):
+    def snapshot(self,as_of=None,*,include_segments=True):
         stamp=self.as_of if as_of is None else as_of
         if not self.as_of<=stamp<=self.end:raise ValueError('Snapshot cannot rewind streaming state')
         segments=[]
-        for row in self.rows:
+        for row in self.rows if include_segments else ():
             if not row['qualified']:continue
             for i,s in enumerate(row['segments']):
                 end=row['segments'][i+1]['start'] if i+1<len(row['segments']) else stamp

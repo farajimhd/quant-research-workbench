@@ -594,6 +594,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )));
     }
     server.await??;
+    qmd_core::level_book_v7::shutdown();
     eprintln!("QMD shutdown requested; stopping producers and draining writer batches.");
     market_calendar_handle.abort();
     for handle in &producer_handles {

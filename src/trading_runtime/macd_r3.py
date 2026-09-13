@@ -9,6 +9,7 @@ from .signals import StrategyEvaluation, StrategyIntent, StrategySignal
 
 CONTRACT = 'macd-r3-100ms-1'
 BOOK_VERSION = 'causal-swing-closing-book-6'
+BOOK_VERSIONS = (BOOK_VERSION, 'causal-level-book-v7-mle-1')
 
 
 def references(observation):
@@ -17,7 +18,7 @@ def references(observation):
     rows = []
     for raw in observation.structural_resistance_levels:
         values = [raw.get(k) for k in ('lower', 'upper', 'confirmed_at_ms')]
-        if (raw.get('book_version') != BOOK_VERSION
+        if (raw.get('book_version') not in BOOK_VERSIONS
                 or raw.get('side') not in (-1, 'resistance')
                 or any(not isinstance(v, (int, float)) or not isfinite(v) for v in values)):
             continue

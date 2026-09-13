@@ -405,6 +405,7 @@ class ReplayRunDefinition:
     new_order_activation_delay_ms: float = 0.0
     experimental_structure_book: str = ""
     experimental_structure_fingerprint: str = ""
+    archived_review_only: bool = False
     minimum_p_norm: float = DEFAULT_THRESHOLD
     historical_frame_cache: dict[tuple[str, str, str, str], Any] | None = field(
         default=None,
@@ -429,14 +430,14 @@ class ReplayRunDefinition:
         recovery = recovery or self.configuration_revision.get('payload', {}).get('strategy', {}).get('parameters', {}).get('macd_hod_contract')
         recovery = recovery or self.configuration_revision.get('payload', {}).get('strategy', {}).get('parameters', {}).get('historical_hod_contract')
         recovery = recovery or self.configuration_revision.get('payload', {}).get('strategy', {}).get('parameters', {}).get('macd_r3_contract')
-        if recovery and not self.experimental_structure_book:
-            raise ValueError('Structural recovery requires an explicitly selected certified V6 swing book')
-        if self.experimental_structure_book:
+        if not self.archived_review_only and not self.experimental_structure_book and self.debug_fixture is None:
+            object.__setattr__(self, 'experimental_structure_book', 'level-book-v7')
+        if self.experimental_structure_book and not self.archived_review_only:
             from src.backend.experimental_structure_book import resolve
             build = resolve(self.experimental_structure_book)
-            if recovery and build['version'] != 'causal-swing-closing-book-6':
-                raise ValueError('Structural recovery requires swing book V6')
-            if self.mode != RunMode.BACKTEST or normalized_tickers != (build['ticker'],):
+            if recovery and build['version'] != 'causal-level-book-v7-mle-1':
+                raise ValueError('Structural recovery requires Level book V7')
+            if build['ticker'] != '*' and normalized_tickers != (build['ticker'],):
                 raise ValueError('Experimental level book requires a Backtest with its single covered ticker')
             if not (build['start'] <= self.session_date.isoformat() <=
                     (self.final_session_date or self.session_date).isoformat() <= build['end']):
@@ -1079,6 +1080,8 @@ class ReplayRunController:
             }
 
     async def start(self) -> None:
+        if self.definition.archived_review_only:
+            raise ValueError('Archived runs are read-only; create a new V7 run')
         if self._task is not None:
             return
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -3054,14 +3057,14 @@ class ReplayRunController:
                 market.get('historical_hod_observation', {}), parameters)
             return
         if frame.timeframe == '1s' and (parameters.get('structural_recovery_contract') or historical_hod):
-            from src.trading_runtime.structural_recovery import MarketStream, BOOK_VERSION
+            from src.trading_runtime.structural_recovery import MarketStream, BOOK_VERSIONS
             from src.backend.experimental_structure_book import resolve
             if not self.definition.experimental_structure_book:
                 raise ValueError('Structural strategy requires an explicitly selected certified V6 swing book')
             if not getattr(self, '_recovery_book_identity', None):
                 build = resolve(self.definition.experimental_structure_book)
-                if build['version'] != BOOK_VERSION:
-                    raise ValueError('Structural recovery requires swing book V6')
+                if build['version'] not in BOOK_VERSIONS:
+                    raise ValueError('Structural recovery requires Level book V7')
                 self._recovery_book_identity = {k:build[k] for k in ('id','fingerprint','version')}
             snapshot = await self._experimental_structure_snapshot(frame.ticker, frame.as_of, 'frame')
             end = frame.as_of.timestamp()
@@ -3727,12 +3730,17 @@ class ReplayRunController:
                 'database': self.definition.experimental_structure_book,
                 'fingerprint': self.definition.experimental_structure_fingerprint,
                 'continuation': 'completed-second causal observations; independent frame/event cursors',
-                'strategy_level_contract': STRATEGY_CONTRACT,
-                'minimum_p_norm': self.definition.minimum_p_norm, 'price_authority': 'merged mean price',
+                'strategy_level_contract': 'v7-mle-bands-1' if cursors[key].build['version']=='causal-level-book-v7-mle-1' else STRATEGY_CONTRACT,
+                'minimum_p_norm': None if cursors[key].build['version']=='causal-level-book-v7-mle-1' else self.definition.minimum_p_norm,
+                'price_authority': 'MLE reaction center and fitted bands' if cursors[key].build['version']=='causal-level-book-v7-mle-1' else 'merged mean price',
                 'load_contract': LEVEL_LOAD_CONTRACT,
                 'session_high_authority': 'causal canonical one-second highs and price-eligible trades',
                 'legacy_probability_scores': 'not used by this versioned contract'})
         snapshot = await asyncio.to_thread(cursors[key].snapshot, as_of, sequence)
+        if snapshot.get('book_version')=='causal-level-book-v7-mle-1':
+            self._record_data_authority(f'v7:{ticker}:{snapshot["session_date"]}',dict(
+                checkpoint=snapshot['provenance'],source_revision=snapshot.get('source_audit',{}).get('source_revision'),
+                source_policy='completed-causal-1s-excluding-late-reports',band_contract='reaction-band-student-t-mle-1'))
         if snapshot.get('normalization'):
             self._record_data_authority(f'level_normalization:{ticker}:{snapshot["normalization"]["frozen_at"]}',
                                         snapshot['normalization'])
@@ -6597,7 +6605,7 @@ def _load_saved_review_materials(
     persisted_run = dict(manifest.get("run") or {})
     if str(persisted_run.get("status") or "") not in {"completed", "stopped"}:
         raise ValueError("Only completed or stopped Backtests can be opened for review")
-    definition = _definition_from_manifest(manifest, run_dir=run_dir)
+    definition = _definition_from_manifest(manifest, run_dir=run_dir, archived_review_only=True)
     if definition.mode != RunMode.BACKTEST:
         raise ValueError("Saved-run review accepts Backtest runs only")
     journal = TradingJournal(journal_path, read_only=True)
@@ -6775,7 +6783,7 @@ def backtest_debug_runtime_root() -> Path:
 
 
 def _definition_from_manifest(
-    manifest: dict[str, Any], *, run_dir: Path
+    manifest: dict[str, Any], *, run_dir: Path, archived_review_only: bool = False
 ) -> ReplayRunDefinition:
     definition = dict(manifest.get("definition") or {})
     approved = manifest.get("approved_configuration")
@@ -6829,6 +6837,7 @@ def _definition_from_manifest(
     session_date = date.fromisoformat(str(definition.get("session_date") or ""))
     session_end = _checkpoint_time(definition.get("session_end"))
     return ReplayRunDefinition(
+        archived_review_only=archived_review_only,
         session_date=session_date,
         final_session_date=session_end.astimezone(NEW_YORK).date(),
         start_time=clock_time.fromisoformat(str(definition.get("start_time") or "")),

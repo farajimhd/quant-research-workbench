@@ -97,22 +97,22 @@ class GlobalContext:
         from src.backend.experimental_structure_book import builds, resolve
         self.ticker = ticker
         self.books = [resolve(book_id)] if book_id else sorted(
-            [b for b in builds() if b['ticker']==ticker and b['version']=='causal-swing-closing-book-6'],
+            [b for b in builds() if b['ticker']==ticker and b['version']=='causal-level-book-v7-mle-1'],
             key=lambda b:(b['end'], b.get('selection_contract')=='symmetric-level-evidence-selection-2', b['id']), reverse=True)
-        if any(b['ticker']!=ticker or b['version'] not in ('causal-swing-closing-book-5','causal-swing-closing-book-6') for b in self.books):
-            raise ValueError('Global context requires a matching certified V5/V6 book')
+        if any(b['ticker'] not in ('*',ticker) or b['version']!='causal-level-book-v7-mle-1' for b in self.books):
+            raise ValueError('Global context requires a matching V7 book')
         self.cursor = None
         self.book = None
         self.errors = {}
 
     def at(self, bar):
-        from src.backend.swing_book_cursor import SwingBookCursor
+        from src.backend.v7_book_cursor import V7BookCursor as SwingBookCursor
         from src.backend.swing_book_source import NY
         at = datetime.fromtimestamp(bar['end'], timezone.utc)
         session = at.astimezone(NY).date().isoformat()
         book = next((b for b in self.books if b['start'] <= session <= b['end']), None)
         if not book:
-            return None, 'no_certified_v6_book_for_session'
+            return None, 'no_verified_v7_book_for_session'
         if session in self.errors:
             return None, self.errors[session]
         try:

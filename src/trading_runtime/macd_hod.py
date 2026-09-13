@@ -12,6 +12,7 @@ from .structural_recovery import DEFAULTS as QUALITY_DEFAULTS, LIQUIDITY_181, tr
 
 CONTRACT = 'macd-hod-100ms-1'
 BOOK_VERSION = 'causal-swing-closing-book-6'
+BOOK_VERSIONS = (BOOK_VERSION, 'causal-level-book-v7-mle-1')
 DEFAULTS = dict(exit_gap_bps=10., stop_buffer_bps=5., reentry_buffer_bps=5.,
                 minimum_selection_score=30., minimum_reward_risk=1.5,
                 cost_bps_per_side=5., maximum_chase_bps=15., risk_fraction=.005,
@@ -49,9 +50,9 @@ def levels(o, s, before):
     """Only pre-trigger certified zones; overlapping representations count once."""
     rows = []
     for raw in o.structural_resistance_levels:
-        if (raw.get('book_version') != BOOK_VERSION or raw.get('side') not in (-1,'resistance')
+        if (raw.get('book_version') not in BOOK_VERSIONS or raw.get('side') not in (-1,'resistance')
                 or raw.get('confirmed_at_ms', float('inf')) > before*1000
-                or float(raw.get('selection_score', 0)) < s['minimum_selection_score']):
+                or (raw.get('fit',{}).get('status')!='estimated' if raw.get('book_version')=='causal-level-book-v7-mle-1' else float(raw.get('selection_score',0)) < s['minimum_selection_score'])):
             continue
         if not 0 < raw.get('lower', 0) <= raw.get('upper', 0):
             continue
