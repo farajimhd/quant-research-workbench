@@ -10,7 +10,7 @@ from math import ceil, floor, isfinite
 from zoneinfo import ZoneInfo
 
 from .structural_recovery import DEFAULTS as QUALITY_DEFAULTS, LIQUIDITY_181, tradability
-from . import v7_encounters
+from . import v7_encounters, v7_setup
 
 CONTRACT = 'historical-hod-1s-macd-5s-1'
 BOOK_VERSION = 'causal-swing-closing-book-6'
@@ -26,6 +26,7 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     regular_luld_enabled=0,backtest_luld_estimation_enabled=0,minimum_regular_previous_close=.75,
     luld_buffer_bps=25.,luld_buffer_ticks=2,luld_maximum_age_ms=60000.,v7_zone_enabled=0,entry_zone_fraction=.30,
     v7_center_swing_enabled=0,v7_transition_entries_enabled=0,v7_price_only_enabled=0,rejection_break_offset_bps=0.,
+    v7_setup_enabled=0,setup_range_seconds=30,setup_minimum_bars=5,
     v7_encounters_enabled=0,breakout_buffer_bps=10.,breakout_buffer_ticks=1.,topping_tail_fraction=.5)
 
 
@@ -43,8 +44,12 @@ def configure(p):
     s = dict(DEFAULTS, **raw)
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
         raise ValueError('Historical HOD settings must be finite and positive')
+    if (s['v7_setup_enabled'] not in (0,1) or s['v7_setup_enabled'] and not s['v7_encounters_enabled']
+            or not 2 <= s['setup_minimum_bars'] <= s['setup_range_seconds']
+            or any(int(s[k]) != s[k] for k in ('setup_minimum_bars','setup_range_seconds'))):
+        raise ValueError('Invalid V7 setup phase policy')
     if s['forming_macd_entry_enabled'] not in (0,1):
         raise ValueError('Invalid forming MACD entry policy')
     if (s['v7_encounters_enabled'] not in (0,1) or s['v7_encounters_enabled'] and not s['v7_price_only_enabled']
@@ -697,9 +702,24 @@ def evaluate(host, a, o, p, state):
     decision_bid = o.price if price_only else o.bid
     decision_ask = o.price if price_only else o.ask
     active = state.get('historical_hod_entry') or {}
+    setup_enabled = bool(s.get('v7_setup_enabled'))
+    setup_state = state.setdefault('v7_setup', {}) if setup_enabled else {}
+    if setup_enabled:
+        v7_setup.observe(setup_state,d,s,fresh)
     encounter_state = state.setdefault('v7_encounters', {}) if s['v7_encounters_enabled'] else {}
     encounter_reason = v7_encounters.update(encounter_state,o,d,s,tick,fresh) if s['v7_encounters_enabled'] else ''
     encounter_blocked = s['v7_encounters_enabled'] and v7_encounters.blocked(encounter_state)
+    if setup_enabled:
+        transitioned = v7_setup.phase(active,d,fresh)
+        if transitioned:
+            # Pre-expansion rejections cannot leak into post-breakout management.
+            encounter_state.clear()
+            encounter_reason = ''
+        post_breakout = active.get('setup',{}).get('phase') == 'post_breakout'
+        if not post_breakout:
+            encounter_reason = ''
+        # Setup oscillation is governed by the swing stop, not rejection vetoes.
+        encounter_blocked = bool(post_breakout and v7_encounters.blocked(encounter_state))
     if not encounter_blocked:
         encounter_state.pop('cancel_notified', None)
     stop = float(state.get('active_stop') or 0)
@@ -729,6 +749,16 @@ def evaluate(host, a, o, p, state):
     if s['v7_encounters_enabled']:
         d['encounter_levels'] = {k:e['level'] for k,e in encounter_state.get('levels',{}).items()}
     reference = entry_reference(d,o,s,session) if fresh else None
+    if setup_enabled and fresh:
+        zone=zone_bounds(d,s)
+        levels=[r for r in d.get('prior_rows',[]) if acquisition_level(r,s) and r['price'] >= o.price]
+        if zone and levels:
+            level=deepcopy(min(levels,key=lambda r:r['price']))
+            reference=dict(level=level,prior_hod=zone[1],zone_lower=zone[0],resistance_threshold=level['price'],
+                threshold=level['price'],reentry=False,failed_breakout=False,entry_breakout_offset=0.)
+        else: reference=None
+    if setup_enabled:
+        evidence['setup_management']=v7_setup.evidence(setup_state,active)
     if fresh:
         chart_reference = dict(hod=reference['prior_hod'],
             resistance_upper=reference['level']['upper'] if reference['level'].get('reference_kind')!='hod' else None,
@@ -784,7 +814,7 @@ def evaluate(host, a, o, p, state):
                 if bar['close'] < bar['open'] else 0)
     if acquired or pending:
         reason = ('session_flatten' if flatten else 'protective_stop' if stop and o.price <= stop
-            else 'manual_exit' if state.get('manual_exit_requested') else 'macd_episode_ended' if macd_closed else '')
+            else 'manual_exit' if state.get('manual_exit_requested') else 'macd_episode_ended' if macd_closed and (not setup_enabled or post_breakout) else '')
         if not reason and luld and (decision_bid >= luld['price'] or decision_bid <= luld['lower_exit']):
             reason = 'luld_buffer_reached'
         if not reason and s['v7_encounters_enabled'] and encounter_reason:
@@ -1063,7 +1093,11 @@ def evaluate(host, a, o, p, state):
         and 0 <= now-recent.get('at',0) <= s.get('recent_breakout_seconds',30.)
         and (min(o.price,decision_bid) >= threshold if inclusive else min(o.price,decision_bid) > threshold))
     evidence['entry_selection']['recent_breakout'] = deepcopy(recent) if recent_held else None
-    if not crossed and not recent_held and not reclaim:
+    if setup_enabled:
+        consolidation=setup_state.get('range')
+        if not consolidation or o.price <= previous or o.price >= consolidation['high']:
+            return result('wait','waiting_for_rising_setup_below_range_high')
+    if not setup_enabled and not crossed and not recent_held and not reclaim:
         return result('wait','waiting_for_fresh_body_high_break' if require_body_high else 'waiting_for_fresh_resistance_break')
     selected = available_target(d['rows'],max(decision_ask,o.price),s,tick,session=session)
     if regular:
@@ -1107,6 +1141,16 @@ def evaluate(host, a, o, p, state):
         initial_risk=decision_ask-stop,best_close=o.price,episode=d['episode'],
         management_base=dict(lower=swing['lower'] if s['v7_encounters_enabled'] else boundary['lower'],
             tolerance=max(tick,s['management_tolerance_atr']*atr)),hold_levels={})
+    if setup_enabled:
+        consolidation=deepcopy(setup_state['range'])
+        entry['setup']=dict(phase='building',range=consolidation,
+            breakout_threshold=v7_encounters.threshold(dict(price=consolidation['high']),s,tick))
+        # No overhead resistance has been broken by this early entry.
+        entry['last_add_level']=dict(boundary,price=o.price,lower=o.price,upper=o.price)
+        entry['last_cleared_resistance']=deepcopy(entry['last_add_level'])
+        entry['breakout_confirmation']=dict(boundary_kind='setup_rising_close',validated_at=now,
+            threshold=None,range=consolidation)
+        evidence['setup_management']=v7_setup.evidence(setup_state,entry)
     if initial_green:
         if reclaim:
             entry['early_green_stop'] = initial_green
@@ -1116,4 +1160,4 @@ def evaluate(host, a, o, p, state):
     state.update(historical_hod_entry=entry,initial_stop=stop,active_stop=stop,structural_profit_targets=[selected['price']],
         entry_reference_price=decision_ask,entry_at=o.observed_at.isoformat(),entries=state.get('entries',0)+1,
         last_exit_reason='',entry_acquisition_exit_latched=False)
-    return enter(entry,'stopped_level_reclaim' if reclaim else 'historical_hod_entry')
+    return enter(entry,'v7_early_setup_entry' if setup_enabled else 'stopped_level_reclaim' if reclaim else 'historical_hod_entry')
