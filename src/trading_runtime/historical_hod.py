@@ -26,7 +26,7 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     regular_luld_enabled=0,backtest_luld_estimation_enabled=0,minimum_regular_previous_close=.75,
     luld_buffer_bps=25.,luld_buffer_ticks=2,luld_maximum_age_ms=60000.,v7_zone_enabled=0,entry_zone_fraction=.30,
     v7_center_swing_enabled=0,v7_transition_entries_enabled=0,v7_price_only_enabled=0,rejection_break_offset_bps=0.,
-    v7_setup_enabled=0,setup_range_seconds=30,setup_minimum_bars=5,
+    v7_setup_enabled=0,setup_recovery_enabled=0,setup_add_requires_range_breakout=1,setup_range_seconds=30,setup_minimum_bars=5,
     v7_encounters_enabled=0,breakout_buffer_bps=10.,breakout_buffer_ticks=1.,topping_tail_fraction=.5)
 
 
@@ -44,8 +44,12 @@ def configure(p):
     s = dict(DEFAULTS, **raw)
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
         raise ValueError('Historical HOD settings must be finite and positive')
+    if s['setup_add_requires_range_breakout'] not in (0,1):
+        raise ValueError('Setup add range gate must be boolean')
+    if s['setup_recovery_enabled'] not in (0,1) or s['setup_recovery_enabled'] and not s['v7_setup_enabled']:
+        raise ValueError('Setup recovery requires the early setup policy')
     if (s['v7_setup_enabled'] not in (0,1) or s['v7_setup_enabled'] and not s['v7_encounters_enabled']
             or not 2 <= s['setup_minimum_bars'] <= s['setup_range_seconds']
             or any(int(s[k]) != s[k] for k in ('setup_minimum_bars','setup_range_seconds'))):
@@ -724,6 +728,10 @@ def evaluate(host, a, o, p, state):
         encounter_state.pop('cancel_notified', None)
     stop = float(state.get('active_stop') or 0)
     target = float((state.get('structural_profit_targets') or [0])[0])
+    recovery_row = None
+    if s.get('setup_recovery_enabled'):
+        recovery_row = v7_setup.recovery_observe(setup_state,active,d,o,stop,
+            (o.structural_detector_state or {}).get('row',{}),fresh)
     acquired = o.position_quantity > 0
     local_clock = o.observed_at.astimezone(NY)
     # TODO(paper-trading halt review): LULD buffers do not guarantee an exit
@@ -800,6 +808,10 @@ def evaluate(host, a, o, p, state):
     flatten = _at_or_after_session_time(o.observed_at,p.get('strategy_behavior',{}).get('flatten_time','15:55:00'))
     market = o.structural_detector_state or {}
     row = market.get('row', {})
+    if s.get('setup_recovery_enabled'):
+        row = recovery_row
+        evidence['setup_recovery'] = dict(last_exit=deepcopy(setup_state.get('last_exit')),
+            retired_swing_count=len(setup_state.get('retired_swings',{})))
     detector_fresh = (fresh and market.get('book',{}).get('version') in (('causal-level-book-v7-mle-1',) if s.get('v7_zone_enabled') else (BOOK_VERSION,))
         and bool(market.get('book',{}).get('fingerprint')) and row.get('effective_at') == now)
     reclaim = (early_reentry_confirmation(saved_reentry,d,o,fresh,row,detector_fresh)
@@ -994,7 +1006,8 @@ def evaluate(host, a, o, p, state):
         if (not regular_block and s['sizing_mode'] == 'cash_tranches' and fresh and detector_fresh and d['contiguous']
                 and not pending and a.permissions.add and ready and macd_ready and o.price > (d.get('vwap') or float('inf'))
                 and o.price >= o.bar_open and not active.get('pending_failed_attempt') and not encounter_blocked
-                and active.get('tranches_requested',1) < s['tranche_count']):
+                and active.get('tranches_requested',1) < s['tranche_count']
+                and (not s.get('setup_recovery_enabled') or not s['setup_add_requires_range_breakout'] or post_breakout)):
             frontier = active.get('last_add_level',active['level'])
             add_field = 'price' if s.get('v7_transition_entries_enabled') else 'upper'
             new = [r for r in active.get('add_breaks',{}).values()
@@ -1113,6 +1126,10 @@ def evaluate(host, a, o, p, state):
         swing=max(candidates,key=lambda r:stop_below(r['lower'],s,tick),default=None)
     if swing is None:
         return result('wait','confirmed_local_swing_low_unavailable')
+    entry_phase = 'building'
+    if s.get('setup_recovery_enabled'):
+        blocked_reason,entry_phase=v7_setup.recovery_permission(setup_state,swing,d)
+        if blocked_reason:return result('wait',blocked_reason)
     stop = stop_below(swing['lower'],s,tick)
     initial_green = green_stop_candidate(d,tick) if s['early_green_stop_enabled'] else None
     if reclaim:
@@ -1143,7 +1160,7 @@ def evaluate(host, a, o, p, state):
             tolerance=max(tick,s['management_tolerance_atr']*atr)),hold_levels={})
     if setup_enabled:
         consolidation=deepcopy(setup_state['range'])
-        entry['setup']=dict(phase='building',range=consolidation,
+        entry['setup']=dict(phase=entry_phase,range=consolidation,
             breakout_threshold=v7_encounters.threshold(dict(price=consolidation['high']),s,tick))
         # No overhead resistance has been broken by this early entry.
         entry['last_add_level']=dict(boundary,price=o.price,lower=o.price,upper=o.price)

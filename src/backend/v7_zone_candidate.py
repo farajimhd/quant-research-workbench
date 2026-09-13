@@ -1,8 +1,8 @@
 """Separate immutable V7 upper-HOD-zone research candidate."""
 from .historical_hod_candidate import build as historical_build
 
-PROFILE_ID='v7-setup-v7'
-LABEL='V7 early setup - swing protection until range breakout'
+PROFILE_ID='v7-setup-recovery-v9'
+LABEL='V7 setup recovery - fresh support with resistance adds'
 
 
 def build(base):
@@ -11,7 +11,7 @@ def build(base):
     p=profile['parameters']
     p['historical_hod'].update(v7_zone_enabled=1,v7_center_swing_enabled=1,v7_transition_entries_enabled=1,v7_price_only_enabled=1,entry_zone_fraction=.30,entry_breakout_offset=0.,
         target_distance_fraction=.10,early_green_stop_enabled=0,forming_macd_entry_enabled=1,rejection_break_offset_bps=115.,
-        v7_setup_enabled=1,setup_range_seconds=30,setup_minimum_bars=5,
+        v7_setup_enabled=1,setup_recovery_enabled=1,setup_add_requires_range_breakout=0,setup_range_seconds=30,setup_minimum_bars=5,
         v7_encounters_enabled=1,breakout_buffer_bps=10.,breakout_buffer_ticks=1.,topping_tail_fraction=.5)
     p['liquidity_admission'].update(maximum_current_spread_bps=115.,maximum_spread_bps=115.,minimum_current_trade_rate_60s=10.)
     p.setdefault('strategy_behavior',{}).update(eligible_sessions=['premarket','regular','after_hours'],
@@ -21,7 +21,8 @@ def build(base):
         'Initial and trailing confirmed swing-low stops. Hold through consolidation, MACD reversals and resistance '
         'rejections until a non-red close clears the frozen entry range high by 10bps or one tick. '
         'Only subsequent encounters can trigger post-breakout rejection exits. Session, manual, LULD and stop exits remain active. '
-        'V7 resistance/gray adds, three cash tranches and existing target rules are retained.')
+        'Reentry requires support formed after the prior exit. Breached swings are retired; mature failures need a higher base or recovery. '
+        'V7 resistance/gray adds on individual level breaks; three cash tranches and existing target rules are retained.')
     return payload,canvas,plan
 
 

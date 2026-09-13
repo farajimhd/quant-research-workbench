@@ -42,3 +42,46 @@ def phase(entry, market, fresh):
 def evidence(state, entry):
     return dict(**{k:state.get(k) for k in ('episode', 'episode_high', 'episode_low', 'body_high')},
         **deepcopy(entry.get('setup') or dict(phase='seeking_setup', range=state.get('range'))))
+
+
+def swing_key(swing):
+    return str((swing.get('scale'), swing.get('pivot_at'), swing.get('lower')))
+
+
+def recovery_observe(state, entry, market, observation, stop, row, fresh):
+    """Persist filled lifecycle failures and retire breached support across positions."""
+    if observation.position_quantity > 0 and entry:
+        state['held'] = dict(entry_at=entry['confirmed_at'], setup=deepcopy(entry.get('setup', {})),
+            stop=stop, body_high=market.get('body_high', 0))
+    elif state.get('held'):
+        held = state.pop('held')
+        state['last_exit'] = dict(at=observation.observed_at.timestamp(), **held)
+    retired = state.setdefault('retired_swings', {})
+    if fresh and market.get('bar'):
+        bar = market['bar']
+        for swing in row.get('local_swings', []) + row.get('confirmed_swings', []):
+            if swing.get('side') in (1, 'support') and swing.get('confirmed_at', float('inf')) <= bar['end']:
+                if bar['low'] < swing.get('lower', 0) - 1e-9:
+                    retired[swing_key(swing)] = bar['end']
+    return {**row, **{field:[s for s in row.get(field, []) if swing_key(s) not in retired]
+        for field in ('local_swings', 'confirmed_swings')}}
+
+
+def recovery_permission(state, swing, market):
+    previous = state.get('last_exit')
+    if not previous:
+        return '', 'building'
+    if swing_key(swing) in state.get('retired_swings', {}):
+        return 'breached_setup_swing', ''
+    if swing['pivot_at'] <= previous['at'] or swing['confirmed_at'] <= previous['at']:
+        return 'waiting_for_new_support_after_exit', ''
+    if previous['setup'].get('phase') != 'post_breakout':
+        return '', 'building'
+    # A fresh higher base can prepare the next leg without reclaiming the top.
+    if swing['lower'] > previous['stop']:
+        return '', 'building'
+    # Otherwise require recovery; never relabel a failed mature move as a setup.
+    reclaim = max(previous['setup']['breakout_threshold'], previous['body_high'])
+    if market['bar']['close'] > reclaim:
+        return '', 'post_breakout'
+    return 'waiting_for_post_move_recovery_or_higher_base', ''
