@@ -25,20 +25,25 @@ def test_budget_reserves_resources_and_avoids_nested_oversubscription():
         w.resource_budget(128, 192 * w.GIB, threads=4)
 
 
-@pytest.mark.parametrize('width,height', [(80, 24), (120, 30)])
-def test_sixty_worker_display_is_paged_not_scrolling(width, height):
+@pytest.mark.parametrize('width,height', [(80, 24), (120, 30), (160, 40)])
+def test_sixty_worker_display_includes_every_slot_even_in_short_terminal(width, height):
     stamp = datetime.now(timezone.utc).isoformat()
     state = dict(state='running', workers=60, sessions_completed=200, sessions_total=10000,
                  initial_completed=100, started_epoch=1, updated_at=stamp,
-                 rows={f'T{i}': dict(state='active', slot=i) for i in range(60)}, worker_progress={})
+                 rows={f'T{i}': dict(state='active', slot=i) for i in range(60)},
+                 worker_progress={f'T{i}': dict(completed=50, total=100, session='2026-08-21', stage='MLE fitting', updated_at=stamp) for i in range(60)})
     output = io.StringIO()
-    Console(file=output, width=width, height=height, color_system=None).print(w.render(state, 1, width, height))
+    Console(file=output, width=width, height=height, color_system=None).print(w.render(state, width))
     lines = output.getvalue().splitlines()
     assert max(map(len, lines)) <= width
-    assert len(lines) <= height
-    assert 'page 2/' in output.getvalue()
+    assert len(lines) >= (30 if width >= 140 else 60)
+    assert '60 worker slots' in output.getvalue()
     assert 'Failed' in output.getvalue() and 'controller age' in output.getvalue()
-    assert 'T0 ' not in output.getvalue()
+    assert output.getvalue().count('50%') == 60
+    assert 'campaign progress' in output.getvalue() and '2.0%' in output.getvalue()
+    for slot in range(60):
+        assert any(f'T{slot} ' in line for line in lines)
+    assert 'page' not in output.getvalue()
 
 
 def test_resume_keeps_deferred_and_rechecks_completed_book(tmp_path, monkeypatch):

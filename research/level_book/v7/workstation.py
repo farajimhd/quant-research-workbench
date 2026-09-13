@@ -20,9 +20,12 @@ from types import SimpleNamespace
 import uuid
 
 import psutil
-from rich.console import Console
+from rich.console import Console, Group
 from rich.live import Live
+from rich.panel import Panel
+from rich.progress_bar import ProgressBar
 from rich.table import Table
+from rich.text import Text
 
 from . import campaign as c
 from src.runtime_paths import WORKSTATION_NAME, WORKSTATION_RUNTIME_ROOT
@@ -130,43 +133,56 @@ def restore_progress(root, plan, retry_failed=False):
     return rows, progress
 
 
-def render(state, page=0, width=110, height=30):
-    # Fixed pages, not auto-rotation: workers keep the same screen position.
-    page_size = max(1, min(12, height - 15))
-    pages = max(1, (state['workers'] + page_size - 1) // page_size)
-    page %= pages
-    table = Table(title=f"V7 MLE | {state['state']} | {state['sessions_completed']:,}/{state['sessions_total']:,} sessions", expand=True)
-    for name in ('Worker', 'Ticker', 'Session', 'Stage', 'Done', 'Age'):
-        table.add_column(name, no_wrap=True, overflow='ellipsis')
+def render(state, width=110, monitor_only=False):
+    # Match the V6 Rich dashboard's overall panel and per-worker progress bars,
+    # but include every slot: wider terminals use two side-by-side tables.
     active = {r['slot']: t for t, r in state['rows'].items() if r['state'] == 'active'}
     progress = state.get('worker_progress', {})
-    for slot in range(page * page_size, min((page + 1) * page_size, state['workers'])):
-        ticker = active.get(slot)
-        value = progress.get(ticker, {})
-        age = time.time() - datetime.fromisoformat(value['updated_at']).timestamp() if value.get('updated_at') else None
-        table.add_row(str(slot + 1), ticker or '--', value.get('session', '--'), value.get('stage', 'starting' if ticker else 'idle'),
-                      f"{value.get('completed', 0)}/{value.get('total', '?')}" if ticker else '--', f'{age:.0f}s' if age is not None else '--')
     counts = Counter(r['state'] for r in state['rows'].values())
-    rate = max(0, state['sessions_completed'] - state['initial_completed']) / max(1, time.time() - state['started_epoch'])
+    done, total = state['sessions_completed'], state['sessions_total']
+    rate = max(0, done - state['initial_completed']) / max(1, time.time() - state['started_epoch'])
     age = time.time() - datetime.fromisoformat(state['updated_at']).timestamp()
-    eta = (state['sessions_total'] - state['sessions_completed']) / rate if rate else None
-    table.caption = (
+    eta = (total - done) / rate if rate else None
+    summary = Text(f"{state['state'].upper()} | {done:,}/{total:,} sessions ({done / max(1, total):.1%})\n")
+    summary.append(
         f"Active {counts['active']} | queued {counts['queued']} | complete {counts['complete']} | deferred {counts['deferred']}\n"
         f"Failed {counts['failed']} | interrupted {counts['interrupted']} | retries {state.get('retried', 0)} | controller age {age:.0f}s\n"
-        f"{rate * 60:.1f} sessions/min | ETA {c.duration(eta)} (mixed workload) | page {page + 1}/{pages}\n"
-        'N/P: worker pages | Ctrl+C: finish active checkpoints and stop')
+        f"{rate * 60:.1f} sessions/min | ETA {c.duration(eta)} (mixed workload)")
+    overall = Panel(Group(summary, ProgressBar(total=max(1, total), completed=done)),
+                    title='V7 MLE book • campaign progress', border_style='cyan')
+    columns = 2 if width >= 140 else 1
+    capacity = (state['workers'] + columns - 1) // columns
+    grid = Table.grid(expand=True, padding=(0, 1))
+    for _ in range(columns):
+        grid.add_column(ratio=1)
+    tables = []
+    compact = width // columns < 100
+    for column in range(columns):
+        table = Table(expand=True, box=None, padding=(0, 1))
+        for name in ('ID', 'Ticker', 'Session', 'Stage', 'Done', 'Progress', 'Age'):
+            table.add_column(name, no_wrap=True, overflow='ellipsis')
+        for slot in range(column * capacity, min((column + 1) * capacity, state['workers'])):
+            ticker = active.get(slot)
+            value = progress.get(ticker, {})
+            worker_age = time.time() - datetime.fromisoformat(value['updated_at']).timestamp() if value.get('updated_at') else None
+            worker_done, worker_total = value.get('completed', 0), value.get('total', 0)
+            bar = Table.grid(padding=(0, 1))
+            if ticker and worker_total:
+                bar.add_row(ProgressBar(total=worker_total, completed=min(worker_done, worker_total), width=6 if compact else 8),
+                            Text(f'{min(worker_done, worker_total) / worker_total:.0%}'))
+            stage = value.get('stage', 'starting' if ticker else 'idle')
+            if compact:
+                stage = {'ClickHouse OHLCV': 'SQL', 'MLE fitting': 'MLE', 'checkpoint saved': 'saved'}.get(stage, stage)
+            table.add_row(f'{slot + 1:02}', ticker or '--', value.get('session', '--'), stage,
+                          f'{worker_done}/{worker_total or "?"}' if ticker else '--', bar,
+                          f'{worker_age:.0f}s' if worker_age is not None else '--')
+        tables.append(table)
+    grid.add_row(*tables)
+    action = 'close monitor; campaign continues' if monitor_only else 'finish active checkpoints and stop'
+    footer = Text(f"All {state['workers']} worker slots | Ctrl+C: {action}")
     if state.get('stop_reason'):
-        table.caption += '\n' + state['stop_reason']
-    return table
-
-
-def key_page(page):
-    if os.name == 'nt' and sys.stdin.isatty():
-        import msvcrt
-        if msvcrt.kbhit():
-            key = msvcrt.getwch().lower()
-            return page + (1 if key == 'n' else -1 if key == 'p' else 0)
-    return page
+        footer.append('\n' + state['stop_reason'])
+    return Group(overall, Panel(grid, title='Workers • completed sessions', padding=(0, 0)), footer)
 
 
 def run(root, plan, budget, retry_failed=False, take_over=False):
@@ -217,11 +233,10 @@ def run(root, plan, budget, retry_failed=False, take_over=False):
         completed_counts = {t: p.get('completed', 0) for t, p in progress.items()}
         old = signal.signal(signal.SIGINT, lambda *_: (root / 'STOP').touch())
         pool = ProcessPoolExecutor(max_workers=budget['workers'], mp_context=multiprocessing.get_context('spawn'), initializer=initialize_worker)
-        page = 0
         last_plain = 0
         fatal = None
         try:
-            with Live(console=console, auto_refresh=False, transient=False) as display:
+            with Live(console=console, auto_refresh=False, transient=False, vertical_overflow='visible') as display:
                 while True:
                     if psutil.virtual_memory().available < 2 * GIB:
                         state['stop_reason'] = 'Free RAM below 2 GiB: stopping after active checkpoints'
@@ -257,9 +272,8 @@ def run(root, plan, budget, retry_failed=False, take_over=False):
                                  sessions_completed=sum(completed_counts.values()), retried=sum(p.get('retried', 0) for p in progress.values()),
                                  worker_progress={t: progress[t] for t, _ in active.values() if t in progress})
                     c.write(root / 'status.json', state, immutable=False)
-                    page = key_page(page)
                     if console.is_terminal:
-                        display.update(render(state, page, console.width, console.height), refresh=True)
+                        display.update(render(state, console.width), refresh=True)
                     elif time.time() - last_plain >= 15:
                         console.print(f"{state['state']} | sessions {state['sessions_completed']:,}/{state['sessions_total']:,} | {dict(Counter(r['state'] for r in rows.values()))}")
                         last_plain = time.time()
@@ -269,7 +283,7 @@ def run(root, plan, budget, retry_failed=False, take_over=False):
             state['state'] = 'interrupted' if stopping else 'complete_with_gaps' if any(r['state'] in ('failed', 'deferred') for r in rows.values()) else 'complete'
             state['updated_at'] = c.now()
             c.write(root / 'status.json', state, immutable=False)
-            console.print(render(state, page, console.width, console.height))
+            console.print(render(state, console.width))
         except BaseException as exc:
             fatal = str(exc) or type(exc).__name__
             raise
@@ -303,7 +317,6 @@ def main():
     parser.add_argument('--threads', type=int, default=1, help='ClickHouse threads per worker (1 or 2)')
     parser.add_argument('--retry-failed', action='store_true')
     parser.add_argument('--take-over', action='store_true', help='Stop the old controller at a checkpoint before resuming here')
-    parser.add_argument('--page', type=int, default=1)
     args = parser.parse_args()
     root = runtime_path(args.runtime)
     console = Console()
@@ -312,17 +325,15 @@ def main():
         console.print('Stop requested. Workers finish active session checkpoints.')
         return
     if args.command in ('status', 'monitor'):
-        page = args.page - 1
-        with Live(console=console, auto_refresh=False) as live:
+        with Live(console=console, auto_refresh=False, vertical_overflow='visible') as live:
             while True:
                 state = c.read(root / 'status.json')
                 if console.is_terminal:
-                    live.update(render(state, page, console.width, console.height), refresh=True)
+                    live.update(render(state, console.width, monitor_only=True), refresh=True)
                 else:
-                    console.print(render(state, page, console.width, console.height))
+                    console.print(render(state, console.width, monitor_only=True))
                 if args.command == 'status' or state['state'] not in ('running', 'stopping'):
                     break
-                page = key_page(page)
                 time.sleep(3 if console.is_terminal else 15)
         return
     if os.environ.get('COMPUTERNAME', '').upper() != WORKSTATION_NAME:

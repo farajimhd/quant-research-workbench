@@ -59,8 +59,14 @@ threads. Each worker reuses imports and HTTP connections across tickers; fit
 caches are cleared between tickers. The task queue contains at most one task
 per active slot. Each ticker's sessions remain chronological and sequential.
 
-The renderer has stable worker pages (N/P), plus `--page` for an independent
-monitor, with durable counts, freshness, failures/retries and an approximate ETA.
+The progress table shows **all configured workers**, including idle slots, with
+the V6-style overall progress panel and per-worker bars/percentages, durable
+counts, freshness, failures/retries and an approximate ETA. Terminals at least
+140 columns wide use two side-by-side worker tables. There is no
+paging or terminal-height row truncation. Enlarge the terminal or reduce its font
+to fit a large worker table on screen. The independent `monitor` command can use
+a newer source copy without restarting the controller; do not overwrite source
+files in a running campaign's pinned code directory.
 Redirected output uses plain text. Execution manifests under `executions/` pin
 the scheduler source hashes, calculation hashes, numerical runtime, host and
 resource budget separately from the unchanged calculation plan. Completed
