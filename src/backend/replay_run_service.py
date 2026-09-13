@@ -3726,20 +3726,32 @@ class ReplayRunController:
         self._experimental_cursors = cursors
         key = (ticker, lane)
         if key not in cursors:
-            cursors[key] = BookCursor(self.definition.experimental_structure_book, ticker,
-                                     self.definition.experimental_structure_fingerprint)
+            from src.backend.v7_book_cursor import V7BookCursor
+            # V7 retains immutable exact-second snapshots. Frame prefetch must
+            # never substitute its latest state for an earlier event cutoff.
+            shared = next((cursor for (symbol, _), cursor in cursors.items()
+                           if symbol == ticker and isinstance(cursor, V7BookCursor)), None)
+            cursors[key] = shared if shared is not None else BookCursor(
+                self.definition.experimental_structure_book, ticker,
+                self.definition.experimental_structure_fingerprint)
             self._record_data_authority('experimental_structure_book', {
                 'authority': cursors[key].build['version'],
                 'database': self.definition.experimental_structure_book,
                 'fingerprint': self.definition.experimental_structure_fingerprint,
-                'continuation': 'completed-second causal observations; independent frame/event cursors',
+                'continuation': ('completed-second causal observations; shared exact-time cache with independent frame/event cutoffs'
+                                 if isinstance(cursors[key], V7BookCursor) else
+                                 'completed-second causal observations; independent frame/event cursors'),
                 'strategy_level_contract': 'v7-mle-bands-1' if cursors[key].build['version']=='causal-level-book-v7-mle-1' else STRATEGY_CONTRACT,
                 'minimum_p_norm': None if cursors[key].build['version']=='causal-level-book-v7-mle-1' else self.definition.minimum_p_norm,
                 'price_authority': 'MLE reaction center and fitted bands' if cursors[key].build['version']=='causal-level-book-v7-mle-1' else 'merged mean price',
                 'load_contract': LEVEL_LOAD_CONTRACT,
                 'session_high_authority': 'causal canonical one-second highs and price-eligible trades',
                 'legacy_probability_scores': 'not used by this versioned contract'})
-        snapshot = await asyncio.to_thread(cursors[key].snapshot, as_of, sequence)
+        started = time.perf_counter()
+        try:
+            snapshot = await asyncio.to_thread(cursors[key].snapshot, as_of, sequence)
+        finally:
+            self._record_stage_time('structure_snapshot', started)
         if snapshot.get('book_version')=='causal-level-book-v7-mle-1':
             self._record_v7_data_authority(ticker, snapshot)
         if snapshot.get('normalization'):

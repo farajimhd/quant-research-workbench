@@ -77,12 +77,16 @@ pub struct SnapshotRequest {
     include_segments: bool,
     #[serde(default)]
     cursor_id: String,
+    #[serde(default)]
+    delta: bool,
+    #[serde(default)]
+    base_version: Option<String>,
 }
 async fn snapshot(request: SnapshotRequest, mode: &str) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     if request.cursor_id.len()>64 || request.ticker.is_empty() || request.ticker.len()>30 || !request.ticker.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || ".- ".contains(c)) {
         return Err((StatusCode::BAD_REQUEST,Json(json!({"error":"Invalid V7 ticker"}))));
     }
-    dispatch(json!({"operation":"snapshot","mode":mode,"ticker":request.ticker,"as_of":request.as_of,"include_segments":request.include_segments,"cursor_id":request.cursor_id})).await
+    dispatch(json!({"operation":"snapshot","mode":mode,"ticker":request.ticker,"as_of":request.as_of,"include_segments":request.include_segments,"cursor_id":request.cursor_id,"delta":request.delta,"base_version":request.base_version})).await
 }
 pub async fn history_snapshot(Json(request): Json<SnapshotRequest>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     snapshot(request,"history").await

@@ -24,7 +24,11 @@ def main():
             elif request.get('operation')=='chart_checkpoint':
                 result=service.chart_checkpoint(request['ticker'],request['as_of'],request['mode'])
             elif request.get('operation')=='snapshot':
-                result=service.snapshot(request['ticker'],request['as_of'],request['mode'],request.get('include_segments',False),request.get('cursor_id',''))
+                if request.get('delta',False):
+                    if request.get('include_segments'):raise ValueError('V7 delta excludes chart segments')
+                    result=service.snapshot_delta(request['ticker'],request['as_of'],request['mode'],request.get('cursor_id',''),request.get('base_version'))
+                else:
+                    result=service.snapshot(request['ticker'],request['as_of'],request['mode'],request.get('include_segments',False),request.get('cursor_id',''))
             else:raise ValueError('Unsupported V7 operation')
             response=dict(ok=True,result=result)
         except Exception as exc:

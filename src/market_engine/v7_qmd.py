@@ -130,6 +130,7 @@ class Service:
     def __init__(self,catalog=None,source=None,closing_root=None,max_sessions=16):
         self.catalog=catalog or Catalog();self.source=source or QmdSource()
         self.sessions=OrderedDict();self.max_sessions=max_sessions
+        self.transports=OrderedDict()
         self.closing_root=Path(closing_root) if closing_root else self.catalog.root/'qmd-live-closing-v7'
 
     def _closing(self,engine,input_hash):
@@ -210,6 +211,16 @@ class Service:
             available_at=book['available_at'],purpose='historical_chart_only',retrospective=True,
             next_before=book['session'],segments=segments,
             provenance={k:v for k,v in provenance.items() if k!='source_plan'})
+
+    def snapshot_delta(self,ticker,as_of,mode='history',cursor_id='',base_version=None):
+        from .v7_snapshot_transport import Encoder
+        if not cursor_id:raise ValueError('V7 delta requires a cursor identity')
+        result=self.snapshot(ticker,as_of,mode,False,cursor_id)
+        key=(mode,ticker,cursor_id)
+        encoder=self.transports.setdefault(key,Encoder())
+        self.transports.move_to_end(key)
+        while len(self.transports)>self.max_sessions:self.transports.popitem(last=False)
+        return encoder.encode(result,base_version)
 
     def snapshot(self,ticker,as_of,mode='history',include_segments=True,cursor_id=''):
         if mode not in ('history','live'):raise ValueError('V7 source mode must be history or live')
