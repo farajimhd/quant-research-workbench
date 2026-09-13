@@ -181,6 +181,35 @@ class Service:
             raise ValueError('V7 seed has missing intervening sessions; complete historical/closing checkpoints first')
         return prior,dict(provenance,checkpoint_session=prior['session'],checkpoint_hash=prior['checkpoint_hash'])
 
+    def chart_checkpoint(self,ticker,as_of,mode='history'):
+        """One verified preceding session, exclusively for retrospective chart display."""
+        if mode not in ('history','live'):raise ValueError('Invalid V7 mode')
+        at=stamp(as_of) if isinstance(as_of,str) else as_of
+        if at.tzinfo is None:raise ValueError('V7 as-of requires a timezone')
+        if mode=='live' and at>datetime.now(timezone.utc):raise ValueError('Future live V7 request')
+        day=at.astimezone(NY).date().isoformat()
+        begin,_=session_bounds(day)
+        book,provenance=self._seed(ticker,day,begin.timestamp(),mode)
+        start,end=session_bounds(book['session'])
+        if book['available_at']>at.timestamp():raise ValueError('Checkpoint not yet available')
+        segments=[]
+        for row in book['levels']:
+            if not row['qualified']:continue
+            roles=row['role_segments']
+            for i,segment in enumerate(roles):
+                first=max(start.timestamp(),segment['start'])
+                last=min(end.timestamp(),roles[i+1]['start'] if i+1<len(roles) else end.timestamp())
+                if last<=first:continue
+                fit=segment.get('fit')
+                if not fit or fit.get('status')!='estimated':raise ValueError('Checkpoint segment lacks fitted geometry')
+                segments.append(dict(id=row['id'],price=segment['price'],lower=segment['lower'],upper=segment['upper'],
+                    role=segment['role'],fit=fit,historical=row['historical'],origin_session=row['origin_session'],
+                    valid_from=first,valid_to=last,model_input=False,historical_checkpoint=True))
+        return dict(ticker=ticker,session_date=book['session'],book_hash=book['checkpoint_hash'],
+            available_at=book['available_at'],purpose='historical_chart_only',retrospective=True,
+            next_before=book['session'],segments=segments,
+            provenance={k:v for k,v in provenance.items() if k!='source_plan'})
+
     def snapshot(self,ticker,as_of,mode='history',include_segments=True,cursor_id=''):
         if mode not in ('history','live'):raise ValueError('V7 source mode must be history or live')
         at=stamp(as_of) if isinstance(as_of,str) else as_of

@@ -13,10 +13,21 @@
 .level-reaction-tooltip p { margin: 4px 0; }
 .level-reaction-tooltip summary { cursor: pointer; }
 
-.reaction-book-controls { display: inline-flex; align-items: center; gap: 6px; }
-.level-reaction-controls, .reaction-book-controls { flex: 0 0 auto; }
-.reaction-book-controls .toolbar-button { width: auto; flex: 0 0 auto; padding-inline: 8px; gap: 5px; white-space: nowrap; }
-.reaction-book-settings { position: relative; font-size: 11px; }
-.reaction-book-settings summary { cursor: pointer; }
-.reaction-book-settings > div { position: absolute; right: 0; width: min(360px, 70vw); max-height: 50vh; overflow: auto; padding: 10px; background: var(--background); color: var(--foreground); border: 1px solid var(--border); border-radius: 5px; z-index: 25; overflow-wrap: anywhere; }
-.reaction-book-settings label { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
+.level-reaction-controls { flex: 0 0 auto; }
+.chart-legend-editor.v7-legend-editor { width: min(400px, calc(var(--app-zoomed-viewport-width) - 16px)); max-height: calc(var(--app-zoomed-viewport-height) - 16px); zoom: var(--app-zoom); font-family: var(--font-body); }
+.v7-legend-content { display: grid; gap: 8px; font-size: 11px; font-weight: 400; color: var(--foreground); overflow-wrap: anywhere; }
+.v7-legend-content small, .v7-legend-content p { color: var(--muted-foreground); line-height: 1.5; margin: 0; }
+.v7-category-control { display: grid; grid-template-columns: minmax(0, 1fr) 40px; gap: 8px; align-items: center; }
+.v7-book-counts { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 12px; margin: 0; }
+.v7-book-counts dd { margin: 0; font-variant-numeric: tabular-nums; }
+.v7-legend-content summary { cursor: pointer; font-weight: 600; }
+.v7-legend-content details > p { margin-top: 8px; }
+
+.chart-legend-row[data-book-status] .legend-row-actions > button { opacity: 1; pointer-events: auto; }
+
+.v7-legend-content .legend-checkbox { justify-content: flex-start; gap: 8px; }
+
+.v7-legend-content .legend-filter-control { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.v7-legend-content .legend-filter-control-copy { display: grid; gap: 3px; }
+.v7-legend-content .legend-range-control { grid-template-columns: minmax(0, 1fr) 64px; }
+.v7-legend-content details > .v7-book-counts { margin-block: 8px; }

@@ -993,7 +993,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const [strategyPresentationOpen, setStrategyPresentationOpen] = useState(false);
   const hindsight = useHindsightPositions(ticker, hindsightSessionDate);
   const levelReaction = useLevelReaction(ticker, hindsightSessionDate, indicatorAsOf, timeframe, payload?.candles);
-  const reactionBook=useReactionBook(ticker,hindsightSessionDate || periodEnd,indicatorAsOf,(visibleColumns ?? []).includes('indicator.qmd_unified_structure'),levelBookMode,settingsStorageKey || 'chart');
+  const [v7Viewport,setV7Viewport]=useState<{ticker:string;first:string;last:string}>();
+  const reactionBook=useReactionBook(ticker,hindsightSessionDate || periodEnd,indicatorAsOf,(visibleColumns ?? []).includes('indicator.qmd_unified_structure'),levelBookMode,settingsStorageKey || 'chart',v7Viewport?.ticker===ticker?v7Viewport:undefined);
   const reactionBookRef=useRef(reactionBook);reactionBookRef.current=reactionBook;
   const reactionBookPrimitiveRef=useRef<ReactionBookPrimitive|null>(null);
   useEffect(()=>{drawCurrentRegions();},[reactionBook.segments,reactionBook.end]);
@@ -1090,11 +1091,18 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   // Native panes share axis gutters; per-pane visibility breaks chart layout.
   const alignLeftPriceScale = chartSettings.legendGutterVisible || displayedOscillatorSeries.some((series) => series.chartRole === "macd-bps");
   const reserveRightPriceScale = chartSettings.rightLegendGutterVisible;
+  const v7LegendKey='indicator.qmd_unified_structure.v7';
+  const v7LegendItem:LegendItem={key:v7LegendKey,label:'Level book V7',itemKind:'zone',configurable:true,
+    color:resolveChartColor('var(--chart-v6-historicalResistance)'),lineStyle:'solid',lineWidth:1,opacity:1,
+    seriesStyle:'line',semanticColor:false,semanticColors:{up:'',down:'',neutral:''},
+    visible:reactionBook.visible,showValue:true,value:reactionBook.summary,customEditor:reactionBook.editor,status:reactionBook.status,priorStatus:reactionBook.priorStatus};
   const priceLegendItems = [
+    ...(visibleColumnLookup.has('indicator.qmd_unified_structure')?[v7LegendItem]:[]),
     ...buildSeriesLegendItems(displayedOverlaySeries, "price", legendSettings, displayItemOptions, catalogColumns, chartSettings),
     ...buildPriceZoneLegendItems(displayedPriceZones, legendSettings, displayItemOptions, catalogColumns, chartSettings),
   ];
   const priceIndicatorCount = new Set([
+    ...(visibleColumnLookup.has('indicator.qmd_unified_structure')?['indicator.qmd_unified_structure']:[]),
     ...displayedOverlaySeries.map((series) => seriesSelectionKey(series)),
     ...displayedPriceZones.map((zone) => String(zone.displayItemId || zone.label).toLowerCase()),
   ]).size;
@@ -1862,6 +1870,12 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       return priceZoneMeetsUnifiedFilters(zone, settings);
     });
     const timeline = chartTimelineData(currentPayload.candles, timeframe, chartSettingsRef.current.hideEmptyIntervals);
+    const range=chart.timeScale().getVisibleLogicalRange();
+    if(range && timeline.length){
+      const dayAt=(index:number)=>new Date(timeline[Math.max(0,Math.min(timeline.length-1,index))].time*1000).toLocaleDateString('en-CA',{timeZone:'America/New_York'});
+      const first=dayAt(Math.floor(range.from)),last=dayAt(Math.ceil(range.to));
+      setV7Viewport(previous=>previous?.ticker===ticker && previous.first===first && previous.last===last?previous:{ticker,first,last});
+    }
     priceZonePrimitiveRef.current?.setState({
       appearanceSettings: chartSettingsRef.current,
       candles: currentPayload.candles,
@@ -2241,7 +2255,6 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         <div className="toolbar-spacer" />
         {hindsight.controls}
         {levelReaction.controls}
-        {reactionBook.controls}
         {structuralDetector.controls}
         {supertrendIndicator.controls}
         <button
@@ -2347,8 +2360,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
               <ChartLegend
                 indicatorCount={priceIndicatorCount}
                 items={priceLegendItems}
-                onReset={resetLegendSettings}
-                onUpdate={updateLegendSettings}
+                onReset={key=>key===v7LegendKey?reactionBook.reset():resetLegendSettings(key)}
+                onUpdate={(key,patch)=>key===v7LegendKey?reactionBook.setVisible(patch.visible!==false):updateLegendSettings(key,patch)}
               />
             </div>
           {oscillatorPaneGroups.map((group) => {
@@ -2626,6 +2639,9 @@ function ChartPeriodSelect({
 }
 
 type LegendItem = {
+  customEditor?: ReactNode;
+  status?: string;
+  priorStatus?: string;
   v6Hidden?: V6Category[];
   v6Colors?: V6Colors;
   settingsId?: string;
@@ -2746,7 +2762,7 @@ function ChartLegend({
         <>
           <div className="chart-legend-rows">
             {items.map((item) => (
-              <div className={item.visible ? "chart-legend-row" : "chart-legend-row muted"} key={item.key}>
+              <div className={item.visible ? "chart-legend-row" : "chart-legend-row muted"} key={item.key} data-book-status={item.status} data-prior-book-status={item.priorStatus}>
                 <span className={item.seriesStyle === "histogram" ? "legend-swatch histogram" : `legend-swatch ${item.lineStyle}`} style={{ color: item.color, opacity: item.opacity }}>
                   <i style={{ background: item.color }} />
                 </span>
@@ -2851,12 +2867,16 @@ function LegendEditor({
       const above = anchorRect.top - editorRect.height - 5;
       const top = below + editorRect.height <= window.innerHeight - margin ? below : Math.max(margin, above);
       const left = Math.max(margin, Math.min(anchorRect.right - editorRect.width, window.innerWidth - editorRect.width - margin));
-      setPosition({ left, top, visibility: "visible" });
+      const zoom=Number.parseFloat(getComputedStyle(editor).zoom)||1;
+      setPosition({ left:left/zoom, top:top/zoom, visibility: "visible" });
     };
     placeEditor();
+    const observer=new ResizeObserver(placeEditor);
+    if(editorRef.current)observer.observe(editorRef.current);
     window.addEventListener("resize", placeEditor);
     window.addEventListener("scroll", placeEditor, true);
     return () => {
+      observer.disconnect();
       window.removeEventListener("resize", placeEditor);
       window.removeEventListener("scroll", placeEditor, true);
     };
@@ -2882,7 +2902,7 @@ function LegendEditor({
   if (!anchor) return null;
   return createPortal(
     <div
-      className={item.supportsUnifiedFilters || item.supportsProminenceFilter ? "chart-legend-editor unified-structure-editor" : "chart-legend-editor"}
+      className={item.customEditor ? "chart-legend-editor v7-legend-editor" : item.supportsUnifiedFilters || item.supportsProminenceFilter ? "chart-legend-editor unified-structure-editor" : "chart-legend-editor"}
       ref={editorRef}
       role="dialog"
       aria-label={`${item.label} presentation settings`}
@@ -2894,6 +2914,7 @@ function LegendEditor({
           <X size={13} />
         </button>
       </div>
+      {item.customEditor ?? <>
       <label>
         {item.v6Colors ? 'Visibility & color' : 'Color'}
         {item.v6Colors ? (
@@ -3205,6 +3226,7 @@ function LegendEditor({
           {onThresholdReset ? <button className="legend-reset-button" onClick={onThresholdReset} type="button">Reset threshold</button> : null}
         </>
       ) : null}
+      </>}
       <button className="legend-reset-button" onClick={onReset} type="button">Reset</button>
     </div>,
     document.body

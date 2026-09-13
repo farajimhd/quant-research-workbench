@@ -212,6 +212,7 @@ struct StandardStatusPayload {
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/level-book-v7/catalog", get(crate::level_book_v7::catalog))
+        .route("/level-book-v7/chart-checkpoint", post(crate::level_book_v7::live_checkpoint))
         .route("/level-book-v7/snapshot", post(crate::level_book_v7::live_snapshot))
         .route("/health", get(health))
         .route("/config", get(config))

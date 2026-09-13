@@ -73,3 +73,30 @@ environment overrides. `QMD_LEVEL_BOOK_V7_PYTHON` selects its Python executable;
 `QMD_LEVEL_BOOK_V7_CODE_ROOT` selects an explicitly deployed code root. Gateway
 shutdown terminates its child worker. Computation errors are reported without
 discarding unrelated ticker state or substituting a legacy book.
+
+
+## Legend configuration and prior-day review
+
+V7 uses the chart indicator legend's visibility action and standard presentation
+editor, not the provisional-tools toolbar. All four origin/role categories and
+transitions have visibility and color controls. Band fills and center lines can
+also be toggled. Existing per-chart V7 preferences are preserved; Reset clears
+them. Threshold sliders filter minimum independent reaction count and maximum
+full band width in basis points of its center (zero means no limit). These are
+presentation-only filters, applied to both current and prior-day geometry.
+V7 currently publishes no comparable level-strength score or calibrated reaction
+probability; MLE interval coverage must not be interpreted as either.
+
+The legend explains discovery counts: confirmed turning points may reinforce
+existing historical levels, which retain historical identity. Unqualified
+candidates, including inherited candidates, do not have drawable MLE bands until
+they acquire sufficient independent evidence.
+
+Both QMD gateways expose `POST /level-book-v7/chart-checkpoint` with `ticker` and
+an aware `as_of`. This returns the verified preceding session's saved geometry,
+role start/end times and fit versions; it provides no strategy level projection.
+The backend mirrors this under `/api/research/level-book-v7/chart-checkpoint`.
+The chart requests preceding pages only for visible earlier days and keeps a
+bounded 32-page cache. Saved full-session results are labeled as retrospective
+chart presentation; they never replace current-session causal inference or
+strategy inputs. Missing checkpoint pages are reported in the legend settings.

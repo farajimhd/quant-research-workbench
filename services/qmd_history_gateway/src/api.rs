@@ -247,6 +247,7 @@ pub fn app(state: AppState) -> Router {
         state.config.structure_checkpoint_request_max_bytes;
     Router::new()
         .route("/level-book-v7/catalog", get(qmd_core::level_book_v7::catalog))
+        .route("/level-book-v7/chart-checkpoint", post(qmd_core::level_book_v7::history_checkpoint))
         .route("/level-book-v7/snapshot", post(qmd_core::level_book_v7::history_snapshot))
         .route("/level-book-v7/seconds/{ticker}", get(level_book_v7_seconds))
         .route("/health", get(health))

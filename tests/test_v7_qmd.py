@@ -107,3 +107,32 @@ def test_restart_recovers_previous_live_close_from_durable_qmd_seconds(tmp_path)
     expected=verified_book(baseline.closing_root/'TEST'/'2026-08-21.json.gz')
     assert value['book_hash']==expected['checkpoint_hash']
     assert verified_book(recovered.closing_root/'TEST'/'2026-08-21.json.gz')==expected
+
+
+def test_chart_checkpoint_preserves_prior_day_geometry_without_advancing_strategy(tmp_path):
+    service,source=make(tmp_path)
+    start,end=session_bounds('2026-08-20')
+    row=service.catalog.prior['levels'][0]
+    row['role_segments']=[dict(row['role_segments'][0],start=start.timestamp()+60),
+        dict(row['role_segments'][0],start=start.timestamp()+120,role='resistance',price=10.1,lower=10.09,upper=10.11)]
+    result=service.chart_checkpoint('TEST',session_bounds('2026-08-21')[0])
+    assert result['purpose']=='historical_chart_only' and result['retrospective']
+    assert result['next_before']=='2026-08-20' and 'unified_levels' not in result
+    assert result['segments'][0]['valid_from']==start.timestamp()+60
+    assert result['segments'][0]['valid_to']==start.timestamp()+120
+    assert result['segments'][1]['price']==10.1 and result['segments'][1]['valid_to']==end.timestamp()
+    assert not service.sessions and not source.calls
+    assert all(not s['model_input'] for s in result['segments'])
+
+
+def test_chart_checkpoint_rejects_unavailable_or_unfitted_geometry(tmp_path):
+    service,_=make(tmp_path)
+    service.catalog.prior['available_at']=session_bounds('2026-08-22')[0].timestamp()
+    with pytest.raises(ValueError,match='not yet available'):
+        service.chart_checkpoint('TEST',session_bounds('2026-08-21')[0])
+    service.catalog.prior['available_at']=session_bounds('2026-08-20')[1].timestamp()
+    row=service.catalog.prior['levels'][0]
+    row['role_segments'][0]['start']=session_bounds('2026-08-20')[0].timestamp()
+    row['role_segments'][0].pop('fit')
+    with pytest.raises(ValueError,match='lacks fitted geometry'):
+        service.chart_checkpoint('TEST',session_bounds('2026-08-21')[0])

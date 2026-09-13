@@ -90,3 +90,19 @@ pub async fn history_snapshot(Json(request): Json<SnapshotRequest>) -> Result<Js
 pub async fn live_snapshot(Json(request): Json<SnapshotRequest>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     snapshot(request,"live").await
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChartCheckpointRequest { ticker: String, as_of: chrono::DateTime<chrono::Utc> }
+async fn chart_checkpoint(request: ChartCheckpointRequest, mode: &str) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if request.ticker.is_empty() || request.ticker.len()>30 || !request.ticker.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || ".- ".contains(c)) {
+        return Err((StatusCode::BAD_REQUEST,Json(json!({"error":"Invalid V7 ticker"}))));
+    }
+    dispatch(json!({"operation":"chart_checkpoint","mode":mode,"ticker":request.ticker,"as_of":request.as_of})).await
+}
+pub async fn history_checkpoint(Json(request): Json<ChartCheckpointRequest>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    chart_checkpoint(request,"history").await
+}
+pub async fn live_checkpoint(Json(request): Json<ChartCheckpointRequest>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    chart_checkpoint(request,"live").await
+}
