@@ -1,3 +1,4 @@
+import {EMA_ACCELERATION_ID,EMA_ACCELERATION_KEY,emaAcceleration,emaPeriod,accelerationUnit,accelerationUnits,type AccelerationUnit} from './emaAcceleration';
 import {ReactionBookPrimitive,useReactionBook} from './ReactionBook';
 import { tradeGuideSpan } from "./tradeGuideGeometry";
 import { LevelReactionPrimitive, useLevelReaction } from "./LevelReaction";
@@ -63,7 +64,7 @@ import { LoadingState } from "./LoadingState";
 import { Modal } from "./Modal";
 import { TickerChangeBadge, TickerIdentity, TickerLogo } from "./TickerIdentity";
 
-type Candle = { time: number; endTime?: number; open: number; high: number; low: number; close: number; color?: string; borderColor?: string; wickColor?: string };
+type Candle = { time: number; endTime?: number; isClosed?: boolean; open: number; high: number; low: number; close: number; color?: string; borderColor?: string; wickColor?: string };
 type ChartSeries = {
   autoscaleMax?: number;
   autoscaleMin?: number;
@@ -362,6 +363,8 @@ function resolveV6Colors(stored?: Partial<V6Colors>): V6Colors {
 }
 
 type LegendSeriesSettings = {
+  emaLength?: number;
+  accelerationUnits?: AccelerationUnit;
   v6Hidden?: V6Category[];
   v6Colors?: V6Colors;
   currentLevelCount?: number;
@@ -1078,8 +1081,15 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       data: macdBpsPoints(series.data, payload?.candles ?? []),
     })), [payload?.oscillator_series, payload?.candles]);
   const macdBpsEnabled = oscillatorThresholdSettings["oscillator:macd"]?.macdBpsVisible !== false;
+  const emaLength=emaPeriod(legendSettings[EMA_ACCELERATION_KEY]?.emaLength??7);
+  const emaUnits=accelerationUnit(legendSettings[EMA_ACCELERATION_KEY]?.accelerationUnits);
+  const emaCurvature=useMemo(()=>visibleColumnLookup.has(EMA_ACCELERATION_ID)?emaAcceleration(payload?.candles??[],emaLength,emaUnits,
+    indicatorAsOf?Date.parse(indicatorAsOf)/1000:Date.now()/1000,chartTimeframeSeconds(timeframe)??60):[],[payload?.candles,emaLength,emaUnits,indicatorAsOf,timeframe,visibleColumnKey]);
   const displayedOscillatorSeries = (payload?.oscillator_series ?? []).filter((series) =>
     visibleColumnLookup.has(seriesSelectionKey(series)) && !(macdBpsEnabled && oscillatorPaneKey(series) === "oscillator:macd"));
+  if(visibleColumnLookup.has(EMA_ACCELERATION_ID))displayedOscillatorSeries.push({column:'ema_acceleration',displayItemId:EMA_ACCELERATION_ID,
+    label:`EMA ${emaLength} second derivative`,axisTitle:accelerationUnits[emaUnits],paneKey:'ema-acceleration',chartRole:'ema-acceleration',
+    style:'line',color:'var(--info)',lineWidth:2,data:emaCurvature});
   if (macdBpsEnabled) displayedOscillatorSeries.push(...macdBpsSeries.filter((series) => visibleColumnLookup.has(seriesSelectionKey(series))));
   const oscillatorPaneGroups = buildOscillatorPaneGroups(displayedOscillatorSeries);
   const oscillatorPaneTotalHeight = oscillatorPaneGroups.reduce((total, group) => total + defaultOscillatorPaneHeight(group), 0);
@@ -1608,7 +1618,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   useEffect(() => {
     if (!priceChartRef.current) return;
     updateOscillatorPanes(oscillatorPaneGroups);
-  }, [payload, visibleColumnKey, timeframe, oscillatorThresholdSettings]);
+  }, [payload, visibleColumnKey, timeframe, oscillatorThresholdSettings, emaCurvature, emaUnits, emaLength]);
 
   function applyChartAppearance() {
     const palette = readChartPalette();
@@ -1733,6 +1743,9 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   function updateOscillatorPaneSeries(runtime: OscillatorPaneRuntime, seriesList: ChartSeries[]) {
     const chart = priceChartRef.current;
     if (!chart) return;
+    if (seriesList[0]?.chartRole === 'ema-acceleration') {
+      runtime.timelineRenderer?.applyOptions({priceFormat: adaptiveSeriesPriceFormat(seriesList[0])});
+    }
     if (seriesList.some((series) => oscillatorPaneKey(series) === "oscillator:macd")) {
       // Keep the invisible timeline on the active scale so the unused side
       // cannot display an unrelated default numerical range.
@@ -2639,6 +2652,8 @@ function ChartPeriodSelect({
 }
 
 type LegendItem = {
+  emaLength?: number;
+  accelerationUnits?: AccelerationUnit;
   customEditor?: ReactNode;
   status?: string;
   priorStatus?: string;
@@ -2902,7 +2917,7 @@ function LegendEditor({
   if (!anchor) return null;
   return createPortal(
     <div
-      className={item.customEditor ? "chart-legend-editor v7-legend-editor" : item.supportsUnifiedFilters || item.supportsProminenceFilter ? "chart-legend-editor unified-structure-editor" : "chart-legend-editor"}
+      className={item.customEditor ? "chart-legend-editor v7-legend-editor" : item.emaLength!==undefined ? "chart-legend-editor ema-acceleration-editor" : item.supportsUnifiedFilters || item.supportsProminenceFilter ? "chart-legend-editor unified-structure-editor" : "chart-legend-editor"}
       ref={editorRef}
       role="dialog"
       aria-label={`${item.label} presentation settings`}
@@ -2915,6 +2930,11 @@ function LegendEditor({
         </button>
       </div>
       {item.customEditor ?? <>
+      {item.emaLength!==undefined && <>
+        <label>EMA length<input className="legend-number-input" aria-label="EMA length" type="number" min={1} max={500} step={1} value={item.emaLength} onChange={e=>onUpdate({emaLength:emaPeriod(e.target.value)})}/></label>
+        <label>Units<select aria-label="EMA derivative units" value={item.accelerationUnits} onChange={e=>onUpdate({accelerationUnits:accelerationUnit(e.target.value)})}>{Object.entries(accelerationUnits).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
+        <small>Completed candles only. Length is in the selected timeframe's candles. First value after {item.emaLength+2} candles; positive means an increasing EMA slope.</small>
+      </>}
       <label>
         {item.v6Colors ? 'Visibility & color' : 'Color'}
         {item.v6Colors ? (
@@ -4602,6 +4622,8 @@ function buildSeriesLegendItems(series: ChartSeries[], pane: LegendPane, setting
     return {
       color: item.colorMode === "sign" ? signColor(latest, appearance) : settings.color,
       configurable: true,
+      emaLength:item.displayItemId===EMA_ACCELERATION_ID?settings.emaLength:undefined,
+      accelerationUnits:item.displayItemId===EMA_ACCELERATION_ID?settings.accelerationUnits:undefined,
       guideHelp,
       guideTitle,
       itemKind: "series" as const,
@@ -4614,7 +4636,7 @@ function buildSeriesLegendItems(series: ChartSeries[], pane: LegendPane, setting
       semanticColor: item.colorMode === "sign",
       semanticColors: { down: appearance.downColor, neutral: readNeutralChartColor(), up: appearance.upColor },
       showValue: settings.showValue,
-      value: latest === null ? "-" : item.chartRole === "macd-bps" ? `${latest.toFixed(1)} bps` : formatPrice(latest),
+      value: latest === null ? "-" : item.chartRole==="ema-acceleration" ? latest.toPrecision(4) : item.chartRole === "macd-bps" ? `${latest.toFixed(1)} bps` : formatPrice(latest),
       visible: settings.visible
     };
   });
@@ -5279,7 +5301,7 @@ function priceZonePresentationColors(
 }
 
 function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettings> {
-  return {
+  return {emaLength:7,accelerationUnits:'price-bar2',
     v6Hidden: [],
     v6Colors: resolveV6Colors(),
     color: resolveChartColor(series.color),
@@ -5324,6 +5346,7 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
   const defaults = defaultLegendSettings(series);
   const stored = settingsMap[key] ?? {};
   return {
+    emaLength:emaPeriod(stored.emaLength??7),accelerationUnits:accelerationUnit(stored.accelerationUnits),
     v6Hidden: Array.isArray(stored.v6Hidden) ? stored.v6Hidden.filter(key => key in v6ColorLabels) : [],
     v6Colors: resolveV6Colors(stored.v6Colors),
     color: resolveChartColor(stored.color || defaults.color),
@@ -5595,6 +5618,10 @@ function seriesAutoscaleInfoProvider(series: ChartSeries) {
 }
 
 function adaptiveSeriesPriceFormat(series: ChartSeries) {
+  if(series.chartRole==='ema-acceleration'){
+    const magnitude=series.data.reduce((m,p)=>Math.max(m,Math.abs(p.value)),0);
+    return {type:'custom' as const,minMove:magnitude>0?10**(Math.floor(Math.log10(magnitude))-3):1e-8,formatter:(value:number)=>value===0?'0':value.toPrecision(4)};
+  }
   if (series.chartRole === "macd-bps") return { type: "custom" as const, minMove: 0.1, formatter: (value: number) => `${value.toFixed(1)} bps` };
   let maxAbs = 0;
   series.data.forEach((point) => {

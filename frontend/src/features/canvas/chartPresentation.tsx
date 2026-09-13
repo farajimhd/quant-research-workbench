@@ -256,7 +256,7 @@ export function ChartPreview({
       liveChart.bars,
       strategyPresentation,
     );
-    const realizedCandles = liveChart.bars.map((bar) => ({ close: bar.close, high: bar.high, low: bar.low, open: bar.open, endTime: bar.bar_end ? Date.parse(bar.bar_end) / 1000 : undefined, time: Date.parse(bar.bar_start) / 1000 }));
+    const realizedCandles = liveChart.bars.map((bar) => ({ isClosed: bar.is_closed, close: bar.close, high: bar.high, low: bar.low, open: bar.open, endTime: bar.bar_end ? Date.parse(bar.bar_end) / 1000 : undefined, time: Date.parse(bar.bar_start) / 1000 }));
     const timelineEvents = stockSplitTimelineEvents(linkContext.symbol, splitEvents.events, liveChart.bars.map((bar) => ({
       sessionDate: bar.session_date || bar.bar_start.slice(0, 10),
       time: Date.parse(bar.bar_start) / 1000,

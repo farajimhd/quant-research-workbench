@@ -6403,6 +6403,13 @@ button {
   color: var(--foreground);
 }
 
+.chart-legend-editor.ema-acceleration-editor {
+  zoom: var(--app-zoom);
+  width: min(340px, calc(var(--app-zoomed-viewport-width) - 16px));
+  max-height: calc(var(--app-zoomed-viewport-height) - 16px);
+  font-family: var(--font-body);
+}
+
 .chart-legend-editor {
   box-sizing: border-box;
   display: grid;
