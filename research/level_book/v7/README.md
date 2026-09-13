@@ -10,6 +10,67 @@ Chart timeframe changes only presentation, never the level calculation.
 
 ## All-tradable historical campaign
 
+### Workstation resume (many-core runner)
+
+Run `scripts/run_level_book_v7_workstation.py` from the committed, verified copy
+on **DESKTOP-SAAI85T**, in the same numerical environment as the frozen plan.
+This launcher resumes the existing campaign; it never changes its population,
+source signatures, MLE algorithm, daily receipt chain, or numerical-version pins.
+The current campaign requires Anaconda Python 3.12.12 (exact build recorded in
+`plan.json`), NumPy 2.4.0 and SciPy 1.16.3. `preflight` fails on a mismatch;
+do not edit the plan to bypass it. The existing campaign dependencies plus
+`psutil` and `rich` must be installed in that environment.
+
+From a workstation terminal in the synchronized code directory:
+
+```powershell
+python -B scripts/run_level_book_v7_workstation.py preflight
+python -B scripts/run_level_book_v7_workstation.py run --take-over
+```
+
+`--take-over` first verifies the code/numerical pins, resources and ClickHouse
+host, then requests that the old controller finish its active session checkpoints.
+It waits up to ten minutes for exclusive campaign ownership before resuming.
+No simultaneous laptop/workstation writers are allowed. Without `--take-over`,
+an active controller blocks startup. If an orphan worker still owns a ticker,
+startup fails rather than stealing its lock; let it finish the STOP request
+and rerun. Do not force-kill healthy workers or remove lock files.
+
+The default runtime on the workstation is the **local alias of the same existing
+directory**: `D:\TradingML\runtimes\level-book-v7\all-tradable-20250101-20260912-mle-v1`.
+This removes SMB from its checkpoint writes without copying or forking state.
+Laptop `status`, `monitor` and `stop` use the workstation share automatically.
+
+```powershell
+# Optional lower concurrency; the launcher rejects settings over the host budget.
+python -B scripts/run_level_book_v7_workstation.py run --workers 32 --threads 1
+python -B scripts/run_level_book_v7_workstation.py monitor
+python -B scripts/run_level_book_v7_workstation.py stop
+```
+
+The persistent process pool is bounded by available RAM and logical CPUs, up to
+60 workers (below the Windows process-pool limit). It reserves at least 1/8 of
+CPUs and 1/4 of free RAM, budgets one Python CPU plus the configured SQL threads
+and two GiB per slot, and defaults to one SQL thread per worker. These are
+admission budgets, not OS memory caps. Free RAM below two GiB requests a graceful
+checkpoint stop. BLAS/OpenMP/NumExpr threads are fixed at one per process.
+For example, 128 logical CPUs and 192 GiB free selects 56 workers and 56 SQL
+threads. Each worker reuses imports and HTTP connections across tickers; fit
+caches are cleared between tickers. The task queue contains at most one task
+per active slot. Each ticker's sessions remain chronological and sequential.
+
+The renderer has stable worker pages (N/P), plus `--page` for an independent
+monitor, with durable counts, freshness, failures/retries and an approximate ETA.
+Redirected output uses plain text. Execution manifests under `executions/` pin
+the scheduler source hashes, calculation hashes, numerical runtime, host and
+resource budget separately from the unchanged calculation plan. Completed
+tickers are verified before being skipped; partial tickers use the original
+receipt-by-receipt recovery. Current code still processes historical bars through
+the shared streaming state machine; this is a scheduling/I/O improvement, not a
+new batch approximation of the MLE algorithm.
+
+### Original laptop runner
+
 Launch on the laptop from the repository. The defaults freeze the September 12,
 2026 published tradable membership and request January 2025 through September 12.
 The certified source currently ends September 11 (September 12 is Saturday).
