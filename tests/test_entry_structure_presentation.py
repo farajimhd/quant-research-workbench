@@ -90,6 +90,9 @@ assert.deepEqual(project(rows,'SUGP',new Date(15000).toISOString()),[
  {start:14,end:15,hod:undefined,resistance:undefined}]);
 assert.deepEqual(project(rows,'SUGP',new Date(9000).toISOString()),[]);
 assert.equal(project(rows,'SUGP',new Date(11500).toISOString())[0].end,11.5);
+const zoneRow=row(20,5,4.85);zoneRow.chart_plan.historical_hod_reference.zone_lower=4.7;
+assert.equal(project([zoneRow],'SUGP',new Date(21000).toISOString())[0].zoneLower,4.7);
+assert.deepEqual(project([zoneRow],'SUGP',new Date(19000).toISOString()),[]);
 '''.replace('SOURCE_PATH',json.dumps(str(source)))
     result=subprocess.run([shutil.which('node') or 'node','--input-type=module','-'],input=script,text=True,
         cwd=frontend_runtime_root(),capture_output=True)

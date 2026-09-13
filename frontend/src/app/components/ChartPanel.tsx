@@ -172,6 +172,7 @@ type StrategyVisualElementKey =
   | "exitFillArrow" | "exitFillLabel" | "exitFillSizePart" | "exitFillStatusPart" | "exitFillSeparatorPart" | "exitFillPricePart" | "exitFillShortPricePart"
   | "levelLine" | "levelLabel"
   | "entryResistanceLine" | "entryResistanceLabel" | "highOfDayLine" | "highOfDayLabel"
+  | "entryZoneLine" | "entryZoneLabel"
   | "stopLine" | "stopLabel"
   | "targetLine" | "targetLabel"
   | "adjustmentLine" | "adjustmentArrow" | "adjustmentLabel"
@@ -418,7 +419,7 @@ type PriceZonePrimitiveState = {
 };
 
 type TradeAnnotationPrimitiveState = {
-  references?: Array<{ start: number; end: number; hod?: number; resistance?: number }>;
+  references?: Array<{ start: number; end: number; hod?: number; resistance?: number; zoneLower?: number }>;
   candles: Candle[];
   executions: TradeFillAnnotation[];
   settings: StrategyPresentationSettings;
@@ -854,6 +855,8 @@ const defaultStrategyPresentationSettings: StrategyPresentationSettings = {
     entryResistanceLine: strategyPresentationStyle(STRATEGY_ENTRY_REFERENCE_COLOR, "dashed", 1, 1),
     entryResistanceLabel: { ...strategyPresentationStyle(STRATEGY_ENTRY_REFERENCE_COLOR, "solid", 1, 1, 9), borderWidth: 0, labelPaddingX: 2, labelPaddingY: 1 },
     highOfDayLine: strategyPresentationStyle(STRATEGY_ENTRY_REFERENCE_COLOR, "solid", 1, 1),
+    entryZoneLine: strategyPresentationStyle(STRATEGY_ENTRY_REFERENCE_COLOR, "dotted", 1, 1),
+    entryZoneLabel: strategyPresentationStyle(STRATEGY_ENTRY_REFERENCE_COLOR, "solid", 1, 1),
     highOfDayLabel: { ...strategyPresentationStyle(STRATEGY_ENTRY_REFERENCE_COLOR, "solid", 1, 1, 9), borderWidth: 0, labelPaddingX: 2, labelPaddingY: 1 },
     levelLabel: { ...strategyPresentationStyle("", "solid", 1, 1, 8, 7, 1), borderWidth: 0, labelPaddingX: 2, labelPaddingY: 1 },
     stopLine: strategyPresentationStyle("", "dashed", 1, 0.95),
@@ -3664,6 +3667,8 @@ const strategyVisualElementDefinitions: StrategyVisualElementDefinition[] = [
   { key: "highOfDayLine", kind: "line", title: "Strategy HOD line", help: "Recorded HOD used by the strategy, including before entry. Solid black by default; older runs show the entry snapshot." },
   { key: "highOfDayLabel", kind: "label", title: "Strategy HOD label", help: "Price of the recorded strategy HOD line." },
   { key: "entryResistanceLine", kind: "line", title: "Selected resistance line", help: "Recorded upper bound of the selected entry resistance. Dashed black by default; older strategies retain their recorded entry references." },
+  { key: "entryZoneLine", kind: "line", title: "Entry zone floor", help: "Recorded VWAP + 70% of the distance to HOD for the V7 zone strategy. No future values are calculated by the chart." },
+  { key: "entryZoneLabel", kind: "label", title: "Entry zone floor label", help: "Price of the recorded lower boundary of the entry zone." },
   { key: "entryResistanceLabel", kind: "label", title: "Selected resistance label", help: "Upper-bound price of the selected entry resistance; older strategies retain their recorded R labels." },
   { key: "levelLine", kind: "line", title: "Structural level lines", help: "Support, short-entry, and exit structural evidence." },
   { key: "levelLabel", kind: "label", title: "Structural level labels", help: "Support, short-entry, exit, and trigger identifiers." },
@@ -4943,6 +4948,7 @@ function normalizeStrategyPresentationSettings(settings: Partial<StrategyPresent
     exitFillSizePart: undefined, exitFillStatusPart: undefined, exitFillSeparatorPart: undefined, exitFillPricePart: undefined, exitFillShortPricePart: undefined,
     levelLine: legacy.levels, levelLabel: legacy.levels,
     entryResistanceLine: undefined, entryResistanceLabel: undefined, highOfDayLine: undefined, highOfDayLabel: undefined,
+    entryZoneLine: undefined, entryZoneLabel: undefined,
     stopLine: legacy.stop, stopLabel: legacy.stop,
     targetLine: legacy.targets, targetLabel: legacy.targets,
     adjustmentLine: legacy.adjustments, adjustmentArrow: legacy.adjustments, adjustmentLabel: legacy.adjustments,
@@ -7662,15 +7668,15 @@ function drawTradeAnnotationPrimitiveGeometry(
       ? [{ ...reference, left: Math.max(0,left), right: Math.min(width,right) }] : [];
   });
   visibleReferences.forEach((reference,index) => {
-    for (const kind of ["hod", "resistance"] as const) {
+    for (const kind of ["hod", "resistance", "zoneLower"] as const) {
       const price = reference[kind];
       if (price === undefined) continue;
       const y = priceSeries.priceToCoordinate(price);
       if (y === null) continue;
-      const line = kind === "hod" ? elements.highOfDayLine : elements.entryResistanceLine;
-      const label = kind === "hod" ? elements.highOfDayLabel : elements.entryResistanceLabel;
+      const line = kind === "hod" ? elements.highOfDayLine : kind === "zoneLower" ? elements.entryZoneLine : elements.entryResistanceLine;
+      const label = kind === "hod" ? elements.highOfDayLabel : kind === "zoneLower" ? elements.entryZoneLabel : elements.entryResistanceLabel;
       drawCanvasTradeGuide(context, reference.left, reference.right, y, STRATEGY_ENTRY_REFERENCE_COLOR,
-        `${kind === "hod" ? "HOD" : "Entry R"} ${formatPrice(price)}`, chartBackground, width, height,
+        `${kind === "hod" ? "HOD" : kind === "zoneLower" ? "Entry zone floor" : "Entry R"} ${formatPrice(price)}`, chartBackground, width, height,
         line, index === visibleReferences.length-1 ? label : { ...label, visible: false }, labelLayout, elements.connector, true);
     }
   });
@@ -8265,6 +8271,7 @@ function tradeAnnotationAutoscaleInfo(
     if (reference.end < state.timeline[visibleStart]?.time || reference.start > state.timeline[visibleEnd]?.time) return;
     if (reference.hod !== undefined) prices.push(reference.hod);
     if (reference.resistance !== undefined) prices.push(reference.resistance);
+    if (reference.zoneLower !== undefined) prices.push(reference.zoneLower);
   });
   const finitePrices = prices.filter((price) => Number.isFinite(price));
   if (!finitePrices.length) return null;

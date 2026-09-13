@@ -14,7 +14,7 @@ def is_point_level(row):
 def qualifies(row, observed_at=None, *, include_retained=False):
     if row.get('book_version')=='causal-level-book-v7-mle-1':
         try:
-            return (row.get('lifecycle')=='active' and row.get('side') in (-1,1)
+            return (row.get('lifecycle')=='active' and (row.get('side') in (-1,1) or (row.get('side')==0 and row.get('role')=='transition'))
                 and all(isfinite(float(row[k])) for k in ('lower','price','upper','confirmed_at_ms'))
                 and 0 < row['lower'] <= row['price'] <= row['upper']
                 and row.get('fit',{}).get('status')=='estimated'

@@ -35,6 +35,7 @@ class StreamingLevelBook:
                 historical=old.get('qualified',True),origin_session=old['origin_session'],qualified=old.get('qualified',True),role=role,segments=[],
                 events=[],last_contact=-1.,armed=True,side=None,created_at=start,proposal_at=None)
             row['observations']=deepcopy(old['observations']);row['fit']=deepcopy(old['fit'])
+            row['transition_from'] = old.get('transition_from') or next((s['role'] for s in reversed(old['role_segments']) if s['role'] in ('support','resistance')),None)
             row['association_radius']=old['association_radius']*split_factor
             for o in row['observations']:
                 o['price']*=split_factor;o['resolution']*=split_factor
@@ -71,6 +72,7 @@ class StreamingLevelBook:
         elif row['role']==event['role']:role='transition'
         else:return
         if row['qualified'] and role!=row['role']:
+            if role=='transition':row['transition_from']=row['role']
             row['role']=role;self._segment(row,stamp)
         row['role']=role
 

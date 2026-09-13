@@ -36,6 +36,27 @@ def make(tmp_path):
 def at(t):return datetime.fromtimestamp(t,timezone.utc)
 
 
+def test_resistance_transition_projection_preserves_origin_and_causal_availability():
+    from src.market_engine.v7_qmd import projection
+    from src.trading_runtime.structure_level_contract import strategy_snapshot
+    stream=engine(historical=True)
+    row=stream.rows[0];row.update(role='resistance',qualified=True)
+    stamp=stream.start+1
+    stream._resolve(0,dict(at=stamp,role='resistance'), 'breakout',stamp)
+    assert row['role']=='transition' and row['transition_from']=='resistance'
+    result=projection(stream,stamp,{},False)
+    projected=strategy_snapshot(result,at(stamp))
+    item=next(r for r in projected['unified_levels'] if r['unified_level_id']==row['id'])
+    assert item['side']==0 and item['transition_from']=='resistance'
+    assert item['confirmed_at_ms']==stamp*1000
+    from src.trading_runtime.structural_recovery import observe_market
+    market=observe_market(dict(time=stamp-1,end=stamp,open=row['price'],close=row['price'],
+        low=row['lower'],high=row['upper'],volume=1000),projected['unified_levels'],
+        dict(id='v7-test',fingerprint='fixture',version=item['book_version']),{})
+    assert market['row']['effective_at']==stamp
+    assert not any(r['unified_level_id']==row['id'] for r in strategy_snapshot(result,at(stamp-1))['unified_levels'])
+
+
 def test_prefix_incremental_rewind_and_strategy_bands(tmp_path):
     service,source=make(tmp_path);first=source.bars[7]['t'];last=source.bars[-1]['t']
     prefix=service.snapshot('TEST',at(first))

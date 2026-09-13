@@ -223,6 +223,7 @@ def strategy_observation_from_market_row(
         structural_support_levels=tuple(
             level for level in unified_levels if int(level.get("side") or 0) > 0
         ),
+        structural_transition_levels=tuple(level for level in unified_levels if level.get('role')=='transition'),
         structural_resistance_levels=tuple(
             level for level in unified_levels if int(level.get("side") or 0) < 0
         ),

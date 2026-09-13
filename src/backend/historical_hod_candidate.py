@@ -8,10 +8,10 @@ PROFILE_ID = 'historical-hod-1s-macd-5s-v1'
 LABEL = 'Historical resistance / HOD - 1s breakout, 5s MACD'
 
 
-def build(base):
+def build(base, *, profile_id=PROFILE_ID, label=LABEL):
     payload, canvas, plan = build_template(base, align_179=True,
-        profile_id=PROFILE_ID, label_override=LABEL)
-    profile = next(p for p in payload['strategy']['profiles'] if p['profile_id']==PROFILE_ID)
+        profile_id=profile_id, label_override=label)
+    profile = next(p for p in payload['strategy']['profiles'] if p['profile_id']==profile_id)
     p = profile['parameters']
     for key in ('structural_recovery_contract','structural_recovery'):
         p.pop(key,None)
@@ -32,7 +32,7 @@ def build(base):
         'and resistance targets nearest 5% above each broken level. Same-episode prior body-high reentry. '
         'Reserve up to 90% cash for three tranches; add once per higher resistance breakout with shared protection.')
     observe = next(r for r in payload['market_discovery']['rule_sets']
-        if r['rule_set_id']==PROFILE_ID+'-observe')
+        if r['rule_set_id']==profile_id+'-observe')
     observe['conditions'].extend([
         dict(condition_id='macd-observed',enabled=True,left_source_id='indicator.macd.line',
             left_timeframe='5s',comparator='greater_than',value=-1000000.),

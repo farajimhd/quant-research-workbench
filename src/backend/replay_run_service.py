@@ -3302,6 +3302,7 @@ class ReplayRunController:
             structural_resistance_levels=tuple(
                 row for row in unified_levels if int(row.get("side") or 0) < 0
             ),
+            structural_transition_levels=tuple(row for row in unified_levels if row.get('role')=='transition'),
             structural_up_probability=float(
                 structural_indicator.get("qmd_structure_up_probability") or 0.5
             ),
@@ -3487,6 +3488,7 @@ class ReplayRunController:
                     dict(row)
                     for row in structural.get("qmd_structure_resistance_levels") or ()
                 ),
+                structural_transition_levels=tuple(structural.get('qmd_structure_transition_levels') or ()),
                 structural_up_probability=float(
                     structural.get("qmd_structure_up_probability") or 0.5
                 ),
@@ -3626,6 +3628,7 @@ class ReplayRunController:
                 structural_session_high=_optional_positive(structural.get("qmd_structure_session_high")),
                 structural_support_levels=tuple(structural.get("qmd_structure_support_levels") or ()),
                 structural_resistance_levels=tuple(structural.get("qmd_structure_resistance_levels") or ()),
+                structural_transition_levels=tuple(structural.get('qmd_structure_transition_levels') or ()),
                 source_values={**base.source_values,
                                "structure.event_cursor": {"observed_at": event.ts.isoformat(),
                                                           "value": event.raw.get("arrival_sequence", event.sequence)}},
@@ -4104,6 +4107,7 @@ class ReplayRunController:
             "qmd_structure_support_levels": [
                 row for row in unified_levels if int(row.get("side") or 0) > 0
             ],
+            "qmd_structure_transition_levels": [row for row in unified_levels if row.get('role')=='transition'],
             "qmd_structure_resistance_levels": [
                 row for row in unified_levels if int(row.get("side") or 0) < 0
             ],

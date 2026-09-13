@@ -23,7 +23,7 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     sizing_mode='risk_fraction',cash_fraction=.9,tranche_count=3,
     recent_breakout_seconds=30., forming_macd_entry_enabled=1, early_green_stop_enabled=1,
     regular_luld_enabled=0,backtest_luld_estimation_enabled=0,minimum_regular_previous_close=.75,
-    luld_buffer_bps=25.,luld_buffer_ticks=2,luld_maximum_age_ms=60000.)
+    luld_buffer_bps=25.,luld_buffer_ticks=2,luld_maximum_age_ms=60000.,v7_zone_enabled=0,entry_zone_fraction=.30)
 
 
 def configure(p):
@@ -40,10 +40,14 @@ def configure(p):
     s = dict(DEFAULTS, **raw)
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
         raise ValueError('Historical HOD settings must be finite and positive')
     if s['forming_macd_entry_enabled'] not in (0,1):
         raise ValueError('Invalid forming MACD entry policy')
+    if s['v7_zone_enabled'] not in (0,1) or not 0<s['entry_zone_fraction']<=1:
+        raise ValueError('Invalid V7 entry zone policy')
+    if s['v7_zone_enabled'] and s['early_green_stop_enabled']:
+        raise ValueError('V7 zone strategy does not use early green stops')
     if s['early_green_stop_enabled'] not in (0,1):
         raise ValueError('Invalid early green stop policy')
     if s['regular_luld_enabled'] not in (0,1) or s['backtest_luld_estimation_enabled'] not in (0,1) or int(s['luld_buffer_ticks']) != s['luld_buffer_ticks']:
@@ -119,7 +123,10 @@ def band_levels(rows):
 
 def selected_levels(o, s, before):
     result = []
-    for raw in band_levels((*o.structural_support_levels, *o.structural_resistance_levels)):
+    transitions=getattr(o,'structural_transition_levels',()) if s.get('v7_zone_enabled') else ()
+    for raw in band_levels((*o.structural_support_levels, *o.structural_resistance_levels,*transitions)):
+        if s.get('v7_zone_enabled') and raw.get('book_version')!='causal-level-book-v7-mle-1':continue
+        if raw.get('role')=='transition' and not s.get('v7_zone_enabled'):continue
         if (raw.get('book_version') not in BOOK_VERSIONS or raw.get('lifecycle') not in ('active',None)
                 or raw.get('confirmed_at_ms', float('inf')) > before*1000):
             continue
@@ -128,17 +135,43 @@ def selected_levels(o, s, before):
                 or not 0 < raw['lower'] <= raw['price'] <= raw['upper']
                 or not 0 < raw['oldest_member_confirmed_at_ms'] <= raw['confirmed_at_ms']):
             raise ValueError('Historical HOD requires valid V7 bands and historical member provenance')
-        result.append(deepcopy(raw))
+        result.append(dict(deepcopy(raw),v7_all_origins=bool(s.get('v7_zone_enabled'))))
     return result
 
 
 def resistance(level):
-    return level.get('side') in (-1, 'resistance')
+    return level.get('side') in (-1, 'resistance') or (level.get('v7_all_origins') and level.get('role')=='transition' and level.get('transition_from')=='resistance')
+
+
+def eligible_origin(level,session,policy=None):
+    return (bool(level.get('v7_all_origins')) or
+        bool(policy and policy.get('v7_zone_enabled') and level.get('book_version')=='causal-level-book-v7-mle-1') or historical(level,session))
+
+
+def zone_bounds(d,s):
+    hod,vwap=d.get('hod'),d.get('vwap')
+    if not all(isinstance(v,(int,float)) and isfinite(v) and v>0 for v in (hod,vwap)) or hod<=vwap:return None
+    return vwap+(1-s['entry_zone_fraction'])*(hod-vwap),hod
+
+
+def zone_reference(d,o,s):
+    zone=zone_bounds(d,s);previous=d.get('prior_close')
+    if not zone or previous is None:return None
+    offset=s['entry_breakout_offset']
+    rows=[r for r in d.get('prior_rows',[]) if resistance(r) and zone[0]<=r['upper']<=zone[1]
+          and (previous < r['upper']+offset if offset else previous<=r['upper'])]
+    if not rows:return None
+    level=deepcopy(min(rows,key=lambda r:(r['upper'],r['price'],r['unified_level_id'])))
+    boundary=round(level['upper']+offset,9)
+    reentry=bool(d.get('used_episode'));failed=bool(d.get('failed_breakout'))
+    return dict(level=level,prior_hod=zone[1],zone_lower=zone[0],resistance_threshold=boundary,
+        threshold=max(boundary,d.get('prior_body_high',0)) if reentry or failed else boundary,
+        reentry=reentry,failed_breakout=failed,entry_breakout_offset=offset)
 
 
 def entry_level(rows, hod, session):
     below = [r for r in rows if resistance(r) and r['upper'] <= hod]
-    old = [r for r in below if historical(r,session)]
+    old = [r for r in below if eligible_origin(r,session)]
     if old or below:
         return deepcopy(max(old or below, key=lambda r:(r['upper'],r['price'])))
     return dict(lower=hod, upper=hod, price=hod, reference_kind='hod')
@@ -162,7 +195,7 @@ def initial_swing_low(row, boundary, now):
 
 
 def next_historical_resistance(rows, price, session):
-    above = [r for r in rows if resistance(r) and historical(r, session) and r['lower'] > price]
+    above = [r for r in rows if resistance(r) and eligible_origin(r, session) and r['lower'] > price]
     return min(above, key=lambda r:(r['lower'],r['price'])) if above else None
 
 
@@ -172,7 +205,7 @@ def target_selection(rows, broken, price, s, tick, *, session, minimum_target=0.
         offset = s['target_offset_ticks']*tick
         return (ceil((r['upper']+offset)/tick-1e-9)*tick if r['price'] < reference
             else floor((r['lower']-offset)/tick+1e-9)*tick)
-    eligible = [r for r in rows if resistance(r) and historical(r,session) and r['lower'] > broken['upper']
+    eligible = [r for r in rows if resistance(r) and eligible_origin(r,session) and r['lower'] > broken['upper']
         and placement(r) > price]
     if not eligible:
         return None
@@ -183,7 +216,7 @@ def target_selection(rows, broken, price, s, tick, *, session, minimum_target=0.
     return dict(price=target, level=deepcopy(level), reference=reference, broken_level=deepcopy(broken),
         trigger_level=deepcopy(broken),
         placement='above_upper_band' if level['price'] < reference else 'below_lower_band',
-        selection_method='resistance_nearest_five_percent_above_broken_level')
+        selection_method='v7_resistance_nearest_configured_ratio' if s.get('v7_zone_enabled') else 'resistance_nearest_five_percent_above_broken_level')
 
 
 def available_target(rows, price, s, tick, *, session, minimum_target=0., synthetic_base=None, reference_price=None):
@@ -260,14 +293,14 @@ def management(row, active, bar, s, tick, *, previous_bar=None, resistance_level
     events = row.get('local_events', [])+row.get('global_events', [])
     session = datetime.fromtimestamp(bar['end'], NY).date().isoformat()
     attempts = resistance_attempts(active, bar, previous_bar,
-        [level for level in resistance_levels if historical(level, session)])
+        [level for level in resistance_levels if eligible_origin(level, session)])
     if (previous_bar and previous_bar['end'] == bar['time']
             and bar['close'] < bar['open'] and bar['close'] < previous_bar['open']
             and bar['low'] < previous_bar['low']):
         for attempt in attempts:
             level = attempt['level']
             # A close inside the band is a retest, not a failed resistance.
-            if historical(level, session) and bar['close'] < level['lower']:
+            if eligible_origin(level, session) and bar['close'] < level['lower']:
                 active['failed_resistance_exit'] = dict(level=deepcopy(level),
                     previous_bar=deepcopy(previous_bar),exit_bar=deepcopy(bar),
                     attempt_kind='failed_breakout' if attempt['broken'] else 'rejection')
@@ -289,7 +322,7 @@ def management(row, active, bar, s, tick, *, previous_bar=None, resistance_level
             for e in row.get('volume_analysis',{}).get('reversal_outcomes', [])):
         return 'confirmed_structural_reversal'
     rejection = active.get('rejection')
-    if rejection and (not historical(rejection.get('level', {}), session) or bar['close'] > rejection['upper']):
+    if rejection and (not eligible_origin(rejection.get('level', {}), session,s) or bar['close'] > rejection['upper']):
         active.pop('rejection',None)
         rejection = None
     if rejection:
@@ -306,7 +339,7 @@ def management(row, active, bar, s, tick, *, previous_bar=None, resistance_level
     if not rejection:
         for e in events:
             level = e.get('level', {})
-            if (e.get('state') in ('rejection','failed_breakout') and resistance(level) and historical(level, session)
+            if (e.get('state') in ('rejection','failed_breakout') and resistance(level) and eligible_origin(level, session,s)
                     and level.get('upper',0) >= bar['close'] and bar['high'] >= level.get('lower',float('inf'))):
                 active['rejection'] = dict(level=deepcopy(level),at=bar['end'],upper=level['upper'],reaction_low=bar['low'],
                     tolerance=max(tick,s['management_tolerance_atr']*atr))
@@ -348,6 +381,7 @@ def forming_macd(o, d):
 
 def observe(o, d, s):
     now = o.observed_at.timestamp()
+    d['v7_zone_enabled']=s.get('v7_zone_enabled',0)
     if 'bar_close' not in o.evaluation_events:
         return False, False
     macd_closed = False
@@ -452,7 +486,7 @@ def confirm_failed_attempt(active, o, *, previous_bar=None):
         return False
     session = o.observed_at.astimezone(NY).date().isoformat()
     level = active.get('failed_resistance_exit', {}).get('level', {})
-    if not historical(level, session):
+    if not eligible_origin(level, session):
         active.pop('pending_failed_attempt', None)
         return False
     now_ms = round(o.observed_at.timestamp()*1000)
@@ -562,6 +596,7 @@ def early_reentry_confirmation(saved, d, o, fresh, row, detector_fresh):
 
 def entry_reference(d, o, s, session):
     """One selected boundary shared by entry evaluation and chart evidence."""
+    if s.get('v7_zone_enabled'):return zone_reference(d,o,s)
     hod, previous = d.get('prior_hod'), d.get('prior_close')
     if not hod or previous is None:
         return None
@@ -601,7 +636,7 @@ def evaluate(host, a, o, p, state):
     if d.get('session') != session:
         d.clear(); d['session'] = session
     passive = (o.structural_detector_state or {}).get('historical_hod_observation',{})
-    if passive.get('observed_at') == now and passive.get('session') == session:
+    if passive.get('v7_zone_enabled',0)==s.get('v7_zone_enabled',0) and passive.get('observed_at') == now and passive.get('session') == session:
         fresh = o.source_timeframe == '1s' and passive.get('closed_at',0) > d.get('closed_at',0)
         macd_closed = (o.source_timeframe == '5s' and passive.get('completed_macd',{}).get('at',0) > d.get('completed_macd',{}).get('at',0)
             and passive.get('macd_valid') and not passive.get('macd_positive'))
@@ -647,6 +682,9 @@ def evaluate(host, a, o, p, state):
         chart_reference = dict(hod=reference['prior_hod'],
             resistance_upper=reference['level']['upper'] if reference['level'].get('reference_kind')!='hod' else None,
             threshold=reference['threshold'],level_id=reference['level'].get('unified_level_id')) if reference else dict(hod=None,resistance_upper=None,threshold=None,level_id=None)
+        if s.get('v7_zone_enabled'):
+            zone=zone_bounds(d,s)
+            chart_reference.update(hod=d.get('hod'),zone_lower=zone[0] if zone else None)
         prior_reference = previous_market.get('chart_reference')
         d['chart_reference'] = chart_reference
         evidence['historical_hod_reference'] = dict(chart_reference,at=now,changed=chart_reference!=prior_reference)
@@ -670,7 +708,7 @@ def evaluate(host, a, o, p, state):
     flatten = _at_or_after_session_time(o.observed_at,p.get('strategy_behavior',{}).get('flatten_time','15:55:00'))
     market = o.structural_detector_state or {}
     row = market.get('row', {})
-    detector_fresh = (fresh and market.get('book',{}).get('version') == BOOK_VERSION
+    detector_fresh = (fresh and market.get('book',{}).get('version') in (('causal-level-book-v7-mle-1',) if s.get('v7_zone_enabled') else (BOOK_VERSION,))
         and bool(market.get('book',{}).get('fingerprint')) and row.get('effective_at') == now)
     reclaim = (early_reentry_confirmation(saved_reentry,d,o,fresh,row,detector_fresh)
         if saved_reentry and not acquired and not pending else None)
@@ -755,11 +793,11 @@ def evaluate(host, a, o, p, state):
                 target_breaks.clear()
             for r in sorted(crossed,key=lambda level:level['upper']):
                 # Stop confirmation includes the breakout close itself.
-                if (historical(r,session) and r['upper'] > cleared['upper']
+                if (eligible_origin(r,session) and r['upper'] > cleared['upper']
                         and r['price'] > cleared['price']):
                     pending_levels[str(r['unified_level_id'])] = dict(level=r,count=0)
             trigger = active['target'].get('trigger_level')
-            if not regular and d['contiguous'] and trigger and (historical(trigger, session) or trigger.get('reference_kind')=='synthetic') and o.price > trigger['upper']:
+            if not regular and d['contiguous'] and trigger and (eligible_origin(trigger, session) or trigger.get('reference_kind')=='synthetic') and o.price > trigger['upper']:
                 target_breaks[str(trigger['unified_level_id'])] = deepcopy(trigger)
             if regular:
                 target_breaks.clear()
@@ -778,7 +816,7 @@ def evaluate(host, a, o, p, state):
                 if selected:
                     selected['triggering_breakout'] = deepcopy(r)
                     if 'synthetic_step_fraction' not in selected:
-                        selected['selection_method'] = 'resistance_nearest_five_percent_above_next_historical_resistance'
+                        selected['selection_method'] = ('v7_resistance_nearest_ratio_above_next_resistance' if s.get('v7_zone_enabled') else 'resistance_nearest_five_percent_above_next_historical_resistance')
                 if selected and selected['price'] >= active.get('desired_target',{}).get('price',target):
                     active['desired_target'] = selected
             if len(target_breaks)>4096:
@@ -791,7 +829,7 @@ def evaluate(host, a, o, p, state):
                     del pending_levels[key]; continue
                 item['count'] += 1
                 if item['count'] >= s['historical_hold_closes']:
-                    if historical(r,session):
+                    if eligible_origin(r,session):
                         active['desired_stop'] = max(active.get('desired_stop',0),stop_below(r['lower'],s,tick))
                         cleared = deepcopy(r)
                         active['last_cleared_resistance'] = cleared
@@ -799,7 +837,7 @@ def evaluate(host, a, o, p, state):
             if len(pending_levels)>4096:
                 raise ValueError('Historical stop confirmation capacity exceeded')
             active['best_close'] = max(active.get('best_close',o.price),o.price)
-            if not any(historical(r,session) and r['upper'] < o.price for r in d['rows']):
+            if not any(eligible_origin(r,session) and resistance(r) and r['upper'] < o.price for r in d['rows']):
                 trailing = floor((active['best_close']-active['initial_risk'])/tick+1e-9)*tick
                 active['desired_stop'] = max(active.get('desired_stop',0),trailing)
         if regular:
@@ -914,6 +952,11 @@ def evaluate(host, a, o, p, state):
     vwap = d.get('vwap')
     if not hod or previous is None or vwap is None or not isfinite(vwap) or vwap <= 0 or o.price <= vwap:
         return result('wait','hod_history_or_vwap_gate')
+    if s.get('v7_zone_enabled'):
+        zone=zone_bounds(d,s)
+        if not zone or not zone[0]<=min(o.price,o.bid)<=max(o.price,o.ask)<=zone[1]:
+            return result('wait','outside_v7_hod_entry_zone')
+        if not reference:return result('wait','no_v7_resistance_in_entry_zone')
     boundary = deepcopy(saved_reentry['level']) if reclaim else reference['level']
     reentry = True if reclaim else reference['reentry']
     failed_breakout = False if reclaim else reference['failed_breakout']
@@ -928,7 +971,7 @@ def evaluate(host, a, o, p, state):
     inclusive = bool(offset) and (not require_body_high or resistance_threshold > d['prior_body_high'])
     crossed = (round(previous,9) < threshold <= round(o.price,9) if inclusive
         else previous <= threshold < o.price)
-    recent_held = (not require_body_high and bool(recent) and recent.get('level_id') == boundary.get('unified_level_id')
+    recent_held = (not s.get('v7_zone_enabled') and not require_body_high and bool(recent) and recent.get('level_id') == boundary.get('unified_level_id')
         and recent.get('threshold') == resistance_threshold
         and 0 <= now-recent.get('at',0) <= s.get('recent_breakout_seconds',30.)
         and (min(o.price,o.bid) >= threshold if inclusive else min(o.price,o.bid) > threshold))
@@ -940,7 +983,13 @@ def evaluate(host, a, o, p, state):
         selected = luld
     if not selected:
         return result('wait','qualified_target_unavailable')
-    swing = initial_swing_low(row,boundary,now)
+    swing = initial_swing_low(row,dict(lower=o.bid) if s.get('v7_zone_enabled') else boundary,now)
+    if s.get('v7_zone_enabled'):
+        # Current confirmed supports and confirmed local swings share one stop
+        # comparison, independent of the session in which they originated.
+        candidates=[r for r in d['rows'] if r.get('side') in (1,'support') and r['upper']<o.bid]
+        if swing:candidates.append(swing)
+        swing=max(candidates,key=lambda r:stop_below(r['lower'],s,tick),default=None)
     if swing is None:
         return result('wait','confirmed_local_swing_low_unavailable')
     stop = stop_below(swing['lower'],s,tick)

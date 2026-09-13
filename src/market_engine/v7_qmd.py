@@ -109,11 +109,12 @@ def projection(engine,as_of,provenance,include_segments):
     snapshot=engine.snapshot(as_of,include_segments=include_segments)
     levels=[]
     for row in engine.rows:
-        if not row['qualified'] or row['role'] not in ('support','resistance'):continue
+        if not row['qualified'] or row['role'] not in ('support','resistance','transition'):continue
         last=row['segments'][-1]
         origin=datetime.combine(datetime.fromisoformat(row['origin_session']).date(),time(4),NY).timestamp()*1000
         levels.append(dict(unified_level_id=row['id'],price=row['price'],lower=row['lower'],upper=row['upper'],
-            side=1 if row['role']=='support' else -1,role=row['role'],historical=row['historical'],
+            side=1 if row['role']=='support' else -1 if row['role']=='resistance' else 0,role=row['role'],historical=row['historical'],
+            transition_from=row.get('transition_from'),
             origin_session=row['origin_session'],book_version=VERSION,lifecycle='active',timeframes=['1s'],
             created_at_ms=row['created_at']*1000,confirmed_at_ms=last['start']*1000,
             oldest_member_confirmed_at_ms=origin if row['historical'] else row['created_at']*1000,

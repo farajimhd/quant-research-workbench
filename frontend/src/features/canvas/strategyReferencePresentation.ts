@@ -1,5 +1,5 @@
 type Row = Record<string, unknown>;
-export type StrategyReferenceSegment = { start: number; end: number; hod?: number; resistance?: number };
+export type StrategyReferenceSegment = { start: number; end: number; hod?: number; resistance?: number; zoneLower?: number };
 
 /** Recorded strategy selections only; never rebuild the book or HOD in the UI. */
 export function strategyReferencePresentation(rows: Row[], ticker: string, asOf: string): StrategyReferenceSegment[] {
@@ -16,10 +16,10 @@ export function strategyReferencePresentation(rows: Row[], ticker: string, asOf:
     if (!Number.isFinite(time) || !Number.isFinite(published) || !Number.isFinite(cutoff)
         || time > cutoff || published > cutoff || time > published) continue;
     const last = result.at(-1);
-    const hod = positive(reference.hod), resistance = positive(reference.resistance_upper);
-    if (last && last.hod === hod && last.resistance === resistance) continue;
+    const hod = positive(reference.hod), resistance = positive(reference.resistance_upper), zoneLower=positive(reference.zone_lower);
+    if (last && last.hod === hod && last.resistance === resistance && last.zoneLower===zoneLower) continue;
     if (last) last.end = time;
-    result.push({ start: time, end: cutoff, hod, resistance });
+    result.push({ start: time, end: cutoff, hod, resistance, ...(zoneLower===undefined?{}:{zoneLower}) });
   }
   return result.filter(row => row.end > row.start);
 }

@@ -327,6 +327,7 @@ class StrategyObservation:
     structural_resistance_confidence: float = 0.0
     structural_support_levels: tuple[dict[str, Any], ...] = ()
     structural_resistance_levels: tuple[dict[str, Any], ...] = ()
+    structural_transition_levels: tuple[dict[str, Any], ...] = ()
     structural_session_high: float | None = None
     structural_up_probability: float = 0.5
     structure_event: str = ""
