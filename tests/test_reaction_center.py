@@ -1,9 +1,43 @@
 from copy import deepcopy
 import math
 import pytest
+import numpy as np
+from types import SimpleNamespace
 from src.market_engine.reaction_center import annotate,estimate,fit
 from src.market_engine.historical_level_checkpoint import seed,consolidate
 from tests.test_historical_level_checkpoint import day
+
+
+def test_analytic_gradient_and_box_convergence_validation():
+    from src.market_engine.reaction_center import objective_gradient,converged
+    prices=np.array([-3.,0.,0.,1.,50.])
+    point=np.array([.06,-.46])
+    objective=lambda p:objective_gradient(p,prices)
+    _,gradient=objective(point)
+    numerical=[]
+    for i in range(2):
+        delta=np.zeros(2);delta[i]=1e-5
+        numerical.append((objective(point+delta)[0]-objective(point-delta)[0])/2e-5)
+    np.testing.assert_allclose(gradient,numerical,rtol=1e-6,atol=1e-7)
+    bad=SimpleNamespace(success=True,fun=objective(point)[0],x=point)
+    assert not converged(bad,objective,[(-3.,50.),(-.69,5.)])
+    boundary=SimpleNamespace(success=True,fun=0.,x=np.array([0.,0.]))
+    assert converged(boundary,lambda p:(0.,np.array([0.,1.])),[(0.,0.),(0.,5.)])
+    boundary.success=False
+    assert not converged(boundary,lambda p:(0.,np.zeros(2)),[(0.,0.),(0.,5.)])
+
+
+def test_repeated_price_regression_with_collapsed_quantile_starts():
+    # Captured failing input, compressed as price multiplicities; no ticker rule.
+    counts={.9997:1,.9998:1,1.:162,1.0001:9,1.0002:1,1.0003:1,
+            1.0004:2,1.0006:1,1.0007:5,1.0008:2,1.0009:3,
+            1.0011:2,1.0012:1,1.0049:1,1.005:19}
+    prices=[p for p,n in counts.items() for _ in range(n)]
+    assert len(prices)==211
+    result=fit(prices,.0001)
+    assert result['status']=='estimated'
+    assert result['center']==pytest.approx(1.0000058502245537,abs=1e-10)
+    assert result['scale']==pytest.approx(6.263900477637807e-5,rel=1e-5)
 
 
 def test_robust_fit_small_samples_and_tick_floor():

@@ -10,6 +10,36 @@ CONFIG = dict(version=VERSION, degrees_of_freedom=4, minimum_observations=3,
               scale_floor_ticks=.5, observation='1s extreme from contact through resolution',
               overlap_policy='first nonoverlapping resolved rejection per role')
 
+SOLVER_VERSION = 'student-t-analytic-gradient-1'
+
+
+def objective_gradient(parameters, prices, degrees_of_freedom=4):
+    """Mean negative log likelihood and exact derivatives in tick coordinates.
+
+    Omits constants independent of the parameters. Averaging leaves the MLE
+    unchanged and makes convergence checks independent of observation count.
+    """
+    location, log_scale = parameters
+    scale = np.exp(log_scale)
+    z = (prices-location)/scale
+    denominator = degrees_of_freedom+z*z
+    value = log_scale+(degrees_of_freedom+1)/2*np.log1p(z*z/degrees_of_freedom).mean()
+    gradient = np.array([-(degrees_of_freedom+1)*(z/denominator).mean()/scale,
+                         1-(degrees_of_freedom+1)*(z*z/denominator).mean()])
+    return float(value), gradient
+
+
+def converged(result, objective, bounds):
+    """Require successful termination and independently checked box stationarity."""
+    if not result.success or not np.isfinite(result.fun) or not np.isfinite(result.x).all():
+        return False
+    lower, upper = np.asarray(bounds).T
+    if np.any(result.x < lower) or np.any(result.x > upper):
+        return False
+    value, gradient = objective(result.x)
+    projected = result.x-np.clip(result.x-gradient, lower, upper)
+    return bool(np.isfinite(value) and np.isfinite(gradient).all() and np.max(np.abs(projected)) <= 1e-6)
+
 
 def annotate(events, bars):
     """Retain source observations, including rejected/overlapping ones for audit."""
@@ -43,13 +73,13 @@ def fit(prices, tick):
     origin=float(np.median(x));y=(x-origin)/tick
     floor=CONFIG['scale_floor_ticks'];nu=CONFIG['degrees_of_freedom']
     def objective(p):
-        scale=np.exp(p[1]);z=(y-p[0])/scale
-        return float(len(y)*p[1]+(nu+1)/2*np.log1p(z*z/nu).sum())
+        return objective_gradient(p,y,nu)
     spread=max(floor,float(np.median(np.abs(y)))*1.4826)
     bounds=[(float(y.min()),float(y.max())),(math.log(floor),math.log(max(1.,float(np.ptp(y))*2)))]
-    trials=[minimize(objective,[float(loc),math.log(spread)],method='L-BFGS-B',bounds=bounds)
+    trials=[minimize(objective,[float(loc),math.log(spread)],jac=True,method='L-BFGS-B',bounds=bounds,
+                     options=dict(gtol=1e-8,ftol=0.,maxls=50,maxiter=1000))
             for loc in np.unique(np.quantile(y,[.25,.5,.75]))]
-    valid=[r for r in trials if r.success and np.isfinite(r.fun) and np.isfinite(r.x).all()]
+    valid=[r for r in trials if converged(r,objective,bounds)]
     if not valid:
         return dict(result,status='fit_failed')
     best=min(valid,key=lambda r:(r.fun,float(r.x[0])))
