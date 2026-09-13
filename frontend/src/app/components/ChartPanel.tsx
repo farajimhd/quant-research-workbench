@@ -4967,13 +4967,14 @@ function normalizeStrategyPresentationSettings(settings: Partial<StrategyPresent
 }
 
 function resolveOscillatorThresholdSettings(settings?: Partial<OscillatorThresholdSettings>, group?: OscillatorPaneGroup): OscillatorThresholdSettings {
+  const emaAxis = group?.series.some(series => series.chartRole === "ema-acceleration") === true;
   const defaultValue = group?.key === "oscillator:rsi" ? 50 : 0;
   const defaultColor = validHexColor(readNeutralChartColor(), "#667085");
   return {
     ...(group?.key === "oscillator:macd" ? { macdBpsVisible: settings?.macdBpsVisible !== false, macdBpsValue: Number.isFinite(settings?.macdBpsValue) ? settings!.macdBpsValue : 0 } : {}),
     color: validHexColor(settings?.color, defaultColor),
-    lineStyle: settings?.lineStyle === "solid" || settings?.lineStyle === "dotted" ? settings.lineStyle : "dashed",
-    lineWidth: Math.max(1, Math.min(4, Math.round(Number(settings?.lineWidth) || 1))),
+    lineStyle: settings?.lineStyle === "solid" || settings?.lineStyle === "dotted" || settings?.lineStyle === "dashed" ? settings.lineStyle : emaAxis ? "solid" : "dashed",
+    lineWidth: Math.max(1, Math.min(4, Math.round(Number(settings?.lineWidth) || (emaAxis ? 2 : 1)))),
     value: Number.isFinite(Number(settings?.value)) ? Number(settings?.value) : defaultValue,
     visible: settings?.visible !== false,
   };
