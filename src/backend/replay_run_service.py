@@ -3738,9 +3738,7 @@ class ReplayRunController:
                 'legacy_probability_scores': 'not used by this versioned contract'})
         snapshot = await asyncio.to_thread(cursors[key].snapshot, as_of, sequence)
         if snapshot.get('book_version')=='causal-level-book-v7-mle-1':
-            self._record_data_authority(f'v7:{ticker}:{snapshot["session_date"]}',dict(
-                checkpoint=snapshot['provenance'],source_revision=snapshot.get('source_audit',{}).get('source_revision'),
-                source_policy='completed-causal-1s-excluding-late-reports',band_contract='reaction-band-student-t-mle-1'))
+            self._record_v7_data_authority(ticker, snapshot)
         if snapshot.get('normalization'):
             self._record_data_authority(f'level_normalization:{ticker}:{snapshot["normalization"]["frozen_at"]}',
                                         snapshot['normalization'])
@@ -6088,6 +6086,24 @@ class ReplayRunController:
                     )
                 )
         return result
+
+    def _record_v7_data_authority(self, ticker: str, snapshot: dict[str, Any]) -> None:
+        # A session-opening snapshot contains only its verified prior seed.
+        # Frame prefetch may load today's source before the event cursor does;
+        # source absence in either lane is not a revision of that frozen source.
+        key = f'v7:{ticker}:{snapshot["session_date"]}'
+        self._record_data_authority(key, dict(
+            checkpoint=snapshot['provenance'],
+            source_policy='completed-causal-1s-excluding-late-reports',
+            band_contract='reaction-band-student-t-mle-1'))
+        revision = snapshot.get('source_audit', {}).get('source_revision')
+        if revision is None:
+            if snapshot.get('bars_processed', 0):
+                raise RuntimeError('V7 consumed historical bars without source revision')
+            return
+        if revision.get('request_complete') is not True:
+            raise RuntimeError('V7 historical source revision is incomplete')
+        self._record_data_authority(f'{key}:source', dict(source_revision=revision))
 
     def _record_data_authority(self, key: str, evidence: dict[str, Any]) -> None:
         normalized = deepcopy(evidence)
