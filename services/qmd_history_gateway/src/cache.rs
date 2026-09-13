@@ -431,6 +431,8 @@ pub struct CacheLease {
 }
 
 pub struct CacheEntry {
+    cache_index: std::sync::Weak<Mutex<CacheIndex>>,
+    cache_stats: Arc<CacheStats>,
     accounted: AtomicBool,
     accounting_lock: StdMutex<()>,
     allocated_bytes: Arc<AtomicU64>,
@@ -1234,7 +1236,9 @@ impl HistoricalDerivedCache {
                 index
                     .entries
                     .get(candidate)
-                    .is_some_and(|entry| entry.complete.load(Ordering::Acquire))
+                    .is_some_and(|entry| {
+                        entry.complete.load(Ordering::Acquire) && Arc::strong_count(entry) == 1
+                    })
             }) else {
                 break;
             };
@@ -1251,6 +1255,8 @@ impl HistoricalDerivedCache {
         let requirement =
             historical_requirement(&key, &revision_window, &ticker, &profile, &source_revision);
         let entry = Arc::new(CacheEntry {
+            cache_index: Arc::downgrade(&self.inner),
+            cache_stats: self.stats.clone(),
             accounted: AtomicBool::new(true),
             accounting_lock: StdMutex::new(()),
             allocated_bytes: self.allocated_bytes.clone(),
@@ -2311,7 +2317,7 @@ impl HistoricalDerivedCache {
                 }
                 events_processed += count as u64;
                 if let Some(products) = products.as_ref() {
-                    entry.set_product_bytes(products.metrics().estimated_bytes)?;
+                    entry.set_product_bytes(products.metrics().estimated_bytes).await?;
                 }
                 let mut state = entry.state.lock().await;
                 state.events_processed = events_processed;
@@ -2403,7 +2409,7 @@ impl HistoricalDerivedCache {
         }
         if let Some(products) = products {
             let product_metrics = products.metrics();
-            entry.set_product_bytes(product_metrics.estimated_bytes)?;
+            entry.set_product_bytes(product_metrics.estimated_bytes).await?;
             if product_metrics.evictions > 0 {
                 return Err(format!(
                     "historical canonical product build exceeded its bounded cache: evictions={} rows={} estimated_bytes={}",
@@ -2736,7 +2742,9 @@ impl HistoricalDerivedCache {
                 index
                     .entries
                     .get(candidate)
-                    .is_some_and(|entry| entry.complete.load(Ordering::Acquire))
+                    .is_some_and(|entry| {
+                        entry.complete.load(Ordering::Acquire) && Arc::strong_count(entry) == 1
+                    })
             }) else {
                 break;
             };
@@ -2916,7 +2924,8 @@ impl CacheEntry {
                 self.max_update_bytes,
             ));
         }
-        self.set_estimated_bytes(frame_bytes as u64 + self.product_bytes.load(Ordering::Acquire))?;
+        self.reserve_estimated_bytes(frame_bytes as u64 + self.product_bytes.load(Ordering::Acquire))
+            .await?;
         self.frame_bytes
             .store(frame_bytes as u64, Ordering::Release);
         let sequence = state.bars.len() as u64 + 1;
@@ -2944,7 +2953,8 @@ impl CacheEntry {
                 self.max_update_bytes,
             ));
         }
-        self.set_estimated_bytes(frame_bytes as u64 + self.product_bytes.load(Ordering::Acquire))?;
+        self.reserve_estimated_bytes(frame_bytes as u64 + self.product_bytes.load(Ordering::Acquire))
+            .await?;
         self.frame_bytes
             .store(frame_bytes as u64, Ordering::Release);
         state.structure_projection = projection;
@@ -3032,7 +3042,8 @@ impl CacheEntry {
             ));
         }
         if let Err(error) = self
-            .set_estimated_bytes(frame_bytes as u64 + self.product_bytes.load(Ordering::Acquire))
+            .reserve_estimated_bytes(frame_bytes as u64 + self.product_bytes.load(Ordering::Acquire))
+            .await
         {
             state.structure_events.truncate(original_len);
             return Err(error);
@@ -3075,7 +3086,8 @@ impl CacheEntry {
             ));
         }
         if let Err(error) = self
-            .set_estimated_bytes(frame_bytes as u64 + self.product_bytes.load(Ordering::Acquire))
+            .reserve_estimated_bytes(frame_bytes as u64 + self.product_bytes.load(Ordering::Acquire))
+            .await
         {
             state.market_signal_events.pop();
             return Err(error);
@@ -3085,11 +3097,45 @@ impl CacheEntry {
         Ok(())
     }
 
-    fn set_product_bytes(&self, bytes: usize) -> Result<(), String> {
+    async fn set_product_bytes(&self, bytes: usize) -> Result<(), String> {
         let bytes = bytes as u64;
-        self.set_estimated_bytes(self.frame_bytes.load(Ordering::Acquire) + bytes)?;
+        self.reserve_estimated_bytes(self.frame_bytes.load(Ordering::Acquire) + bytes)
+            .await?;
         self.product_bytes.store(bytes, Ordering::Release);
         Ok(())
+    }
+
+    async fn reserve_estimated_bytes(&self, next: u64) -> Result<(), String> {
+        loop {
+            let error = match self.set_estimated_bytes(next) {
+                Ok(()) => return Ok(()),
+                Err(error) => error,
+            };
+            if !error.starts_with("historical cache byte limit exceeded:") {
+                return Err(error);
+            }
+            let Some(index) = self.cache_index.upgrade() else {
+                return Err(error);
+            };
+            let mut index = index.lock().await;
+            // Reclaim at reservation time, before the hard ceiling rejects a
+            // build. Only the index may own a victim: completed readers and
+            // builders retain leases and must remain fully accounted.
+            let victim = index.order.iter().position(|key| {
+                index.entries.get(key).is_some_and(|entry| {
+                    entry.complete.load(Ordering::Acquire) && Arc::strong_count(entry) == 1
+                })
+            });
+            let Some(position) = victim else {
+                return Err(error);
+            };
+            let key = index.order.remove(position).unwrap();
+            let entry = index.entries.remove(&key).unwrap();
+            entry.release_accounting();
+            self.cache_stats.evictions.fetch_add(1, Ordering::Relaxed);
+            drop(entry);
+            drop(index);
+        }
     }
 
     fn set_estimated_bytes(&self, next: u64) -> Result<(), String> {
@@ -3949,6 +3995,8 @@ fn valid_price_bar(bar: &BarRow) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::{CacheIndex, CacheStats};
+    use std::collections::{HashMap, VecDeque};
     use super::{
         apply_structure_projection_row, bounded_encountered_structure_levels,
         cache_event_type_filter, cache_key, encountered_structure_levels_for_session,
@@ -4689,12 +4737,69 @@ mod tests {
         assert_eq!(history[0].price, 45.0);
     }
 
+    #[tokio::test]
+    async fn byte_pressure_reclaims_idle_entries_but_preserves_readers_and_builders() {
+        let allocated = Arc::new(AtomicU64::new(0));
+        let index = Arc::new(Mutex::new(CacheIndex { entries: HashMap::new(), order: VecDeque::new() }));
+        let make_entry = |index: &Arc<Mutex<CacheIndex>>| {
+            let (updates, _) = broadcast::channel(16);
+            let (bar_updates, _) = broadcast::channel(16);
+            Arc::new(CacheEntry {
+                cache_index: Arc::downgrade(index),
+                cache_stats: Arc::new(CacheStats::default()),
+                accounted: AtomicBool::new(true),
+                accounting_lock: StdMutex::new(()),
+                allocated_bytes: allocated.clone(),
+                complete: AtomicBool::new(false),
+                frame_bytes: AtomicU64::new(0),
+                global_max_bytes: 1_000,
+                notify: Notify::new(),
+                state: Mutex::new(EntryState::default()),
+                bar_updates,
+                updates,
+                estimated_bytes: AtomicU64::new(0),
+                max_update_bytes: 1_000,
+                max_updates: 10,
+                product_bytes: AtomicU64::new(0),
+                requirement: None,
+            })
+        };
+        let idle = make_entry(&index);
+        idle.set_estimated_bytes(600).unwrap();
+        idle.complete.store(true, Ordering::Release);
+        let reader = make_entry(&index);
+        reader.set_estimated_bytes(200).unwrap();
+        reader.complete.store(true, Ordering::Release);
+        let builder = make_entry(&index);
+        builder.set_estimated_bytes(100).unwrap();
+        {
+            let mut entries = index.lock().await;
+            for (key, entry) in [("reader", reader.clone()), ("builder", builder.clone()), ("idle", idle)] {
+                entries.order.push_back(key.into());
+                entries.entries.insert(key.into(), entry);
+            }
+        }
+        builder.reserve_estimated_bytes(700).await.unwrap();
+        assert_eq!(allocated.load(Ordering::Acquire), 900);
+        assert_eq!(builder.cache_stats.evictions.load(Ordering::Acquire), 1);
+        assert!(!index.lock().await.entries.contains_key("idle"));
+        assert!(reader.accounted.load(Ordering::Acquire));
+        assert!(builder.reserve_estimated_bytes(900).await.is_err());
+        assert_eq!(allocated.load(Ordering::Acquire), 900);
+        drop(reader);
+        builder.reserve_estimated_bytes(900).await.unwrap();
+        assert!(!index.lock().await.entries.contains_key("reader"));
+        assert_eq!(allocated.load(Ordering::Acquire), 900);
+    }
+
     #[test]
     fn cache_entry_reservations_enforce_the_service_byte_ceiling() {
         let allocated = Arc::new(AtomicU64::new(0));
         let (updates, _) = broadcast::channel(16);
         let (bar_updates, _) = broadcast::channel(16);
         let entry = CacheEntry {
+            cache_index: std::sync::Weak::new(),
+            cache_stats: Arc::new(CacheStats::default()),
             accounted: AtomicBool::new(true),
             accounting_lock: StdMutex::new(()),
             allocated_bytes: allocated.clone(),
@@ -4728,6 +4833,8 @@ mod tests {
         let (updates, _) = broadcast::channel(16);
         let (bar_updates, _) = broadcast::channel(16);
         let entry = Arc::new(CacheEntry {
+            cache_index: std::sync::Weak::new(),
+            cache_stats: Arc::new(CacheStats::default()),
             accounted: AtomicBool::new(true),
             accounting_lock: StdMutex::new(()),
             allocated_bytes: allocated.clone(),
@@ -4775,6 +4882,8 @@ mod tests {
         let (updates, _) = broadcast::channel(16);
         let (bar_updates, _) = broadcast::channel(16);
         let entry = Arc::new(CacheEntry {
+            cache_index: std::sync::Weak::new(),
+            cache_stats: Arc::new(CacheStats::default()),
             accounted: AtomicBool::new(true),
             accounting_lock: StdMutex::new(()),
             allocated_bytes: allocated,
@@ -4815,6 +4924,8 @@ mod tests {
         let (updates, _) = broadcast::channel(16);
         let (bar_updates, _) = broadcast::channel(16);
         let entry = CacheEntry {
+            cache_index: std::sync::Weak::new(),
+            cache_stats: Arc::new(CacheStats::default()),
             accounted: AtomicBool::new(true),
             accounting_lock: StdMutex::new(()),
             allocated_bytes: allocated,
