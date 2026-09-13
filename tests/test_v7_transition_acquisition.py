@@ -129,4 +129,19 @@ def test_candidate_publishes_forming_macd_gray_centers_and_configurable_offset()
     s=profile['parameters']['historical_hod']
     assert s['forming_macd_entry_enabled']==1
     assert s['v7_transition_entries_enabled']==1
-    assert s['rejection_break_offset_bps']==10
+    assert s['rejection_break_offset_bps']==115
+
+
+@pytest.mark.parametrize('close,expected',[(3.95,False),(3.93,False),(3.929,True)])
+def test_115_bps_rejection_buffer_holds_until_below_saved_band_threshold(close,expected):
+    at=NOW.timestamp()
+    previous=dict(time=at+2,end=at+3,open=4.,high=4.,low=3.96,close=3.98)
+    bar=dict(time=at+3,end=at+4,open=3.99,high=4.,low=close-.01,close=close)
+    level=dict(side='resistance',lower=3.97569858298652,upper=4.016966832064307,
+        confirmed_at=at+1,level_id='saved-band',oldest_member_confirmed_at_ms=(at-86400)*1000)
+    active=dict(confirmed_at=at+1,management_base=dict(lower=3.5,tolerance=.01))
+    settings=dict(H.DEFAULTS,rejection_break_offset_bps=115.)
+    reason=H.management({},active,bar,settings,.01,previous_bar=previous,resistance_levels=[level])
+    assert (reason=='red_close_below_attempt_open')==expected
+    if expected:
+        assert active['failed_resistance_exit']['failure_threshold']==pytest.approx(3.9299780492821754)
