@@ -23,10 +23,11 @@ class V7ZonePresentationTests(unittest.TestCase):
                   const candles=Array.from({length:90},(_,i)=>({time:base+i,endTime:base+i+1,open:4.65+i*.003,close:4.65+(i+1)*.003,high:4.67+(i+1)*.003,low:4.64+i*.003}));
                   const rows=[0,30].map((i)=>({ticker:'TEST',event_time:new Date((base+i)*1000).toISOString(),chart_plan:{historical_hod_reference:{at:base+i,hod:5,zone_lower:4.7+i*.001,resistance_upper:4.8,changed:true}}}));
                   const refs=project(rows,'TEST',new Date((base+90)*1000).toISOString());
+                  const trade={id:'zone-test',entryTime:base+10,exitTime:base+65,endTime:base+65,entryPrice:4.7,exitPrice:4.85,status:'closed',positionSide:'LONG'};
                   if(refs.length!==2||refs[1].zoneLower!==4.73)throw Error('Recorded zone geometry');
                   document.getElementById('root').style.display='none';
                   const node=document.createElement('div');document.body.appendChild(node);
-                  (dom.default??dom).createRoot(node).render(React.createElement(ChartPanel,{ticker:'TEST',timeframe:'1s',timeframes:['1s'],baseHeight:650,settingsStorageKey:'v7-zone-review',visibleColumns:[],featureOptions:[],indicatorOptions:[],displayItemOptions:[],payload:{candles,volume:[],overlay_series:[],oscillator_series:[],markers:[],regions:[],strategy_references:refs}}));
+                  (dom.default??dom).createRoot(node).render(React.createElement(ChartPanel,{ticker:'TEST',timeframe:'1s',timeframes:['1s'],baseHeight:650,settingsStorageKey:'v7-zone-review',visibleColumns:[],featureOptions:[],indicatorOptions:[],displayItemOptions:[],payload:{candles,volume:[],overlay_series:[],oscillator_series:[],markers:[],regions:[],strategy_references:refs,trade_annotations:[trade]}}));
                 }""")
                 page.wait_for_timeout(400)
                 output=Path(os.environ['V7_ZONE_REVIEW_OUTPUT']);output.mkdir(parents=True,exist_ok=True)

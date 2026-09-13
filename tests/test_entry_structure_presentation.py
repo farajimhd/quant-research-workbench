@@ -109,7 +109,18 @@ const ts = require('typescript');
 const assert = require('node:assert/strict');
 const source = require('node:fs').readFileSync(SOURCE_PATH, 'utf8');
 const js = ts.transpileModule(source, {compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
-const {tradeGuideSpan} = await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'));
+const {tradeGuideSpan,positionReferenceSegments:clip} = await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'));
+const references=[{start:0,end:20,hod:5},{start:20,end:100,hod:6}];
+// No position, no lines; no bridging flat intervals or leaking another trade.
+assert.deepEqual(clip(references,[]),[]);
+assert.deepEqual(clip(references,[{entryTime:10,exitTime:15,endTime:100}]),[{start:10,end:15,hod:5}]);
+assert.deepEqual(clip(references,[{entryTime:10,exitTime:25},{entryTime:40,endTime:50}]),[
+ {start:10,end:25,hod:5},{start:40,end:50,hod:6}]);
+// Exact-boundary entry takes that observation; open positions stop at the as-of horizon.
+assert.deepEqual(clip(references,[{entryTime:20,endTime:150}]),[{start:20,end:100,hod:6}]);
+assert.deepEqual(clip(references,[{entryTime:101,endTime:110}]),[]);
+assert.deepEqual(clip(references,[{entryTime:15,exitTime:15}]),[]);
+assert.deepEqual(references,[{start:0,end:20,hod:5},{start:20,end:100,hod:6}]);
 // A subsecond entry/exit must not smear its later HOD/R1-R3 into earlier bars.
 assert.deepEqual(tradeGuideSpan(200,200.2,1000,true),{left:200,right:200.2});
 assert.deepEqual(tradeGuideSpan(200,200,1000,true),{left:200,right:200});

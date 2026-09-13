@@ -1,6 +1,6 @@
 import {EMA_ACCELERATION_ID,EMA_ACCELERATION_KEY,emaAcceleration,emaPeriod,accelerationUnit,accelerationUnits,emaStates,type EmaState,type AccelerationUnit} from './emaAcceleration';
 import {ReactionBookPrimitive,useReactionBook} from './ReactionBook';
-import { tradeGuideSpan } from "./tradeGuideGeometry";
+import { positionReferenceSegments, tradeGuideSpan } from "./tradeGuideGeometry";
 import { LevelReactionPrimitive, useLevelReaction } from "./LevelReaction";
 import { macdBpsPoints } from "./macdBps";
 import { HindsightPrimitive, useHindsightPositions } from "./HindsightPositions";
@@ -854,8 +854,8 @@ const defaultStrategyPresentationSettings: StrategyPresentationSettings = {
     levelLine: strategyPresentationStyle("", "dashed", 1, 0.9),
     entryResistanceLine: strategyPresentationStyle(STRATEGY_ENTRY_REFERENCE_COLOR, "dashed", 1, 1),
     entryResistanceLabel: { ...strategyPresentationStyle(STRATEGY_ENTRY_REFERENCE_COLOR, "solid", 1, 1, 9), borderWidth: 0, labelPaddingX: 2, labelPaddingY: 1 },
-    highOfDayLine: strategyPresentationStyle(STRATEGY_ENTRY_REFERENCE_COLOR, "solid", 1, 1),
-    entryZoneLine: strategyPresentationStyle(STRATEGY_ENTRY_REFERENCE_COLOR, "dotted", 1, 1),
+    highOfDayLine: strategyPresentationStyle(STRATEGY_ENTRY_REFERENCE_COLOR, "dashed", 1, 1),
+    entryZoneLine: strategyPresentationStyle(STRATEGY_ENTRY_REFERENCE_COLOR, "dashed", 1, 1),
     entryZoneLabel: strategyPresentationStyle(STRATEGY_ENTRY_REFERENCE_COLOR, "solid", 1, 1),
     highOfDayLabel: { ...strategyPresentationStyle(STRATEGY_ENTRY_REFERENCE_COLOR, "solid", 1, 1, 9), borderWidth: 0, labelPaddingX: 2, labelPaddingY: 1 },
     levelLabel: { ...strategyPresentationStyle("", "solid", 1, 1, 8, 7, 1), borderWidth: 0, labelPaddingX: 2, labelPaddingY: 1 },
@@ -1946,17 +1946,18 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
 
   function syncTradeAnnotationPrimitive(currentPayload: ChartPayload, timeline: Array<{ time: number }>) {
     const trades = currentPayload.trade_annotations ?? [];
+    const displayedTrades = strategyPresentationEnabled ? trades.filter((trade) => trade.id === selectedStrategyRef.current) : trades;
     tradeAnnotationPrimitiveRef.current?.setState({
       candles: currentPayload.candles,
       // Standalone executions have no lifecycle identity. The selected trade
       // already contains its canonical fills; unrelated executions must not leak in.
       executions: strategyPresentationEnabled ? [] : currentPayload.execution_annotations ?? [],
       settings: strategyPresentationSettingsRef.current,
-      references: currentPayload.strategy_references,
+      references: positionReferenceSegments(currentPayload.strategy_references ?? [], displayedTrades),
       // Autoscale logical indexes belong to the rendered series timeline;
       // raw candles omit explicit whitespace bars and are not index-compatible.
       timeline,
-      trades: strategyPresentationEnabled ? trades.filter((trade) => trade.id === selectedStrategyRef.current) : trades,
+      trades: displayedTrades,
     });
   }
 
@@ -3664,10 +3665,10 @@ const strategyVisualElementDefinitions: StrategyVisualElementDefinition[] = [
   { key: "exitLabel", kind: "label", title: "Exit intent label", help: "The strategy-issued exit action at its decision reference price." },
   { key: "exitFillArrow", kind: "marker", title: "Exit final-fill arrow", help: "Last immutable execution completing each exit order." },
   { key: "exitFillLabel", kind: "label", title: "Exit final-fill label", help: "Cumulative quantity, truthful fill state, execution VWAP, and final realized P&L." },
-  { key: "highOfDayLine", kind: "line", title: "Strategy HOD line", help: "Recorded HOD used by the strategy, including before entry. Solid black by default; older runs show the entry snapshot." },
+  { key: "highOfDayLine", kind: "line", title: "Strategy HOD line", help: "HOD recorded at entry, held constant through the position lifecycle. Dashed black by default." },
   { key: "highOfDayLabel", kind: "label", title: "Strategy HOD label", help: "Price of the recorded strategy HOD line." },
   { key: "entryResistanceLine", kind: "line", title: "Selected resistance line", help: "Recorded upper bound of the selected entry resistance. Dashed black by default; older strategies retain their recorded entry references." },
-  { key: "entryZoneLine", kind: "line", title: "Entry zone floor", help: "Recorded VWAP + 70% of the distance to HOD for the V7 zone strategy. No future values are calculated by the chart." },
+  { key: "entryZoneLine", kind: "line", title: "Entry zone floor", help: "Recorded entry-zone floor at entry, held constant through the position lifecycle. Dashed black by default." },
   { key: "entryZoneLabel", kind: "label", title: "Entry zone floor label", help: "Price of the recorded lower boundary of the entry zone." },
   { key: "entryResistanceLabel", kind: "label", title: "Selected resistance label", help: "Upper-bound price of the selected entry resistance; older strategies retain their recorded R labels." },
   { key: "levelLine", kind: "line", title: "Structural level lines", help: "Support, short-entry, and exit structural evidence." },
@@ -4956,7 +4957,9 @@ function normalizeStrategyPresentationSettings(settings: Partial<StrategyPresent
   };
   const elements = Object.fromEntries((Object.keys(defaultStrategyPresentationSettings.elements) as StrategyVisualElementKey[]).map((key) => {
     const configured = settings.elements?.[key] ?? legacyByElement[key];
-    const legacyShortDefault = legacyShortLabelStyleDefaults[key];
+    const legacyShortDefault = key === "highOfDayLine" || key === "entryZoneLine"
+      ? strategyPresentationStyle(STRATEGY_ENTRY_REFERENCE_COLOR, key === "highOfDayLine" ? "solid" : "dotted", 1, 1)
+      : legacyShortLabelStyleDefaults[key];
     const migrateUntouchedShortStyle = Boolean(
       configured
       && legacyShortDefault
@@ -7823,7 +7826,7 @@ function drawTradeAnnotationPrimitiveGeometry(
       });
     }
     // Entry references must never inherit the minimum-width trade footprint.
-    const referenceLeft = Math.max(0, guideStartX ?? entryX);
+    const referenceLeft = Math.max(0, entryX);
     const referenceRight = Math.min(width, exitX);
     const resistanceLine = annotation.positionSide === "SHORT" ? elements.levelLine : elements.entryResistanceLine;
     const resistanceLabel = annotation.positionSide === "SHORT" ? elements.levelLabel : elements.entryResistanceLabel;
