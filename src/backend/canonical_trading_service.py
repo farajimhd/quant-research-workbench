@@ -171,6 +171,7 @@ def trading_state_payload(
     *,
     include_strategy_activity: bool = True,
     protection_as_of: datetime | None = None,
+    performance_extrema: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if (
         snapshot.mode in {TradingMode.BACKTEST, TradingMode.BACKTEST_DEBUG}
@@ -259,7 +260,7 @@ def trading_state_payload(
         else episodes_from_round_trips(snapshot.closed_trades)
     )
     report = build_performance_report(episodes, snapshot.executions, snapshot.orders)
-    payload["performance_snapshot"] = performance_snapshot(snapshot, metrics, episodes, report=report)
+    payload["performance_snapshot"] = performance_snapshot(snapshot, metrics, episodes, report=report, extrema=performance_extrema)
     payload["performance_journal"] = report
     return payload
 
@@ -321,6 +322,7 @@ def performance_snapshot(
     episodes: list[Any],
     *,
     report: dict[str, Any] | None = None,
+    extrema: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the compact, point-in-time performance contract used across UIs.
 
@@ -353,13 +355,20 @@ def performance_snapshot(
     open_cost = sum((abs(row.average_price * row.quantity) for row in snapshot.positions if row.quantity != 0), Decimal("0"))
     unrealized_return = unrealized / open_cost if open_cost else None
     summary = dict((report or build_performance_report(episodes, snapshot.executions, snapshot.orders)).get("summary") or {})
+    historical = snapshot.mode in {TradingMode.BACKTEST, TradingMode.BACKTEST_DEBUG, TradingMode.REPLAY}
+    retained = historical and bool(extrema and extrema.get('complete'))
+    if historical:
+        max_unrealized = extrema['peak_unrealized'] if retained else None
+    drawdown = extrema['maximum_drawdown'] if retained else summary.get('maximum_drawdown')
+    peak_description = ('Highest aggregate open unrealized P&L observed across this run; retained after positions close.'
+        if historical else "Sum of each open position's lifecycle peak unrealized P&L.")
     headline_metrics = [
         _performance_metric("net_pnl_today", "Net P&L today", realized_today + unrealized, "money", "signed", "Today's realized net P&L plus current unrealized P&L."),
         _performance_metric("unrealized_pnl", "Open unrealized", unrealized, "money", "signed", "Current mark-to-market P&L on open positions."),
-        _performance_metric("max_unrealized_pnl", "Peak unrealized", max_unrealized, "money", "favorable_high", "Sum of each open position's maximum favorable unrealized P&L observed during its current lifecycle."),
+        _performance_metric("max_unrealized_pnl", "Peak unrealized", max_unrealized, "money", "favorable_high", peak_description),
         _performance_metric("sharpe_ratio", "Sharpe", summary.get("sharpe_ratio"), "ratio", "signed", "Mean closed-episode net return divided by its sample deviation; not annualized."),
         _performance_metric("win_rate", "Win rate", summary.get("win_rate"), "percent", "favorable_high", "Winning closed episodes divided by all closed flat-to-flat episodes."),
-        _performance_metric("maximum_drawdown", "Max drawdown", summary.get("maximum_drawdown"), "money", "adverse_high", "Largest peak-to-trough decline in cumulative closed-episode net P&L."),
+        _performance_metric("maximum_drawdown", "Max drawdown", drawdown, "money", "adverse_high", "Largest marked-equity decline, including unrealized P&L and fees." if retained else "Largest decline in closed-trade net P&L; intratrade history unavailable."),
     ]
     supporting_metrics = [
         _performance_metric("unrealized_return", "Open return", unrealized_return, "percent", "signed", "Current unrealized P&L divided by aggregate absolute open cost."),
@@ -377,7 +386,10 @@ def performance_snapshot(
             "open_position_count": open_positions,
             "unrealized_pnl": unrealized,
             "max_unrealized_pnl": max_unrealized,
-            "max_unrealized_pnl_basis": "sum_of_open_position_maxima",
+            "max_unrealized_pnl_basis": "run_mark_to_market_peak" if retained else "unavailable_historical_path" if historical else "sum_of_open_position_maxima",
+            "minimum_unrealized_pnl": extrema['worst_unrealized'] if retained else None,
+            "maximum_drawdown": drawdown,
+            "extrema_complete": bool(retained),
             "realized_pnl_today": realized_today,
             "available_cash": Decimal(str(available_cash or 0)),
             "available_cash_basis": "available_funds" if has_available_funds else "total_cash",

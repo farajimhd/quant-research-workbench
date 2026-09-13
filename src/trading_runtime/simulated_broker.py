@@ -209,6 +209,9 @@ class SimulatedBrokerAdapter:
         self._quotes_by_ticker: dict[str, QuoteEvent] = {}
         self._trades_by_ticker: dict[str, TradeEvent] = {}
         self._marks: dict[int, float] = {}
+        self._performance_marks: dict[int, tuple[float, float]] = {}
+        self._performance = dict(complete=True, as_of='', unrealized=0., market_value=0.,
+            peak_unrealized=0., worst_unrealized=0., equity_peak=0., maximum_drawdown=0.)
         self._liquidity_consumed: dict[str, tuple[str, float]] = {}
         self._next_order_id = 1
         self._next_execution_id = 1
@@ -221,7 +224,9 @@ class SimulatedBrokerAdapter:
     def checkpoint_state(self) -> dict[str, Any]:
         """Return the complete deterministic broker state required for restart."""
         return {
-            "schema_version": 3,
+            "schema_version": 4,
+            "performance_extrema": dict(self._performance),
+            "performance_marks": {str(k): list(v) for k,v in self._performance_marks.items()},
             "liquidity_consumed": dict(self._liquidity_consumed),
             "account_ids": list(self._account_ids),
             "cash": dict(self._cash),
@@ -274,7 +279,7 @@ class SimulatedBrokerAdapter:
     def restore_checkpoint_state(self, payload: dict[str, Any]) -> None:
         """Restore only an exact, complete simulator checkpoint."""
         schema_version = int(payload.get("schema_version") or 0)
-        if schema_version not in {1, 2, 3}:
+        if schema_version not in {1, 2, 3, 4}:
             raise ValueError("Unsupported simulated broker checkpoint schema")
         account_ids = [str(value) for value in payload.get("account_ids") or ()]
         if account_ids != self._account_ids:
@@ -359,6 +364,21 @@ class SimulatedBrokerAdapter:
             int(conid): float(value)
             for conid, value in dict(payload.get("marks") or {}).items()
         }
+        if schema_version >= 4:
+            performance = dict(payload['performance_extrema'])
+            if any(not isfinite(float(performance[k])) for k in
+                ('unrealized','market_value','peak_unrealized','worst_unrealized','equity_peak','maximum_drawdown')):
+                raise ValueError('Invalid performance checkpoint')
+            self._performance = performance
+            self._performance_marks = {int(k): tuple(v) for k,v in payload['performance_marks'].items()}
+        else:
+            # Older checkpoints did not retain the intra-position path. Do not
+            # invent historical extrema from the final (possibly flat) state.
+            self._performance_marks = {}
+            self._performance = dict(complete=False, as_of='', unrealized=0., market_value=0.,
+                peak_unrealized=0., worst_unrealized=0., equity_peak=0., maximum_drawdown=0.)
+            for conid in self._marks:
+                self._observe_performance(conid, None)
         self._next_order_id = int(payload.get("next_order_id") or 0)
         self._next_execution_id = int(payload.get("next_execution_id") or 0)
         if self._next_order_id < 1 or self._next_execution_id < 1:
@@ -615,6 +635,35 @@ class SimulatedBrokerAdapter:
     def has_orders(self) -> bool:
         return bool(self._orders)
 
+    def performance_extrema(self) -> dict[str, Any]:
+        return dict(self._performance)
+
+    def _observe_performance(self, conid: int, at: datetime | None) -> None:
+        # Update only the changed instrument, not every position on every tick.
+        unrealized = market_value = 0.
+        for positions in self._positions.values():
+            position = positions.get(conid)
+            if position is not None and position.quantity:
+                mark = self._marks.get(conid, position.avg_cost)
+                unrealized += (mark-position.avg_cost)*position.quantity
+                market_value += mark*position.quantity
+        previous = self._performance_marks.get(conid, (0.,0.))
+        if unrealized or market_value:
+            self._performance_marks[conid] = (unrealized,market_value)
+        else:
+            self._performance_marks.pop(conid,None)
+        p = self._performance
+        p['unrealized'] += unrealized-previous[0]
+        p['market_value'] += market_value-previous[1]
+        if not self._performance_marks:
+            p['unrealized'] = p['market_value'] = 0.
+        equity = sum(self._cash.values())+p['market_value']-self.config.initial_cash*len(self._account_ids)
+        p['peak_unrealized'] = max(p['peak_unrealized'],p['unrealized'])
+        p['worst_unrealized'] = min(p['worst_unrealized'],p['unrealized'])
+        p['equity_peak'] = max(p['equity_peak'],equity)
+        p['maximum_drawdown'] = max(p['maximum_drawdown'],p['equity_peak']-equity)
+        if at is not None:p['as_of'] = at.isoformat()
+
     def observe_market_event(self, event: MarketEvent) -> int:
         """Update causal quote/trade marks without running order matching."""
 
@@ -637,6 +686,7 @@ class SimulatedBrokerAdapter:
             self._trades[conid] = event
             if event.price > 0:
                 self._marks[conid] = event.price
+        self._observe_performance(conid,event.ts)
         return conid
 
     async def on_market_event(self, event: MarketEvent) -> list[Execution]:
@@ -985,6 +1035,7 @@ class SimulatedBrokerAdapter:
         self._next_execution_id += 1
         self._executions.append(execution)
         self._book_execution(state.request, price, quantity, commission)
+        self._observe_performance(state.request.conid,ts)
         if state.status == OrderStatus.FILLED:
             self._activate_children(state.request.cOID)
             self._cancel_oca_siblings(state)

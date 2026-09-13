@@ -767,10 +767,25 @@ function ActivityPreview({ data, settings }: { data: CanonicalTradingPreview; se
   return <section className="trading-preview"><TradingFreshness data={data} /><PreviewTable columns={["time", "event", "account", "order_id", "client_id", "execution_id", "provider", "correlation"]} rows={rows.slice(0, settings.limit)} /></section>;
 }
 
-function TradingJournalPreview({ data, settings }: { data: CanonicalTradingPreview; settings: ContainerSettings["performance_journal"] }) {
+function performanceLifecycleRow(data: CanonicalTradingPreview, lifecycle: PreviewRow) {
+  const symbol = String(nestedValue(lifecycle,"instrument","symbol") || "");
+  const position = data.positions.find(row => row.account_id === lifecycle.account_id && nestedValue(row,"instrument","instrument_id") === nestedValue(lifecycle,"instrument","instrument_id"));
+  const executionIds = new Set((lifecycle.execution_ids as string[] | undefined) ?? []);
+  const executions = data.executions.filter(row => row.account_id === lifecycle.account_id && executionIds.has(String(row.execution_id)));
+  const orderIds = new Set((lifecycle.order_ids as string[] | undefined) ?? []);
+  const orders = data.orders.filter(row => row.account_id === lifecycle.account_id && orderIds.has(String(row.broker_order_id)));
+  return {symbol,_lifecycle:lifecycle,_position:position,_executions:executions,_orders:orders,_activity:(data.strategy_chart_activity ?? data.strategy_activity ?? []).filter(event => String(event.ticker) === symbol && (!event.account_id || event.account_id === lifecycle.account_id) && Date.parse(String(event.event_time)) >= Date.parse(String(lifecycle.requested_at || lifecycle.opened_at)) && (!lifecycle.closed_at || Date.parse(String(event.event_time)) <= Date.parse(String(lifecycle.closed_at))))};
+}
+
+export function TradingJournalPreview({ data, settings }: { data: CanonicalTradingPreview; settings: ContainerSettings["performance_journal"] }) {
   const [view, setView] = useState<"overview" | "strategies" | "trades" | "execution" | "risk">("overview");
   const [pnlTimeframe, setPnlTimeframe] = useState<PnlCandleTimeframe>("30m");
   const [guideOpen, setGuideOpen] = useState(false);
+  const [selectedLifecycle, setSelectedLifecycle] = useState<string | null>(null);
+  const selectedPosition = (data.position_lifecycles ?? []).find(row => row.lifecycle_id === selectedLifecycle);
+  const openLifecycles = (data.position_lifecycles ?? []).filter(row => row.status === "open");
+  const extrema = data.performance_snapshot;
+  const drawdown = extrema?.maximum_drawdown ?? data.performance_journal?.summary?.maximum_drawdown;
   const report = data.performance_journal;
   const summary = report?.summary ?? {};
   const scope = report?.scope ?? {};
@@ -818,16 +833,38 @@ function TradingJournalPreview({ data, settings }: { data: CanonicalTradingPrevi
     </header>
     <TradingFreshness data={data} />
     <div className="performance-kpi-grid">
-      <JournalMetric detail="Closed episode profit after recorded commissions and fees." label="Net P&L" tone={numberTone(summary.net_pnl)} value={signedMoney(summary.net_pnl)} />
+      <JournalMetric detail="Closed episode profit after recorded commissions and fees." label="Realized net P&L" tone={numberTone(summary.net_pnl)} value={signedMoney(summary.net_pnl)} />
       <JournalMetric detail="Current mark-to-market P&L on open positions." label="Open unrealized" tone={numberTone(data.performance_snapshot?.unrealized_pnl)} value={signedMoney(data.performance_snapshot?.unrealized_pnl)} />
-      <JournalMetric detail="Sum of each open position's maximum favorable unrealized P&L observed during its current lifecycle." label="Peak unrealized" tone={Number(data.performance_snapshot?.max_unrealized_pnl || 0) > 0 ? "positive" : "neutral"} value={money(data.performance_snapshot?.max_unrealized_pnl)} />
+      <JournalMetric detail={extrema?.max_unrealized_pnl_basis === "sum_of_open_position_maxima" ? "Sum of current open positions' lifecycle peaks." : "Highest aggregate unrealized P&L observed during the run, retained after closing."} label="Peak unrealized" tone={Number(extrema?.max_unrealized_pnl || 0) > 0 ? "positive" : "neutral"} value={extrema?.max_unrealized_pnl == null ? "—" : money(extrema.max_unrealized_pnl)} />
+      <JournalMetric detail="Lowest aggregate unrealized P&L observed during the run, retained after closing." label="Worst unrealized" tone={numberTone(extrema?.minimum_unrealized_pnl)} value={extrema?.minimum_unrealized_pnl == null ? "—" : signedMoney(extrema.minimum_unrealized_pnl)} />
+      <JournalMetric detail="Sum of positive closed-trade results, after recorded fees." label="Winning-trade profit" tone={Number(summary.gross_profit) > 0 ? "positive" : "neutral"} value={money(summary.gross_profit)} />
+      <JournalMetric detail="Absolute sum of negative closed-trade results, after recorded fees." label="Losing-trade loss" tone={Number(summary.gross_loss) > 0 ? "negative" : "neutral"} value={money(summary.gross_loss)} />
       <JournalMetric detail="Mean closed-episode net return divided by its sample deviation; not annualized and unavailable with fewer than two varying returns." label="Sharpe" tone={numberTone(summary.sharpe_ratio)} value={ratioNumber(summary.sharpe_ratio)} />
       <JournalMetric detail="Average expected dollars per closed trade episode." label="Expectancy" tone={numberTone(summary.expectancy)} value={signedMoney(summary.expectancy)} />
-      <JournalMetric detail="Gross winning dollars divided by gross losing dollars." label="Profit factor" tone={metricThresholdTone(summary.profit_factor, 1)} value={ratioNumber(summary.profit_factor)} />
-      <JournalMetric detail="Winning episodes divided by all closed episodes." label="Win rate" tone={metricThresholdTone(summary.win_rate, 0.5)} value={ratioPct(summary.win_rate)} />
-      <JournalMetric detail="Average winning episode divided by average losing episode." label="Payoff" tone={metricThresholdTone(summary.payoff_ratio, 1)} value={ratioNumber(summary.payoff_ratio)} />
-      <JournalMetric detail="Largest peak-to-trough decline in cumulative closed P&L." label="Max drawdown" tone={Number(summary.maximum_drawdown || 0) > 0 ? "negative" : "neutral"} value={money(summary.maximum_drawdown)} />
+      <JournalMetric detail="Gross winning dollars divided by gross losing dollars." label="Profit factor" tone={summary.profit_factor == null ? "neutral" : metricThresholdTone(summary.profit_factor, 1)} value={ratioNumber(summary.profit_factor)} />
+      <JournalMetric detail="Winning episodes divided by all closed episodes." label="Win rate" tone={Number(summary.episode_count) ? metricThresholdTone(summary.win_rate, 0.5) : "neutral"} value={Number(summary.episode_count) ? ratioPct(summary.win_rate) : "—"} />
+      <JournalMetric detail="Average winning episode divided by average losing episode." label="Payoff" tone={summary.payoff_ratio == null ? "neutral" : metricThresholdTone(summary.payoff_ratio, 1)} value={ratioNumber(summary.payoff_ratio)} />
+      <JournalMetric detail={extrema?.extrema_complete ? "Largest marked-equity decline from a prior peak, including fees and open P&L; never resets on close." : "Closed-trade drawdown only; intratrade history was not recorded in this run."} label={extrema?.extrema_complete ? "Max drawdown" : "Closed-trade drawdown"} tone={Number(drawdown || 0) > 0 ? "negative" : "neutral"} value={money(drawdown || 0)} />
     </div>
+    {extrema?.max_unrealized_pnl_basis === "unavailable_historical_path" ? <div className="trading-disclosure">This saved run predates retained intratrade metrics. A new backtest records peak/worst unrealized and marked-equity drawdown.</div> : null}
+    <section className="performance-active-positions" aria-label="Active position lifecycles">
+      <header><strong>Active positions</strong><span>{openLifecycles.length} open</span></header>
+      {openLifecycles.length ? openLifecycles.map(lifecycle => {
+        const row = performanceLifecycleRow(data,lifecycle);
+        const {symbol,_position:position,_executions:executions,_orders:orders} = row;
+        const pendingOrders = orders.filter(order => !terminalOrderState(String(order.lifecycle_state)));
+        const openingSide = String(lifecycle.side).toUpperCase() === 'SHORT' ? 'SELL' : 'BUY';
+        const phase = pendingOrders.some(order => String((nestedValue(order,'raw','canonical_metadata') as PreviewRow)?.execution_role) === 'exit')
+          ? 'Exit pending' : pendingOrders.some(order => String(order.side).toUpperCase() === openingSide) ? 'Building position' : 'Managing';
+        return <div className="performance-active-position" key={String(lifecycle.lifecycle_id)}>
+          <strong>{symbol} <small>{String(lifecycle.side)} · {String(lifecycle.current_quantity)} shares</small></strong>
+          <ol><li>Requested <MarketTime includeSeconds value={String(lifecycle.requested_at || "")} /></li><li>Opened <MarketTime includeSeconds value={String(lifecycle.opened_at || "")} /></li><li>{executions.length} fills · {phase}</li></ol>
+          <span data-tone={numberTone(position?.unrealized_pnl)}>{signedMoney(position?.unrealized_pnl)}</span>
+          <button type="button" onClick={() => setSelectedLifecycle(String(lifecycle.lifecycle_id))}>View lifecycle</button>
+        </div>;
+      }) : <p>No open positions. Completed lifecycles remain in Trades.</p>}
+    </section>
+    {selectedPosition ? <PositionLifecycleModal row={performanceLifecycleRow(data,selectedPosition)} onClose={() => setSelectedLifecycle(null)} /> : null}
     <TradingTabs active={view} onChange={(value) => setView(value as typeof view)} tabs={tabs} />
     {view === "overview" ? <div className="performance-overview-stack"><div className="performance-overview-grid"><section className="performance-chart-card"><header><div><strong>Net P&L trajectory</strong><span>Cumulative closed-episode P&L</span></div><b data-tone={numberTone(summary.net_pnl)}>{signedMoney(summary.net_pnl)}</b></header><JournalAreaChart rows={report.equity_curve} /></section><section className="performance-diagnosis"><header><strong>Edge snapshot</strong><span>Read together, never from win rate alone</span></header><div><JournalFact label="Average win" tone="positive" value={money(summary.average_win)} /><JournalFact label="Average loss" tone="negative" value={money(summary.average_loss)} /><JournalFact label="Largest win" tone="positive" value={money(summary.largest_win)} /><JournalFact label="Largest loss" tone="negative" value={money(summary.largest_loss)} /><JournalFact label="Average hold" value={compactDuration(Number(summary.average_duration_seconds || 0))} /><JournalFact label="Fees" tone={Number(summary.total_fees || 0) > 0 ? "negative" : "neutral"} value={money(summary.total_fees)} /></div></section></div><JournalPnlCandleChart candles={report.pnl_candles?.[pnlTimeframe] ?? []} onTimeframeChange={setPnlTimeframe} timeframe={pnlTimeframe} /></div> : null}
     {view === "strategies" ? <div className="performance-strategy-view"><StrategyComparisonChart rows={strategyRows} /><TradingDataTable columns={["strategy", "revision", "trades", "net_pnl", "win_rate_pct", "expectancy", "profit_factor", "payoff_ratio", "max_drawdown"]} defaultSort="net_pnl" filterColumn="strategy" filterLabel="All strategies" rows={strategyRows} searchPlaceholder="Search strategies and revisions…" /></div> : null}

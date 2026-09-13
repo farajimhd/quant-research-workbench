@@ -1985,6 +1985,7 @@ class ReplayRunController:
                 trading_state_payload, snapshot,
                 include_strategy_activity=False,
                 protection_as_of=publication_time,
+                performance_extrema=self._runtime.broker.performance_extrema(),
             )
             activity_page = await asyncio.to_thread(self.strategy_activity_snapshot,
                 as_of=publication_time,

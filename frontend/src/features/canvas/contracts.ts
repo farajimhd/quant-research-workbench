@@ -243,7 +243,10 @@ export type PerformanceSnapshot = {
   net_pnl_today: string | number;
   open_position_count: number;
   unrealized_pnl: string | number;
-  max_unrealized_pnl: string | number;
+  max_unrealized_pnl: string | number | null;
+  minimum_unrealized_pnl?: string | number | null;
+  maximum_drawdown?: string | number | null;
+  extrema_complete?: boolean;
   max_unrealized_pnl_basis?: string;
   realized_pnl_today: string | number;
   available_cash: string | number;
