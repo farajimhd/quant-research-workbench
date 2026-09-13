@@ -835,9 +835,9 @@ const defaultStrategyPresentationSettings: StrategyPresentationSettings = {
     entryFillShortPricePart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#FF1744", labelPaddingX: 4, labelPaddingY: 2 },
     exitLine: strategyPresentationStyle("#FF3D47", "solid", 2, 0.9),
     exitArrow: strategyPresentationStyle("#FF4D55", "solid", 2, 1, 10, 5, 1),
-    exitLabel: { ...strategyPresentationStyle("#64748B", "solid", 1, 1, 10, 7, 0.45), borderColor: "#F75555", borderOpacity: 0.7, labelPaddingX: 8, labelPaddingY: 2 },
-    exitReasonPart: { ...strategyPresentationStyle("#FF1744", "solid", 1, 1, 10, 7, 0.18), fillBlur: 2, fillColor: "#FFFFFF", labelPaddingX: 6, labelPaddingY: 2 },
-    exitShortReasonPart: { ...strategyPresentationStyle("#007DFA", "solid", 1, 1, 10, 7, 0.18), fillBlur: 2, fillColor: "#FFFFFF", labelPaddingX: 6, labelPaddingY: 2 },
+    exitLabel: { ...strategyPresentationStyle("", "solid", 1, 1, 11, 7, 1), borderColor: "#F75555", borderOpacity: 0.7, labelPaddingX: 8, labelPaddingY: 2 },
+    exitReasonPart: { ...strategyPresentationStyle("", "solid", 1, 1, 11, 7, 1), labelPaddingX: 6, labelPaddingY: 2 },
+    exitShortReasonPart: { ...strategyPresentationStyle("", "solid", 1, 1, 11, 7, 1), labelPaddingX: 6, labelPaddingY: 2 },
     exitSizePart: { ...strategyPresentationStyle("#000000", "solid", 1, 1, 12, 7, 0), fontWeight: 600, labelPaddingX: 4, labelPaddingY: 2, visible: false },
     exitSeparatorPart: { ...strategyPresentationStyle("", "solid", 1, 0.9, 10, 7, 1), borderOpacity: 0.5, labelPaddingX: 2, labelPaddingY: 2, visible: false },
     exitPricePart: { ...strategyPresentationStyle("#FFFFFF", "solid", 1, 1, 10, 7, 1), fillColor: "#007DFF", labelPaddingX: 4, labelPaddingY: 2 },
@@ -7667,6 +7667,8 @@ function drawTradeAnnotationPrimitiveGeometry(
     return left !== null && right !== null && right > 0 && left < width && right > left
       ? [{ ...reference, left: Math.max(0,left), right: Math.min(width,right) }] : [];
   });
+  const lastReferenceByKind = Object.fromEntries((["hod", "resistance", "zoneLower"] as const)
+    .map(kind => [kind, visibleReferences.reduce((last, reference, index) => reference[kind] !== undefined ? index : last, -1)]));
   visibleReferences.forEach((reference,index) => {
     for (const kind of ["hod", "resistance", "zoneLower"] as const) {
       const price = reference[kind];
@@ -7677,7 +7679,7 @@ function drawTradeAnnotationPrimitiveGeometry(
       const label = kind === "hod" ? elements.highOfDayLabel : kind === "zoneLower" ? elements.entryZoneLabel : elements.entryResistanceLabel;
       drawCanvasTradeGuide(context, reference.left, reference.right, y, STRATEGY_ENTRY_REFERENCE_COLOR,
         `${kind === "hod" ? "HOD" : kind === "zoneLower" ? "Entry zone floor" : "Entry R"} ${formatPrice(price)}`, chartBackground, width, height,
-        line, index === visibleReferences.length-1 ? label : { ...label, visible: false }, labelLayout, elements.connector, true);
+        line, index === lastReferenceByKind[kind] ? label : { ...label, visible: false }, labelLayout, elements.connector, true);
     }
   });
   annotations.forEach((annotation) => {
@@ -7713,8 +7715,7 @@ function drawTradeAnnotationPrimitiveGeometry(
     const entryLabelColor = strategyPresentationColor(elements.entryLabel.color, infoColor);
     const exitLineColor = strategyPresentationColor(elements.exitLine.color, exitFallbackColor);
     const exitArrowColor = strategyPresentationColor(elements.exitArrow.color, exitFallbackColor);
-    const exitLabelFallback = Number(annotation.pnl) > 0 ? successColor : Number(annotation.pnl) < 0 ? dangerColor : validHexColor(annotation.exitLabelColor, exitFallbackColor);
-    const exitLabelColor = strategyPresentationColor(elements.exitLabel.color, exitLabelFallback);
+    const exitLabelColor = strategyPresentationColor(elements.exitLabel.color, readChartPalette().text);
     const supportColor = annotation.positionSide === "SHORT" ? successColor : stopColor;
     const resistanceColor = annotation.positionSide === "SHORT" ? stopColor : successColor;
     const entryLabelPartSettings: TradeLabelPartSettings = {
@@ -8129,8 +8130,16 @@ function drawCanvasTradeLabel(
     return { bottom: candidateTop + labelHeight, left, right: left + labelWidth, top: candidateTop };
   }));
   const occupied = layout?.boxes ?? [];
-  const box = candidates.find((candidate) => occupied.every((placed) => !canvasLabelBoxesOverlap(candidate, placed)))
-    ?? candidates.reduce((best, candidate) => canvasLabelOverlapArea(candidate, occupied) < canvasLabelOverlapArea(best, occupied) ? candidate : best, candidates[0]);
+  // A collision-free box outside the pane must not win over a visible box.
+  // Keep offscreen anchors offscreen; only fit labels whose event is in view.
+  const anchorVisible = anchorX >= 0 && anchorX <= width && preferredCenterY >= 0 && preferredCenterY <= height;
+  const fullyVisible = anchorVisible ? candidates.filter(candidate => candidate.left >= 0
+    && candidate.right <= width && candidate.top >= 0 && candidate.bottom <= height) : [];
+  const intersecting = candidates.filter(candidate => candidate.right > 0 && candidate.left < width
+    && candidate.bottom > 0 && candidate.top < height);
+  const eligible = !anchorVisible ? candidates : fullyVisible.length ? fullyVisible : intersecting;
+  const box = eligible.find((candidate) => occupied.every((placed) => !canvasLabelBoxesOverlap(candidate, placed)))
+    ?? eligible.reduce<CanvasLabelBox | undefined>((best, candidate) => !best || canvasLabelOverlapArea(candidate, occupied) < canvasLabelOverlapArea(best, occupied) ? candidate : best, undefined);
   if (!box) return;
   if (box.right <= 0 || box.left >= width || box.bottom <= 0 || box.top >= height) return;
   layout?.boxes.push(box);

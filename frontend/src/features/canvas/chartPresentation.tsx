@@ -210,12 +210,16 @@ export function ChartPreview({
     };
   }, [barGptOriginUs, barGptScopeId, barGptTriggerMode, barGptVersion, barGptView, linkContext.symbol, liveChart.pointInTime, showBarGpt]);
   const strategyPresentationAvailable = showTradeAnnotations && supportsPositionPresentation(timeframe);
+  const inlineActivityAvailable = Array.isArray(trading?.strategy_chart_activity)
+    && (trading.strategy_chart_activity_symbol?.toUpperCase() === linkContext.symbol.toUpperCase()
+      || (!trading.strategy_chart_activity_symbol && trading.strategy_chart_activity.length > 0
+        && trading.strategy_chart_activity.every(row => String(row.ticker).toUpperCase() === linkContext.symbol.toUpperCase())));
   // Canvas publishes compact chart plans alongside its broker snapshot. The
   // table endpoint omits those plans and must never overwrite this authority.
   const [scopedStrategyActivity, setScopedStrategyActivity] = useState<PreviewRow[] | null>(null);
   useEffect(() => { setScopedStrategyActivity(null); }, [runId, linkContext.symbol]);
   usePollingTask({
-    enabled: Boolean(trading && strategyPresentationAvailable && !Array.isArray(trading.strategy_chart_activity)), initialDelayMs: 0, intervalMs: 1000,
+    enabled: Boolean(trading && strategyPresentationAvailable && !inlineActivityAvailable), initialDelayMs: 0, intervalMs: 1000,
     pauseWhenHidden: false, restartKey: `${runId}:${linkContext.symbol}`,
     onError: () => setStrategyActivityError("Strategy evidence unavailable"),
     task: async (signal) => {
@@ -227,10 +231,10 @@ export function ChartPreview({
     },
   });
   const chartTrading = useMemo(
-    () => scopedStrategyActivity === null || !trading || Array.isArray(trading.strategy_chart_activity)
+    () => !trading || inlineActivityAvailable
       ? trading
-      : { ...trading, strategy_chart_activity: scopedStrategyActivity },
-    [scopedStrategyActivity, trading],
+      : { ...trading, strategy_chart_activity: scopedStrategyActivity ?? [], strategy_chart_activity_symbol: linkContext.symbol },
+    [scopedStrategyActivity, trading, inlineActivityAvailable, linkContext.symbol],
   );
   const tradeAnnotations = useMemo(
     () => strategyPresentationAvailable ? positionLifecycleAnnotations(chartTrading, linkContext.symbol) : [],

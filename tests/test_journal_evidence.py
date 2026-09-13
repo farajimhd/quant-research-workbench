@@ -76,3 +76,55 @@ def test_checkpoint_and_oms_state_recover_complete_evidence(tmp_path):
     assert journal.order_management_states(run_id='run')[0]['state'] == state
     assert journal.portfolio_states()['sim'] == state
     journal.close()
+
+
+def test_execution_externalized_chart_plan_survives_new_and_legacy_compact_reads(tmp_path):
+    path=tmp_path/'chart.sqlite3'
+    journal=TradingJournal(path)
+    metadata={'unified_structural_trigger':{'current_snapshot':{
+        'session_high':4.,'frozen_at_entry':True,'levels':[
+            {'unified_level_id':'r','price':3.61,'entry_boundary':3.61,'fit':{'observations':[1]*1000}}]}},
+        'profit_target_selection':{'price':4.28,'selected_target_prices':[4.28]},
+        'historical_hod_reference':{'changed':True,'at':1,'hod':4.,'zone_lower':3.6},
+        'reason_code':'historical_hod_entry'}
+    external=journal.reference_evidence(metadata)
+    record=journal.append(run_id='run',category='strategy',entity_type='strategy_intent',entity_id='entry',
+        payload={'ticker':'SUGP','action':'enter_long','metadata':external})
+    def check():
+        compact=journal.strategy_activity_records(run_id='run',compact=True)[0].payload
+        current=compact['metadata']['unified_structural_trigger']['current_snapshot']
+        assert current['session_high']==4. and current['levels'][0]['entry_boundary']==3.61
+        assert 'fit' not in current['levels'][0]
+        assert REFERENCE not in json.dumps(compact)
+        assert len(json.dumps(compact))<2000
+    check()
+    # Reproduce the old projection, which persisted hashes rather than prices.
+    with journal._connection:
+        journal._connection.execute('UPDATE journal_activity SET payload_json=? WHERE record_id=?',
+            (json.dumps({'ticker':'SUGP','action':'enter_long','metadata':external}),record.record_id))
+    before=journal._fetchone('SELECT payload_json FROM journal_activity')[0]
+    journal.close()
+    journal=TradingJournal(path,read_only=True)
+    check()
+    assert journal._fetchone('SELECT payload_json FROM journal_activity')[0]==before
+    assert journal.records('run')[0].payload['metadata']==metadata
+    journal.close()
+
+
+def test_compact_reference_integrity_and_unselected_books():
+    from hashlib import sha256
+    import pytest
+    from src.trading_runtime.journal_evidence import activity_payload
+    raw=json.dumps({'current_snapshot':{'session_high':4.,'levels':[]},
+                    'levels':{REFERENCE:'unselected-book'}})
+    digest=sha256(raw.encode()).hexdigest()
+    fetched=[]
+    def fetch(key):
+        fetched.append(key)
+        assert key==digest  # Never fetch the unselected entire book.
+        return raw
+    compact=activity_payload({'unified_structural_trigger':{REFERENCE:digest}},fetch)
+    assert compact['unified_structural_trigger']['current_snapshot']['session_high']==4.
+    assert fetched==[digest]
+    with pytest.raises(ValueError,match='Missing or corrupt'):
+        activity_payload({'unified_structural_trigger':{REFERENCE:digest}},lambda _:raw+' ')

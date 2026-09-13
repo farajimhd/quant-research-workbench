@@ -2020,6 +2020,7 @@ class ReplayRunController:
         trading = {
             **{key: value for key, value in trading.items() if key != "presentation_run"},
             "presentation_as_of": publication_time.isoformat(),
+            "strategy_chart_activity_symbol": ticker,
             "strategy_chart_activity": _compact_strategy_chart_activity_rows(
                 chart_activity_rows
             ),

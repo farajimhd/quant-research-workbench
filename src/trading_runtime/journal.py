@@ -80,6 +80,14 @@ class TradingJournal:
         record = _record(row)
         return replace(record, payload=self._hydrate(record.payload))
 
+    def _chart_payload(self, value, pending=None):
+        def fetch(digest):
+            if pending is not None and digest in pending:
+                return pending[digest]
+            found = self._fetchone("SELECT payload_json FROM journal_evidence WHERE sha256 = ?", (digest,))
+            return found['payload_json'] if found else None
+        return activity_payload(value, fetch)
+
     def _dump_evidence(self, value, pending=None):
         evidence = {} if pending is None else pending
         dumps = lambda item: json.dumps(item, separators=(",", ":"), sort_keys=True, default=_json_default)
@@ -200,7 +208,7 @@ class TradingJournal:
         dumps = lambda value: json.dumps(value, separators=(",", ":"), sort_keys=True, default=_json_default)
         for entry in prepared:
             entry["payload_json"] = dumps(encode_evidence(entry["payload"], dumps, evidence))
-            entry["activity_json"] = dumps(activity_payload(entry["payload"]))
+            entry["activity_json"] = dumps(self._chart_payload(entry["payload"], evidence))
         self.timings["serialization_seconds"] += perf_counter() - serialization_started
         transaction_started = perf_counter()
         records: list[JournalRecord] = []
@@ -1096,7 +1104,12 @@ class TradingJournal:
             "ORDER BY event_time DESC, recorded_at DESC, sequence DESC LIMIT ? OFFSET ?",
             values,
         )
-        return [_record(row) if compact else self._record(row) for row in rows]
+        if not compact:
+            return [self._record(row) for row in rows]
+        # Older compact projections may still contain execution evidence refs.
+        # Resolve them read-only so saved runs benefit without journal rewrites.
+        return [replace(record, payload=self._chart_payload(record.payload))
+                for record in map(_record, rows)]
 
     def order_management_records(
         self,
