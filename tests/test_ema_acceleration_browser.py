@@ -14,8 +14,9 @@ class EmaAccelerationBrowserTests(unittest.TestCase):
                 page = browser.new_page(viewport={'width': 1500, 'height': 1000})
                 page.goto(os.environ['CHART_BROWSER_TEST_URL'])
                 page.evaluate("""async()=>{
-                  const {emaAcceleration:f}=await import('/src/app/components/emaAcceleration.ts');
+                  const {emaAcceleration:f,emaState}=await import('/src/app/components/emaAcceleration.ts');
                   const check=(v,m)=>{if(!v)throw Error(m)};
+                  [[1,1,'risingFaster'],[1,-1,'risingSlower'],[-1,-1,'fallingFaster'],[-1,1,'fallingSlower'],[0,1,'neutral'],[1,0,'neutral']].forEach(([s,a,state])=>check(emaState(s,a)===state,'Slope/curvature state'));
                   const bars=Array.from({length:10},(_,i)=>({time:i,close:10+i*i}));
                   const r=f(bars,1,'price-bar2',10,1);
                   check(r.length===8&&r.every(p=>p.value===2),'Quadratic curvature');
@@ -49,6 +50,10 @@ class EmaAccelerationBrowserTests(unittest.TestCase):
                 page.get_by_label('EMA length', exact=True).fill('12')
                 self.assertEqual(page.get_by_label('EMA length', exact=True).input_value(), '12')
                 page.get_by_label('EMA derivative units').select_option('bps-second2')
+                for label in ['Rising · accelerating','Rising · slowing','Falling · accelerating downward','Falling · slowing','Flat slope or unchanged slope']:
+                    self.assertTrue(page.get_by_label(label, exact=True).is_visible())
+                page.get_by_label('Rising · accelerating', exact=True).fill('#12ab34')
+                self.assertEqual(page.get_by_label('Rising · accelerating', exact=True).input_value(), '#12ab34')
                 output = Path(os.environ['EMA_REVIEW_OUTPUT']) if os.environ.get('EMA_REVIEW_OUTPUT') else None
                 for theme, scale, width in [('light', 1, 1500), ('dark', .8, 1000), ('light', 1.25, 1000)]:
                     page.set_viewport_size({'width': width, 'height': 1000})

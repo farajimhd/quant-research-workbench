@@ -3,10 +3,20 @@ export const EMA_ACCELERATION_ID='indicator.ema_acceleration';
 export const EMA_ACCELERATION_KEY=`oscillator:${EMA_ACCELERATION_ID}:ema_acceleration`;
 export const accelerationUnits={ 'price-bar2':'Price / candle²', 'bps-bar2':'bps / candle²', 'price-second2':'Price / second²', 'bps-second2':'bps / second²' };
 export type AccelerationUnit=keyof typeof accelerationUnits;
+export const emaStates = {
+  risingFaster: 'Rising · accelerating', risingSlower: 'Rising · slowing',
+  fallingFaster: 'Falling · accelerating downward', fallingSlower: 'Falling · slowing',
+  neutral: 'Flat slope or unchanged slope',
+};
+export type EmaState = keyof typeof emaStates;
+export function emaState(slope:number, acceleration:number):EmaState {
+  if(slope===0 || acceleration===0)return 'neutral';
+  return slope>0 ? acceleration>0?'risingFaster':'risingSlower' : acceleration<0?'fallingFaster':'fallingSlower';
+}
 export function emaPeriod(value:unknown){const n=Number(value);return Number.isFinite(n)?Math.max(1,Math.min(500,Math.round(n))):7;}
 export function accelerationUnit(value:unknown):AccelerationUnit{return typeof value==='string' && value in accelerationUnits?value as AccelerationUnit:'price-bar2';}
 export function emaAcceleration(candles:Array<{time:number;endTime?:number;isClosed?:boolean;close:number}>,length:number,unit:AccelerationUnit,asOf:number,duration:number){
-  const period=emaPeriod(length),alpha=2/(period+1),points:Array<{time:number;value:number}>=[];
+  const period=emaPeriod(length),alpha=2/(period+1),points:Array<{time:number;value:number;emaState:EmaState}>=[];
   let sum=0,count=0,ema:number|undefined;let samples:Array<{value:number;t:number}>=[];
   for(const candle of candles){
     const end=candle.endTime??candle.time+duration;
@@ -23,7 +33,7 @@ export function emaAcceleration(candles:Array<{time:number;endTime?:number;isClo
       value=2*((c.value-b.value)/current-(b.value-a.value)/previous)/(current+previous);
     }
     if(unit.startsWith('bps'))value=value/ema*10000;
-    if(Number.isFinite(value))points.push({time:candle.time,value});
+    if(Number.isFinite(value))points.push({time:candle.time,value,emaState:emaState(c.value-b.value,value)});
   }
   return points;
 }

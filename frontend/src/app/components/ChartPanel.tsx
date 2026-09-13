@@ -1,4 +1,4 @@
-import {EMA_ACCELERATION_ID,EMA_ACCELERATION_KEY,emaAcceleration,emaPeriod,accelerationUnit,accelerationUnits,type AccelerationUnit} from './emaAcceleration';
+import {EMA_ACCELERATION_ID,EMA_ACCELERATION_KEY,emaAcceleration,emaPeriod,accelerationUnit,accelerationUnits,emaStates,type EmaState,type AccelerationUnit} from './emaAcceleration';
 import {ReactionBookPrimitive,useReactionBook} from './ReactionBook';
 import { tradeGuideSpan } from "./tradeGuideGeometry";
 import { LevelReactionPrimitive, useLevelReaction } from "./LevelReaction";
@@ -87,7 +87,7 @@ type ChartSeries = {
   lineWidth: number;
   opacity?: number;
   priceScaleId?: "left" | "right";
-  data: Array<{ color?: string; confidence?: number; time: number; tone?: "buy" | "neutral" | "sell"; value: number }>;
+  data: Array<{ emaState?: EmaState; color?: string; confidence?: number; time: number; tone?: "buy" | "neutral" | "sell"; value: number }>;
 };
 type RendererDatum = { time: Time; [key: string]: unknown };
 type RendererDataCache = { data: RendererDatum[]; styleKey: string };
@@ -363,6 +363,7 @@ function resolveV6Colors(stored?: Partial<V6Colors>): V6Colors {
 }
 
 type LegendSeriesSettings = {
+  emaColors?: Partial<Record<EmaState,string>>;
   emaLength?: number;
   accelerationUnits?: AccelerationUnit;
   v6Hidden?: V6Category[];
@@ -2652,6 +2653,7 @@ function ChartPeriodSelect({
 }
 
 type LegendItem = {
+  emaColors?: Record<EmaState,string>;
   emaLength?: number;
   accelerationUnits?: AccelerationUnit;
   customEditor?: ReactNode;
@@ -2935,7 +2937,7 @@ function LegendEditor({
         <label>Units<select aria-label="EMA derivative units" value={item.accelerationUnits} onChange={e=>onUpdate({accelerationUnits:accelerationUnit(e.target.value)})}>{Object.entries(accelerationUnits).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
         <small>Completed candles only. Length is in the selected timeframe's candles. First value after {item.emaLength+2} candles; positive means an increasing EMA slope.</small>
       </>}
-      <label>
+      {item.emaColors ? <div className="legend-semantic-color-inputs">{(Object.keys(emaStates) as EmaState[]).map(state=><label key={state}><input type="color" aria-label={emaStates[state]} value={item.emaColors![state]} onChange={e=>onUpdate({emaColors:{...item.emaColors,[state]:e.target.value}})}/>{emaStates[state]}</label>)}</div> : <label>
         {item.v6Colors ? 'Visibility & color' : 'Color'}
         {item.v6Colors ? (
           <span className="legend-v6-controls">
@@ -2969,6 +2971,7 @@ function LegendEditor({
           )
         ) : <input type="color" value={item.color} onChange={(event) => onUpdate({ color: event.target.value })} />}
       </label>
+      }
       {item.supportsPreset && item.presetOptions?.length ? (
         <label>
           Mode
@@ -4620,8 +4623,9 @@ function buildSeriesLegendItems(series: ChartSeries[], pane: LegendPane, setting
         }, guideTitle, chartMenuItemUsesLookahead(displayItem) || chartMenuItemUsesLookahead(sourceColumn))
       : sourceColumn ? chartColumnHelp(sourceColumn, guideTitle) : undefined;
     return {
-      color: item.colorMode === "sign" ? signColor(latest, appearance) : settings.color,
+      color: item.chartRole==='ema-acceleration' ? resolveEmaColors(settings.emaColors)[item.data.at(-1)?.emaState??'neutral'] : item.colorMode === "sign" ? signColor(latest, appearance) : settings.color,
       configurable: true,
+      emaColors:item.displayItemId===EMA_ACCELERATION_ID?resolveEmaColors(settings.emaColors):undefined,
       emaLength:item.displayItemId===EMA_ACCELERATION_ID?settings.emaLength:undefined,
       accelerationUnits:item.displayItemId===EMA_ACCELERATION_ID?settings.accelerationUnits:undefined,
       guideHelp,
@@ -5302,7 +5306,7 @@ function priceZonePresentationColors(
 }
 
 function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettings> {
-  return {emaLength:7,accelerationUnits:'price-bar2',
+  return {emaColors:{},emaLength:7,accelerationUnits:'price-bar2',
     v6Hidden: [],
     v6Colors: resolveV6Colors(),
     color: resolveChartColor(series.color),
@@ -5347,7 +5351,7 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
   const defaults = defaultLegendSettings(series);
   const stored = settingsMap[key] ?? {};
   return {
-    emaLength:emaPeriod(stored.emaLength??7),accelerationUnits:accelerationUnit(stored.accelerationUnits),
+    emaColors:resolveEmaColors(stored.emaColors),emaLength:emaPeriod(stored.emaLength??7),accelerationUnits:accelerationUnit(stored.accelerationUnits),
     v6Hidden: Array.isArray(stored.v6Hidden) ? stored.v6Hidden.filter(key => key in v6ColorLabels) : [],
     v6Colors: resolveV6Colors(stored.v6Colors),
     color: resolveChartColor(stored.color || defaults.color),
@@ -5564,7 +5568,7 @@ function rendererDatumEqual(left: RendererDatum | undefined, right: RendererDatu
 }
 
 function seriesStyleKey(source: ChartSeries, settings: Required<LegendSeriesSettings>, appearance: ChartAppearanceSettings): string {
-  return [source.style, source.colorMode ?? "", source.opacity ?? 1, settings.color, settings.opacity, appearance.upColor, appearance.downColor, readNeutralChartColor()].join(":");
+  return [source.style, source.colorMode ?? "", source.opacity ?? 1, settings.color, settings.opacity, appearance.upColor, appearance.downColor, readNeutralChartColor(),source.chartRole==='ema-acceleration'?JSON.stringify(settings.emaColors):''].join(":");
 }
 
 function volumeStyleKey(appearance: ChartAppearanceSettings): string {
@@ -5691,12 +5695,21 @@ function resolveChartColor(color: string) {
   return window.getComputedStyle(document.documentElement).getPropertyValue(variable[1]).trim() || "#344054";
 }
 
+function resolveEmaColors(stored?: Partial<Record<EmaState,string>>):Record<EmaState,string> {
+  const tokens:Record<EmaState,string>={risingFaster:'var(--success)',risingSlower:'var(--warning)',fallingFaster:'var(--danger)',fallingSlower:'var(--info)',neutral:readNeutralChartColor()};
+  return Object.fromEntries((Object.keys(tokens) as EmaState[]).map(key=>[key,validHexColor(stored?.[key],resolveChartColor(tokens[key]))])) as Record<EmaState,string>;
+}
+
 function seriesDataForSettings(series: ChartSeries, settings: Required<LegendSeriesSettings>, appearance = defaultChartAppearanceSettings) {
   if (!settings.visible) return [];
   const defaultColor = defaultLegendSettings(series).color;
   const opacity = effectiveSeriesOpacity(series, settings);
   const applyOpacity = (color: string) => colorWithOpacity(color, opacity);
   const neutralColor = readNeutralChartColor();
+  if(series.chartRole==='ema-acceleration'){
+    const colors=resolveEmaColors(settings.emaColors);
+    return series.data.map(({emaState,...point})=>({...point,color:applyOpacity(colors[emaState??'neutral'])}));
+  }
   if (series.colorMode === "sign") {
     return series.data.map(({ tone: _tone, ...point }) => ({
       ...point,
