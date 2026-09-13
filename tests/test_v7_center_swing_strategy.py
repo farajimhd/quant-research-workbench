@@ -12,6 +12,34 @@ def candidate(transition=False):
     return host,replace(a,parameters=p),obs
 
 
+def test_price_only_entry_ignores_quote_and_swing_band_overlap_but_keeps_spread_gate():
+    host,a,obs=candidate()
+    p=deepcopy(a.parameters);p['historical_hod']['v7_price_only_enabled']=1
+    a=replace(a,parameters=p)
+    o=obs(2,10.02)
+    market=deepcopy(o.structural_detector_state)
+    # The confirmed swing price and resulting stop are below price, even
+    # though its uncertainty band overlaps price and bid lies below the zone.
+    market['row']['local_swings']=[dict(side='support',state='active',lower=9.99,
+        price=10.,upper=10.04,pivot_at=o.observed_at.timestamp()-2,
+        confirmed_at=o.observed_at.timestamp()-1)]
+    results=[]
+    for bid,ask in [(9.99,10.03),(10.01,10.04)]:
+        r=host.evaluate(a,replace(o,bid=bid,ask=ask,structural_detector_state=market))
+        assert r.evaluation.signals[0].action=='enter_long',r.evaluation.signals[0].reason
+        results.append(r.state['historical_hod_entry'])
+        assert r.state['initial_stop']==pytest.approx(9.98)
+        assert r.state['entry_reference_price']==10.02
+    assert results[0]['target']==results[1]['target']
+    # Execution may price its buy envelope from the ask without changing
+    # the strategy's entry, stop or target decisions.
+    assert results[0]['maximum_buy_price']>=10.03
+    assert results[1]['maximum_buy_price']>=10.04
+    r=host.evaluate(a,replace(o,bid=9.9,ask=10.1,structural_detector_state=market))
+    assert not r.evaluation.intents
+    assert 'current_spread' in r.evaluation.signals[0].metadata['liquidity_admission']['failed']
+
+
 @pytest.mark.parametrize('transition',[False,True])
 def test_center_close_opens_gate_before_upper_band_and_support_never_sets_stop(transition):
     host,a,obs=candidate(transition)
@@ -39,8 +67,11 @@ def test_center_requires_completed_non_red_candle_and_valid_confirmed_swing():
         assert r.evaluation.signals[0].reason=='confirmed_local_swing_low_unavailable'
 
 
-def test_only_new_confirmed_swing_lows_raise_stop_and_never_loosen():
+@pytest.mark.parametrize('price_only',[False,True])
+def test_only_new_confirmed_swing_lows_raise_stop_and_never_loosen(price_only):
     host,a,obs=candidate()
+    p=deepcopy(a.parameters);p['historical_hod']['v7_price_only_enabled']=int(price_only)
+    a=replace(a,parameters=p)
     entered=host.evaluate(a,obs(2,10.02))
     a=replace(a,state=entered.state,status=S.AssignmentStatus.MANAGING)
     for i,price in [(3,10.10),(4,10.20),(5,10.21)]:
@@ -49,6 +80,7 @@ def test_only_new_confirmed_swing_lows_raise_stop_and_never_loosen():
         a=replace(a,state=r.state,status=S.AssignmentStatus.MANAGING)
     for i,low in [(6,10.10),(7,10.05),(8,10.15)]:
         o=replace(obs(i,10.25),position_quantity=100,average_price=10.025)
+        if price_only:o=replace(o,bid=10.04,ask=10.08)
         market=deepcopy(o.structural_detector_state);now=o.observed_at.timestamp()
         swing=dict(side='support',state='active',lower=low,price=low+.002,upper=low+.005,pivot_at=now-1,confirmed_at=now)
         # A higher future-confirmed swing must not influence this stop.

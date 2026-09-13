@@ -130,6 +130,9 @@ def test_candidate_publishes_forming_macd_gray_centers_and_configurable_offset()
     assert s['forming_macd_entry_enabled']==1
     assert s['v7_transition_entries_enabled']==1
     assert s['rejection_break_offset_bps']==115
+    assert s['v7_price_only_enabled']==1
+    assert profile['parameters']['liquidity_admission']['minimum_current_trade_rate_60s']==10
+    assert profile['parameters']['liquidity_admission']['minimum_current_trade_rate_10s']==5
 
 
 @pytest.mark.parametrize('close,expected',[(3.95,False),(3.93,False),(3.929,True)])

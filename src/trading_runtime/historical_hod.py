@@ -24,7 +24,7 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     recent_breakout_seconds=30., forming_macd_entry_enabled=1, early_green_stop_enabled=1,
     regular_luld_enabled=0,backtest_luld_estimation_enabled=0,minimum_regular_previous_close=.75,
     luld_buffer_bps=25.,luld_buffer_ticks=2,luld_maximum_age_ms=60000.,v7_zone_enabled=0,entry_zone_fraction=.30,
-    v7_center_swing_enabled=0,v7_transition_entries_enabled=0,rejection_break_offset_bps=0.)
+    v7_center_swing_enabled=0,v7_transition_entries_enabled=0,v7_price_only_enabled=0,rejection_break_offset_bps=0.)
 
 
 def configure(p):
@@ -41,7 +41,7 @@ def configure(p):
     s = dict(DEFAULTS, **raw)
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
         raise ValueError('Historical HOD settings must be finite and positive')
     if s['forming_macd_entry_enabled'] not in (0,1):
         raise ValueError('Invalid forming MACD entry policy')
@@ -53,6 +53,8 @@ def configure(p):
         raise ValueError('Center break and swing stops require the V7 zone policy')
     if s['v7_transition_entries_enabled'] not in (0,1) or (s['v7_transition_entries_enabled'] and not s['v7_center_swing_enabled']):
         raise ValueError('All-transition acquisition requires the V7 center policy')
+    if s['v7_price_only_enabled'] not in (0,1) or (s['v7_price_only_enabled'] and not s['v7_center_swing_enabled']):
+        raise ValueError('Price-only decisions require the V7 center policy')
     if s['rejection_break_offset_bps'] >= 10000:
         raise ValueError('Rejection break offset must be less than 10000 bps')
     if s['early_green_stop_enabled'] not in (0,1):
@@ -106,9 +108,9 @@ def regular_luld(o, s, tick, estimate_state=None):
         if not band:
             return None
     buffer = max(band['upper']*s['luld_buffer_bps']/10000,
-        tick*s['luld_buffer_ticks'],max(0.,o.ask-o.bid))
+        tick*s['luld_buffer_ticks'],(0. if s.get('v7_price_only_enabled') else max(0.,o.ask-o.bid)))
     lower_buffer = max(band['lower']*s['luld_buffer_bps']/10000,
-        tick*s['luld_buffer_ticks'],max(0.,o.ask-o.bid))
+        tick*s['luld_buffer_ticks'],(0. if s.get('v7_price_only_enabled') else max(0.,o.ask-o.bid)))
     return dict(price=floor((band['upper']-buffer)/tick+1e-9)*tick,
         lower_exit=ceil((band['lower']+lower_buffer)/tick-1e-9)*tick,
         selection_method='estimated_luld' if band['source'] == 'estimated' else 'official_luld',band=deepcopy(band),buffer=buffer)
@@ -201,14 +203,15 @@ def stop_below(value, s, tick):
     return floor((value-max(tick,value*s['stop_buffer_bps']/10000))/tick+1e-9)*tick
 
 
-def initial_swing_low(row, boundary, now, *, closest=False, confirmed_after=0):
+def initial_swing_low(row, boundary, now, *, closest=False, confirmed_after=0, price_only=False):
     candidates = []
     for level in row.get('local_swings',[]) + row.get('confirmed_swings',[]):
         if (level.get('side') not in (1,'support') or level.get('state','active') != 'active'
                 or any(type(level.get(k)) not in (int,float) or not isfinite(level[k])
                        for k in ('lower','price','upper','pivot_at','confirmed_at'))):
             continue
-        if (0 < level['lower'] <= level['price'] <= level['upper'] < boundary['lower']
+        if (0 < level['lower'] <= level['price'] <= level['upper']
+                and (level['price'] if price_only else level['upper']) < boundary['lower']
                 and 0 < level['pivot_at'] <= level['confirmed_at'] <= now and level['confirmed_at'] > confirmed_after):
             candidates.append(level)
     key=(lambda l:(l['lower'],l['pivot_at'],l['confirmed_at'])) if closest else (lambda l:(l['pivot_at'],l['confirmed_at'],l['price']))
@@ -679,6 +682,10 @@ def evaluate(host, a, o, p, state):
     if saved_reentry and (not s['early_green_stop_enabled'] or saved_reentry['episode'] != d.get('episode')):
         state.pop('early_stop_reentry', None)
         saved_reentry = None
+    # Strategy geometry uses trade price; tradability still reads the real quote.
+    price_only = bool(s.get('v7_price_only_enabled'))
+    decision_bid = o.price if price_only else o.bid
+    decision_ask = o.price if price_only else o.ask
     active = state.get('historical_hod_entry') or {}
     stop = float(state.get('active_stop') or 0)
     target = float((state.get('structural_profit_targets') or [0])[0])
@@ -696,7 +703,7 @@ def evaluate(host, a, o, p, state):
     regular_block = ('regular_previous_close_unavailable' if prior_close is None or not isfinite(prior_close) or prior_close <= 0
         else 'regular_previous_close_below_minimum' if prior_close < s['minimum_regular_previous_close']
         else 'official_luld_unavailable' if not luld else
-        'inside_luld_buffer' if not luld['lower_exit'] < o.bid <= o.ask < luld['price'] else '') if regular else ''
+        'inside_luld_buffer' if not luld['lower_exit'] < decision_bid <= decision_ask < luld['price'] else '') if regular else ''
     pending = a.status == Status.ENTRY_PENDING or bool(state.get('pending_capital_request'))
     evidence = dict(contract=CONTRACT,macd=dict(timeframe='5s',observed_at=d.get('macd_at'),
         line=d.get('macd_line'),signal=d.get('macd_signal'),episode=d.get('episode'),
@@ -749,7 +756,7 @@ def evaluate(host, a, o, p, state):
     if acquired or pending:
         reason = ('session_flatten' if flatten else 'protective_stop' if stop and o.price <= stop
             else 'manual_exit' if state.get('manual_exit_requested') else 'macd_episode_ended' if macd_closed else '')
-        if not reason and luld and (o.bid >= luld['price'] or o.bid <= luld['lower_exit']):
+        if not reason and luld and (decision_bid >= luld['price'] or decision_bid <= luld['lower_exit']):
             reason = 'luld_buffer_reached'
         if not reason and acquired and active and confirm_failed_attempt(active,o,previous_bar=d.get('prior_bar')):
             reason = 'red_close_below_attempt_open'
@@ -841,7 +848,7 @@ def evaluate(host, a, o, p, state):
                 del target_breaks[key]
                 # Rebase above this completed close, including when it cleared
                 # several bands. The old target is not the next reference.
-                selected = available_target(d['rows'],max(o.price,o.ask),s,tick,
+                selected = available_target(d['rows'],max(o.price,decision_ask),s,tick,
                     session=session,minimum_target=target,synthetic_base=r['upper'],reference_price=o.price)
                 if selected:
                     selected['triggering_breakout'] = deepcopy(r)
@@ -871,8 +878,8 @@ def evaluate(host, a, o, p, state):
                 trailing = floor((active['best_close']-active['initial_risk'])/tick+1e-9)*tick
                 active['desired_stop'] = max(active.get('desired_stop',0),trailing)
             if s.get('v7_center_swing_enabled') and detector_fresh:
-                swing=initial_swing_low(row,dict(lower=min(o.price,o.bid)),now,
-                    closest=True,confirmed_after=active['confirmed_at'])
+                swing=initial_swing_low(row,dict(lower=min(o.price,decision_bid)),now,
+                    closest=True,confirmed_after=active['confirmed_at'],price_only=price_only)
                 if swing and stop_below(swing['lower'],s,tick)>max(stop,active.get('desired_stop',0)):
                     active['desired_stop']=stop_below(swing['lower'],s,tick)
                     active['stop_swing']=swing
@@ -883,12 +890,12 @@ def evaluate(host, a, o, p, state):
                 if not s.get('v7_center_swing_enabled'):
                     active['desired_stop'] = max(active.get('desired_stop',0),luld['lower_exit'])
         elif fresh and active['target'].get('selection_method') in ('official_luld','estimated_luld'):
-            active['desired_target'] = available_target(d['rows'],max(o.price,o.ask),s,tick,session=session)
+            active['desired_target'] = available_target(d['rows'],max(o.price,decision_ask),s,tick,session=session)
         proposed = active.get('desired_stop',0)
         replacements = []
         early = active.get('early_green_stop') or {}
         if (fresh and not active.get('early_green_graduated') and early.get('price') == proposed
-                and stop < proposed and 0 < o.bid <= proposed):
+                and stop < proposed and 0 < decision_bid <= proposed):
             # An already marketable new stop must protect now, not wait for a
             # later candle to make the replacement guard's bid inequality pass.
             state.update(active_stop=proposed,last_exit_reason='protective_stop',
@@ -897,7 +904,7 @@ def evaluate(host, a, o, p, state):
             return result('exit','protective_stop',Status.EXIT_PENDING,quantity=o.position_quantity,
                 invalidation_price=proposed,metadata={'early_green_stop':deepcopy(early),
                     'early_stop_marketable_at_confirmation':True})
-        if (fresh or luld) and stop < proposed < o.bid:
+        if (fresh or luld) and stop < proposed < decision_bid:
             state['active_stop'] = proposed
             early_reason = early.get('price') == proposed and not active.get('early_green_graduated')
             replacements.append(result('replace_protective_stop','confirmed_swing_low_trail' if s.get('v7_center_swing_enabled') else 'three_green_second_close' if early_reason else 'historical_hold_or_initial_risk_trail',Status.MANAGING,
@@ -908,7 +915,7 @@ def evaluate(host, a, o, p, state):
                     'last_cleared_resistance':deepcopy(active['last_cleared_resistance'])}))
         selection = active.get('desired_target')
         switching = active['target'].get('selection_method') in ('official_luld','estimated_luld') and not regular
-        if (regular or (fresh and o.price >= o.bar_open)) and selection and (selection['price'] > target or ((regular or switching) and selection['price'] != target)) and selection['price'] > max(o.price,o.ask):
+        if (regular or (fresh and o.price >= o.bar_open)) and selection and (selection['price'] > target or ((regular or switching) and selection['price'] != target)) and selection['price'] > max(o.price,decision_ask):
             previous_selection = deepcopy(active['target'])
             active['target'] = deepcopy(selection)
             state['structural_profit_targets'] = [selection['price']]
@@ -926,7 +933,7 @@ def evaluate(host, a, o, p, state):
                 if r[add_field] > frontier[add_field] and r['price'] > frontier['price']]
             current_target = active['target']['price']
             ceiling = min(o.ask*(1+s['maximum_chase_bps']/10000),current_target-tick)
-            if new and 0 < state['active_stop'] < o.bid <= o.ask <= ceiling:
+            if new and 0 < state['active_stop'] < decision_bid <= decision_ask <= ceiling:
                 broken = min(new,key=lambda r:(r[add_field],r['price'],r['unified_level_id']))
                 index = active.get('tranches_requested',1)
                 active['tranches_requested'] = index+1
@@ -994,7 +1001,7 @@ def evaluate(host, a, o, p, state):
         return result('wait','hod_history_or_vwap_gate')
     if s.get('v7_zone_enabled'):
         zone=zone_bounds(d,s)
-        if not zone or not zone[0]<=min(o.price,o.bid)<=max(o.price,o.ask)<=zone[1]:
+        if not zone or not zone[0]<=min(o.price,decision_bid)<=max(o.price,decision_ask)<=zone[1]:
             return result('wait','outside_v7_hod_entry_zone')
         if not reference:return result('wait','no_v7_resistance_in_entry_zone')
     boundary = deepcopy(saved_reentry['level']) if reclaim else reference['level']
@@ -1014,20 +1021,20 @@ def evaluate(host, a, o, p, state):
     recent_held = (not s.get('v7_zone_enabled') and not require_body_high and bool(recent) and recent.get('level_id') == boundary.get('unified_level_id')
         and recent.get('threshold') == resistance_threshold
         and 0 <= now-recent.get('at',0) <= s.get('recent_breakout_seconds',30.)
-        and (min(o.price,o.bid) >= threshold if inclusive else min(o.price,o.bid) > threshold))
+        and (min(o.price,decision_bid) >= threshold if inclusive else min(o.price,decision_bid) > threshold))
     evidence['entry_selection']['recent_breakout'] = deepcopy(recent) if recent_held else None
     if not crossed and not recent_held and not reclaim:
         return result('wait','waiting_for_fresh_body_high_break' if require_body_high else 'waiting_for_fresh_resistance_break')
-    selected = available_target(d['rows'],max(o.ask,o.price),s,tick,session=session)
+    selected = available_target(d['rows'],max(decision_ask,o.price),s,tick,session=session)
     if regular:
         selected = luld
     if not selected:
         return result('wait','qualified_target_unavailable')
-    swing = initial_swing_low(row,dict(lower=o.bid) if s.get('v7_zone_enabled') else boundary,now)
+    swing = initial_swing_low(row,dict(lower=decision_bid) if s.get('v7_zone_enabled') else boundary,now,price_only=price_only)
     if s.get('v7_zone_enabled') and not s.get('v7_center_swing_enabled'):
         # Current confirmed supports and confirmed local swings share one stop
         # comparison, independent of the session in which they originated.
-        candidates=[r for r in d['rows'] if r.get('side') in (1,'support') and r['upper']<o.bid]
+        candidates=[r for r in d['rows'] if r.get('side') in (1,'support') and r['upper']<decision_bid]
         if swing:candidates.append(swing)
         swing=max(candidates,key=lambda r:stop_below(r['lower'],s,tick),default=None)
     if swing is None:
@@ -1042,9 +1049,10 @@ def evaluate(host, a, o, p, state):
         stop = max(stop,initial_green['price'])
     if luld and not s.get('v7_center_swing_enabled'):
         stop = max(stop,luld['lower_exit'])
-    # Bound execution slippage from the executable quote, not the last trade.
+    # The execution envelope still caps the actual ask; decision geometry
+    # above uses trade price independently of the executable quote.
     ceiling = min(o.ask*(1+s['maximum_chase_bps']/10000),selected['price']-tick)
-    if not 0 < stop < o.bid <= o.ask <= ceiling:
+    if not 0 < stop < decision_bid <= decision_ask <= ceiling:
         return result('wait','invalid_stop_or_entry_price')
     atr = row.get('qualification',{}).get('atr') or 0.
     entry = dict(confirmed_at=now,level=boundary,hod=hod,stop=stop,target=selected,maximum_buy_price=ceiling,
@@ -1056,7 +1064,7 @@ def evaluate(host, a, o, p, state):
         last_add_level=deepcopy(boundary),
         initial_stop_selection=swing,
         last_cleared_resistance=deepcopy(boundary),
-        initial_risk=o.ask-stop,best_close=o.price,episode=d['episode'],
+        initial_risk=decision_ask-stop,best_close=o.price,episode=d['episode'],
         management_base=dict(lower=boundary['lower'],tolerance=max(tick,s['management_tolerance_atr']*atr)),hold_levels={})
     if initial_green:
         if reclaim:
@@ -1065,6 +1073,6 @@ def evaluate(host, a, o, p, state):
         else:
             entry['early_green_pending'] = initial_green
     state.update(historical_hod_entry=entry,initial_stop=stop,active_stop=stop,structural_profit_targets=[selected['price']],
-        entry_reference_price=o.ask,entry_at=o.observed_at.isoformat(),entries=state.get('entries',0)+1,
+        entry_reference_price=decision_ask,entry_at=o.observed_at.isoformat(),entries=state.get('entries',0)+1,
         last_exit_reason='',entry_acquisition_exit_latched=False)
     return enter(entry,'stopped_level_reclaim' if reclaim else 'historical_hod_entry')
