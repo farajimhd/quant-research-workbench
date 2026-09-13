@@ -10,6 +10,7 @@ from math import ceil, floor, isfinite
 from zoneinfo import ZoneInfo
 
 from .structural_recovery import DEFAULTS as QUALITY_DEFAULTS, LIQUIDITY_181, tradability
+from . import v7_encounters
 
 CONTRACT = 'historical-hod-1s-macd-5s-1'
 BOOK_VERSION = 'causal-swing-closing-book-6'
@@ -24,7 +25,8 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     recent_breakout_seconds=30., forming_macd_entry_enabled=1, early_green_stop_enabled=1,
     regular_luld_enabled=0,backtest_luld_estimation_enabled=0,minimum_regular_previous_close=.75,
     luld_buffer_bps=25.,luld_buffer_ticks=2,luld_maximum_age_ms=60000.,v7_zone_enabled=0,entry_zone_fraction=.30,
-    v7_center_swing_enabled=0,v7_transition_entries_enabled=0,v7_price_only_enabled=0,rejection_break_offset_bps=0.)
+    v7_center_swing_enabled=0,v7_transition_entries_enabled=0,v7_price_only_enabled=0,rejection_break_offset_bps=0.,
+    v7_encounters_enabled=0,breakout_buffer_bps=10.,breakout_buffer_ticks=1.,topping_tail_fraction=.5)
 
 
 def configure(p):
@@ -41,10 +43,13 @@ def configure(p):
     s = dict(DEFAULTS, **raw)
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
         raise ValueError('Historical HOD settings must be finite and positive')
     if s['forming_macd_entry_enabled'] not in (0,1):
         raise ValueError('Invalid forming MACD entry policy')
+    if (s['v7_encounters_enabled'] not in (0,1) or s['v7_encounters_enabled'] and not s['v7_price_only_enabled']
+            or not 0 < s['topping_tail_fraction'] <= 1 or int(s['breakout_buffer_ticks']) != s['breakout_buffer_ticks']):
+        raise ValueError('Invalid V7 encounter policy')
     if s['v7_zone_enabled'] not in (0,1) or not 0<s['entry_zone_fraction']<=1:
         raise ValueError('Invalid V7 entry zone policy')
     if s['v7_zone_enabled'] and s['early_green_stop_enabled']:
@@ -144,12 +149,13 @@ def selected_levels(o, s, before):
                 or not 0 < raw['lower'] <= raw['price'] <= raw['upper']
                 or not 0 < raw['oldest_member_confirmed_at_ms'] <= raw['confirmed_at_ms']):
             raise ValueError('Historical HOD requires valid V7 bands and historical member provenance')
-        result.append(dict(deepcopy(raw),v7_all_origins=bool(s.get('v7_zone_enabled'))))
+        result.append(dict(deepcopy(raw),v7_all_origins=bool(s.get('v7_zone_enabled')),
+            v7_encounter_eligible=bool(s.get('v7_encounters_enabled'))))
     return result
 
 
 def resistance(level):
-    return level.get('side') in (-1, 'resistance') or (level.get('v7_all_origins') and level.get('role')=='transition' and level.get('transition_from')=='resistance')
+    return level.get('side') in (-1, 'resistance') or (level.get('v7_all_origins') and level.get('role')=='transition' and (level.get('transition_from')=='resistance' or level.get('v7_encounter_eligible')))
 
 
 def acquisition_level(level,s):
@@ -180,11 +186,15 @@ def zone_reference(d,o,s):
     center=s.get('v7_center_swing_enabled')
     field='price' if center else 'upper'
     offset=0. if center else s['entry_breakout_offset']
-    rows=[r for r in d.get('prior_rows',[]) if acquisition_level(r,s) and zone[0]<=r[field]<=zone[1]
-          and (previous < r[field]+offset if offset else previous<=r[field])]
+    def boundary_for(r):
+        return v7_encounters.threshold(r,s,d.get('tick_size',.01)) if s.get('v7_encounters_enabled') else r[field]+offset
+    frozen=d.get('encounter_levels',{}) if s.get('v7_encounters_enabled') else {}
+    candidates=[frozen.get(str(r.get('unified_level_id')),r) for r in d.get('prior_rows',[])]
+    rows=[r for r in candidates if acquisition_level(r,s) and zone[0]<=r[field]<=zone[1]
+          and (previous<=boundary_for(r) if s.get('v7_encounters_enabled') or not offset else previous<boundary_for(r))]
     if not rows:return None
     level=deepcopy(min(rows,key=lambda r:(r[field],r['price'],r['unified_level_id'])))
-    boundary=round(level[field]+offset,9)
+    boundary=round(boundary_for(level),9)
     reentry=bool(d.get('used_episode'));failed=bool(d.get('failed_breakout'))
     return dict(level=level,prior_hod=zone[1],zone_lower=zone[0],resistance_threshold=boundary,
         threshold=max(boundary,d.get('prior_body_high',0)) if reentry or failed else boundary,
@@ -687,6 +697,11 @@ def evaluate(host, a, o, p, state):
     decision_bid = o.price if price_only else o.bid
     decision_ask = o.price if price_only else o.ask
     active = state.get('historical_hod_entry') or {}
+    encounter_state = state.setdefault('v7_encounters', {}) if s['v7_encounters_enabled'] else {}
+    encounter_reason = v7_encounters.update(encounter_state,o,d,s,tick,fresh) if s['v7_encounters_enabled'] else ''
+    encounter_blocked = s['v7_encounters_enabled'] and v7_encounters.blocked(encounter_state)
+    if not encounter_blocked:
+        encounter_state.pop('cancel_notified', None)
     stop = float(state.get('active_stop') or 0)
     target = float((state.get('structural_profit_targets') or [0])[0])
     acquired = o.position_quantity > 0
@@ -708,6 +723,11 @@ def evaluate(host, a, o, p, state):
     evidence = dict(contract=CONTRACT,macd=dict(timeframe='5s',observed_at=d.get('macd_at'),
         line=d.get('macd_line'),signal=d.get('macd_signal'),episode=d.get('episode'),
         kind=d.get('macd_kind'),completed_base_at=d.get('completed_macd',{}).get('at')))
+    if s['v7_encounters_enabled']:
+        evidence['level_encounters'] = v7_encounters.evidence(encounter_state)
+    d['tick_size'] = tick
+    if s['v7_encounters_enabled']:
+        d['encounter_levels'] = {k:e['level'] for k,e in encounter_state.get('levels',{}).items()}
     reference = entry_reference(d,o,s,session) if fresh else None
     if fresh:
         chart_reference = dict(hod=reference['prior_hod'],
@@ -723,13 +743,22 @@ def evaluate(host, a, o, p, state):
         evidence['historical_hod_reference'] = dict(chart_reference,at=now,changed=chart_reference!=prior_reference)
     if regular:
         evidence['regular_session_policy'] = dict(previous_close=prior_close,block_reason=regular_block,luld=luld)
+    cancel_acquisition = False
     def result(action, reason, status=None, **kw):
+        nonlocal cancel_acquisition
         metadata = dict(evidence, **kw.pop('metadata', {}))
         if action == 'exit':
             metadata.update(reentry_after_fill=reason != 'session_flatten' and a.permissions.reenter,
                 cancel_entry_acquisition=True,position_fraction=1.)
-        return host._result(a,o,action,reason,1. if action=='enter_long' else 0.,1.,state,status or a.status,
+        output = host._result(a,o,action,reason,1. if action=='enter_long' else 0.,1.,state,status or a.status,
             metadata=metadata,**kw)
+        if cancel_acquisition and action != 'exit':
+            cancel_acquisition = False
+            cancel = StrategyIntent(intent_id=output.evaluation.signals[0].signal_id+'-cancel-entry',
+                ticker=o.ticker,event_time=o.observed_at,action='cancel_entry',quantity=0,
+                reference_price=o.price,reason='unresolved_level_rejection',metadata={'assignment_id':a.assignment_id})
+            return replace(output,evaluation=replace(output.evaluation,intents=(cancel,*output.evaluation.intents)))
+        return output
     if acquired and d.get('episode') is not None:
         d['used_episode'] = True
     if a.status == Status.EXIT_PENDING or o.pending_exit_quantity > 0:
@@ -758,9 +787,11 @@ def evaluate(host, a, o, p, state):
             else 'manual_exit' if state.get('manual_exit_requested') else 'macd_episode_ended' if macd_closed else '')
         if not reason and luld and (decision_bid >= luld['price'] or decision_bid <= luld['lower_exit']):
             reason = 'luld_buffer_reached'
-        if not reason and acquired and active and confirm_failed_attempt(active,o,previous_bar=d.get('prior_bar')):
+        if not reason and s['v7_encounters_enabled'] and encounter_reason:
+            reason = encounter_reason
+        if not reason and not s['v7_encounters_enabled'] and acquired and active and confirm_failed_attempt(active,o,previous_bar=d.get('prior_bar')):
             reason = 'red_close_below_attempt_open'
-        if not reason and acquired and active and detector_fresh:
+        if not reason and not s['v7_encounters_enabled'] and acquired and active and detector_fresh:
             if not d['contiguous'] or row.get('gap_before'):
                 active['failure_closes'] = 0; active.pop('rejection',None)
             else:
@@ -789,14 +820,20 @@ def evaluate(host, a, o, p, state):
     quality_p = dict(p,structural_recovery=dict(QUALITY_DEFAULTS,**{k:v for k,v in s.items() if k in QUALITY_DEFAULTS}))
     ready, quality = tradability(o,quality_p,dict(effective_at=d.get('closed_at',0),candle=d.get('bar',{})),state,producer_freshness=True)
     evidence['liquidity_admission'] = quality
-    if pending and (state.get('pending_capital_request') or regular_block) and (regular_block or not active or not ready or not macd_ready or o.price <= (d.get('vwap') or float('inf'))
+    if ((encounter_blocked and (pending or acquired) and not encounter_state.get('cancel_notified')) or (pending and (state.get('pending_capital_request') or regular_block) and (regular_block or not active or not ready or not macd_ready or o.price <= (d.get('vwap') or float('inf'))
             or now-active.get('confirmed_at',0) >= s['confirmation_lifetime_ms']/1000
-            or o.ask > active.get('maximum_buy_price',0)):
+            or o.ask > active.get('maximum_buy_price',0)))):
+        if encounter_blocked:
+            encounter_state['cancel_notified'] = True
         state.pop('pending_capital_request',None)
-        base = result('hold' if acquired else 'wait','entry_acquisition_invalidated',Status.MANAGING if acquired else Status.WATCHING)
-        cancel = StrategyIntent(intent_id=base.evaluation.signals[0].signal_id,ticker=o.ticker,event_time=o.observed_at,
-            action='cancel_entry',quantity=0,reference_price=o.price,reason='entry_acquisition_invalidated',metadata={'assignment_id':a.assignment_id})
-        return replace(base,evaluation=replace(base.evaluation,intents=(cancel,)))
+        if acquired and encounter_blocked:
+            # Cancellation must not suppress a simultaneous swing-stop ratchet.
+            cancel_acquisition = True
+        else:
+            base = result('hold' if acquired else 'wait','entry_acquisition_invalidated',Status.MANAGING if acquired else Status.WATCHING)
+            cancel = StrategyIntent(intent_id=base.evaluation.signals[0].signal_id,ticker=o.ticker,event_time=o.observed_at,
+                action='cancel_entry',quantity=0,reference_price=o.price,reason='entry_acquisition_invalidated',metadata={'assignment_id':a.assignment_id})
+            return replace(base,evaluation=replace(base.evaluation,intents=(cancel,)))
     if acquired:
         if not active:
             return result('hold','position_context_missing',Status.MANAGING,invalidation_price=stop)
@@ -810,8 +847,9 @@ def evaluate(host, a, o, p, state):
             previous = d.get('prior_close')
             crossed = [r for r in d.get('prior_rows',[]) if resistance(r) and previous is not None and previous <= r['upper'] < o.price]
             add_field = 'price' if s.get('v7_transition_entries_enabled') else 'upper'
-            acquisition_crossed = ([r for r in d.get('prior_rows',[]) if acquisition_level(r,s)
-                and previous is not None and previous <= r[add_field] < o.price]
+            add_rows = [d.get('encounter_levels',{}).get(str(r.get('unified_level_id')),r) for r in d.get('prior_rows',[])] if s['v7_encounters_enabled'] else d.get('prior_rows',[])
+            acquisition_crossed = ([r for r in add_rows if acquisition_level(r,s)
+                and previous is not None and previous <= (v7_encounters.threshold(r,s,tick) if s['v7_encounters_enabled'] else r[add_field]) < o.price]
                 if s.get('v7_transition_entries_enabled') else crossed)
             add_breaks = active.setdefault('add_breaks',{})
             if not d['contiguous']:
@@ -821,7 +859,7 @@ def evaluate(host, a, o, p, state):
                 if r[add_field] > frontier[add_field] and r['price'] > frontier['price']:
                     add_breaks[str(r['unified_level_id'])] = deepcopy(r)
             for key,r in list(add_breaks.items()):
-                if o.price <= r[add_field] or r[add_field] <= frontier[add_field]:
+                if o.price <= (v7_encounters.threshold(r,s,tick) if s['v7_encounters_enabled'] else r[add_field]) or r[add_field] <= frontier[add_field]:
                     del add_breaks[key]
             pending_levels = active.setdefault('hold_levels',{})
             cleared = active.setdefault('last_cleared_resistance',deepcopy(active['level']))
@@ -925,7 +963,7 @@ def evaluate(host, a, o, p, state):
                     'previous_historical_hod_target':previous_selection}))
         if (not regular_block and s['sizing_mode'] == 'cash_tranches' and fresh and detector_fresh and d['contiguous']
                 and not pending and a.permissions.add and ready and macd_ready and o.price > (d.get('vwap') or float('inf'))
-                and o.price >= o.bar_open and not active.get('pending_failed_attempt')
+                and o.price >= o.bar_open and not active.get('pending_failed_attempt') and not encounter_blocked
                 and active.get('tranches_requested',1) < s['tranche_count']):
             frontier = active.get('last_add_level',active['level'])
             add_field = 'price' if s.get('v7_transition_entries_enabled') else 'upper'
@@ -945,7 +983,7 @@ def evaluate(host, a, o, p, state):
                     order_intent={'execution_policy':'adaptive_urgent','protection_profile':'structural-single-target'},
                     metadata={'cash_tranche':dict(key=active['cash_tranche_key'],index=index,count=s['tranche_count']),
                         'tranche_breakout':deepcopy(broken),'mandatory_broker_target':True,
-                        'tranche_breakout_confirmation':dict(threshold=broken[add_field],boundary_kind='center' if add_field=='price' else 'upper',confirmed_at=now),
+                        'tranche_breakout_confirmation':dict(threshold=v7_encounters.threshold(broken,s,tick) if s['v7_encounters_enabled'] else broken[add_field],boundary_kind='buffered_center' if s['v7_encounters_enabled'] else 'center' if add_field=='price' else 'upper',confirmed_at=now),
                         'maximum_buy_price':ceiling,'wait_for_capital':False}))
         # A non-red close consumes this confirmation opportunity even when
         # acquisition gates block it. Never replay old gate failures later.
@@ -972,6 +1010,8 @@ def evaluate(host, a, o, p, state):
                 'entry_breakout_confirmation':entry.get('breakout_confirmation'),
                 'unified_structural_trigger':{'current_snapshot':{'levels':[dict(entry['level'],entry_boundary=entry['level']['price'] if s.get('v7_center_swing_enabled') else entry['level']['upper'])], 'session_high':entry['hod'],
                     'selected_at':o.observed_at.isoformat(),'frozen_at_entry':True}}})
+    if encounter_blocked and not acquired:
+        return result('wait','unresolved_level_rejection')
     if pending:
         return enter(active,'historical_hod_entry') if state.get('pending_capital_request') else result('wait','entry_fill_pending',Status.ENTRY_PENDING)
     if (a.status in (Status.DISABLED,Status.PAUSED,Status.COMPLETED,Status.ERROR)
@@ -1065,7 +1105,8 @@ def evaluate(host, a, o, p, state):
         initial_stop_selection=swing,
         last_cleared_resistance=deepcopy(boundary),
         initial_risk=decision_ask-stop,best_close=o.price,episode=d['episode'],
-        management_base=dict(lower=boundary['lower'],tolerance=max(tick,s['management_tolerance_atr']*atr)),hold_levels={})
+        management_base=dict(lower=swing['lower'] if s['v7_encounters_enabled'] else boundary['lower'],
+            tolerance=max(tick,s['management_tolerance_atr']*atr)),hold_levels={})
     if initial_green:
         if reclaim:
             entry['early_green_stop'] = initial_green
