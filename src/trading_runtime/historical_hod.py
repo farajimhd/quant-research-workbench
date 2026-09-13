@@ -24,7 +24,7 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     recent_breakout_seconds=30., forming_macd_entry_enabled=1, early_green_stop_enabled=1,
     regular_luld_enabled=0,backtest_luld_estimation_enabled=0,minimum_regular_previous_close=.75,
     luld_buffer_bps=25.,luld_buffer_ticks=2,luld_maximum_age_ms=60000.,v7_zone_enabled=0,entry_zone_fraction=.30,
-    v7_center_swing_enabled=0)
+    v7_center_swing_enabled=0,v7_transition_entries_enabled=0,rejection_break_offset_bps=0.)
 
 
 def configure(p):
@@ -41,7 +41,7 @@ def configure(p):
     s = dict(DEFAULTS, **raw)
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
         raise ValueError('Historical HOD settings must be finite and positive')
     if s['forming_macd_entry_enabled'] not in (0,1):
         raise ValueError('Invalid forming MACD entry policy')
@@ -51,6 +51,10 @@ def configure(p):
         raise ValueError('V7 zone strategy does not use early green stops')
     if s['v7_center_swing_enabled'] not in (0,1) or (s['v7_center_swing_enabled'] and not s['v7_zone_enabled']):
         raise ValueError('Center break and swing stops require the V7 zone policy')
+    if s['v7_transition_entries_enabled'] not in (0,1) or (s['v7_transition_entries_enabled'] and not s['v7_center_swing_enabled']):
+        raise ValueError('All-transition acquisition requires the V7 center policy')
+    if s['rejection_break_offset_bps'] >= 10000:
+        raise ValueError('Rejection break offset must be less than 10000 bps')
     if s['early_green_stop_enabled'] not in (0,1):
         raise ValueError('Invalid early green stop policy')
     if s['regular_luld_enabled'] not in (0,1) or s['backtest_luld_estimation_enabled'] not in (0,1) or int(s['luld_buffer_ticks']) != s['luld_buffer_ticks']:
@@ -146,6 +150,17 @@ def resistance(level):
     return level.get('side') in (-1, 'resistance') or (level.get('v7_all_origins') and level.get('role')=='transition' and level.get('transition_from')=='resistance')
 
 
+def acquisition_level(level,s):
+    """Gray V7 bands can be crossed upward regardless of their former role.
+
+    Acquisition eligibility does not turn a support-origin transition into a
+    confirmed resistance for targets or touch-based rejection exits.
+    """
+    return resistance(level) or bool(s.get('v7_transition_entries_enabled')
+        and level.get('book_version')=='causal-level-book-v7-mle-1'
+        and level.get('role')=='transition')
+
+
 def eligible_origin(level,session,policy=None):
     return (bool(level.get('v7_all_origins')) or
         bool(policy and policy.get('v7_zone_enabled') and level.get('book_version')=='causal-level-book-v7-mle-1') or historical(level,session))
@@ -163,7 +178,7 @@ def zone_reference(d,o,s):
     center=s.get('v7_center_swing_enabled')
     field='price' if center else 'upper'
     offset=0. if center else s['entry_breakout_offset']
-    rows=[r for r in d.get('prior_rows',[]) if resistance(r) and zone[0]<=r[field]<=zone[1]
+    rows=[r for r in d.get('prior_rows',[]) if acquisition_level(r,s) and zone[0]<=r[field]<=zone[1]
           and (previous < r[field]+offset if offset else previous<=r[field])]
     if not rows:return None
     level=deepcopy(min(rows,key=lambda r:(r[field],r['price'],r['unified_level_id'])))
@@ -306,9 +321,11 @@ def management(row, active, bar, s, tick, *, previous_bar=None, resistance_level
         for attempt in attempts:
             level = attempt['level']
             # A close inside the band is a retest, not a failed resistance.
-            if eligible_origin(level, session) and bar['close'] < level['lower']:
+            failure_threshold = level['lower']*(1-s.get('rejection_break_offset_bps',0)/10000)
+            if eligible_origin(level, session) and bar['close'] < failure_threshold:
                 active['failed_resistance_exit'] = dict(level=deepcopy(level),
                     previous_bar=deepcopy(previous_bar),exit_bar=deepcopy(bar),
+                    failure_threshold=failure_threshold,offset_bps=s.get('rejection_break_offset_bps',0),
                     attempt_kind='failed_breakout' if attempt['broken'] else 'rejection')
                 return 'red_close_below_attempt_open'
     atr = row.get('qualification', {}).get('atr') or 0.
@@ -511,6 +528,7 @@ def confirm_failed_attempt(active, o, *, previous_bar=None):
     pending['last_bar_ms'] = now_ms
     pending['red_closes'] = count + 1 if o.price < o.bar_open else 0
     if (pending['red_closes'] < 2 or not previous_bar
+            or o.price >= active.get('failed_resistance_exit',{}).get('failure_threshold',level['lower'])
             or previous_bar['end'] != o.observed_at.timestamp()-1
             or not isfinite(o.bar_low) or o.bar_low <= 0
             or o.bar_low >= previous_bar['low'] or o.price >= previous_bar['open']):
@@ -784,15 +802,19 @@ def evaluate(host, a, o, p, state):
                 early_green_stop(active,d,tick)
             previous = d.get('prior_close')
             crossed = [r for r in d.get('prior_rows',[]) if resistance(r) and previous is not None and previous <= r['upper'] < o.price]
+            add_field = 'price' if s.get('v7_transition_entries_enabled') else 'upper'
+            acquisition_crossed = ([r for r in d.get('prior_rows',[]) if acquisition_level(r,s)
+                and previous is not None and previous <= r[add_field] < o.price]
+                if s.get('v7_transition_entries_enabled') else crossed)
             add_breaks = active.setdefault('add_breaks',{})
             if not d['contiguous']:
                 add_breaks.clear()
             frontier = active.get('last_add_level',active['level'])
-            for r in crossed:
-                if r['upper'] > frontier['upper'] and r['price'] > frontier['price']:
+            for r in acquisition_crossed:
+                if r[add_field] > frontier[add_field] and r['price'] > frontier['price']:
                     add_breaks[str(r['unified_level_id'])] = deepcopy(r)
             for key,r in list(add_breaks.items()):
-                if o.price <= r['upper'] or r['upper'] <= frontier['upper']:
+                if o.price <= r[add_field] or r[add_field] <= frontier[add_field]:
                     del add_breaks[key]
             pending_levels = active.setdefault('hold_levels',{})
             cleared = active.setdefault('last_cleared_resistance',deepcopy(active['level']))
@@ -899,12 +921,13 @@ def evaluate(host, a, o, p, state):
                 and o.price >= o.bar_open and not active.get('pending_failed_attempt')
                 and active.get('tranches_requested',1) < s['tranche_count']):
             frontier = active.get('last_add_level',active['level'])
+            add_field = 'price' if s.get('v7_transition_entries_enabled') else 'upper'
             new = [r for r in active.get('add_breaks',{}).values()
-                if r['upper'] > frontier['upper'] and r['price'] > frontier['price']]
+                if r[add_field] > frontier[add_field] and r['price'] > frontier['price']]
             current_target = active['target']['price']
             ceiling = min(o.ask*(1+s['maximum_chase_bps']/10000),current_target-tick)
             if new and 0 < state['active_stop'] < o.bid <= o.ask <= ceiling:
-                broken = min(new,key=lambda r:r['upper'])
+                broken = min(new,key=lambda r:(r[add_field],r['price'],r['unified_level_id']))
                 index = active.get('tranches_requested',1)
                 active['tranches_requested'] = index+1
                 active['last_add_level'] = deepcopy(broken)
@@ -915,6 +938,7 @@ def evaluate(host, a, o, p, state):
                     order_intent={'execution_policy':'adaptive_urgent','protection_profile':'structural-single-target'},
                     metadata={'cash_tranche':dict(key=active['cash_tranche_key'],index=index,count=s['tranche_count']),
                         'tranche_breakout':deepcopy(broken),'mandatory_broker_target':True,
+                        'tranche_breakout_confirmation':dict(threshold=broken[add_field],boundary_kind='center' if add_field=='price' else 'upper',confirmed_at=now),
                         'maximum_buy_price':ceiling,'wait_for_capital':False}))
         # A non-red close consumes this confirmation opportunity even when
         # acquisition gates block it. Never replay old gate failures later.
