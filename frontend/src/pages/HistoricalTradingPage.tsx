@@ -2,7 +2,7 @@ import { Modal } from "../app/components/Modal";
 import { BacktestRecoveryFailure } from "../app/components/BacktestRecoveryFailure";
 import { BacktestRecoveryState } from "../app/components/BacktestRecoveryState";
 import { BacktestRunHistory } from "../app/components/BacktestRunHistory";
-import { ArrowLeft, CheckCircle2, CircleStop, Gauge, Pause, Play, RefreshCcw, Square, TriangleAlert, X, Zap } from "lucide-react";
+import { ArrowLeft, CheckCircle2, CircleStop, Gauge, LoaderCircle, Pause, Play, RefreshCcw, Square, TriangleAlert, X, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "../api/client";
@@ -324,7 +324,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   }, [anchorDate, candidateId, endTime, indicatorWarmup?.status, loadingOptions, mode, normalizedTickers, optionsError, refreshKey, runPlanId, selectedPlan, setupKey, startTime, tickerReady, selectedRunId, fullMarket]);
 
   usePollingTask({
-    enabled: Boolean(run && !["completed", "stopped", "failed"].includes(run.status)),
+    enabled: Boolean(run && (run.work_progress?.active || !["completed", "stopped", "failed"].includes(run.status))),
     intervalMs: 1_000,
     onError: (reason) => setError(reason instanceof Error ? reason.message : String(reason)),
     restartKey: run?.run_id,
@@ -445,9 +445,12 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
 
   if (run) {
     const terminal = ["completed", "stopped", "failed"].includes(run.status);
-    const warming = run.status === "warming";
+    const warming = !terminal && (run.status === "warming" || run.runtime_ready === false);
+    const work = run.work_progress;
+    const checkpointing = Boolean(work?.active && (work.phase.startsWith('checkpoint_') || work.phase === 'finalizing'));
+    const workLabel = checkpointing ? work?.phase === 'finalizing' ? 'Finalizing backtest' : work?.phase === 'checkpoint_capture' ? 'Capturing checkpoint' : 'Saving checkpoint' : warming ? 'Preparing backtest' : `Backtest ${run.status.replaceAll("_", " ")}`;
     const preparation = run.preparation_progress;
-    const progressKnown = !warming || Boolean(preparation && preparation.total > 0);
+    const progressKnown = !checkpointing && (!warming || Boolean(preparation && preparation.total > 0));
     const phaseProgress = warming
       ? preparation && preparation.total > 0 ? preparation.completed / preparation.total : 0
       : run.progress;
@@ -462,16 +465,16 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
           options={batchRuns.map(item => ({value:item.run_id,label:(item.tickers ?? []).join(', ')}))}
           onChange={id => { setRun(null); setSelectedRunId(id); persistSelectedRun(id); }} /> : null}
         <div className="historical-backtest-progress-actions"><span className="historical-backtest-engine" title="Accelerated causal engine"><Zap aria-hidden="true" size={11} /><span>Accelerated causal engine</span></span><button className="button secondary compact" aria-haspopup="dialog" onClick={() => setDetailsOpen(true)} type="button">Details{run.level_book_coverage?.excluded_ticker_count ? ` · ${run.level_book_coverage.excluded_ticker_count} excluded` : ""}</button><button aria-label="Return to Backtest setup" className="button secondary compact" onClick={returnToSetup} type="button"><ArrowLeft size={14} /> Setup</button>{terminal && run.status !== "completed" && run.checkpoint?.resume_supported ? <button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void resumeRun()} type="button"><Play size={14} />{controlBusy === "resume" ? "Resuming…" : "Resume from checkpoint"}</button> : null}{!terminal ? <><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void commandRun(run.status === "paused" ? "play" : "pause")} type="button">{run.status === "paused" ? <Play size={14} /> : <Pause size={14} />}{run.status === "paused" ? "Resume" : "Pause"}</button><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void stopRun()} type="button"><Square size={14} /> Stop</button></> : null}</div>
-        <div className="historical-backtest-progress-heading"><strong>Backtest {run.status.replaceAll("_", " ")}</strong><b>{progressKnown ? `${progressPercent}%` : "Preparing"}</b></div>
+        <div className="historical-backtest-progress-heading"><strong>{warming || checkpointing ? <LoaderCircle aria-hidden="true" className="spin" size={12} /> : null} {workLabel}</strong><b>{checkpointing ? `${Math.floor(work?.elapsed_seconds ?? 0)}s` : progressKnown ? `${progressPercent}%` : "Preparing"}</b></div>
 
-        <div aria-label={`${progressLabel} progress`} aria-valuemax={100} aria-valuemin={0} aria-valuenow={progressKnown ? progressPercent : undefined} aria-valuetext={warming && preparation?.total ? `${preparation.completed.toLocaleString()} of ${preparation.total.toLocaleString()} prepared · ${progressPercent}%` : progressKnown ? `${progressPercent}%` : "Preparing"} className="historical-backtest-progress-track" role="progressbar"><span style={{ width: `${progressPercent}%` }} /></div>
-        <div className="historical-backtest-progress-facts">{warming ? <>
+        <div aria-label={`${progressLabel} progress`} aria-valuemax={100} aria-valuemin={0} aria-valuenow={progressKnown ? progressPercent : undefined} aria-valuetext={checkpointing ? `${workLabel} - ${Math.floor(work?.elapsed_seconds ?? 0)} seconds` : warming && preparation?.total ? `${preparation.completed.toLocaleString()} of ${preparation.total.toLocaleString()} prepared · ${progressPercent}%` : progressKnown ? `${progressPercent}%` : "Preparing"} className="historical-backtest-progress-track" role="progressbar"><span style={{ width: `${progressPercent}%` }} /></div>
+        <div className="historical-backtest-progress-facts" role="status">{checkpointing ? <><span>{work?.stop_requested ? 'Stop requested · finishing durable checkpoint' : 'Engine held at a causal boundary'}</span><span>Progress updates remain available</span></> : warming ? <>
           <span>{run.preparation_stage === "strategy_frames" ? "Strategy streams" : run.preparation_stage?.replaceAll("_", " ") || "Preparing"}</span>
           <span>{progressKnown && preparation ? `${preparation.completed.toLocaleString()} / ${preparation.total.toLocaleString()} prepared` : "Waiting for preparation totals"}</span>
         </> : <><span>{new Intl.NumberFormat("en-US").format(run.processed_events || 0)} exact events</span><span>Through {formatReplayTime(run.current_time)} ET</span><span>{runScope}</span></>}</div>
         {detailsOpen ? <Modal title="Backtest preparation" onClose={() => setDetailsOpen(false)} closeOnBackdrop className="backtest-preparation-modal">
           <div className="backtest-preparation-content">
-            <dl><div><dt>Stage</dt><dd>{run.preparation_stage?.replaceAll('_', ' ') || run.status}</dd></div>
+            <dl><div><dt>Stage</dt><dd>{work?.phase.replaceAll('_', ' ') || run.preparation_stage?.replaceAll('_', ' ') || run.status}</dd></div>
               <div><dt>Prepared streams</dt><dd>{run.preparation_progress?.completed.toLocaleString() ?? '—'} / {run.preparation_progress?.total.toLocaleString() ?? '—'}</dd></div>
               <div><dt>Eligible tickers</dt><dd>{run.level_book_coverage?.eligible_ticker_count.toLocaleString() ?? '—'}</dd></div></dl>
             <h3>Excluded tickers · {run.level_book_coverage?.excluded_ticker_count ?? 0}</h3>

@@ -26,14 +26,14 @@ from src.trading_runtime.runtime import RunMode
 
 
 class BacktestCanvasContractTests(unittest.IsolatedAsyncioTestCase):
-    def test_status_compact_does_not_serialize_assignments(self) -> None:
+    async def test_status_compact_does_not_serialize_assignments(self) -> None:
         controller = MagicMock()
         controller.stream_snapshot.return_value = {"status": "running", "assignment_count": 1}
         controller.snapshot.return_value = {"assignments": [{"parameters": "full evidence"}]}
         with patch("src.backend.app.backtest_run_service.get", return_value=controller):
-            self.assertEqual(trading_backtest_run("run-1", compact=True), controller.stream_snapshot.return_value)
+            self.assertEqual(await trading_backtest_run("run-1", compact=True), controller.stream_snapshot.return_value)
             controller.snapshot.assert_not_called()
-            self.assertEqual(trading_backtest_run("run-1"), controller.snapshot.return_value)
+            self.assertEqual(await trading_backtest_run("run-1"), controller.snapshot.return_value)
 
     async def test_indicator_warmup_accepts_and_reports_multiple_tickers(self) -> None:
         request = IndicatorWarmupSubmit(
@@ -85,11 +85,13 @@ class BacktestCanvasContractTests(unittest.IsolatedAsyncioTestCase):
             offset=0,
             include_decision_evidence=False,
             consequential_only=True,
+            through_sequence=None,
         )
         self.assertEqual(payload["rows"][0]["ticker"], "MSFT")
 
     async def test_projects_canvas_from_the_pinned_backtest_controller(self) -> None:
         controller = MagicMock()
+        controller._monitoring = None
         controller.canvas_payload = AsyncMock(
             return_value={
                 "preview_kind": "backtest_run",

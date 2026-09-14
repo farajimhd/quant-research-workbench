@@ -242,8 +242,8 @@ change. The first financial Canvas request measured 21 ms and 11,970 JSON bytes.
 These are presentation measurements, not engine-throughput benchmarks. The run
 remains stopped at 08:00:47Z with 71,347 processed events.
 
-Backtest views hold their displayed boundary by default. Update view explicitly
-advances it; Follow latest optionally refreshes every five seconds and pauses
+Backtest views follow new data by default. Update view explicitly
+advances a held view; Follow latest refreshes every five seconds and pauses
 when the user interacts with a panel. Hidden panels suspend requests, chart
 details are requested only when needed, and unused publication interests expire
 after 15 seconds. Engine publication still uses a separate process and bounded
@@ -272,3 +272,42 @@ with zero automated objective issues. Evidence is under
 The existing compact header clips some older controls at maximum scale; the new
 view controls remain usable. Full-session causal/P&L and throughput acceptance
 remain open as described above.
+
+## Resumed-run progress and checkpoint responsiveness
+
+The user resumed `8c5022c3-2536-4fda-885f-367d7c2f4e3b` on September 14.
+Preparation rebuilt all 2,610 V7 working-set tickers and retained about 8.54 GB.
+At 11:32 PDT it advanced from 2,432 to 2,560 prepared tickers while its market
+clock stayed fixed. The API reported running with runtime_ready=false, which
+the old UI incorrectly treated as playback. Warmup finished around 11:33 PDT.
+The following 300,000-event checkpoint measured 22.78 seconds for capture plus
+20.32 seconds for persistence. Over the observed 54-second interval, the market
+clock advanced only 26 seconds. The earlier 2.35x bounded playback measurement
+therefore does not establish sustained resumed-run throughput.
+
+Checkpoint capture/persistence now runs in a worker while the engine awaits the
+same complete, durable checkpoint before advancing. Compact status uses a frozen
+boundary plus current work phase and elapsed time; its async endpoint bypasses
+the shared synchronous request pool. Mutation APIs reject concurrent changes;
+pause/stop only set control flags during the checkpoint. Cancellation waits for
+the worker to finish before releasing the boundary. Checkpoint contents and
+durability are unchanged; this fixes reporting/request stalls, not the underlying
+43-second checkpoint cost. Repeated full working-set preparation and incremental
+checkpoint performance remain optimization work.
+
+The UI now recognizes resumed preparation from runtime readiness, reports ticker
+counts, shows checkpoint capture/save with elapsed time, and keeps polling through
+finalization. Activity follows automatically until the user interacts; a visible
+paused-updates message explains held rows. Activity-only layouts use their own
+held clock rather than a hidden financial panel's old timestamp/sequence.
+
+Validation: delayed capture/persistence keeps the compact endpoint responsive
+within a 200 ms test deadline and the complete saved state equals the synchronous
+baseline. Browser tests cover automatic follow, evidence inspection, paging,
+checkpoint phase labels and 2,432/2,610 resumed-warmup progress. Managed build and
+12 theme/scale/viewport reviews passed; screenshots are under
+`D:/TradingML/runtimes/ui-review/backtest-work-progress` and `backtest-work-phases`.
+The user run subsequently reached stopped with a complete checkpoint at
+596,100 events (08:37:06.8Z). No other active backtest was resident, so the
+backend was restarted through the managed lifecycle to activate these changes.
+No stop or resume command was issued by this task.

@@ -1141,6 +1141,14 @@ class ReplayRunController:
         target_event_type: str = "",
     ) -> dict[str, Any]:
         normalized = command.strip().lower()
+        if getattr(self, '_checkpoint_io_task', None) is not None:
+            if normalized == 'stop':
+                self._stop_requested = True
+            elif normalized == 'pause':
+                self.status = 'paused'
+            else:
+                raise ValueError('Checkpoint is being saved; retry this command after it finishes')
+            return self.stream_snapshot()
         if normalized not in {"play", "pause", "step", "set_speed", "fast_forward", "next_action", "stop"}:
             raise ValueError(f"Unsupported Replay command: {command}")
         async with self._condition:
@@ -1251,6 +1259,7 @@ class ReplayRunController:
         return self.stream_snapshot()
 
     async def add_assignment(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._require_checkpoint_idle()
         if self._strategy is None:
             raise ValueError("Replay strategy runtime is not ready")
         source_account = str(payload.get("account_id") or "").strip()
@@ -1308,6 +1317,7 @@ class ReplayRunController:
         command: str,
         detail: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        self._require_checkpoint_idle()
         if self._strategy is None:
             raise ValueError("Replay strategy runtime is not ready")
         assignment = self._strategy.command_assignment(
@@ -1322,6 +1332,7 @@ class ReplayRunController:
         return assignment.payload()
 
     async def submit_trade_proposal(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._require_checkpoint_idle()
         if self._runtime is None or self._planner is None:
             raise ValueError("Historical trading runtime is not ready")
         account_id = str(payload.get("account_id") or "").strip()
@@ -1597,6 +1608,7 @@ class ReplayRunController:
             "run_id": self.run_id,
             "status": self.status,
             "runtime_ready": self._runtime_inputs_ready,
+            "work_progress": self._work_progress_payload(),
             "monitoring": {
                 "error": getattr(self, '_monitoring_capture_error', '') or getattr(self._monitoring, 'error', None),
                 "pending": self._monitoring is not None and self._monitoring.pending is not None,
@@ -1707,6 +1719,9 @@ class ReplayRunController:
                 else None
             ),
         }
+        return self._with_lifecycle(payload)
+
+    def _with_lifecycle(self, payload):
         payload["lifecycle"] = lifecycle_projection(
             resource_type="historical_trading_run",
             resource_id=self.run_id,
@@ -1715,7 +1730,7 @@ class ReplayRunController:
             completed_units=self.processed_events,
             total_units=None,
             unit="market_events",
-            checkpoint=checkpoint,
+            checkpoint=payload['checkpoint'],
             error=self.error,
             created_at=payload["created_at"],
             updated_at=payload["updated_at"],
@@ -1739,6 +1754,9 @@ class ReplayRunController:
         adds serialization, websocket, and browser parsing pressure.
         """
 
+        cached = getattr(self, '_checkpoint_work_snapshot', None)
+        if cached is not None:
+            return self._with_lifecycle({**cached, 'status': self.status, 'work_progress': self._work_progress_payload()})
         payload = self.snapshot(include_details=False)
         if (
             self._next_action_after_sequence is not None
@@ -1965,6 +1983,8 @@ class ReplayRunController:
         if self._journal is None or self._runtime is None:
             return
         started=time.perf_counter()
+        if getattr(self, '_checkpoint_work_snapshot', None) is not None:
+            self._checkpoint_phase = 'checkpoint_capture'
         state = self._restart_checkpoint_state(reference_authority=getattr(self,'_prepared_v7',None) is not None)
         self._record_stage_time('checkpoint_capture',started)
         cursor = json.dumps(
@@ -1976,6 +1996,8 @@ class ReplayRunController:
             sort_keys=True,
         )
         started=time.perf_counter()
+        if getattr(self, '_checkpoint_work_snapshot', None) is not None:
+            self._checkpoint_phase = 'checkpoint_persist'
         self._journal.save_checkpoint(self.run_id, cursor, state, event_time)
         self._record_stage_time('checkpoint_persist',started)
         self._checkpoint_projection_cache = {
@@ -1990,6 +2012,44 @@ class ReplayRunController:
             "resume_supported": True,
             "schema_version": int(state.get("schema_version") or 1),
         }
+
+    def _require_checkpoint_idle(self):
+        if getattr(self, '_checkpoint_io_task', None) is not None:
+            raise ValueError('Checkpoint is being saved; retry after it finishes')
+
+    def _work_progress_payload(self):
+        if getattr(self, '_checkpoint_work_snapshot', None) is not None:
+            return dict(phase=self._checkpoint_phase, active=True, started_at=self._checkpoint_started_at.isoformat(),
+                elapsed_seconds=(datetime.now(UTC)-self._checkpoint_started_at).total_seconds(),
+                completed=None, total=None, stop_requested=self._stop_requested)
+        if getattr(self, '_finalizing', False):
+            return dict(phase='finalizing', active=True, completed=None, total=None)
+        preparing = not self._runtime_inputs_ready and self.status not in TERMINAL_REPLAY_STATUSES
+        return dict(phase=self._preparation_stage if preparing else self.status if self.status in TERMINAL_REPLAY_STATUSES else 'playback',
+            active=self.status not in TERMINAL_REPLAY_STATUSES and self.status != 'paused',
+            completed=self._preparation_completed_units if preparing else self.processed_events,
+            total=self._preparation_total_units if preparing else None)
+
+    async def _save_restart_checkpoint_responsive(self, event_time):
+        if self.definition.mode != RunMode.BACKTEST:
+            self._save_restart_checkpoint(event_time)
+            return
+        # The engine awaits the entire operation: no market/strategy state can
+        # advance while the worker captures it. Mutation APIs reject changes;
+        # pause/stop only set control flags and take effect at this boundary.
+        snapshot = self.stream_snapshot()
+        self._checkpoint_phase = 'checkpoint_capture'
+        self._checkpoint_started_at = datetime.now(UTC)
+        self._checkpoint_work_snapshot = snapshot
+        self._checkpoint_io_task = asyncio.create_task(asyncio.to_thread(self._save_restart_checkpoint, event_time))
+        try:
+            await asyncio.shield(self._checkpoint_io_task)
+        except asyncio.CancelledError:
+            await self._checkpoint_io_task
+            raise
+        finally:
+            self._checkpoint_io_task = None
+            self._checkpoint_work_snapshot = None
 
     def _record_stage_time(self, stage, started):
         elapsed = time.perf_counter() - started
@@ -4938,13 +4998,14 @@ class ReplayRunController:
             and bool(self._frame_cursor)
         )
         if event_checkpoint_due or frame_checkpoint_due:
-            self._save_restart_checkpoint(event_time)
+            await self._save_restart_checkpoint_responsive(event_time)
             self._last_restart_checkpoint_event_bucket = event_bucket
             self._last_restart_checkpoint_frame_bucket = frame_bucket
         if transport_boundary:
             self._schedule_manifest_write()
 
     async def _finish(self, status: str) -> None:
+        self._finalizing = True
         if status in {"failed", "stopped"}:
             # Publish the engine outcome before potentially slow broker and
             # checkpoint cleanup. A failed engine must not appear to keep
@@ -4962,7 +5023,7 @@ class ReplayRunController:
             await self._runtime.finish(status=status)
             self._runtime_finished = True
         if self.current_time is not None and (self._source_cursor or self._frame_cursor):
-            self._save_restart_checkpoint(self.current_time)
+            await self._save_restart_checkpoint_responsive(self.current_time)
         self._next_action_after_sequence = None
         self._clear_navigation_search()
         self.status = status
@@ -4983,6 +5044,8 @@ class ReplayRunController:
             await asyncio.to_thread(remove_bar_gpt_scope, f"{self.definition.mode.value}:{self.run_id}", 0.5)
         except Exception:
             pass
+        self._finalizing = False
+        await self._publish(force=True)
 
     def _schedule_bar_gpt_scope(self, event_time: datetime) -> None:
         if self._bar_gpt_fields_required():
@@ -5126,7 +5189,7 @@ class ReplayRunController:
         allow_navigation: bool = False,
     ) -> None:
         now = time.monotonic()
-        if (self.definition.mode == RunMode.BACKTEST and self._runtime is not None and self._journal is not None
+        if (getattr(self, '_checkpoint_io_task', None) is None and self.definition.mode == RunMode.BACKTEST and self._runtime is not None and self._journal is not None
                 and (force or now - self._last_monitoring_capture >= 1.0)):
             self._last_monitoring_capture = now
             try:

@@ -5814,10 +5814,10 @@ async def trading_backtest_comparison(
 
 
 @app.get("/api/trading/backtest/runs/{run_id}")
-def trading_backtest_run(run_id: str, compact: bool = False) -> dict[str, Any]:
+async def trading_backtest_run(run_id: str, compact: bool = False) -> dict[str, Any]:
     try:
         controller = backtest_run_service.get(run_id)
-        return controller.stream_snapshot() if compact else controller.snapshot()
+        return controller.stream_snapshot() if compact else await asyncio.to_thread(controller.snapshot)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Backtest run not found") from exc
 

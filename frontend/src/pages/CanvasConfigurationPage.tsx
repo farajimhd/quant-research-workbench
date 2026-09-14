@@ -426,7 +426,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   const dedicatedContainers = new Set<WorkspaceContainerId>(["chart", "charts_quotes", "facts", "microstructure", "news", "ticker_news", "news_detail", "sec", "ticker_sec", "sec_detail", "xbrl", "scanner", "signal_stream", "watchlist", "strategy_activity"]);
   const historicalTradingContainers = new Set<WorkspaceContainerId>(["chart", "charts_quotes"]);
   const [visiblePanels, setVisiblePanels] = useState<Record<string, boolean>>({});
-  const [followLatest, setFollowLatest] = useState(false);
+  const [followLatest, setFollowLatest] = useState(true);
   const [viewRevision, setViewRevision] = useState(0);
   const [heldClock, setHeldClock] = useState({ runId: replayRun?.run_id, time: replayRun?.current_time });
   const heldTime = heldClock.runId === replayRun?.run_id ? heldClock.time : replayRun?.current_time;
@@ -459,9 +459,9 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   const activeSymbol = activeLinkGroup === "none" ? primarySettings.chart.symbol : registry.linkContexts[activeLinkGroup].symbol;
   const chartCutoffMs = useMemo(
     () => replayRun
-      ? Date.parse(preview?.run?.run_id === replayRun.run_id ? preview.run.current_time : runtimeMode === "backtest" ? heldTime || replayRun.current_time : replayRun.current_time)
+      ? Date.parse(preview?.run?.run_id === replayRun.run_id && (runtimeMode !== "backtest" || previewContainerKey) ? preview.run.current_time : runtimeMode === "backtest" ? heldTime || replayRun.current_time : replayRun.current_time)
       : dateInTimeZone(previewContext.sessionDate, previewContext.previewTime, "America/New_York").getTime(),
-    [previewContext, replayRun?.run_id, replayRun?.current_time, preview?.run?.run_id, preview?.run?.current_time, heldTime, runtimeMode],
+    [previewContext, replayRun?.run_id, replayRun?.current_time, preview?.run?.run_id, preview?.run?.current_time, heldTime, runtimeMode, previewContainerKey],
   );
   const scannerCutoffMs = replayRun ? Math.floor(chartCutoffMs / 15_000) * 15_000 : chartCutoffMs;
   const historicalScanner = useCanvasScannerSnapshot({
@@ -1126,7 +1126,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
       </div> : null}
 
       {runtimeMode === "backtest" && replayRun ? <div className="backtest-view-controls" aria-label="Backtest view updates">
-        <span>{followLatest ? "Following latest · every 5 seconds" : isTerminalReplayStatus(replayRun.status) ? "Saved backtest review" : "View held · engine continues independently"}</span>
+        <span>{isTerminalReplayStatus(replayRun.status) ? "Saved backtest review" : followLatest ? "Following latest · every 5 seconds" : "Updates paused for browsing · engine continues"}</span>
         <button className="button secondary compact" onClick={() => { setHeldClock({ runId: replayRun.run_id, time: replayRun.current_time }); setViewRevision(n => n + 1); }}>Update view</button>
         <label><input type="checkbox" checked={followLatest} onChange={event => setFollowLatest(event.target.checked)} /> Follow latest</label>
         {preview?.run?.current_time && preview.run.current_time !== replayRun.current_time ? <span role="status">Newer snapshot available</span> : null}
@@ -1361,7 +1361,7 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
             ? <div className="canvas-inline-error">{liveMode ? "Live" : "Historical"} watchlist unavailable: {scannerError}</div>
             : <WatchUniverseContainer asOf={new Date(chartCutoffMs).toISOString()} live={liveMode} onSettingsChange={(change) => updateSettings((state) => ({ ...state, watchlist: { ...state.watchlist, ...(typeof change === "function" ? change(state.watchlist) : change) } }))} onTickerSelect={onTickerWorkspaceOpen} runtime={replayWatchlistRuntime ?? scannerSnapshot?.watchlist_runtime ?? null} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.watchlist} />
       : definition.id === "strategy_activity"
-        ? runtimeMode === "backtest" ? <LazyBacktestActivity throughSequence={preview?.trading.presentation_sequence} asOf={new Date(chartCutoffMs).toISOString()} runId={signalStreamRunId} settings={settings.strategy_activity} onSettingsChange={patch => updateSettings(state => ({ ...state, strategy_activity: { ...state.strategy_activity, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} /> : <StrategyActivityContainer loadAllHistory={runtimeMode === "backtest_debug" || (readOnly && Boolean(signalStreamRunId))} asOf={new Date(chartCutoffMs).toISOString()} focusSequence={strategyActivityFocusSequence} historicalPage={signalStreamRunId ? preview?.trading.strategy_activity_page : undefined} historicalRows={signalStreamRunId ? preview?.trading.strategy_activity ?? [] : undefined} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, strategy_activity: { ...state.strategy_activity, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} runId={signalStreamRunId} settings={settings.strategy_activity} />
+        ? runtimeMode === "backtest" ? <LazyBacktestActivity throughSequence={preview?.run?.current_time && Date.parse(preview.run.current_time) === chartCutoffMs ? preview.trading.presentation_sequence : undefined} asOf={new Date(chartCutoffMs).toISOString()} runId={signalStreamRunId} settings={settings.strategy_activity} onSettingsChange={patch => updateSettings(state => ({ ...state, strategy_activity: { ...state.strategy_activity, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} /> : <StrategyActivityContainer loadAllHistory={runtimeMode === "backtest_debug" || (readOnly && Boolean(signalStreamRunId))} asOf={new Date(chartCutoffMs).toISOString()} focusSequence={strategyActivityFocusSequence} historicalPage={signalStreamRunId ? preview?.trading.strategy_activity_page : undefined} historicalRows={signalStreamRunId ? preview?.trading.strategy_activity ?? [] : undefined} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, strategy_activity: { ...state.strategy_activity, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} runId={signalStreamRunId} settings={settings.strategy_activity} />
       : loading && !preview && definition.id !== "performance_journal"
         ? <LoadingState fill label={`Loading ${definition.title.toLowerCase()}`} />
         : renderPreview(definition.id, preview, settings, linkGroup, onLinkContextChange, onTickerWorkspaceOpen)}</div>

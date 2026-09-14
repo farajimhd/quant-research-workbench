@@ -24,6 +24,7 @@ class LazyBacktestUITests(unittest.TestCase):
                 context = browser.new_context(viewport={'width': 1600, 'height': 1000})
                 page = context.new_page()
                 requests, evidence = [], []
+                progress = {}
                 clock = datetime.fromisoformat(run['current_time'])
                 def row(n):
                     event_time = (datetime.fromisoformat(run['current_time']) - timedelta(seconds=n)).isoformat()
@@ -54,7 +55,7 @@ class LazyBacktestUITests(unittest.TestCase):
                                 'next_offset': offset + 200, 'as_of': query['as_of'][0], 'presentation_sequence': 999})
                     elif path.endswith('/' + run_id):
                         clock += timedelta(seconds=30)
-                        route.fulfill(json={**run, 'status': 'running', 'current_time': clock.isoformat(), 'updated_at': clock.isoformat()})
+                        route.fulfill(json={**run, 'status': 'running', 'current_time': clock.isoformat(), 'updated_at': clock.isoformat(), **progress})
                     elif '/ticker-presentations' in path:
                         route.fulfill(json={'rows': []})
                     else:
@@ -62,6 +63,10 @@ class LazyBacktestUITests(unittest.TestCase):
                 page.route('**/api/trading/**', route_request)
                 page.goto(f'http://127.0.0.1:5173/?backtest_run={run_id}#backtest-trading')
                 page.get_by_role('button', name='Update view', exact=True).wait_for()
+                self.assertTrue(page.get_by_role('checkbox', name='Follow latest').is_checked())
+                count_before = len([p for p, _ in requests if p.endswith('/canvas')])
+                page.wait_for_timeout(5500)
+                self.assertGreater(len([p for p, _ in requests if p.endswith('/canvas')]), count_before)
                 page.get_by_text('Strategy Activity', exact=True).first.scroll_into_view_if_needed()
                 activity = page.get_by_role('region', name='Strategy activity', exact=True)
                 activity.wait_for()
@@ -73,13 +78,14 @@ class LazyBacktestUITests(unittest.TestCase):
                 self.assertEqual(len([p for p, _ in requests if p.endswith('/canvas')]), initial)
                 self.assertEqual(evidence, ['event-0'])
                 self.assertEqual(activity.locator('tr[aria-selected="true"]').count(), 1)
+                first_page_requests = len([q for p, q in requests if p.endswith('/strategy-activity') and q.get('offset') == ['0']])
                 page.get_by_role('button', name='Older events', exact=True).click()
                 activity.get_by_role('row').filter(has_text='causal reason 200').wait_for()
                 older = [q for p, q in requests if p.endswith('/strategy-activity') and q.get('offset') == ['200']]
                 self.assertEqual(older[-1]['through_sequence'], ['999'])
                 page.get_by_role('button', name='Newer events', exact=True).click()
                 activity.get_by_role('row').filter(has_text='causal reason 0').wait_for()
-                self.assertEqual(len([q for p, q in requests if p.endswith('/strategy-activity') and q.get('offset') == ['0']]), 1)
+                self.assertEqual(len([q for p, q in requests if p.endswith('/strategy-activity') and q.get('offset') == ['0']]), first_page_requests)
                 page.get_by_role('checkbox', name='Follow latest').check()
                 page.wait_for_timeout(5500)
                 self.assertGreater(len([p for p, _ in requests if p.endswith('/canvas')]), initial)
@@ -93,6 +99,16 @@ class LazyBacktestUITests(unittest.TestCase):
                 self.assertTrue(any(q.get('ticker') == ['AAPL'] and q.get('offset') == ['0'] for p, q in requests if p.endswith('/strategy-activity')))
                 self.assertFalse(any(p.endswith('/results') or p.endswith('/comparison') for p, _ in requests))
                 page.screenshot(path=str(output / 'held-selected.png'))
+                for phase, label in [('checkpoint_capture', 'Capturing checkpoint'), ('checkpoint_persist', 'Saving checkpoint')]:
+                    progress.update(work_progress={'phase': phase, 'active': True, 'elapsed_seconds': 23})
+                    page.get_by_text(label, exact=True).wait_for()
+                    bar = page.get_by_role('progressbar', name='Backtest progress', exact=True)
+                    self.assertIsNone(bar.get_attribute('aria-valuenow'))
+                    page.screenshot(path=str(output / f'{phase}.png'))
+                progress.update(runtime_ready=False, preparation_stage='level_book_working_set', preparation_progress={'completed': 2432, 'total': 2610}, work_progress={'phase': 'level_book_working_set', 'active': True})
+                page.get_by_text('Preparing backtest', exact=True).wait_for()
+                self.assertEqual(page.get_by_role('progressbar', name='Backtest warm-up progress', exact=True).get_attribute('aria-valuenow'), '93')
+                page.screenshot(path=str(output / 'resumed-warmup.png'))
                 context.close()
             finally:
                 browser.close()

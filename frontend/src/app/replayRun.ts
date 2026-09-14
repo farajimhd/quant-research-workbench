@@ -48,7 +48,7 @@ export type CanvasReplayRun = {
     targets: string[];
   };
   progress: number;
-  preparation_stage?: "created" | "market_events" | "ready" | "signal_occurrences" | "strategy_frames" | "strategy_runtime" | "watchlist_membership" | "level_book_coverage" | "signal_identity" | "strategy_quality_admission";
+  preparation_stage?: "created" | "market_events" | "ready" | "signal_occurrences" | "strategy_frames" | "strategy_runtime" | "watchlist_membership" | "level_book_coverage" | "level_book_working_set" | "signal_identity" | "strategy_quality_admission";
   preparation_progress?: { completed: number; total: number };
   preparation_cache?: { strategy_frames?: "fixture" | "hit" | "miss" | "not_requested" | "not_required" | "request_memory" | "run_checkpoint" };
   run_id: string;
@@ -60,6 +60,7 @@ export type CanvasReplayRun = {
   status: string;
   transport_mode?: "completed" | "created" | "failed" | "fast_forward" | "next_action" | "paused" | "play" | "ready" | "step" | "stopped" | "warming";
   runtime_ready?: boolean;
+  work_progress?: { phase: string; active: boolean; started_at?: string; elapsed_seconds?: number; completed?: number | null; total?: number | null; stop_requested?: boolean };
   strategy_debug_sources?: {
     signal_stream_ids: string[];
     watchlist_ids: string[];

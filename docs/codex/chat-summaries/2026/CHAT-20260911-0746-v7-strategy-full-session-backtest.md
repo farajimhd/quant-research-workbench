@@ -99,3 +99,18 @@ the new controls remain usable across the tested themes/scales/viewports. An
 older compact-header clipping issue remains outside this change. TASK-0212
 records delivery; no original run was resumed for UI validation. Next work is
 the remaining engine and full-session acceptance, not another review restore.
+
+The user subsequently resumed `8c5022c3-2536-4fda-885f-367d7c2f4e3b` and reported
+stalls, timeouts and unchanged activity. Live diagnosis confirmed resumed V7
+preparation was still advancing despite a running status, followed by a 43-second
+checkpoint capture/persist pause that blocked status handling. A 54-second sample
+advanced only 26 market seconds; 2.35x is not a sustained guarantee. The follow-up
+source moves checkpoint work off the API event loop while holding the engine at
+the same causal boundary, serves compact status from cached state, and reports
+capture, persistence and finalization explicitly. Activity now follows by default
+and clearly reports pauses caused by browsing. Exact checkpoint parity and
+delayed-worker responsiveness tests passed, along with browser phase/follow and
+12 visual checks. The run subsequently reached stopped at 596,100 events with a complete
+checkpoint; the managed backend restart then activated the fix without issuing
+any stop or resume command. Remaining work includes reducing checkpoint cost and
+reusing prepared working sets, without weakening durability or causality.
