@@ -1,0 +1,63 @@
+"""Opt-in browser checks; all backtest mutations are intercepted."""
+import os
+import unittest
+
+
+@unittest.skipUnless(os.environ.get("BACKTEST_HISTORY_UI"), "opt-in managed frontend browser test")
+class BacktestHistoryTests(unittest.TestCase):
+    def test_history_order_pagination_and_resume_contracts(self):
+        from playwright.sync_api import sync_playwright
+
+        rows = [dict(run_id=f"run-{i:04d}", created_at=f"2026-09-{i + 1:02d}T12:00:00Z",
+                     current_time="2026-08-21T08:00:05Z", session_date="2026-08-21",
+                     status="stopped", resident=False, processed_events=i,
+                     checkpoint=dict(resume_supported=True, processed_events=i)) for i in range(12)]
+        rows[11]["status"] = "completed"
+        rows[10]["checkpoint"]["resume_supported"] = False
+        rows[8].update(status="paused", resident=True)
+        mutations = []
+
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.set_viewport_size({"width": 900, "height": 700})
+                page.add_init_script("localStorage.setItem('quant-research-workbench.ui-scale', '1.25')")
+                def handle(route):
+                    path = route.request.url.split("?")[0]
+                    if route.request.method != "GET":
+                        if "/backtest/runs/" in path:
+                            mutations.append((path, route.request.post_data_json))
+                        route.fulfill(status=409, json={"detail": "Checkpoint rejected by backend"})
+                    elif path.endswith("/backtest/runs"):
+                        route.fulfill(json={"rows": rows})
+                    elif path.endswith("/configuration-options"):
+                        route.fulfill(json={"candidates": [], "available_run_plans": [], "error": ""})
+                    else:
+                        route.fulfill(json={"items": [], "checks": []})
+                page.route("**/api/trading/**", handle)
+                page.goto("http://127.0.0.1:5173/#backtest-trading")
+                table = page.get_by_role("region", name="Recent backtests table", exact=True)
+                table.wait_for()
+                self.assertEqual(table.locator("tbody tr").count(), 10)
+                self.assertEqual(table.locator("tbody tr td:nth-child(2) strong").all_text_contents(),
+                                 [f"run-{i:04d}" for i in range(11, 1, -1)])
+                self.assertTrue(page.get_by_role("button", name="Resume backtest run-0011", exact=True).is_disabled())
+                self.assertTrue(page.get_by_role("button", name="Resume backtest run-0010", exact=True).is_disabled())
+                bounds = page.get_by_role("button", name="Resume backtest run-0009", exact=True).bounding_box()
+                self.assertLessEqual(bounds["x"] + bounds["width"], 900)
+                page.get_by_role("button", name="Resume backtest run-0009", exact=True).click()
+                table.get_by_role("alert").filter(has_text="Checkpoint rejected by backend").wait_for()
+                self.assertTrue(mutations[-1][0].endswith("/run-0009/resume"))
+                page.get_by_role("button", name="Resume backtest run-0008", exact=True).click()
+                table.get_by_role("alert").filter(has_text="Checkpoint rejected by backend").wait_for()
+                self.assertTrue(mutations[-1][0].endswith("/run-0008/commands"))
+                self.assertEqual(mutations[-1][1], {"command": "play"})
+                page.get_by_role("button", name="Older", exact=True).click()
+                self.assertEqual(table.locator("tbody tr").count(), 2)
+                page.get_by_role("button", name="Newer", exact=True).click()
+                page.get_by_role("button", name="Review backtest run-0009", exact=True).click()
+                page.wait_for_url("**backtest_run=run-0009#backtest-trading")
+                self.assertEqual(len(mutations), 2)
+            finally:
+                browser.close()

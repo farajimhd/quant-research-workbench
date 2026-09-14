@@ -1,5 +1,25 @@
 /* Replay and Backtest setup */
 
+.mode-launch-secondary:has(.backtest-run-history) { min-width: 0; }
+.backtest-run-history { border: 1px solid var(--border); border-radius: 8px; padding: 16px; min-width: 0; }
+.backtest-run-history :is(header, footer) { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.backtest-run-history h2 { margin: 0; font-size: 16px; }
+.backtest-run-history p { margin: 6px 0; }
+.backtest-run-history header p, .backtest-run-history small { color: var(--muted-foreground); }
+.backtest-run-history small { display: block; margin-top: 4px; }
+.backtest-history-scroll { overflow-x: auto; margin: 12px 0; }
+.backtest-run-history table { width: 100%; min-width: 760px; border-collapse: collapse; text-align: left; font-size: 12px; }
+.backtest-run-history :is(th, td) { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.backtest-run-history th { font-weight: 600; white-space: nowrap; }
+.backtest-run-history td { max-width: 260px; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.backtest-run-history td:nth-child(4) { min-width: 80px; overflow-wrap: normal; }
+.backtest-history-actions { display: flex; gap: 6px; }
+.backtest-history-actions button { white-space: nowrap; }
+.backtest-run-history [role="alert"] { color: var(--destructive); }
+@media (max-width: 1100px) {
+  .backtest-run-history :is(th, td):last-child { position: sticky; right: 0; background: var(--surface); min-width: 170px; border-left: 1px solid var(--border); }
+}
+
 .historical-canvas-run-state.historical-backtest-progress {
   min-width: 0;
   max-width: 100%;

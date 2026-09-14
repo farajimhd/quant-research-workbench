@@ -1,5 +1,6 @@
 import { Modal } from "../app/components/Modal";
 import { BacktestRecoveryFailure } from "../app/components/BacktestRecoveryFailure";
+import { BacktestRunHistory } from "../app/components/BacktestRunHistory";
 import { ArrowLeft, CheckCircle2, CircleStop, Gauge, Pause, Play, RefreshCcw, Square, TriangleAlert, X, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -433,7 +434,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     setControlBusy("resume");
     setError("");
     try {
-      setRun(await api<BacktestRun>(`/api/trading/backtest/runs/${encodeURIComponent(run.run_id)}/resume`, { method: "POST" }));
+      setRun(await api<BacktestRun>(`/api/trading/backtest/runs/${encodeURIComponent(run.run_id)}/resume`, { method: "POST", timeoutMs: 180_000 }));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -459,7 +460,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
         {batchRuns.length > 1 ? <TradingModeSelectField label="Batch run" help="Each ticker has its own portfolio, time window and V7 book." value={run.run_id}
           options={batchRuns.map(item => ({value:item.run_id,label:(item.tickers ?? []).join(', ')}))}
           onChange={id => { setRun(null); setSelectedRunId(id); persistSelectedRun(id); }} /> : null}
-        <div className="historical-backtest-progress-actions"><span className="historical-backtest-engine" title="Accelerated causal engine"><Zap aria-hidden="true" size={11} /><span>Accelerated causal engine</span></span><button className="button secondary compact" aria-haspopup="dialog" onClick={() => setDetailsOpen(true)} type="button">Details{run.level_book_coverage?.excluded_ticker_count ? ` · ${run.level_book_coverage.excluded_ticker_count} excluded` : ""}</button><button aria-label="Return to Backtest setup" className="button secondary compact" onClick={returnToSetup} type="button"><ArrowLeft size={14} /> Setup</button>{!terminal ? <><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void commandRun(run.status === "paused" ? "play" : "pause")} type="button">{run.status === "paused" ? <Play size={14} /> : <Pause size={14} />}{run.status === "paused" ? "Resume" : "Pause"}</button><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void stopRun()} type="button"><Square size={14} /> Stop</button></> : null}</div>
+        <div className="historical-backtest-progress-actions"><span className="historical-backtest-engine" title="Accelerated causal engine"><Zap aria-hidden="true" size={11} /><span>Accelerated causal engine</span></span><button className="button secondary compact" aria-haspopup="dialog" onClick={() => setDetailsOpen(true)} type="button">Details{run.level_book_coverage?.excluded_ticker_count ? ` · ${run.level_book_coverage.excluded_ticker_count} excluded` : ""}</button><button aria-label="Return to Backtest setup" className="button secondary compact" onClick={returnToSetup} type="button"><ArrowLeft size={14} /> Setup</button>{terminal && run.status !== "completed" && run.checkpoint?.resume_supported ? <button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void resumeRun()} type="button"><Play size={14} />{controlBusy === "resume" ? "Resuming…" : "Resume from checkpoint"}</button> : null}{!terminal ? <><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void commandRun(run.status === "paused" ? "play" : "pause")} type="button">{run.status === "paused" ? <Play size={14} /> : <Pause size={14} />}{run.status === "paused" ? "Resume" : "Pause"}</button><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void stopRun()} type="button"><Square size={14} /> Stop</button></> : null}</div>
         <div className="historical-backtest-progress-heading"><strong>Backtest {run.status.replaceAll("_", " ")}</strong><b>{progressKnown ? `${progressPercent}%` : "Preparing"}</b></div>
 
         <div aria-label={`${progressLabel} progress`} aria-valuemax={100} aria-valuemin={0} aria-valuenow={progressKnown ? progressPercent : undefined} aria-valuetext={warming && preparation?.total ? `${preparation.completed.toLocaleString()} of ${preparation.total.toLocaleString()} prepared · ${progressPercent}%` : progressKnown ? `${progressPercent}%` : "Preparing"} className="historical-backtest-progress-track" role="progressbar"><span style={{ width: `${progressPercent}%` }} /></div>
@@ -542,7 +543,10 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       onAction={createRun}
       onRefresh={() => setRefreshKey((value) => value + 1)}
       ready={launchReady}
-      secondary={results ? <HistoricalResults comparison={comparison} comparisonError={comparisonError} results={results} /> : null}
+      secondary={<><BacktestRunHistory
+        onReview={id => { setBatchRuns([]); setRun(null); setSelectedRunId(id); persistSelectedRun(id); }}
+        onResumed={value => { setBatchRuns([]); setRun(value as BacktestRun); setSelectedRunId(value.run_id); persistSelectedRun(value.run_id); }}
+      />{results ? <HistoricalResults comparison={comparison} comparisonError={comparisonError} results={results} /> : null}</>}
       title="Evaluate a strategy"
     >
               <TradingModeSelectField
