@@ -187,8 +187,17 @@ def main():
         if args.action != 'run': raise ValueError('--new-run is only valid for run')
         if state.get('run_id'):
             prior = requests.get(f"{api}/{state['run_id']}?compact=true", timeout=30)
-            prior.raise_for_status()
-            if prior.json()['status'] not in {'completed', 'failed', 'stopped', 'cancelled'}:
+            if prior.status_code == 404:
+                # A stopped preparation has a durable summary but no complete
+                # execution checkpoint to open in the review controller.
+                listing = requests.get(api, timeout=30)
+                listing.raise_for_status()
+                prior_state = next((r for r in listing.json()['rows'] if r['run_id'] == state['run_id']), None)
+                if prior_state is None: raise ValueError('Previous run has no authoritative saved state')
+            else:
+                prior.raise_for_status()
+                prior_state = prior.json()
+            if prior_state['status'] not in {'completed', 'failed', 'stopped', 'cancelled'}:
                 raise ValueError('Previous run is still active; stop it explicitly before starting a successor')
             state.setdefault('prior_runs', []).append(state['run_id'])
             state.update(run_id=None, stage='candidate_ready')
