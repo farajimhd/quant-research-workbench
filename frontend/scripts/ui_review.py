@@ -2159,6 +2159,81 @@ def validate_service_interactions(page: Any, scenario: dict[str, Any], interacti
     return issues
 
 
+def review_strategy_activity_evidence(page, screenshot_path: Path) -> None:
+    """Exercise immutable evidence against replacement activity projections."""
+    requests: list[str] = []
+
+    def evidence_response(route):
+        from urllib.parse import parse_qs, urlparse
+        query = parse_qs(urlparse(route.request.url).query)
+        record_id = query["record_id"][0]
+        requests.append(record_id)
+        route.fulfill(json={"complete": True, "rows": [{
+            "record_id": record_id, "run_id": "evidence-review", "ticker": "TEST",
+            "event_type": "decision", "action": "wait", "reason": record_id,
+            "event_time": "2026-08-21T08:00:01+00:00",
+            "gate_snapshot": {"review": {"record": record_id, "passed": True}},
+        }]})
+
+    page.route("**/api/trading/strategy-activity?**", evidence_response)
+    page.evaluate("""async () => {
+        const {StrategyActivityContainer} = await import('/src/app/components/MarketScreenerContainers.tsx');
+        const {default: React} = await import('/node_modules/.vite/deps/react.js');
+        const {default: ReactDOM} = await import('/node_modules/.vite/deps/react-dom_client.js');
+        const host = document.createElement('div');
+        document.querySelector('main').replaceChildren(host);
+        const root = ReactDOM.createRoot(host);
+        let revision = 0;
+        window.refreshEvidenceReview = () => {
+            revision++;
+            root.render(React.createElement(StrategyActivityContainer, {
+                asOf: `2026-08-21T08:00:${String(revision + 2).padStart(2, '0')}+00:00`,
+                runId: 'evidence-review', settings: {limit: 2000, runId: '', strategyId: '', ticker: '', eventType: ''},
+                onSettingsChange: () => {}, onTickerSelect: () => {},
+                historicalRows: ['evidence-a', 'evidence-b'].map((record_id, index) => ({
+                    record_id, run_id: 'evidence-review', ticker: 'TEST', event_type: 'decision',
+                    action: 'wait', reason: record_id, sequence: index,
+                    event_time: `2026-08-21T08:00:0${index}+00:00`,
+                })),
+            }));
+        };
+        window.refreshEvidenceReview();
+    }""")
+    surface = page.get_by_role("region", name="Strategy activity", exact=True)
+    row_a = surface.get_by_role("row").filter(has_text="evidence-a")
+    row_b = surface.get_by_role("row").filter(has_text="evidence-b")
+    inspector = page.get_by_role("complementary", name="Strategy event details")
+    row_a.click()
+    inspector.locator(".strategy-activity-evidence-card").first.wait_for()
+    for _ in range(3):
+        page.evaluate("window.refreshEvidenceReview()")
+        page.wait_for_timeout(100)
+    if requests != ["evidence-a"]:
+        raise RuntimeError(f"Projection refresh reloaded immutable evidence: {requests}")
+    row_a.click()
+    inspector.wait_for(state="detached")
+    row_a.press("Enter")
+    inspector.locator(".strategy-activity-evidence-card").first.wait_for()
+    # Nested button keyboard activation must not also toggle the parent row.
+    row_a.get_by_role("button", name=re.compile("^Close strategy event")).press("Enter")
+    inspector.wait_for(state="detached")
+    row_a.press("Space")
+    inspector.locator(".strategy-activity-evidence-card").first.wait_for()
+    row_b.click()
+    inspector.get_by_text("evidence-b", exact=True).first.wait_for()
+    inspector.locator(".strategy-activity-evidence-card").first.wait_for()
+    row_a.click()
+    inspector.get_by_text("evidence-a", exact=True).first.wait_for()
+    page.wait_for_timeout(200)
+    if requests != ["evidence-a", "evidence-b"]:
+        raise RuntimeError(f"Reopening an event reloaded its evidence: {requests}")
+    page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem + "__evidence.png")), full_page=True)
+    inspector.get_by_role("button", name="Close strategy event details").click()
+    inspector.wait_for(state="detached")
+    if surface.locator('tr[aria-selected="true"]').count():
+        raise RuntimeError("Closing evidence did not clear row selection")
+
+
 def capture(args: argparse.Namespace) -> int:
     from playwright.sync_api import sync_playwright
 
@@ -3273,6 +3348,8 @@ def capture(args: argparse.Namespace) -> int:
                             if args.swing_book_version==6:label+=' - daily survivors'
                             prefix=re.escape(label+' · '+ticker+' · ').replace('/',r'\/')
                             page.get_by_role('option',name=re.compile('^'+prefix)).first.wait_for(state='visible',timeout=args.timeout_ms)
+                    if args.strategy_activity_evidence:
+                        review_strategy_activity_evidence(page, screenshot_path)
                     page.screenshot(path=str(screenshot_path), full_page=True)
                     issues: list[str] = []
                     if hindsight_issue:
@@ -3423,6 +3500,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument('--structural-detector-fixture', help='backend detector result JSON for independent candle-label rendering and indicator-form validation')
     result.add_argument('--backtest-presets', action='store_true', help='verify ticker defaults and V5 selection with stubbed books and warmup; never launch a run')
     result.add_argument('--backtest-warmup-presentation', action='store_true', help='validate active warmup modal and journal shell without changing the run')
+    result.add_argument('--strategy-activity-evidence', action='store_true', help='verify evidence caching, refreshed projections, row switching and deselection using a component fixture')
     result.add_argument('--full-market-backtest', action='store_true', help='verify full-market setup and intercept the single launch request without starting a backtest')
     result.add_argument('--structure-gaps-fixture', action='store_true', help='validate gap controls, causal cutoff and outcome visibility with deterministic fixtures')
     result.add_argument('--structure-gaps', action='store_true', help='calculate and inspect the real v4 gap preview on a historical chart')
