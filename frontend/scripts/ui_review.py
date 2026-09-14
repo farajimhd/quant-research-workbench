@@ -2299,6 +2299,17 @@ def capture(args: argparse.Namespace) -> int:
                         "localStorage.setItem(" + json.dumps(f"{storage_prefix}.{args.canvas_id}") + ", " + json.dumps(json.dumps(storage_payload)) + ");"
                     )
                 page = context.new_page()
+                if args.full_market_backtest:
+                    full_market_requests = []
+                    plan = dict(name='V7 full session / first Early Squeeze', profile_id='fixture', run_plan_id='fixture-plan', strategy_id='fixture', strategy_revision=1)
+                    page.route('**/api/trading/backtest/configuration-options*', fulfill_json(json.dumps(dict(candidate_id='fixture-222', run_plan_id='fixture-plan', available_run_plans=[plan], error='', candidates=[dict(candidate_id='fixture-222', candidate_revision=222, label='Full session', content_hash='fixture')]))))
+                    page.route('**/api/trading/backtest/structure-books', fulfill_json(json.dumps(dict(items=[dict(id='fixture-SUGP', ticker='SUGP', version='causal-level-book-v7-mle-1', start='2025-01-01', end='2026-09-12')]))))
+                    page.route('**/api/trading/backtest/indicator-warmup', fulfill_json(json.dumps(dict(status='ready', items=[], ready_count=1, ticker_count=1))))
+                    page.route('**/api/trading/historical-preflight', fulfill_json(json.dumps(dict(configuration_revision_id='fixture-222', configuration_revision=222, run_plan_id='fixture-plan', strategy_run_ready=True, checks=[], window=dict(sessions=['2026-08-21'])))))
+                    def capture_market_launch(route):
+                        full_market_requests.append(route.request.post_data_json)
+                        route.fulfill(status=400, content_type='application/json', body=json.dumps(dict(detail='UI test intercepted launch; no backtest created')))
+                    page.route('**/api/trading/backtest/runs', capture_market_launch)
                 if args.backtest_presets:
                     books=[dict(id='fixture_'+ticker,ticker=ticker,version='causal-swing-closing-book-6',start='2025-01-01',end='2026-09-04') for ticker in ('SUGP','JUNS')]
                     page.route('**/api/trading/backtest/structure-books',fulfill_json(json.dumps(dict(items=books))))
@@ -3204,6 +3215,26 @@ def capture(args: argparse.Namespace) -> int:
                         page.get_by_role('button',name='Ticker preset',exact=True).click()
                         page.get_by_role('option',name='SUGP',exact=True).click()
                         page.get_by_role('button',name='Level book',exact=True).filter(has_text='Swing book v6 - daily survivors · SUGP').wait_for(timeout=args.timeout_ms)
+                    if args.full_market_backtest and scenario['page']=='backtest-trading':
+                        page.get_by_role('button', name='Ticker preset', exact=True).click()
+                        page.get_by_role('option', name=re.compile('^Full market')).click()
+                        if page.get_by_label('Tickers', exact=True).count():raise RuntimeError('Full market must not require a ticker list')
+                        if page.get_by_label('Start time', exact=True).input_value()!='04:00:00' or page.get_by_label('End time', exact=True).input_value()!='20:00:00':raise RuntimeError('Full market must default to the whole extended session')
+                        launch=page.get_by_role('button', name='Run Full-market Backtest', exact=True)
+                        launch.click(timeout=args.timeout_ms)
+                        page.wait_for_function("!document.querySelector('button[aria-label=\"Check readiness again\"]').disabled")
+                        if len(full_market_requests)!=1:raise RuntimeError('Full market must create exactly one run')
+                        request=full_market_requests[0]
+                        expected=dict(tickers=[], experimental_structure_book='level-book-v7', start_time='04:00:00', end_time='20:00:00', session_count=1, configuration_revision_id='fixture-222', run_plan_id='fixture-plan', new_order_activation_delay_ms=0)
+                        if any(request.get(k)!=v for k,v in expected.items()):raise RuntimeError('Full market launch differs from canonical request: '+str(request))
+                        page.get_by_role('button', name='Ticker preset', exact=True).click()
+                        page.get_by_role('option', name='Custom tickers', exact=True).click()
+                        page.get_by_label('Tickers', exact=True).fill('SUGP')
+                        page.wait_for_function("[...document.querySelectorAll('button')].some(b=>b.textContent==='Run Backtest'&&!b.disabled)")
+                        page.get_by_role('button', name='Ticker preset', exact=True).click()
+                        page.get_by_role('option', name=re.compile('^Full market')).click()
+                        page.get_by_role('button', name='Check readiness again', exact=True).click()
+                        page.wait_for_function("[...document.querySelectorAll('button')].some(b=>b.textContent==='Run Full-market Backtest'&&!b.disabled)")
                     if args.swing_book_selector and scenario['page']=='backtest-trading':
                         page.get_by_role('button',name='Level book',exact=True).click()
                         for ticker in ('JUNS','SUGP'):
@@ -3361,6 +3392,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument('--staged-strategy-fixture', action='store_true', help='validate frozen R1-R4 and stop/target paths using synthetic journal evidence; no backtest')
     result.add_argument('--structural-detector-fixture', help='backend detector result JSON for independent candle-label rendering and indicator-form validation')
     result.add_argument('--backtest-presets', action='store_true', help='verify ticker defaults and V5 selection with stubbed books and warmup; never launch a run')
+    result.add_argument('--full-market-backtest', action='store_true', help='verify full-market setup and intercept the single launch request without starting a backtest')
     result.add_argument('--structure-gaps-fixture', action='store_true', help='validate gap controls, causal cutoff and outcome visibility with deterministic fixtures')
     result.add_argument('--structure-gaps', action='store_true', help='calculate and inspect the real v4 gap preview on a historical chart')
     result.add_argument('--structure-time-placement', action='store_true', help='verify exact confirmation placement across missing and coarse candles')

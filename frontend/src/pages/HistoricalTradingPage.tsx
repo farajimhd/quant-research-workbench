@@ -49,6 +49,11 @@ type BacktestConfigurationOptions = {
 type BacktestRun = CanvasReplayRun & {
   configuration_revision: number;
   mode: "backtest";
+  level_book_coverage?: {
+    eligible_ticker_count: number;
+    excluded_ticker_count: number;
+    excluded: Array<{ ticker: string; session: string; reason: string }>;
+  };
 };
 
 type BacktestResults = {
@@ -133,6 +138,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [endTime, setEndTime] = useState("04:30:00");
   const [tickerInput, setTickerInput] = useState("SUGP");
   const batchPreset = tickerPreset === 'both' || tickerPreset === 'all';
+  const fullMarket = tickerPreset === 'market';
   useEffect(() => {
     if (tickerPreset === 'custom') return;
     const tickers = presetTickers(tickerPreset, sessionDate, structureBooks);
@@ -140,6 +146,9 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   }, [tickerPreset, sessionDate, structureBooks]);
   function chooseTickerPreset(value: string) {
     setTickerPreset(value as BacktestTickerPreset);
+    if (value === 'market') {
+      applyPeriodPreset('extended', setPeriodPreset, setStartTime, setEndTime);
+    }
   }
   const [preflight, setPreflight] = useState<HistoricalPreflight | null>(null);
   const [checking, setChecking] = useState(true);
@@ -164,13 +173,14 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [indicatorWarmup, setIndicatorWarmup] = useState<IndicatorWarmupBatch | null>(null);
   const [warmingIndicators, setWarmingIndicators] = useState(false);
   const parsedTickers = useMemo(() => parseBacktestTickers(tickerInput), [tickerInput]);
-  const normalizedTickers = parsedTickers.tickers;
+  const normalizedTickers = useMemo(() => fullMarket ? [] : parsedTickers.tickers, [fullMarket, parsedTickers]);
   useEffect(() => {
+    if (fullMarket) { setStructureBook('level-book-v7'); return; }
     const selected = parseBacktestTickers(tickerInput);
     setStructureBook(selected.invalid.length === 0 && selected.tickers.length === 1
       ? v6BookFor(selected.tickers[0], sessionDate, structureBooks)?.id ?? '' : '');
-  }, [tickerInput, sessionDate, structureBooks]);
-  const tickerReady = normalizedTickers.length > 0 && normalizedTickers.length <= 100 && parsedTickers.invalid.length === 0;
+  }, [tickerInput, sessionDate, structureBooks, fullMarket]);
+  const tickerReady = fullMarket || (normalizedTickers.length > 0 && normalizedTickers.length <= 100 && parsedTickers.invalid.length === 0);
   const periodReady = startTime >= "04:00:00" && endTime <= "20:00:00" && startTime < endTime;
   const anchorDate = nextIsoDate(sessionDate);
   const resolvedSessionMatches = preflight?.window.sessions.length === 1 && preflight.window.sessions[0] === sessionDate;
@@ -238,7 +248,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
 
   useEffect(() => {
     if (selectedRunId) return;
-    if (!tickerReady) {
+    if (!tickerReady || fullMarket) {
       setIndicatorWarmup(null);
       setWarmingIndicators(false);
       return;
@@ -258,11 +268,11 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
         .finally(() => { if (!cancelled) setWarmingIndicators(false); });
     }, 450);
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [normalizedTickers, refreshKey, sessionDate, tickerReady, selectedRunId]);
+  }, [normalizedTickers, refreshKey, sessionDate, tickerReady, selectedRunId, fullMarket]);
 
   useEffect(() => {
     if (selectedRunId) return;
-    if (!candidateId || !selectedPlan || loadingOptions || optionsError || !tickerReady || indicatorWarmup?.status !== "ready") {
+    if (!candidateId || !selectedPlan || loadingOptions || optionsError || !tickerReady || (!fullMarket && indicatorWarmup?.status !== "ready")) {
       setChecking(false);
       setPreflight(null);
       return;
@@ -307,7 +317,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [anchorDate, candidateId, endTime, indicatorWarmup?.status, loadingOptions, mode, normalizedTickers, optionsError, refreshKey, runPlanId, selectedPlan, setupKey, startTime, tickerReady, selectedRunId]);
+  }, [anchorDate, candidateId, endTime, indicatorWarmup?.status, loadingOptions, mode, normalizedTickers, optionsError, refreshKey, runPlanId, selectedPlan, setupKey, startTime, tickerReady, selectedRunId, fullMarket]);
 
   usePollingTask({
     enabled: Boolean(run && !["completed", "stopped", "failed"].includes(run.status)),
@@ -366,9 +376,10 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
             start_time: job.start,
             end_time: job.end,
             tickers: job.tickers,
+            ...(fullMarket ? { new_order_activation_delay_ms: 0 } : {}),
           }),
           method: "POST",
-          timeoutMs: 60_000,
+          timeoutMs: fullMarket ? 180_000 : 60_000,
         });
         createdRuns.push(created);
         setBatchRuns([...createdRuns]);
@@ -440,8 +451,13 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
           onChange={id => { setRun(null); setSelectedRunId(id); persistSelectedRun(id); }} /> : null}
         <div className="historical-backtest-progress-actions"><button aria-label="Return to Backtest setup" className="button secondary compact" onClick={returnToSetup} type="button"><ArrowLeft size={14} /> Setup</button>{!terminal ? <><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void commandRun(run.status === "paused" ? "play" : "pause")} type="button">{run.status === "paused" ? <Play size={14} /> : <Pause size={14} />}{run.status === "paused" ? "Resume" : "Pause"}</button><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void stopRun()} type="button"><Square size={14} /> Stop</button></> : null}</div>
         <div className="historical-backtest-progress-heading"><strong>Backtest {run.status.replaceAll("_", " ")}</strong><b>{Math.round(run.progress * 100)}%</b></div>
+        {run.status === 'warming' ? <div role="status" className="configuration-help">{run.preparation_stage?.replaceAll('_', ' ') || 'Preparing'}{run.preparation_progress?.total ? ` · ${run.preparation_progress.completed.toLocaleString()} / ${run.preparation_progress.total.toLocaleString()}` : ''}</div> : null}
         <div aria-label={`Backtest ${Math.round(run.progress * 100)} percent complete`} aria-valuemax={100} aria-valuemin={0} aria-valuenow={Math.round(run.progress * 100)} className="historical-backtest-progress-track" role="progressbar"><span style={{ width: `${Math.max(0, Math.min(100, run.progress * 100))}%` }} /></div>
         <div className="historical-backtest-progress-facts"><span>{new Intl.NumberFormat("en-US").format(run.processed_events || 0)} exact events</span><span>Through {formatReplayTime(run.current_time)} ET</span><span>{runScope}</span><span><Zap aria-hidden="true" size={11} /> Accelerated causal engine</span></div>
+        {run.level_book_coverage && run.level_book_coverage.excluded_ticker_count > 0 ? <details className="configuration-help">
+          <summary>{run.level_book_coverage.excluded_ticker_count} tickers excluded by V7 coverage · {run.level_book_coverage.eligible_ticker_count} eligible</summary>
+          {run.level_book_coverage.excluded.map(row => <p key={`${row.ticker}:${row.session}`}><strong>{row.ticker}</strong> · {row.session} · {row.reason}</p>)}
+        </details> : null}
         {error ? <div className="canvas-inline-error" role="alert">{error}</div> : null}
       </div>}
       replayRun={run}
@@ -460,10 +476,10 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
 
   const warmupCheck: HistoricalCheck = {
     id: "indicator_warmup",
-    label: "1-second indicator warm-up",
+    label: fullMarket ? "Indicator preparation" : "1-second indicator warm-up",
     required: true,
-    status: indicatorWarmup?.status === "ready" ? "ready" : indicatorWarmup?.status === "insufficient_history" ? "blocked" : "blocked",
-    summary: indicatorWarmup?.status === "ready"
+    status: fullMarket || indicatorWarmup?.status === "ready" ? "ready" : "blocked",
+    summary: fullMarket ? "The backend prepares causal indicator history for admitted tickers before simulation starts." : indicatorWarmup?.status === "ready"
       ? `${indicatorWarmup.ready_count}/${indicatorWarmup.ticker_count} ticker warm-ups are ready from canonical closes.`
       : indicatorWarmup?.status === "insufficient_history"
         ? `${indicatorWarmup.ready_count}/${indicatorWarmup.ticker_count} ticker warm-ups are ready; ${indicatorWarmup.items.filter((item) => item.status !== "ready").map((item) => item.ticker).join(", ")} lack the required history.`
@@ -480,21 +496,21 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   };
   const requiresV7 = selectedPlan?.profile_id === 'v6-structural-support-recovery';
   const selectedBook = structureBooks.find(book => book.id === structureBook);
-  const booksReady = batchPreset
+  const booksReady = fullMarket ? structureBooks.length > 0 : batchPreset
     ? normalizedTickers.length > 0 && normalizedTickers.every(ticker => Boolean(v6BookFor(ticker,sessionDate,structureBooks)))
     : selectedBook
       ? normalizedTickers.length === 1 && selectedBook.ticker === normalizedTickers[0]
         && selectedBook.start <= sessionDate && sessionDate <= selectedBook.end
         && (!requiresV7 || selectedBook.version === 'causal-level-book-v7-mle-1')
       : normalizedTickers.length > 0 && normalizedTickers.every(ticker => Boolean(v6BookFor(ticker,sessionDate,structureBooks)));
-  const launchChecks = [configurationCheck, warmupCheck, {id:'preset_books',label:'V7 book coverage',required:true,
-    status:booksReady ? 'ready' as const : 'blocked' as const, summary:booksReady ? 'Matching books available.' : 'A published V7 book covering this date is required for each selected ticker.',evidence:normalizedTickers}, ...(currentPreflight ? preflight?.checks ?? [] : [])];
-  const launchReady = Boolean(booksReady && currentPreflight && selectedPlan && !loadingOptions && !optionsError && preflight?.strategy_run_ready && indicatorWarmup?.status === "ready" && tickerReady && periodReady && resolvedSessionMatches);
+  const launchChecks = [configurationCheck, warmupCheck, {id:'preset_books',label:fullMarket ? 'V7 coverage policy' : 'V7 book coverage',required:true,
+    status:booksReady ? 'ready' as const : 'blocked' as const, summary:fullMarket ? 'V7 catalog available. Before strategy preparation, the backend verifies preceding-session books and logs excluded tickers.' : booksReady ? 'Matching books available.' : 'A published V7 book covering this date is required for each selected ticker.',evidence:normalizedTickers}, ...(currentPreflight ? preflight?.checks ?? [] : [])];
+  const launchReady = Boolean(booksReady && currentPreflight && selectedPlan && !loadingOptions && !optionsError && preflight?.strategy_run_ready && (fullMarket || indicatorWarmup?.status === "ready") && tickerReady && periodReady && resolvedSessionMatches);
 
   return (
     <TradingModeLaunch
-      actionLabel={batchPreset ? `Run ${normalizedTickers.length} Backtests` : 'Run Backtest'}
-      actionSummary={batchPreset ? `Creates one separate portfolio run per ticker on ${sessionDate}, each with its V7 book. Every ticker uses ${startTime.slice(0,5)}–${endTime.slice(0,5)} ET.` : launchReady ? <><strong>{normalizedTickers.join(", ")}</strong> will run together on <strong>{sessionDate}</strong> from <strong>{startTime.slice(0, 5)}–{endTime.slice(0, 5)} ET</strong> using one shared simulated portfolio and strategy revision <strong>{selectedPlan?.strategy_revision}</strong> (candidate {preflight?.configuration_revision}).</> : !tickerReady ? parsedTickers.invalid.length ? `Remove invalid ticker${parsedTickers.invalid.length === 1 ? "" : "s"}: ${parsedTickers.invalid.join(", ")}.` : "Enter at least one valid ticker before starting." : warmingIndicators ? "Preparing persisted 1-second indicator warm-ups." : !periodReady ? "Choose a valid period inside 04:00–20:00 ET." : preflight && !resolvedSessionMatches ? "The selected date is not an exchange session. Choose a trading day." : "Resolve each required readiness item before starting."}
+      actionLabel={fullMarket ? 'Run Full-market Backtest' : batchPreset ? `Run ${normalizedTickers.length} Backtests` : 'Run Backtest'}
+      actionSummary={batchPreset ? `Creates one separate portfolio run per ticker on ${sessionDate}, each with its V7 book. Every ticker uses ${startTime.slice(0,5)}–${endTime.slice(0,5)} ET.` : launchReady ? <><strong>{fullMarket ? 'The Run Plan’s signal-admitted market' : normalizedTickers.join(", ")}</strong> will run together on <strong>{sessionDate}</strong> from <strong>{startTime.slice(0, 5)}–{endTime.slice(0, 5)} ET</strong> using one shared simulated portfolio and strategy revision <strong>{selectedPlan?.strategy_revision}</strong> (candidate {preflight?.configuration_revision}).</> : !tickerReady ? parsedTickers.invalid.length ? `Remove invalid ticker${parsedTickers.invalid.length === 1 ? "" : "s"}: ${parsedTickers.invalid.join(", ")}.` : "Enter at least one valid ticker before starting." : warmingIndicators ? "Preparing persisted 1-second indicator warm-ups." : !periodReady ? "Choose a valid period inside 04:00–20:00 ET." : preflight && !resolvedSessionMatches ? "The selected date is not an exchange session. Choose a trading day." : "Resolve each required readiness item before starting."}
       busy={creating}
       checking={checking || warmingIndicators || loadingOptions}
       checkingLabel={loadingOptions ? "Loading strategy settings…" : warmingIndicators ? "Preparing indicators…" : "Checking strategy and services…"}
@@ -524,9 +540,10 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
                 value={runPlanId}
               />
               <TradingModeSelectField label="Ticker preset" searchable value={tickerPreset} onChange={chooseTickerPreset}
-                options={[{value:'SUGP',label:'SUGP'},{value:'JUNS',label:'JUNS'},
-                  {value:'both',label:'SUGP and JUNS'},{value:'all',label:'All tickers',description:'All tickers with a published V7 book for this date'},
-                  {value:'custom',label:'Custom tickers'}]} help={batchPreset ? 'Separate runs use the selected period and a V7 book for each ticker.' : 'Select a ticker to load its V7 book; the selected period is preserved.'} />
+                options={[{value:'market',label:'Full market · shared portfolio',description:'The selected Run Plan’s signals admit tickers causally into one portfolio'}, {value:'SUGP',label:'SUGP'},{value:'JUNS',label:'JUNS'},
+                  {value:'both',label:'SUGP and JUNS · separate runs'},{value:'all',label:'All V7 tickers · separate runs',description:'Separate portfolio per ticker; up to 100 tickers'},
+                  {value:'custom',label:'Custom tickers'}]} help={fullMarket ? 'The selected Run Plan controls ticker admission; cash is shared across tickers.' : batchPreset ? 'Separate runs use the selected period and a V7 book for each ticker.' : 'Select a ticker to load its V7 book; the selected period is preserved.'} />
+              {fullMarket ? <p className="configuration-help">Tickers enter causally through the selected Run Plan's signals and share portfolio cash. The selected date must have prepared historical signals. Missing V7 books are excluded and reported before strategy preparation.</p> : null}
               {tickerPreset === 'custom' ? <label className="configuration-field"><span>Tickers</span><textarea aria-label="Tickers" value={tickerInput} onChange={event => setTickerInput(event.target.value.toUpperCase())} /><small>Up to 100 symbols, separated by commas or spaces.</small></label> : null}
               {batchPreset ? <div className="configuration-help">{normalizedTickers.map(ticker => <p key={ticker}>{ticker} · {startTime.slice(0,5)}–{endTime.slice(0,5)} ET · {v6BookFor(ticker,sessionDate,structureBooks) ? 'V7 book selected' : 'V7 book unavailable'}</p>)}</div> : null}
               {batchRuns.length ? <div className="configuration-help">Created runs: {batchRuns.map(item => <button type="button" className="button secondary compact" key={item.run_id} onClick={() => {setSelectedRunId(item.run_id);persistSelectedRun(item.run_id);}}>{item.tickers?.join(', ')} · {item.run_id.slice(0,8)}</button>)}</div> : null}
@@ -535,9 +552,9 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
               <label className="configuration-field"><span>Start time · ET</span><input aria-label="Start time" max="19:59:59" min="04:00:00" onChange={(event) => { setPeriodPreset("custom"); setStartTime(normalizeClockInput(event.target.value)); }} step="1" type="time" value={startTime} /><small>No new strategy actions are admitted before this time.</small></label>
               <label className="configuration-field"><span>End time · ET</span><input aria-label="End time" max="20:00:00" min="04:00:01" onChange={(event) => { setPeriodPreset("custom"); setEndTime(normalizeClockInput(event.target.value)); }} step="1" type="time" value={endTime} /><small>The run stops at this exact New York boundary.</small></label>
               <label className="configuration-field"><span>Initial cash</span><input max={1_000_000_000} min={1_000} onChange={(event) => setInitialCash(Math.max(1_000, Number(event.target.value) || 1_000))} step={1_000} type="number" value={initialCash} /><small>Applied to the isolated simulated account for the full run.</small></label>
-              <TradingModeSelectField disabled={batchPreset} label="Level book" help="V7 loads each ticker's verified preceding-session checkpoint and refits adaptive MLE bands from causal completed 1s candles."
+              <TradingModeSelectField disabled={batchPreset || fullMarket} label="Level book" help="V7 loads each ticker's verified preceding-session checkpoint and refits adaptive MLE bands from causal completed 1s candles."
                 value={structureBook} onChange={(value) => { setTickerPreset('custom'); setStructureBook(value); const book = structureBooks.find((row) => row.id === value); if (book) setTickerInput(book.ticker); }}
-                options={[{ label: "Automatic V7 book per ticker", value: "" }, ...structureBooks.map((row) => ({ label: `Level book V7 - ${row.ticker} - ${row.start} to ${row.end}`, value: row.id }))]} />
+                options={fullMarket ? [{ label: 'Automatic V7 coverage check per ticker', value: 'level-book-v7' }] : [{ label: "Automatic V7 book per ticker", value: "" }, ...structureBooks.map((row) => ({ label: `Level book V7 - ${row.ticker} - ${row.start} to ${row.end}`, value: row.id }))]} />
               <p className="configuration-help">V7 uses fitted reaction-price bands. Checkpoint integrity and exact preceding-session coverage are verified when loading; no legacy book is substituted.</p>
               <TradingModeSelectField help="Both use $0.005 per share with a $1 minimum commission. Approval requires positive stress results." label="Execution realism" onChange={(value) => setSimulationProfile(value as "baseline" | "stress")} options={[{ label: "Baseline · 25% participation · 5 bps slippage", value: "baseline" }, { label: "Stress · 10% participation · 10 bps slippage", value: "stress" }]} value={simulationProfile} />
               <div className="historical-accelerated-engine-note"><Zap aria-hidden="true" size={17} /><div><strong>Accelerated causal engine</strong><span>{selectedPlan ? `Strategy revision ${selectedPlan.strategy_revision} · candidate ${configurationOptions?.candidates.find((row) => row.candidate_id === candidateId)?.candidate_revision}.` : "Select a strategy above."} Launch checks require current execution code and strategy. Results open in Charts &amp; Quotes with MACD, positions, lifecycle activity, and performance.</span></div></div>

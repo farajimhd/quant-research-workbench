@@ -48,7 +48,7 @@ export type CanvasReplayRun = {
     targets: string[];
   };
   progress: number;
-  preparation_stage?: "created" | "market_events" | "ready" | "signal_occurrences" | "strategy_frames" | "strategy_runtime" | "watchlist_membership";
+  preparation_stage?: "created" | "market_events" | "ready" | "signal_occurrences" | "strategy_frames" | "strategy_runtime" | "watchlist_membership" | "level_book_coverage" | "signal_identity" | "strategy_quality_admission";
   preparation_progress?: { completed: number; total: number };
   preparation_cache?: { strategy_frames?: "fixture" | "hit" | "miss" | "not_requested" | "not_required" | "request_memory" | "run_checkpoint" };
   run_id: string;
