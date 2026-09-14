@@ -77,10 +77,10 @@ export function TradingContainerPreview({
   preview,
   settings,
 }: TradingContainerPreviewProps) {
-  if (id === "performance_journal") return <TradingJournalPreview data={preview?.trading} settings={settings.performance_journal} />;
+  const selectSymbol = onTickerSelect ?? (linkGroup === "none" ? undefined : (symbol: string) => onLinkContextChange({ symbol }));
+  if (id === "performance_journal") return <TradingJournalPreview data={preview?.trading} onSymbolSelect={selectSymbol} settings={settings.performance_journal} />;
   if (!preview) return <EmptyState label="No preview data" />;
   if (id === "portfolio") return <PortfolioPreview data={preview.trading} settings={settings.portfolio} />;
-  const selectSymbol = onTickerSelect ?? (linkGroup === "none" ? undefined : (symbol: string) => onLinkContextChange({ symbol }));
   if (id === "positions") return <PositionsPreview data={preview.trading} onSymbolSelect={selectSymbol} settings={settings.positions} />;
   if (id === "orders") return <OrdersPreview data={preview.trading} onSymbolSelect={selectSymbol} settings={settings.orders} />;
   if (id === "fills") return <ExecutionsPreview data={preview.trading} onSymbolSelect={selectSymbol} settings={settings.fills} />;
@@ -778,7 +778,7 @@ function performanceLifecycleRow(data: CanonicalTradingPreview, lifecycle: Previ
   return {symbol,_lifecycle:lifecycle,_position:position,_executions:executions,_orders:orders,_activity:(data.strategy_chart_activity ?? data.strategy_activity ?? []).filter(event => String(event.ticker) === symbol && (!event.account_id || event.account_id === lifecycle.account_id) && Date.parse(String(event.event_time)) >= Date.parse(String(lifecycle.requested_at || lifecycle.opened_at)) && (!lifecycle.closed_at || Date.parse(String(event.event_time)) <= Date.parse(String(lifecycle.closed_at))))};
 }
 
-export function TradingJournalPreview({ data, settings }: { data?: CanonicalTradingPreview; settings: ContainerSettings["performance_journal"] }) {
+export function TradingJournalPreview({ data, onSymbolSelect, settings }: { data?: CanonicalTradingPreview; onSymbolSelect?: (symbol: string) => void; settings: ContainerSettings["performance_journal"] }) {
   const [view, setView] = useState<"overview" | "strategies" | "trades" | "execution" | "risk">("overview");
   const [pnlTimeframe, setPnlTimeframe] = useState<PnlCandleTimeframe>("30m");
   const [guideOpen, setGuideOpen] = useState(false);
@@ -822,7 +822,7 @@ export function TradingJournalPreview({ data, settings }: { data?: CanonicalTrad
   const tabs = [
     { id: "overview", label: "Overview", count: Number(summary.episode_count || 0) },
     { id: "strategies", label: "Strategies", count: strategyRows.length },
-    { id: "trades", label: "Trades", count: episodes.length },
+    { id: "trades", label: "Positions", count: episodes.length },
     { id: "execution", label: "Execution", count: Number(execution.fill_count || 0) },
     { id: "risk", label: "Risk", count: Number(summary.loss_count || 0) },
   ];
@@ -862,13 +862,13 @@ export function TradingJournalPreview({ data, settings }: { data?: CanonicalTrad
           <span data-tone={numberTone(position?.unrealized_pnl)}>{signedMoney(position?.unrealized_pnl)}</span>
           <button type="button" onClick={() => setSelectedLifecycle(String(lifecycle.lifecycle_id))}>View lifecycle</button>
         </div>;
-      }) : <p>{data ? "No open positions. Completed lifecycles remain in Trades." : "Waiting for position data."}</p>}
+      }) : <p>{data ? "No open positions. Completed lifecycles remain in Positions." : "Waiting for position data."}</p>}
     </section>
     {selectedPosition ? <PositionLifecycleModal row={performanceLifecycleRow(data!,selectedPosition)} onClose={() => setSelectedLifecycle(null)} /> : null}
     <TradingTabs active={view} onChange={(value) => setView(value as typeof view)} tabs={tabs} />
     {view === "overview" ? <div className="performance-overview-stack"><div className="performance-overview-grid"><section className="performance-chart-card"><header><div><strong>Net P&L trajectory</strong><span>Cumulative closed-episode P&L</span></div><b data-tone={numberTone(summary.net_pnl)}>{summary.net_pnl == null ? "—" : signedMoney(summary.net_pnl)}</b></header><JournalAreaChart rows={report?.equity_curve ?? []} /></section><section className="performance-diagnosis"><header><strong>Edge snapshot</strong><span>Read together, never from win rate alone</span></header><div><JournalFact label="Average win" tone="positive" value={money(summary.average_win)} /><JournalFact label="Average loss" tone="negative" value={money(summary.average_loss)} /><JournalFact label="Largest win" tone="positive" value={money(summary.largest_win)} /><JournalFact label="Largest loss" tone="negative" value={money(summary.largest_loss)} /><JournalFact label="Average hold" value={summary.average_duration_seconds == null ? "—" : compactDuration(Number(summary.average_duration_seconds))} /><JournalFact label="Fees" tone={Number(summary.total_fees || 0) > 0 ? "negative" : "neutral"} value={money(summary.total_fees)} /></div></section></div><JournalPnlCandleChart candles={report?.pnl_candles?.[pnlTimeframe] ?? []} onTimeframeChange={setPnlTimeframe} timeframe={pnlTimeframe} /></div> : null}
     {view === "strategies" ? <div className="performance-strategy-view"><StrategyComparisonChart rows={strategyRows} /><TradingDataTable columns={["strategy", "revision", "trades", "net_pnl", "win_rate_pct", "expectancy", "profit_factor", "payoff_ratio", "max_drawdown"]} defaultSort="net_pnl" filterColumn="strategy" filterLabel="All strategies" rows={strategyRows} searchPlaceholder="Search strategies and revisions…" /></div> : null}
-    {view === "trades" ? <TradingDataTable columns={settings.showRiskMultiple ? ["closed_at", "symbol", "side", "strategy", "revision", "setup", "quantity", "entry_price", "exit_price", "net_pnl", "risk_multiple", "duration", "exit_reason"] : ["closed_at", "symbol", "side", "strategy", "revision", "setup", "quantity", "entry_price", "exit_price", "net_pnl", "duration", "exit_reason"]} defaultSort="closed_at" filterColumn="strategy" filterLabel="All strategies" renderExpanded={(row) => <JournalEpisodeDetail row={row} />} rows={episodes} searchPlaceholder="Search trades, symbols, setups, exits…" /> : null}
+    {view === "trades" ? <TradingDataTable columns={settings.showRiskMultiple ? ["closed_at", "symbol", "side", "strategy", "revision", "setup", "quantity", "entry_price", "exit_price", "net_pnl", "risk_multiple", "duration", "exit_reason"] : ["closed_at", "symbol", "side", "strategy", "revision", "setup", "quantity", "entry_price", "exit_price", "net_pnl", "duration", "exit_reason"]} defaultSort="closed_at" filterColumn="strategy" filterLabel="All strategies" onSymbolSelect={onSymbolSelect} renderExpanded={(row) => <JournalEpisodeDetail row={row} />} rows={episodes} searchPlaceholder="Search positions, symbols, setups, exits…" /> : null}
     {view === "execution" ? <ExecutionJournalView execution={execution} /> : null}
     {view === "risk" ? <RiskJournalView risk={risk} summary={summary} /> : null}
     {guideOpen ? <TradingJournalGuide onClose={() => setGuideOpen(false)} /> : null}

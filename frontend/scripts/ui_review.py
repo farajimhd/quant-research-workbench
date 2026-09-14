@@ -3316,8 +3316,8 @@ def capture(args: argparse.Namespace) -> int:
                         page.keyboard.press('Escape')
                         if dialog.count():raise RuntimeError('Escape did not close preparation modal')
                         if not trigger.evaluate('(el)=>el===document.activeElement'):raise RuntimeError('Modal did not restore focus')
-                        journal.get_by_role('tab',name=re.compile('^Trades')).click()
-                        journal.get_by_placeholder('Search trades, symbols, setups, exits…').wait_for(state='visible')
+                        journal.get_by_role('tab',name=re.compile('^Positions')).click()
+                        journal.get_by_placeholder('Search positions, symbols, setups, exits…').wait_for(state='visible')
                         journal.get_by_role('tab',name=re.compile('^Overview')).click()
                         result['warmup_header_height']=before
                     if args.full_market_backtest and scenario['page']=='backtest-trading':
