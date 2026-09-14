@@ -119,7 +119,6 @@ REPLAY_STATUSES = {
 TERMINAL_REPLAY_STATUSES = {"completed", "stopped", "failed"}
 PLAYBACK_SPEEDS = (1.0, 5.0, 30.0, 120.0, 0.0)
 REPLAY_RESTART_CHECKPOINT_INTERVAL_EVENTS = 25_000
-BACKTEST_RESTART_CHECKPOINT_INTERVAL_EVENTS = 100_000
 DEFAULT_MAX_RESIDENT_RUNS = 32
 DEFAULT_HISTORY_FETCH_CONCURRENCY = 4
 MAX_DEBUG_FIXTURE_EVENTS = 20_000
@@ -1106,6 +1105,7 @@ class ReplayRunController:
         self._frame_cursor: dict[str, Any] = {}
         self._stage_timings = {}
         self._processed_frames = 0
+        self._pause_checkpoint_requested = False
         self._last_restart_checkpoint_event_bucket = 0
         self._last_restart_checkpoint_frame_bucket = 0
         self._checkpoint_projection_cache: dict[str, Any] | None = None
@@ -1162,6 +1162,8 @@ class ReplayRunController:
                 self._clear_navigation_search()
                 self._pace_reset = True
             elif normalized == "pause":
+                if self.status != "paused" and self.definition.mode == RunMode.BACKTEST:
+                    self._pause_checkpoint_requested = True
                 self.status = "paused"
                 self._step_until = None
                 self._fast_forward_until = None
@@ -1830,9 +1832,10 @@ class ReplayRunController:
         self._checkpoint_projection_cache = projection
         return deepcopy(projection)
 
-    def _restart_checkpoint_interval_events(self) -> int:
+    def _restart_checkpoint_interval_events(self) -> int | None:
+        # Full backtest snapshots are control-boundary work, not playback work.
         return (
-            BACKTEST_RESTART_CHECKPOINT_INTERVAL_EVENTS
+            None
             if self.definition.mode == RunMode.BACKTEST
             else REPLAY_RESTART_CHECKPOINT_INTERVAL_EVENTS
         )
@@ -3057,10 +3060,10 @@ class ReplayRunController:
             for ticker, value in controller.get('completed_range_windows', {}).items()}
         checkpoint_interval = self._restart_checkpoint_interval_events()
         self._last_restart_checkpoint_event_bucket = (
-            self.processed_events // checkpoint_interval
+            self.processed_events // checkpoint_interval if checkpoint_interval else 0
         )
         self._last_restart_checkpoint_frame_bucket = (
-            self._processed_frames // checkpoint_interval
+            self._processed_frames // checkpoint_interval if checkpoint_interval else 0
         )
         if not self._source_cursor and not self._frame_cursor:
             raise ValueError("Historical restart checkpoint omitted all source cursors")
@@ -4912,12 +4915,18 @@ class ReplayRunController:
 
     async def _wait_until_active(self) -> None:
         async with self._condition:
-            while (
-                not self._stop_requested
-                and self.status in {"ready", "paused"}
-                and self._step_until is None
-                and self._fast_forward_until is None
-            ):
+            while True:
+                # Only the engine captures state, after the current event/frame
+                # has completed. The command endpoint never snapshots mid-event.
+                if (self._pause_checkpoint_requested and not self._stop_requested
+                        and self.current_time is not None
+                        and (self._source_cursor or self._frame_cursor)):
+                    await self._save_restart_checkpoint_responsive(self.current_time)
+                    self._pause_checkpoint_requested = False
+                    self._schedule_manifest_write()
+                if (self._stop_requested or self.status not in {"ready", "paused"}
+                        or self._step_until is not None or self._fast_forward_until is not None):
+                    return
                 await self._condition.wait()
 
     async def _pace(self, event: MarketEvent) -> None:
@@ -4987,20 +4996,21 @@ class ReplayRunController:
             transport_boundary = True
         await self._publish(force=transport_boundary)
         checkpoint_interval = self._restart_checkpoint_interval_events()
-        event_bucket = self.processed_events // checkpoint_interval
-        frame_bucket = self._processed_frames // checkpoint_interval
-        event_checkpoint_due = (
-            event_bucket > self._last_restart_checkpoint_event_bucket
-            and bool(self._source_cursor)
-        )
-        frame_checkpoint_due = (
-            frame_bucket > self._last_restart_checkpoint_frame_bucket
-            and bool(self._frame_cursor)
-        )
-        if event_checkpoint_due or frame_checkpoint_due:
-            await self._save_restart_checkpoint_responsive(event_time)
-            self._last_restart_checkpoint_event_bucket = event_bucket
-            self._last_restart_checkpoint_frame_bucket = frame_bucket
+        if checkpoint_interval is not None:
+            event_bucket = self.processed_events // checkpoint_interval
+            frame_bucket = self._processed_frames // checkpoint_interval
+            event_checkpoint_due = (
+                event_bucket > self._last_restart_checkpoint_event_bucket
+                and bool(self._source_cursor)
+            )
+            frame_checkpoint_due = (
+                frame_bucket > self._last_restart_checkpoint_frame_bucket
+                and bool(self._frame_cursor)
+            )
+            if event_checkpoint_due or frame_checkpoint_due:
+                await self._save_restart_checkpoint_responsive(event_time)
+                self._last_restart_checkpoint_event_bucket = event_bucket
+                self._last_restart_checkpoint_frame_bucket = frame_bucket
         if transport_boundary:
             self._schedule_manifest_write()
 

@@ -322,3 +322,38 @@ In the actual running browser after scrolling, the status advanced from
 1,140,497 to 1,146,709 events (05:29:23 to 05:30:05 ET) over the observation.
 Following remained enabled, with three distinct activity-page requests and
 three Canvas requests. The browser regression and 12 visual scenarios passed.
+
+
+## On-demand backtest recovery checkpoints
+
+Backtests no longer capture full recovery snapshots every 100,000 market events
+or derived frames. `checkpoint.interval_events` is null for this mode. Explicit
+Pause requests a checkpoint at the next engine control boundary after the current
+unit finishes; repeated Pause while already paused does not save again. Stop,
+completion and failure retain the existing terminal checkpoint path. Replay and
+Backtest Debug retain their existing cadence. Journal evidence persistence is
+unchanged.
+
+The control endpoint returns promptly. The engine owns capture and awaits its
+worker while the frozen checkpoint is captured and committed; existing work-phase
+reporting remains available. Pause therefore becomes durably resumable only when
+saving finishes. Playback has no periodic capture/persistence overhead. An
+unexpected process or machine failure can lose recovery progress since the last
+completed checkpoint, possibly the entire run if none has been saved.
+
+The worker must not read mutable broker, strategy or detector state concurrently
+with event processing: that could combine different causal prefixes. Concurrent
+automatic persistence would require an immutable snapshot or versioned state with
+bounded copying before releasing the engine. This change does not introduce that
+architecture or alter strategy rules, event ordering, checkpoint contents or
+restore validation.
+
+Validation: five focused checks pass for checkpoint responsiveness, disabled
+backtest periodic saves, unchanged Replay cadence, repeated Pause, Play/Stop,
+and exact market/frame cursor and broker-state restoration. The broader replay,
+checkpoint and saved-review run passed 137 tests plus six subtests; its two
+failures were reproduced using the committed baseline (legacy round-trip entry
+expectations and a V6 fixture rejected by the V7 contract). Seven additional
+publication, review API and history-isolation tests pass. Activation requires a
+managed backend restart after the active run has saved a terminal checkpoint;
+source validation does not establish sustained full-market speedup.
