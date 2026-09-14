@@ -52,6 +52,42 @@ pub struct CanonicalSessionOrdinalRange {
     pub next_ordinal: u64,
 }
 
+// A disposable physical read index, derived exclusively from canonical events.
+// It never supplies prices, eligibility, or decision-time information.
+#[derive(Clone, Debug, Deserialize)]
+struct EventMinuteBounds {
+    ticker: String,
+    minute: u64,
+    first: u64,
+    last: u64,
+}
+
+struct EventHourIndex {
+    key: String,
+    hour: u64,
+    minutes: BTreeMap<u64, Vec<EventMinuteBounds>>,
+}
+
+fn event_block_filter(bounds: &[EventMinuteBounds]) -> Result<String, String> {
+    let mut keys = Vec::new();
+    for row in bounds {
+        if row.first > row.last {
+            return Err("Invalid canonical event index bounds".into());
+        }
+        // intDiv is monotonic on the UInt64 primary key. A tuple IN set avoids
+        // the quadratic expression work of thousands of independent OR ranges.
+        for block in row.first / 8192..=row.last / 8192 {
+            if keys.len() >= 100_000 {
+                return Err("Canonical event page index exceeds bounded key capacity".into());
+            }
+            keys.push(format!("({}, {block})", sql_literal(&row.ticker)));
+        }
+    }
+    Ok(if keys.is_empty() { " AND 0".into() } else {
+        format!(" AND (source.ticker, intDiv(source.ordinal, 8192)) IN ({})", keys.join(","))
+    })
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct StructureTradeCountEstimateRequest {
     pub as_of: DateTime<Utc>,
@@ -329,6 +365,7 @@ pub struct HistoricalEventSource {
     decoder: CompactEventDecoder,
     latest_coverage_cache: Arc<Mutex<HashMap<Option<NaiveDate>, CachedLatestEventCoverage>>>,
     latest_coverage_query_gate: Arc<Mutex<()>>,
+    event_hour_index: Arc<Mutex<Option<EventHourIndex>>>,
     structure_table_available: Arc<OnceCell<bool>>,
     structure_daily_checkpoint_table_available: Arc<OnceCell<bool>>,
     structure_condition_revision: String,
@@ -577,6 +614,7 @@ impl HistoricalEventSource {
             decoder: references.decoder(),
             latest_coverage_cache: Arc::new(Mutex::new(HashMap::new())),
             latest_coverage_query_gate: Arc::new(Mutex::new(())),
+            event_hour_index: Arc::new(Mutex::new(None)),
             structure_table_available: Arc::new(OnceCell::new()),
             structure_daily_checkpoint_table_available: Arc::new(OnceCell::new()),
             structure_condition_revision,
@@ -2408,6 +2446,100 @@ impl HistoricalEventSource {
         Ok(())
     }
 
+    async fn indexed_event_minute(
+        &self,
+        window: &EventWindow,
+        revision: &SourceRevision,
+        minute: u64,
+    ) -> Result<Vec<EventMinuteBounds>, String> {
+        let hour = minute / 60;
+        let key = format!("{}:{}:{}:{}:{}", revision.token, revision.source_plan_hash,
+            window.start.timestamp_micros(), window.end.timestamp_micros(), ticker_filter(&window.tickers)?);
+        // One hour/population is retained. Serialize construction so competing
+        // requests cannot multiply the bounded metadata working set.
+        let mut cache = self.event_hour_index.lock().await;
+        if !cache.as_ref().is_some_and(|entry| entry.key == key && entry.hour == hour) {
+            let start_us = (hour * 3_600_000_000).max(window.start.timestamp_micros() as u64);
+            let end_us = ((hour + 1) * 3_600_000_000).min(window.end.timestamp_micros() as u64);
+            let filter = ticker_filter(&window.tickers)?;
+            let sql = format!("SELECT source.ticker AS ticker, intDiv(source.sip_timestamp_us, 60000000) AS minute, \
+                min(source.ordinal) AS first, max(source.ordinal) AS last \
+                FROM {}.{}{} AS source \
+                PREWHERE source.event_date=toDate('{}') AND source.sip_timestamp_us>={} \
+                AND source.sip_timestamp_us<={}{} \
+                GROUP BY ticker, minute FORMAT JSONEachRow", self.config.clickhouse_database,
+                self.config.table_prefix, window.start.year(), window.start.date_naive(),
+                start_us, end_us.saturating_sub(1), filter);
+            let text = self.query_bounded(&sql, 45).await?;
+            let mut minutes: BTreeMap<u64, Vec<EventMinuteBounds>> = BTreeMap::new();
+            let mut count = 0;
+            for line in text.lines().filter(|line| !line.is_empty()) {
+                let row: EventMinuteBounds = serde_json::from_str(line).map_err(|e| e.to_string())?;
+                count += 1;
+                if count > 4096 * 60 || row.minute / 60 != hour || row.first > row.last {
+                    return Err("Invalid or oversized canonical event hour index".into());
+                }
+                minutes.entry(row.minute).or_default().push(row);
+            }
+            let after = self.source_revision(window).await?;
+            if after.token != revision.token || after.source_plan_hash != revision.source_plan_hash {
+                return Err("Canonical source changed during event index construction".into());
+            }
+            *cache = Some(EventHourIndex { key, hour, minutes });
+        }
+        Ok(cache.as_ref().unwrap().minutes.get(&minute).cloned().unwrap_or_default())
+    }
+
+    async fn fetch_indexed_archive_page(
+        &self,
+        window: &EventWindow,
+        cursor: Option<&HistoricalCursor>,
+        limit: usize,
+        event_type_filter: Option<u8>,
+    ) -> Result<(Vec<LiveCompactEvent>, Option<HistoricalCursor>), String> {
+        let revision = self.source_revision(window).await?;
+        if !revision.request_complete || !revision.complete_for_history {
+            return Err("Indexed event page requires complete canonical source authority".into());
+        }
+        let begin = (window.start.timestamp_micros() as u64)
+            .max(cursor.map_or(0, |value| value.sip_timestamp_us));
+        let end = window.end.timestamp_micros() as u64;
+        if begin >= end { return Ok((Vec::new(), None)); }
+        let mut minute = begin / 60_000_000;
+        let mut events = Vec::with_capacity(limit);
+        // Fill the requested page across sparse/empty minutes. Returning an
+        // underfilled page early would incorrectly signal end-of-history.
+        while minute * 60_000_000 < end && events.len() < limit {
+            let bounds = self.indexed_event_minute(window, &revision, minute).await?;
+            if !bounds.is_empty() {
+                let start = DateTime::from_timestamp_micros((minute * 60_000_000).max(begin) as i64)
+                    .ok_or("Invalid indexed event start")?;
+                let stop = DateTime::from_timestamp_micros(((minute + 1) * 60_000_000).min(end) as i64)
+                    .ok_or("Invalid indexed event end")?;
+                let mut filter = ticker_filter(&window.tickers)?;
+                filter.push_str(&event_block_filter(&bounds)?);
+                if let Some(kind) = event_type_filter.filter(|kind| *kind <= 1) {
+                    filter.push_str(&format!(" AND bitAnd(source.event_meta, 1) = toUInt8({kind})"));
+                }
+                let select = event_select(&format!("{}.{}{}", self.config.clickhouse_database,
+                    self.config.table_prefix, window.start.year()), false, None, start, stop, &filter, cursor);
+                let sql = format!("SELECT * FROM ({select}) ORDER BY sip_timestamp_us ASC, ticker ASC, ordinal ASC LIMIT {} FORMAT JSONEachRow", limit-events.len());
+                for line in self.query(&sql).await?.lines().filter(|line| !line.is_empty()) {
+                    let row = serde_json::from_str::<HistoricalRow>(line).map_err(|e| e.to_string())?;
+                    events.push(row_to_event(row));
+                }
+            }
+            minute += 1;
+        }
+        let after = self.source_revision(window).await?;
+        if after.token != revision.token || after.source_plan_hash != revision.source_plan_hash {
+            return Err("Canonical source changed during indexed event page".into());
+        }
+        let next = events.last().map(|event| HistoricalCursor { ordinal: event.arrival_sequence,
+            sip_timestamp_us: event.sip_timestamp_us, ticker: event.ticker.clone() });
+        Ok((events, next))
+    }
+
     async fn fetch_ordered(
         &self,
         window: &EventWindow,
@@ -2424,6 +2556,16 @@ impl HistoricalEventSource {
             self.archive_execution_clock_revision(window, &plan).await?;
         }
         let limit = limit.clamp(1, 100_000);
+        // Large single-day archive populations benefit from a physical index.
+        // Other source/clock/direction contracts retain their existing reader.
+        if !descending && !require_archive_execution_clock && self.config.archive_clock_policy == "canonical_sip"
+            && (64..=4096).contains(&window.tickers.len())
+            && window.start.timestamp_micros() >= 0
+            && window.start.date_naive() == (window.end-chrono::Duration::microseconds(1)).date_naive()
+            && plan.segments.iter().all(|segment| matches!(segment.tier, MarketSourceTier::Archive))
+        {
+            return self.fetch_indexed_archive_page(window, cursor, limit, event_type_filter).await;
+        }
         let mut ticker_filter = ticker_filter(&window.tickers)?;
         if let Some(event_type) = event_type_filter.filter(|value| *value <= 1) {
             ticker_filter.push_str(&format!(
@@ -5056,6 +5198,101 @@ mod tests {
     use qmd_core::compact_event::{CompactEventDecoder, LIVE_COMPACT_EVENT_SCHEMA_VERSION};
     use qmd_core::event::MarketEvent;
     use qmd_core::generic_structure::StructureSplitAdjustment;
+
+    #[test]
+    fn event_block_index_covers_boundaries_without_claiming_exact_time_membership() {
+        let bounds = vec![super::EventMinuteBounds {
+            ticker: "TEST".into(), minute: 1, first: 8191, last: 16384,
+        }];
+        let filter = super::event_block_filter(&bounds).unwrap();
+        assert!(filter.contains("('TEST', 0),('TEST', 1),('TEST', 2)"));
+        assert_eq!(super::event_block_filter(&[]).unwrap(), " AND 0");
+        assert!(super::event_block_filter(&[super::EventMinuteBounds {
+            ticker: "TEST".into(), minute: 1, first: 10, last: 9,
+        }]).is_err());
+        // The lossy physical block filter is additional to all exact time,
+        // ticker, and cursor predicates, never a replacement for them.
+        let start = Utc.with_ymd_and_hms(2026, 8, 21, 8, 0, 0).unwrap();
+        let sql = event_select("events", false, None, start, start+chrono::Duration::seconds(1),
+            &filter, Some(&super::HistoricalCursor {ticker:"TEST".into(), ordinal:8192,
+                sip_timestamp_us:start.timestamp_micros() as u64}));
+        assert!(sql.contains("source.sip_timestamp_us >="));
+        assert!(sql.contains("source.sip_timestamp_us <"));
+        assert!(sql.contains("tuple(source.sip_timestamp_us, upper(source.ticker), source.ordinal) >"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires certified Aug 21 canonical ClickHouse fixture"]
+    async fn indexed_event_pages_match_independent_canonical_rows() {
+        qmd_core::config::load_env_files();
+        let mut config = HistoricalGatewayConfig::from_env();
+        config.archive_clock_policy = "canonical_sip".into();
+        config.validate().unwrap();
+        let source = super::HistoricalEventSource::initialize(config).await.unwrap();
+        for (hour, minute) in [(11,21), (11,59)] {
+            let boundary = Utc.with_ymd_and_hms(2026,8,21,hour,minute,59).unwrap()
+                + chrono::Duration::milliseconds(990);
+            let window = EventWindow {start:boundary,end:boundary+chrono::Duration::milliseconds(100),
+                tickers:vec!["SUGP".into(),"JUNS".into()]};
+            for kind in [None,Some(0),Some(1)] {
+                let (expected,_) = source.fetch_ordered(&window,None,100_000,false,None,kind,false).await.unwrap();
+                assert!(expected.len()<100_000);
+                let mut actual = Vec::new();
+                let mut cursor = None;
+                loop {
+                    let (page,next) = source.fetch_indexed_archive_page(&window,cursor.as_ref(),31,kind).await.unwrap();
+                    let done = page.len()<31;
+                    actual.extend(page);
+                    if done {break;}
+                    assert_ne!(cursor,next);
+                    cursor=next;
+                    assert!(actual.len()<=expected.len());
+                }
+                assert_eq!(format!("{actual:?}"),format!("{expected:?}"),"{hour}:{minute} kind={kind:?}");
+                // A repeat/backward request must not inherit the later cursor.
+                let (repeat,_) = source.fetch_indexed_archive_page(&window,None,100_000,kind).await.unwrap();
+                assert_eq!(format!("{repeat:?}"),format!("{expected:?}"));
+                println!("{hour}:{minute} kind={kind:?}: {} exact canonical rows", actual.len());
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires QMD_INDEX_PARITY_OCCURRENCES and certified canonical full-session population"]
+    async fn indexed_full_population_pages_match_canonical_query() {
+        qmd_core::config::load_env_files();
+        let path = std::env::var("QMD_INDEX_PARITY_OCCURRENCES").unwrap();
+        let data = std::fs::read_to_string(path).unwrap();
+        let mut tickers = std::collections::BTreeSet::new();
+        for line in data.lines() {
+            let row: serde_json::Value = serde_json::from_str(line).unwrap();
+            tickers.insert(row["ticker"].as_str().unwrap().to_string());
+        }
+        assert!((64..=4096).contains(&tickers.len()));
+        let mut config = HistoricalGatewayConfig::from_env();
+        config.archive_clock_policy = "canonical_sip".into();
+        let table = format!("{}.{}2026",config.clickhouse_database,config.table_prefix);
+        let source = super::HistoricalEventSource::initialize(config).await.unwrap();
+        let window = EventWindow {start:Utc.with_ymd_and_hms(2026,8,21,8,0,0).unwrap(),
+            end:Utc.with_ymd_and_hms(2026,8,22,0,0,0).unwrap(),tickers:tickers.into_iter().collect()};
+        let mut cursor = None;
+        for page in 0..2 {
+            let started = std::time::Instant::now();
+            let (actual,next) = source.fetch_ordered(&window,cursor.as_ref(),10_000,false,None,None,false).await.unwrap();
+            let indexed_seconds=started.elapsed().as_secs_f64();
+            let select=event_select(&table,false,None,window.start,window.end,
+                &ticker_filter(&window.tickers).unwrap(),cursor.as_ref());
+            let started = std::time::Instant::now();
+            let text=source.query(&format!("SELECT * FROM ({select}) ORDER BY sip_timestamp_us ASC, ticker ASC, ordinal ASC LIMIT 10000 FORMAT JSONEachRow")).await.unwrap();
+            let expected=text.lines().filter(|line| !line.is_empty())
+                .map(|line|super::row_to_event(serde_json::from_str::<HistoricalRow>(line).unwrap())).collect::<Vec<_>>();
+            assert_eq!(format!("{actual:?}"),format!("{expected:?}"));
+            println!("page {page}: {} tickers, {} exact rows; indexed {indexed_seconds:.3}s, original {:.3}s",
+                window.tickers.len(),actual.len(),started.elapsed().as_secs_f64());
+            assert_ne!(cursor,next);
+            cursor=next;
+        }
+    }
 
     #[test]
     fn wire_trade_eligibility_preserves_condition_and_execution_clock_authority() {
