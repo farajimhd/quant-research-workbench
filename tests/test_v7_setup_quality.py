@@ -8,6 +8,51 @@ from src.trading_runtime import v7_setup as V, strategy_engine as S
 from tests.test_v7_setup import prepared
 
 
+@pytest.mark.parametrize('enabled,bid,ask,enters', [
+    (0,9.99,10.03,True),  # Retain the selected baseline's trade-price policy.
+    (1,9.99,10.03,False), # Only one cent remains before the 9.98 stop.
+    (1,10.00,10.02,True), # Exactly one spread of executable clearance.
+    (1,10.01,10.03,True),
+    (1,9.97,10.02,False), # Stop above bid is never acceptable when enabled.
+    (2,10.00,10.02,False),
+])
+def test_setup_quote_clearance_uses_real_bid_without_moving_structural_stop(enabled,bid,ask,enters):
+    host,a,obs=prepared()
+    parameters=deepcopy(a.parameters)
+    parameters['historical_hod']['setup_minimum_quote_clearance_spreads']=enabled
+    result=host.evaluate(replace(a,parameters=parameters),replace(obs(2,10.02),bid=bid,ask=ask))
+    assert any(i.action=='enter_long' for i in result.evaluation.intents)==enters
+    if enabled:
+        evidence=result.evaluation.signals[0].metadata['entry_quote_clearance']
+        assert evidence['bid']==bid and evidence['ask']==ask
+        assert evidence['stop']==pytest.approx(9.98)
+        assert evidence['minimum']==pytest.approx(enabled*(ask-bid))
+    if enters:
+        assert result.state['initial_stop']==pytest.approx(9.98)
+    else:
+        assert result.evaluation.signals[0].reason=='setup_stop_inside_quote_noise'
+        assert not result.state.get('historical_hod_entry')
+
+
+@pytest.mark.parametrize('value',[-1,float('nan'),float('inf'),True])
+def test_setup_quote_clearance_rejects_invalid_configuration(value):
+    from src.trading_runtime.historical_hod import configure
+    _,a,_=prepared()
+    parameters=deepcopy(a.parameters)
+    parameters['historical_hod']['setup_minimum_quote_clearance_spreads']=value
+    with pytest.raises(ValueError):
+        configure(parameters)
+
+
+def test_setup_quote_clearance_requires_setup_policy():
+    from src.trading_runtime.historical_hod import configure
+    _,a,_=prepared()
+    parameters=deepcopy(a.parameters)
+    parameters['historical_hod'].update(v7_setup_enabled=0,setup_minimum_quote_clearance_spreads=1)
+    with pytest.raises(ValueError,match='Setup quality policies require early setup entry'):
+        configure(parameters)
+
+
 def test_episode_high_is_prior_only_and_resets_with_episode():
     state={};settings=dict(setup_range_seconds=30,setup_minimum_bars=1)
     for i,episode,high in [(1,1,10),(2,1,11),(3,2,9)]:

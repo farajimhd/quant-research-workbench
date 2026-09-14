@@ -57,3 +57,21 @@ August 21 04:00–04:30 run `ad4e4a58-ad17-4529-9e99-bff1d96fc31b` completed;
 all six entry requests used center thresholds and confirmed swing initial stops,
 and all three stop updates matched their recorded confirmed swings. Evidence is
 under `D:/TradingML/runtimes/v7-center-swing-validation`.
+
+## Optional setup quote clearance
+
+`historical_hod.setup_minimum_quote_clearance_spreads` defaults to zero,
+preserving existing candidates. A positive value requires the V7 setup policy
+and checks a new entry against the real executable quote after selecting its
+confirmed swing stop:
+
+`bid - initial_stop >= setting * (ask - bid)`, with `bid > initial_stop`.
+
+For example, one requires at least one current spread of room below the bid.
+The gate records `entry_quote_clearance` and waits with
+`setup_stop_inside_quote_noise` when it fails. It does not move the stop or
+change structural trade-price selection. This is an initial-entry decision
+gate; it does not replace OMS freshness/repricing, alter additions, or prevent
+subsequent quote changes. The setting must be enabled in a separate immutable
+experimental candidate and validated through causal portfolio replay before
+claiming a trading improvement. It is not enabled in Candidate 222.
