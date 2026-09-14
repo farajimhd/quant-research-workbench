@@ -338,6 +338,27 @@ class PortfolioManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(first_intent)
         self.assertIsNotNone(second_intent)
 
+    async def test_simultaneous_tickers_share_one_cash_reservation_budget(self) -> None:
+        policy = PortfolioPolicy(
+            policy_id="multi-ticker-cash", maximum_position_fraction=1,
+            maximum_ticker_fraction=1, maximum_planned_risk_fraction=1,
+            maximum_open_risk_fraction=1, maximum_order_notional=1_000_000,
+        )
+        engine = self.engine([PortfolioAccountProfile("cash", "CASH1", "backtest", "cash", policy)])
+        at = datetime.now(timezone.utc)
+        engine.synchronize_snapshot("CASH1",
+            summary=summary("CASH1", equity=10_000, available=10_000, at=at),
+            ledger=ledger("CASH1", cash=10_000, at=at), positions=[])
+        decisions = await asyncio.gather(*(
+            engine.approve(replace(intent(f"shared-{ticker}", ticker=ticker, quantity=80), event_time=at),
+                           account_id="CASH1")
+            for ticker in ["AAA", "BBB", "CCC"]
+        ))
+        quantities = sorted(decision.approved_quantity for decision, _ in decisions)
+        self.assertEqual(quantities, [0, 20, 80])
+        self.assertEqual(sum(row.reserved_notional for row in engine.reservations.values()), 10_000)
+        self.assertEqual(sum(approved is not None for _, approved in decisions), 2)
+
     async def test_separate_process_journals_share_fenced_account_capacity(self) -> None:
         policy = PortfolioPolicy(
             policy_id="cross-process",
