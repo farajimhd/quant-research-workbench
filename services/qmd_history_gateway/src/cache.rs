@@ -3751,12 +3751,38 @@ fn write_prepared_structure_seed_cache(
     Ok(true)
 }
 
+// All processes sharing this disposable cache must coordinate publication and
+// eviction with readers. Keep the lock file permanently: unlinking it would
+// allow two processes to lock different files for the same cache directory.
+fn prepared_bar_cache_lock(root: &Path, exclusive: bool) -> Result<fs::File, String> {
+    fs::create_dir_all(root)
+        .map_err(|error| format!("failed to create {}: {error}", root.display()))?;
+    let path = root.join(".prepared-bars.lock");
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
+    if exclusive {
+        file.lock()
+    } else {
+        file.lock_shared()
+    }
+    .map_err(|error| format!("failed to lock {}: {error}", path.display()))?;
+    Ok(file)
+}
+
 fn read_prepared_bar_cache(
     path: &Path,
     expected_key: &str,
     expected_ticker: &str,
     expected_timeframe: &str,
 ) -> Result<Option<PreparedBarCacheArtifact>, String> {
+    let guard = prepared_bar_cache_lock(
+        path.parent().ok_or("Prepared-bar cache path has no parent")?, false,
+    )?;
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -3764,6 +3790,8 @@ fn read_prepared_bar_cache(
             return Err(format!("failed to read {}: {error}", path.display()));
         }
     };
+    // The immutable bytes no longer need protection while decoding/validating.
+    drop(guard);
     let artifact = serde_json::from_slice::<PreparedBarCacheArtifact>(&bytes)
         .map_err(|error| format!("failed to decode {}: {error}", path.display()))?;
     if artifact.schema_version != PREPARED_BAR_CACHE_SCHEMA_VERSION {
@@ -3805,8 +3833,9 @@ fn write_prepared_bar_cache(
     bytes: &[u8],
     max_entries: usize,
 ) -> Result<bool, String> {
-    fs::create_dir_all(root)
-        .map_err(|error| format!("failed to create {}: {error}", root.display()))?;
+    // Includes the existence check, temporary publication and the entire
+    // eviction transaction. File locks are released even on error/process exit.
+    let _guard = prepared_bar_cache_lock(root, true)?;
     let path = prepared_bar_cache_path(root, key);
     if path.is_file() {
         return Ok(false);
@@ -4582,6 +4611,90 @@ mod tests {
         assert_eq!(restored.bars.len(), 1);
         assert!(read_prepared_bar_cache(&path, "wrong-key", "SUGP", "1s").is_err());
 
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prepared_bar_cache_concurrent_processes_publish_read_and_prune() {
+        const CHILD_ROOT: &str = "QMD_TEST_PREPARED_BAR_LOCK_ROOT";
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
+            let root = std::path::PathBuf::from(root);
+            std::thread::scope(|scope| {
+                for worker in 0..4 {
+                    let root = &root;
+                    scope.spawn(move || {
+                        for i in 0..20 {
+                            let key = if i % 2 == 0 {
+                                "shared".to_string()
+                            } else {
+                                format!("{}-{worker}-{i}", std::process::id())
+                            };
+                            let artifact = PreparedBarCacheArtifact {
+                                schema_version: PREPARED_BAR_CACHE_SCHEMA_VERSION,
+                                key: key.clone(),
+                                event_count: 0,
+                                bars: vec![],
+                                bar_indicator_projection: vec![],
+                                structure_projection: vec![],
+                            };
+                            write_prepared_bar_cache(
+                                root,
+                                &key,
+                                &serde_json::to_vec(&artifact).unwrap(),
+                                8,
+                            )
+                            .unwrap();
+                            // A concurrent eviction is a legitimate miss, never
+                            // a partial read, identity mismatch or I/O failure.
+                            if let Some(value) = read_prepared_bar_cache(
+                                &prepared_bar_cache_path(root, &key),
+                                &key,
+                                "TEST",
+                                "1s",
+                            )
+                            .unwrap()
+                            {
+                                assert_eq!(value.key, key);
+                            }
+                        }
+                    });
+                }
+            });
+            return;
+        }
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("qmd-cache-concurrency-{nonce}"));
+        let mut children = (0..4).map(|_| {
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "cache::tests::prepared_bar_cache_concurrent_processes_publish_read_and_prune"])
+                .env(CHILD_ROOT, &root).spawn().unwrap()
+        }).collect::<Vec<_>>();
+        let statuses = children
+            .iter_mut()
+            .map(|child| child.wait().unwrap())
+            .collect::<Vec<_>>();
+        assert!(statuses.iter().all(|status| status.success()));
+        let files = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            files
+                .iter()
+                .filter(|path| path.extension().is_some_and(|ext| ext == "tmp"))
+                .count(),
+            0
+        );
+        assert_eq!(
+            files
+                .iter()
+                .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+                .count(),
+            8
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
