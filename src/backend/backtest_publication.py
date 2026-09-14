@@ -53,7 +53,8 @@ class BacktestPublication:
         while self.pending is not None and not self.closed:
             boundary, self.pending = self.pending, None
             symbols = tuple(symbol for symbol in self.symbols if boundary.get('assignments_complete',True)
-                or symbol in boundary.get('assignment_symbols',()))
+                or symbol in boundary.get('assignment_symbols',())
+                or not self.interests.get(symbol, {}).get('include_chart', True))
             if not symbols:
                 continue
             # Assignment dataclasses and broker snapshot rows are immutable

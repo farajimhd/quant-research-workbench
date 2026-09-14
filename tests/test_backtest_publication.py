@@ -18,6 +18,17 @@ def slow_render(packet):
 
 
 class PublicationTests(IsolatedAsyncioTestCase):
+    async def test_financial_reader_does_not_wait_for_engine_or_symbol_assignments(self):
+        publication = BacktestPublication(slow_render)
+        try:
+            publication.publish(dict(run=dict(status='running', updated_at='frozen'),
+                assignments=(), assignments_complete=False, assignment_symbols=()))
+            result = await asyncio.wait_for(publication.get('NEW', lazy=True, include_chart=False), 20)
+            assert result['run']['updated_at'] == 'frozen'
+            assert publication.boundary['assignment_symbols'] == ()
+        finally:
+            await publication.close()
+
     async def test_new_symbol_waits_for_next_captured_boundary(self):
         publication=BacktestPublication(slow_render)
         try:

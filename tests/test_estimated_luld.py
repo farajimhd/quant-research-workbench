@@ -64,3 +64,4 @@ def test_prior_close_excludes_after_hours_and_uses_early_close():
         result=previous_regular_close('TEST',date(2026,11,30))
     assert result['price']==2.8
     assert query.call_args.args[0].end=='2026-11-27T18:00:00+00:00'
+    assert query.call_args.args[0].stage == 'prices'

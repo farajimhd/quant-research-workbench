@@ -1322,6 +1322,7 @@ async fn chart_bar_snapshot(
             && columns.contains("qmd_structure_unified_levels")
     });
     let bars_only = parse_chart_stage(query.stage.as_deref())?;
+    let price_only = query.stage.as_deref() == Some("prices");
     let mode = parse_chart_mode(query.mode.as_deref())?;
     if bars_only && mode == "live" && query.allow_persisted_bars.unwrap_or(true) {
         if let Some(persisted) = state
@@ -1425,6 +1426,7 @@ async fn chart_bar_snapshot(
             before,
             bars_only,
             structure_only,
+            price_only,
         )
         .await
         .map_err(|error| {
@@ -1449,6 +1451,7 @@ async fn chart_bar_snapshot(
                 before,
                 true,
                 false,
+                true,
             )
             .await
             .map_err(service_error)?;
@@ -1466,6 +1469,11 @@ async fn chart_bar_snapshot(
         .await
         .map_err(service_error)?;
     adjust_chart_snapshot_for_splits(&mut snapshot, &split_adjustments);
+    if price_only {
+        snapshot.indicators.clear();
+        snapshot.indicator_projection = None;
+        snapshot.indicators_available = false;
+    }
     project_chart_snapshot(
         snapshot,
         indicator_columns.as_ref(),
@@ -1495,10 +1503,10 @@ fn adjust_chart_snapshot_for_splits(
 
 fn parse_chart_stage(raw: Option<&str>) -> Result<bool, ApiError> {
     match raw.unwrap_or("full") {
-        "bars" => Ok(true),
+        "bars" | "prices" => Ok(true),
         "full" => Ok(false),
         value => Err(bad_request(format!(
-            "invalid chart stage {value}; expected bars or full"
+            "invalid chart stage {value}; expected prices, bars or full"
         ))),
     }
 }
@@ -3150,6 +3158,7 @@ mod tests {
     fn chart_stage_defaults_to_full_and_rejects_unknown_values() {
         assert!(!parse_chart_stage(None).unwrap());
         assert!(parse_chart_stage(Some("bars")).unwrap());
+        assert!(parse_chart_stage(Some("prices")).unwrap());
         assert!(!parse_chart_stage(Some("full")).unwrap());
         assert!(parse_chart_stage(Some("indicators")).is_err());
     }

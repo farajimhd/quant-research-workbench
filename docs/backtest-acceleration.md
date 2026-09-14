@@ -494,3 +494,40 @@ failed-run visual matrix captured 12/12 with zero automated objective issues und
 `D:/TradingML/runtimes/ui-review/failed-backtest-review`. After backend/frontend
 restart, the real failed 8c5022c3 run returned review_only=true, 4,380,591 events
 and resume_supported=true. No backtest was resumed.
+
+## Previous-close lookup and independent financial publication
+
+The repeated AGNC timeout originated in the LULD previous-regular-session-close
+lookup. It requested `stage=bars`, which also warmed EMA/VWAP history and built
+indicator projections. The close selector never used those indicators. QMD now
+supports `stage=prices`: it uses the same canonical Bars cache profile,
+ChartBarRow conversion, completed-bar cutoff, pagination and split adjustments,
+but skips indicator-page warmup and projection construction. Price-only cold
+results never overwrite the shared prepared indicator artifact. Existing `bars`
+and `full` consumers retain their indicator behavior; the full-chart secondary
+OHLCV-only read also skips its unused indicator work. LULD uses the new explicit
+stage with the same prior-session calendar, time window and close selection.
+
+A second dependency made a newly opened financial-only journal wait for the
+engine's next symbol assignment capture. Financial-only publication now renders
+the existing immutable financial snapshot regardless of whether that symbol's
+strategy assignments have been captured. Chart/strategy-detail requests retain
+their assignment completeness guard; no missing assignment is reported as absent.
+This adds no engine capture, reconciliation, batch split or market processing.
+
+Validation: 70 Python tests passed, including financial publication without a new
+engine boundary and early-close/after-hours reference tests. QMD History library
+tests passed 107 with three ignored. The real AGNC prior-close lookup returned
+10.925 for 2026-08-20 20:00 UTC in 2.892 seconds; SUGP returned 2.78 in 0.487
+seconds. The exact AGNC window returned 390 price bars with indicators disabled.
+The legacy `bars` comparison still timed out after 65.008 seconds during warmup,
+so no live end-to-end legacy output equality is claimed. Price preservation rests
+on reusing the identical aggregation/conversion/filtering path, not substituting
+a daily feed or alternate price rule. Full-session strategy/P&L acceptance remains
+open. The saved financial journal loaded in 0.138 seconds after activation.
+
+QMD History, backend and frontend were restarted through the service manager
+after the run exhausted retries and completed its checkpoint. Delayed backend
+child cleanup required a second managed restart after verifying the child had
+exited. The failed 8c5022c3 run remains reviewable and resumable at 4,380,591 events;
+no playback resume was issued during validation.

@@ -1530,6 +1530,7 @@ impl HistoricalDerivedCache {
         before: Option<DateTime<Utc>>,
         bars_only: bool,
         structure_only: bool,
+        price_only: bool,
     ) -> Result<ChartSnapshot, String> {
         let resolution_us = parse_resolution_us(&timeframe)
             .ok_or_else(|| format!("unsupported chart timeframe {timeframe}"))?;
@@ -1598,6 +1599,25 @@ impl HistoricalDerivedCache {
             source_revision: lease.source_revision,
         };
 
+        // Price consumers need the identical canonical bars and paging fence,
+        // but must not wait for EMA/VWAP history or publish an incomplete
+        // indicator artifact into the shared prepared cache.
+        if bars_only && price_only && qmd_core::bars::is_supported_timeframe(&timeframe) {
+            let state = lease.entry.state.lock().await;
+            let artifact = PreparedBarCacheArtifact {
+                schema_version: PREPARED_BAR_CACHE_SCHEMA_VERSION,
+                key: lease.key.clone(),
+                event_count,
+                bars: state.bars.iter()
+                    .filter(|update| update.bar.timeframe.eq_ignore_ascii_case(&timeframe))
+                    .map(|update| ChartBarRow::from_bar(&update.bar)).collect(),
+                bar_indicator_projection: Vec::new(),
+                structure_projection: Vec::new(),
+            };
+            return Ok(prepared_bar_chart_snapshot(
+                &artifact, cache, ticker, timeframe, limit, as_of, before,
+            ));
+        }
         let bars_only_indicator_warmup = if bars_only {
             self.indicator_page_warmup(
                 &window,

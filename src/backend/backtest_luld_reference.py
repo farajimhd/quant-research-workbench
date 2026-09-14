@@ -16,7 +16,7 @@ def previous_regular_close(ticker, session):
     response = qmd_product_request(QmdProductRequest(
         'chart', authority='history', mode='backtest', ticker=ticker, timeframe='1m',
         start=start.isoformat(), end=end.isoformat(), as_of=end.isoformat(),
-        stage='bars', include_structure=False, include_market_signals=False,
+        stage='prices', include_structure=False, include_market_signals=False,
         limit=400, timeout_seconds=60), history_get=qmd_history_get_json)
     payload = response.payload
     rows = list(payload.get('bars') or payload.get('history') or [])

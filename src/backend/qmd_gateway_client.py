@@ -410,8 +410,8 @@ def _qmd_product_route(
 ) -> tuple[Literal["live", "history"], str, dict[str, Any]]:
     if request.product not in {"chart", "compact_events", "scanner"}:
         raise ValueError(f"unsupported QMD product: {request.product}")
-    if request.stage not in {"bars", "full"}:
-        raise ValueError("QMD chart stage must be bars or full")
+    if request.stage not in {"prices", "bars", "full"}:
+        raise ValueError("QMD chart stage must be prices, bars or full")
     if request.mode not in {"live", "replay", "backtest", "debug"}:
         raise ValueError("QMD mode must be live, replay, backtest, or debug")
     limit = max(1, min(int(request.limit), 50_000))
