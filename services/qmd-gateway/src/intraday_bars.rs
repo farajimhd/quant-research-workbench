@@ -2061,7 +2061,11 @@ fn event_points(
     decoder: &CompactEventDecoder,
     trade_rules: &TradeAggregationRules,
 ) -> Vec<EventPoint> {
-    match decoder.decode(event) {
+    event_points_from_market_event(decoder.decode(event), trade_rules)
+}
+
+fn event_points_from_market_event(event: MarketEvent, trade_rules: &TradeAggregationRules) -> Vec<EventPoint> {
+    match event {
         MarketEvent::Trade(trade) if trade.price > 0.0 && trade.size > 0.0 => {
             let rule = trade_rules.resolve(&trade.conditions, trade.ts);
             (rule.update_high_low || rule.update_last || rule.update_volume)
@@ -2095,6 +2099,57 @@ fn event_points(
             out
         }
         _ => Vec::new(),
+    }
+}
+
+/// Bounded, ordered historical replay of the canonical 100 ms trade family.
+/// Reuses the live condition codec, Float32 prices, event identity and bar updates.
+/// A caller must certify the whole source window before publishing its output.
+pub struct OrderedIntradayTradeBars {
+    rules: TradeAggregationRules,
+    pending: HashMap<String, (IntradayBarRow, HashSet<EventIdentity>)>,
+    last_sip: u64,
+}
+
+impl OrderedIntradayTradeBars {
+    pub fn new(rules: TradeAggregationRules) -> Self {
+        Self { rules, pending: HashMap::new(), last_sip: 0 }
+    }
+
+    pub fn push(&mut self, event: &LiveCompactEvent, decoded: MarketEvent) -> Result<Option<IntradayBarRow>, String> {
+        if event.sip_timestamp_us < self.last_sip {
+            return Err("Canonical trade replay source is out of SIP order".into());
+        }
+        self.last_sip = event.sip_timestamp_us;
+        let (local_date, session_us) = local_coordinates(event.sip_timestamp_us)
+            .ok_or("Invalid canonical SIP timestamp")?;
+        if !(SESSION_START_US..SESSION_END_US).contains(&session_us) { return Ok(None); }
+        let bucket = session_us.div_euclid(BASE_RESOLUTION_US);
+        let mut completed = None;
+        if self.pending.get(&event.ticker).is_some_and(|(bar, _)| bar.local_date != local_date || bar.bucket_index != bucket) {
+            completed = self.pending.remove(&event.ticker).map(|(bar, _)| bar);
+        }
+        for point in event_points_from_market_event(decoded, &self.rules).into_iter().filter(|p| p.family == "trade") {
+            let entry = self.pending.entry(event.ticker.clone());
+            match entry {
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert((IntradayBarRow::from_event(event, &point, bucket, local_date.clone()),
+                        HashSet::from([event_identity(event)])));
+                }
+                std::collections::hash_map::Entry::Occupied(mut slot) => {
+                    let (bar, seen) = slot.get_mut();
+                    if seen.len() >= 100_000 { return Err("Canonical 100 ms trade bucket exceeds replay memory bound".into()); }
+                    if seen.insert(event_identity(event)) { bar.update_event(event, &point); }
+                }
+            }
+        }
+        Ok(completed)
+    }
+
+    pub fn finish(self) -> Vec<IntradayBarRow> {
+        let mut rows = self.pending.into_values().map(|(bar, _)| bar).collect::<Vec<_>>();
+        rows.sort_by_key(|bar| (bar.local_date.clone(), bar.bucket_index, bar.ticker.clone()));
+        rows
     }
 }
 
@@ -2259,6 +2314,34 @@ mod tests {
             &CompactEventDecoder::default(),
             &TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap(),
         )
+    }
+
+    #[test]
+    fn ordered_replay_matches_live_trade_bars_and_deduplicates() {
+        let start = Utc.with_ymd_and_hms(2026, 8, 21, 8, 0, 0).unwrap().timestamp_micros() as u64;
+        let mut first = quote_event(start + 10_000, 1, 0, 40_000);
+        first.event_meta = 3;
+        let mut second = first.clone();
+        second.sip_timestamp_us += 20_000;
+        second.arrival_sequence = 2;
+        second.source_sequence = 2;
+        second.price_primary_int = 40_100;
+        let mut next = second.clone();
+        next.sip_timestamp_us = start + 110_000;
+        next.source_sequence = 3;
+        next.arrival_sequence = 3;
+        let decoder = CompactEventDecoder::default();
+        let rules = TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap();
+        let mut replay = OrderedIntradayTradeBars::new(rules);
+        assert!(replay.push(&first, decoder.decode(&first)).unwrap().is_none());
+        assert!(replay.push(&first, decoder.decode(&first)).unwrap().is_none());
+        assert!(replay.push(&second, decoder.decode(&second)).unwrap().is_none());
+        let actual = replay.push(&next, decoder.decode(&next)).unwrap().unwrap();
+        let (date, session_us) = local_coordinates(first.sip_timestamp_us).unwrap();
+        let mut expected = IntradayBarRow::from_event(&first, &points(&first)[0], session_us / BASE_RESOLUTION_US, date);
+        expected.update_event(&second, &points(&second)[0]);
+        assert_eq!(serde_json::to_value(actual).unwrap(), serde_json::to_value(expected).unwrap());
+        assert!(replay.push(&first, decoder.decode(&first)).is_err());
     }
 
     fn quote_event(timestamp_us: u64, sequence: u64, bid: u32, ask: u32) -> LiveCompactEvent {

@@ -3911,6 +3911,33 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
             "abc123",
         )
 
+    async def test_session_watch_ignores_repeated_squeeze_and_does_not_expire(self) -> None:
+        configuration = approved_configuration()
+        configuration["payload"]["run_plan"] = {
+            "activation": {"watchlist_policy": "not_required", "watch_duration": "session",
+                           "maximum_signal_price_exclusive": 20}, "watchlist_ids": [],
+        }
+        controller = ReplayRunController(ReplayRunDefinition(session_date=date(2026, 7, 28),
+            start_time=time(4), configuration_revision=configuration), runtime_root=Path(tempfile.gettempdir()))
+        at = datetime(2026, 7, 28, 5, 0, tzinfo=NEW_YORK)
+        event = ReplaySignalEvent(available_at=at, ticker="AAPL",
+            occurrence={"ticker": "AAPL", "last_price": 5, "squeeze_expires_at": (at + timedelta(minutes=5)).isoformat()},
+            source_values={"first": {"value": 1}})
+        with patch("src.backend.replay_run_service.run_plan_accepts_signal", return_value=True) as accepts, \
+                patch.object(controller, "_after_event", new_callable=AsyncMock):
+            await controller._process_external_signal_event(event)
+            await controller._process_external_signal_event(replace(event, available_at=at + timedelta(hours=1),
+                source_values={"first": {"value": 2}}))
+            controller._refresh_source_native_signal_activation(at + timedelta(hours=14))
+            self.assertEqual(accepts.call_count, 1)
+            self.assertEqual(controller._strategy_source_values["AAPL"]["first"]["value"], 1)
+            self.assertIn("AAPL", controller._signal_activated_tickers)
+            self.assertIn("AAPL", controller._strategy_engaged_tickers)
+            self.assertNotIn("AAPL", controller._source_native_signal_episodes)
+            await controller._process_external_signal_event(replace(event, ticker="MSFT",
+                occurrence={"ticker": "MSFT", "last_price": 20}))
+            self.assertNotIn("MSFT", controller._signal_activated_tickers)
+
     def test_source_native_activation_refreshes_only_on_event_or_expiry(self) -> None:
         configuration = approved_configuration()
         configuration["payload"]["run_plan"] = {

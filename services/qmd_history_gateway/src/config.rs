@@ -5,6 +5,8 @@ use std::path::PathBuf;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct HistoricalGatewayConfig {
+    /// Explicit archive timing authority. Native recent/live clocks are unchanged.
+    pub archive_clock_policy: String,
     pub batch_size: usize,
     pub bind: String,
     pub cache_max_bars_per_entry: usize,
@@ -61,6 +63,7 @@ impl HistoricalGatewayConfig {
     pub fn from_env() -> Self {
         let source = HistoricalClickHouseConnection::from_env();
         Self {
+            archive_clock_policy: env_string("QMD_HISTORY_ARCHIVE_CLOCK_POLICY", "execution_clock"),
             batch_size: env_usize("QMD_HISTORY_BATCH_SIZE", 25_000).clamp(1, 100_000),
             bind: env_string("QMD_HISTORY_BIND", "127.0.0.1:8801"),
             cache_max_bars_per_entry: env_usize("QMD_HISTORY_CACHE_MAX_BARS_PER_ENTRY", 100_000)
@@ -82,7 +85,7 @@ impl HistoricalGatewayConfig {
             prepared_bar_cache_root: PathBuf::from(env_string(
                 "QMD_HISTORY_PREPARED_BAR_CACHE_ROOT",
                 r"D:\TradingML\runtimes\qmd_history_gateway\prepared-bars",
-            )),
+            )).join(format!("clock-{}", env_string("QMD_HISTORY_ARCHIVE_CLOCK_POLICY", "execution_clock"))),
             clickhouse_database: source.database,
             clickhouse_password_present: !source.password.is_empty(),
             clickhouse_password: source.password,
@@ -210,6 +213,9 @@ impl HistoricalGatewayConfig {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if !matches!(self.archive_clock_policy.as_str(), "execution_clock" | "canonical_sip") {
+            return Err("QMD_HISTORY_ARCHIVE_CLOCK_POLICY must be execution_clock or canonical_sip".into());
+        }
         if self.clickhouse_url.trim().is_empty() {
             return Err("QMD_HISTORY_CLICKHOUSE_URL is required".to_string());
         }

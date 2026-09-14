@@ -44,6 +44,14 @@ pub struct EventWindow {
     pub tickers: Vec<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CanonicalSessionOrdinalRange {
+    pub ticker: String,
+    pub event_count: u64,
+    pub first_ordinal: u64,
+    pub next_ordinal: u64,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct StructureTradeCountEstimateRequest {
     pub as_of: DateTime<Utc>,
@@ -695,6 +703,30 @@ impl HistoricalEventSource {
         self.trade_rules.clone()
     }
 
+    pub fn requires_archive_execution_clock(&self) -> bool {
+        self.config.archive_clock_policy == "execution_clock"
+    }
+
+    /// Fetch the certified daily primary-key bounds once for a population.
+    /// Consumers can stream exact ticker/ordinal ranges without rescanning a
+    /// monthly ticker-sorted partition for every wall-clock slice.
+    pub async fn canonical_session_ordinal_ranges(&self, day: NaiveDate, tickers: &[String]) -> Result<Vec<CanonicalSessionOrdinalRange>, String> {
+        if tickers.is_empty() || tickers.len() > 25_000 { return Err("Canonical range population must contain 1..25000 tickers".into()); }
+        let normalized = tickers.iter().map(|t| normalize_ticker(t)).collect::<Result<Vec<_>, _>>()?;
+        let filter = normalized.iter().map(|t| sql_literal(t)).collect::<Vec<_>>().join(",");
+        let sql = format!("SELECT ticker, argMax(event_count, tuple(build_step, updated_at)) AS event_count, \
+            argMax(next_ordinal, tuple(build_step, updated_at)) AS next_ordinal, next_ordinal-event_count AS first_ordinal \
+            FROM {}.events_ordinal_continuity WHERE source_date=toDate('{}') AND ticker IN ({}) \
+            GROUP BY ticker HAVING event_count>0 ORDER BY ticker FORMAT JSONEachRow", self.config.clickhouse_database, day, filter);
+        let rows = self.query_bounded(&sql, 60).await?.lines().filter(|s| !s.is_empty())
+            .map(|s| serde_json::from_str::<CanonicalSessionOrdinalRange>(s).map_err(|e| e.to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
+        if rows.iter().any(|r| r.next_ordinal <= r.first_ordinal || r.next_ordinal-r.first_ordinal != r.event_count) {
+            return Err("Canonical day has invalid ordinal bounds".into());
+        }
+        Ok(rows)
+    }
+
     pub async fn scanner_market_snapshot(
         &self,
         window: EventWindow,
@@ -1224,7 +1256,12 @@ impl HistoricalEventSource {
                 Ok(IndicatorWarmupOrdinalSession {
                     event_count: row.event_count,
                     execution_clock_complete: row.execution_clock_complete == 1,
-                    execution_clock_revision: row.execution_clock_revision,
+                    execution_clock_revision: if self.requires_archive_execution_clock() {
+                        row.execution_clock_revision
+                    } else {
+                        format!("archive-sip-condition:{}:{}:{}:{}", self.structure_condition_revision,
+                            session_date, row.first_ordinal, row.next_ordinal)
+                    },
                     first_ordinal: row.first_ordinal,
                     next_ordinal: row.next_ordinal,
                     session_date,
@@ -1357,10 +1394,10 @@ impl HistoricalEventSource {
                     source.config.table_prefix,
                     session_date.year()
                 ),
-                Some(&format!(
+                source.requires_archive_execution_clock().then_some(format!(
                     "{}.{}",
                     source.config.execution_clock_database, source.config.execution_clock_table
-                )),
+                )).as_deref(),
                 &ticker,
                 first_ordinal,
                 next_ordinal,
@@ -1787,7 +1824,7 @@ impl HistoricalEventSource {
     }
 
     pub async fn source_revision(&self, window: &EventWindow) -> Result<SourceRevision, String> {
-        self.source_revision_for_policy(window, true).await
+        self.source_revision_for_policy(window, self.requires_archive_execution_clock()).await
     }
 
     /// Revision authority for the structural level book. Completed archive
@@ -2013,7 +2050,7 @@ impl HistoricalEventSource {
         cursor: Option<&HistoricalCursor>,
         limit: usize,
     ) -> Result<(Vec<LiveCompactEvent>, Option<HistoricalCursor>), String> {
-        self.fetch_ordered(window, cursor, limit, false, None, None, true)
+        self.fetch_ordered(window, cursor, limit, false, None, None, self.requires_archive_execution_clock())
             .await
     }
 
@@ -2032,7 +2069,7 @@ impl HistoricalEventSource {
             false,
             live_continuation_sequence,
             event_type_filter,
-            true,
+            self.requires_archive_execution_clock(),
         )
         .await
     }
@@ -2063,7 +2100,7 @@ impl HistoricalEventSource {
         limit: usize,
     ) -> Result<Vec<LiveCompactEvent>, String> {
         let (mut events, _) = self
-            .fetch_ordered(window, None, limit, true, None, None, true)
+            .fetch_ordered(window, None, limit, true, None, None, self.requires_archive_execution_clock())
             .await?;
         events.reverse();
         Ok(events)
@@ -2091,7 +2128,7 @@ impl HistoricalEventSource {
             live_continuation_sequence,
             event_type_filter,
             self.config.scanner_fetch_chunk_minutes.max(1),
-            true,
+            self.requires_archive_execution_clock(),
         )
     }
 
@@ -2628,7 +2665,9 @@ impl HistoricalEventSource {
     pub async fn coverage(&self, window: &EventWindow) -> Result<EventCoverage, String> {
         validate_window(window)?;
         let plan = self.source_plan(window).await?;
-        self.archive_execution_clock_revision(window, &plan).await?;
+        if self.requires_archive_execution_clock() {
+            self.archive_execution_clock_revision(window, &plan).await?;
+        }
         let ticker_filter = ticker_filter(&window.tickers)?;
         let mut selects = Vec::new();
         let mut source_tables = Vec::new();
@@ -2649,11 +2688,11 @@ impl HistoricalEventSource {
                         selects.push(event_select(
                             &table,
                             false,
-                            Some(&format!(
+                            self.requires_archive_execution_clock().then_some(format!(
                                 "{}.{}",
                                 self.config.execution_clock_database,
                                 self.config.execution_clock_table
-                            )),
+                            )).as_deref(),
                             segment.start,
                             segment.end,
                             &ticker_filter,

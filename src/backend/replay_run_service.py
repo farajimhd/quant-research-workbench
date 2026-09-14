@@ -127,7 +127,7 @@ RESTART_CHECKPOINT_SCHEMA_VERSION = 3
 # artifact can carry zero spread when built from trade-only persisted bars, so
 # current execution quality continues to prefer the causal raw quote stream.
 # 7 preserves causal estimated-LULD inputs; older prepared frames omit them.
-PREPARED_FRAME_CACHE_SCHEMA_VERSION = 7
+PREPARED_FRAME_CACHE_SCHEMA_VERSION = 8
 _PREPARED_FRAME_CACHE_LOCKS: WeakValueDictionary[str, asyncio.Lock] = (
     WeakValueDictionary()
 )
@@ -2212,28 +2212,40 @@ class ReplayRunController:
                     self._historical_watchlist_plans,
                     self._historical_external_signal_events,
                 )
-                self._preparation_stage = "strategy_quality_admission"
-                await self._publish(force=True)
-                self._strategy_quality_candidate_tickers = await asyncio.to_thread(
-                    _historical_strategy_quality_candidate_tickers,
-                    self._historical_watchlist_plans,
-                    tuple(sorted(self._historical_signal_identities)),
-                )
-                self._strategy_quality_prune_ready = True
-                self._record_data_authority(
-                    "strategy_quality_admission",
-                    {
-                        "authority": "compiled_historical_watchlist_plan",
-                        "watchlist_id": "squeeze-tradable-candidates",
-                        "source_signal_ticker_count": len(
-                            self._historical_signal_identities
-                        ),
-                        "ever_eligible_ticker_count": len(
-                            self._strategy_quality_candidate_tickers
-                        ),
-                        "use": "necessary-condition computation prune only",
-                    },
-                )
+                if configuration.get("run_plan", {}).get("activation", {}).get("watch_duration") == "session":
+                    # The complete native stream already applied the scanner
+                    # funnel. Admission lasts the session; strategy liquidity,
+                    # volume and price gates remain causal decision-time checks.
+                    self._strategy_quality_candidate_tickers = set(self._historical_signal_identities)
+                    self._strategy_quality_prune_ready = True
+                    self._record_data_authority("strategy_signal_admission", {
+                        "authority": "first_native_signal_session_watch",
+                        "admitted_ticker_count": len(self._historical_signal_identities),
+                        "use": "admission only; strategy gates still required",
+                    })
+                else:
+                    self._preparation_stage = "strategy_quality_admission"
+                    await self._publish(force=True)
+                    self._strategy_quality_candidate_tickers = await asyncio.to_thread(
+                        _historical_strategy_quality_candidate_tickers,
+                        self._historical_watchlist_plans,
+                        tuple(sorted(self._historical_signal_identities)),
+                    )
+                    self._strategy_quality_prune_ready = True
+                    self._record_data_authority(
+                        "strategy_quality_admission",
+                        {
+                            "authority": "compiled_historical_watchlist_plan",
+                            "watchlist_id": "squeeze-tradable-candidates",
+                            "source_signal_ticker_count": len(
+                                self._historical_signal_identities
+                            ),
+                            "ever_eligible_ticker_count": len(
+                                self._strategy_quality_candidate_tickers
+                            ),
+                            "use": "necessary-condition computation prune only",
+                        },
+                    )
                 # Entry eligibility belongs to the Strategy rule graph.  The
                 # configured Watchlist remains a presentation surface, not a
                 # second all-market admission gate for source-native runs.
@@ -4313,16 +4325,31 @@ class ReplayRunController:
                 source_cache[f"{field_refs[source_id]}@1s"] = record
 
     async def _process_external_signal_event(self, event: ReplaySignalEvent) -> None:
-        source_cache = self._strategy_source_values.setdefault(event.ticker, {})
-        source_cache.update(deepcopy(event.source_values))
         configuration = self.definition.configuration_revision["payload"]
         run_plan = dict(configuration.get("run_plan") or {})
         activation = dict(run_plan.get("activation") or {})
+        session_watch = activation.get("watch_duration") == "session"
+        if session_watch and event.ticker in self._signal_activated_tickers:
+            # A repeated squeeze cannot refresh/replace admission evidence or
+            # reset the strategy's position/episode state.
+            return
+        source_cache = self._strategy_source_values.setdefault(event.ticker, {})
+        source_cache.update(deepcopy(event.source_values))
         is_new_for_run = event.available_at >= self.definition.requested_start
         accepts_prior = str(activation.get("event_policy") or "new_occurrences") == "latest_session_occurrence"
         self._apply_historical_watchlist_membership(event.available_at)
         if is_new_for_run or accepts_prior:
-            if event.occurrence.get("squeeze_expires_at"):
+            if session_watch:
+                ceiling = activation.get("maximum_signal_price_exclusive")
+                price = _positive(event.occurrence.get("last_price"))
+                price_eligible = ceiling is None or (price is not None and price < float(ceiling))
+                if price_eligible and run_plan_accepts_signal(
+                    run_plan, event.occurrence,
+                    eligible_tickers=self._historical_signal_eligible_tickers(run_plan),
+                ):
+                    self._signal_activated_tickers.add(event.ticker)
+                    self._strategy_engaged_tickers.add(event.ticker)
+            elif event.occurrence.get("squeeze_expires_at"):
                 self._source_native_signal_episodes[event.ticker] = event
                 self._refresh_source_native_signal_activation(
                     event.available_at,
@@ -8208,8 +8235,9 @@ def _uses_source_native_identity_preparation(configuration: dict[str, Any], has_
                if row.get("enabled", True)]
     return bool(has_events and streams
                 and all(str(row.get("occurrence_source") or "").strip() for row in streams)
-                and not configuration.get("strategy", {}).get("parameters", {}).get("structural_recovery_contract")
-                and not configuration.get("strategy", {}).get("parameters", {}).get("historical_hod_contract")
+                and (configuration.get("run_plan", {}).get("activation", {}).get("watch_duration") == "session"
+                     or (not configuration.get("strategy", {}).get("parameters", {}).get("structural_recovery_contract")
+                         and not configuration.get("strategy", {}).get("parameters", {}).get("historical_hod_contract")))
                 and configuration.get("run_plan", {}).get("activation", {}).get("watchlist_policy") == "not_required")
 
 
@@ -8595,6 +8623,31 @@ async def _stream_historical_bar_derived_frames(
     redundant; QMD History's revisioned bar artifact is the shared authority.
     """
 
+    # Chart products are bounded responses, not a full-session streaming API.
+    # At 100 ms a 16-hour session has up to 576,000 bars. Never accept its last
+    # 50,000 bars as a complete stream. Chunk output and retain each authority.
+    if end - start > timedelta(minutes=30):
+        chunks: list[dict[str, Any]] = []
+        cursor = start
+        while cursor < end:
+            chunk_end = min(cursor + timedelta(minutes=30), end)
+            await _stream_historical_bar_derived_frames(
+                ticker=ticker, timeframe=timeframe, start=cursor, end=chunk_end,
+                frame_sink=frame_sink,
+                authority_sink=lambda _key, value: chunks.append(dict(value)),
+                indicator_columns=indicator_columns, batch_size=batch_size,
+            )
+            cursor = chunk_end
+        if authority_sink is not None:
+            authority_sink(f"derived:{_ticker(ticker)}:{timeframe}", {
+                "authority": "qmd_history_prepared_closed_bar_chunks",
+                "start": start.isoformat(), "end": end.isoformat(),
+                "complete_for_history": all(chunk.get("complete_for_history") for chunk in chunks),
+                "chunks": chunks,
+                "revision_token": hashlib.sha256(json.dumps(chunks, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+            })
+        return
+
     def fetch() -> tuple[list[ReplayDerivedFrame], dict[str, Any]]:
         payload = qmd_product_request(
             QmdProductRequest(
@@ -8616,6 +8669,11 @@ async def _stream_historical_bar_derived_frames(
             )
         ).payload
         bars = [dict(row) for row in payload.get("bars") or []]
+        if len(bars) >= 50_000:
+            raise RuntimeError(f"Prepared QMD bar response reached its limit for {ticker} {timeframe}; completeness is unproven")
+        bars = [bar for bar in bars
+                if start <= _aware_datetime(bar.get("bar_start")) < end
+                and _aware_datetime(bar.get("bar_end")) <= end]
         indicators = [dict(row) for row in payload.get("indicators") or []]
         indicator_by_start = {
             str(row.get("bar_start") or ""): row

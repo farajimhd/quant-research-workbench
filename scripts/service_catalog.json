@@ -36,6 +36,7 @@
       "readiness": {"kind": "service", "accepted_statuses": ["ready"], "require_running": true},
       "environment": {
         "QMD_HISTORY_BIND": "127.0.0.1:8801",
+        "QMD_HISTORY_ARCHIVE_CLOCK_POLICY": "canonical_sip",
         "QMD_HISTORY_STRUCTURE_CHECKPOINT_MAX_CONCURRENT_ADVANCEMENTS": "32"
       },
       "start_priority": 10,

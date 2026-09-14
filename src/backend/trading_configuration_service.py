@@ -5726,6 +5726,12 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
                 + ", ".join(sorted(unknown_signal_streams))
             )
         activation = dict(run_plan.get("activation") or {})
+        if activation.get("watch_duration", "episode") not in {"episode", "session"}:
+            raise ValueError("Run Plan watch_duration must be episode or session")
+        if activation.get("maximum_signal_price_exclusive") is not None:
+            ceiling = float(activation["maximum_signal_price_exclusive"])
+            if not 0 < ceiling < float("inf"):
+                raise ValueError("Run Plan signal price ceiling must be finite and positive")
         if str(activation.get("event_policy") or "") not in {
             "new_occurrences", "latest_session_occurrence"
         }:

@@ -440,6 +440,7 @@ impl SharedSignalStreamStore {
         mut row: Value,
         market: &SharedMarketState,
     ) -> Result<Vec<Value>, String> {
+        row["market.last_price"] = json!(close);
         let _mutation = self.mutation.lock().await;
         let mut store = self.inner.lock().await;
         let Some(configuration) = store.configuration.clone() else {
@@ -466,74 +467,9 @@ impl SharedSignalStreamStore {
             store.squeeze_last_prices.insert(ticker.to_string(), close);
             return Ok(Vec::new());
         }
-        let previous_price = store.squeeze_last_prices.insert(ticker.to_string(), close);
-        if store
-            .squeeze_episodes
-            .get(ticker)
-            .is_some_and(|episode| at >= episode.expires_at)
-        {
-            store.squeeze_episodes.remove(ticker);
-        }
-
-        let start_stream = episode_streams
-            .iter()
-            .find(|stream| string(stream, "episode_role") == Some("start"));
-        let start_matches = start_stream.is_some_and(|stream| stream_matches(stream, &rules, &row));
-        let mut emit_roles = Vec::<(&str, Value)>::new();
-        if !store.squeeze_episodes.contains_key(ticker) && start_matches {
-            let stream = start_stream.expect("start stream exists when its rules match");
-            let anchor_price = previous_price.filter(|price| *price > 0.0).unwrap_or(open);
-            let ttl_ms = stream
-                .get("episode_ttl_ms")
-                .and_then(Value::as_i64)
-                .unwrap_or(300_000)
-                .max(1);
-            let episode_id = sha256_hex(&format!(
-                "squeeze|{}|{}|{}",
-                ticker,
-                at.to_rfc3339(),
-                anchor_price
-            ));
-            store.squeeze_episodes.insert(
-                ticker.to_string(),
-                SqueezeEpisode {
-                    episode_id,
-                    started_at: at,
-                    expires_at: at + chrono::Duration::milliseconds(ttl_ms),
-                    anchor_price,
-                    high_water_pct: 0.0,
-                    milestone_emitted: false,
-                },
-            );
-            emit_roles.push(("start", stream.clone()));
-        }
-
-        let mut episode = match store.squeeze_episodes.get(ticker).cloned() {
-            Some(value) => value,
-            None => return Ok(Vec::new()),
-        };
-        let move_pct = (close / episode.anchor_price - 1.0) * 100.0;
-        episode.high_water_pct = episode.high_water_pct.max(move_pct);
-        if !episode.milestone_emitted {
-            if let Some(stream) = episode_streams
-                .iter()
-                .find(|stream| string(stream, "episode_role") == Some("milestone"))
-            {
-                let mut milestone_row = row.clone();
-                milestone_row["squeeze_move_pct"] = json!(move_pct);
-                milestone_row["signal.squeeze_move_pct"] = json!(move_pct);
-                if stream_matches(stream, &rules, &milestone_row) {
-                    episode.milestone_emitted = true;
-                    emit_roles.push(("milestone", stream.clone()));
-                }
-            }
-        }
-        store
-            .squeeze_episodes
-            .insert(ticker.to_string(), episode.clone());
-        if emit_roles.is_empty() {
-            return Ok(Vec::new());
-        }
+        let Some((episode, move_pct, emit_roles)) = advance_squeeze_episode(
+            &mut store, &episode_streams, &rules, ticker, at, open, close, &row,
+        ) else { return Ok(Vec::new()); };
         drop(store);
 
         if let Some(snapshot) = market.ticker_snapshot_at(ticker, at).await {
@@ -1009,6 +945,88 @@ impl SharedSignalStreamStore {
     }
 }
 
+// One episode state machine for live observations and certified historical replay.
+fn advance_squeeze_episode(
+    store: &mut SignalStreamStore,
+    episode_streams: &[Value],
+    rules: &HashMap<String, Value>,
+    ticker: &str,
+    at: DateTime<Utc>,
+    open: f64,
+    close: f64,
+    row: &Value,
+) -> Option<(SqueezeEpisode, f64, Vec<(&'static str, Value)>)> {
+        let previous_price = store.squeeze_last_prices.insert(ticker.to_string(), close);
+        if store
+            .squeeze_episodes
+            .get(ticker)
+            .is_some_and(|episode| at >= episode.expires_at)
+        {
+            store.squeeze_episodes.remove(ticker);
+        }
+
+        let start_stream = episode_streams
+            .iter()
+            .find(|stream| string(stream, "episode_role") == Some("start"));
+        let start_matches = start_stream.is_some_and(|stream| stream_matches(stream, &rules, &row));
+        let mut emit_roles = Vec::<(&str, Value)>::new();
+        if !store.squeeze_episodes.contains_key(ticker) && start_matches {
+            let stream = start_stream.expect("start stream exists when its rules match");
+            let anchor_price = previous_price.filter(|price| *price > 0.0).unwrap_or(open);
+            let ttl_ms = stream
+                .get("episode_ttl_ms")
+                .and_then(Value::as_i64)
+                .unwrap_or(300_000)
+                .max(1);
+            let episode_id = sha256_hex(&format!(
+                "squeeze|{}|{}|{}",
+                ticker,
+                at.to_rfc3339(),
+                anchor_price
+            ));
+            store.squeeze_episodes.insert(
+                ticker.to_string(),
+                SqueezeEpisode {
+                    episode_id,
+                    started_at: at,
+                    expires_at: at + chrono::Duration::milliseconds(ttl_ms),
+                    anchor_price,
+                    high_water_pct: 0.0,
+                    milestone_emitted: false,
+                },
+            );
+            emit_roles.push(("start", stream.clone()));
+        }
+
+        let mut episode = match store.squeeze_episodes.get(ticker).cloned() {
+            Some(value) => value,
+            None => return None,
+        };
+        let move_pct = (close / episode.anchor_price - 1.0) * 100.0;
+        episode.high_water_pct = episode.high_water_pct.max(move_pct);
+        if !episode.milestone_emitted {
+            if let Some(stream) = episode_streams
+                .iter()
+                .find(|stream| string(stream, "episode_role") == Some("milestone"))
+            {
+                let mut milestone_row = row.clone();
+                milestone_row["squeeze_move_pct"] = json!(move_pct);
+                milestone_row["signal.squeeze_move_pct"] = json!(move_pct);
+                if stream_matches(stream, &rules, &milestone_row) {
+                    episode.milestone_emitted = true;
+                    emit_roles.push(("milestone", stream.clone()));
+                }
+            }
+        }
+        store
+            .squeeze_episodes
+            .insert(ticker.to_string(), episode.clone());
+        if emit_roles.is_empty() {
+            return None;
+        }
+    Some((episode, move_pct, emit_roles))
+}
+
 #[derive(Clone)]
 struct CanonicalSqueezePrevious {
     bucket_index: i64,
@@ -1016,6 +1034,74 @@ struct CanonicalSqueezePrevious {
     event_count: u64,
     local_date: String,
     size_sum: f64,
+}
+
+/// No database writes, live configuration changes or unbounded event retention.
+/// Completed historical bars become available at their bucket end, never earlier.
+pub struct HistoricalSqueezeReplay {
+    configuration: SignalStreamConfigurationRequest,
+    streams: Vec<Value>,
+    rules: HashMap<String, Value>,
+    store: SignalStreamStore,
+    previous: HashMap<String, CanonicalSqueezePrevious>,
+}
+
+impl HistoricalSqueezeReplay {
+    pub fn new(configuration: SignalStreamConfigurationRequest) -> Result<Self, String> {
+        validate_configuration(&configuration)?;
+        let streams = configuration.streams.iter().filter(|s| {
+            s.get("enabled").and_then(Value::as_bool) != Some(false)
+                && string(s, "occurrence_source") == Some("qmd_squeeze_episode")
+        }).cloned().collect::<Vec<_>>();
+        if streams.is_empty() { return Err("Historical squeeze replay requires a native episode stream".into()); }
+        let rules = configuration.rule_sets.iter().filter_map(|r| Some((string(r, "rule_set_id")?.to_string(), r.clone()))).collect();
+        Ok(Self { configuration, streams, rules, store: SignalStreamStore::default(), previous: HashMap::new() })
+    }
+
+    pub fn observe(&mut self, bar: &IntradayBarRow) -> Result<Vec<Value>, String> {
+        use chrono::TimeZone;
+        if bar.label_resolution_us != 100_000 || bar.bar_family != "trade" || !bar.close.is_finite() || bar.close <= 0.0 {
+            return Ok(Vec::new());
+        }
+        let midnight = chrono::NaiveDate::parse_from_str(&bar.local_date, "%Y-%m-%d")
+            .map_err(|e| e.to_string())?.and_hms_opt(0, 0, 0).ok_or("Invalid session date")?;
+        let at = chrono_tz::America::New_York.from_local_datetime(&midnight).single()
+            .ok_or("Ambiguous session date")?.with_timezone(&Utc)
+            + chrono::Duration::microseconds((bar.bucket_index + 1) * 100_000);
+        if at < self.configuration.session_start_utc || at >= self.configuration.session_end_utc { return Ok(Vec::new()); }
+        let current = CanonicalSqueezePrevious { bucket_index: bar.bucket_index, close: f64::from(bar.close),
+            event_count: bar.event_count, local_date: bar.local_date.clone(), size_sum: bar.size_sum };
+        let previous = self.previous.insert(bar.ticker.clone(), current.clone());
+        if previous.as_ref().is_some_and(|p| p.local_date == current.local_date && p.bucket_index >= current.bucket_index) {
+            return Err("Historical squeeze bars are duplicated or out of order".into());
+        }
+        let (price_change, volume_change, count_change) = canonical_squeeze_changes(previous.as_ref(), &current);
+        let mut row = json!({"ticker":bar.ticker,"symbol":bar.ticker,"last_price":current.close,"market.last_price":current.close,
+            "open":bar.open,"close":current.close,"price_change_1_bar_pct":price_change,
+            "volume_change":volume_change,"trade_count_change":count_change});
+        let Some((episode, move_pct, roles)) = advance_squeeze_episode(&mut self.store, &self.streams, &self.rules,
+            &bar.ticker, at, f64::from(bar.open), current.close, &row) else { return Ok(Vec::new()); };
+        row["squeeze_episode_id"] = json!(episode.episode_id);
+        row["squeeze_episode_started_at"] = json!(episode.started_at.to_rfc3339());
+        row["squeeze_episode_expires_at"] = json!(episode.expires_at.to_rfc3339());
+        row["squeeze_anchor_price"] = json!(episode.anchor_price);
+        row["squeeze_move_pct"] = json!(move_pct);
+        row["squeeze_high_water_pct"] = json!(episode.high_water_pct);
+        project_occurrence_columns(&mut row, &self.configuration.column_catalog);
+        let mut result = Vec::new();
+        for (role, stream) in roles {
+            let selected = stream.get("inclusion_rule_sets").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>();
+            let revision = definition_revision(&stream, &self.rules, &selected);
+            let mut event = occurrence(&stream, &row, at, &self.configuration, &revision, "qmd_canonical_sip_squeeze_replay_v1");
+            event["last_price"] = json!(current.close);
+            event["squeeze_episode_id"] = json!(episode.episode_id);
+            event["squeeze_episode_role"] = json!(role);
+            event["squeeze_expires_at"] = json!(episode.expires_at.to_rfc3339());
+            event["source_values"] = row.clone();
+            result.push(event);
+        }
+        Ok(result)
+    }
 }
 
 fn canonical_squeeze_changes(

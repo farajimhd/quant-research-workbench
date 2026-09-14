@@ -850,7 +850,7 @@ impl HistoricalDerivedCache {
         let mut oldest_range_starts_at_session_boundary = false;
         let mut bars = Vec::new();
         'sessions: for session in sessions {
-            if !session.execution_clock_complete {
+            if self.source.requires_archive_execution_clock() && !session.execution_clock_complete {
                 if !events.is_empty() {
                     bars = self
                         .indicator_warmup_bars(timeframe, session_start, &events)

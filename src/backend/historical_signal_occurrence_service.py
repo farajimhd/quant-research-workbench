@@ -45,6 +45,9 @@ def historical_source_native_signal_occurrences(
             f"Historical source-native Signal Stream source is unsupported: {source or 'missing'}"
         )
 
+    if stream.get("historical_occurrence_artifact"):
+        return _certified_occurrence_artifact(stream, start=start, end=end)
+
     _load_repository_env()
     active = client or ClickHouseHttpClient(
         default_clickhouse_url(),
@@ -155,6 +158,61 @@ def historical_source_native_signal_occurrences(
             "content_hash": content_hash,
         },
     }
+
+
+def _certified_occurrence_artifact(stream: dict[str, Any], *, start: datetime, end: datetime) -> dict[str, Any]:
+    """Read a pinned complete canonical replay; never fall back to partial live history."""
+    spec = dict(stream["historical_occurrence_artifact"])
+    manifest_path = Path(str(spec.get("manifest_path") or "")).resolve()
+    runtime = Path(os.environ.get("TRADINGML_RUNTIME_ROOT", "D:/TradingML/runtimes")).resolve()
+    if not manifest_path.is_relative_to(runtime):
+        raise ValueError("Historical signal artifact must be inside the operational runtime")
+    manifest_bytes = manifest_path.read_bytes()
+    if hashlib.sha256(manifest_bytes).hexdigest() != spec.get("manifest_sha256"):
+        raise RuntimeError("Historical signal manifest hash changed")
+    manifest = json.loads(manifest_bytes)
+    if (manifest.get("schema_version") != 1 or manifest.get("complete") is not True
+            or manifest.get("authority") != "qmd_canonical_sip_squeeze_replay_v1"):
+        raise RuntimeError("Historical signal artifact is not a certified canonical replay")
+    revision = dict(manifest.get("source_revision") or {})
+    if not revision.get("complete_for_history") or not revision.get("request_complete"):
+        raise RuntimeError("Historical signal canonical coverage is incomplete")
+    if (_clock(manifest.get("available_start"), "available_start") > start
+            or _clock(manifest.get("available_end"), "available_end") < end):
+        raise RuntimeError("Historical signal artifact does not cover the requested session")
+    definition = {key: value for key, value in stream.items() if key != "historical_occurrence_artifact"}
+    if definition not in manifest.get("stream_definitions", []):
+        raise RuntimeError("Historical signal definition differs from the certified detector")
+    path = manifest_path.parent / "occurrences.jsonl"
+    if path.stat().st_size > 256 * 1024 * 1024:
+        raise RuntimeError("Historical signal artifact exceeds bounded loader size")
+    digest = hashlib.sha256()
+    occurrences = []
+    seen = set()
+    rows = 0
+    with path.open("rb") as handle:
+        for line in handle:
+            digest.update(line)
+            event = json.loads(line)
+            rows += 1
+            ticker = str(event.get("ticker") or "")
+            available = _clock(event.get("available_at"), "available_at")
+            if (not ticker or ticker in seen or not event.get("event_id")
+                    or event.get("signal_stream_id") != stream.get("signal_stream_id")
+                    or _clock(event.get("event_time"), "event_time") > available):
+                raise RuntimeError("Invalid or repeated historical admission event")
+            seen.add(ticker)
+            if start <= available < end:
+                occurrences.append(event)
+            if rows > MAX_HISTORICAL_SIGNAL_OCCURRENCES:
+                raise RuntimeError("Historical signal artifact exceeds bounded occurrence count")
+    if rows != manifest.get("row_count") or digest.hexdigest() != manifest.get("occurrences_sha256"):
+        raise RuntimeError("Historical signal occurrence count or hash changed")
+    occurrences.sort(key=lambda event: (_clock(event["available_at"], "available_at"), event["ticker"], event["event_id"]))
+    return {"occurrences": occurrences, "authority": {
+        **manifest, "manifest_sha256": spec["manifest_sha256"],
+        "content_hash": manifest["occurrences_sha256"], "signal_stream_id": stream["signal_stream_id"],
+    }}
 
 
 def _clock(value: Any, label: str) -> datetime:
