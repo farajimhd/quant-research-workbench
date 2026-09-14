@@ -9,10 +9,20 @@ from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import patch
 
 from src.backend.historical_signal_occurrence_service import historical_source_native_signal_occurrences
-from src.backend.replay_run_service import _stream_historical_bar_derived_frames
+from src.backend.replay_run_service import _stream_historical_bar_derived_frames, _structural_recovery_projection_tickers
 
 
 class ArtifactTests(TestCase):
+    def test_dynamic_population_requires_native_session_activation(self):
+        config = dict(strategy=dict(parameters=dict(historical_hod_contract=True)),
+            run_plan=dict(activation=dict(watch_duration='session', watchlist_policy='not_required')),
+            signal_activation=dict(signal_streams=[dict(enabled=True, occurrence_source='qmd_squeeze_episode')]))
+        self.assertIsNone(_structural_recovery_projection_tickers(config, ()))
+        self.assertEqual(_structural_recovery_projection_tickers(config, ('SUGP',)), ['SUGP'])
+        config['run_plan']['activation']['watch_duration'] = 'episode'
+        with self.assertRaisesRegex(ValueError, 'selected ticker'):
+            _structural_recovery_projection_tickers(config, ())
+
     def test_complete_pinned_artifact_and_hash_drift(self):
         start = datetime(2026, 8, 21, 8, tzinfo=UTC)
         end = start + timedelta(hours=16)

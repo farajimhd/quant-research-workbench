@@ -8249,6 +8249,11 @@ def _structural_recovery_projection_tickers(
         return None
     selected = sorted({ticker.strip().upper() for ticker in tickers if ticker.strip()})
     if not selected:
+        if (configuration.get("run_plan", {}).get("activation", {}).get("watch_duration") == "session"
+                and _uses_source_native_identity_preparation(configuration, True)):
+            # The certified occurrence stream determines the computation scope;
+            # admission is still delivered only at each event's available_at.
+            return None
         raise ValueError("Structural recovery backtests require at least one selected ticker")
     return selected
 
