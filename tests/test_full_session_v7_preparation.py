@@ -3,16 +3,42 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import patch
 
 from src.backend.historical_signal_occurrence_service import historical_source_native_signal_occurrences
-from src.backend.replay_run_service import _stream_historical_bar_derived_frames, _structural_recovery_projection_tickers
+from src.backend.replay_run_service import ReplayFrameSpool, ReplayDerivedFrame, _stream_historical_bar_derived_frames, _structural_recovery_projection_tickers
 
 
 class ArtifactTests(TestCase):
+    def test_preparation_cleanup_is_indexed_and_preserves_other_streams(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'frames.sqlite3'
+            spool = ReplayFrameSpool(path)
+            at = datetime(2026, 8, 21, 8, tzinfo=UTC)
+            spool.append([ReplayDerivedFrame(as_of=at, bar={'close': 3}, indicator={}, sequence=1,
+                ticker=ticker, timeframe=timeframe)
+                for ticker, timeframe in [('AAA', '1s'), ('AAA', '5s'), ('BBB', '1s')]])
+            with closing(sqlite3.connect(path)) as connection:
+                plan = connection.execute('EXPLAIN QUERY PLAN DELETE FROM strategy_frames WHERE ticker=? AND timeframe=?',
+                    ('AAA', '1s')).fetchall()
+                self.assertTrue(any('strategy_frames_stream' in row[-1] for row in plan))
+            spool.delete_stream('AAA', '1s')
+            self.assertEqual({(row.ticker, row.timeframe) for row in spool}, {('AAA', '5s'), ('BBB', '1s')})
+            # Existing partial spools receive the index when reopened, without
+            # resetting retained data or requiring a finished replay index.
+            with closing(sqlite3.connect(path)) as connection:
+                connection.execute('DROP INDEX strategy_frames_stream')
+                connection.commit()
+            restored = ReplayFrameSpool(path, reset=False)
+            self.assertEqual(len(list(restored)), 2)
+            with closing(sqlite3.connect(path)) as connection:
+                self.assertIn('strategy_frames_stream', [row[1] for row in connection.execute('PRAGMA index_list(strategy_frames)')])
+
     def test_dynamic_population_requires_native_session_activation(self):
         config = dict(strategy=dict(parameters=dict(historical_hod_contract=True)),
             run_plan=dict(activation=dict(watch_duration='session', watchlist_policy='not_required')),

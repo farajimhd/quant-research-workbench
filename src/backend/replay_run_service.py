@@ -587,6 +587,13 @@ class ReplayFrameSpool:
                     )
                     """
                 )
+                # Retry cleanup runs during construction, before finalize()
+                # creates the chronological replay index. Without this key,
+                # every new stream rescans every previously prepared frame.
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS strategy_frames_stream "
+                    "ON strategy_frames (ticker, timeframe)"
+                )
                 connection.execute(
                     """
                     CREATE TABLE IF NOT EXISTS strategy_frame_streams (
