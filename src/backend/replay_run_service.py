@@ -2027,6 +2027,10 @@ class ReplayRunController:
                 completed=None, total=None, stop_requested=self._stop_requested)
         if getattr(self, '_finalizing', False):
             return dict(phase='finalizing', active=True, completed=None, total=None)
+        retries = list(getattr(self, '_dependency_retries', {}).values())
+        if retries and self.status not in TERMINAL_REPLAY_STATUSES:
+            return dict(phase='waiting_for_data', active=True, completed=self.processed_events,
+                total=None, dependencies=retries, elapsed_seconds=(datetime.now(UTC)-self._dependency_retry_started).total_seconds())
         preparing = not self._runtime_inputs_ready and self.status not in TERMINAL_REPLAY_STATUSES
         return dict(phase=self._preparation_stage if preparing else self.status if self.status in TERMINAL_REPLAY_STATUSES else 'playback',
             active=self.status not in TERMINAL_REPLAY_STATUSES and self.status != 'paused',
@@ -2322,6 +2326,32 @@ class ReplayRunController:
         self._subscribers.discard(queue)
 
     async def _run(self) -> None:
+        from src.backend.qmd_gateway_client import backtest_history_retries
+        if self.definition.mode != RunMode.BACKTEST:
+            return await self._run_engine()
+        loop = asyncio.get_running_loop()
+        self._dependency_retries = {}
+        active = True
+        def update(key, value):
+            if not active:
+                return
+            if value is None:
+                self._dependency_retries.pop(key, None)
+            else:
+                if not self._dependency_retries:
+                    self._dependency_retry_started = datetime.now(UTC)
+                self._dependency_retries[key] = value
+        def observe(key, value):
+            if active:
+                loop.call_soon_threadsafe(update, key, value)
+        try:
+            with backtest_history_retries(observe):
+                await self._run_engine()
+        finally:
+            active = False
+            self._dependency_retries.clear()
+
+    async def _run_engine(self) -> None:
         try:
             if self.status == "created":
                 self.status = "warming"

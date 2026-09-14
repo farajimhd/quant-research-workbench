@@ -437,3 +437,41 @@ checkpoint contains 4,380,591 events and is resumable. The initial live-page
 visual matrix captured that failure screen and was not accepted as header-layout
 validation; the valid saved-run matrix replaced it. The QMD timeout requires
 separate investigation before claiming reliable resumed execution.
+
+## Bounded historical dependency recovery
+
+Backtest engine tasks now scope read-only QMD History GET requests to three
+attempts, with two- and four-second backoff after retryable transport/service
+errors. Each attempt retains the original endpoint, parameters (including as-of)
+and timeout. Successful requests have no additional network calls or sleep.
+Retries occur inside the data request: surrounding strategy evaluation, broker
+mutation and cursor processing are not restarted. Permanent errors and exhausted
+retries still fail closed through the existing checkpoint finalization path.
+POST operations and ordinary Live, Replay and UI requests are not opted in.
+
+The scope follows asyncio worker threads and the context-aware QMD executor.
+Concurrent retry dependencies are tracked separately on the controller event
+loop and cleared after completion. Compact progress reports waiting_for_data,
+request path, attempt count and elapsed retry time. The existing progress area
+shows the ticker and attempt; Details exposes the underlying error. This is
+recovery from transient unavailability, not evidence that the original AGNC
+storage/computation latency has been resolved. In-flight requests retain their
+timeout; pause/stop remains an engine-boundary operation.
+
+Validation: 63 focused gateway/retry/checkpoint tests and 11 publication,
+financial-projection and saved-review tests passed. The controller test injects a
+threaded timeout, observes the unchanged processed-event count, then verifies
+continuation without repeating surrounding engine work. The browser regression
+checks waiting and recovery alongside evidence/paging behavior. Managed build
+passed; saved-review layout matrix captured 12/12 with zero automated objective
+issues. Runtime artifacts are under `D:/TradingML/runtimes/ui-review/dependency-retry*`.
+
+Activation: restarted QMD History and its backend/frontend dependents through
+`scripts/services.ps1`. The first coordinated stop reported a lingering backend
+child; it exited before follow-up inspection. Managed restart/start then completed
+and all three services reported ready, owned and without fingerprint drift.
+QMD retained algorithm 18 and revision qmd-derived-v58. No backtest was resumed.
+The failed run's saved selection still reports the available 4,380,591-event
+checkpoint. Failed runs are not admitted by the existing saved-review endpoint;
+post-restart browser validation uses the stopped original run instead. Resume
+remains the action for restoring execution of the failed run.

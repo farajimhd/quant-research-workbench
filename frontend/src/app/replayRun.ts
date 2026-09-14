@@ -60,7 +60,7 @@ export type CanvasReplayRun = {
   status: string;
   transport_mode?: "completed" | "created" | "failed" | "fast_forward" | "next_action" | "paused" | "play" | "ready" | "step" | "stopped" | "warming";
   runtime_ready?: boolean;
-  work_progress?: { phase: string; active: boolean; started_at?: string; elapsed_seconds?: number; completed?: number | null; total?: number | null; stop_requested?: boolean };
+  work_progress?: { dependencies?: { path: string; attempt: number; max_attempts: number; error: string }[]; phase: string; active: boolean; started_at?: string; elapsed_seconds?: number; completed?: number | null; total?: number | null; stop_requested?: boolean };
   strategy_debug_sources?: {
     signal_stream_ids: string[];
     watchlist_ids: string[];

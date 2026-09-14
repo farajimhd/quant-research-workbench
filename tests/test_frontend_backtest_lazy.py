@@ -16,6 +16,9 @@ class LazyBacktestUITests(unittest.TestCase):
         base = f'http://127.0.0.1:8000/api/trading/backtest/runs/{run_id}'
         with urlopen(base + '?compact=true') as response: run = json.load(response)
         with urlopen(base + '/canvas?symbol=AAPL&lazy=true&include_chart=false') as response: canvas = json.load(response)
+        # The running fixture must not retain a saved failure's error banner.
+        run['error'] = ''
+        canvas['run']['error'] = ''
         output = Path(os.environ['BACKTEST_REVIEW_EVIDENCE'])
         output.mkdir(parents=True, exist_ok=True)
         with sync_playwright() as pw:
@@ -116,6 +119,14 @@ class LazyBacktestUITests(unittest.TestCase):
                 progress.update(runtime_ready=True, created_at='2026-09-14T23:00:00+00:00', work_progress={'phase': 'playback', 'active': True})
                 page.wait_for_timeout(1500)
                 self.assertEqual(page.locator('[aria-label="Backtest view updates"]').count(), 0)
+                progress.update(work_progress={'phase': 'waiting_for_data', 'active': True,
+                    'elapsed_seconds': 62, 'dependencies': [{'path': '/snapshot/chart-bars/AGNC',
+                    'attempt': 2, 'max_attempts': 3, 'error': 'QMD request timed out after 60 seconds.'}]})
+                page.get_by_text('Waiting for historical data', exact=True).wait_for()
+                page.get_by_text('AGNC · attempt 2 / 3', exact=True).wait_for()
+                page.screenshot(path=str(output / 'dependency-retry.png'))
+                progress.update(work_progress={'phase': 'playback', 'active': True})
+                page.get_by_text('Backtest running', exact=True).wait_for()
                 context.close()
             finally:
                 browser.close()

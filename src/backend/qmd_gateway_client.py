@@ -4,6 +4,10 @@ import json
 import hashlib
 import math
 import os
+import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+from copy import deepcopy
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -29,6 +33,17 @@ DEFAULT_QMD_HISTORY_BASE_URL = "http://127.0.0.1:8801"
 ENRICHED_QMD_TIMEFRAMES = frozenset({"100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"})
 MACRO_QMD_TIMEFRAMES = frozenset({"1d", "1w", "1mo", "1y"})
 DEFAULT_HISTORICAL_WATCHLIST_TIMEOUT_SECONDS = 900
+_history_retry_observer = ContextVar("history_retry_observer", default=None)
+
+
+@contextmanager
+def backtest_history_retries(observer):
+    """Scope retries to engine-owned, read-only historical dependencies."""
+    token = _history_retry_observer.set(observer)
+    try:
+        yield
+    finally:
+        _history_retry_observer.reset(token)
 
 QmdProduct = Literal["chart", "compact_events", "scanner"]
 QmdAuthority = Literal["auto", "live", "history"]
@@ -538,13 +553,27 @@ def qmd_history_get_json(
     *,
     timeout: float = 3,
 ) -> Any:
-    return _qmd_service_get_json(
-        qmd_history_base_url(),
-        path,
-        params,
-        timeout=timeout,
-        service_label="QMD History",
-    )
+    observer = _history_retry_observer.get()
+    base_url = qmd_history_base_url()
+    frozen_params = deepcopy(params) if observer is not None else params
+    request_key = object()
+    retrying = False
+    try:
+        for attempt in range(1, 4 if observer is not None else 2):
+            try:
+                return _qmd_service_get_json(base_url, path, frozen_params,
+                    timeout=timeout, service_label="QMD History")
+            except QmdServiceError as exc:
+                if observer is None or not exc.retryable or attempt == 3:
+                    raise
+                retrying = True
+                delay = 2 ** attempt
+                observer(request_key, dict(path=path, attempt=attempt + 1,
+                    max_attempts=3, retry_delay_seconds=delay, error=str(exc)))
+                time.sleep(delay)
+    finally:
+        if retrying:
+            observer(request_key, None)
 
 
 def qmd_history_post_json(
