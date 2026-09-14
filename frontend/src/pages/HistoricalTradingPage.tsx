@@ -443,6 +443,14 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
 
   if (run) {
     const terminal = ["completed", "stopped", "failed"].includes(run.status);
+    const warming = run.status === "warming";
+    const preparation = run.preparation_progress;
+    const progressKnown = !warming || Boolean(preparation && preparation.total > 0);
+    const phaseProgress = warming
+      ? preparation && preparation.total > 0 ? preparation.completed / preparation.total : 0
+      : run.progress;
+    const progressPercent = Math.round(Math.max(0, Math.min(1, phaseProgress || 0)) * 100);
+    const progressLabel = warming ? "Backtest warm-up" : "Backtest";
     const runScope = run.tickers?.length ? run.tickers.join(", ") : "Configured strategy universe";
     return <CanvasWorkspaceSurface
       canvasId="main"
@@ -451,11 +459,14 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
         {batchRuns.length > 1 ? <TradingModeSelectField label="Batch run" help="Each ticker has its own portfolio, time window and V7 book." value={run.run_id}
           options={batchRuns.map(item => ({value:item.run_id,label:(item.tickers ?? []).join(', ')}))}
           onChange={id => { setRun(null); setSelectedRunId(id); persistSelectedRun(id); }} /> : null}
-        <div className="historical-backtest-progress-actions"><button className="button secondary compact" aria-haspopup="dialog" onClick={() => setDetailsOpen(true)} type="button">Details{run.level_book_coverage?.excluded_ticker_count ? ` · ${run.level_book_coverage.excluded_ticker_count} excluded` : ""}</button><button aria-label="Return to Backtest setup" className="button secondary compact" onClick={returnToSetup} type="button"><ArrowLeft size={14} /> Setup</button>{!terminal ? <><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void commandRun(run.status === "paused" ? "play" : "pause")} type="button">{run.status === "paused" ? <Play size={14} /> : <Pause size={14} />}{run.status === "paused" ? "Resume" : "Pause"}</button><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void stopRun()} type="button"><Square size={14} /> Stop</button></> : null}</div>
-        <div className="historical-backtest-progress-heading"><strong>Backtest {run.status.replaceAll("_", " ")}</strong><b>{Math.round(run.progress * 100)}%</b></div>
+        <div className="historical-backtest-progress-actions"><span className="historical-backtest-engine" title="Accelerated causal engine"><Zap aria-hidden="true" size={11} /><span>Accelerated causal engine</span></span><button className="button secondary compact" aria-haspopup="dialog" onClick={() => setDetailsOpen(true)} type="button">Details{run.level_book_coverage?.excluded_ticker_count ? ` · ${run.level_book_coverage.excluded_ticker_count} excluded` : ""}</button><button aria-label="Return to Backtest setup" className="button secondary compact" onClick={returnToSetup} type="button"><ArrowLeft size={14} /> Setup</button>{!terminal ? <><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void commandRun(run.status === "paused" ? "play" : "pause")} type="button">{run.status === "paused" ? <Play size={14} /> : <Pause size={14} />}{run.status === "paused" ? "Resume" : "Pause"}</button><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void stopRun()} type="button"><Square size={14} /> Stop</button></> : null}</div>
+        <div className="historical-backtest-progress-heading"><strong>Backtest {run.status.replaceAll("_", " ")}</strong><b>{progressKnown ? `${progressPercent}%` : "Preparing"}</b></div>
 
-        <div aria-label={`Backtest ${Math.round(run.progress * 100)} percent complete`} aria-valuemax={100} aria-valuemin={0} aria-valuenow={Math.round(run.progress * 100)} className="historical-backtest-progress-track" role="progressbar"><span style={{ width: `${Math.max(0, Math.min(100, run.progress * 100))}%` }} /></div>
-        <div className="historical-backtest-progress-facts"><span>{new Intl.NumberFormat("en-US").format(run.processed_events || 0)} exact events</span><span>Through {formatReplayTime(run.current_time)} ET</span><span>{runScope}</span><span><Zap aria-hidden="true" size={11} /> Accelerated causal engine</span></div>
+        <div aria-label={`${progressLabel} progress`} aria-valuemax={100} aria-valuemin={0} aria-valuenow={progressKnown ? progressPercent : undefined} aria-valuetext={warming && preparation?.total ? `${preparation.completed.toLocaleString()} of ${preparation.total.toLocaleString()} prepared · ${progressPercent}%` : progressKnown ? `${progressPercent}%` : "Preparing"} className="historical-backtest-progress-track" role="progressbar"><span style={{ width: `${progressPercent}%` }} /></div>
+        <div className="historical-backtest-progress-facts">{warming ? <>
+          <span>{run.preparation_stage === "strategy_frames" ? "Strategy streams" : run.preparation_stage?.replaceAll("_", " ") || "Preparing"}</span>
+          <span>{progressKnown && preparation ? `${preparation.completed.toLocaleString()} / ${preparation.total.toLocaleString()} prepared` : "Waiting for preparation totals"}</span>
+        </> : <><span>{new Intl.NumberFormat("en-US").format(run.processed_events || 0)} exact events</span><span>Through {formatReplayTime(run.current_time)} ET</span><span>{runScope}</span></>}</div>
         {detailsOpen ? <Modal title="Backtest preparation" onClose={() => setDetailsOpen(false)} closeOnBackdrop className="backtest-preparation-modal">
           <div className="backtest-preparation-content">
             <dl><div><dt>Stage</dt><dd>{run.preparation_stage?.replaceAll('_', ' ') || run.status}</dd></div>

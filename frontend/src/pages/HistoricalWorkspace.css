@@ -2113,3 +2113,8 @@
   }
 }
 
+
+.historical-backtest-engine { display: inline-flex; align-items: center; gap: 3px; margin-right: auto; min-width: 0; }
+
+.historical-backtest-engine > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.historical-backtest-engine > svg { flex-shrink: 0; }
