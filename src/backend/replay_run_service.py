@@ -6856,15 +6856,15 @@ class ReplayRunService:
         return await asyncio.shield(task)
 
     async def _review_saved(self, run_id: str) -> ReplayRunController:
-        """Open completed or stopped Backtest evidence without resuming execution."""
+        """Open terminal Backtest evidence without resuming execution."""
 
         normalized = str(run_id or "").strip()
         if not re.fullmatch(r"[0-9a-fA-F-]{36}", normalized):
             raise KeyError(run_id)
         resident = self._runs.get(normalized)
         if resident is not None:
-            if resident.status not in {"completed", "stopped"}:
-                raise ValueError("Only completed or stopped Backtests can be opened for review")
+            if resident.status not in {"completed", "stopped", "failed"}:
+                raise ValueError("Only terminal Backtests can be opened for review")
             return resident
         run_dir = (self.runtime_root / normalized).resolve()
         if self.runtime_root != run_dir and self.runtime_root not in run_dir.parents:

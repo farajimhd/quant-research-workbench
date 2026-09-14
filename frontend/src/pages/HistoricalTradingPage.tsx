@@ -1,5 +1,4 @@
 import { Modal } from "../app/components/Modal";
-import { BacktestRecoveryFailure } from "../app/components/BacktestRecoveryFailure";
 import { BacktestRecoveryState } from "../app/components/BacktestRecoveryState";
 import { BacktestRunHistory } from "../app/components/BacktestRunHistory";
 import { ArrowLeft, CheckCircle2, CircleStop, Gauge, LoaderCircle, Pause, Play, RefreshCcw, Square, TriangleAlert, X, Zap } from "lucide-react";
@@ -7,7 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "../api/client";
 import "./HistoricalWorkspace.css";
-import { FailedBacktestError, recoverBacktest } from "../app/backtestRecovery";
+import { recoverBacktest } from "../app/backtestRecovery";
 import { TradingLaunchEvidence, TradingModeLaunch, TradingModeSelectField } from "../app/components/TradingModeLaunch";
 import { usePollingTask } from "../app/hooks/usePollingTask";
 import type { CanvasReplayRun } from "../app/replayRun";
@@ -161,7 +160,6 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [creating, setCreating] = useState(false);
   const [run, setRun] = useState<BacktestRun | null>(null);
   const [restoreError, setRestoreError] = useState("");
-  const [restoreFailed, setRestoreFailed] = useState(false);
   const [restoreAttempt, setRestoreAttempt] = useState(0);
   const [results, setResults] = useState<BacktestResults | null>(null);
   const [comparison, setComparison] = useState<BacktestComparison | null>(null);
@@ -199,12 +197,10 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     if (run?.run_id === selectedRunId) return;
     const controller = new AbortController();
     setRestoreError("");
-    setRestoreFailed(false);
     void recoverBacktest<BacktestRun>(selectedRunId, controller.signal)
       .then((value) => { if (!controller.signal.aborted) setRun(value); })
       .catch((reason) => {
         if (!controller.signal.aborted) {
-          setRestoreFailed(reason instanceof FailedBacktestError);
           setRestoreError(reason instanceof Error ? reason.message : String(reason));
         }
       });
@@ -492,7 +488,6 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     />;
   }
 
-  if (selectedRunId && restoreFailed) return <div className="canvas-config-page"><BacktestRecoveryFailure error={restoreError} onSetup={returnToSetup} /></div>;
   if (selectedRunId) return <BacktestRecoveryState error={restoreError}
     onRetry={() => { setRestoreError(""); setRestoreAttempt(value => value + 1); }} onSetup={returnToSetup} />;
 

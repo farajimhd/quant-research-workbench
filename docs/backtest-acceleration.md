@@ -472,6 +472,25 @@ child; it exited before follow-up inspection. Managed restart/start then complet
 and all three services reported ready, owned and without fingerprint drift.
 QMD retained algorithm 18 and revision qmd-derived-v58. No backtest was resumed.
 The failed run's saved selection still reports the available 4,380,591-event
-checkpoint. Failed runs are not admitted by the existing saved-review endpoint;
-post-restart browser validation uses the stopped original run instead. Resume
-remains the action for restoring execution of the failed run.
+checkpoint. At that activation, failed runs were not admitted by the saved-review
+endpoint; browser validation used the stopped original run. The correction below
+removes that limitation. Resume remains the action for restoring execution.
+
+## Failed-run evidence review
+
+Failed terminal runs now open through the same read-only review loader as stopped
+and completed runs. Resident and saved admission accept failed status; checkpoint
+completeness, account/configuration identity, journal fences and financial checks
+remain unchanged. Frontend recovery no longer treats failed execution as failed
+review. It requests review directly when a run is absent from memory, avoiding an
+unnecessary history-list read. The obsolete blocking failure page is removed from
+Backtest and chart focus. The journal retains the failure message and Resume.
+
+Five backend review tests passed, including financial parity and unchanged journal
+bytes for all three terminal statuses without execution restoration. Browser
+coverage passed for resident/saved failed runs across Backtest and chart focus
+(four subtests), forbidding execution mutations. Managed build passed; the actual
+failed-run visual matrix captured 12/12 with zero automated objective issues under
+`D:/TradingML/runtimes/ui-review/failed-backtest-review`. After backend/frontend
+restart, the real failed 8c5022c3 run returned review_only=true, 4,380,591 events
+and resume_supported=true. No backtest was resumed.

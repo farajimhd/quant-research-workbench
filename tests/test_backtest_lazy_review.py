@@ -11,7 +11,8 @@ from tests.test_replay_run_service import approved_configuration, NEW_YORK
 from tests.test_trading_runtime import quote
 
 
-def test_review_financial_parity_and_fenced_pages_without_execution_restore(tmp_path):
+@pytest.mark.parametrize('status', ['stopped', 'completed', 'failed'])
+def test_review_financial_parity_and_fenced_pages_without_execution_restore(tmp_path, status):
     async def check():
         from datetime import datetime
         from src.trading_runtime.ibkr_schema import OrderRequest
@@ -29,7 +30,8 @@ def test_review_financial_parity_and_fenced_pages_without_execution_restore(tmp_
         await broker.on_market_event(replace(quote(bid=101, ask=102), ts=at + timedelta(seconds=1)))
         await source._runtime._canonical_session.reconcile()
         source.current_time = at + timedelta(seconds=1)
-        source.status = 'stopped'
+        source.status = status
+        source.error = 'QMD History timeout' if status == 'failed' else ''
         source._runtime_finished = True
         source.processed_events = 2
         source._source_cursor = {'market': {'ticker': 'AAPL', 'sequence': 2, 'ts': source.current_time.isoformat()}}
@@ -44,7 +46,11 @@ def test_review_financial_parity_and_fenced_pages_without_execution_restore(tmp_
         original = (source.run_dir / 'journal.sqlite3').read_bytes()
         with (patch.object(TradingJournal, 'load_checkpoint', side_effect=AssertionError('Execution checkpoint loaded')),
               patch.object(ReplayRunController, '_initialize_runtime', side_effect=AssertionError('Execution runtime restored'))):
-            review = await ReplayRunService(runtime_root=tmp_path).review_saved(source.run_id)
+            service = ReplayRunService(runtime_root=tmp_path)
+            review = await service.review_saved(source.run_id)
+            assert await service.review_saved(source.run_id) is review
+            assert review.status == status
+            assert review.snapshot()["error"] == source.error
             try:
                 actual = (await review.canvas_payload('AAPL', include_chart=False))['trading']
                 def normalized(value):

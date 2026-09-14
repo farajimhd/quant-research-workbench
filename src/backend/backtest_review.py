@@ -28,12 +28,12 @@ class SavedBacktestReview:
         from src.backend.replay_run_service import _durable_run_selection
         self.run_dir, self.run_id = run_dir, run_dir.name
         selection = _durable_run_selection(run_dir)
-        if not selection or selection.get('status') not in {'completed', 'stopped'}:
-            raise ValueError('Only completed or stopped Backtests can be opened for review')
+        if not selection or selection.get('status') not in {'completed', 'stopped', 'failed'}:
+            raise ValueError('Only terminal Backtests can be opened for review')
         definition, accounts, sources, status = _json_fields(run_dir / 'manifest.json',
             '$.definition', '$.run.account_ids', '$.run.strategy_debug_sources', '$.run.status')
-        if status not in {'completed', 'stopped'}:
-            raise ValueError('Only completed or stopped Backtests can be opened for review')
+        if status not in {'completed', 'stopped', 'failed'}:
+            raise ValueError('Only terminal Backtests can be opened for review')
         if definition.get('mode') != 'backtest':
             raise ValueError('Saved-run review accepts Backtest runs only')
         self._run = {**definition, **selection, 'account_ids': accounts or [],

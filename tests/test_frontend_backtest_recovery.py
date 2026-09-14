@@ -93,13 +93,14 @@ class BacktestRecoveryBrowserTests(unittest.TestCase):
             finally:
                 browser.close()
 
-    def test_failed_run_reports_cause_without_review_or_retry(self) -> None:
+    def test_failed_run_opens_review_without_execution_mutations(self) -> None:
         from playwright.sync_api import sync_playwright
 
         base = os.environ.get("BACKTEST_RECOVERY_URL", "http://127.0.0.1:5173").rstrip("/")
         run_id = os.environ["BACKTEST_RECOVERY_RUN_ID"]
         path = f"/api/trading/backtest/runs/{run_id}"
-        failure = {"run_id": run_id, "status": "failed", "error": "Canonical 1s warm-up required"}
+        with urlopen(base + path + '?compact=true', timeout=30) as response:
+            failure = {**json.load(response), "status": "failed", "error": "Canonical 1s warm-up required"}
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
             try:
@@ -110,9 +111,12 @@ class BacktestRecoveryBrowserTests(unittest.TestCase):
                             mutations = []
                             def handle(route):
                                 url = route.request.url.split("?")[0]
-                                if route.request.method != "GET":
+                                if url.endswith(path + '/review'):
+                                    mutations.append('review')
+                                    route.fulfill(json=failure)
+                                elif route.request.method != "GET":
                                     mutations.append(url)
-                                    route.fulfill(status=409, json={"detail": "No mutations allowed"})
+                                    route.fulfill(status=409, json={"detail": "No execution mutations allowed"})
                                 elif url.endswith(path):
                                     route.fulfill(status=200 if resident else 404, json=failure if resident else {"detail": "Not resident"})
                                 elif url.endswith("/api/trading/backtest/runs"):
@@ -123,14 +127,12 @@ class BacktestRecoveryBrowserTests(unittest.TestCase):
                             page = context.new_page()
                             key = "backtest_run" if route_name == "backtest-trading" else "replay_run"
                             page.goto(f"{base}/?{key}={run_id}&historical_mode=backtest#{route_name}")
-                            page.get_by_text("Backtest failed", exact=True).wait_for()
-                            self.assertEqual(page.get_by_role("button", name="Retry connection").count(), 0)
-                            page.get_by_text("Original failure details", exact=True).click()
-                            page.get_by_text("Canonical 1s warm-up required", exact=False).wait_for()
-                            page.get_by_role("button", name="Return to setup", exact=True).click()
-                            page.wait_for_function("!new URL(location.href).searchParams.has(\"backtest_run\") && !new URL(location.href).searchParams.has(\"replay_run\")")
-                            self.assertIsNone(page.evaluate("sessionStorage.getItem('backtest.active-run.v1')"))
-                            self.assertEqual(mutations, [])
+                            page.locator('.trading-workspace-canvas').wait_for()
+                            self.assertEqual(page.get_by_text('This run cannot be reopened for review.', exact=False).count(), 0)
+                            if route_name == 'backtest-trading':
+                                page.get_by_role('button', name='Resume from checkpoint', exact=True).wait_for()
+                            self.assertTrue(all(item == 'review' for item in mutations))
+                            self.assertEqual(bool(mutations), not resident)
                             context.close()
             finally:
                 browser.close()
