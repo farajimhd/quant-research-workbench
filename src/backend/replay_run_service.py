@@ -127,7 +127,7 @@ RESTART_CHECKPOINT_SCHEMA_VERSION = 3
 # artifact can carry zero spread when built from trade-only persisted bars, so
 # current execution quality continues to prefer the causal raw quote stream.
 # 7 preserves causal estimated-LULD inputs; older prepared frames omit them.
-PREPARED_FRAME_CACHE_SCHEMA_VERSION = 8
+PREPARED_FRAME_CACHE_SCHEMA_VERSION = 9
 _PREPARED_FRAME_CACHE_LOCKS: WeakValueDictionary[str, asyncio.Lock] = (
     WeakValueDictionary()
 )
@@ -8630,12 +8630,17 @@ async def _stream_historical_bar_derived_frames(
 
     # Chart products are bounded responses, not a full-session streaming API.
     # At 100 ms a 16-hour session has up to 576,000 bars. Never accept its last
-    # 50,000 bars as a complete stream. Chunk output and retain each authority.
-    if end - start > timedelta(minutes=30):
+    # 50,000 bars as a complete stream. Budget each request by candle count;
+    # repeating 32 warm-ups for a full day of 5s bars is unnecessary.
+    resolution_seconds = {"100ms": 0.1, "1s": 1, "5s": 5, "10s": 10,
+                          "30s": 30, "1m": 60, "5m": 300}.get(timeframe)
+    chunk_span = (timedelta(seconds=40_000 * resolution_seconds)
+                  if resolution_seconds is not None else timedelta(minutes=30))
+    if end - start > chunk_span:
         chunks: list[dict[str, Any]] = []
         cursor = start
         while cursor < end:
-            chunk_end = min(cursor + timedelta(minutes=30), end)
+            chunk_end = min(cursor + chunk_span, end)
             await _stream_historical_bar_derived_frames(
                 ticker=ticker, timeframe=timeframe, start=cursor, end=chunk_end,
                 frame_sink=frame_sink,

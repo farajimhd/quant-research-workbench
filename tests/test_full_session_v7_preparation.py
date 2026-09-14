@@ -70,11 +70,19 @@ class FullDayBarTests(IsolatedAsyncioTestCase):
         with patch('src.backend.replay_run_service.qmd_product_request', side_effect=fetch):
             await _stream_historical_bar_derived_frames(ticker='ABC', timeframe='100ms', start=start, end=end,
                 frame_sink=sink, authority_sink=lambda key, value: authorities.append(value), indicator_columns=('close',))
-        self.assertEqual(len(requests), 32)
-        self.assertEqual(len(received), 32)
+        self.assertEqual(len(requests), 15)
+        self.assertEqual(len(received), 15)
         self.assertEqual(datetime.fromisoformat(requests[0].start), start)
         self.assertEqual(datetime.fromisoformat(requests[-1].end), end)
         for previous, current in zip(requests, requests[1:]):
             self.assertEqual(previous.end, current.start)
         self.assertTrue(authorities[0]['complete_for_history'])
-        self.assertEqual(len(authorities[0]['chunks']), 32)
+        self.assertEqual(len(authorities[0]['chunks']), 15)
+        for timeframe, expected in [('1s', 2), ('5s', 1)]:
+            requests.clear()
+            with patch('src.backend.replay_run_service.qmd_product_request', side_effect=fetch):
+                await _stream_historical_bar_derived_frames(ticker='ABC', timeframe=timeframe, start=start, end=end,
+                    frame_sink=sink, authority_sink=None, indicator_columns=('close',))
+            self.assertEqual(len(requests), expected)
+            self.assertEqual(datetime.fromisoformat(requests[0].start), start)
+            self.assertEqual(datetime.fromisoformat(requests[-1].end), end)

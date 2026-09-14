@@ -120,6 +120,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=['plan', 'signals', 'candidate', 'run', 'status'])
     parser.add_argument('--date', type=date.fromisoformat, default=date(2026, 8, 21))
+    parser.add_argument('--new-run', action='store_true', help='Start a successor only after the previous run is terminal; preserve its ID')
     parser.add_argument('--runtime', type=Path, default=Path('D:/TradingML/runtimes/research/v7-full-session-20260821-stocks'))
     parser.add_argument('--binary', type=Path, default=Path('D:/TradingML/runtimes/qmd_history_gateway/cargo-target/release/historical_squeeze_replay.exe'))
     args = parser.parse_args()
@@ -182,6 +183,16 @@ def main():
         print(f"Candidate {state['candidate_revision']} | {state['admitted_tickers']:,} admitted stocks", flush=True)
         return
     api = 'http://127.0.0.1:8000/api/trading/backtest/runs'
+    if args.new_run:
+        if args.action != 'run': raise ValueError('--new-run is only valid for run')
+        if state.get('run_id'):
+            prior = requests.get(f"{api}/{state['run_id']}?compact=true", timeout=30)
+            prior.raise_for_status()
+            if prior.json()['status'] not in {'completed', 'failed', 'stopped', 'cancelled'}:
+                raise ValueError('Previous run is still active; stop it explicitly before starting a successor')
+            state.setdefault('prior_runs', []).append(state['run_id'])
+            state.update(run_id=None, stage='candidate_ready')
+            save(root / 'state.json', state)
     if args.action == 'run' and not state['run_id']:
         if state.get('launching'): raise RuntimeError('Prior launch outcome uncertain; reconcile API runs before retry')
         if not state.get('candidate_id'): raise ValueError('Prepare and validate the signal artifact and candidate first')
@@ -212,7 +223,8 @@ def main():
         save(root / 'latest-run.json', run)
         state.update(stage=run['status'], current_time=run.get('current_time'), progress=run.get('progress'), error=run.get('error'))
         save(root / 'state.json', state)
-        print(f"{run['status']} | {run.get('current_time') or 'preparing'} | replay {100 * (run.get('progress') or 0):.1f}% | {run.get('preparation_stage') or ''}", flush=True)
+        preparation = run.get('preparation_progress') or {}
+        print(f"{run['status']} | {run.get('current_time') or 'preparing'} | replay {100 * (run.get('progress') or 0):.1f}% | {run.get('preparation_stage') or ''} {preparation.get('completed', 0)}/{preparation.get('total', 0)}", flush=True)
         if run['status'] in {'completed', 'failed', 'stopped', 'cancelled'} or args.action == 'status':
             if run.get('error'): print(run['error'], flush=True)
             return
