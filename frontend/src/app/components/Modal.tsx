@@ -1,3 +1,4 @@
+import "./Modal.css";
 import { useEffect, useId, useRef, type MouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";

@@ -1341,7 +1341,7 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
             : <WatchUniverseContainer asOf={new Date(chartCutoffMs).toISOString()} live={liveMode} onSettingsChange={(change) => updateSettings((state) => ({ ...state, watchlist: { ...state.watchlist, ...(typeof change === "function" ? change(state.watchlist) : change) } }))} onTickerSelect={onTickerWorkspaceOpen} runtime={replayWatchlistRuntime ?? scannerSnapshot?.watchlist_runtime ?? null} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.watchlist} />
       : definition.id === "strategy_activity"
         ? <StrategyActivityContainer loadAllHistory={runtimeMode === "backtest" ? isTerminalReplayStatus(preview?.run?.status ?? "") : runtimeMode === "backtest_debug" || (readOnly && Boolean(signalStreamRunId))} asOf={new Date(chartCutoffMs).toISOString()} focusSequence={strategyActivityFocusSequence} historicalPage={signalStreamRunId ? preview?.trading.strategy_activity_page : undefined} historicalRows={signalStreamRunId ? preview?.trading.strategy_activity ?? [] : undefined} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, strategy_activity: { ...state.strategy_activity, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} runId={signalStreamRunId} settings={settings.strategy_activity} />
-      : loading && !preview
+      : loading && !preview && definition.id !== "performance_journal"
         ? <LoadingState fill label={`Loading ${definition.title.toLowerCase()}`} />
         : renderPreview(definition.id, preview, settings, linkGroup, onLinkContextChange, onTickerWorkspaceOpen)}</div>
   </div>;

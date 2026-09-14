@@ -1,3 +1,4 @@
+import { Modal } from "../app/components/Modal";
 import { BacktestRecoveryFailure } from "../app/components/BacktestRecoveryFailure";
 import { ArrowLeft, CheckCircle2, CircleStop, Gauge, Pause, Play, RefreshCcw, Square, TriangleAlert, X, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -120,6 +121,7 @@ function persistSelectedRun(runId: string) {
 }
 
 export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState(readSelectedRun);
   const [sessionDate, setSessionDate] = useState(DEFAULT_BACKTEST_DATE);
   const [tickerPreset, setTickerPreset] = useState<BacktestTickerPreset>('SUGP');
@@ -449,15 +451,22 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
         {batchRuns.length > 1 ? <TradingModeSelectField label="Batch run" help="Each ticker has its own portfolio, time window and V7 book." value={run.run_id}
           options={batchRuns.map(item => ({value:item.run_id,label:(item.tickers ?? []).join(', ')}))}
           onChange={id => { setRun(null); setSelectedRunId(id); persistSelectedRun(id); }} /> : null}
-        <div className="historical-backtest-progress-actions"><button aria-label="Return to Backtest setup" className="button secondary compact" onClick={returnToSetup} type="button"><ArrowLeft size={14} /> Setup</button>{!terminal ? <><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void commandRun(run.status === "paused" ? "play" : "pause")} type="button">{run.status === "paused" ? <Play size={14} /> : <Pause size={14} />}{run.status === "paused" ? "Resume" : "Pause"}</button><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void stopRun()} type="button"><Square size={14} /> Stop</button></> : null}</div>
+        <div className="historical-backtest-progress-actions"><button className="button secondary compact" aria-haspopup="dialog" onClick={() => setDetailsOpen(true)} type="button">Details{run.level_book_coverage?.excluded_ticker_count ? ` · ${run.level_book_coverage.excluded_ticker_count} excluded` : ""}</button><button aria-label="Return to Backtest setup" className="button secondary compact" onClick={returnToSetup} type="button"><ArrowLeft size={14} /> Setup</button>{!terminal ? <><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void commandRun(run.status === "paused" ? "play" : "pause")} type="button">{run.status === "paused" ? <Play size={14} /> : <Pause size={14} />}{run.status === "paused" ? "Resume" : "Pause"}</button><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void stopRun()} type="button"><Square size={14} /> Stop</button></> : null}</div>
         <div className="historical-backtest-progress-heading"><strong>Backtest {run.status.replaceAll("_", " ")}</strong><b>{Math.round(run.progress * 100)}%</b></div>
-        {run.status === 'warming' ? <div role="status" className="configuration-help">{run.preparation_stage?.replaceAll('_', ' ') || 'Preparing'}{run.preparation_progress?.total ? ` · ${run.preparation_progress.completed.toLocaleString()} / ${run.preparation_progress.total.toLocaleString()}` : ''}</div> : null}
+
         <div aria-label={`Backtest ${Math.round(run.progress * 100)} percent complete`} aria-valuemax={100} aria-valuemin={0} aria-valuenow={Math.round(run.progress * 100)} className="historical-backtest-progress-track" role="progressbar"><span style={{ width: `${Math.max(0, Math.min(100, run.progress * 100))}%` }} /></div>
         <div className="historical-backtest-progress-facts"><span>{new Intl.NumberFormat("en-US").format(run.processed_events || 0)} exact events</span><span>Through {formatReplayTime(run.current_time)} ET</span><span>{runScope}</span><span><Zap aria-hidden="true" size={11} /> Accelerated causal engine</span></div>
-        {run.level_book_coverage && run.level_book_coverage.excluded_ticker_count > 0 ? <details className="configuration-help">
-          <summary>{run.level_book_coverage.excluded_ticker_count} tickers excluded by V7 coverage · {run.level_book_coverage.eligible_ticker_count} eligible</summary>
-          {run.level_book_coverage.excluded.map(row => <p key={`${row.ticker}:${row.session}`}><strong>{row.ticker}</strong> · {row.session} · {row.reason}</p>)}
-        </details> : null}
+        {detailsOpen ? <Modal title="Backtest preparation" onClose={() => setDetailsOpen(false)} closeOnBackdrop className="backtest-preparation-modal">
+          <div className="backtest-preparation-content">
+            <dl><div><dt>Stage</dt><dd>{run.preparation_stage?.replaceAll('_', ' ') || run.status}</dd></div>
+              <div><dt>Prepared streams</dt><dd>{run.preparation_progress?.completed.toLocaleString() ?? '—'} / {run.preparation_progress?.total.toLocaleString() ?? '—'}</dd></div>
+              <div><dt>Eligible tickers</dt><dd>{run.level_book_coverage?.eligible_ticker_count.toLocaleString() ?? '—'}</dd></div></dl>
+            <h3>Excluded tickers · {run.level_book_coverage?.excluded_ticker_count ?? 0}</h3>
+            {run.level_book_coverage?.excluded.length ? <div className="backtest-exclusion-table"><table><thead><tr><th>Ticker</th><th>Session</th><th>Reason</th></tr></thead><tbody>
+              {run.level_book_coverage.excluded.map(row => <tr key={`${row.ticker}:${row.session}`}><td>{row.ticker}</td><td>{row.session}</td><td>{row.reason}</td></tr>)}
+            </tbody></table></div> : <p>No exclusions reported.</p>}
+          </div>
+        </Modal> : null}
         {error ? <div className="canvas-inline-error" role="alert">{error}</div> : null}
       </div>}
       replayRun={run}

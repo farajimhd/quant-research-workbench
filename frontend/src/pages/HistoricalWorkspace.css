@@ -1,5 +1,54 @@
 /* Replay and Backtest setup */
 
+.historical-canvas-run-state.historical-backtest-progress {
+  min-width: 0;
+  max-width: 100%;
+}
+.historical-backtest-progress-actions > button { flex-shrink: 0; white-space: nowrap; }
+@media (max-width: 1500px) {
+  .canvas-config-toolbar:has(.historical-backtest-progress) .canvas-clock-zones > span:nth-child(n + 2),
+  .canvas-mode-context-slot:has(.historical-backtest-progress) .canvas-performance-strip {
+    display: none;
+  }
+  .canvas-mode-context-slot > .historical-backtest-progress { width: 100%; }
+}
+.historical-backtest-progress .historical-backtest-progress-facts {
+  flex-wrap: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.historical-backtest-progress-facts > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.backtest-preparation-modal {
+  width: min(640px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+}
+.backtest-preparation-content {
+  padding: 16px;
+  font-family: var(--font-body);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.backtest-preparation-content dl {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0 0 20px;
+}
+.backtest-preparation-content dt { color: var(--muted-foreground); }
+.backtest-preparation-content dd { margin: 4px 0 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+.backtest-preparation-content h3 { font-size: 12px; margin: 0 0 8px; }
+.backtest-exclusion-table { overflow: auto; }
+.backtest-exclusion-table table { width: 100%; border-collapse: collapse; text-align: left; }
+.backtest-exclusion-table :is(th, td) { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.backtest-exclusion-table th { color: var(--muted-foreground); font-weight: 500; }
+.backtest-exclusion-table td:last-child { overflow-wrap: anywhere; }
+
 .replay-setup-page {
   display: grid;
   gap: 18px;
