@@ -156,8 +156,10 @@ def historical(level, session):
 
 def band_levels(rows):
     """Recover the original V6 bands from the shared point-price projection."""
-    return [dict(r,lower=r.get('band_lower',r['lower']),upper=r.get('band_upper',r['upper']),
-        strategy_level_contract=CONTRACT) for r in rows]
+    from src.market_engine.immutable_evidence import FrozenDict
+    def project(r):
+        return dict(r,lower=r.get('band_lower',r['lower']),upper=r.get('band_upper',r['upper']),strategy_level_contract=CONTRACT)
+    return [r.derived('hod_band',lambda:project(r)) if isinstance(r,FrozenDict) else project(r) for r in rows]
 
 
 def selected_levels(o, s, before):
@@ -169,14 +171,24 @@ def selected_levels(o, s, before):
         if (raw.get('book_version') not in BOOK_VERSIONS or raw.get('lifecycle') not in ('active',None)
                 or raw.get('confirmed_at_ms', float('inf')) > before*1000):
             continue
-        if (not raw.get('unified_level_id') or any(type(raw.get(k)) not in (int,float)
+        from src.market_engine.immutable_evidence import FrozenDict, freeze
+        def validate():
+            if (not raw.get('unified_level_id') or any(type(raw.get(k)) not in (int,float)
                 or not isfinite(raw[k]) for k in ('lower','price','upper','confirmed_at_ms','oldest_member_confirmed_at_ms'))
                 or not 0 < raw['lower'] <= raw['price'] <= raw['upper']
                 or not 0 < raw['oldest_member_confirmed_at_ms'] <= raw['confirmed_at_ms']):
-            raise ValueError('Historical HOD requires valid V7 bands and historical member provenance')
-        result.append(dict(deepcopy(raw),v7_all_origins=bool(s.get('v7_zone_enabled')),
-            v7_encounter_eligible=bool(s.get('v7_encounters_enabled'))))
-    return result
+                raise ValueError('Historical HOD requires valid V7 bands and historical member provenance')
+            return True
+        if isinstance(raw,FrozenDict):raw.derived('hod_valid',validate)
+        else:validate()
+        # Only the prepared producer publishes sealed fit evidence. Preserve
+        # ordinary mutable-input behavior for other callers.
+        sealed=isinstance(raw.get('fit'),FrozenDict)
+        options=(bool(s.get('v7_zone_enabled')),bool(s.get('v7_encounters_enabled')))
+        def select():return dict(raw if sealed else deepcopy(raw),v7_all_origins=options[0],v7_encounter_eligible=options[1])
+        result.append(raw.derived(('hod_selected',*options),select) if isinstance(raw,FrozenDict)
+            else freeze(select()) if sealed else select())
+    return freeze(result) if result and all(isinstance(row,FrozenDict) for row in result) else result
 
 
 def resistance(level):

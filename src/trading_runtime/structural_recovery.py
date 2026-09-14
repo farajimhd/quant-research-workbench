@@ -95,10 +95,10 @@ class MarketStream:
         self.saved = dict(session=session, book=deepcopy(book), row=row, reset=reset)
         return self.saved
 
-    def checkpoint(self):
+    def checkpoint(self, *, compact=False):
         saved = deepcopy(self.saved)
         if self.engine is not None:
-            saved['checkpoint'] = checkpoint(self.engine)
+            saved['checkpoint'] = checkpoint(self.engine,compact=compact)
         elif self._checkpoint is not None:
             saved['checkpoint'] = deepcopy(self._checkpoint)
         return saved

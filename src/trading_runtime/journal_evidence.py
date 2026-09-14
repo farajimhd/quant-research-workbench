@@ -1,6 +1,8 @@
 """Lossless content-addressed journal evidence and a small read projection."""
 from hashlib import sha256
 import json
+from src.market_engine.immutable_evidence import FrozenDict, FrozenList
+from .journal_storage import unpack,unpack_value
 
 REFERENCE = '$journal_evidence_sha256'
 CHART_LEVEL_FIELDS = frozenset({'unified_level_id', 'side', 'price', 'lower', 'upper',
@@ -14,35 +16,53 @@ EVIDENCE_KEYS = frozenset({
 })
 
 
-def encode_evidence(value, dumps, evidence):
+FROZEN_EVIDENCE_KEYS = frozenset({'rows','prior_rows','global_levels','structural_transition_levels','immutable_json','items','parameters'})
+
+
+def encode_evidence(value, dumps, evidence, memo=None):
+    memo={} if memo is None else memo
+    sealed=isinstance(value,(FrozenDict,FrozenList))
+    if sealed and id(value) in memo:
+        return memo[id(value)]
     if isinstance(value, dict):
         if set(value) == {REFERENCE}:
             return dict(value)
         result = {}
         for key, item in value.items():
-            encoded = encode_evidence(item, dumps, evidence)
-            if (key in EVIDENCE_KEYS and isinstance(item, (dict, list, tuple)) and item
+            encoded = encode_evidence(item, dumps, evidence, memo)
+            immutable=isinstance(item,(FrozenDict,FrozenList))
+            if ((key in EVIDENCE_KEYS or immutable and key in FROZEN_EVIDENCE_KEYS) and isinstance(item, (dict, list, tuple)) and item
                     and not (isinstance(item, dict) and set(item) == {REFERENCE})):
-                raw = dumps(encoded)
-                digest = sha256(raw.encode('utf-8')).hexdigest()
+                cached=memo.get(('json',id(item))) if immutable else None
+                if cached is None:
+                    raw = dumps(encoded)
+                    digest = sha256(raw.encode('utf-8')).hexdigest()
+                    if immutable:memo[('json',id(item))]=(digest,raw)
+                else:
+                    digest,raw=cached
                 evidence[digest] = raw
                 result[key] = {REFERENCE: digest}
             else:
                 result[key] = encoded
+        if sealed:memo[id(value)]=result
         return result
     if isinstance(value, (list, tuple)):
-        return [encode_evidence(item, dumps, evidence) for item in value]
+        result=[encode_evidence(item, dumps, evidence, memo) for item in value]
+        if sealed:memo[id(value)]=result
+        return result
     return value
 
 
 def decode_evidence(value, fetch, active=None):
     active = set() if active is None else active
+    value=unpack_value(value)
     if isinstance(value, dict):
         if set(value) == {REFERENCE}:
             digest = value[REFERENCE]
             if digest in active:
                 raise ValueError('Cyclic journal evidence reference')
             raw = fetch(digest)
+            if raw is not None:raw=unpack(raw)
             if raw is None or sha256(raw.encode('utf-8')).hexdigest() != digest:
                 raise ValueError(f'Missing or corrupt journal evidence: {digest}')
             return decode_evidence(json.loads(raw), fetch, active | {digest})
@@ -69,6 +89,7 @@ def activity_payload(value, fetch=None):
         if digest in active:
             raise ValueError('Cyclic journal evidence reference')
         raw = fetch(digest)
+        if raw is not None:raw=unpack(raw)
         if raw is None or sha256(raw.encode('utf-8')).hexdigest() != digest:
             raise ValueError(f'Missing or corrupt journal evidence: {digest}')
         active.add(digest)

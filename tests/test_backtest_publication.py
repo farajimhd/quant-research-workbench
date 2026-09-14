@@ -18,6 +18,22 @@ def slow_render(packet):
 
 
 class PublicationTests(IsolatedAsyncioTestCase):
+    async def test_new_symbol_waits_for_next_captured_boundary(self):
+        publication=BacktestPublication(slow_render)
+        try:
+            publication.publish(dict(run=dict(status='running',updated_at='1'),assignments=(),
+                assignments_complete=False,assignment_symbols=()))
+            reader=asyncio.create_task(publication.get('AAA'))
+            await asyncio.sleep(.05)
+            assert not reader.done()
+            assert publication.pool is None
+            publication.publish(dict(run=dict(status='running',updated_at='2'),assignments=(),
+                assignments_complete=False,assignment_symbols=('AAA',)))
+            result=await asyncio.wait_for(reader,20)
+            assert result['run']['updated_at']=='2'
+        finally:
+            await publication.close()
+
     async def test_historical_bootstrap_and_round_trip_are_independent_of_ui(self):
         from dataclasses import replace
         from src.trading_runtime.runtime import TradingRuntime, RunConfig, RunMode
@@ -26,7 +42,7 @@ class PublicationTests(IsolatedAsyncioTestCase):
         from src.trading_runtime.journal import TradingJournal
         from src.trading_runtime.ibkr_schema import OrderRequest
         from tests.test_trading_runtime import TS, quote, _NoopStrategy
-        async def run(watched):
+        async def run(watched, batched=False):
             with TemporaryDirectory() as directory:
                 journal = TradingJournal(Path(directory) / 'journal.sqlite3')
                 broker = SimulatedBrokerAdapter(['SIM'], SimulationConfig(liquidity_participation=1),
@@ -37,6 +53,7 @@ class PublicationTests(IsolatedAsyncioTestCase):
                 reader = None
                 try:
                     await runtime.initialize()
+                    if batched:journal.enable_write_batching()
                     assert runtime.projected_snapshot().as_of == TS
                     assert (await broker.shortability(265598)).observed_at == TS
                     restored = SimulatedBrokerAdapter(['SIM'], broker.config, mode=TradingMode.BACKTEST)
@@ -67,7 +84,10 @@ class PublicationTests(IsolatedAsyncioTestCase):
                     if publication:
                         await publication.close()
                     journal.close()
-        assert await run(False) == await run(True)
+        reference=await run(False)
+        assert reference == await run(True)
+        assert reference == await run(False,True)
+        assert reference == await run(True,True)
 
     async def test_slow_process_latest_boundary_and_cancelled_reader(self):
         publication = BacktestPublication(slow_render)

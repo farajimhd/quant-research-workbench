@@ -250,6 +250,7 @@ pub fn app(state: AppState) -> Router {
         .route("/level-book-v7/coverage", post(qmd_core::level_book_v7::coverage))
         .route("/level-book-v7/chart-checkpoint", post(qmd_core::level_book_v7::history_checkpoint))
         .route("/level-book-v7/snapshot", post(qmd_core::level_book_v7::history_snapshot))
+        .route("/level-book-v7/stream", post(qmd_core::level_book_v7::prepared_stream))
         .route("/level-book-v7/seconds/{ticker}", get(level_book_v7_seconds))
         .route("/health", get(health))
         .route("/config", get(config))

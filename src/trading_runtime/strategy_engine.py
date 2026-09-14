@@ -291,7 +291,8 @@ class StrategyAssignment:
             raise ValueError("Strategy assignment conid must be positive")
 
     def payload(self) -> dict[str, Any]:
-        result = asdict(self)
+        from src.market_engine.immutable_evidence import evidence_payload
+        result = evidence_payload(self)
         result["status"] = self.status.value
         result["created_at"] = self.created_at.isoformat()
         result["updated_at"] = self.updated_at.isoformat()
@@ -382,7 +383,8 @@ class StrategyObservation:
             raise ValueError("Strategy observation price must be positive")
 
     def payload(self) -> dict[str, Any]:
-        return asdict(self)
+        from src.market_engine.immutable_evidence import evidence_payload
+        return evidence_payload(self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -6006,6 +6008,9 @@ class AssignedLongMomentumStrategy:
             (assignment.account_id, assignment.ticker.upper()): assignment
             for assignment in assignments
         }
+        self._assignment_keys_by_ticker = {}
+        for key in self._assignments:
+            self._assignment_keys_by_ticker.setdefault(key[1], []).append(key)
         if len(self._assignments) != len(assignments):
             raise ValueError(
                 "A Strategy Campaign may have only one active account leg per ticker and account"
@@ -6059,6 +6064,10 @@ class AssignedLongMomentumStrategy:
 
     def assignments(self) -> tuple[StrategyAssignment, ...]:
         return tuple(self._assignments.values())
+
+    def assignments_for_ticker(self, ticker: str) -> tuple[StrategyAssignment, ...]:
+        # Index keys, not objects: state replacements remain immediately visible.
+        return tuple(self._assignments[key] for key in self._assignment_keys_by_ticker.get(ticker.upper(), ()))
 
     async def on_intent_rejected(
         self,
@@ -6241,6 +6250,8 @@ class AssignedLongMomentumStrategy:
                 f"{assignment.ticker} already has an active campaign leg for {assignment.account_id}"
             )
         self._campaigns.register(assignment)
+        if key not in self._assignments:
+            self._assignment_keys_by_ticker.setdefault(key[1], []).append(key)
         self._assignments[key] = assignment
 
     def command_assignment(

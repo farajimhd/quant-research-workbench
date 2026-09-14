@@ -3,14 +3,18 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from contextlib import contextmanager
+from collections import OrderedDict
 from time import perf_counter
 import uuid
+from hashlib import sha256
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from .journal_evidence import encode_evidence, decode_evidence, activity_payload
+from .journal_evidence import encode_evidence, decode_evidence, activity_payload, REFERENCE
+from .journal_storage import pack
 
 from src.request_context import causal_identity, current_request_identity
 
@@ -44,7 +48,8 @@ class TradingJournal:
         read_only: bool = False,
         synchronous: str = "FULL",
     ) -> None:
-        self.timings = {"serialization_seconds": 0.0, "transaction_seconds": 0.0, "append_count": 0}
+        self.timings = {"serialization_seconds": 0.0, "transaction_seconds": 0.0, "append_count": 0,
+            "commit_seconds":0.0,"commit_count":0}
         self.path = path
         self.read_only = read_only
         self.synchronous = str(synchronous or "FULL").strip().upper()
@@ -64,8 +69,52 @@ class TradingJournal:
             self._connection = sqlite3.connect(path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._lock = threading.RLock()
+        self._batch_writes=False
+        self._batch_count=0
+        self._batch_started=perf_counter()
+        self._batch_error=None
+        self._stored_evidence=OrderedDict()
         if not read_only:
             self._initialize()
+
+    def enable_write_batching(self):
+        """Backtest-only bounded commits; readers/checkpoints fence visibility."""
+        if self.read_only or self.synchronous!='FULL':
+            raise ValueError('Batched backtest writes require a writable FULL journal')
+        self.flush()
+        self._batch_writes=True
+
+    @contextmanager
+    def _transaction(self):
+        with self._lock:
+            if self._batch_error is not None:
+                raise RuntimeError('Journal transaction failed; restart from the durable prefix') from self._batch_error
+            try:
+                yield
+                self._batch_count+=1
+                if not self._batch_writes or self._batch_count>=4096 or perf_counter()-self._batch_started>=.5:
+                    self.flush()
+            except BaseException as exc:
+                self._connection.rollback()
+                if self._batch_writes:self._batch_error=exc
+                raise
+
+    def flush(self):
+        with self._lock:
+            if self._batch_error is not None:
+                raise RuntimeError('Journal transaction failed; restart from the durable prefix') from self._batch_error
+            try:
+                if self._connection.in_transaction:
+                    started=perf_counter()
+                    self._connection.commit()
+                    self.timings['commit_seconds']+=perf_counter()-started
+                    self.timings['commit_count']+=1
+            except BaseException as exc:
+                self._connection.rollback()
+                if self._batch_writes:self._batch_error=exc
+                raise
+            self._batch_count=0
+            self._batch_started=perf_counter()
 
     def _hydrate(self, value):
         cache = {}
@@ -88,18 +137,35 @@ class TradingJournal:
             return found['payload_json'] if found else None
         return activity_payload(value, fetch)
 
-    def _dump_evidence(self, value, pending=None):
+    def _dump_evidence(self, value, pending=None, *, compress_sections=False):
         evidence = {} if pending is None else pending
         dumps = lambda item: json.dumps(item, separators=(",", ":"), sort_keys=True, default=_json_default)
-        result = dumps(encode_evidence(value, dumps, evidence))
+        encoded=encode_evidence(value,dumps,evidence)
+        if compress_sections and self._batch_writes:
+            for key in ('assignments','candle_detector_states','controller'):
+                if key in encoded:encoded[key]=json.loads(pack(dumps(encoded[key])))
+        result = dumps(encoded)
         if pending is None:
-            self._connection.executemany(
-                "INSERT OR IGNORE INTO journal_evidence(sha256, payload_json) VALUES (?, ?)", evidence.items())
+            self._store_evidence(evidence)
         return result
+
+    def _store_evidence(self, evidence):
+        # A batched write failure poisons this journal, so remembered inserts
+        # cannot outlive a rollback and subsequently hide missing evidence.
+        rows=[(key,pack(value) if self._batch_writes else value) for key,value in evidence.items()
+              if not self._batch_writes or key not in self._stored_evidence]
+        self._connection.executemany("INSERT OR IGNORE INTO journal_evidence(sha256,payload_json) VALUES (?,?)",rows)
+        if self._batch_writes:
+            for key in evidence:
+                self._stored_evidence[key]=None
+                self._stored_evidence.move_to_end(key)
+            while len(self._stored_evidence)>65536:self._stored_evidence.popitem(last=False)
 
     def _assignment(self, row):
         result = _assignment(row)
         result['state'] = self._hydrate(result['state'])
+        if set(result['parameters'])=={REFERENCE}:
+            result['parameters']=self._hydrate(result['parameters'])
         return result
 
     def reference_evidence(self, value):
@@ -108,11 +174,19 @@ class TradingJournal:
         Operational scalars stay inline; only the existing evidence contract
         is externalized. Normal journal/recovery reads hydrate and verify it.
         """
-        with self._lock, self._connection:
+        with self._transaction():
             return json.loads(self._dump_evidence(value))
+
+    def reference_json(self, value):
+        """Store a complete JSON authority without walking it for sub-evidence."""
+        raw=json.dumps(value,separators=(',',':'),sort_keys=True,default=_json_default)
+        digest=sha256(raw.encode('utf-8')).hexdigest()
+        with self._transaction():self._store_evidence({digest:raw})
+        return {REFERENCE:digest}
 
     def close(self) -> None:
         with self._lock:
+            if self._batch_error is None:self.flush()
             self._connection.close()
 
     def _fetchone(
@@ -212,9 +286,8 @@ class TradingJournal:
         self.timings["serialization_seconds"] += perf_counter() - serialization_started
         transaction_started = perf_counter()
         records: list[JournalRecord] = []
-        with self._lock, self._connection:
-            self._connection.executemany(
-                "INSERT OR IGNORE INTO journal_evidence(sha256, payload_json) VALUES (?, ?)", evidence.items())
+        with self._transaction():
+            self._store_evidence(evidence)
             next_sequence: dict[str, int] = {}
             for entry in prepared:
                 run_id = entry["run_id"]
@@ -377,7 +450,7 @@ class TradingJournal:
             return returned
 
     def save_checkpoint(self, run_id: str, cursor: str, state: dict[str, Any], event_time: datetime) -> None:
-        with self._lock, self._connection:
+        with self._transaction():
             self._connection.execute(
                 """
                 INSERT INTO checkpoints(run_id, cursor, event_time, state_json, updated_at)
@@ -385,8 +458,9 @@ class TradingJournal:
                 ON CONFLICT(run_id) DO UPDATE SET cursor=excluded.cursor, event_time=excluded.event_time,
                     state_json=excluded.state_json, updated_at=excluded.updated_at
                 """,
-                (run_id, cursor, event_time.astimezone(timezone.utc).isoformat(), self._dump_evidence(state), datetime.now(timezone.utc).isoformat()),
+                (run_id, cursor, event_time.astimezone(timezone.utc).isoformat(), self._dump_evidence(state,compress_sections=True), datetime.now(timezone.utc).isoformat()),
             )
+        self.flush()
 
     def load_checkpoint(self, run_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -400,7 +474,7 @@ class TradingJournal:
     def save_portfolio_state(self, account_id: str, state: dict[str, Any]) -> None:
         if not account_id:
             raise ValueError("account_id is required")
-        with self._lock, self._connection:
+        with self._transaction():
             self._connection.execute(
                 """
                 INSERT INTO portfolio_states(account_id, state_json, updated_at)
@@ -456,6 +530,7 @@ class TradingJournal:
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(seconds=float(ttl_seconds))
         with self._lock:
+            self.flush()
             try:
                 self._connection.execute("BEGIN IMMEDIATE")
                 row = self._connection.execute(
@@ -518,7 +593,7 @@ class TradingJournal:
         self, resource_id: str, *, owner_id: str, epoch: int
     ) -> bool:
         """Release only the exact epoch; stale owners cannot clear newer leases."""
-        with self._lock, self._connection:
+        with self._transaction():
             cursor = self._connection.execute(
                 """
                 DELETE FROM portfolio_admission_leases
@@ -526,6 +601,7 @@ class TradingJournal:
                 """,
                 (resource_id, owner_id, int(epoch)),
             )
+        self.flush()
         return cursor.rowcount == 1
 
     def acquire_campaign_session_ownership(
@@ -544,6 +620,7 @@ class TradingJournal:
             raise ValueError("Campaign ownership state must be reserved or confirmed")
         now = datetime.now(timezone.utc).isoformat()
         with self._lock:
+            self.flush()
             try:
                 self._connection.execute("BEGIN IMMEDIATE")
                 row = self._connection.execute(
@@ -608,12 +685,13 @@ class TradingJournal:
     ) -> bool:
         """Release a failed pre-fill reservation; confirmed owners are retained."""
 
-        with self._lock, self._connection:
+        with self._transaction():
             cursor = self._connection.execute(
                 "DELETE FROM campaign_session_ownership WHERE resource_id = ? "
                 "AND session_key = ? AND owner_id = ? AND state = 'reserved'",
                 (resource_id, session_key, owner_id),
             )
+        self.flush()
         return cursor.rowcount == 1
 
     def save_order_management_state(
@@ -626,7 +704,7 @@ class TradingJournal:
     ) -> None:
         if not group_id or not account_id:
             raise ValueError("order group and account identity are required")
-        with self._lock, self._connection:
+        with self._transaction():
             self._connection.execute(
                 """
                 INSERT INTO order_management_states(group_id, run_id, account_id, state_json, updated_at)
@@ -674,7 +752,7 @@ class TradingJournal:
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         approved_at = datetime.now(timezone.utc).isoformat()
-        with self._lock, self._connection:
+        with self._transaction():
             self._connection.execute(
                 """
                 INSERT INTO trading_configuration_revisions(
@@ -709,7 +787,7 @@ class TradingJournal:
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         created_at = datetime.now(timezone.utc).isoformat()
-        with self._lock, self._connection:
+        with self._transaction():
             self._connection.execute(
                 """
                 INSERT INTO trading_configuration_candidates(
@@ -785,7 +863,7 @@ class TradingJournal:
     ) -> dict[str, Any]:
         normalized_tags = tuple(dict.fromkeys(str(tag).strip() for tag in tags if str(tag).strip()))
         updated_at = datetime.now(timezone.utc).isoformat()
-        with self._lock, self._connection:
+        with self._transaction():
             self._connection.execute(
                 """
                 INSERT INTO trade_annotations(episode_id, note, tags_json, review_status, setup_override, updated_at)
@@ -824,7 +902,7 @@ class TradingJournal:
         config: dict[str, Any],
         enabled: bool = True,
     ) -> None:
-        with self._lock, self._connection:
+        with self._transaction():
             self._connection.execute(
                 """
                 INSERT INTO strategies(strategy_id, revision, name, implementation, automatic, enabled, config_json, created_at)
@@ -878,7 +956,7 @@ class TradingJournal:
         return saved[0] if saved else {}
 
     def save_strategy_assignments(
-        self, payloads: Iterable[dict[str, Any]]
+        self, payloads: Iterable[dict[str, Any]], *, return_rows: bool = True
     ) -> list[dict[str, Any]]:
         """Upsert an assignment set in one crash-safe transaction."""
 
@@ -892,6 +970,11 @@ class TradingJournal:
             if not assignment_id:
                 raise ValueError("assignment_id is required")
             assignment_ids.append(assignment_id)
+            parameters=json.dumps(payload.get('parameters') or {},sort_keys=True,default=_json_default)
+            if self._batch_writes:
+                digest=sha256(parameters.encode('utf-8')).hexdigest()
+                evidence[digest]=parameters
+                parameters=json.dumps({REFERENCE:digest})
             prepared.append(
                 (
                     assignment_id,
@@ -906,11 +989,7 @@ class TradingJournal:
                         sort_keys=True,
                         default=_json_default,
                     ),
-                    json.dumps(
-                        payload.get("parameters") or {},
-                        sort_keys=True,
-                        default=_json_default,
-                    ),
+                    parameters,
                     self._dump_evidence(payload.get("state") or {}, evidence),
                     str(payload.get("source") or "order_entry"),
                     str(payload.get("created_at") or now),
@@ -919,8 +998,8 @@ class TradingJournal:
             )
         if not prepared:
             return []
-        with self._lock, self._connection:
-            self._connection.executemany("INSERT OR IGNORE INTO journal_evidence(sha256,payload_json) VALUES (?,?)", evidence.items())
+        with self._transaction():
+            self._store_evidence(evidence)
             self._connection.executemany(
                 """
                 INSERT INTO strategy_assignments(
@@ -934,6 +1013,8 @@ class TradingJournal:
                 """,
                 prepared,
             )
+        if not return_rows:
+            return []
         placeholders = ",".join("?" for _ in assignment_ids)
         rows = self._fetchall(
             f"SELECT * FROM strategy_assignments WHERE assignment_id IN ({placeholders})",
@@ -1172,6 +1253,7 @@ class TradingJournal:
         return [self._record(row) for row in rows]
 
     def latest_sequence(self, run_id: str) -> int:
+        self.flush()
         row = self._fetchone(
             "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM journal WHERE run_id = ?",
             (run_id,),
@@ -1274,6 +1356,7 @@ class TradingJournal:
         return [self._record(row) for row in rows]
 
     def pending_outbox(self, limit: int = 500) -> list[JournalRecord]:
+        self.flush()
         rows = self._fetchall(
             """
             SELECT journal.* FROM journal
@@ -1287,11 +1370,11 @@ class TradingJournal:
 
     def mark_delivered(self, record_ids: Iterable[str]) -> None:
         now = datetime.now(timezone.utc).isoformat()
-        with self._lock, self._connection:
+        with self._transaction():
             self._connection.executemany("UPDATE outbox SET delivered_at = ? WHERE record_id = ?", ((now, record_id) for record_id in record_ids))
 
     def mark_failed(self, record_ids: Iterable[str], error: str) -> None:
-        with self._lock, self._connection:
+        with self._transaction():
             self._connection.executemany(
                 "UPDATE outbox SET attempts = attempts + 1, last_error = ? WHERE record_id = ?",
                 ((error[:2000], record_id) for record_id in record_ids),

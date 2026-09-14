@@ -59,7 +59,9 @@ def qualifies(row, observed_at=None, *, include_retained=False):
 def strategy_snapshot(snapshot, observed_at, minimum_p_norm=DEFAULT_THRESHOLD):
     """Default to point prices; retain bands for opt-in breakout/rejection rules."""
     if snapshot.get('book_version')=='causal-level-book-v7-mle-1':
-        return dict(snapshot,unified_levels=[dict(row,strategy_level_contract='v7-mle-bands-1')
+        from src.market_engine.immutable_evidence import FrozenDict
+        return dict(snapshot,unified_levels=[row.derived('v7_strategy_band',lambda:dict(row,strategy_level_contract='v7-mle-bands-1'))
+            if isinstance(row,FrozenDict) else dict(row,strategy_level_contract='v7-mle-bands-1')
             for row in snapshot['unified_levels'] if qualifies(row,observed_at)])
     rows = [dict(row, minimum_p_norm=minimum_p_norm) if row.get('load_contract') else row for row in snapshot['unified_levels']]
     return {'unified_levels': [dict(row, band_lower=row['lower'], band_upper=row['upper'],

@@ -1787,6 +1787,9 @@ class PortfolioManagementEngine:
         )
         return decision
 
+    def has_pending_entry_requests(self, account_id: str) -> bool:
+        return bool(self._state(account_id).pending_entry_requests)
+
     def withdraw_invalidated_requests(self, account_id: str, active_request_ids: set[str]) -> None:
         state = self._state(account_id)
         for request_id in list(state.pending_entry_requests):

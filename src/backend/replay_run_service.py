@@ -1819,7 +1819,7 @@ class ReplayRunController:
             else REPLAY_RESTART_CHECKPOINT_INTERVAL_EVENTS
         )
 
-    def _restart_checkpoint_state(self) -> dict[str, Any]:
+    def _restart_checkpoint_state(self, *, reference_authority=False) -> dict[str, Any]:
         if self._runtime is None:
             raise RuntimeError("Historical runtime is not ready for checkpointing")
         self._flush_passive_market_events()
@@ -1922,7 +1922,8 @@ class ReplayRunController:
                     }
                     for event in self._source_native_signal_episodes.values()
                 ],
-                "data_authority": deepcopy(self._data_authority),
+                "data_authority": (self._journal.reference_json(self._data_authority)
+                    if reference_authority else deepcopy(self._data_authority)),
             },
             "runtime": {
                 "processed_events": self._runtime.processed_events,
@@ -1933,24 +1934,39 @@ class ReplayRunController:
                 ),
                 "latest_checkpoint_cursor": self._runtime._latest_checkpoint_cursor,
             },
-            "assignments": [
-                assignment.payload() for assignment in self._strategy.assignments()
-            ] if self._strategy is not None else [
-            ],
+            "assignments": self._checkpoint_assignments(),
             "candle_detector_states": self._checkpoint_candle_detectors(),
             "broker": broker_checkpoint(),
         }
 
+    def _checkpoint_assignments(self):
+        if self._strategy is None:return []
+        if getattr(self,'_prepared_v7',None) is None:
+            return [assignment.payload() for assignment in self._strategy.assignments()]
+        from src.market_engine.immutable_evidence import freeze
+        parameters=[];result=[]
+        for assignment in self._strategy.assignments():
+            sealed=next((saved for original,saved in parameters if original==assignment.parameters),None)
+            if sealed is None:
+                sealed=freeze(assignment.parameters)
+                parameters.append((assignment.parameters,sealed))
+            payload=replace(assignment,parameters={}).payload()
+            payload['parameters']=sealed
+            result.append(payload)
+        return result
+
     def _checkpoint_candle_detectors(self):
         states = deepcopy(self._candle_detector_states)
         for ticker, stream in self._structural_market_streams.items():
-            states[ticker]['structural_recovery'] = stream.checkpoint()
+            states[ticker]['structural_recovery'] = stream.checkpoint(compact=getattr(self,'_prepared_v7',None) is not None)
         return states
 
     def _save_restart_checkpoint(self, event_time: datetime) -> None:
         if self._journal is None or self._runtime is None:
             return
-        state = self._restart_checkpoint_state()
+        started=time.perf_counter()
+        state = self._restart_checkpoint_state(reference_authority=getattr(self,'_prepared_v7',None) is not None)
+        self._record_stage_time('checkpoint_capture',started)
         cursor = json.dumps(
             {
                 "market": state["controller"]["source_cursor"],
@@ -1959,7 +1975,9 @@ class ReplayRunController:
             separators=(",", ":"),
             sort_keys=True,
         )
+        started=time.perf_counter()
         self._journal.save_checkpoint(self.run_id, cursor, state, event_time)
+        self._record_stage_time('checkpoint_persist',started)
         self._checkpoint_projection_cache = {
             "status": "available",
             "cursor": cursor,
@@ -2230,13 +2248,11 @@ class ReplayRunController:
                 self.status = "warming"
             self.updated_at = datetime.now(UTC)
             await self._publish(force=True)
-            # Historical runs are reproducible from pinned source revisions.
-            # WAL NORMAL preserves ordered transactional records while avoiding
-            # a disk fsync for every simulated partial fill. Live trading keeps
-            # TradingJournal's FULL default.
+            # Bound commit frequency during backtest playback while retaining
+            # FULL durability at every committed publication/checkpoint prefix.
             self._journal = TradingJournal(
                 self.run_dir / "journal.sqlite3",
-                synchronous="NORMAL",
+                synchronous="FULL" if self.definition.mode==RunMode.BACKTEST else "NORMAL",
             )
             self._preparation_stage = "signal_occurrences"
             await self._publish(force=True)
@@ -2320,7 +2336,10 @@ class ReplayRunController:
             self._preparation_stage = "strategy_frames"
             await self._publish(force=True)
             frame_source = await self._load_strategy_frames()
-            frame_iterator = BoundedFrameLookahead(frame_source)
+            await self._prepare_v7_stream(frame_source)
+            if self.definition.mode == RunMode.BACKTEST:
+                self._journal.enable_write_batching()
+            frame_iterator = BoundedFrameLookahead(frame_source, limit=8192 if getattr(self,'_prepared_v7',None) else 64)
             prefetched_generation = -1
             threshold_only = self.definition.configuration_revision['payload'].get('strategy',{}).get('parameters',{}).get('macd_threshold_contract')
             if self.definition.debug_fixture is None and not self.definition.experimental_structure_book and not threshold_only:
@@ -2372,7 +2391,7 @@ class ReplayRunController:
                             self.current_time = self.definition.requested_start
                             self.updated_at = datetime.now(UTC)
                             await self._publish(force=True)
-                            self._write_manifest()
+                            self._write_manifest(include_details=False)
                         await self._wait_until_active()
                         if self._stop_requested:
                             await self._finish("stopped")
@@ -2434,9 +2453,10 @@ class ReplayRunController:
                             await asyncio.sleep(0)
                         continue
                     while next_frame is not None and next_frame.as_of <= event.ts:
-                        if prefetched_generation != frame_iterator.generation:
+                        generation=(frame_iterator.generation,int(event.ts.timestamp()))
+                        if prefetched_generation != generation:
                             await self._prefetch_v7_frames([next_frame, *frame_iterator.pending], event.ts)
-                            prefetched_generation = frame_iterator.generation
+                            prefetched_generation = generation
                         frame = next_frame
                         while (
                             external_index < len(self._historical_external_signal_events)
@@ -2551,6 +2571,11 @@ class ReplayRunController:
         except Exception as exc:
             self.error = str(exc)
             await self._finish("failed")
+        finally:
+            pool=getattr(self,'_prepared_v7',None)
+            if pool is not None:
+                try:await asyncio.to_thread(pool.close)
+                finally:self._prepared_v7=None
 
     async def _market_event_batches(self):
         if self.definition.mode == RunMode.BACKTEST_DEBUG:
@@ -2762,7 +2787,7 @@ class ReplayRunController:
         if self._journal is None:
             self._journal = TradingJournal(
                 self.run_dir / "journal.sqlite3",
-                synchronous="NORMAL",
+                synchronous="FULL" if self.definition.mode==RunMode.BACKTEST else "NORMAL",
             )
         if record_configuration:
             self._journal.append(
@@ -3336,12 +3361,14 @@ class ReplayRunController:
             frame.ticker, {}
         )
         for key in _STRATEGY_STATEFUL_STRUCTURE_FIELDS:
-            if key in indicator:
+            if key in indicator and key != 'qmd_structure_unified_levels':
                 prepared_structure[key] = deepcopy(indicator[key])
         if "qmd_structure_unified_levels" in indicator:
-            prepared_structure["qmd_structure_unified_levels"] = deepcopy(
-                indicator["qmd_structure_unified_levels"]
-            )
+            # Prepared QMD projections are replaced, never mutated. Retain the
+            # exact frozen observation instead of copying the entire book twice.
+            levels=indicator['qmd_structure_unified_levels']
+            prepared_structure['qmd_structure_unified_levels'] = (
+                levels if getattr(self,'_prepared_v7',None) is not None else deepcopy(levels))
         elif isinstance(indicator.get("qmd_structure_unified_level_delta"), Mapping):
             current_levels = {
                 (int(row.get("side") or 0), str(row.get("unified_level_id") or "")): dict(row)
@@ -3365,7 +3392,7 @@ class ReplayRunController:
             ]
         structural_indicator = {**prepared_structure, **indicator}
         unified_levels = tuple(
-            dict(row)
+            row if getattr(self,'_prepared_v7',None) is not None else dict(row)
             for row in structural_indicator.get("qmd_structure_unified_levels") or ()
             if isinstance(row, Mapping)
         )
@@ -3510,11 +3537,7 @@ class ReplayRunController:
             # timestamps and frozen evidence without copying every level book.
             source_values=dict(source_cache),
         )
-        ticker_assignments = tuple(
-            assignment
-            for assignment in self._strategy.assignments()
-            if assignment.ticker == frame.ticker
-        )
+        ticker_assignments = self._ticker_assignments(frame.ticker)
         if frame.ticker not in self._strategy_quality_admitted_tickers:
             quality_rules = [
                 dict(rule_set)
@@ -3693,11 +3716,7 @@ class ReplayRunController:
         base = self._latest_strategy_observations.get(event.ticker)
         if base is None or event.ticker not in self._strategy_engaged_tickers:
             return False
-        ticker_assignments = tuple(
-            assignment
-            for assignment in self._strategy.assignments()
-            if assignment.ticker == event.ticker
-        )
+        ticker_assignments = self._ticker_assignments(event.ticker)
         if (event.raw.get("schema_version") and "price_eligible" not in event.raw
                 and any(row.strategy_revision >= 39 for row in ticker_assignments)):
             raise RuntimeError("Historical strategy requires QMD trade eligibility; restart the updated QMD History gateway")
@@ -3842,9 +3861,98 @@ class ReplayRunController:
         await self._evaluate_strategy_observation(observation, ticker_assignments)
         return True
 
+    async def _prepare_v7_stream(self, frames):
+        if self.definition.mode != RunMode.BACKTEST or self.definition.experimental_structure_book!='level-book-v7' or self.definition.debug_fixture is not None:
+            return
+        if self.definition.final_session_date not in (None,self.definition.session_date):
+            self._record_data_authority('v7_preparation',dict(mode='existing_causal_cursor',reason='resident stream is session-scoped'))
+            return
+        if not isinstance(frames,ReplayFrameSpool):
+            raise ValueError('V7 streaming requires persisted canonical strategy frames')
+        from .v7_book_cursor import PreparedV7Cursors
+        from .experimental_structure_book import resolve
+        from .qmd_gateway_client import qmd_history_post_json
+        tickers=sorted(ticker for ticker,timeframe in await asyncio.to_thread(frames.completed_streams) if timeframe=='1s')
+        build=await asyncio.to_thread(resolve,'level-book-v7')
+        if build['fingerprint']!=self.definition.experimental_structure_fingerprint:
+            raise ValueError('Prepared V7 catalog changed')
+        pool=PreparedV7Cursors(uuid4().hex,build,tickers)
+        self._preparation_stage='level_book_working_set'
+        self._preparation_completed_units=0
+        self._preparation_total_units=len(tickers)
+        await self._publish(force=True)
+        receipts=[]
+        try:
+            for start in range(0,len(tickers),32):
+                if self._stop_requested:raise asyncio.CancelledError('V7 warm-up cancelled')
+                packet=await asyncio.to_thread(qmd_history_post_json,'/level-book-v7/stream',dict(
+                    operation='prepare',stream_id=pool.stream_id,frame_path=str(frames.path),day=str(self.definition.session_date),
+                    expected_revisions={ticker:self._data_authority[f'v7:{ticker}:{self.definition.session_date}:source']['source_revision']
+                        for ticker in tickers[start:start+32] if f'v7:{ticker}:{self.definition.session_date}:source' in self._data_authority},
+                    catalog_hash=build['fingerprint'],required_end=self.definition.session_end.isoformat(),tickers=tickers[start:start+32]),timeout=180)
+                if sorted(row['ticker'] for row in packet['rows']) != tickers[start:start+32]:
+                    raise ValueError('Prepared V7 warm-up returned incomplete or duplicate ticker receipts')
+                for row in packet['rows']:
+                    cursor=pool.cursors[row['ticker']]
+                    seed=cursor.decoder.decode(row.pop('seed_packet'))
+                    second=int(self.definition.session_start.timestamp())
+                    if (seed['as_of']!=second or seed['max_input_timestamp']!=second or seed['bars_processed']!=0
+                            or seed['provenance']['catalog_hash']!=build['fingerprint']):
+                        raise ValueError('Prepared V7 seed crossed the session-opening boundary')
+                    cursor.snapshots[second]=seed
+                    self._warm_prepared_v7_projection(row['ticker'],seed)
+                receipts.extend(packet['rows'])
+                self._preparation_completed_units=len(receipts)
+                self.updated_at=datetime.now(UTC)
+                await self._publish(force=True)
+            self._prepared_v7=pool
+            self._structure_prefetch_progress = dict(mode='resident_v7',tickers=len(receipts),
+                retained_bytes=sum(r['retained_bytes'] for r in receipts))
+            identities=[{k:row[k] for k in ('ticker','checkpoint_hash','input_hash','bars')} for row in receipts]
+            self._record_data_authority('v7_prepared_working_set',dict(authority='qmd-v7-prepared-stream-1',
+                catalog_hash=build['fingerprint'],tickers=len(receipts),
+                input_hash=hashlib.sha256(json.dumps(sorted(identities,key=lambda r:r['ticker']),sort_keys=True).encode()).hexdigest()))
+        except BaseException:
+            await asyncio.to_thread(pool.close)
+            raise
+
+    def _warm_prepared_v7_projection(self, ticker, seed):
+        """Prepare static views of the prior book without observing a candle."""
+        from types import SimpleNamespace
+        from src.market_engine.immutable_evidence import freeze
+        from src.market_engine.structural_evidence import level_evidence,band_key
+        from src.trading_runtime.structure_level_contract import strategy_snapshot
+        from src.trading_runtime.historical_hod import band_levels,selected_levels,DEFAULTS
+        at=self.definition.session_start
+        projected=strategy_snapshot(seed,at,self.definition.minimum_p_norm)
+        parameters=self.definition.configuration_revision['payload'].get('strategy',{}).get('parameters',{})
+        if parameters.get('historical_hod_contract'):
+            projected=dict(projected,unified_levels=band_levels(projected['unified_levels']))
+        projected=dict(projected,unified_levels=freeze(projected['unified_levels']))
+        for level in projected['unified_levels']:
+            level_evidence(level);band_key(level)
+        if parameters.get('historical_hod_contract'):
+            selected_levels(SimpleNamespace(structural_support_levels=(),structural_resistance_levels=projected['unified_levels'],
+                structural_transition_levels=()),parameters.get('historical_hod',DEFAULTS),at.timestamp())
+        cache=getattr(self,'_experimental_projection_cache',{})
+        self._experimental_projection_cache=cache
+        for lane in ('frame','event'):
+            cache[(ticker,lane)]=(seed,self.definition.minimum_p_norm,projected)
+
     async def _prefetch_v7_frames(self, frames, cutoff):
         """Parallel transport only; observations and authority commits stay ordered."""
         if self.definition.experimental_structure_book != 'level-book-v7':
+            return
+        if getattr(self,'_prepared_v7',None) is not None:
+            # A future intrasecond frame can need the already-completed current
+            # second. Prepare that view only; never observe its future candle.
+            second=int(cutoff.timestamp())
+            requests=[(frame.ticker,datetime.fromtimestamp(int(frame.as_of.timestamp()),UTC))
+                for frame in frames if int(frame.as_of.timestamp())<=second]
+            if requests:
+                started=time.perf_counter()
+                await asyncio.to_thread(self._prepared_v7.fetch,requests)
+                self._record_stage_time('structure_batch',started)
             return
         parameters = self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {})
         if not (parameters.get('historical_hod_contract') or parameters.get('structural_recovery_contract')):
@@ -3889,6 +3997,8 @@ class ReplayRunController:
         cursors = getattr(self, '_experimental_cursors', {})
         self._experimental_cursors = cursors
         key = (ticker, lane)
+        if getattr(self,'_prepared_v7',None) is not None:
+            cursors[key]=self._prepared_v7.cursors[ticker]
         if key not in cursors:
             from src.backend.v7_book_cursor import V7BookCursor
             # V7 retains immutable exact-second snapshots. Frame prefetch must
@@ -3915,7 +4025,11 @@ class ReplayRunController:
                 'legacy_probability_scores': 'not used by this versioned contract'})
         started = time.perf_counter()
         try:
-            snapshot = await asyncio.to_thread(cursors[key].snapshot, as_of, sequence)
+            cursor=cursors[key]
+            if getattr(self,'_prepared_v7',None) is not None and int(as_of.timestamp()) in cursor.snapshots:
+                snapshot=cursor.snapshot(as_of,sequence)
+            else:
+                snapshot = await asyncio.to_thread(cursor.snapshot, as_of, sequence)
         finally:
             self._record_stage_time('structure_snapshot', started)
         if snapshot.get('book_version')=='causal-level-book-v7-mle-1':
@@ -3928,10 +4042,19 @@ class ReplayRunController:
         previous = cache.get(key)
         if previous is not None and previous[0] is snapshot and previous[1] == self.definition.minimum_p_norm:
             return previous[2]
+        if (getattr(self,'_prepared_v7',None) is not None and previous is not None
+                and previous[0]['unified_levels'] is snapshot['unified_levels']
+                and previous[0]['as_of'] <= snapshot['as_of'] and previous[1] == self.definition.minimum_p_norm):
+            projected=dict(snapshot,unified_levels=previous[2]['unified_levels'])
+            cache[key]=(snapshot,self.definition.minimum_p_norm,projected)
+            return projected
         projected = strategy_snapshot(snapshot, as_of, self.definition.minimum_p_norm)
         if self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {}).get('historical_hod_contract'):
             from src.trading_runtime.historical_hod import band_levels
             projected = dict(projected, unified_levels=band_levels(projected['unified_levels']))
+        if getattr(self,'_prepared_v7',None) is not None:
+            from src.market_engine.immutable_evidence import freeze
+            projected=dict(projected,unified_levels=freeze(projected['unified_levels']))
         cache[key] = (snapshot, self.definition.minimum_p_norm, projected)
         return projected
 
@@ -3977,6 +4100,12 @@ class ReplayRunController:
         self._event_structure_snapshots = snapshots
         sessions[event.ticker] = (session_id, batch[-1].ts, cursors[-1])
         return snapshots.pop(key)
+
+    def _ticker_assignments(self, ticker):
+        indexed = getattr(type(self._strategy), 'assignments_for_ticker', None)
+        if indexed is not None:
+            return indexed(self._strategy,ticker)
+        return tuple(row for row in self._strategy.assignments() if row.ticker == ticker)
 
     async def _evaluate_strategy_observation(
         self,
@@ -5015,7 +5144,11 @@ class ReplayRunController:
         configuration = self.definition.configuration_revision['payload']
         assignments = self._strategy.assignments() if self._strategy is not None else ()
         frozen = {}
+        requested=getattr(self._monitoring,'symbols',None)
+        complete=self._strategy is None or self.status not in {'running','fast_forwarding'}
         for assignment in assignments:
+            if not complete and requested is not None and assignment.ticker not in requested:
+                continue
             previous = self._monitoring_assignments.get(assignment.assignment_id)
             # Parameters belong to the immutable run configuration; mutable
             # state is copied only when its owning assignment is replaced.
@@ -5026,6 +5159,7 @@ class ReplayRunController:
             run=self.stream_snapshot(), snapshot=self._runtime.projected_snapshot(),
             sequence=self._journal.latest_sequence(self.run_id), journal_path=str(self._journal.path),
             assignments=tuple(row[1] for row in frozen.values()),
+            assignment_symbols=tuple(requested or ()),assignments_complete=complete,
             configuration={k: configuration[k] for k in ('strategy', 'deployment') if k in configuration},
             automatic=self._strategy is not None,
             performance_extrema=self._runtime.broker.performance_extrema()))
@@ -6339,6 +6473,16 @@ class ReplayRunController:
             return
         if revision.get('request_complete') is not True:
             raise RuntimeError('V7 historical source revision is incomplete')
+        if revision.get('authority') == 'qmd-prepared-causal-seconds-v1':
+            old=self._data_authority.get(f'{key}:source',{}).get('source_revision')
+            if old is not None and revision.get('verified_resume_revision') != old:
+                from src.market_engine.v7_prepared_stream import source_clock_identity
+                authority=revision['prepared_authority']
+                chunks=authority.get('chunks',[authority])
+                if any(source_clock_identity(row['revision_token']) != source_clock_identity(old['token']) for row in chunks):
+                    raise RuntimeError('Prepared V7 source differs from the resumed canonical source revision')
+            self._record_data_authority(f'{key}:prepared-source',dict(source_revision=revision))
+            return
         self._record_data_authority(f'{key}:source', dict(source_revision=revision))
 
     def _record_data_authority(self, key: str, evidence: dict[str, Any]) -> None:

@@ -173,10 +173,56 @@ class Service:
         # accumulators while exact engine checkpoints spill to bounded disk.
         self.spilled_digests={}
         self.transports=OrderedDict()
+        self.prepared_streams={}
         self.closing_root=Path(closing_root) if closing_root else self.catalog.root/'qmd-live-closing-v7'
 
     def close(self):
+        for stream in self.prepared_streams.values():stream.close()
+        self.prepared_streams.clear()
         self.cache.close()
+
+    def prepared(self, request):
+        from .v7_prepared_stream import PreparedStream
+        from src.runtime_paths import runtime_root
+        import re
+        identity=request['stream_id']
+        if not re.fullmatch(r'[a-zA-Z0-9-]{1,64}',identity):raise ValueError('Invalid prepared V7 stream identity')
+        operation=request['operation']
+        if operation=='release':
+            stream=self.prepared_streams.pop(identity,None)
+            if stream is not None:stream.close()
+            return []
+        if operation=='prepare':
+            root=(runtime_root()/'trading'/'backtest').resolve()
+            path=Path(request['frame_path']).resolve()
+            if root not in path.parents or path.suffix!='.sqlite3':raise ValueError('Prepared V7 source escaped the backtest runtime root')
+            stream=self.prepared_streams.get(identity)
+            if stream is None:
+                if self.prepared_streams:raise ValueError('Prepared V7 active-run capacity reached')
+                stream=PreparedStream(self,path,request['day'],request['catalog_hash'],required_end=request.get('required_end'))
+                self.prepared_streams[identity]=stream
+            elif (stream.path!=path or stream.day!=request['day'] or self.catalog.fingerprint!=request['catalog_hash']
+                    or stream.required_end != (stamp(request['required_end']) if request.get('required_end') else stream.end)):
+                raise ValueError('Prepared V7 stream identity changed')
+            receipts=stream.prepare(request['tickers'],request.get('expected_revisions'))
+            return [dict(row,seed_packet=stream.snapshot(row['ticker'],stream.begin)) for row in receipts]
+        if operation=='advance':
+            stream=self.prepared_streams[identity]
+            results=[]
+            seen=set()
+            for row in request['requests']:
+                item=dict(ticker=row['ticker'],as_of=row['as_of'])
+                try:
+                    base=row.get('base_version')
+                    if row.get('continue_batch'):
+                        if row['ticker'] not in seen:raise ValueError('Prepared V7 batch continuation lacks a preceding request')
+                        base=stream.states[row['ticker']]['encoder'].version
+                    item['packet']=stream.snapshot(row['ticker'],row['as_of'],base)
+                except Exception as exc:item['error']=str(exc)
+                seen.add(row['ticker'])
+                results.append(item)
+            return results
+        raise ValueError('Unsupported prepared V7 operation')
 
     def _spill_sessions(self):
         while len(self.sessions)>self.max_sessions:

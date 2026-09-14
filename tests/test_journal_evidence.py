@@ -4,6 +4,120 @@ from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.journal_evidence import REFERENCE
 
 
+def test_batched_full_journal_fences_visibility_and_poisoned_prefix(tmp_path,monkeypatch):
+    import pytest
+    import sqlite3
+    writer=TradingJournal(tmp_path/'batch.sqlite3')
+    reader=TradingJournal(writer.path,read_only=True)
+    try:
+        writer.enable_write_batching()
+        assert writer._connection.execute('PRAGMA synchronous').fetchone()[0]==2
+        monkeypatch.setattr('src.trading_runtime.journal.perf_counter',lambda:0.)
+        writer._batch_started=0.
+        def append(n):
+            writer.append(run_id='run',category='test',entity_type='test',entity_id=str(n),payload={'n':n})
+        append(1);append(2)
+        assert reader.records('run')==[]
+        assert writer.latest_sequence('run')==2
+        assert reader.latest_sequence('run')==2
+        append(3)
+        writer.save_checkpoint('run','3',{'complete':True},datetime.now(timezone.utc))
+        assert reader.load_checkpoint('run')['state']=={'complete':True}
+        assert reader.latest_sequence('run')==3
+        append(4)
+        with pytest.raises(sqlite3.OperationalError):
+            with writer._transaction():
+                writer._connection.execute('INSERT INTO missing_table VALUES (1)')
+        with pytest.raises(RuntimeError,match='durable prefix'):
+            writer.latest_sequence('run')
+        assert reader.latest_sequence('run')==3
+    finally:
+        writer.close();reader.close()
+
+
+def test_frozen_repeated_checkpoint_evidence_reopens_exactly(tmp_path):
+    from src.market_engine.immutable_evidence import freeze
+    levels=freeze([{'id':i,'fit':{'center':float(i)},'timeframes':['1s']} for i in range(50)])
+    state={'complete':True,'states':[{'rows':levels,'prior_rows':levels} for _ in range(20)]}
+    path=tmp_path/'checkpoint.sqlite3'
+    journal=TradingJournal(path)
+    journal.save_checkpoint('run','cursor',state,datetime.now(timezone.utc))
+    stored=journal._fetchone('SELECT state_json FROM checkpoints')['state_json']
+    assert len(stored)<len(json.dumps(state))/10
+    journal.close()
+    journal=TradingJournal(path,read_only=True)
+    try:
+        assert journal.load_checkpoint('run')['state']==state
+    finally:journal.close()
+
+
+def test_compressed_backtest_checkpoint_and_evidence_reopen_exactly(tmp_path):
+    from src.trading_runtime.journal_storage import MARKER
+    value={'levels':[{'price':i,'evidence':'retained causal evidence '*100} for i in range(100)]}
+    state={'complete':True,'controller':{'values':[value]*10,'series':[0]*10000},'broker':{'executions':[]}}
+    journal=TradingJournal(tmp_path/'compressed.sqlite3');journal.enable_write_batching()
+    journal.append(run_id='run',category='test',entity_type='test',entity_id='1',payload=value)
+    journal.save_checkpoint('run','cursor',state,datetime.now(timezone.utc))
+    assert journal._fetchone('select sum(length(payload_json)) n from journal_evidence')['n']<len(json.dumps(value))/5
+    assert MARKER in journal._fetchone('select state_json from checkpoints')['state_json']
+    assert journal._fetchone("select json_type(state_json,'$.broker.executions') kind from checkpoints")['kind']=='array'
+    journal.close();journal=TradingJournal(journal.path,read_only=True)
+    try:
+        assert journal.records('run')[0].payload['levels']==value['levels']
+        assert journal.load_checkpoint('run')['state']==state
+    finally:journal.close()
+
+
+def test_compressed_storage_rejects_corruption_and_preserves_unicode():
+    import pytest
+    from src.trading_runtime.journal_storage import pack,unpack,MARKER
+    raw=json.dumps({'value':'\u03bb'*10000},ensure_ascii=False)
+    encoded=pack(raw)
+    assert unpack(encoded)==raw
+    for key,value in [('bytes',1),('bytes',2**40),('sha256','wrong'),('data','!'),('codec','unknown')]:
+        changed=json.loads(encoded);changed[MARKER][key]=value
+        with pytest.raises(ValueError,match='Corrupt compressed'):
+            unpack(json.dumps(changed,separators=(',',':')))
+
+
+def test_whole_authority_reference_preserves_nested_evidence(tmp_path):
+    journal=TradingJournal(tmp_path/'authority.sqlite3');journal.enable_write_batching()
+    authority={'source':{'levels':[{'value':'provenance'*10000}], 'revision':'pinned'}}
+    reference=journal.reference_json(authority)
+    journal.save_checkpoint('run','cursor',{'controller':{'data_authority':reference}},datetime.now(timezone.utc))
+    journal.close();journal=TradingJournal(journal.path,read_only=True)
+    try:assert journal.load_checkpoint('run')['state']['controller']['data_authority']==authority
+    finally:journal.close()
+
+
+def test_assignment_write_can_skip_unused_hydration_without_changing_storage(tmp_path, monkeypatch):
+    from tests.test_long_momentum_strategy import assignment
+    journal=TradingJournal(tmp_path/'assignments.sqlite3')
+    journal.enable_write_batching()
+    payload=assignment(state={'levels':[{'price':2.1,'fit':{'center':2.1}}]}).payload()
+    try:
+        expected=journal.save_strategy_assignments([payload])
+        with monkeypatch.context() as patch:
+            patch.setattr(journal,'_fetchall',lambda *args,**kwargs: (_ for _ in ()).throw(AssertionError('Unnecessary hydration')))
+            assert journal.save_strategy_assignments([payload],return_rows=False)==[]
+        assert journal.strategy_assignment(payload['assignment_id'])==expected[0]
+    finally:
+        journal.close()
+
+
+def test_batched_assignment_parameters_remain_exact_after_updates_and_reopen(tmp_path):
+    from tests.test_long_momentum_strategy import assignment
+    journal=TradingJournal(tmp_path/'parameters.sqlite3');journal.enable_write_batching()
+    payload=assignment().payload()
+    journal.save_strategy_assignments([payload],return_rows=False)
+    assert REFERENCE in journal._fetchone('select parameters_json from strategy_assignments')['parameters_json']
+    payload['parameters']['new_parameter']={'value':1}
+    journal.save_strategy_assignments([payload],return_rows=False)
+    journal.close();journal=TradingJournal(journal.path,read_only=True)
+    try:assert journal.strategy_assignment(payload['assignment_id'])['parameters']==payload['parameters']
+    finally:journal.close()
+
+
 def test_compact_projection_retains_frozen_entry_chart_references():
     from src.trading_runtime.journal_evidence import activity_payload
     level = {'unified_level_id': 'r1', 'price': 12, 'entry_boundary': 12.1,
@@ -19,6 +133,9 @@ def test_compact_projection_retains_frozen_entry_chart_references():
 def test_evidence_roundtrip_compact_read_reopen_and_integrity(tmp_path):
     path = tmp_path / 'journal.sqlite3'
     journal = TradingJournal(path)
+    journal.enable_write_batching()
+    inserted=[]
+    journal._connection.set_trace_callback(lambda sql:inserted.append(sql) if sql.startswith('INSERT OR IGNORE INTO journal_evidence') else None)
     payload = {'ticker': 'TEST', 'action': 'enter_long', 'metadata': {
         'profit_target': 12, 'unified_structural_trigger': {'levels': [
             {'price': n, 'evidence': 'original' * 100} for n in range(100)]}}}
@@ -28,6 +145,7 @@ def test_evidence_roundtrip_compact_read_reopen_and_integrity(tmp_path):
     stored = journal._fetchall('SELECT payload_json FROM journal')
     assert all(REFERENCE in row['payload_json'] for row in stored)
     assert journal._fetchone('SELECT count(*) n FROM journal_evidence')['n'] == 2
+    assert len(inserted)==2
     assert journal.records('run')[0].payload['metadata'] == payload['metadata']
     compact = journal.strategy_activity_records(run_id='run', compact=True)
     assert compact[0].payload['metadata']['profit_target'] == 12
@@ -48,6 +166,26 @@ def test_missing_evidence_fails_closed(tmp_path):
     with pytest.raises(ValueError, match='Missing or corrupt'):
         journal.records('run')
     journal.close()
+
+
+def test_batched_writes_fence_cross_process_admission(tmp_path):
+    journal=TradingJournal(tmp_path/'admission.sqlite3')
+    journal.enable_write_batching()
+    try:
+        journal.save_portfolio_state('sim',{'cash':100})
+        lease=journal.acquire_portfolio_admission_lease('sim',owner_id='first')
+        assert lease is not None
+        journal.save_portfolio_state('sim',{'cash':90})
+        owner=journal.acquire_campaign_session_ownership('TEST',session_key='today',owner_id='first',state='reserved')
+        assert owner is not None
+        assert journal.release_portfolio_admission_lease('sim',owner_id='first',epoch=lease['epoch'])
+        assert journal.release_campaign_session_reservation('TEST',session_key='today',owner_id='first')
+        reader=TradingJournal(journal.path,read_only=True)
+        try:
+            assert reader.portfolio_states()['sim']=={'cash':90}
+            assert reader.campaign_session_ownership('TEST',session_key='today') is None
+        finally:reader.close()
+    finally:journal.close()
 
 
 def test_execution_references_are_idempotent_and_recover_original_evidence(tmp_path):

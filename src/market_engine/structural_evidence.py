@@ -4,7 +4,9 @@ Shapes describe geometry, not predicted reversals. Retests require a later
 candle than the break; OHLC cannot establish an intrabar break/retest order.
 """
 from copy import deepcopy
+from math import isfinite
 from .structural_labels import level_context, enclosing_levels
+from .immutable_evidence import FrozenDict
 
 
 def known_at(level):
@@ -17,6 +19,8 @@ def direction(level):
 
 
 def level_evidence(level):
+    if isinstance(level,FrozenDict):
+        return level.derived('interaction_evidence',lambda:level_evidence(dict(level)))
     return {k:level[k] for k in ('unified_level_id','level_id','side','lower','upper',
         'price','pivot_at','created_at_ms','confirmed_at','confirmed_at_ms','book_version',
         'scale','prominence','score','selection_score','selection_minimum_score','reversal_distance') if k in level}
@@ -24,7 +28,15 @@ def level_evidence(level):
 
 def band_key(level):
     """Co-located sources describe one encounter, without merging nearby bands."""
+    if isinstance(level,FrozenDict):
+        return level.derived('interaction_band_key',lambda:band_key(dict(level)))
     return ':'.join((str(direction(level)),format(level['lower'],'.12g'),format(level['upper'],'.12g')))
+
+
+def band_geometry(level):
+    sign=direction(level)
+    lower,upper=sorted((sign*level['lower'],sign*level['upper']))
+    return sign,lower,upper,max(abs(lower),abs(upper))*1e-12
 
 
 def interaction_focus(events, close):
@@ -108,16 +120,36 @@ class Interactions:
             self.tracks[key]['source_ids'] = sorted(group['source_ids'])
         if len(self.tracks)>4096:
             raise ValueError('Structural interaction capacity exceeded; refusing partial evidence')
+        candles={sign:(sign*bar['close'],sign*bar['open'],*sorted((sign*bar['low'],sign*bar['high'])),
+            sign*previous if previous is not None else None) for sign in (-1,1)}
+        q=qualification
+        quiet_safe=not q or (type(q.get('ready')) is bool
+            and (q.get('atr') is None or type(q['atr']) in (int,float) and isfinite(q['atr']) and q['atr']>=0)
+            and all(type(q.get(k)) in (int,float) and isfinite(q[k]) and q[k]>0
+                for k in ('penetration_atr','body_atr','body_fraction','acceptance_closes'))
+            and type(q.get('price_floor',0)) in (int,float) and isfinite(q.get('price_floor',0)))
         for key,t in self.tracks.items():
             if key not in incoming and t['phase']=='active':
                 continue
-            level = t['level']; sign = direction(level)
+            level = t['level']
+            if isinstance(level,FrozenDict):
+                sign,lower,upper,eps=level.derived('interaction_geometry',lambda:band_geometry(level))
+                close,opened,low,high,prev=candles[sign]
+                # Quiet active bands still advance every bookkeeping field.
+                # They cannot emit an event or create an attempt witness.
+                if (quiet_safe and t['phase']=='active' and not (high>=lower-eps and low<=upper+eps)
+                        and not 0<lower-close<=proximity
+                        and not (prev is not None and close>upper+eps and (prev<=upper+eps or t.get('attempt_atr')))):
+                    t['contact_bars']=0
+                    t['departure']=max(t['departure'],max(lower-high,low-upper,0))
+                    if qualification and close<=upper:
+                        t.pop('attempt_atr',None);t.pop('attempt_context',None);t['attempt_closes']=0
+                    t['contact']=False
+                    continue
+            else:
+                sign,lower,upper,eps=band_geometry(level)
+                close,opened,low,high,prev=candles[sign]
             prior_break = t['break_at']
-            lower, upper = sorted((sign*level['lower'], sign*level['upper']))
-            close, opened = sign*bar['close'], sign*bar['open']
-            low, high = sorted((sign*bar['low'], sign*bar['high']))
-            prev = sign*previous if previous is not None else None
-            eps = max(abs(lower),abs(upper))*1e-12
             q = qualification
             atr = t.get('attempt_atr') or (q['atr'] if q else None)
             distance_floor = max(atr*q['penetration_atr'],q.get('price_floor',0)) if q and atr else eps

@@ -218,7 +218,8 @@ class StrategySignal:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def payload(self) -> dict[str, Any]:
-        return asdict(self)
+        from src.market_engine.immutable_evidence import evidence_payload
+        return evidence_payload(self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -323,7 +324,8 @@ class StrategyIntent:
             raise ValueError(f"{self.action} requires a positive quantity")
 
     def payload(self) -> dict[str, Any]:
-        return asdict(self)
+        from src.market_engine.immutable_evidence import evidence_payload
+        return evidence_payload(self)
 
 
 @dataclass(frozen=True, slots=True)

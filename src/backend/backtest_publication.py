@@ -44,7 +44,10 @@ class BacktestPublication:
     async def _run(self):
         while self.pending is not None and not self.closed:
             boundary, self.pending = self.pending, None
-            symbols = tuple(self.symbols)
+            symbols = tuple(symbol for symbol in self.symbols if boundary.get('assignments_complete',True)
+                or symbol in boundary.get('assignment_symbols',()))
+            if not symbols:
+                continue
             # Assignment dataclasses and broker snapshot rows are immutable
             # engine publications. Only requested tickers cross the process pipe.
             packet = {k: v for k, v in boundary.items() if k != "assignments"}

@@ -48,6 +48,8 @@ class StreamingLevelBook:
     def _index(self):
         old_armed=getattr(self,'armed',None);old_sides=getattr(self,'sides',None)
         self.lower=np.array([r['lower'] for r in self.rows]);self.upper=np.array([r['upper'] for r in self.rows])
+        self.prices=np.array([r['price'] for r in self.rows])
+        self.association_radii=np.array([r['association_radius'] for r in self.rows])
         self.armed=np.array([r['armed'] for r in self.rows],dtype=bool)
         self.sides=np.array([1 if r['side']=='resistance' else -1 if r['side']=='support' else 0 for r in self.rows],dtype=np.int8)
         if old_armed is not None:self.armed[:len(old_armed)]=old_armed;self.sides[:len(old_sides)]=old_sides
@@ -77,6 +79,7 @@ class StreamingLevelBook:
         row['role']=role
 
     def _segment(self,row,stamp):
+        self._projection_revision=getattr(self,'_projection_revision',0)+1
         segment=dict(start=stamp,role=row['role'],lower=row['lower'],upper=row['upper'],price=row['price'],fit=deepcopy(row['fit']))
         if row['segments'] and row['segments'][-1]['start']==stamp:row['segments'][-1]=segment
         else:row['segments'].append(segment)
@@ -103,10 +106,8 @@ class StreamingLevelBook:
         self.proposals+=1;center=price
         # This radius assigns independent turning observations to candidates.
         # It is never rendered as band geometry or used as a fit fallback.
-        radius=prominence/2;matches=[]
-        for i,r in enumerate(self.rows):
-            if abs(price-r['price'])<=max(radius,r['association_radius']):
-                matches.append(i)
+        radius=prominence/2
+        matches=np.flatnonzero(np.abs(self.prices-price)<=np.maximum(radius,self.association_radii)).tolist()
         observation=dict(price=price,at=pivot,resolved_at=bar['t'],role=role,session=self.session,resolution=.0001 if price<1 else .01)
         if matches:
             self.merged+=1
@@ -207,7 +208,7 @@ class StreamingLevelBook:
         # The serialized spill path runs synchronously under its worker's
         # exclusive ownership. It may borrow nested values until encoding ends;
         # ordinary checkpoint callers still receive an independent deep copy.
-        state={k:v for k,v in self.__dict__.items() if k not in ('lower','upper','armed','sides')}
+        state={k:v for k,v in self.__dict__.items() if k not in ('lower','upper','armed','sides','prices','association_radii','_projection_revision','_projection_cache')}
         if copy_state:state=deepcopy(state)
         state['rows']=[dict(r,armed=bool(self.armed[i]),
             side='resistance' if self.sides[i]==1 else 'support' if self.sides[i]==-1 else None)

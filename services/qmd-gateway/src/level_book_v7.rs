@@ -46,7 +46,9 @@ impl Worker {
 // shares mutable MLE state or changes the ordering within a cursor.
 const WORKER_COUNT: usize = 4;
 static WORKERS: OnceLock<Vec<Mutex<Option<Worker>>>> = OnceLock::new();
+static PREPARED_WORKERS: OnceLock<Vec<Mutex<Option<Worker>>>> = OnceLock::new();
 static ADMISSION: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
+static PREPARED_ADMISSION: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
 fn worker_index(request: &Value) -> usize {
     request["ticker"].as_str().unwrap_or("").bytes()
         .fold(0usize, |hash, byte| hash.wrapping_mul(31).wrapping_add(byte as usize)) % WORKER_COUNT
@@ -68,7 +70,8 @@ mod worker_tests {
     }
 }
 pub fn shutdown() {
-    if let Some(slots)=WORKERS.get() {
+    for pool in [&WORKERS,&PREPARED_WORKERS] {
+      if let Some(slots)=pool.get() {
         for slot in slots {
             if let Ok(mut worker)=slot.lock() {
                 if let Some(running)=worker.as_mut() {
@@ -77,14 +80,21 @@ pub fn shutdown() {
                 *worker=None;
             }
         }
+      }
     }
 }
 pub async fn dispatch(request: Value) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let permit = ADMISSION.try_acquire().map_err(|_| (StatusCode::TOO_MANY_REQUESTS, Json(json!({"error":"V7 request queue is full; retry"}))))?;
+    let index=worker_index(&request);
+    dispatch_to(request,index,false).await
+}
+async fn dispatch_to(request: Value,index:usize,prepared:bool) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let admission=if prepared {&PREPARED_ADMISSION}else{&ADMISSION};
+    let permit = admission.try_acquire().map_err(|_| (StatusCode::TOO_MANY_REQUESTS, Json(json!({"error":"V7 request queue is full; retry"}))))?;
     let result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        let slots = WORKERS.get_or_init(|| (0..WORKER_COUNT).map(|_| Mutex::new(None)).collect());
-        let mut slot = slots[worker_index(&request)].lock().map_err(|_| "V7 worker lock poisoned".to_string())?;
+        let pool=if prepared {&PREPARED_WORKERS}else{&WORKERS};
+        let slots = pool.get_or_init(|| (0..WORKER_COUNT).map(|_| Mutex::new(None)).collect());
+        let mut slot = slots[index].lock().map_err(|_| "V7 worker lock poisoned".to_string())?;
         if slot.is_none() { *slot = Some(Worker::start()?); }
         let result = slot.as_mut().unwrap().request(&request);
         if result.is_err() { *slot = None; }
@@ -98,6 +108,41 @@ pub async fn dispatch(request: Value) -> Result<Json<Value>, (StatusCode, Json<V
 }
 pub async fn catalog() -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     dispatch(json!({"operation":"catalog"})).await
+}
+
+/// Batched transport retains per-ticker ownership and order. Only QMD workers
+/// open the prepared authority and update level state.
+pub async fn prepared_stream(Json(request):Json<Value>) -> Result<Json<Value>,(StatusCode,Json<Value>)> {
+    let operation=request["operation"].as_str().unwrap_or("");
+    let field=match operation {"prepare"=>"tickers","advance"=>"requests","release"=>"",_=>return Err((StatusCode::BAD_REQUEST,Json(json!({"error":"Invalid prepared V7 operation"}))))};
+    let rows=if field.is_empty(){Vec::new()}else{request[field].as_array().cloned().ok_or_else(||(StatusCode::BAD_REQUEST,Json(json!({"error":"Prepared V7 rows required"}))))?};
+    if rows.len()>256 {return Err((StatusCode::BAD_REQUEST,Json(json!({"error":"Prepared V7 batch limit is 256"}))));}
+    let mut groups:Vec<Vec<Value>>=(0..WORKER_COUNT).map(|_|Vec::new()).collect();
+    for row in rows {
+        let ticker=if operation=="prepare"{row.as_str()}else{row["ticker"].as_str()}.unwrap_or("");
+        if ticker.is_empty() || ticker.len()>30 || !ticker.chars().all(|c|c.is_ascii_uppercase()||c.is_ascii_digit()||".- ".contains(c)) {
+            return Err((StatusCode::BAD_REQUEST,Json(json!({"error":"Invalid prepared V7 ticker"}))));
+        }
+        groups[worker_index(&json!({"ticker":ticker}))].push(row);
+    }
+    let mut tasks=tokio::task::JoinSet::new();
+    for (index,rows) in groups.into_iter().enumerate() {
+        if rows.is_empty() && operation!="release" {continue;}
+        let mut item=request.clone();
+        if !field.is_empty(){item[field]=json!(rows);}
+        tasks.spawn(async move {dispatch_to(item,index,true).await});
+    }
+    let mut result=Vec::new();
+    let mut error=None;
+    while let Some(value)=tasks.join_next().await {
+        match value {
+            Ok(Ok(Json(value)))=>result.extend(value.as_array().cloned().unwrap_or_default()),
+            Ok(Err(value))=>{error=Some(value);},
+            Err(value)=>{error=Some((StatusCode::SERVICE_UNAVAILABLE,Json(json!({"error":value.to_string()}))));}
+        }
+    }
+    if let Some(error)=error{return Err(error);}
+    Ok(Json(json!({"rows":result})))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

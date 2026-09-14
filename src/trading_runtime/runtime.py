@@ -29,7 +29,7 @@ from src.trading_runtime.signals import (
     StrategySignal,
     normalize_strategy_evaluation,
 )
-from src.trading_runtime.strategy_engine import StrategyObservation
+from src.trading_runtime.strategy_engine import StrategyObservation, StrategyAssignment
 from src.trading_runtime.strategy_orders import StrategyOrderPlan
 
 
@@ -589,7 +589,8 @@ class TradingRuntime:
         results: list[dict[str, Any]] = []
         # Portfolio owns deferred requests; Strategy must refresh their causal
         # authorization. Withdraw any request whose strategy witness expired.
-        if self.config.strategy_revision >= 41 and hasattr(self.strategy, "assignments"):
+        if (self.config.strategy_revision >= 41 and hasattr(self.strategy, "assignments")
+                and self.portfolio.has_pending_entry_requests(account_id)):
             active = {str(a.state.get("pending_capital_request", {}).get("request_id", ""))
                       for a in self.strategy.assignments() if a.account_id == account_id}
             self.portfolio.withdraw_invalidated_requests(account_id, active)
@@ -898,9 +899,11 @@ class TradingRuntime:
         if assignments is None:
             return
         normalized_ticker = ticker.strip().upper()
+        indexed = getattr(type(self.strategy), 'assignments_for_ticker', None)
+        candidates = indexed(self.strategy,normalized_ticker) if normalized_ticker and indexed else assignments()
         selected = (
             assignment
-            for assignment in assignments()
+            for assignment in candidates
             if (not account_id or assignment.account_id == account_id)
             and (not normalized_ticker or assignment.ticker.upper() == normalized_ticker)
         )
@@ -921,12 +924,18 @@ class TradingRuntime:
             ):
                 continue
             # Do not deep-copy the full book for a state that will not be written.
-            payload = assignment.payload()
+            if self.config.mode==RunMode.BACKTEST and isinstance(assignment,StrategyAssignment):
+                # The synchronous journal call below serializes these settings
+                # before control can yield; avoid a redundant deep copy.
+                payload=replace(assignment,parameters={}).payload()
+                payload['parameters']=assignment.parameters
+            else:
+                payload = assignment.payload()
             changed.append((assignment, payload, version, status_changed))
         if not changed:
             return
         self.journal.save_strategy_assignments(
-            [payload for _, payload, _, _ in changed]
+            [payload for _, payload, _, _ in changed], return_rows=False
         )
         if record_events:
             self.journal.append_many([
