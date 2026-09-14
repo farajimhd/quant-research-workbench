@@ -429,6 +429,12 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   const [followLatest, setFollowLatest] = useState(true);
   const [viewRevision, setViewRevision] = useState(0);
   const [heldClock, setHeldClock] = useState({ runId: replayRun?.run_id, time: replayRun?.current_time });
+  useEffect(() => {
+    if (runtimeMode !== "backtest") return;
+    setFollowLatest(true);
+    loadedPreviewRevisionRef.current = "";
+    setHeldClock({ runId: replayRun?.run_id, time: replayRun?.current_time });
+  }, [runtimeMode, replayRun?.run_id, replayRun?.created_at]);
   const heldTime = heldClock.runId === replayRun?.run_id ? heldClock.time : replayRun?.current_time;
   usePollingTask({ enabled: runtimeMode === "backtest" && followLatest, intervalMs: 5000,
     task: async () => setHeldClock({ runId: replayRun?.run_id, time: replayRun?.current_time }) });
@@ -1132,7 +1138,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
         {preview?.run?.current_time && preview.run.current_time !== replayRun.current_time ? <span role="status">Newer snapshot available</span> : null}
       </div> : null}
       <TradingWorkspace
-        key={`${workspaceStorageKey}:${overlayEpoch}`}
+        key={`${workspaceStorageKey}:${overlayEpoch}:${runtimeMode === "backtest" ? replayRun?.created_at ?? "" : ""}`}
         allowMultipleInstances
         canPopOut={!runtimeBase || (Boolean(replayRun) && runtimeMode === "replay")}
         canvasTargets={runtimeBase ? [] : canvasTargets}
@@ -1229,7 +1235,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
             symbolEditable={symbolEditable}
             updateSettings={(update) => updateInstanceSettings(instanceId, update)}
           />;
-          return runtimeMode === "backtest" ? <VisibleBacktestPanel onInteract={() => setFollowLatest(false)} onVisibility={visible => setVisiblePanels(current => current[instanceId] === visible ? current : { ...current, [instanceId]: visible })}>{content}</VisibleBacktestPanel> : content;
+          return runtimeMode === "backtest" ? <VisibleBacktestPanel onVisibility={visible => setVisiblePanels(current => current[instanceId] === visible ? current : { ...current, [instanceId]: visible })}>{content}</VisibleBacktestPanel> : content;
         }}
         runLabel={currentCanvas.label}
         runStatus={preview ? "running" : "idle"}

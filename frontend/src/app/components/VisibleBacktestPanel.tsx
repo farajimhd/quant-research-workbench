@@ -3,7 +3,7 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 const PanelVisibility = createContext(true);
 export const usePanelVisibility = () => useContext(PanelVisibility);
 
-export function VisibleBacktestPanel({ children, onVisibility, onInteract }: { children: ReactNode; onVisibility: (visible: boolean) => void; onInteract?: () => void }) {
+export function VisibleBacktestPanel({ children, onVisibility }: { children: ReactNode; onVisibility: (visible: boolean) => void }) {
   const ref = useRef<HTMLDivElement>(null);
   const callback = useRef(onVisibility);
   callback.current = onVisibility;
@@ -18,5 +18,5 @@ export function VisibleBacktestPanel({ children, onVisibility, onInteract }: { c
     if (ref.current) observer.observe(ref.current);
     return () => observer.disconnect();
   }, []);
-  return <div ref={ref} onPointerDownCapture={onInteract} onWheelCapture={onInteract} onKeyDownCapture={onInteract} style={{ height: "100%", minHeight: 0 }}><PanelVisibility.Provider value={visible}>{mounted ? children : null}</PanelVisibility.Provider></div>;
+  return <div ref={ref} style={{ height: "100%", minHeight: 0 }}><PanelVisibility.Provider value={visible}>{mounted ? children : null}</PanelVisibility.Provider></div>;
 }

@@ -243,8 +243,8 @@ These are presentation measurements, not engine-throughput benchmarks. The run
 remains stopped at 08:00:47Z with 71,347 processed events.
 
 Backtest views follow new data by default. Update view explicitly
-advances a held view; Follow latest refreshes every five seconds and pauses
-when the user interacts with a panel. Hidden panels suspend requests, chart
+advances a held view; Follow latest refreshes every five seconds. Only its explicit checkbox pauses
+the dashboard; ordinary panel interaction does not stop updates. Hidden panels suspend requests, chart
 details are requested only when needed, and unused publication interests expire
 after 15 seconds. Engine publication still uses a separate process and bounded
 latest-only work. Setup-only results/comparison reads no longer run when opening
@@ -297,8 +297,9 @@ checkpoint performance remain optimization work.
 
 The UI now recognizes resumed preparation from runtime readiness, reports ticker
 counts, shows checkpoint capture/save with elapsed time, and keeps polling through
-finalization. Activity follows automatically until the user interacts; a visible
-paused-updates message explains held rows. Activity-only layouts use their own
+finalization. Activity follows automatically; the Follow latest checkbox explicitly controls
+dashboard updates. Older activity pages hold only their own time/sequence
+boundary and expose Latest events to return to the live page. Activity-only layouts use their own
 held clock rather than a hidden financial panel's old timestamp/sequence.
 
 Validation: delayed capture/persistence keeps the compact endpoint responsive
@@ -311,3 +312,13 @@ The user run subsequently reached stopped with a complete checkpoint at
 596,100 events (08:37:06.8Z). No other active backtest was resident, so the
 backend was restarted through the managed lifecycle to activate these changes.
 No stop or resume command was issued by this task.
+
+The subsequent resume follow-up removed pointer/wheel/key handlers that had
+inadvertently disabled dashboard polling on any panel interaction. Resume
+invalidates the saved-review cache and restores following, including when the
+run ID stays the same. Existing selected evidence remains cached while fresh
+rows arrive. The frontend-only fix does not restart or command the engine.
+In the actual running browser after scrolling, the status advanced from
+1,140,497 to 1,146,709 events (05:29:23 to 05:30:05 ET) over the observation.
+Following remained enabled, with three distinct activity-page requests and
+three Canvas requests. The browser regression and 12 visual scenarios passed.

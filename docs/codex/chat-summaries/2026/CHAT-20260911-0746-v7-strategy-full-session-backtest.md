@@ -114,3 +114,12 @@ delayed-worker responsiveness tests passed, along with browser phase/follow and
 checkpoint; the managed backend restart then activated the fix without issuing
 any stop or resume command. Remaining work includes reducing checkpoint cost and
 reusing prepared working sets, without weakening durability or causality.
+
+The next resume exposed an overly broad frontend pause: pointer, wheel and key
+events in any panel disabled following for the entire dashboard. Those handlers
+are removed. Only the explicit Follow latest checkbox pauses dashboard updates;
+Older events pins that activity page alone, with Latest events restoring its live
+page. Resume invalidates saved-review caches and restores following for the same
+run ID. Browser regression checks selected evidence during incoming updates,
+stable older pages and resume reset; the build and 12 visual scenarios passed.
+This follow-up changed no backend execution code and did not restart the run.
