@@ -8,6 +8,31 @@ from src.trading_runtime import v7_setup as V, strategy_engine as S
 from tests.test_v7_setup import prepared
 
 
+def test_episode_high_is_prior_only_and_resets_with_episode():
+    state={};settings=dict(setup_range_seconds=30,setup_minimum_bars=1)
+    for i,episode,high in [(1,1,10),(2,1,11),(3,2,9)]:
+        V.observe(state,dict(session='day',episode=episode,bar=dict(time=i-1,end=i,
+            open=high-.1,close=high,high=high,low=high-.2)),settings,True)
+        assert state['prior_episode_high']==(10 if i==2 else None)
+    assert state['episode_high']==9
+
+
+@pytest.mark.parametrize('price,opening,enters',[(10.02,10,False),(10.1,10,False),
+    (10.11,10,True),(10.11,10.12,False)])
+def test_episode_high_entry_replaces_below_range_requirement(price,opening,enters):
+    host,a,obs=prepared()
+    p=deepcopy(a.parameters);p['historical_hod']['setup_episode_high_entry']=1
+    state=deepcopy(a.state)
+    state['historical_hod_state']['episode']=obs(2,price).observed_at.timestamp()-5
+    state['v7_setup'].update(episode=state['historical_hod_state']['episode'],episode_high=10.1)
+    a=replace(a,parameters=p,state=state)
+    result=host.evaluate(a,replace(obs(2,price),bar_open=opening,bar_high=max(price,10.12)))
+    assert any(i.action=='enter_long' for i in result.evaluation.intents)==enters,result.evaluation.signals[0].reason
+    if enters:
+        assert result.state['historical_hod_entry']['breakout_confirmation']['threshold']==10.1
+        assert result.evaluation.signals[0].reason=='v7_episode_high_entry'
+
+
 @pytest.mark.parametrize('minimum,opening,enters', [(0,10.02,True),(5,10.02,False),
     (5,10.0193,False),(5,10.01,True),(10,10.01,False),(10,10.0,True)])
 def test_completed_entry_body_threshold_is_independent_of_resistance_buffers(minimum,opening,enters):

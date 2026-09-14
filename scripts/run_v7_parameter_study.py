@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import argparse
 from copy import deepcopy
 import json
+from math import isfinite
 import time
 import requests
 
@@ -33,12 +34,18 @@ def main():
     parser.add_argument('--runtime', type=Path, required=True)
     parser.add_argument('--baseline', default=BASELINE)
     parser.add_argument('--prepare-only', action='store_true')
+    parser.add_argument('--spread-bps', type=float, help='Override current trading spread gate; retain admission policy')
     args = parser.parse_args()
     root = args.runtime.resolve()
     root.relative_to(Path('D:/TradingML/runtimes').resolve())
     recipe = json.loads((root / 'recipe.json').read_text())
     manifest = root / 'manifest.json'
     state = json.loads(manifest.read_text()) if manifest.exists() else dict(baseline=args.baseline, recipe=recipe, trials=[])
+    if args.spread_bps is not None and (not isfinite(args.spread_bps) or args.spread_bps <= 0):
+        raise ValueError('Spread limit must be finite and positive')
+    if manifest.exists() and state.get('spread_bps') != args.spread_bps:
+        raise ValueError('Pinned spread limit changed; use a new study directory')
+    state['spread_bps'] = args.spread_bps
     if state['baseline'] != args.baseline or state['recipe'] != recipe:
         raise ValueError('Pinned baseline or recipe changed; use a new study directory')
     if state.get('launching'):
@@ -66,6 +73,9 @@ def main():
         if set(changes) - set(DEFAULTS):
             raise ValueError(f'Unknown parameter in {name}')
         settings.update(changes)
+        if args.spread_bps is not None:
+            profile['parameters']['liquidity_admission'].update(
+                maximum_current_spread_bps=args.spread_bps,maximum_spread_bps=args.spread_bps)
         candidate = create_test_candidate(label=f'V7 study / {name}',
             canvas_revision=payload['canvas']['revision'], canvas_profile=payload['canvas']['profile'],
             configuration=payload, run_plan_id=PLAN, strategy_profile_id=PROFILE)
@@ -75,6 +85,7 @@ def main():
     if args.prepare_only:
         print('Prepared candidates:', [(t['name'],t['revision']) for t in state['trials']], flush=True)
         return
+    print(f'Spread gate: {args.spread_bps:g} bps' if args.spread_bps is not None else 'Spread gate: frozen baseline', flush=True)
     session = requests.Session()
     base = 'http://127.0.0.1:8000/api/trading/backtest/runs'
     while True:

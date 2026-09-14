@@ -27,7 +27,7 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     luld_buffer_bps=25.,luld_buffer_ticks=2,luld_maximum_age_ms=60000.,v7_zone_enabled=0,entry_zone_fraction=.30,
     v7_center_swing_enabled=0,v7_transition_entries_enabled=0,v7_price_only_enabled=0,rejection_break_offset_bps=0.,
     v7_setup_enabled=0,setup_failure_seconds=0,setup_failure_buffer_ticks=1.,setup_minimum_body_bps=0.,setup_trail_requires_breakout=0,setup_trail_activation_r=0.,setup_recovery_preserve_peak=0,setup_recovery_enabled=0,setup_add_requires_range_breakout=1,setup_range_seconds=30,setup_minimum_bars=5,
-    v7_encounters_enabled=0,breakout_buffer_bps=10.,breakout_buffer_ticks=1.,topping_tail_fraction=.5)
+    setup_episode_high_entry=0,v7_encounters_enabled=0,breakout_buffer_bps=10.,breakout_buffer_ticks=1.,topping_tail_fraction=.5)
 
 
 def configure(p):
@@ -42,9 +42,11 @@ def configure(p):
     if set(raw)-set(DEFAULTS):
         raise ValueError('Unknown historical HOD setting')
     s = dict(DEFAULTS, **raw)
+    if s['setup_episode_high_entry'] not in (0,1) or s['setup_episode_high_entry'] and not s['v7_setup_enabled']:
+        raise ValueError('Episode-high entry requires the V7 setup policy and a boolean switch')
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
         raise ValueError('Historical HOD settings must be finite and positive')
     if not 0 <= s['setup_failure_seconds'] <= 5 or int(s['setup_failure_seconds']) != s['setup_failure_seconds']:
         raise ValueError('Initial setup failure window must be zero to five completed seconds')
@@ -1139,7 +1141,12 @@ def evaluate(host, a, o, p, state):
         if o.price-o.bar_open+1e-9 < minimum_body:
             return result('wait','setup_body_below_minimum')
         consolidation=setup_state.get('range')
-        if not consolidation or o.price <= previous or o.price >= consolidation['high']:
+        if s['setup_episode_high_entry']:
+            episode_high = setup_state.get('prior_episode_high')
+            evidence['episode_high_entry'] = dict(threshold=episode_high,close=o.price,observed_at=now)
+            if not consolidation or not episode_high or o.price <= episode_high:
+                return result('wait','waiting_for_episode_high_break')
+        elif not consolidation or o.price <= previous or o.price >= consolidation['high']:
             return result('wait','waiting_for_rising_setup_below_range_high')
     if not setup_enabled and not crossed and not recent_held and not reclaim:
         return result('wait','waiting_for_fresh_body_high_break' if require_body_high else 'waiting_for_fresh_resistance_break')
@@ -1195,11 +1202,12 @@ def evaluate(host, a, o, p, state):
             breakout_threshold=v7_encounters.threshold(dict(price=consolidation['high']),s,tick))
         if s['setup_failure_seconds']:
             entry['setup']['entry_bar'] = deepcopy(d['bar'])
-        # No overhead resistance has been broken by this early entry.
+        # Start add progression above entry; do not replay earlier level breaks.
         entry['last_add_level']=dict(boundary,price=o.price,lower=o.price,upper=o.price)
         entry['last_cleared_resistance']=deepcopy(entry['last_add_level'])
-        entry['breakout_confirmation']=dict(boundary_kind='setup_rising_close',validated_at=now,
-            threshold=None,range=consolidation)
+        entry['breakout_confirmation']=dict(
+            boundary_kind='episode_high' if s['setup_episode_high_entry'] else 'setup_rising_close',validated_at=now,
+            threshold=setup_state.get('prior_episode_high') if s['setup_episode_high_entry'] else None,range=consolidation)
         evidence['setup_management']=v7_setup.evidence(setup_state,entry)
     if initial_green:
         if reclaim:
@@ -1210,4 +1218,4 @@ def evaluate(host, a, o, p, state):
     state.update(historical_hod_entry=entry,initial_stop=stop,active_stop=stop,structural_profit_targets=[selected['price']],
         entry_reference_price=decision_ask,entry_at=o.observed_at.isoformat(),entries=state.get('entries',0)+1,
         last_exit_reason='',entry_acquisition_exit_latched=False)
-    return enter(entry,'v7_early_setup_entry' if setup_enabled else 'stopped_level_reclaim' if reclaim else 'historical_hod_entry')
+    return enter(entry,'v7_episode_high_entry' if s['setup_episode_high_entry'] else 'v7_early_setup_entry' if setup_enabled else 'stopped_level_reclaim' if reclaim else 'historical_hod_entry')

@@ -21,6 +21,7 @@ def observe(state, market, settings, fresh):
     state.update(at=bar['end'], bars=[*bars, deepcopy(bar)])
     if state.get('episode') != market.get('episode'):
         state.update(episode=market.get('episode'), episode_high=None, episode_low=None, body_high=None)
+    state['prior_episode_high'] = state.get('episode_high')
     if market.get('episode') is not None:
         state['episode_high'] = max(state.get('episode_high') or bar['high'], bar['high'])
         state['episode_low'] = min(state.get('episode_low') or bar['low'], bar['low'])
