@@ -1,3 +1,4 @@
+import { usePanelVisibility } from "../../app/components/VisibleBacktestPanel";
 import { usePollingTask } from "../../app/hooks/usePollingTask";
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { UTCTimestamp } from "lightweight-charts";
@@ -81,6 +82,8 @@ function isBarDerivedIndicatorColumn(column: string): boolean {
 type HistoricalChartMode = "backtest" | "debug" | "replay";
 
 export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimeframe, cutoffMs: number, sessionDate: string, visibleIndicatorIds: string[], liveTail = false, enabled = true, historicalMode: HistoricalChartMode = "replay", fullSession = false, runId?: string): CanvasLiveChartState {
+  const panelVisible = usePanelVisibility();
+  enabled = enabled && panelVisible;
   const pointInTime = !liveTail;
   const barsCutoffRef = useRef(0);
   const refreshCutoffMs = pointInTime

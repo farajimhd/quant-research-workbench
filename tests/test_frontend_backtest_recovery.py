@@ -80,10 +80,13 @@ class BacktestRecoveryBrowserTests(unittest.TestCase):
                 payload = response.json()
                 self.assertFalse(payload['errors'])
                 self.assertEqual(payload['run']['run_id'], run_id)
+                page.get_by_text('Strategy Activity', exact=True).first.scroll_into_view_if_needed()
                 page.get_by_role('region', name='Strategy activity', exact=True).wait_for()
                 self.assertEqual(page.locator('.backtest-recovery-state').count(), 0)
                 # Complete small journals correctly have no older-page button.
-                if not payload['trading']['strategy_activity_page']['complete']:
+                if payload['trading'].get('strategy_activity_deferred'):
+                    page.get_by_role("button", name="Older events", exact=True).wait_for()
+                elif not payload['trading']['strategy_activity_page']['complete']:
                     page.get_by_role("button", name="Load next 2,000 older events").wait_for()
                 page.wait_for_timeout(2000)
                 self.assertEqual(setup_requests, [])

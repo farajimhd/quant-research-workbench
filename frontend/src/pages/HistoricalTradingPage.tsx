@@ -343,7 +343,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   });
 
   useEffect(() => {
-    if (!run || !["completed", "stopped", "failed"].includes(run.status)) return;
+    if (selectedRunId || !run || !["completed", "stopped", "failed"].includes(run.status)) return;
     api<BacktestResults>(`/api/trading/backtest/runs/${encodeURIComponent(run.run_id)}/results`, { timeoutMs: 60_000 })
       .then(setResults)
       .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));

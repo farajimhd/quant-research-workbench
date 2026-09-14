@@ -155,6 +155,8 @@ export type CanonicalTradingPreview = {
   positions: PreviewRow[];
   position_lifecycles?: PreviewRow[];
   presentation_as_of?: string;
+  presentation_sequence?: number;
+  strategy_activity_deferred?: boolean;
   orders: PreviewRow[];
   executions: PreviewRow[];
   closed_trades: PreviewRow[];

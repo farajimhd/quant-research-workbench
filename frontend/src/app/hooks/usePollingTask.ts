@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { usePanelVisibility } from "../components/VisibleBacktestPanel";
 
 type PollingTaskOptions = {
   enabled?: boolean;
@@ -25,6 +26,8 @@ export function usePollingTask({
   restartKey = "",
   task,
 }: PollingTaskOptions) {
+  const panelVisible = usePanelVisibility();
+  enabled = enabled && panelVisible;
   const taskRef = useRef(task);
   const errorRef = useRef(onError);
   taskRef.current = task;

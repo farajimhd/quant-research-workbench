@@ -2207,10 +2207,26 @@ class ReplayRunController:
         offset: int = 0,
         include_decision_evidence: bool = True,
         consequential_only: bool = False,
+        through_sequence: int | None = None,
     ) -> dict[str, Any]:
         if self._journal is None:
             raise ValueError("Replay Strategy Activity is not ready")
         from src.backend.trading_runtime_service import strategy_activity_payload
+
+        if self.definition.mode == RunMode.BACKTEST or through_sequence is not None:
+            cutoff = min(as_of, self.current_time) if as_of and self.current_time else self.current_time or as_of
+            fence = self._journal.latest_sequence(self.run_id)
+            if through_sequence is not None:
+                fence = min(fence, through_sequence)
+            limit = max(1, min(int(limit), 50_000))
+            records = self._journal.strategy_activity_records(run_id=self.run_id, as_of=cutoff,
+                through_sequence=fence, record_id=record_id, strategy_id=strategy_id, ticker=ticker,
+                event_type=event_type, limit=limit + 1, offset=offset,
+                compact=not include_decision_evidence, consequential_only=consequential_only)
+            return {**strategy_activity_payload(as_of=cutoff, run_id=self.run_id, record_id=record_id,
+                strategy_id=strategy_id, ticker=ticker, event_type=event_type, limit=limit, offset=offset,
+                include_decision_evidence=include_decision_evidence, consequential_only=consequential_only,
+                _records=records), 'presentation_sequence': fence}
 
         if not record_id and not include_decision_evidence:
             from src.backend.replay_activity_index import ReplayActivityIndex
@@ -6751,43 +6767,13 @@ class ReplayRunService:
         journal_path = run_dir / "journal.sqlite3"
         if not manifest_path.is_file() or not journal_path.is_file():
             raise KeyError(run_id)
-        persisted_run, definition, persisted = await asyncio.to_thread(
-            _load_saved_review_materials,
-            normalized,
-            run_dir,
-            manifest_path,
-            journal_path,
-        )
-        controller = await asyncio.to_thread(ReplayRunController,
-            definition,
-            run_id=normalized,
-            runtime_root=self.runtime_root,
-            resume_state=dict(persisted["state"]),
-        )
-        controller._journal = TradingJournal(journal_path, read_only=True)
+        from src.backend.backtest_review import SavedBacktestReview
+        controller = await asyncio.to_thread(SavedBacktestReview, run_dir)
         try:
-            await asyncio.to_thread(_initialize_completed_review_controller, controller)
-            controller._checkpoint_projection(persisted)
-        except Exception:
+            await self._admit(controller)
+        except BaseException:
             controller._journal.close()
-            controller._journal = None
             raise
-        controller.status = str(persisted_run["status"])
-        controller.error = str(persisted_run.get("error") or "")
-        controller._runtime_inputs_ready = True
-        controller._runtime_finished = True
-        controller._preparation_stage = "ready"
-        controller._strategy_frame_cache_status = str(
-            dict(persisted_run.get("preparation_cache") or {}).get("strategy_frames")
-            or "run_checkpoint"
-        )
-        controller.created_at = _checkpoint_time(
-            persisted_run.get("created_at") or controller.created_at
-        )
-        controller.updated_at = _checkpoint_time(
-            persisted_run.get("updated_at") or controller.updated_at
-        )
-        await self._admit(controller)
         return controller
 
     async def _admit(self, controller: ReplayRunController) -> None:
@@ -6804,6 +6790,9 @@ class ReplayRunService:
                 evicted = terminal.pop(0)
                 if getattr(evicted, '_monitoring', None) is not None:
                     await evicted._monitoring.close()
+                if getattr(evicted, '_journal', None) is not None:
+                    evicted._journal.close()
+                    evicted._journal = None
                 self._runs.pop(evicted.run_id, None)
             if len(self._runs) >= self.max_resident_runs:
                 raise ReplayRunCapacityError(
@@ -7007,47 +6996,6 @@ def _durable_backtest_tickers(run_dir: Path) -> list[str]:
         return sorted({_ticker(str(value)) for value in values if str(value).strip()})
     except (IndexError, OSError, TypeError, ValueError, json.JSONDecodeError):
         return []
-
-
-def _load_saved_review_materials(
-    run_id: str,
-    run_dir: Path,
-    manifest_path: Path,
-    journal_path: Path,
-) -> tuple[dict[str, Any], ReplayRunDefinition, dict[str, Any]]:
-    """Load large immutable review artifacts without blocking the API event loop."""
-
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    persisted_run = dict(manifest.get("run") or {})
-    if str(persisted_run.get("status") or "") not in {"completed", "stopped"}:
-        raise ValueError("Only completed or stopped Backtests can be opened for review")
-    definition = _definition_from_manifest(manifest, run_dir=run_dir, archived_review_only=True)
-    if definition.mode != RunMode.BACKTEST:
-        raise ValueError("Saved-run review accepts Backtest runs only")
-    journal = TradingJournal(journal_path, read_only=True)
-    try:
-        persisted = journal.load_checkpoint(run_id, immutable=True)
-    finally:
-        journal.close()
-    state = dict((persisted or {}).get("state") or {})
-    if (
-        int(state.get("schema_version") or 0) != RESTART_CHECKPOINT_SCHEMA_VERSION
-        or not bool(state.get("complete"))
-    ):
-        raise ValueError("Saved Backtest has no complete review checkpoint")
-    return persisted_run, definition, persisted
-
-
-def _initialize_completed_review_controller(controller: ReplayRunController) -> None:
-    """Rebuild a terminal runtime off the serving event loop."""
-
-    asyncio.run(
-        controller._initialize_runtime(
-            record_configuration=False,
-            record_lifecycle=False,
-            review_only=True,
-        )
-    )
 
 
 def _durable_run_selection(run_dir: Path) -> dict[str, Any] | None:

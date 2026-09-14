@@ -66,4 +66,36 @@ The app inventory exposed this active task, the September 9 predecessor and othe
 
 ### Handoff to the next chat
 
-Read this summary, TASK-0014/0206/0208/0211/0213, and the effective run configuration before changing strategy or service behavior. Open the active run with `?backtest_run=fdeff0d5-654e-41cc-91a9-e309c290af93#backtest-trading`; first recheck its actual state. Preserve working checkpoints and the active run. Finish run validation and schedule the pending managed QMD activation before claiming operational closure. Source changes belong on the laptop and task-owned commits only; canonical repairs and broker identity publication need verified authority and the applicable user authorization.
+Read this summary, TASK-0014/0206/0208/0211/0213, and the effective run configuration before changing strategy or service behavior. Open the run with `?backtest_run=fdeff0d5-654e-41cc-91a9-e309c290af93#backtest-trading`; first recheck its actual state. Preserve working checkpoints. Source changes belong on the laptop and task-owned commits only; canonical repairs and broker identity publication need verified authority and the applicable user authorization.
+
+### September 14 acceleration and saved-review follow-up
+
+This update supersedes the earlier warming/activation status above. The original
+run is stopped and resumable at 08:00:47Z, 71,347 events. Managed activation has
+completed. TASK-0213 still needs its dedicated real concurrent cache stress
+acceptance; full-session strategy, P&L and throughput acceptance remain open.
+The isolated full-market diagnostic advanced 618 simulated seconds in 263.28
+playback seconds (2.35x), plus 274.46 seconds of warmup. Resident causal V7 books,
+persisted bars, four workers and bounded journal/checkpoint/publication work are
+documented in [the acceleration reference](../../../backtest-acceleration.md).
+All 2,368 prefix decisions and 865 real-bar V7 prefix snapshots matched their
+baselines. These bounded comparisons do not establish full-session acceptance.
+
+The user then requested faster saved Review and lazy frontend updates. Review
+now reads checkpoint identity and financial state without restoring the engine.
+Cold opening of the original stopped run measured 2.75-2.97 seconds versus
+37.13 seconds previously; the first financial view took 21 ms. Resume retains
+the complete checkpoint validation and execution path. Activity loads in
+200-row pages, caches six pages and holds causal time/sequence fences. Views
+hold by default; Update view advances explicitly, while optional five-second
+Follow latest pauses on interaction. Hidden panels suspend requests and unused
+publication interests expire. Explicit results requests retain their activity.
+
+Saved financial-state parity, unchanged journal bytes, forbidden engine restore
+during Review, checkpoint resume, publication parity and causal chart boundaries
+passed focused tests. Browser checks verified stable selection/evidence, cached
+paging, filters and Follow behavior. Managed build and 12 visual scenarios passed;
+the new controls remain usable across the tested themes/scales/viewports. An
+older compact-header clipping issue remains outside this change. TASK-0212
+records delivery; no original run was resumed for UI validation. Next work is
+the remaining engine and full-session acceptance, not another review restore.

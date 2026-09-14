@@ -1,3 +1,5 @@
+import { LazyBacktestActivity } from "../app/components/LazyBacktestActivity";
+import { VisibleBacktestPanel } from "../app/components/VisibleBacktestPanel";
 import { BacktestRecoveryFailure } from "../app/components/BacktestRecoveryFailure";
 import { FailedBacktestError, openBacktestSetup, recoverBacktest } from "../app/backtestRecovery";
 import { Activity, Check, Clock3, Globe2, Link2, MapPin, Maximize2, Minimize2, PanelRightOpen, Pause, Play, RefreshCcw, Search, Save, Settings2, ShieldCheck, TriangleAlert, Unlink } from "lucide-react";
@@ -423,8 +425,17 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   const primarySettings = instanceSettings(registry, primaryChartId);
   const dedicatedContainers = new Set<WorkspaceContainerId>(["chart", "charts_quotes", "facts", "microstructure", "news", "ticker_news", "news_detail", "sec", "ticker_sec", "sec_detail", "xbrl", "scanner", "signal_stream", "watchlist", "strategy_activity"]);
   const historicalTradingContainers = new Set<WorkspaceContainerId>(["chart", "charts_quotes"]);
+  const [visiblePanels, setVisiblePanels] = useState<Record<string, boolean>>({});
+  const [followLatest, setFollowLatest] = useState(false);
+  const [viewRevision, setViewRevision] = useState(0);
+  const [heldClock, setHeldClock] = useState({ runId: replayRun?.run_id, time: replayRun?.current_time });
+  const heldTime = heldClock.runId === replayRun?.run_id ? heldClock.time : replayRun?.current_time;
+  usePollingTask({ enabled: runtimeMode === "backtest" && followLatest, intervalMs: 5000,
+    task: async () => setHeldClock({ runId: replayRun?.run_id, time: replayRun?.current_time }) });
+
   const previewContainerKey = (workspaceState?.openIds ?? []).filter((id) => {
     const kind = workspaceContainerKind(id, workspaceState);
+    if (runtimeMode === "backtest" && (!visiblePanels[id] || workspaceState?.layouts[id]?.minimized)) return false;
     return !dedicatedContainers.has(kind) || Boolean(replayRun && historicalTradingContainers.has(kind));
   }).sort().join(",");
   const scannerContainerKey = (workspaceState?.openIds ?? []).filter((id) => ["scanner", "watchlist"].includes(workspaceContainerKind(id, workspaceState))).sort().join(",");
@@ -448,9 +459,9 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   const activeSymbol = activeLinkGroup === "none" ? primarySettings.chart.symbol : registry.linkContexts[activeLinkGroup].symbol;
   const chartCutoffMs = useMemo(
     () => replayRun
-      ? Date.parse(preview?.run?.run_id === replayRun.run_id ? preview.run.current_time : replayRun.current_time)
+      ? Date.parse(preview?.run?.run_id === replayRun.run_id ? preview.run.current_time : runtimeMode === "backtest" ? heldTime || replayRun.current_time : replayRun.current_time)
       : dateInTimeZone(previewContext.sessionDate, previewContext.previewTime, "America/New_York").getTime(),
-    [previewContext, replayRun?.run_id, replayRun?.current_time, preview?.run?.run_id, preview?.run?.current_time],
+    [previewContext, replayRun?.run_id, replayRun?.current_time, preview?.run?.run_id, preview?.run?.current_time, heldTime, runtimeMode],
   );
   const scannerCutoffMs = replayRun ? Math.floor(chartCutoffMs / 15_000) * 15_000 : chartCutoffMs;
   const historicalScanner = useCanvasScannerSnapshot({
@@ -663,18 +674,21 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   usePollingTask({
     enabled: Boolean(contextReady && replayRun && replayRuntimeReady && previewContainerKey),
     initialDelayMs: 0,
-    intervalMs: runtimeMode === "backtest" ? 1_000 : 250,
+    intervalMs: runtimeMode === "backtest" ? 5_000 : 250,
     // Let the one final read finish even if its tab is hidden. A single-shot
     // polling task otherwise treats a visibility abort as completion.
     pauseWhenHidden: Boolean(replayRun && !isTerminalReplayStatus(replayRun.status)),
-    repeat: !replayRun || !isTerminalReplayStatus(replayRun.status),
-    restartKey: `${replayRun?.run_id}:${activeSymbol}:${previewContainerKey}:${Boolean(replayRun && isTerminalReplayStatus(replayRun.status))}`,
+    repeat: (!replayRun || !isTerminalReplayStatus(replayRun.status)) && (runtimeMode !== "backtest" || followLatest),
+    restartKey: `${replayRun?.run_id}:${activeSymbol}:${previewContainerKey}:${Boolean(replayRun && isTerminalReplayStatus(replayRun.status))}:${viewRevision}`,
     onError: (reason) => { setError(reason instanceof Error ? reason.message : String(reason)); setLoading(false); },
     task: async (signal) => {
       if (!replayRun) return;
-      const revision = `${replayRun.run_id}:${activeSymbol}:${previewContainerKey}:${replayRun.updated_at}:${replayRun.status}`;
-      if (isTerminalReplayStatus(replayRun.status) && loadedPreviewRevisionRef.current === revision) return;
-      const payload = await api<CanvasPreview>(`/api/trading/${runtimeMode}/runs/${encodeURIComponent(replayRun.run_id)}/canvas${query({ symbol: activeSymbol })}`, { signal, timeoutMs: 60000 });
+      const includeChart = previewContainerKey.split(",").some(id => ["chart", "charts_quotes"].includes(workspaceContainerKind(id, workspaceState)));
+      const revision = runtimeMode === "backtest"
+        ? `${replayRun.run_id}:${activeSymbol}:${viewRevision}:${includeChart}`
+        : `${replayRun.run_id}:${activeSymbol}:${previewContainerKey}:${replayRun.updated_at}:${replayRun.status}`;
+      if ((isTerminalReplayStatus(replayRun.status) || (runtimeMode === "backtest" && !followLatest)) && loadedPreviewRevisionRef.current === revision) return;
+      const payload = await api<CanvasPreview>(`/api/trading/${runtimeMode}/runs/${encodeURIComponent(replayRun.run_id)}/canvas${query({ symbol: activeSymbol, lazy: runtimeMode === "backtest" ? "true" : undefined, include_chart: includeChart ? "true" : "false" })}`, { signal, timeoutMs: 60000 });
       if (!signal.aborted) { loadedPreviewRevisionRef.current = revision; setPreview(payload); setLoading(false); setError(""); }
     },
   });
@@ -688,7 +702,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
       return;
     }
     if (!previewContainerKey) {
-      setPreview(null);
+      if (runtimeMode !== "backtest") setPreview(null);
       setLoading(false);
       setError("");
       return;
@@ -1111,6 +1125,12 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
         {error ? <div className="canvas-inline-error">{error}</div> : null}
       </div> : null}
 
+      {runtimeMode === "backtest" && replayRun ? <div className="backtest-view-controls" aria-label="Backtest view updates">
+        <span>{followLatest ? "Following latest · every 5 seconds" : isTerminalReplayStatus(replayRun.status) ? "Saved backtest review" : "View held · engine continues independently"}</span>
+        <button className="button secondary compact" onClick={() => { setHeldClock({ runId: replayRun.run_id, time: replayRun.current_time }); setViewRevision(n => n + 1); }}>Update view</button>
+        <label><input type="checkbox" checked={followLatest} onChange={event => setFollowLatest(event.target.checked)} /> Follow latest</label>
+        {preview?.run?.current_time && preview.run.current_time !== replayRun.current_time ? <span role="status">Newer snapshot available</span> : null}
+      </div> : null}
       <TradingWorkspace
         key={`${workspaceStorageKey}:${overlayEpoch}`}
         allowMultipleInstances
@@ -1160,7 +1180,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
               const candidate = TRADING_WORKSPACE_CONTAINERS.find((item) => item.id === candidateKind)!;
               return { status: metaForContainer(candidate).status, symbol: registry.linkContexts[group].symbol, title: containerInstanceTitle(candidateKind, candidateId, workspaceState, registry) };
             });
-          return <ContainerPreview
+          const content = <ContainerPreview
             canvasId={canvasId}
             chartCutoffMs={chartCutoffMs}
             definition={definition}
@@ -1209,6 +1229,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
             symbolEditable={symbolEditable}
             updateSettings={(update) => updateInstanceSettings(instanceId, update)}
           />;
+          return runtimeMode === "backtest" ? <VisibleBacktestPanel onInteract={() => setFollowLatest(false)} onVisibility={visible => setVisiblePanels(current => current[instanceId] === visible ? current : { ...current, [instanceId]: visible })}>{content}</VisibleBacktestPanel> : content;
         }}
         runLabel={currentCanvas.label}
         runStatus={preview ? "running" : "idle"}
@@ -1340,7 +1361,7 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
             ? <div className="canvas-inline-error">{liveMode ? "Live" : "Historical"} watchlist unavailable: {scannerError}</div>
             : <WatchUniverseContainer asOf={new Date(chartCutoffMs).toISOString()} live={liveMode} onSettingsChange={(change) => updateSettings((state) => ({ ...state, watchlist: { ...state.watchlist, ...(typeof change === "function" ? change(state.watchlist) : change) } }))} onTickerSelect={onTickerWorkspaceOpen} runtime={replayWatchlistRuntime ?? scannerSnapshot?.watchlist_runtime ?? null} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.watchlist} />
       : definition.id === "strategy_activity"
-        ? <StrategyActivityContainer loadAllHistory={runtimeMode === "backtest" ? isTerminalReplayStatus(preview?.run?.status ?? "") : runtimeMode === "backtest_debug" || (readOnly && Boolean(signalStreamRunId))} asOf={new Date(chartCutoffMs).toISOString()} focusSequence={strategyActivityFocusSequence} historicalPage={signalStreamRunId ? preview?.trading.strategy_activity_page : undefined} historicalRows={signalStreamRunId ? preview?.trading.strategy_activity ?? [] : undefined} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, strategy_activity: { ...state.strategy_activity, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} runId={signalStreamRunId} settings={settings.strategy_activity} />
+        ? runtimeMode === "backtest" ? <LazyBacktestActivity throughSequence={preview?.trading.presentation_sequence} asOf={new Date(chartCutoffMs).toISOString()} runId={signalStreamRunId} settings={settings.strategy_activity} onSettingsChange={patch => updateSettings(state => ({ ...state, strategy_activity: { ...state.strategy_activity, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} /> : <StrategyActivityContainer loadAllHistory={runtimeMode === "backtest_debug" || (readOnly && Boolean(signalStreamRunId))} asOf={new Date(chartCutoffMs).toISOString()} focusSequence={strategyActivityFocusSequence} historicalPage={signalStreamRunId ? preview?.trading.strategy_activity_page : undefined} historicalRows={signalStreamRunId ? preview?.trading.strategy_activity ?? [] : undefined} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, strategy_activity: { ...state.strategy_activity, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} runId={signalStreamRunId} settings={settings.strategy_activity} />
       : loading && !preview && definition.id !== "performance_journal"
         ? <LoadingState fill label={`Loading ${definition.title.toLowerCase()}`} />
         : renderPreview(definition.id, preview, settings, linkGroup, onLinkContextChange, onTickerWorkspaceOpen)}</div>

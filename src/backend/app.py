@@ -5004,6 +5004,7 @@ def trading_strategy_activity(
     offset: int = 0,
     include_decision_evidence: bool = True,
     consequential_only: bool = False,
+    through_sequence: int | None = None,
 ) -> dict[str, Any]:
     try:
         cutoff = datetime.fromisoformat(as_of.replace("Z", "+00:00")) if as_of else None
@@ -5021,6 +5022,7 @@ def trading_strategy_activity(
                 offset=offset,
                 include_decision_evidence=include_decision_evidence,
                 consequential_only=consequential_only,
+                through_sequence=through_sequence,
             )
         return strategy_activity_payload(
             as_of=cutoff,
@@ -5849,13 +5851,18 @@ async def trading_backtest_run_results(
 async def trading_backtest_run_canvas(
     run_id: str,
     symbol: str = "AAPL",
+    lazy: bool = False,
+    include_chart: bool = True,
 ) -> dict[str, Any]:
     try:
         controller = backtest_run_service.get(run_id)
+        from src.backend.backtest_review import SavedBacktestReview
+        if isinstance(controller, SavedBacktestReview):
+            return await controller.canvas_payload(symbol, lazy=lazy, include_chart=include_chart)
         if getattr(controller, '_monitoring', None) is not None:
             # Already encoded in the publication process. Request frequency
             # cannot trigger journal/assignment projection on the engine loop.
-            content = await controller._monitoring.encoded(symbol.strip().upper())
+            content = await controller._monitoring.encoded(symbol.strip().upper(), lazy=lazy, include_chart=include_chart)
             return Response(content=content, media_type="application/json")
         return await controller.canvas_payload(symbol)
     except KeyError as exc:
@@ -6300,6 +6307,14 @@ def trading_canvas_live_chart_history(
         if len(projected_columns) > 128 or any(not re.fullmatch(r"[A-Za-z0-9_]{1,64}", column) for column in projected_columns):
             raise HTTPException(status_code=400, detail="indicator_columns contains an invalid column")
     try:
+        if run_id and mode == 'backtest':
+            controller = backtest_run_service.get(run_id)
+            cutoff = datetime.fromisoformat(as_of.replace('Z', '+00:00')) if as_of else controller.current_time
+            if cutoff is None or cutoff.tzinfo is None:
+                raise ValueError('Backtest chart requires an aware as-of cursor')
+            as_of = min(cutoff, controller.current_time).isoformat() if controller.current_time else cutoff.isoformat()
+            # A run-linked chart must not expand beyond its causal boundary.
+            full_session = False
         if run_id and mode == 'backtest' and 'qmd_structure_unified_levels' in (projected_columns or ()):
             controller = backtest_run_service.get(run_id)
             build_id = controller.definition.experimental_structure_book

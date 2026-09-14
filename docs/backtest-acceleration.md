@@ -227,3 +227,48 @@ checkpoints, frozen configuration, book fingerprint, and existing journals.
 Never bypass runtime-version or checkpoint-integrity checks to resume a run.
 The source changes require fresh backend and QMD History processes; a frontend
 refresh alone does not activate them.
+
+## Saved review and lazy monitoring (2026-09-14)
+
+Saved Review now uses a read-only reader that projects checkpoint identity and
+broker state, without restoring source readers, detector state, assignments or
+the strategy engine. Resume retains the complete restart validation and causal
+execution path. Legacy manifests are projected through SQLite JSON extraction
+to avoid constructing their enormous unrelated Python object trees.
+
+For stopped run `fdeff0d5-654e-41cc-91a9-e309c290af93`, cold HTTP Review after
+backend restart measured 2.75 and 2.97 seconds, versus 37.13 seconds before this
+change. The first financial Canvas request measured 21 ms and 11,970 JSON bytes.
+These are presentation measurements, not engine-throughput benchmarks. The run
+remains stopped at 08:00:47Z with 71,347 processed events.
+
+Backtest views hold their displayed boundary by default. Update view explicitly
+advances it; Follow latest optionally refreshes every five seconds and pauses
+when the user interacts with a panel. Hidden panels suspend requests, chart
+details are requested only when needed, and unused publication interests expire
+after 15 seconds. Engine publication still uses a separate process and bounded
+latest-only work. Setup-only results/comparison reads no longer run when opening
+an existing monitoring workspace.
+
+Strategy activity uses filtered 200-row server pages and a six-page client cache.
+Each browse scope is fenced by both causal time and journal sequence; returning
+to a cached page preserves evidence state. Exact evidence remains demand-loaded.
+Run-linked charts cannot expand beyond the engine cursor, even when a caller
+requests a full session or future cutoff. Explicit legacy Canvas/results reads
+retain their activity page; lazy monitoring defers it.
+
+Validation includes exact saved positions, orders, executions, closed trades,
+portfolio and performance equality, unchanged journal bytes, a test that forbids
+execution restoration during Review, checkpoint resume regression, and the
+existing monitored/unmonitored round-trip equality checks. Browser tests use
+intercepted advancing status to verify held selections, single evidence reads,
+page caching, sequence fences, filtering and Follow interaction. The managed
+final regression passed 15 focused backend tests and two browser tests (the
+saved-run browser test scrolls the activity panel into view before expecting
+its lazy content). The managed
+production build and 12 light/dark, 0.8/1/1.25-scale, normal/compact captures pass
+with zero automated objective issues. Evidence is under
+`D:/TradingML/runtimes/ui-review/backtest-lazy-final` and `backtest-lazy`.
+The existing compact header clips some older controls at maximum scale; the new
+view controls remain usable. Full-session causal/P&L and throughput acceptance
+remain open as described above.

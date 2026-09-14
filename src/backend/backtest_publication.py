@@ -5,6 +5,7 @@ reads, hydration and rendering. At most one render and one replacement boundary
 are retained. Slow/disconnected readers cannot backpressure the engine.
 """
 import asyncio
+from time import monotonic
 from collections import OrderedDict
 from concurrent.futures import ProcessPoolExecutor
 from multiprocessing import get_context
@@ -18,6 +19,7 @@ class BacktestPublication:
         self.pending = None
         self.task = None
         self.symbols = OrderedDict()
+        self.interests = {}
         self.results = {}
         self.wire = {}
         self.changed = asyncio.Event()
@@ -28,6 +30,12 @@ class BacktestPublication:
         if self.closed:
             return
         self.boundary = boundary
+        for symbol, touched in list(self.symbols.items()):
+            if symbol in self.results and touched is not None and monotonic() - touched > 15:
+                self.symbols.pop(symbol, None)
+                self.interests.pop(symbol, None)
+                self.results.pop(symbol, None)
+                self.wire.pop(symbol, None)
         if self.symbols:
             self.pending = boundary
             self._start()
@@ -53,12 +61,14 @@ class BacktestPublication:
             packet = {k: v for k, v in boundary.items() if k != "assignments"}
             packet["assignments"] = tuple(a for a in boundary["assignments"] if a.ticker in symbols)
             packet["symbols"] = symbols
+            packet['interests'] = {symbol: self.interests.get(symbol, {}) for symbol in symbols}
             try:
                 if self.pool is None:
                     self.pool = ProcessPoolExecutor(max_workers=1, mp_context=get_context("spawn"))
                 result = await asyncio.get_running_loop().run_in_executor(self.pool, self.render, packet)
-                self.results.update({k: v for k, v in result['payloads'].items() if k in self.symbols})
-                self.wire.update({k: v for k, v in result['wire'].items() if k in self.symbols})
+                valid = {k for k in symbols if k in self.symbols and self.interests.get(k, {}) == packet['interests'][k]}
+                self.results.update({k: v for k, v in result['payloads'].items() if k in valid})
+                self.wire.update({k: v for k, v in result['wire'].items() if k in valid})
                 self.error = None
             except Exception as exc:
                 self.error = str(exc)
@@ -67,11 +77,17 @@ class BacktestPublication:
             pool, self.pool = self.pool, None
             await asyncio.to_thread(pool.shutdown, wait=True, cancel_futures=True)
 
-    async def get(self, symbol):
-        self.symbols[symbol] = None
+    async def get(self, symbol, *, lazy=False, include_chart=True):
+        interest = dict(lazy=lazy, include_chart=include_chart)
+        if self.interests.get(symbol) != interest:
+            self.results.pop(symbol, None)
+            self.wire.pop(symbol, None)
+        self.interests[symbol] = interest
+        self.symbols[symbol] = monotonic()
         self.symbols.move_to_end(symbol)
         while len(self.symbols) > 8:
             old, _ = self.symbols.popitem(last=False)
+            self.interests.pop(old, None)
             self.results.pop(old, None)
             self.wire.pop(old, None)
         if symbol not in self.results and self.boundary is not None and not self.closed:
@@ -94,8 +110,8 @@ class BacktestPublication:
             await self.changed.wait()
         return self.results[symbol]
 
-    async def encoded(self, symbol):
-        await self.get(symbol)
+    async def encoded(self, symbol, *, lazy=False, include_chart=True):
+        await self.get(symbol, lazy=lazy, include_chart=include_chart)
         return self.wire[symbol]
 
     async def close(self):
@@ -130,20 +146,25 @@ def render_publication(packet):
         trading = trading_state_payload(packet["snapshot"], include_strategy_activity=False,
             protection_as_of=cutoff, performance_extrema=packet["performance_extrema"])
         # Fetch one extra record for the canonical pagination contract.
-        records = journal.strategy_activity_records(run_id=run["run_id"], as_of=cutoff,
+        interests = packet.get('interests', {})
+        defer_activity = all(interests.get(ticker, {}).get('lazy', False) for ticker in packet['symbols'])
+        records = [] if defer_activity else journal.strategy_activity_records(run_id=run["run_id"], as_of=cutoff,
             through_sequence=packet["sequence"], compact=True, limit=2001)
         page = strategy_activity_payload(as_of=cutoff, run_id=run["run_id"], limit=2000,
             include_decision_evidence=False, _records=records)
         trading.update(strategy_activity=page["rows"],
             strategy_activity_page={"complete": page["complete"], "next_offset": page.get("next_offset")},
             presentation_as_of=cutoff.isoformat(), presentation_sequence=packet["sequence"])
+        if defer_activity:
+            trading['strategy_activity_deferred'] = True
         configuration = packet["configuration"]
         strategy_configuration = configuration.get("strategy") or {}
         definition = {**strategy_configuration, "config": {"parameters": strategy_configuration.get("parameters") or {}}}
         results = {}
         for ticker in packet["symbols"]:
+            include_chart = interests.get(ticker, {}).get('include_chart', True)
             assignments = [a.payload() for a in packet["assignments"] if a.ticker == ticker]
-            chart = activity(ticker=ticker, limit=50_000, consequential_only=True)["rows"]
+            chart = activity(ticker=ticker, limit=50_000, consequential_only=True)["rows"] if include_chart else []
             strategy = dict(fixture=False, run_id=run["run_id"], runtime_mode=run["mode"],
                 strategy_id=strategy_configuration.get("strategy_id", ""),
                 name=strategy_configuration.get("name", "Manual trading"), revision=strategy_configuration.get("revision", 0),
@@ -156,6 +177,8 @@ def render_publication(packet):
             for name, event in (("signals", "signal"), ("decisions", "decision"), ("order_management", "order")):
                 strategy[name] = [_compact_strategy_chart_activity_row(r, include_chart_plan=False)
                     for r in page["rows"] if r.get("event_type") == event and (event == "order" or r.get("ticker", "").upper() == ticker)]
+            if not include_chart:
+                strategy = {k: v for k, v in strategy.items() if k in ('run_id', 'runtime_mode', 'strategy_id', 'name', 'revision', 'historical_source')}
             results[ticker] = dict(as_of=trading["as_of"], coverage={},
                 chart={"bars": [], "indicators": [], "symbol": ticker, "timeframe": "1m"}, errors={},
                 fills=[], journal=[], news=[], orders=[], portfolio=trading.get("portfolio", {}),
