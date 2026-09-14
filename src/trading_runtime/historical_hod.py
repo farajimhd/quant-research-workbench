@@ -26,7 +26,7 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     regular_luld_enabled=0,backtest_luld_estimation_enabled=0,minimum_regular_previous_close=.75,
     luld_buffer_bps=25.,luld_buffer_ticks=2,luld_maximum_age_ms=60000.,v7_zone_enabled=0,entry_zone_fraction=.30,
     v7_center_swing_enabled=0,v7_transition_entries_enabled=0,v7_price_only_enabled=0,rejection_break_offset_bps=0.,
-    v7_setup_enabled=0,setup_recovery_enabled=0,setup_add_requires_range_breakout=1,setup_range_seconds=30,setup_minimum_bars=5,
+    v7_setup_enabled=0,setup_failure_seconds=0,setup_failure_buffer_ticks=1.,setup_minimum_body_bps=0.,setup_trail_requires_breakout=0,setup_trail_activation_r=0.,setup_recovery_preserve_peak=0,setup_recovery_enabled=0,setup_add_requires_range_breakout=1,setup_range_seconds=30,setup_minimum_bars=5,
     v7_encounters_enabled=0,breakout_buffer_bps=10.,breakout_buffer_ticks=1.,topping_tail_fraction=.5)
 
 
@@ -44,8 +44,22 @@ def configure(p):
     s = dict(DEFAULTS, **raw)
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
         raise ValueError('Historical HOD settings must be finite and positive')
+    if not 0 <= s['setup_failure_seconds'] <= 5 or int(s['setup_failure_seconds']) != s['setup_failure_seconds']:
+        raise ValueError('Initial setup failure window must be zero to five completed seconds')
+    if any(s[k] not in (0,1) for k in ('setup_trail_requires_breakout','setup_recovery_preserve_peak')):
+        raise ValueError('Setup policy switches must be boolean')
+    if (s['setup_failure_seconds'] or s['setup_minimum_body_bps'] or s['setup_trail_requires_breakout'] or s['setup_recovery_preserve_peak']) and not s['v7_setup_enabled']:
+        raise ValueError('Setup quality policies require early setup entry')
+    if s['setup_recovery_preserve_peak'] and not s['setup_recovery_enabled']:
+        raise ValueError('Position peak memory requires setup recovery')
+    if s['setup_trail_activation_r'] and not s['setup_trail_requires_breakout']:
+        raise ValueError('Risk activation requires deferred setup trailing')
+    if s['setup_trail_requires_breakout'] and not s['v7_center_swing_enabled']:
+        raise ValueError('Deferred setup trailing requires V7 swing-low protection')
+    if s['setup_failure_seconds'] and not s['setup_recovery_enabled']:
+        raise ValueError('Failed setup exits require persistent recovery state')
     if s['setup_add_requires_range_breakout'] not in (0,1):
         raise ValueError('Setup add range gate must be boolean')
     if s['setup_recovery_enabled'] not in (0,1) or s['setup_recovery_enabled'] and not s['v7_setup_enabled']:
@@ -731,7 +745,7 @@ def evaluate(host, a, o, p, state):
     recovery_row = None
     if s.get('setup_recovery_enabled'):
         recovery_row = v7_setup.recovery_observe(setup_state,active,d,o,stop,
-            (o.structural_detector_state or {}).get('row',{}),fresh)
+            (o.structural_detector_state or {}).get('row',{}),fresh,preserve_peak=bool(s['setup_recovery_preserve_peak']))
     acquired = o.position_quantity > 0
     local_clock = o.observed_at.astimezone(NY)
     # TODO(paper-trading halt review): LULD buffers do not guarantee an exit
@@ -831,6 +845,15 @@ def evaluate(host, a, o, p, state):
             reason = 'luld_buffer_reached'
         if not reason and s['v7_encounters_enabled'] and encounter_reason:
             reason = encounter_reason
+        if not reason and acquired and setup_enabled:
+            failure = v7_setup.entry_failure(active,d,s,tick,fresh)
+            if failure:
+                reason = 'early_setup_failed'
+                evidence['setup_failure'] = failure
+                active['setup']['entry_failure_recovery'] = failure['reclaim_threshold']
+                # Persist the decision before a fill can make the next observation flat.
+                if setup_state.get('held',{}).get('entry_at') == active['confirmed_at']:
+                    setup_state['held']['setup'] = deepcopy(active['setup'])
         if not reason and not s['v7_encounters_enabled'] and acquired and active and confirm_failed_attempt(active,o,previous_bar=d.get('prior_bar')):
             reason = 'red_close_below_attempt_open'
         if not reason and not s['v7_encounters_enabled'] and acquired and active and detector_fresh:
@@ -881,6 +904,7 @@ def evaluate(host, a, o, p, state):
             return result('hold','position_context_missing',Status.MANAGING,invalidation_price=stop)
         if not active.get('fill_risk_frozen') and not pending and o.average_price > 0:
             active['initial_risk'] = o.average_price-active['stop']
+            active['initial_fill_price'] = o.average_price
             active['fill_risk_frozen'] = True
         if fresh:
             active.pop('desired_target',None)
@@ -957,7 +981,9 @@ def evaluate(host, a, o, p, state):
             if not s.get('v7_center_swing_enabled') and not any(eligible_origin(r,session) and resistance(r) and r['upper'] < o.price for r in d['rows']):
                 trailing = floor((active['best_close']-active['initial_risk'])/tick+1e-9)*tick
                 active['desired_stop'] = max(active.get('desired_stop',0),trailing)
-            if s.get('v7_center_swing_enabled') and detector_fresh:
+            if (s.get('v7_center_swing_enabled') and detector_fresh
+                    and (not s['setup_trail_requires_breakout'] or post_breakout
+                         or v7_setup.risk_trail_ready(active,s))):
                 swing=initial_swing_low(row,dict(lower=min(o.price,decision_bid)),now,
                     closest=True,confirmed_after=active['confirmed_at'],price_only=price_only)
                 if swing and stop_below(swing['lower'],s,tick)>max(stop,active.get('desired_stop',0)):
@@ -1107,6 +1133,11 @@ def evaluate(host, a, o, p, state):
         and (min(o.price,decision_bid) >= threshold if inclusive else min(o.price,decision_bid) > threshold))
     evidence['entry_selection']['recent_breakout'] = deepcopy(recent) if recent_held else None
     if setup_enabled:
+        minimum_body = o.bar_open*s['setup_minimum_body_bps']/10000
+        evidence['entry_body'] = dict(open=o.bar_open,close=o.price,minimum=minimum_body,
+            minimum_bps=s['setup_minimum_body_bps'],observed_at=now)
+        if o.price-o.bar_open+1e-9 < minimum_body:
+            return result('wait','setup_body_below_minimum')
         consolidation=setup_state.get('range')
         if not consolidation or o.price <= previous or o.price >= consolidation['high']:
             return result('wait','waiting_for_rising_setup_below_range_high')
@@ -1162,6 +1193,8 @@ def evaluate(host, a, o, p, state):
         consolidation=deepcopy(setup_state['range'])
         entry['setup']=dict(phase=entry_phase,range=consolidation,
             breakout_threshold=v7_encounters.threshold(dict(price=consolidation['high']),s,tick))
+        if s['setup_failure_seconds']:
+            entry['setup']['entry_bar'] = deepcopy(d['bar'])
         # No overhead resistance has been broken by this early entry.
         entry['last_add_level']=dict(boundary,price=o.price,lower=o.price,upper=o.price)
         entry['last_cleared_resistance']=deepcopy(entry['last_add_level'])

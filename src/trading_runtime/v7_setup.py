@@ -48,11 +48,16 @@ def swing_key(swing):
     return str((swing.get('scale'), swing.get('pivot_at'), swing.get('lower')))
 
 
-def recovery_observe(state, entry, market, observation, stop, row, fresh):
+def recovery_observe(state, entry, market, observation, stop, row, fresh, *, preserve_peak=False):
     """Persist filled lifecycle failures and retire breached support across positions."""
     if observation.position_quantity > 0 and entry:
+        body_high = market.get('body_high', 0)
+        if preserve_peak:
+            held = state.get('held', {})
+            previous_peak = held.get('body_high', 0) if held.get('entry_at') == entry['confirmed_at'] else 0
+            body_high = max(previous_peak or 0, body_high or 0)
         state['held'] = dict(entry_at=entry['confirmed_at'], setup=deepcopy(entry.get('setup', {})),
-            stop=stop, body_high=market.get('body_high', 0))
+            stop=stop, body_high=body_high)
     elif state.get('held'):
         held = state.pop('held')
         state['last_exit'] = dict(at=observation.observed_at.timestamp(), **held)
@@ -75,6 +80,9 @@ def recovery_permission(state, swing, market):
         return 'breached_setup_swing', ''
     if swing['pivot_at'] <= previous['at'] or swing['confirmed_at'] <= previous['at']:
         return 'waiting_for_new_support_after_exit', ''
+    failed_entry = previous['setup'].get('entry_failure_recovery')
+    if failed_entry and market['bar']['close'] <= failed_entry:
+        return 'waiting_for_failed_setup_reclaim', ''
     if previous['setup'].get('phase') != 'post_breakout':
         return '', 'building'
     # A fresh higher base can prepare the next leg without reclaiming the top.
@@ -85,3 +93,32 @@ def recovery_permission(state, swing, market):
     if market['bar']['close'] > reclaim:
         return '', 'post_breakout'
     return 'waiting_for_post_move_recovery_or_higher_base', ''
+
+
+def entry_failure(entry, market, settings, tick, fresh):
+    """A short-lived, completed-candle failure of the frozen entry candle."""
+    window = settings.get('setup_failure_seconds', 0)
+    setup = entry.get('setup', {})
+    initial = setup.get('entry_bar')
+    if not window or not fresh or not initial or setup.get('phase') != 'building':
+        return None
+    bar = market.get('bar')
+    if not bar or not market.get('contiguous'):
+        return None
+    elapsed = bar['end'] - entry['confirmed_at']
+    buffer = tick * settings['setup_failure_buffer_ticks']
+    threshold = initial['low'] - buffer
+    if (0 < elapsed <= window and bar['close'] < bar['open']
+            and round(bar['close'],9) <= round(threshold,9)):
+        return dict(entry_low=initial['low'],threshold=threshold,close=bar['close'],
+            confirmed_at=bar['end'],elapsed_seconds=elapsed,
+            reclaim_threshold=max(initial['open'],initial['close'])+buffer)
+    return None
+
+
+def risk_trail_ready(entry, settings):
+    multiple = settings.get('setup_trail_activation_r', 0)
+    fill = entry.get('initial_fill_price', 0)
+    risk = entry.get('initial_risk', 0)
+    return bool(multiple and fill > 0 and risk > 0
+                and entry.get('best_close',0) >= fill + multiple*risk - 1e-9)
