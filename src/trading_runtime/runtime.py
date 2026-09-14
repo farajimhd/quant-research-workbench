@@ -990,15 +990,23 @@ class TradingRuntime:
             self._protection_history_sequence = records[-1].sequence
         return replace(snapshot, protection_events=tuple(rows))
 
-    def projected_snapshot(self):
+    def projected_snapshot(self, *, as_of: datetime | None = None):
         """Read the engine-owned broker projection without reconciliation or writes.
 
-        Presentation must never change trading state. Preserve its actual as-of
-        timestamp; market ticks do not imply a new broker position snapshot.
+        Presentation must never change trading state. An explicit engine boundary
+        projects simulator marks/cash; other consumers retain broker snapshot time.
         """
         if self._canonical_session is None:
             raise RuntimeError("The configured broker does not expose canonical Replay state")
-        return self._with_protection_history(self._canonical_session.projector.snapshot())
+        snapshot = self._canonical_session.projector.snapshot()
+        if as_of is not None:
+            if self.last_event_time is not None and as_of < self.last_event_time:
+                raise ValueError("Financial publication precedes the processed market boundary")
+            project = getattr(self.broker, "financial_projection", None)
+            if project is None:
+                raise ValueError("Broker does not support read-only financial projection")
+            snapshot = project(snapshot, as_of=as_of)
+        return self._with_protection_history(snapshot)
 
     async def canonical_snapshot(self, *, as_of: datetime | None = None):
         """Return the freshest canonical broker projection for UI and recovery consumers."""

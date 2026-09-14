@@ -67,7 +67,7 @@ class PublicationTests(IsolatedAsyncioTestCase):
                                 cOID=f'order-{i}', ticker='AAPL', orderType='MKT', side='BUY' if i == 0 else 'SELL', quantity=10)])
                         if publication:
                             publication.publish(dict(run=dict(run_id=runtime.run_id, mode='backtest', status='running',
-                                current_time=event.ts.isoformat(), updated_at=str(i)), snapshot=runtime.projected_snapshot(),
+                                current_time=event.ts.isoformat(), updated_at=str(i)), snapshot=runtime.projected_snapshot(as_of=event.ts),
                                 sequence=journal.latest_sequence(runtime.run_id), journal_path=str(journal.path),
                                 assignments=(), configuration={}, automatic=False, performance_extrema=broker.performance_extrema()))
                             if reader is None:
@@ -125,12 +125,13 @@ class PublicationTests(IsolatedAsyncioTestCase):
         from src.trading_runtime.domain import TradingMode, BrokerProvider
         from src.trading_runtime.journal import TradingJournal
         from tests.test_replay_run_service import approved_configuration
-        broker = SimulatedBrokerAdapter(['SIM'], mode=TradingMode.BACKTEST)
+        broker = SimulatedBrokerAdapter(['SIM'], mode=TradingMode.BACKTEST, initial_time=datetime(2026, 8, 21, 8, tzinfo=timezone.utc))
         session = CanonicalBrokerSession(broker, mode=TradingMode.BACKTEST, provider=BrokerProvider.SIMULATED)
         await session.bootstrap()
         runtime = object.__new__(TradingRuntime)
         runtime._canonical_session = session
         runtime.broker = broker
+        runtime.last_event_time = broker.initial_time
         with TemporaryDirectory() as directory:
             controller = ReplayRunController(ReplayRunDefinition(session_date=date(2026, 8, 21),
                 start_time=clock_time(4), end_time=clock_time(4, 30), mode=RunMode.BACKTEST,
@@ -157,7 +158,13 @@ class PublicationTests(IsolatedAsyncioTestCase):
                 append('future', controller.current_time + timedelta(seconds=1))
                 result = render_publication(packet)['payloads']['SUGP']
                 assert result['trading'].pop('presentation_sequence') == count
-                assert result == expected
+                def without_receipt_time(value):
+                    if isinstance(value, dict):
+                        return {k: without_receipt_time(v) for k,v in value.items() if k != 'received_at'}
+                    if isinstance(value, list): return [without_receipt_time(v) for v in value]
+                    return value
+                # Independently captured projections have different receipt times.
+                assert without_receipt_time(result) == without_receipt_time(expected)
                 # Exercise the real subprocess with frozen canonical dataclasses.
                 observed = await asyncio.wait_for(controller.canvas_payload('SUGP'), 30)
                 assert observed['trading']['strategy_activity'] == expected['trading']['strategy_activity']

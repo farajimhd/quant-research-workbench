@@ -391,3 +391,49 @@ An unrelated warmup-specific review mode failed its four-exclusion modal asserti
 the requested chart-page review used the standard targeted mode. Evidence is under
 `D:/TradingML/runtimes/ui-review/journal-overview-charts`,
 `journal-overview-matrix-final`, and `pause-checkpoint-follow`.
+
+
+## Financial publication at the processed boundary
+
+The simulator already updates marks while consuming causal market events, but
+monitoring previously read the last reconciled canonical position snapshot.
+Consequently open P&L and broker timestamps could lag even when publication and
+activity kept advancing. Backtest monitoring now asks the runtime for a read-only
+financial projection at its completed publication boundary. The simulator reuses
+the same position, cash-summary and ledger valuation helpers as reconciliation;
+orders, executions, closed episodes and protection history retain their canonical
+authority. No reconcile call, journal write, portfolio synchronization, quote-cache
+scan or execution-state mutation is introduced by that financial projection.
+Publication before the processed market boundary is rejected. Live and other
+callers without an explicit simulator boundary retain broker snapshot semantics.
+
+Monitoring waits for existing passive batch boundaries instead of flushing or
+splitting batches for UI demand. This preserves event grouping and engine results.
+Routine publication remains at most once per wall-clock second, with rendering in
+the existing worker. The UI follows automatically about every five seconds; the
+Following latest / Update view / Follow latest / Newer snapshot available header
+strip is removed. Activity paging, older-page fences and selected evidence remain.
+
+Validation: the simulator/runtime suite passed 85 tests and four subtests;
+controller/checkpoint/review coverage passed 140 tests and six subtests, with the
+same two pre-existing legacy fixtures failing. Focused price-only marking tests
+matched full reconciliation through gains, losses and final flat state, preserved
+frozen earlier snapshots, rejected earlier boundaries and left broker checkpoints,
+canonical projector state and journal sequence unchanged. Monitoring on/off still
+produces identical broker checkpoints. A 5,000-ticker cache cost probe measured
+0.046 ms for zero positions, 0.069 ms for one and 0.825 ms for 50 per publication;
+these are bounded local measurements, not a full-session throughput guarantee.
+Managed build and automatic-follow/evidence/paging browser regression passed.
+The saved-run matrix captured 12/12 with zero automated objective issues;
+initial light 0.8 captures encountered a transient 404 and are not layout proof.
+Loaded normal/compact light/dark captures were inspected under
+`D:/TradingML/runtimes/ui-review/backtest-header-cleanup-saved`.
+
+Activation remains pending the user's service-restart step; no engine stop,
+resume or service restart was issued during this fix. The running backtest
+independently failed at 09:30:00.100 ET on QMD History GET
+`/snapshot/chart-bars/AGNC` timing out after 60 seconds. Its complete terminal
+checkpoint contains 4,380,591 events and is resumable. The initial live-page
+visual matrix captured that failure screen and was not accepted as header-layout
+validation; the valid saved-run matrix replaced it. The QMD timeout requires
+separate investigation before claiming reliable resumed execution.

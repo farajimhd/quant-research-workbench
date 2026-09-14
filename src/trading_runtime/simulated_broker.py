@@ -13,7 +13,7 @@ from src.trading_runtime.domain import BrokerProvider
 from src.trading_runtime.domain import Execution as CanonicalExecution
 from src.trading_runtime.domain import OrderState as CanonicalOrderState
 from src.trading_runtime.domain import PositionState as CanonicalPositionState
-from src.trading_runtime.domain import SnapshotManifest
+from src.trading_runtime.domain import SnapshotManifest, TradingStateSnapshot
 from src.trading_runtime.domain import BrokerEventEnvelope, BrokerEventType, OrderIntent, TradingMode
 from src.trading_runtime.canonical_commands import intent_to_ibkr_request, lifecycle_event, response_events
 from src.trading_runtime.ibkr_normalizer import (
@@ -21,6 +21,7 @@ from src.trading_runtime.ibkr_normalizer import (
     normalize_execution,
     normalize_ledger,
     normalize_order,
+    normalize_position,
     normalize_position_snapshot,
 )
 from src.trading_runtime.ibkr_schema import (
@@ -572,6 +573,9 @@ class SimulatedBrokerAdapter:
         return [row for row in rows if not account_id or row.account_id == account_id]
 
     async def positions(self, account_id: str) -> list[PortfolioPosition]:
+        return self._position_rows(account_id)
+
+    def _position_rows(self, account_id: str) -> list[PortfolioPosition]:
         self._require_account(account_id)
         rows: list[PortfolioPosition] = []
         for position in sorted(self._positions[account_id].values(), key=lambda item: (item.ticker, item.conid)):
@@ -607,6 +611,9 @@ class SimulatedBrokerAdapter:
     async def account_summary(self, account_id: str) -> AccountSummary:
         self._require_account(account_id)
         positions = await self.positions(account_id)
+        return self._summary_from_positions(account_id, positions, self._latest_event_time())
+
+    def _summary_from_positions(self, account_id: str, positions: list[PortfolioPosition], at: datetime) -> AccountSummary:
         gross = sum(abs(row.mktValue) for row in positions)
         net = self._cash[account_id] + sum(row.mktValue for row in positions)
         return AccountSummary(
@@ -618,7 +625,7 @@ class SimulatedBrokerAdapter:
             availablefunds=max(0.0, self._cash[account_id]),
             excessliquidity=max(0.0, self._cash[account_id]),
             currency=self.config.base_currency,
-            timestamp=self._latest_event_time(),
+            timestamp=at,
         )
 
     async def canonical_account_values(self, account_id: str):
@@ -627,6 +634,9 @@ class SimulatedBrokerAdapter:
     async def account_ledger(self, account_id: str) -> AccountLedger:
         summary = await self.account_summary(account_id)
         positions = await self.positions(account_id)
+        return self._ledger_from_positions(account_id, positions, summary)
+
+    def _ledger_from_positions(self, account_id: str, positions: list[PortfolioPosition], summary: AccountSummary) -> AccountLedger:
         return AccountLedger(
             acctId=account_id,
             cashbalance=summary.totalcashvalue,
@@ -641,6 +651,26 @@ class SimulatedBrokerAdapter:
 
     async def canonical_ledger(self, account_id: str):
         return normalize_ledger((await self.account_ledger(account_id)).to_cpapi(), account_id)
+
+    def financial_projection(self, snapshot: TradingStateSnapshot, *, as_of: datetime) -> TradingStateSnapshot:
+        """Freeze current simulator financial state without reconciliation or writes.
+
+        Called only at an engine publication boundary. Reuse the broker's
+        valuation formulas; never scan market history or mutate execution state.
+        """
+        if as_of.tzinfo is None or as_of < snapshot.as_of:
+            raise ValueError("Financial projection requires a causal timezone-aware boundary")
+        positions, values, ledger = [], [], []
+        for account_id in snapshot.account_ids:
+            rows = self._position_rows(account_id)
+            summary = self._summary_from_positions(account_id, rows, as_of)
+            values.extend(normalize_account_values(summary.to_cpapi(), account_id))
+            ledger.extend(normalize_ledger(self._ledger_from_positions(account_id, rows, summary).to_cpapi(), account_id))
+            snapshot_id = f"{account_id}:{as_of.isoformat()}"
+            positions.extend(replace(normalize_position(row.to_cpapi(), account_id, snapshot_id),
+                source_event_time=as_of) for row in rows)
+        return replace(snapshot, as_of=as_of, positions=tuple(positions),
+            account_values=tuple(values), ledger=tuple(ledger))
 
     @property
     def has_orders(self) -> bool:

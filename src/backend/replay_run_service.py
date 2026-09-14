@@ -5199,7 +5199,10 @@ class ReplayRunController:
         allow_navigation: bool = False,
     ) -> None:
         now = time.monotonic()
+        # Never split a passive batch for presentation: capture only after the
+        # engine reaches its existing boundary, preserving event/mark grouping.
         if (getattr(self, '_checkpoint_io_task', None) is None and self.definition.mode == RunMode.BACKTEST and self._runtime is not None and self._journal is not None
+                and not self._pending_passive_market_events
                 and (force or now - self._last_monitoring_capture >= 1.0)):
             self._last_monitoring_capture = now
             try:
@@ -5245,7 +5248,7 @@ class ReplayRunController:
                 assignment, replace(assignment, state=deepcopy(assignment.state)))
         self._monitoring_assignments = frozen
         self._monitoring.publish(dict(
-            run=self.stream_snapshot(), snapshot=self._runtime.projected_snapshot(),
+            run=self.stream_snapshot(), snapshot=self._runtime.projected_snapshot(as_of=self.current_time),
             sequence=self._journal.latest_sequence(self.run_id), journal_path=str(self._journal.path),
             assignments=tuple(row[1] for row in frozen.values()),
             assignment_symbols=tuple(requested or ()),assignments_complete=complete,

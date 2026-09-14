@@ -426,17 +426,14 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   const dedicatedContainers = new Set<WorkspaceContainerId>(["chart", "charts_quotes", "facts", "microstructure", "news", "ticker_news", "news_detail", "sec", "ticker_sec", "sec_detail", "xbrl", "scanner", "signal_stream", "watchlist", "strategy_activity"]);
   const historicalTradingContainers = new Set<WorkspaceContainerId>(["chart", "charts_quotes"]);
   const [visiblePanels, setVisiblePanels] = useState<Record<string, boolean>>({});
-  const [followLatest, setFollowLatest] = useState(true);
-  const [viewRevision, setViewRevision] = useState(0);
   const [heldClock, setHeldClock] = useState({ runId: replayRun?.run_id, time: replayRun?.current_time });
   useEffect(() => {
     if (runtimeMode !== "backtest") return;
-    setFollowLatest(true);
     loadedPreviewRevisionRef.current = "";
     setHeldClock({ runId: replayRun?.run_id, time: replayRun?.current_time });
   }, [runtimeMode, replayRun?.run_id, replayRun?.created_at]);
   const heldTime = heldClock.runId === replayRun?.run_id ? heldClock.time : replayRun?.current_time;
-  usePollingTask({ enabled: runtimeMode === "backtest" && followLatest, intervalMs: 5000,
+  usePollingTask({ enabled: runtimeMode === "backtest", intervalMs: 5000,
     task: async () => setHeldClock({ runId: replayRun?.run_id, time: replayRun?.current_time }) });
 
   const previewContainerKey = (workspaceState?.openIds ?? []).filter((id) => {
@@ -684,16 +681,16 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
     // Let the one final read finish even if its tab is hidden. A single-shot
     // polling task otherwise treats a visibility abort as completion.
     pauseWhenHidden: Boolean(replayRun && !isTerminalReplayStatus(replayRun.status)),
-    repeat: (!replayRun || !isTerminalReplayStatus(replayRun.status)) && (runtimeMode !== "backtest" || followLatest),
-    restartKey: `${replayRun?.run_id}:${activeSymbol}:${previewContainerKey}:${Boolean(replayRun && isTerminalReplayStatus(replayRun.status))}:${viewRevision}`,
+    repeat: (!replayRun || !isTerminalReplayStatus(replayRun.status)),
+    restartKey: `${replayRun?.run_id}:${activeSymbol}:${previewContainerKey}:${Boolean(replayRun && isTerminalReplayStatus(replayRun.status))}`,
     onError: (reason) => { setError(reason instanceof Error ? reason.message : String(reason)); setLoading(false); },
     task: async (signal) => {
       if (!replayRun) return;
       const includeChart = previewContainerKey.split(",").some(id => ["chart", "charts_quotes"].includes(workspaceContainerKind(id, workspaceState)));
       const revision = runtimeMode === "backtest"
-        ? `${replayRun.run_id}:${activeSymbol}:${viewRevision}:${includeChart}`
+        ? `${replayRun.run_id}:${activeSymbol}:${includeChart}`
         : `${replayRun.run_id}:${activeSymbol}:${previewContainerKey}:${replayRun.updated_at}:${replayRun.status}`;
-      if ((isTerminalReplayStatus(replayRun.status) || (runtimeMode === "backtest" && !followLatest)) && loadedPreviewRevisionRef.current === revision) return;
+      if (isTerminalReplayStatus(replayRun.status) && loadedPreviewRevisionRef.current === revision) return;
       const payload = await api<CanvasPreview>(`/api/trading/${runtimeMode}/runs/${encodeURIComponent(replayRun.run_id)}/canvas${query({ symbol: activeSymbol, lazy: runtimeMode === "backtest" ? "true" : undefined, include_chart: includeChart ? "true" : "false" })}`, { signal, timeoutMs: 60000 });
       if (!signal.aborted) { loadedPreviewRevisionRef.current = revision; setPreview(payload); setLoading(false); setError(""); }
     },
@@ -1131,12 +1128,6 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
         {error ? <div className="canvas-inline-error">{error}</div> : null}
       </div> : null}
 
-      {runtimeMode === "backtest" && replayRun ? <div className="backtest-view-controls" aria-label="Backtest view updates">
-        <span>{isTerminalReplayStatus(replayRun.status) ? "Saved backtest review" : followLatest ? "Following latest · every 5 seconds" : "Updates paused for browsing · engine continues"}</span>
-        <button className="button secondary compact" onClick={() => { setHeldClock({ runId: replayRun.run_id, time: replayRun.current_time }); setViewRevision(n => n + 1); }}>Update view</button>
-        <label><input type="checkbox" checked={followLatest} onChange={event => setFollowLatest(event.target.checked)} /> Follow latest</label>
-        {preview?.run?.current_time && preview.run.current_time !== replayRun.current_time ? <span role="status">Newer snapshot available</span> : null}
-      </div> : null}
       <TradingWorkspace
         key={`${workspaceStorageKey}:${overlayEpoch}:${runtimeMode === "backtest" ? replayRun?.created_at ?? "" : ""}`}
         allowMultipleInstances
