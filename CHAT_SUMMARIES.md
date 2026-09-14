@@ -7,6 +7,19 @@ each year.
 
 ## 2026
 
+### [2026-09-11 07:46 PDT - V7 strategy and full-session backtest](docs/codex/chat-summaries/2026/CHAT-20260911-0746-v7-strategy-full-session-backtest.md)
+
+- Chat/task ID: `01a090ef-8081-7c91-8e26-154dcab43253`
+- Related tasks: `TASK-0014`, `TASK-0206`, `TASK-0208`, `TASK-0210` through `TASK-0214`
+- Summary written: 2026-09-14 PDT
+
+Traces V6 strategy refinement into V7 adaptive MLE books, causal streaming,
+workstation campaigns, rejected reaction-model quality, Candidate 222 full-session
+admission, coverage exclusions, cache concurrency repair and app presentation.
+Preserves unfinished run acceptance, LGHL identity/source audits and pending QMD
+cache-fix activation. Earlier experiment evidence is partial; no full-session
+profitability acceptance is claimed.
+
 ### [2026-09-09 16:14 PDT - Structural strategy, causal signals and clock recovery](docs/codex/chat-summaries/2026/CHAT-20260909-1614-structural-strategy-clock-validation.md)
 
 - Chat/task ID: `01a08873-ca5b-7653-a100-5caf07a4e10c`
