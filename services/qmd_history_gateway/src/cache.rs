@@ -231,6 +231,21 @@ struct ExactIndicatorPrefix {
     session_vwap_seed: SessionVwapSeed,
 }
 
+// Retain only causal prefixes already requested. Each cursor has one retained
+// closed bar plus at most one session of f64 closes (100ms minimum timeframe).
+// Eight entries bound auxiliary memory; eviction only causes recomputation.
+struct IndicatorPrefixCursor {
+    through: DateTime<Utc>,
+    bars: SharedBarStore,
+    prefix: ExactIndicatorPrefix,
+}
+
+#[derive(Default)]
+struct IndicatorPrefixIndex {
+    entries: HashMap<String, Arc<Mutex<Option<IndicatorPrefixCursor>>>>,
+    order: VecDeque<String>,
+}
+
 fn bar_indicator_projection(
     selected: &[&BarUpdate],
     warmup_closes: &[f64],
@@ -417,6 +432,8 @@ pub struct HistoricalDerivedCache {
     source: HistoricalEventSource,
     stats: Arc<CacheStats>,
     structure_seeds: Arc<Mutex<HashMap<String, Arc<OnceCell<StructureSeedResult>>>>>,
+    indicator_prefixes: Arc<Mutex<IndicatorPrefixIndex>>,
+    indicator_prefix_permits: Arc<Semaphore>,
     build_permits: Arc<Semaphore>,
     fetch_permits: Arc<Semaphore>,
 }
@@ -674,6 +691,8 @@ impl HistoricalDerivedCache {
             source,
             stats: Arc::new(CacheStats::default()),
             structure_seeds: Arc::new(Mutex::new(HashMap::new())),
+            indicator_prefixes: Arc::new(Mutex::new(IndicatorPrefixIndex::default())),
+            indicator_prefix_permits: Arc::new(Semaphore::new(max_concurrent_fetches.min(8).max(1))),
             build_permits: Arc::new(Semaphore::new(max_concurrent_builds)),
             fetch_permits: Arc::new(Semaphore::new(max_concurrent_fetches)),
         }
@@ -1128,20 +1147,56 @@ impl HistoricalDerivedCache {
         live_continuation_sequence: Option<u64>,
         max_closes: Option<usize>,
     ) -> Result<ExactIndicatorPrefix, String> {
-        let bars = SharedBarStore::new_without_structure(
-            vec![timeframe.to_string()],
-            self.config.cache_max_bars_per_entry,
-            1,
-            self.source.trade_aggregation_rules(),
-        );
-        let shard = bars.shard(0);
+        let _prefix_permit = self.indicator_prefix_permits.acquire().await.map_err(|e| e.to_string())?;
+        let session_start = session_anchor(window.start)?;
+        let session_end = session_start + Duration::hours(16);
+        let reusable = max_closes.is_none() && window.tickers.len() == 1
+            && window.start == session_start && window.end <= session_end
+            && session_end <= Utc::now()
+            && parse_resolution_us(timeframe).is_some_and(|v| v >= 100_000);
+        let cache_slot = if reusable {
+            // Full-day certification is a cache identity only. No event after
+            // the requested cutoff is fetched or exposed to the calculation.
+            let revision = self.source.source_revision(&EventWindow {
+                start: session_start, end: session_end, tickers: window.tickers.clone(),
+            }).await.ok().filter(|r| r.complete_for_history && r.request_complete
+                && r.source_tiers.iter().all(|tier| tier == "archive"));
+            // Failure to certify this larger cache scope only disables reuse.
+            // The stream below still validates the exact requested source range.
+            if let Some(revision) = revision {
+                let key = format!("{}|{}|{}|{}", window.tickers[0], timeframe, session_start, revision.token);
+                let mut index = self.indicator_prefixes.lock().await;
+                if !index.entries.contains_key(&key) {
+                    while index.entries.len() >= 8 {
+                        if let Some(old) = index.order.pop_front() { index.entries.remove(&old); }
+                    }
+                    index.order.push_back(key.clone());
+                    index.entries.insert(key.clone(), Arc::new(Mutex::new(None)));
+                }
+                Some(index.entries[&key].clone())
+            } else { None }
+        } else { None };
+        let mut cached = match &cache_slot { Some(slot) => Some(slot.lock().await), None => None };
+        // A backward request must never inherit a later EMA or VWAP state.
+        let use_cursor = cached.as_ref().and_then(|slot| slot.as_ref()).is_some_and(|c| c.through <= window.end);
+        let can_store = cached.as_ref().is_some_and(|slot| slot.is_none() || use_cursor);
+        let cursor = if use_cursor { cached.as_mut().unwrap().take() } else { None };
+        let mut cursor = cursor.unwrap_or_else(|| IndicatorPrefixCursor {
+            through: window.start,
+            bars: SharedBarStore::new_without_structure(vec![timeframe.to_string()], 1, 1, self.source.trade_aggregation_rules()),
+            prefix: ExactIndicatorPrefix::default(),
+        });
+        if cursor.through == window.end {
+            let result = cursor.prefix.clone();
+            if can_store { **cached.as_mut().unwrap() = Some(cursor); }
+            return Ok(result);
+        }
+        let shard = cursor.bars.shard(0);
         let mut receiver = self.source.stream_ordered_filtered(
-            window.clone(),
-            self.config.batch_size.max(100_000),
-            live_continuation_sequence,
-            Some(1),
+            EventWindow {start: cursor.through, ..window.clone()},
+            self.config.batch_size.max(100_000), live_continuation_sequence, Some(1),
         )?;
-        let mut prefix = ExactIndicatorPrefix::default();
+        let prefix = &mut cursor.prefix;
         let mut collect_bar = |bar: BarRow| {
             if !bar.timeframe.eq_ignore_ascii_case(timeframe)
                 || bar.bar_end > window.end
@@ -1184,7 +1239,14 @@ impl HistoricalDerivedCache {
         for bar in shard.finalize_due(window.end).await {
             collect_bar(bar);
         }
-        Ok(prefix)
+        cursor.through = window.end;
+        let result = cursor.prefix.clone();
+        // Failure/cancellation leaves the slot empty, so a partial prefix can
+        // never be certified or reused. Oversized prefixes remain uncached.
+        if can_store && cursor.prefix.closes.len() <= 600_000 {
+            **cached.as_mut().unwrap() = Some(cursor);
+        }
+        Ok(result)
     }
 
     async fn acquire(
@@ -4026,6 +4088,38 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::{broadcast, Mutex, Notify};
+
+    #[tokio::test]
+    #[ignore = "requires certified Aug 21 canonical ClickHouse fixture"]
+    async fn incremental_indicator_prefix_matches_independent_full_replays() {
+        use super::HistoricalDerivedCache;
+        use crate::{config::HistoricalGatewayConfig, source::HistoricalEventSource};
+        qmd_core::config::load_env_files();
+        let mut config = HistoricalGatewayConfig::from_env();
+        config.archive_clock_policy = "canonical_sip".into();
+        config.validate().unwrap();
+        let source = HistoricalEventSource::initialize(config.clone()).await.unwrap();
+        let start = Utc.with_ymd_and_hms(2026, 8, 21, 8, 0, 0).unwrap();
+        for (ticker, base_seconds) in [("SUGP", 600), ("JUNS", 12000)] {
+            for timeframe in ["100ms", "1s", "5s"] {
+                let cache = HistoricalDerivedCache::new(config.clone(), source.clone());
+                // Forward, exact repeat, backward, then forward beyond the
+                // previous high watermark. Include a partial candle cutoff.
+                for seconds in [base_seconds, base_seconds + 60, base_seconds + 60,
+                                base_seconds + 30, base_seconds + 120] {
+                    let end = start + Duration::seconds(seconds) + Duration::milliseconds(50);
+                    let window = EventWindow {start, end, tickers:vec![ticker.into()]};
+                    let incremental = cache.exact_indicator_prefix(window.clone(), timeframe, None, None).await.unwrap();
+                    let independent = HistoricalDerivedCache::new(config.clone(), source.clone())
+                        .exact_indicator_prefix(window, timeframe, None, Some(usize::MAX)).await.unwrap();
+                    assert_eq!(incremental.closes, independent.closes, "{ticker} {timeframe} {seconds}: closes");
+                    assert_eq!(incremental.session_vwap_seed, independent.session_vwap_seed,
+                        "{ticker} {timeframe} {seconds}: volume/notional");
+                }
+                println!("{ticker} {timeframe}: forward/repeat/backward prefix parity passed");
+            }
+        }
+    }
 
     #[tokio::test]
     async fn forming_candle_excludes_future_reports_and_preserves_open_bucket() {
