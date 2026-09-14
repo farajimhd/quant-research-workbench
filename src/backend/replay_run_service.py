@@ -1765,10 +1765,10 @@ class ReplayRunController:
             )
         return payload
 
-    def _checkpoint_projection(self) -> dict[str, Any]:
+    def _checkpoint_projection(self, persisted: dict[str, Any] | None = None) -> dict[str, Any]:
         if self._checkpoint_projection_cache is not None:
             return deepcopy(self._checkpoint_projection_cache)
-        persisted = (
+        persisted = persisted if persisted is not None else (
             self._journal.load_checkpoint(self.run_id)
             if self._journal is not None
             else None
@@ -6644,6 +6644,7 @@ class ReplayRunService:
             raise ValueError("max_resident_runs must be positive")
         self.max_resident_runs = configured_limit
         self._runs: dict[str, ReplayRunController] = {}
+        self._review_tasks: dict[str, asyncio.Task[ReplayRunController]] = {}
         self._lock = asyncio.Lock()
 
     async def create(self, definition: ReplayRunDefinition) -> ReplayRunController:
@@ -6719,6 +6720,20 @@ class ReplayRunService:
         return controller
 
     async def review_saved(self, run_id: str) -> ReplayRunController:
+        normalized = str(run_id or "").strip()
+        task = self._review_tasks.get(normalized)
+        if task is None:
+            task = asyncio.create_task(self._review_saved(normalized))
+            self._review_tasks[normalized] = task
+            def release(completed):
+                if self._review_tasks.get(normalized) is completed:
+                    self._review_tasks.pop(normalized, None)
+                if not completed.cancelled():
+                    completed.exception()
+            task.add_done_callback(release)
+        return await asyncio.shield(task)
+
+    async def _review_saved(self, run_id: str) -> ReplayRunController:
         """Open completed or stopped Backtest evidence without resuming execution."""
 
         normalized = str(run_id or "").strip()
@@ -6736,22 +6751,23 @@ class ReplayRunService:
         journal_path = run_dir / "journal.sqlite3"
         if not manifest_path.is_file() or not journal_path.is_file():
             raise KeyError(run_id)
-        persisted_run, definition, state = await asyncio.to_thread(
+        persisted_run, definition, persisted = await asyncio.to_thread(
             _load_saved_review_materials,
             normalized,
             run_dir,
             manifest_path,
             journal_path,
         )
-        controller = ReplayRunController(
+        controller = await asyncio.to_thread(ReplayRunController,
             definition,
             run_id=normalized,
             runtime_root=self.runtime_root,
-            resume_state=state,
+            resume_state=dict(persisted["state"]),
         )
         controller._journal = TradingJournal(journal_path, read_only=True)
         try:
             await asyncio.to_thread(_initialize_completed_review_controller, controller)
+            controller._checkpoint_projection(persisted)
         except Exception:
             controller._journal.close()
             controller._journal = None
@@ -7010,7 +7026,7 @@ def _load_saved_review_materials(
         raise ValueError("Saved-run review accepts Backtest runs only")
     journal = TradingJournal(journal_path, read_only=True)
     try:
-        persisted = journal.load_checkpoint(run_id)
+        persisted = journal.load_checkpoint(run_id, immutable=True)
     finally:
         journal.close()
     state = dict((persisted or {}).get("state") or {})
@@ -7019,7 +7035,7 @@ def _load_saved_review_materials(
         or not bool(state.get("complete"))
     ):
         raise ValueError("Saved Backtest has no complete review checkpoint")
-    return persisted_run, definition, state
+    return persisted_run, definition, persisted
 
 
 def _initialize_completed_review_controller(controller: ReplayRunController) -> None:

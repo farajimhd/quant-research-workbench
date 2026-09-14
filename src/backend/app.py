@@ -5821,10 +5821,10 @@ def trading_backtest_run(run_id: str, compact: bool = False) -> dict[str, Any]:
 
 
 @app.post("/api/trading/backtest/runs/{run_id}/review")
-async def trading_backtest_run_review(run_id: str) -> dict[str, Any]:
+async def trading_backtest_run_review(run_id: str, compact: bool = False) -> dict[str, Any]:
     try:
         controller = await backtest_run_service.review_saved(run_id)
-        return controller.snapshot()
+        return controller.stream_snapshot() if compact else controller.snapshot()
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Backtest run not found") from exc
     except (ReplayRunCapacityError, ValueError) as exc:

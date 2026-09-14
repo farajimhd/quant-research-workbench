@@ -311,7 +311,7 @@ function ReplayCanvasFocusPage({ focusToken, runId, runMode }: { focusToken?: st
   useEffect(() => {
     let cancelled = false;
     const loadRun = () => runMode === "backtest"
-      ? recoverBacktest<CanvasReplayRun>(runId, undefined, Boolean(handoff))
+      ? recoverBacktest<CanvasReplayRun>(runId)
       : api<CanvasReplayRun>(`/api/trading/${runMode}/runs/${encodeURIComponent(runId)}${handoff ? "?compact=true" : ""}`, { timeoutMs: 20_000 });
     loadRun()
       .then((payload) => { if (!cancelled) mergeFocusRun(payload); })

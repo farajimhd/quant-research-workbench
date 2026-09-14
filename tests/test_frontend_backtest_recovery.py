@@ -73,8 +73,18 @@ class BacktestRecoveryBrowserTests(unittest.TestCase):
                 for endpoint in ("backtest/configuration-options", "backtest/indicator-warmup",
                                  "historical-preflight", "backtest/structure-books"):
                     page.route(f"**/api/trading/{endpoint}*", block_setup)
-                page.goto(f"{base}/?backtest_run={run_id}#backtest-trading")
-                page.get_by_role("button", name="Load next 2,000 older events").wait_for(timeout=60000)
+                with page.expect_response(lambda response: f"/backtest/runs/{run_id}/canvas?" in response.url, timeout=60000) as canvas_response:
+                    page.goto(f"{base}/?backtest_run={run_id}#backtest-trading")
+                response = canvas_response.value
+                self.assertEqual(response.status, 200)
+                payload = response.json()
+                self.assertFalse(payload['errors'])
+                self.assertEqual(payload['run']['run_id'], run_id)
+                page.get_by_role('region', name='Strategy activity', exact=True).wait_for()
+                self.assertEqual(page.locator('.backtest-recovery-state').count(), 0)
+                # Complete small journals correctly have no older-page button.
+                if not payload['trading']['strategy_activity_page']['complete']:
+                    page.get_by_role("button", name="Load next 2,000 older events").wait_for()
                 page.wait_for_timeout(2000)
                 self.assertEqual(setup_requests, [])
             finally:

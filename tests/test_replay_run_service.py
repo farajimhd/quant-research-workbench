@@ -1112,6 +1112,8 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(review.current_time, source.current_time)
                     self.assertIsNone(review._task)
                     self.assertIs(await service.review_saved(source.run_id), review)
+                    with patch.object(review._journal, "load_checkpoint", side_effect=AssertionError("Checkpoint loaded twice")):
+                        self.assertEqual(review.stream_snapshot()["checkpoint"]["processed_events"], 42)
                     start.assert_not_awaited()
                 finally:
                     review._journal.close()
@@ -1132,6 +1134,31 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
             journal.close()
             with self.assertRaisesRegex(ValueError, "no complete review checkpoint"):
                 await ReplayRunService(runtime_root=root).review_saved(source.run_id)
+
+    async def test_saved_review_coalesces_requests_and_survives_caller_cancellation(self) -> None:
+        service = ReplayRunService()
+        gate = asyncio.Event()
+        result = object()
+        async def restore(run_id):
+            await gate.wait()
+            return result
+        with patch.object(service, "_review_saved", side_effect=restore) as restore_mock:
+            first = asyncio.create_task(service.review_saved("same-run"))
+            second = asyncio.create_task(service.review_saved("same-run"))
+            await asyncio.sleep(0)
+            first.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await first
+            gate.set()
+            self.assertIs(await second, result)
+            self.assertEqual(restore_mock.call_count, 1)
+            await asyncio.sleep(0)
+            self.assertFalse(service._review_tasks)
+        with patch.object(service, "_review_saved", side_effect=ValueError("invalid")) as restore_mock:
+            for _ in range(2):
+                with self.assertRaisesRegex(ValueError, "invalid"):
+                    await service.review_saved("same-run")
+            self.assertEqual(restore_mock.call_count, 2)
 
     async def test_service_restores_complete_debug_checkpoint(self) -> None:
         class StopAfterFirstEvent(ReplayRunController):

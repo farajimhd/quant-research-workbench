@@ -48,6 +48,17 @@ def test_frozen_repeated_checkpoint_evidence_reopens_exactly(tmp_path):
     journal=TradingJournal(path,read_only=True)
     try:
         assert journal.load_checkpoint('run')['state']==state
+        from copy import deepcopy
+        import pytest
+        restored = journal.load_checkpoint('run', immutable=True)['state']
+        assert restored == state
+        assert restored['states'][0]['rows'] is restored['states'][1]['prior_rows']
+        assert deepcopy(restored) is restored
+        with pytest.raises(TypeError):
+            restored['states'][0]['rows'][0]['fit']['center'] = -1
+        mutable = journal.load_checkpoint('run')['state']
+        mutable['states'][0]['rows'][0]['fit']['center'] = -1
+        assert mutable['states'][1]['prior_rows'][0]['fit']['center'] == 0
     finally:journal.close()
 
 
@@ -65,6 +76,7 @@ def test_compressed_backtest_checkpoint_and_evidence_reopen_exactly(tmp_path):
     try:
         assert journal.records('run')[0].payload['levels']==value['levels']
         assert journal.load_checkpoint('run')['state']==state
+        assert journal.load_checkpoint('run', immutable=True)['state']==state
     finally:journal.close()
 
 

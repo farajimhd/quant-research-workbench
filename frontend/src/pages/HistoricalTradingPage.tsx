@@ -1,5 +1,6 @@
 import { Modal } from "../app/components/Modal";
 import { BacktestRecoveryFailure } from "../app/components/BacktestRecoveryFailure";
+import { BacktestRecoveryState } from "../app/components/BacktestRecoveryState";
 import { BacktestRunHistory } from "../app/components/BacktestRunHistory";
 import { ArrowLeft, CheckCircle2, CircleStop, Gauge, Pause, Play, RefreshCcw, Square, TriangleAlert, X, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -487,13 +488,8 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   }
 
   if (selectedRunId && restoreFailed) return <div className="canvas-config-page"><BacktestRecoveryFailure error={restoreError} onSetup={returnToSetup} /></div>;
-  if (selectedRunId) return <div className="canvas-config-page">
-    <div className={restoreError ? "canvas-inline-error" : "historical-canvas-run-state"} role={restoreError ? "alert" : "status"}>
-      {restoreError ? restoreFailed ? restoreError : `Could not reconnect to backtest: ${restoreError}` : "Reconnecting to your backtest…"}
-      {restoreError && !restoreFailed ? <button className="button secondary compact" onClick={() => setRestoreAttempt((value) => value + 1)} type="button">Retry connection</button> : null}
-      <button className="button secondary compact" onClick={returnToSetup} type="button">Return to setup</button>
-    </div>
-  </div>;
+  if (selectedRunId) return <BacktestRecoveryState error={restoreError}
+    onRetry={() => { setRestoreError(""); setRestoreAttempt(value => value + 1); }} onSetup={returnToSetup} />;
 
   const warmupCheck: HistoricalCheck = {
     id: "indicator_warmup",

@@ -53,22 +53,36 @@ def encode_evidence(value, dumps, evidence, memo=None):
     return value
 
 
-def decode_evidence(value, fetch, active=None):
+def decode_evidence(value, fetch, active=None, *, immutable=False, memo=None):
+    if immutable and isinstance(value, (FrozenDict, FrozenList)):
+        return value
+    if not isinstance(value, (dict, list)):
+        return value
     active = set() if active is None else active
+    memo = {} if memo is None else memo
+    def decode(item, ancestors=active):
+        return decode_evidence(item, fetch, ancestors, immutable=immutable, memo=memo)
     value=unpack_value(value)
     if isinstance(value, dict):
-        if set(value) == {REFERENCE}:
+        if len(value) == 1 and REFERENCE in value:
             digest = value[REFERENCE]
             if digest in active:
                 raise ValueError('Cyclic journal evidence reference')
+            if immutable and digest in memo:
+                return memo[digest]
             raw = fetch(digest)
             if raw is not None:raw=unpack(raw)
             if raw is None or sha256(raw.encode('utf-8')).hexdigest() != digest:
                 raise ValueError(f'Missing or corrupt journal evidence: {digest}')
-            return decode_evidence(json.loads(raw), fetch, active | {digest})
-        return {k: decode_evidence(v, fetch, active) for k, v in value.items()}
+            result = decode(json.loads(raw), active | {digest})
+            if immutable:
+                memo[digest] = result
+            return result
+        result = {k: decode(v) if isinstance(v, (dict, list)) else v for k, v in value.items()}
+        return FrozenDict(result) if immutable else result
     if isinstance(value, list):
-        return [decode_evidence(v, fetch, active) for v in value]
+        result = [decode(v) if isinstance(v, (dict, list)) else v for v in value]
+        return FrozenList(result) if immutable else result
     return value
 
 
@@ -136,6 +150,13 @@ def _activity_payload(value, resolved):
     if isinstance(value, (list, tuple)):
         return [_activity_payload(v, resolved) for v in value]
     return value
+
+
+def decode_immutable_json(raw, fetch):
+    """Hydrate owned checkpoint JSON bottom-up without a second mutable tree."""
+    memo = {}
+    return decode_evidence(json.loads(raw, object_hook=lambda value: decode_evidence(
+        value, fetch, immutable=True, memo=memo)), fetch, immutable=True, memo=memo)
 
 
 def _chart_evidence(item, resolved):

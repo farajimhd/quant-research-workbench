@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from .journal_evidence import encode_evidence, decode_evidence, activity_payload, REFERENCE
+from .journal_evidence import encode_evidence, decode_evidence, decode_immutable_json, activity_payload, REFERENCE
 from .journal_storage import pack
 
 from src.request_context import causal_identity, current_request_identity
@@ -116,14 +116,14 @@ class TradingJournal:
             self._batch_count=0
             self._batch_started=perf_counter()
 
-    def _hydrate(self, value):
+    def _hydrate(self, value, *, immutable=False):
         cache = {}
         def fetch(digest):
             if digest not in cache:
                 found = self._fetchone("SELECT payload_json FROM journal_evidence WHERE sha256 = ?", (digest,))
                 cache[digest] = found["payload_json"] if found else None
             return cache[digest]
-        return decode_evidence(value, fetch)
+        return decode_immutable_json(value, fetch) if immutable else decode_evidence(value, fetch)
 
     def _record(self, row) -> JournalRecord:
         record = _record(row)
@@ -462,14 +462,17 @@ class TradingJournal:
             )
         self.flush()
 
-    def load_checkpoint(self, run_id: str) -> dict[str, Any] | None:
+    def load_checkpoint(self, run_id: str, *, immutable=False) -> dict[str, Any] | None:
+        if immutable and not self.read_only:
+            raise ValueError('Immutable checkpoints are for read-only review')
         with self._lock:
             row = self._connection.execute(
                 "SELECT * FROM checkpoints WHERE run_id = ?", (run_id,)
             ).fetchone()
         if row is None:
             return None
-        return {"run_id": row["run_id"], "cursor": row["cursor"], "event_time": row["event_time"], "state": self._hydrate(json.loads(row["state_json"])), "updated_at": row["updated_at"]}
+        value = row["state_json"] if immutable else json.loads(row["state_json"])
+        return {"run_id": row["run_id"], "cursor": row["cursor"], "event_time": row["event_time"], "state": self._hydrate(value, immutable=immutable), "updated_at": row["updated_at"]}
 
     def save_portfolio_state(self, account_id: str, state: dict[str, Any]) -> None:
         if not account_id:
