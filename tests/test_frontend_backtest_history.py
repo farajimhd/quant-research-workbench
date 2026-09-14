@@ -39,6 +39,19 @@ class BacktestHistoryTests(unittest.TestCase):
                 page.goto("http://127.0.0.1:5173/#backtest-trading")
                 table = page.get_by_role("region", name="Recent backtests table", exact=True)
                 table.wait_for()
+                # Wheel input must reach history inside the clipped Canvas shell.
+                # scroll_into_view/click auto-scrolling can hide an overflow:hidden bug.
+                setup = page.locator(".mode-launch-page")
+                self.assertEqual(setup.evaluate("el => getComputedStyle(el).overflowY"), "auto")
+                surface = page.locator(".mode-launch-surface")
+                self.assertGreater(surface.bounding_box()["height"], 300)
+                self.assertTrue(page.get_by_role("button", name="Test Candidate", exact=True).is_visible())
+                page.mouse.move(500, 350)
+                page.mouse.wheel(0, 10000)
+                page.wait_for_function("document.querySelector('.mode-launch-page').scrollTop > 0")
+                footer = page.get_by_role("button", name="Older", exact=True)
+                page.wait_for_function("document.querySelector('.backtest-run-history footer').getBoundingClientRect().bottom <= innerHeight")
+                self.assertTrue(footer.is_visible())
                 self.assertEqual(table.locator("tbody tr").count(), 10)
                 self.assertEqual(table.locator("tbody tr td:nth-child(2) strong").all_text_contents(),
                                  [f"run-{i:04d}" for i in range(11, 1, -1)])

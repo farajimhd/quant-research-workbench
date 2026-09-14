@@ -1,5 +1,16 @@
 /* Replay and Backtest setup */
 
+/* The Canvas shell clips overflow; setup owns scrolling within that shell. */
+.mode-launch-page:has(.backtest-run-history) {
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  align-content: start;
+  grid-template-rows: max-content max-content max-content;
+  scrollbar-gutter: stable;
+}
+
 .mode-launch-secondary:has(.backtest-run-history) { min-width: 0; }
 .backtest-run-history { border: 1px solid var(--border); border-radius: 8px; padding: 16px; min-width: 0; }
 .backtest-run-history :is(header, footer) { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
