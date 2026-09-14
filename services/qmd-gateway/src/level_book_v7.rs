@@ -70,6 +70,19 @@ pub async fn catalog() -> Result<Json<Value>, (StatusCode, Json<Value>)> {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct CoverageRequest {
+    tickers: Vec<String>,
+    as_of: chrono::DateTime<chrono::Utc>,
+}
+pub async fn coverage(Json(request): Json<CoverageRequest>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if request.tickers.is_empty() || request.tickers.len() > 128 || request.tickers.iter().any(|t|
+        t.is_empty() || t.len() > 30 || !t.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || ".- ".contains(c))) {
+        return Err((StatusCode::BAD_REQUEST, Json(json!({"error":"Invalid V7 coverage tickers"}))));
+    }
+    dispatch(json!({"operation":"coverage","tickers":request.tickers,"as_of":request.as_of})).await
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SnapshotRequest {
     ticker: String,
     as_of: chrono::DateTime<chrono::Utc>,

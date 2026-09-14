@@ -12,6 +12,11 @@ from .streaming_level_book import EXTRACTION_VERSION
 from .reaction_band import CONFIG
 
 BOOK_ID = 'level-book-v7'
+
+
+class CoverageUnavailable(ValueError):
+    """Expected ticker eligibility failure, distinct from corrupt authority."""
+
 CAMPAIGNS = (
     'all-tradable-20250101-20260912-mle-v1',
     'deferred-common-share-repair-20260913/common-share-supplement',
@@ -65,7 +70,10 @@ class Catalog:
             if not directory or Path(directory).name!=directory:
                 raise ValueError('Invalid V7 ticker directory')
             target=root/'tickers'/directory
-            source=read(target/'source-plan.json')
+            try:
+                source=read(target/'source-plan.json')
+            except FileNotFoundError as exc:
+                raise CoverageUnavailable('V7 source plan unavailable for '+ticker) from exc
             if source['plan_hash']!=plan['plan_hash']:
                 raise ValueError('V7 ticker source plan mismatch')
             days=[d['source_date'] for d in source['days']]
@@ -78,7 +86,10 @@ class Catalog:
         """Choose the exact preceding source session, never an older stale book."""
         candidates=self.sources(ticker)
         if not candidates:
-            raise ValueError('No V7 historical coverage for '+ticker)
+            reasons = sorted({row.get('reason', 'unpublished') for _, plan in self.plans
+                              for row in plan['rows'] if row['ticker'] == ticker})
+            raise CoverageUnavailable('No V7 historical coverage for '+ticker
+                                      + (': ' + '; '.join(reasons) if reasons else ': absent from published campaigns'))
         failures=[]
         for target,plan,source in reversed(candidates):
             days=[d['source_date'] for d in source['days']]
@@ -104,7 +115,7 @@ class Catalog:
             except FileNotFoundError:
                 failures.append(str(target))
                 continue
-        raise ValueError(f'Verified preceding V7 checkpoint unavailable for {ticker} {session}; no stale or legacy fallback')
+        raise CoverageUnavailable(f'Verified preceding V7 checkpoint unavailable for {ticker} {session}; no stale or legacy fallback')
 
     def items(self):
         return [dict(id=BOOK_ID,ticker=ticker,version='causal-level-book-v7-mle-1',

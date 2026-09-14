@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import urllib.parse
 
-from .v7_catalog import Catalog,BOOK_ID
+from .v7_catalog import Catalog,BOOK_ID,CoverageUnavailable
 from .streaming_level_book import StreamingLevelBook,VERSION
 from .historical_level_checkpoint import digest
 from .level_book_store import verified_book
@@ -127,6 +127,31 @@ def projection(engine,as_of,provenance,include_segments):
 
 
 class Service:
+    def coverage(self, tickers, as_of):
+        """Verify preceding books without loading any current-session market data."""
+        if not isinstance(tickers, list) or not 1 <= len(tickers) <= 128:
+            raise ValueError('V7 coverage requires 1 to 128 tickers')
+        import re
+        if any(not isinstance(t, str) or not re.fullmatch(r'[A-Z0-9.\- ]{1,30}', t) for t in tickers):
+            raise ValueError('Invalid V7 coverage ticker')
+        at=stamp(as_of) if isinstance(as_of,str) else as_of
+        if at.tzinfo is None:raise ValueError('V7 coverage requires a timezone')
+        day=at.astimezone(NY).date().isoformat()
+        begin,_=session_bounds(day)
+        rows=[]
+        for ticker in sorted(set(tickers)):
+            try:
+                book,provenance=self._seed(ticker,day,begin.timestamp(),'history')
+                if book['available_at']>at.timestamp():
+                    raise CoverageUnavailable('Preceding V7 book is not yet available')
+                if not book['levels']:
+                    raise CoverageUnavailable('Preceding V7 book contains no levels')
+                rows.append(dict(ticker=ticker,eligible=True,checkpoint_session=book['session'],
+                                 checkpoint_hash=book['checkpoint_hash']))
+            except CoverageUnavailable as exc:
+                rows.append(dict(ticker=ticker,eligible=False,reason=str(exc)))
+        return dict(catalog_hash=self.catalog.fingerprint,as_of=at.isoformat(),rows=rows)
+
     def __init__(self,catalog=None,source=None,closing_root=None,max_sessions=16):
         self.catalog=catalog or Catalog();self.source=source or QmdSource()
         self.sessions=OrderedDict();self.max_sessions=max_sessions
@@ -180,7 +205,7 @@ class Service:
         # proves such absence within its range, not beyond the campaign end.
         known={r['source_date'] for r in provenance['source_plan']['days']}-set(provenance.get('verified_empty_sessions',[]))
         if any(str(d)[:10]>provenance['last_source_session'] or str(d)[:10] in known for d in missing):
-            raise ValueError('V7 seed has missing intervening sessions; complete historical/closing checkpoints first')
+            raise CoverageUnavailable('V7 seed has missing intervening sessions; complete historical/closing checkpoints first')
         return prior,dict(provenance,checkpoint_session=prior['session'],checkpoint_hash=prior['checkpoint_hash'])
 
     def chart_checkpoint(self,ticker,as_of,mode='history'):

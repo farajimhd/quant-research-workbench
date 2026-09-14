@@ -9,9 +9,41 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock
 
 from src.backend.historical_signal_occurrence_service import historical_source_native_signal_occurrences
 from src.backend.replay_run_service import ReplayFrameSpool, ReplayDerivedFrame, _stream_historical_bar_derived_frames, _structural_recovery_projection_tickers
+
+
+class CoveragePreflightTests(IsolatedAsyncioTestCase):
+    async def test_missing_book_is_warned_and_guarded_before_signal_activation(self):
+        from src.backend.replay_run_service import ReplayRunController
+        from src.trading_runtime.runtime import RunMode
+        with tempfile.TemporaryDirectory() as folder:
+            controller = object.__new__(ReplayRunController)
+            controller.definition = SimpleNamespace(mode=RunMode.BACKTEST,
+                experimental_structure_book='level-book-v7', execution_mode='strategy',
+                session_date=datetime(2026, 8, 21).date(), final_session_date=None,
+                requested_start=datetime(2026, 8, 21, 8, tzinfo=UTC))
+            controller.run_dir = Path(folder)
+            controller.run_id = 'test'
+            controller._v7_excluded_tickers = set()
+            controller._selected_assignments = lambda: [dict(ticker='GOOD'), dict(ticker='LGHL')]
+            controller._publish = AsyncMock()
+            controller._record_data_authority = Mock()
+            controller._journal = Mock()
+            response = dict(catalog_hash='pinned', rows=[dict(ticker='GOOD', eligible=True,
+                checkpoint_session='2026-08-20', checkpoint_hash='one'),
+                dict(ticker='LGHL', eligible=False, reason='ambiguous published ticker identity')])
+            with patch('src.backend.qmd_gateway_client.qmd_history_post_json', return_value=response):
+                await controller._prepare_v7_coverage()
+            assert controller._v7_excluded_tickers == {'LGHL'}
+            report = json.loads((Path(folder) / 'level-book-coverage.json').read_text())
+            assert report['eligible_ticker_count'] == 1
+            assert report['excluded'][0]['ticker'] == 'LGHL'
+            assert controller._journal.append.call_args.kwargs['category'] == 'warning'
+            # No configuration/cache access or activation is possible for an excluded ticker.
+            await controller._process_external_signal_event(SimpleNamespace(ticker='LGHL'))
 
 
 class ArtifactTests(TestCase):

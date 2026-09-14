@@ -33,6 +33,34 @@ def make(tmp_path):
     source=Source();return Service(Catalog(tmp_path),source),source
 
 
+def test_coverage_does_not_consume_current_day_and_excludes_only_missing_books(tmp_path, monkeypatch):
+    from src.market_engine.v7_catalog import CoverageUnavailable
+    service, source = make(tmp_path)
+    original = service.catalog.select
+    def select(ticker, day):
+        if ticker == 'MISSING':
+            raise CoverageUnavailable('ambiguous published ticker identity')
+        return original(ticker, day)
+    monkeypatch.setattr(service.catalog, 'select', select)
+    packet = service.coverage(['TEST', 'MISSING'], '2026-08-21T04:00:00-04:00')
+    assert {r['ticker']: r['eligible'] for r in packet['rows']} == {'TEST': True, 'MISSING': False}
+    assert source.calls == []
+    assert service.sessions == {}
+    def corrupt(*args):
+        raise ValueError('V7 checkpoint hash mismatch')
+    monkeypatch.setattr(service.catalog, 'select', corrupt)
+    with pytest.raises(ValueError, match='hash mismatch'):
+        service.coverage(['TEST'], '2026-08-21T04:00:00-04:00')
+
+
+def test_coverage_rejects_empty_and_future_seed(tmp_path):
+    service, _ = make(tmp_path)
+    service.catalog.prior['levels'] = []
+    assert not service.coverage(['TEST'], '2026-08-21T04:00:00-04:00')['rows'][0]['eligible']
+    service.catalog.prior['available_at'] = datetime(2026, 8, 22, tzinfo=timezone.utc).timestamp()
+    assert 'not yet available' in service.coverage(['TEST'], '2026-08-21T04:00:00-04:00')['rows'][0]['reason']
+
+
 def at(t):return datetime.fromtimestamp(t,timezone.utc)
 
 

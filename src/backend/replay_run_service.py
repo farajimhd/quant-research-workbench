@@ -8,6 +8,7 @@ from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD, CONTRAC
 import asyncio
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -991,6 +992,12 @@ class ReplayRunController:
         self._latest_strategy_observations: dict[str, StrategyObservation] = {}
         self._signal_stream_states: dict[tuple[str, str], dict[str, Any]] = {}
         self._signal_activated_tickers: set[str] = set()
+        self._v7_excluded_tickers: set[str] = set()
+        self._v7_coverage_report: dict[str, Any] = {}
+        coverage_path = self.run_dir / 'level-book-coverage.json'
+        if coverage_path.exists():
+            self._v7_coverage_report = json.loads(coverage_path.read_text(encoding='utf-8'))
+            self._v7_excluded_tickers = {row['ticker'] for row in self._v7_coverage_report['excluded']}
         # Once a source-native signal has admitted a ticker, keep evaluating
         # that campaign after the short-lived signal episode expires (an open
         # position may still need management). Tickers that have never been
@@ -1659,6 +1666,8 @@ class ReplayRunController:
                 if key.startswith("configuration_") or key.startswith("canvas_") or key.startswith("experimental_structure_")
             },
             "tickers": list(self.definition.tickers),
+            "level_book_coverage": {key: value for key, value in self._v7_coverage_report.items()
+                                    if include_details or key != 'verified'},
             "debug_fixture": (
                 self.definition.debug_fixture.payload()
                 if self.definition.debug_fixture is not None
@@ -2268,6 +2277,7 @@ class ReplayRunController:
             self._preparation_stage = "watchlist_membership"
             await self._publish(force=True)
             await self._prepare_historical_watchlist_timeline()
+            await self._prepare_v7_coverage()
             self._preparation_stage = "strategy_runtime"
             await self._publish(force=True)
             await self._initialize_runtime()
@@ -2568,6 +2578,59 @@ class ReplayRunController:
                 },
             )
             yield batch.events
+
+    async def _prepare_v7_coverage(self) -> None:
+        if (self.definition.mode == RunMode.BACKTEST_DEBUG
+                or self.definition.experimental_structure_book != 'level-book-v7'
+                or self.definition.execution_mode != 'strategy'):
+            return
+        from src.backend.qmd_gateway_client import qmd_history_post_json
+        from src.data_provider.calendar import market_sessions
+        names = sorted({_ticker(row['ticker']) for row in self._selected_assignments()})
+        days = market_sessions(self.definition.session_date,
+                               self.definition.final_session_date or self.definition.session_date)
+        self._preparation_stage = 'level_book_coverage'
+        self._preparation_completed_units = 0
+        self._preparation_total_units = len(names) * len(days)
+        report = dict(requested_ticker_count=len(names), excluded=[], verified=[], catalog_hash=None)
+        for day in days:
+            at = datetime.combine(day, clock_time(4), tzinfo=NEW_YORK)
+            for offset in range(0, len(names), 64):
+                await self._publish(force=True)
+                batch = names[offset:offset + 64]
+                packet = await asyncio.to_thread(qmd_history_post_json, '/level-book-v7/coverage',
+                    dict(tickers=batch, as_of=at.isoformat()), timeout=180)
+                rows = packet.get('rows', [])
+                if (len(rows) != len(batch) or {r['ticker'] for r in rows} != set(batch)
+                        or any(type(r.get('eligible')) is not bool for r in rows)
+                        or not packet.get('catalog_hash')):
+                    raise ValueError('Incomplete V7 coverage response')
+                if report['catalog_hash'] not in (None, packet['catalog_hash']):
+                    raise ValueError('V7 catalog changed during coverage preflight')
+                report['catalog_hash'] = packet['catalog_hash']
+                for row in rows:
+                    evidence = dict(row, session=str(day))
+                    report['verified' if row['eligible'] else 'excluded'].append(evidence)
+                    if not row['eligible']:
+                        self._v7_excluded_tickers.add(row['ticker'])
+                        logging.getLogger(__name__).warning('Backtest %s excludes %s on %s: %s',
+                            self.run_id, row['ticker'], day, row.get('reason'))
+                self._preparation_completed_units += len(rows)
+        report['excluded_ticker_count'] = len(self._v7_excluded_tickers)
+        report['eligible_ticker_count'] = len(set(names) - self._v7_excluded_tickers)
+        report['policy'] = 'require verified preceding V7 books for every requested session'
+        path = self.run_dir / 'level-book-coverage.json'
+        temporary = path.with_suffix('.tmp')
+        temporary.write_text(json.dumps(report, indent=2), encoding='utf-8')
+        temporary.replace(path)
+        self._v7_coverage_report = report
+        self._record_data_authority('v7_coverage_preflight', report)
+        if report['excluded'] and self._journal is not None:
+            self._journal.append(run_id=self.run_id, category='warning',
+                entity_type='level_book_coverage', entity_id='v7_coverage_preflight',
+                event_time=self.definition.requested_start, payload=report)
+        if names and not report['eligible_ticker_count']:
+            raise ValueError('No strategy tickers have required V7 books; see level-book-coverage.json')
 
     async def _initialize_runtime(
         self,
@@ -4332,6 +4395,8 @@ class ReplayRunController:
                 source_cache[f"{field_refs[source_id]}@1s"] = record
 
     async def _process_external_signal_event(self, event: ReplaySignalEvent) -> None:
+        if event.ticker in self._v7_excluded_tickers:
+            return
         configuration = self.definition.configuration_revision["payload"]
         run_plan = dict(configuration.get("run_plan") or {})
         activation = dict(run_plan.get("activation") or {})
@@ -4957,7 +5022,7 @@ class ReplayRunController:
                 raise ValueError(
                     f"Historical assignments are unavailable or inactive: {', '.join(sorted(missing))}"
                 )
-        return rows
+        return [row for row in rows if _ticker(row['ticker']) not in self._v7_excluded_tickers]
 
     def _historical_signal_assignment_identities(self) -> dict[str, dict[str, Any]]:
         identities: dict[str, dict[str, Any]] = deepcopy(
@@ -5382,6 +5447,7 @@ class ReplayRunController:
                 for ticker in tickers
                 if ticker in explicit or ticker in assigned and ticker in source_native_signal_tickers
             )
+        tickers = tuple(ticker for ticker in tickers if ticker not in self._v7_excluded_tickers)
         if not tickers:
             raise ValueError(
                 "Historical run requires at least one explicit symbol, strategy assignment, or configured universe member"

@@ -21,6 +21,8 @@ def main():
             request=json.loads(line)
             if service is None:service=Service()
             if request.get('operation')=='catalog':result=service.catalog.items()
+            elif request.get('operation')=='coverage':
+                result=service.coverage(request['tickers'],request['as_of'])
             elif request.get('operation')=='chart_checkpoint':
                 result=service.chart_checkpoint(request['ticker'],request['as_of'],request['mode'])
             elif request.get('operation')=='snapshot':
