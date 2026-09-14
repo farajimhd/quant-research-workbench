@@ -42,18 +42,49 @@ impl Worker {
         Ok(response)
     }
 }
-static WORKER: OnceLock<Mutex<Option<Worker>>> = OnceLock::new();
+// A ticker always has one owning process. Parallel ticker preparation never
+// shares mutable MLE state or changes the ordering within a cursor.
+const WORKER_COUNT: usize = 4;
+static WORKERS: OnceLock<Vec<Mutex<Option<Worker>>>> = OnceLock::new();
 static ADMISSION: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
+fn worker_index(request: &Value) -> usize {
+    request["ticker"].as_str().unwrap_or("").bytes()
+        .fold(0usize, |hash, byte| hash.wrapping_mul(31).wrapping_add(byte as usize)) % WORKER_COUNT
+}
+
+#[cfg(test)]
+mod worker_tests {
+    use super::*;
+    #[test]
+    fn ticker_ownership_is_stable_across_modes_and_operations() {
+        let mut owners = std::collections::HashSet::new();
+        for ticker in ["AAA", "BBB", "CCC", "DDD"] {
+            let owner = worker_index(&json!({"ticker":ticker,"operation":"snapshot","mode":"history"}));
+            assert_eq!(owner, worker_index(&json!({"ticker":ticker,"operation":"chart_checkpoint","mode":"live"})));
+            owners.insert(owner);
+        }
+        assert_eq!(owners.len(), WORKER_COUNT);
+        assert_eq!(worker_index(&json!({"operation":"catalog"})), 0);
+    }
+}
 pub fn shutdown() {
-    if let Some(slot)=WORKER.get() {
-        if let Ok(mut worker)=slot.lock() { *worker=None; }
+    if let Some(slots)=WORKERS.get() {
+        for slot in slots {
+            if let Ok(mut worker)=slot.lock() {
+                if let Some(running)=worker.as_mut() {
+                    let _=running.request(&json!({"operation":"shutdown"}));
+                }
+                *worker=None;
+            }
+        }
     }
 }
 pub async fn dispatch(request: Value) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let permit = ADMISSION.try_acquire().map_err(|_| (StatusCode::TOO_MANY_REQUESTS, Json(json!({"error":"V7 request queue is full; retry"}))))?;
     let result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        let mut slot = WORKER.get_or_init(|| Mutex::new(None)).lock().map_err(|_| "V7 worker lock poisoned".to_string())?;
+        let slots = WORKERS.get_or_init(|| (0..WORKER_COUNT).map(|_| Mutex::new(None)).collect());
+        let mut slot = slots[worker_index(&request)].lock().map_err(|_| "V7 worker lock poisoned".to_string())?;
         if slot.is_none() { *slot = Some(Worker::start()?); }
         let result = slot.as_mut().unwrap().request(&request);
         if result.is_err() { *slot = None; }

@@ -42,7 +42,7 @@ def completed_seconds(rows,ticker,start,end):
 
 
 class QmdSource:
-    def __init__(self):self.history=OrderedDict()
+    def __init__(self, cache=None):self.history=OrderedDict();self.cache=cache
 
     def seconds(self,ticker,day,start,end,mode):
         from src.backend.qmd_gateway_client import qmd_history_get_json,qmd_bars,qmd_intraday_bar_history
@@ -55,6 +55,11 @@ class QmdSource:
             # Closed-day data are immutable canonical inputs. Never cache an
             # in-progress day as complete.
             closed=close<=datetime.now(timezone.utc)
+            if closed and self.cache is not None:
+                saved=self.cache.source(key,start,end)
+                if saved is not None:
+                    bars,audit=saved
+                    return bars,dict(audit,consumed_through=end)
             cached=self.history.get(key) if closed else None
             if cached is not None:
                 self.history.move_to_end(key)
@@ -69,6 +74,9 @@ class QmdSource:
             if closed:
                 bars,unavailable=completed_seconds(rows,ticker,request_start,request_end)
                 audit=dict(unavailable_seconds=unavailable,source='qmd-history',source_revision=result['source_revision'],late_trade_policy='qmd-completed-seconds-excludes-delayed-reports')
+                if self.cache is not None:
+                    self.cache.save_source(key,bars,audit)
+                    return [b for b in bars if start<b['t']<=end],dict(audit,consumed_through=end)
                 times=[b['t'] for b in bars]
                 self.history[key]=(times,bars,audit)
                 while len(self.history)>4:self.history.popitem(last=False)
@@ -152,11 +160,34 @@ class Service:
                 rows.append(dict(ticker=ticker,eligible=False,reason=str(exc)))
         return dict(catalog_hash=self.catalog.fingerprint,as_of=at.isoformat(),rows=rows)
 
-    def __init__(self,catalog=None,source=None,closing_root=None,max_sessions=16):
-        self.catalog=catalog or Catalog();self.source=source or QmdSource()
+    def __init__(self,catalog=None,source=None,closing_root=None,max_sessions=16,cache_root=None):
+        from .v7_runtime_cache import RuntimeCache
+        from src.runtime_paths import runtime_root
+        local_cache=cache_root or (catalog.root/'qmd-runtime-cache' if catalog is not None else runtime_root()/'qmd_history'/'v7-cache')
+        self.catalog=catalog or Catalog()
+        if max_sessions<1:raise ValueError('V7 resident session limit must be positive')
+        self.cache=RuntimeCache(local_cache)
+        self.source=source or QmdSource(self.cache)
         self.sessions=OrderedDict();self.max_sessions=max_sessions
+        # SHA objects cannot be serialized. Retain only these small digest
+        # accumulators while exact engine checkpoints spill to bounded disk.
+        self.spilled_digests={}
         self.transports=OrderedDict()
         self.closing_root=Path(closing_root) if closing_root else self.catalog.root/'qmd-live-closing-v7'
+
+    def close(self):
+        self.cache.close()
+
+    def _spill_sessions(self):
+        while len(self.sessions)>self.max_sessions:
+            key,state=next(iter(self.sessions.items()))
+            if key not in self.spilled_digests and len(self.spilled_digests)>=50_000:
+                raise ValueError('V7 session capacity reached; release unused cursors')
+            self.cache.save_state(key,dict(
+                metadata={k:v for k,v in state.items() if k not in ('engine','input_digest')},
+                engine=state['engine'].checkpoint(copy_state=False)))
+            self.spilled_digests[key]=state['input_digest']
+            self.sessions.pop(key)
 
     def _closing(self,engine,input_hash):
         book=engine.historical_checkpoint(input_hash)
@@ -242,9 +273,21 @@ class Service:
         if not cursor_id:raise ValueError('V7 delta requires a cursor identity')
         result=self.snapshot(ticker,as_of,mode,False,cursor_id)
         key=(mode,ticker,cursor_id)
-        encoder=self.transports.setdefault(key,Encoder())
+        encoder=self.transports.get(key)
+        if encoder is None:
+            encoder=Encoder()
+            saved=self.cache.take_state(('transport',*key))
+            if saved is not None:
+                encoder.version=saved['version']
+                encoder.metadata=saved['metadata']
+                encoder.rows=saved['rows']
+            self.transports[key]=encoder
         self.transports.move_to_end(key)
-        while len(self.transports)>self.max_sessions:self.transports.popitem(last=False)
+        while len(self.transports)>self.max_sessions:
+            old,previous=next(iter(self.transports.items()))
+            self.cache.save_state(('transport',*old),dict(version=previous.version,
+                metadata=previous.metadata,rows=previous.rows))
+            self.transports.pop(old)
         return encoder.encode(result,base_version)
 
     def snapshot(self,ticker,as_of,mode='history',include_segments=True,cursor_id=''):
@@ -262,6 +305,12 @@ class Service:
                     self.sessions.pop(old_key,None)
         key=(mode,ticker,day,cursor_id if mode=='history' else '')
         state=self.sessions.get(key)
+        if state is None:
+            saved=self.cache.take_state(key)
+            if saved is not None:
+                state=dict(saved['metadata'],engine=StreamingLevelBook.restore(saved['engine'],copy_state=False),
+                           input_digest=self.spilled_digests.pop(key))
+                self.sessions[key]=state
         if state is None or cutoff<state['cutoff']:
             prior,provenance=self._seed(ticker,day,begin.timestamp(),mode)
             splits=self.source.splits(ticker,prior['session'],day,at)
@@ -270,7 +319,7 @@ class Service:
                 cutoff=begin.timestamp(),provenance={k:v for k,v in provenance.items() if k!='source_plan'},audit={},input_digest=hashlib.sha256())
             self.sessions[key]=state
         self.sessions.move_to_end(key)
-        while len(self.sessions)>self.max_sessions:self.sessions.popitem(last=False)
+        self._spill_sessions()
         try:
             if cutoff>state['cutoff']:
                 bars,audit=self.source.seconds(ticker,day,state['cutoff'],cutoff,mode)

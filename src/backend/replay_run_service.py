@@ -15,6 +15,7 @@ import re
 import sqlite3
 import time
 import urllib.parse
+from collections import deque
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime, time as clock_time, timedelta
@@ -562,6 +563,30 @@ class ReplayDerivedFrame:
     signals: dict[str, float] = field(default_factory=dict)
 
 
+class BoundedFrameLookahead:
+    """Read ahead only immutable inputs; consumption order remains unchanged."""
+    def __init__(self, source, limit=64):
+        self.source = iter(source)
+        self.pending = deque()
+        self.limit = limit
+        self.generation = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if not self.pending:
+            self.generation += 1
+            for _ in range(self.limit):
+                row = next(self.source, None)
+                if row is None:
+                    break
+                self.pending.append(row)
+        if not self.pending:
+            raise StopIteration
+        return self.pending.popleft()
+
+
 class ReplayFrameSpool:
     """Disk-backed, event-time-ordered derived frames for one historical run."""
 
@@ -1009,6 +1034,9 @@ class ReplayRunController:
         self._canvas_state_cache: tuple[float, dict[str, Any]] | None = None
         self._canvas_state_cache_state: tuple[str, bool] | None = None
         self._canvas_build_lock = asyncio.Lock()
+        self._monitoring = None
+        self._last_monitoring_capture = 0.0
+        self._monitoring_assignments = {}
         self._activity_index = None
         self.level_load_contract = LEVEL_LOAD_CONTRACT
         self._runtime_finished = False
@@ -1569,6 +1597,11 @@ class ReplayRunController:
             "run_id": self.run_id,
             "status": self.status,
             "runtime_ready": self._runtime_inputs_ready,
+            "monitoring": {
+                "error": getattr(self, '_monitoring_capture_error', '') or getattr(self._monitoring, 'error', None),
+                "pending": self._monitoring is not None and self._monitoring.pending is not None,
+                "cached_symbols": len(self._monitoring.results) if self._monitoring is not None else 0,
+            },
             "performance_timings": {"stages": deepcopy(getattr(self, '_stage_timings', {})),
                 "journal": dict(getattr(self._journal, 'timings', {})),
                 "scope": "inclusive wall time; journal work is included in execution stages"},
@@ -1949,6 +1982,8 @@ class ReplayRunController:
                    maximum_seconds=max(row['maximum_seconds'], elapsed))
 
     async def canvas_payload(self, symbol: str = "AAPL") -> dict[str, Any]:
+        if getattr(self, '_monitoring', None) is not None:
+            return await self._monitoring.get(_ticker(symbol))
         # Concurrent polls of one chart share a publication, rather than
         # queueing complete rebuilds behind the presentation lock. Cancelling
         # one HTTP request must not cancel work awaited by other readers.
@@ -2044,7 +2079,7 @@ class ReplayRunController:
         }
         strategy_records = list(trading.get("strategy_activity") or [])
         assignments = (
-            [assignment.payload() for assignment in self._strategy.assignments()]
+            [assignment.payload() for assignment in self._strategy.assignments() if assignment.ticker == ticker]
             if self._strategy is not None
             else []
         )
@@ -2285,7 +2320,8 @@ class ReplayRunController:
             self._preparation_stage = "strategy_frames"
             await self._publish(force=True)
             frame_source = await self._load_strategy_frames()
-            frame_iterator = iter(frame_source)
+            frame_iterator = BoundedFrameLookahead(frame_source)
+            prefetched_generation = -1
             threshold_only = self.definition.configuration_revision['payload'].get('strategy',{}).get('parameters',{}).get('macd_threshold_contract')
             if self.definition.debug_fixture is None and not self.definition.experimental_structure_book and not threshold_only:
                 self._historical_structure_frame_iterator = iter(frame_source)
@@ -2398,6 +2434,9 @@ class ReplayRunController:
                             await asyncio.sleep(0)
                         continue
                     while next_frame is not None and next_frame.as_of <= event.ts:
+                        if prefetched_generation != frame_iterator.generation:
+                            await self._prefetch_v7_frames([next_frame, *frame_iterator.pending], event.ts)
+                            prefetched_generation = frame_iterator.generation
                         frame = next_frame
                         while (
                             external_index < len(self._historical_external_signal_events)
@@ -2787,6 +2826,7 @@ class ReplayRunController:
             list(self.account_ids),
             _simulation_config(self.definition),
             mode=TradingMode(self.definition.mode.value),
+            initial_time=self.definition.session_start,
         )
         if self._resume_state is not None:
             broker_state = self._resume_state.get("broker")
@@ -2830,6 +2870,7 @@ class ReplayRunController:
             portfolio=portfolio,
             review_only=review_only,
         )
+        self._runtime.last_event_time = self.current_time or self.definition.session_start
         await self._runtime.initialize(
             record_lifecycle=record_lifecycle,
             review_only=review_only,
@@ -3801,6 +3842,45 @@ class ReplayRunController:
         await self._evaluate_strategy_observation(observation, ticker_assignments)
         return True
 
+    async def _prefetch_v7_frames(self, frames, cutoff):
+        """Parallel transport only; observations and authority commits stay ordered."""
+        if self.definition.experimental_structure_book != 'level-book-v7':
+            return
+        parameters = self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {})
+        if not (parameters.get('historical_hod_contract') or parameters.get('structural_recovery_contract')):
+            return
+        from src.backend.v7_book_cursor import V7BookCursor
+        prepared = getattr(self, '_v7_prefetch_cursors', {})
+        self._v7_prefetch_cursors = prepared
+        groups = {}
+        for frame in frames:
+            if frame.timeframe != '1s' or frame.as_of > cutoff:
+                continue
+            times = groups.setdefault(frame.ticker, [])
+            if frame.as_of not in times and len(times) < 32:
+                times.append(frame.as_of)
+        semaphore = asyncio.Semaphore(4)
+        async def prepare(ticker, times):
+            cursors = getattr(self, '_experimental_cursors', {})
+            cursor = cursors.get((ticker, 'frame')) or cursors.get((ticker, 'event'))
+            if cursor is None:
+                cursor = prepared.get(ticker)
+            async with semaphore:
+                if cursor is None:
+                    try:
+                        cursor = await asyncio.to_thread(V7BookCursor, self.definition.experimental_structure_book,
+                            ticker, self.definition.experimental_structure_fingerprint)
+                        prepared[ticker] = cursor
+                    except Exception:
+                        # Construction is retried at its original consumption
+                        # boundary, preserving the original failure ordering.
+                        return
+                for at in times:
+                    await asyncio.to_thread(cursor.prefetch, at)
+        started = time.perf_counter()
+        await asyncio.gather(*(prepare(ticker, times) for ticker, times in groups.items()))
+        self._record_stage_time('structure_prefetch', started)
+
     async def _experimental_structure_snapshot(self, ticker, as_of, lane, sequence=None):
         from src.backend.experimental_structure_book import NormalizedBookCursor as BookCursor
         from src.trading_runtime.structure_level_contract import (
@@ -3815,6 +3895,8 @@ class ReplayRunController:
             # never substitute its latest state for an earlier event cutoff.
             shared = next((cursor for (symbol, _), cursor in cursors.items()
                            if symbol == ticker and isinstance(cursor, V7BookCursor)), None)
+            if shared is None:
+                shared = getattr(self, '_v7_prefetch_cursors', {}).pop(ticker, None)
             cursors[key] = shared if shared is not None else BookCursor(
                 self.definition.experimental_structure_book, ticker,
                 self.definition.experimental_structure_fingerprint)
@@ -4898,9 +4980,21 @@ class ReplayRunController:
         force: bool = False,
         allow_navigation: bool = False,
     ) -> None:
+        now = time.monotonic()
+        if (self.definition.mode == RunMode.BACKTEST and self._runtime is not None and self._journal is not None
+                and (force or now - self._last_monitoring_capture >= 1.0)):
+            self._last_monitoring_capture = now
+            try:
+                self._capture_monitoring()
+                self._monitoring_capture_error = ''
+            except Exception as exc:
+                # Presentation failure is visible but cannot stop trading.
+                self._monitoring_capture_error = str(exc)
+                if self._monitoring is not None:
+                    self._monitoring.error = str(exc)
+                    self._monitoring.changed.set()
         if not self._subscribers:
             return
-        now = time.monotonic()
         if not force and now - self._last_publish_monotonic < 0.25:
             return
         self._last_publish_monotonic = now
@@ -4912,6 +5006,30 @@ class ReplayRunController:
                 except asyncio.QueueEmpty:
                     pass
             queue.put_nowait(payload)
+
+    def _capture_monitoring(self):
+        from src.backend.backtest_publication import BacktestPublication
+        started = time.perf_counter()
+        if self._monitoring is None:
+            self._monitoring = BacktestPublication()
+        configuration = self.definition.configuration_revision['payload']
+        assignments = self._strategy.assignments() if self._strategy is not None else ()
+        frozen = {}
+        for assignment in assignments:
+            previous = self._monitoring_assignments.get(assignment.assignment_id)
+            # Parameters belong to the immutable run configuration; mutable
+            # state is copied only when its owning assignment is replaced.
+            frozen[assignment.assignment_id] = previous if previous is not None and previous[0] is assignment else (
+                assignment, replace(assignment, state=deepcopy(assignment.state)))
+        self._monitoring_assignments = frozen
+        self._monitoring.publish(dict(
+            run=self.stream_snapshot(), snapshot=self._runtime.projected_snapshot(),
+            sequence=self._journal.latest_sequence(self.run_id), journal_path=str(self._journal.path),
+            assignments=tuple(row[1] for row in frozen.values()),
+            configuration={k: configuration[k] for k in ('strategy', 'deployment') if k in configuration},
+            automatic=self._strategy is not None,
+            performance_extrema=self._runtime.broker.performance_extrema()))
+        self._record_stage_time('monitoring_capture', started)
 
     def _selected_assignments(self) -> list[dict[str, Any]]:
         configuration = self.definition.configuration_revision["payload"]
@@ -6442,6 +6560,8 @@ class ReplayRunService:
         ):
             raise ValueError("Historical restart checkpoint identity changed")
         if resident is not None and resident._journal is not None:
+            if resident._monitoring is not None:
+                await resident._monitoring.close()
             resident._journal.close()
             resident._journal = None
         controller = ReplayRunController(
@@ -6522,6 +6642,8 @@ class ReplayRunService:
             )
             while len(self._runs) >= self.max_resident_runs and terminal:
                 evicted = terminal.pop(0)
+                if getattr(evicted, '_monitoring', None) is not None:
+                    await evicted._monitoring.close()
                 self._runs.pop(evicted.run_id, None)
             if len(self._runs) >= self.max_resident_runs:
                 raise ReplayRunCapacityError(

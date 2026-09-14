@@ -19,6 +19,10 @@ def main():
         try:
             if len(line)>65536:raise ValueError('V7 request exceeds protocol limit')
             request=json.loads(line)
+            if request.get('operation')=='shutdown':
+                if service is not None:service.close()
+                print(json.dumps(dict(ok=True,result={'closed':True})),flush=True)
+                return
             if service is None:service=Service()
             if request.get('operation')=='catalog':result=service.catalog.items()
             elif request.get('operation')=='coverage':
@@ -36,6 +40,7 @@ def main():
         except Exception as exc:
             response=dict(ok=False,error=str(exc))
         print(json.dumps(response,separators=(',',':'),allow_nan=False),flush=True)
+    if service is not None:service.close()
 
 
 if __name__=='__main__':main()

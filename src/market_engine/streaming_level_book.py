@@ -203,14 +203,21 @@ class StreamingLevelBook:
             levels=rows,split_factor=self.split_factor,split_evidence=self.split_evidence,retrospective=True)
         result['checkpoint_hash']=digest(result);return result
 
-    def checkpoint(self):
-        state=deepcopy({k:v for k,v in self.__dict__.items() if k not in ('lower','upper','armed','sides')})
-        for i,r in enumerate(state['rows']):
-            r['armed']=bool(self.armed[i]);r['side']='resistance' if self.sides[i]==1 else 'support' if self.sides[i]==-1 else None
+    def checkpoint(self, *, copy_state=True):
+        # The serialized spill path runs synchronously under its worker's
+        # exclusive ownership. It may borrow nested values until encoding ends;
+        # ordinary checkpoint callers still receive an independent deep copy.
+        state={k:v for k,v in self.__dict__.items() if k not in ('lower','upper','armed','sides')}
+        if copy_state:state=deepcopy(state)
+        state['rows']=[dict(r,armed=bool(self.armed[i]),
+            side='resistance' if self.sides[i]==1 else 'support' if self.sides[i]==-1 else None)
+            for i,r in enumerate(state['rows'])]
         state['pending']={str(k):v for k,v in state['pending'].items()}
         value=dict(version=VERSION,state=state);value['hash']=digest(value);return value
 
     @classmethod
-    def restore(cls,value):
+    def restore(cls,value, *, copy_state=True):
         if value.get('version')!=VERSION or value.get('hash')!=digest({k:v for k,v in value.items() if k!='hash'}):raise ValueError('Streaming checkpoint integrity/version mismatch')
-        engine=cls.__new__(cls);engine.__dict__.update(deepcopy(value['state']));engine.pending={int(k):v for k,v in engine.pending.items()};engine._index();return engine
+        # copy_state=False transfers ownership of freshly decoded private
+        # scratch data. Hash and version validation are identical in both paths.
+        engine=cls.__new__(cls);engine.__dict__.update(deepcopy(value['state']) if copy_state else value['state']);engine.pending={int(k):v for k,v in engine.pending.items()};engine._index();return engine

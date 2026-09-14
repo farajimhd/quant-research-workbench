@@ -1750,6 +1750,7 @@ class ReplayRunServiceCapacityTests(unittest.IsolatedAsyncioTestCase):
                 status=status,
                 updated_at=datetime(2026, 8, 10, index, tzinfo=NEW_YORK),
                 start=AsyncMock(),
+                _monitoring=MagicMock(close=AsyncMock()),
             )
             for index, status in ((1, "completed"), (2, "running"), (3, "created"))
         ]
@@ -1765,6 +1766,8 @@ class ReplayRunServiceCapacityTests(unittest.IsolatedAsyncioTestCase):
             service.get(controllers[0].run_id)
         self.assertIs(service.get(controllers[1].run_id), controllers[1])
         self.assertIs(service.get(controllers[2].run_id), controllers[2])
+        controllers[0]._monitoring.close.assert_awaited_once()
+        controllers[1]._monitoring.close.assert_not_awaited()
 
     async def test_rejects_new_run_when_every_resident_run_is_active(self) -> None:
         service = ReplayRunService(

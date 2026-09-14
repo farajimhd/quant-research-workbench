@@ -5840,7 +5840,13 @@ async def trading_backtest_run_canvas(
     symbol: str = "AAPL",
 ) -> dict[str, Any]:
     try:
-        return await backtest_run_service.get(run_id).canvas_payload(symbol)
+        controller = backtest_run_service.get(run_id)
+        if getattr(controller, '_monitoring', None) is not None:
+            # Already encoded in the publication process. Request frequency
+            # cannot trigger journal/assignment projection on the engine loop.
+            content = await controller._monitoring.encoded(symbol.strip().upper())
+            return Response(content=content, media_type="application/json")
+        return await controller.canvas_payload(symbol)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Backtest run not found") from exc
     except ValueError as exc:

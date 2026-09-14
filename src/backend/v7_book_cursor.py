@@ -14,6 +14,7 @@ class V7BookCursor:
         self.cursor_id=uuid4().hex
         self.decoder=Decoder()
         self.snapshots=OrderedDict()
+        self.prefetch_errors={}
         if self.build['ticker'] not in ('*',ticker) or fingerprint and fingerprint!=self.build['fingerprint']:
             raise ValueError('V7 book identity changed')
 
@@ -21,6 +22,8 @@ class V7BookCursor:
         if cutoff.tzinfo is None:raise ValueError('V7 strategy cutoff requires a timezone')
         second=int(cutoff.timestamp())
         with self.lock:
+            failure=self.prefetch_errors.pop(second,None)
+            if failure is not None:raise failure
             if second not in self.snapshots:
                 packet=qmd_level_book_v7(self.ticker,datetime.fromtimestamp(second,timezone.utc),cursor_id=self.cursor_id,
                     delta=True,base_version=self.decoder.version)
@@ -34,3 +37,12 @@ class V7BookCursor:
             self.snapshots.move_to_end(second)
             self.cached=self.snapshots[second];self.cutoff=second
             return self.cached
+
+    def prefetch(self,cutoff):
+        # Fail at the original consumption boundary, not at a later input
+        # merely read ahead by a preparation worker.
+        try:
+            self.snapshot(cutoff)
+        except Exception as exc:
+            with self.lock:
+                self.prefetch_errors[int(cutoff.timestamp())]=exc

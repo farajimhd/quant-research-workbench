@@ -190,13 +190,16 @@ class SimulatedBrokerAdapter:
 
     requires_fresh_execution_state = False
 
-    def __init__(self, account_ids: list[str], config: SimulationConfig | None = None, *, mode: TradingMode = TradingMode.REPLAY) -> None:
+    def __init__(self, account_ids: list[str], config: SimulationConfig | None = None, *, mode: TradingMode = TradingMode.REPLAY, initial_time: datetime | None = None) -> None:
         if not account_ids or any(not item.strip() for item in account_ids):
             raise ValueError("At least one non-empty simulated account id is required")
         if len(set(account_ids)) != len(account_ids):
             raise ValueError("Simulated account ids must be unique")
         self.config = config or SimulationConfig()
         self.mode = mode
+        if initial_time is not None and initial_time.tzinfo is None:
+            raise ValueError("Simulated initial time requires a timezone")
+        self.initial_time = initial_time
         self._account_ids = list(account_ids)
         self._cash = {account_id: self.config.initial_cash for account_id in account_ids}
         self._realized_pnl = {account_id: 0.0 for account_id in account_ids}
@@ -225,6 +228,7 @@ class SimulatedBrokerAdapter:
         """Return the complete deterministic broker state required for restart."""
         return {
             "schema_version": 4,
+            "initial_time": self.initial_time.isoformat() if self.initial_time is not None else None,
             "performance_extrema": dict(self._performance),
             "performance_marks": {str(k): list(v) for k,v in self._performance_marks.items()},
             "liquidity_consumed": dict(self._liquidity_consumed),
@@ -281,6 +285,8 @@ class SimulatedBrokerAdapter:
         schema_version = int(payload.get("schema_version") or 0)
         if schema_version not in {1, 2, 3, 4}:
             raise ValueError("Unsupported simulated broker checkpoint schema")
+        if payload.get('initial_time'):
+            self.initial_time = _checkpoint_time(payload['initial_time'])
         account_ids = [str(value) for value in payload.get("account_ids") or ()]
         if account_ids != self._account_ids:
             raise ValueError("Simulated broker checkpoint account identity changed")
@@ -400,6 +406,7 @@ class SimulatedBrokerAdapter:
                 title="Deterministic simulated account",
                 can_view=True,
                 can_trade=True,
+                valid_at=self._latest_event_time(),
             )
             for account_id in self._account_ids
         ]
@@ -496,7 +503,7 @@ class SimulatedBrokerAdapter:
             conid=conid,
             available_shares=1_000_000.0,
             classification="easy_to_borrow",
-            observed_at=datetime.now(timezone.utc),
+            observed_at=self._latest_event_time(),
             raw={"7636": 1_000_000.0, "7644": "easy_to_borrow"},
         )
 
@@ -591,7 +598,11 @@ class SimulatedBrokerAdapter:
 
     async def canonical_position_snapshot(self, account_id: str) -> tuple[SnapshotManifest, list[CanonicalPositionState]]:
         rows = [position.to_cpapi() for position in await self.positions(account_id)]
-        return normalize_position_snapshot(rows, account_id)
+        manifest, positions = normalize_position_snapshot(rows, account_id)
+        at = self._latest_event_time()
+        return (replace(manifest, provider=BrokerProvider.SIMULATED, started_at=at,
+                        completed_at=at, source_watermark=at.isoformat()),
+                [replace(row, source_event_time=at) for row in positions])
 
     async def account_summary(self, account_id: str) -> AccountSummary:
         self._require_account(account_id)
@@ -1374,7 +1385,7 @@ class SimulatedBrokerAdapter:
             event = self._trades_by_ticker.get(
                 ticker.upper()
             ) or self._quotes_by_ticker.get(ticker.upper())
-        return event.ts if event is not None else datetime.now(timezone.utc)
+        return event.ts if event is not None else self._latest_event_time()
 
     def _order_submission_time(self, request: OrderRequest) -> datetime:
         """Bound simulated submission by both market and decision clocks."""
@@ -1408,7 +1419,7 @@ class SimulatedBrokerAdapter:
                 *self._quotes_by_ticker.values(),
             ]
         ]
-        return max(times) if times else datetime.now(timezone.utc)
+        return max(times) if times else self.initial_time or datetime.now(timezone.utc)
 
     def _sorted_orders(self) -> list[_OrderState]:
         return sorted(self._orders.values(), key=lambda state: int(state.order_id))
