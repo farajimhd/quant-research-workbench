@@ -357,3 +357,37 @@ expectations and a V6 fixture rejected by the V7 contract). Seven additional
 publication, review API and history-isolation tests pass. Activation requires a
 managed backend restart after the active run has saved a terminal checkpoint;
 source validation does not establish sustained full-market speedup.
+
+
+Activation on September 14: the user authorized graceful stop, managed backend
+restart and resume. The terminal checkpoint matched 3,995,591 processed events.
+The first managed shutdown reported a leftover process; reconciliation confirmed
+it had exited, then the managed backend/frontend started successfully with QMD
+History preserved. Resume restored that exact prefix and completed preparation
+for 2,610 tickers. Playback crossed four million events with periodic checkpoints
+disabled. The backend was owned, ready and not stale at activation. Large initial
+checkpoint loading/restoration still contains synchronous work and temporarily
+blocked compact requests before normal warmup progress became available.
+
+Browser verification observed 26 compact status responses over 25 seconds during
+warmup, with visible preparation advancing from 704 to 1,472 tickers. During
+playback, seven strategy-activity responses advanced from sequence 344,427 to
+345,233, mostly about five seconds apart; the visible rows changed while events
+advanced from 4,111,104 to 4,132,001. The opt-in following/evidence/paging browser
+regression passed once runtime preparation was complete. Earlier attempts during
+preparation correctly encountered unavailable Canvas data or disabled polling.
+
+Journal Overview charts now attach width observation when the SVG actually
+mounts after its empty state, measure before paint, and retain full container
+width across updates and resizing. Compact minimums no longer shrink the area
+chart or force sparse candles to scroll unnecessarily. Both charts show
+width-aware intraday ET ticks, with seconds for short spans and dates for longer
+scopes; daily/monthly candles retain date axes. The equity curve uses actual
+elapsed time instead of spacing episodes equally. Financial values are unchanged.
+The managed build passed, the focused chart test exercised delayed mounting,
+repeated publication, proportional time placement and twelve theme/scale/viewport
+captures, and the managed page matrix captured 12/12 with zero objective issues.
+An unrelated warmup-specific review mode failed its four-exclusion modal assertion;
+the requested chart-page review used the standard targeted mode. Evidence is under
+`D:/TradingML/runtimes/ui-review/journal-overview-charts`,
+`journal-overview-matrix-final`, and `pause-checkpoint-follow`.
