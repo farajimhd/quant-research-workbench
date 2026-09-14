@@ -117,6 +117,30 @@ speed must not be advertised as full-session throughput.
 
 ## UI publication
 
+The recent-backtests table fetches independently of setup readiness. Its backend
+read uses a dedicated two-thread executor, so readiness checks and indicator
+warmup cannot exhaust the worker pool serving history. The frontend defers its
+initial dispatch past React's development mount/cleanup probe to avoid duplicate
+history reads. Refresh and Resume retain their own pending/error states; new-run
+launch checks remain mandatory.
+
+The history isolation test holds every default preparation worker busy while
+the actual history endpoint returns. Browser tests hold configuration, warmup,
+or preflight requests pending and exercise history loading, Refresh, and an
+intercepted Resume across 12 light/dark, scale and viewport scenarios. Three
+focused tests and 12 subtests pass; the managed production build and 12-scenario
+strict UI review pass with zero objective issues. Evidence is under
+`D:\TradingML\runtimes\ui-review\backtest-history-independent` and
+`backtest-history-final`. The before trace already showed independent frontend
+mounting; the fixed dependency was the shared backend executor, not a readiness
+condition hiding the table.
+
+A broader historical Canvas/launch-contract check returned 11 passes and three
+failures in unchanged paths: the Canvas projection mock and two launch-page
+source-text expectations. The affected endpoint AST and launch-page source
+were verified unchanged from the preceding commit. These unrelated fixtures
+were not rewritten as part of the history-loading fix.
+
 The engine captures a boundary at most once per second, with forced lifecycle
 updates. The packet contains the canonical broker projection, frozen assignment
 state, simulated time, and the journal's committed sequence.

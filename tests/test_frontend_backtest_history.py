@@ -5,6 +5,71 @@ import unittest
 
 @unittest.skipUnless(os.environ.get("BACKTEST_HISTORY_UI"), "opt-in managed frontend browser test")
 class BacktestHistoryTests(unittest.TestCase):
+    def test_history_controls_work_while_setup_requests_are_pending(self):
+        from pathlib import Path
+        from playwright.sync_api import sync_playwright
+
+        output = Path(os.environ["BACKTEST_HISTORY_EVIDENCE"]) if os.environ.get("BACKTEST_HISTORY_EVIDENCE") else None
+        if output:
+            output.mkdir(parents=True, exist_ok=True)
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            try:
+                for theme in ("light", "dark"):
+                    for scale, blocked in zip((.8, 1, 1.25), ("configuration-options", "indicator-warmup", "historical-preflight")):
+                        for width, height in ((1600, 1000), (900, 700)):
+                            with self.subTest(theme=theme, scale=scale, width=width, blocked=blocked):
+                                context = browser.new_context(viewport={"width": width, "height": height})
+                                page = context.new_page()
+                                page.add_init_script(f"localStorage.setItem('quant-research-workbench.theme', '{theme}'); localStorage.setItem('quant-research-workbench.ui-scale', '{scale}')")
+                                held, reads, mutations = [], [], []
+                                def handle(route):
+                                    path = route.request.url.split("?")[0]
+                                    if path.endswith('/' + blocked):
+                                        held.append(route)
+                                    elif path.endswith('/backtest/runs') and route.request.method == 'GET':
+                                        reads.append(path)
+                                        route.fulfill(json={"rows": [dict(run_id="saved-01", created_at="2026-09-14T12:00:00Z", status="stopped", resident=False, session_date="2026-08-21", checkpoint={"resume_supported": True})]})
+                                    elif path.endswith('/configuration-options'):
+                                        route.fulfill(json=dict(candidate_id='fixture', run_plan_id='plan', error='', candidates=[dict(candidate_id='fixture', candidate_revision=222, label='Test')], available_run_plans=[dict(run_plan_id='plan', profile_id='test', name='Test', strategy_id='test', strategy_revision=47)]))
+                                    elif path.endswith('/indicator-warmup'):
+                                        route.fulfill(json=dict(status='ready', items=[], ready_count=1, ticker_count=1))
+                                    elif path.endswith('/resume'):
+                                        mutations.append(path)
+                                        route.fulfill(status=409, json={"detail": "Test intercepted resume"})
+                                    elif route.request.method != 'GET':
+                                        route.fulfill(status=409, json={"detail": "Test blocked mutation"})
+                                    else:
+                                        route.fulfill(json={"items": [], "checks": []})
+                                page.route('**/api/trading/**', handle)
+                                page.goto('http://127.0.0.1:5173/#backtest-trading')
+                                table = page.get_by_role('region', name='Recent backtests table', exact=True)
+                                table.wait_for(timeout=5000)
+                                # Readiness has its own debounce after indicator warmup.
+                                for _ in range(50):
+                                    if held:
+                                        break
+                                    page.wait_for_timeout(100)
+                                self.assertTrue(held, f'{blocked} was not requested')
+                                self.assertEqual(len(reads), 1, 'Development mount must not issue duplicate history reads')
+                                self.assertTrue(page.get_by_role('button', name='Run Backtest', exact=True).is_disabled())
+                                with page.expect_response(lambda response: response.url.endswith('/api/trading/backtest/runs')):
+                                    page.get_by_role('button', name='Refresh runs', exact=True).click()
+                                page.wait_for_function("document.querySelector('.backtest-run-history').getAttribute('aria-busy') === 'false'")
+                                self.assertEqual(len(reads), 2)
+                                page.get_by_role('button', name='Resume backtest saved-01', exact=True).click()
+                                table.get_by_role('alert').filter(has_text='Test intercepted resume').wait_for()
+                                self.assertEqual(len(mutations), 1)
+                                if output:
+                                    page.screenshot(path=str(output / f'{theme}-{scale}-{width}-pending.png'))
+                                for route in held:
+                                    route.fulfill(status=503, json={"detail": "Setup temporarily unavailable"})
+                                page.wait_for_timeout(100)
+                                self.assertEqual(table.locator('tbody tr').count(), 1)
+                                context.close()
+            finally:
+                browser.close()
+
     def test_history_order_pagination_and_resume_contracts(self):
         from playwright.sync_api import sync_playwright
 

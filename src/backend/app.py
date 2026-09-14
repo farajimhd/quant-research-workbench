@@ -92,6 +92,12 @@ _CANVAS_PROFILE_WRITE_EXECUTOR = ThreadPoolExecutor(
     max_workers=1,
     thread_name_prefix="canvas-profile-write",
 )
+# History is an independent operator read, not part of new-run preparation.
+# Keep slow readiness/warmup jobs in the default pool from starving this table.
+_BACKTEST_HISTORY_READ_EXECUTOR = ThreadPoolExecutor(
+    max_workers=2,
+    thread_name_prefix="backtest-history-read",
+)
 from src.backend.canonical_backtest_service import backtest_comparison_projection
 from src.backend.canonical_trading_service import canonical_trading_state
 from src.backend.portfolio_management_service import (
@@ -587,6 +593,7 @@ async def application_lifespan(_app: FastAPI):
         LIVE_STRATEGY_RUNTIME.stop()
         _CANVAS_PROFILE_READ_EXECUTOR.shutdown(wait=True, cancel_futures=True)
         _CANVAS_PROFILE_WRITE_EXECUTOR.shutdown(wait=True, cancel_futures=True)
+        _BACKTEST_HISTORY_READ_EXECUTOR.shutdown(wait=True, cancel_futures=True)
         close_trading_journal()
 
 
@@ -5735,7 +5742,11 @@ async def trading_backtest_debug_run_command(
 
 @app.get("/api/trading/backtest/runs")
 async def trading_backtest_runs() -> dict[str, Any]:
-    rows = await asyncio.to_thread(backtest_run_service.list, include_durable=True)
+    loop = asyncio.get_running_loop()
+    rows = await loop.run_in_executor(
+        _BACKTEST_HISTORY_READ_EXECUTOR,
+        lambda: backtest_run_service.list(include_durable=True),
+    )
     return {"schema_version": 1, "rows": rows, "row_count": len(rows)}
 
 
