@@ -11,6 +11,8 @@ pub mod portfolio;
 pub mod publication;
 pub mod replay;
 pub mod strategy_setup;
+pub mod v7_encounters;
+pub mod v7_evidence;
 pub mod v7_math;
 
 use serde::Serialize;

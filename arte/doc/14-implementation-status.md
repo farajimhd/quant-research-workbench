@@ -2,6 +2,10 @@
 
 Status: partial implementation. This is not the complete ARTE system.
 
+The user has set an active goal to finish the entire implementation. This status
+file tracks progress; an intermediate commit does not close that goal. Service
+tests remain prohibited until the user copies ARTE to its separate repository.
+
 ## User instructions for this implementation
 
 - Use the latest strategy source as the starting point. Pin it because it is changing.
@@ -26,6 +30,7 @@ was started during this implementation. Existing application files remain unchan
 | Historical seed contract | Historical-only publication, object references and availability gates |
 | Strategy primitives | Causal preceding range and candle quality |
 | V7 primitives | Student-t analytic objective/gradient and array-based level association |
+| V7 historical evidence | Fixed-band encounters, role timelines, reaction annotation and split-adjusted nonoverlapping observations |
 | Provider adapter | REST/WS field normalization and bounded REST pagination implementation |
 | Persistence adapter | ClickHouse identifier checks, policy/part checks and synchronous inserts |
 | Broker adapter | IBKR bracket request construction and confirmation classification |
@@ -63,7 +68,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 29 in-process Rust tests passed (23 core and 6 adapter tests).
+- 37 in-process Rust tests passed (31 core and 6 adapter tests).
 - Cargo format checks passed.
 - Clippy passed with warnings denied.
 - All 11 frozen source hashes matched the origin manifest.
@@ -82,3 +87,16 @@ service-release contract. `run.ps1 -Action Start` rejects startup deliberately.
 Performance is not benchmarked on representative market sessions. The numerical
 primitive tests do not certify V7 parity. Passing domain tests does not establish
 strategy profitability or broker protection under actual partial fills.
+
+## Current implementation continuation
+
+The historical evidence port follows the frozen `reaction_center` and
+`historical_session_levels` references. It uses completed epoch seconds for
+encounter evaluation and nanoseconds for the normalized reaction contract.
+Callers must convert those units explicitly. The historical evaluator reuses
+session arrays and prefix volume sums across candidate bands. Floating-point
+sum differences still require tolerance-based comparison against the source.
+
+Next: complete candidate extraction and numerical fitting, then integrate daily
+consolidation and the streaming state machine. Build shared strategy execution
+on these authorities. Do not substitute the current primitives for full V7.
