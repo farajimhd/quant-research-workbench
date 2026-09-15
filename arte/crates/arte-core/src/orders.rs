@@ -62,22 +62,24 @@ impl TradingSession {
         bands: Option<&Bands>,
         policy: &RiskPolicy,
     ) -> Result<()> {
-        use crate::session::Phase;
         if policy.band_session != self.session.session || policy.band_provider == 0 {
             return Err(Error::Conflict(
                 "order risk scope differs from pinned session".into(),
             ));
         }
-        let regular = match self.session.phase(&self.hash, now_ns)? {
-            Phase::Regular => true,
-            Phase::Premarket | Phase::Postmarket if self.allow_extended => false,
-            _ => {
-                return Err(Error::Unready(
-                    "order outside permitted trading hours".into(),
-                ))
-            }
-        };
-        order.validate(now_ns, regular, bands, policy)
+        order.validate(now_ns, self.require_phase(now_ns)?, bands, policy)
+    }
+    /// Shared live/historical session gate. Returns whether LULD is mandatory.
+    /// Does not validate an order or establish the calendar producer's authority.
+    pub fn require_phase(&self, now_ns: u64) -> Result<bool> {
+        use crate::session::Phase;
+        match self.session.phase(&self.hash, now_ns)? {
+            Phase::Regular => Ok(true),
+            Phase::Premarket | Phase::Postmarket if self.allow_extended => Ok(false),
+            _ => Err(Error::Unready(
+                "order outside permitted trading hours".into(),
+            )),
+        }
     }
     fn authorization_context(&self, policy: &RiskPolicy) -> Result<AuthorizationContext> {
         Ok(AuthorizationContext {

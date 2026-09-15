@@ -6,6 +6,24 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Historical submission uses the shared session authority
+
+Historical reserved submission no longer accepts a caller-supplied regular-session
+boolean. It requires the same pinned TradingSession used by live order validation.
+The adapter checks the actual submission clock, permitted session phase, bracket
+geometry, risk-policy session and required official LULD evidence before mutating
+the simulator. Funding is recomputed using the calendar-derived phase.
+
+Already-reserved cash cannot bypass these checks. Tests exercise regular-session
+submission without bands, valid regular submission, permitted and prohibited
+extended hours, and the exact closed-session boundaries. Rejected submissions
+produce no simulated fills on the next quote.
+
+All 292 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+No services or network tests ran. Source-oracle parity was not rerun. This change
+does not complete the historical run controller, calendar producer certification,
+run-manifest binding or full strategy-to-simulation orchestration.
+
 ## Settled-parent bracket evidence checks
 
 The shared core now checks normalized broker protection snapshots against the exact

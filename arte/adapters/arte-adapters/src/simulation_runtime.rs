@@ -32,7 +32,7 @@ pub struct Submission<'a> {
     pub cash_policy: &'a arte_core::order_funding::Policy,
     pub risk_policy: &'a arte_core::orders::RiskPolicy,
     pub bands: Option<&'a arte_core::orders::Bands>,
-    pub regular: bool,
+    pub session: &'a arte_core::orders::TradingSession,
     pub now_ns: u64,
     pub latency_ns: u64,
 }
@@ -95,11 +95,17 @@ impl Runtime {
     pub fn submit_reserved(&mut self, request: Submission<'_>) -> Result<()> {
         self.ready()?;
         validate_run(request.plan, self.simulator.run_id())?;
+        request.session.validate(
+            &request.plan.bracket,
+            request.now_ns,
+            request.bands,
+            request.risk_policy,
+        )?;
         let expected = arte_core::order_funding::requirements(
             request.plan,
             request.cash_policy,
             request.now_ns,
-            request.regular,
+            request.session.require_phase(request.now_ns)?,
             request.bands,
             request.risk_policy,
         )?;
@@ -266,6 +272,7 @@ mod tests {
         };
         let funding =
             arte_core::order_funding::requirements(&plan, &cash, 1, false, None, &risk).unwrap();
+        let session = session(true);
         let submit =
             |runtime: &mut Runtime, funding: &arte_core::order_funding::Funding, now_ns| {
                 runtime.submit_reserved(Submission {
@@ -275,7 +282,7 @@ mod tests {
                     cash_policy: &cash,
                     risk_policy: &risk,
                     bands: None,
-                    regular: false,
+                    session: &session,
                     now_ns,
                     latency_ns: 0,
                 })
@@ -292,6 +299,122 @@ mod tests {
         assert!(submit(&mut runtime, &funding, 1).is_err());
     }
     use std::collections::BTreeMap;
+    #[test]
+    fn pinned_calendar_controls_historical_submission_before_simulator_mutation() {
+        use arte_core::{
+            decision_orders::Plan, order_funding, orders, portfolio, strategy_dispatch,
+        };
+        let plan = Plan {
+            scope: strategy_dispatch::Scope {
+                run_id: "r".into(),
+                mode: strategy_dispatch::Mode::Backtest,
+                account: "a".into(),
+                instrument: 1,
+                strategy_instance: "s".into(),
+                code_hash: "code".into(),
+                config_hash: "config".into(),
+            },
+            decision_id: "d".into(),
+            action_index: 0,
+            bracket: bracket("a"),
+        };
+        let portfolio = portfolio::Portfolio::new(BTreeMap::from([(
+            "a".into(),
+            portfolio::Account {
+                budget_minor: 1000,
+                broker_available_minor: 1000,
+                balance_at_ns: 0,
+                max_balance_age_ns: 100,
+                reservations: BTreeMap::new(),
+            },
+        )]))
+        .unwrap();
+        let cash = order_funding::Policy {
+            currency_scale: 2,
+            maximum_order_cash_minor: 1000,
+            maximum_order_risk_minor: 100,
+            fee_reserve_minor: 1,
+        };
+        let risk = orders::RiskPolicy {
+            band_provider: 1,
+            band_session: 20260915,
+            band_buffer_ticks: 3,
+            max_band_age_ns: 10,
+        };
+        // Deliberately reserve through the lower-level geometry path. This must
+        // never bypass the calendar at the actual execution adapter boundary.
+        let funding =
+            order_funding::reserve(&portfolio, &plan, &cash, 1, false, None, &risk).unwrap();
+        let bands = orders::Bands {
+            provider: 1,
+            instrument: 1,
+            session: 20260915,
+            lower: 80,
+            upper: 120,
+            scale: 2,
+            effective_at_ns: 20,
+            available_at_ns: 20,
+            official: true,
+        };
+        for (at, extended, band, accepted) in [
+            (20, true, None, false),
+            (20, false, Some(&bands), true),
+            (1, false, None, false),
+            (1, true, None, true),
+            (30, false, None, false),
+            (30, true, None, true),
+            (50, true, None, false),
+            (0, true, None, false),
+        ] {
+            let mut runtime = Runtime::new(
+                Simulator::new_scoped("r", 1, 2, 2, 10000).unwrap(),
+                Projection::new(2, 10, 4).unwrap(),
+                4,
+            )
+            .unwrap();
+            let session = session(extended);
+            let result = runtime.submit_reserved(Submission {
+                plan: &plan,
+                funding: &funding,
+                portfolio: &portfolio,
+                cash_policy: &cash,
+                risk_policy: &risk,
+                bands: band,
+                session: &session,
+                now_ns: at,
+                latency_ns: 0,
+            });
+            assert_eq!(
+                result.is_ok(),
+                accepted,
+                "at={at}, extended={extended}: {result:?}"
+            );
+            runtime
+                .quote(&Quote {
+                    sequence: 1,
+                    at_ns: at + 1,
+                    bid: 99,
+                    ask: 100,
+                    bid_size: 10,
+                    ask_size: 10,
+                })
+                .unwrap();
+            assert_eq!(runtime.status().pending_fills, usize::from(accepted));
+        }
+    }
+    fn session(extended: bool) -> arte_core::orders::TradingSession {
+        let session = arte_core::session::Session {
+            exchange: "XNYS".into(),
+            session: 20260915,
+            previous_trading_session: 20260914,
+            extended: arte_core::coverage::Interval { start: 1, end: 50 },
+            regular: arte_core::coverage::Interval { start: 20, end: 30 },
+            available_at_ns: 0,
+            source_manifest_hash: "a".repeat(64),
+        };
+        let hash = content_hash(&session).unwrap();
+        arte_core::orders::TradingSession::new(session, hash, 0, extended).unwrap()
+    }
     fn bracket(account: &str) -> Bracket {
         Bracket {
             command_id: account.into(),
