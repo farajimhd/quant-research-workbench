@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 176 in-process Rust tests passed (123 core and 53 adapter tests).
+- 177 in-process Rust tests passed (124 core and 53 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -596,3 +596,14 @@ limits; all 176 tests pass. Same settlement currency must be certified by the ca
 This does not implement FX, margin, automatic quantity sizing, durable reservations,
 fill-to-balance reconciliation or OMS submission. Nominal stop risk is not a maximum
 realized-loss guarantee. No service, database operation or broker request ran.
+
+Whole-share quantity sizing now uses the same exact money arithmetic. It floors the
+quantity against cash, nominal stop-risk, caller maximum quantity and lot-size limits.
+Fees are removed from both budgets before sizing. The size-and-reserve path reads
+the account snapshot, sizes a copy of the maximum plan, then uses the account-locked
+reservation check. A concurrent cash change can reject the request; it cannot cause
+an overspend. Successful plans must be retained for exact reservation retries.
+Already reserved commands cannot be silently resized. One new test checks cash/risk
+and lot limits over a range of budgets; the reservation test now covers actual sizing
+and retained-plan retry. All 177 offline tests pass. Account mandate provenance,
+currency certification, durable reservations and execution integration remain open.

@@ -23,6 +23,103 @@ pub struct Funding {
     pub stop_risk_minor: u64,
     pub plan_hash: String,
 }
+/// Exact whole-share sizing. Limits include fees; round quantity down to the lot.
+/// This proposal does not reserve funds or certify the freshness of available cash.
+#[allow(clippy::too_many_arguments)]
+pub fn quantity(
+    entry: u64,
+    stop: u64,
+    price_scale: u8,
+    policy: &Policy,
+    available_cash_minor: u64,
+    maximum_quantity: u64,
+    lot_size: u64,
+) -> Result<u64> {
+    if stop == 0
+        || entry <= stop
+        || price_scale > 9
+        || policy.currency_scale > 9
+        || maximum_quantity == 0
+        || lot_size == 0
+        || policy.maximum_order_cash_minor == 0
+        || policy.maximum_order_risk_minor == 0
+    {
+        return Err(Error::Invalid("invalid long sizing operands".into()));
+    }
+    let cash = available_cash_minor
+        .min(policy.maximum_order_cash_minor)
+        .checked_sub(policy.fee_reserve_minor)
+        .ok_or_else(|| Error::Unready("cash cannot cover fees".into()))?;
+    let risk = policy
+        .maximum_order_risk_minor
+        .checked_sub(policy.fee_reserve_minor)
+        .ok_or_else(|| Error::Unready("risk budget cannot cover fees".into()))?;
+    let capacity = |budget: u64, price: u64| -> u128 {
+        u128::from(budget) * 10_u128.pow(u32::from(price_scale))
+            / (u128::from(price) * 10_u128.pow(u32::from(policy.currency_scale)))
+    };
+    let count = capacity(cash, entry)
+        .min(capacity(risk, entry - stop))
+        .min(u128::from(maximum_quantity)) as u64;
+    let count = count / lot_size * lot_size;
+    if count == 0 {
+        return Err(Error::Unready("budget cannot fund one approved lot".into()));
+    }
+    Ok(count)
+}
+/// Size from an account snapshot and atomically reserve through Portfolio. Another
+/// ticker may consume funds between these steps; then reservation fails without
+/// changing this plan. Caller retains a successful result for exact retry.
+#[allow(clippy::too_many_arguments)]
+pub fn size_and_reserve(
+    portfolio: &Portfolio,
+    maximum_plan: &Plan,
+    lot_size: u64,
+    policy: &Policy,
+    now_ns: u64,
+    regular: bool,
+    bands: Option<&Bands>,
+    risk: &RiskPolicy,
+) -> Result<(Plan, Funding)> {
+    maximum_plan
+        .bracket
+        .validate(now_ns, regular, bands, risk)?;
+    if maximum_plan.bracket.side != Side::Long {
+        return Err(Error::Invalid(
+            "sizing only supports long cash orders".into(),
+        ));
+    }
+    let account = portfolio.snapshot(&maximum_plan.bracket.account)?;
+    if account
+        .reservations
+        .contains_key(&maximum_plan.bracket.command_id)
+    {
+        return Err(Error::Conflict(
+            "already sized command: retry its retained plan, do not resize".into(),
+        ));
+    }
+    let used = account
+        .reservations
+        .values()
+        .try_fold(0_u64, |sum, r| sum.checked_add(r.cash_minor))
+        .ok_or_else(|| Error::Invalid("reserved cash overflow".into()))?;
+    let available = account
+        .budget_minor
+        .min(account.broker_available_minor)
+        .saturating_sub(used);
+    let mut plan = maximum_plan.clone();
+    plan.bracket.quantity = quantity(
+        plan.bracket.entry as u64,
+        plan.bracket.stop.unwrap() as u64,
+        plan.price_scale,
+        policy,
+        available,
+        plan.bracket.quantity,
+        lot_size,
+    )?;
+    let funding = reserve(portfolio, &plan, policy, now_ns, regular, bands, risk)?;
+    Ok((plan, funding))
+}
 /// Round required money upward, never available cash or permissible quantity upward.
 fn money(price: u64, quantity: u64, price_scale: u8, currency_scale: u8) -> Result<u64> {
     if price_scale > 9 || currency_scale > 9 || price == 0 || quantity == 0 {
@@ -105,6 +202,24 @@ pub fn reserve(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    #[test]
+    fn sizing_floors_cash_risk_and_lot_limits() {
+        let policy = Policy {
+            currency_scale: 2,
+            maximum_order_cash_minor: 10010,
+            maximum_order_risk_minor: 510,
+            fee_reserve_minor: 10,
+        };
+        assert_eq!(quantity(1000, 900, 2, &policy, 10010, 100, 1).unwrap(), 5);
+        assert_eq!(quantity(1000, 900, 2, &policy, 4010, 100, 3).unwrap(), 3);
+        assert!(quantity(1000, 900, 2, &policy, 1009, 100, 1).is_err());
+        for available in 10..2000 {
+            if let Ok(count) = quantity(10001, 9001, 3, &policy, available, 100, 1) {
+                assert!(money(10001, count, 3, 2).unwrap() + 10 <= available);
+                assert!(money(1000, count, 3, 2).unwrap() + 10 <= policy.maximum_order_risk_minor);
+            }
+        }
+    }
     fn plan(id: &str) -> Plan {
         Plan {
             decision_id: "decision".into(),
@@ -164,5 +279,14 @@ mod tests {
         strict.maximum_order_risk_minor = 609;
         assert!(reserve(&portfolio, &plan("three"), &strict, 2, false, None, &risk).is_err());
         assert_eq!(portfolio.snapshot("a").unwrap().reservations.len(), 1);
+        let (sized, funding) =
+            size_and_reserve(&portfolio, &plan("two"), 1, &policy, 2, false, None, &risk).unwrap();
+        assert_eq!(sized.bracket.quantity, 3);
+        assert_eq!(funding.cash_minor, 3010);
+        assert!(
+            size_and_reserve(&portfolio, &plan("two"), 1, &policy, 2, false, None, &risk).is_err()
+        );
+        reserve(&portfolio, &sized, &policy, 2, false, None, &risk).unwrap();
+        assert_eq!(portfolio.snapshot("a").unwrap().reservations.len(), 2);
     }
 }
