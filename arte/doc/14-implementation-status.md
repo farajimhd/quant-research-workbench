@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 183 in-process Rust tests passed (129 core and 54 adapter tests).
+- 185 in-process Rust tests passed (131 core and 54 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -638,3 +638,14 @@ claimed. Commission/slippage models, corporate actions, session/auction/conditio
 eligibility, cancel/replace simulation, journaled common execution-event integration,
 checkpoint recovery and the full strategy backtest loop remain incomplete. Shared
 OMS risk authorization must precede submission; this model only checks geometry.
+
+Simulated acknowledged amendments now cancel remaining entry quantity or replace
+complete protection. The immutable original bracket remains unchanged; active stop
+and target prices are separate position state. Revisions must be contiguous and
+exact retries must retain identical contents. Acknowledgments apply after the current
+quote, so they cannot change earlier fills. Replacements require an open position
+and cannot undo a triggered stop. A profit-lock replacement incompatible with an
+unfilled entry requires entry cancellation first. Two offline tests cover these
+transitions, invalid clocks/revisions and unchanged state after rejection. All 185
+tests pass. The caller must still schedule modeled acknowledgment latency and apply
+shared OMS authorization; actual broker cancel/replace behavior is unverified.

@@ -20,6 +20,49 @@ pub struct Quote {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cancellation_preserves_position_and_replacement_applies_next_quote() {
+        let mut sim = Simulator::new(1, 2, 1, 10000).unwrap();
+        sim.submit(bracket("a", Side::Long), 0, 0).unwrap();
+        sim.quote(&quote(1, 99, 100, 2)).unwrap();
+        sim.acknowledge_amendment("a", 1, 1, &Amendment::CancelEntry)
+            .unwrap();
+        sim.acknowledge_amendment("a", 1, 1, &Amendment::CancelEntry)
+            .unwrap();
+        let replacement = Amendment::ReplaceProtection {
+            stop: 105,
+            target: 115,
+        };
+        assert!(sim.acknowledge_amendment("a", 1, 1, &replacement).is_err());
+        sim.acknowledge_amendment("a", 2, 1, &replacement).unwrap();
+        assert_eq!(sim.positions()[0].bracket.stop, Some(90));
+        assert_eq!(sim.positions()[0].active_stop, 105);
+        let fills = sim.quote(&quote(2, 104, 105, 10)).unwrap();
+        assert_eq!(fills.len(), 1);
+        assert_eq!(fills[0].leg, Leg::Stop);
+        assert_eq!(fills[0].quantity, 2);
+        assert!(sim.acknowledge_amendment("a", 3, 2, &replacement).is_err());
+    }
+    #[test]
+    fn invalid_amendments_do_not_change_protection_or_revision() {
+        let mut sim = Simulator::new(1, 2, 1, 10000).unwrap();
+        sim.submit(bracket("a", Side::Long), 0, 0).unwrap();
+        sim.quote(&quote(1, 99, 100, 2)).unwrap();
+        let invalid = Amendment::ReplaceProtection {
+            stop: 105,
+            target: 115,
+        };
+        assert!(sim.acknowledge_amendment("a", 1, 1, &invalid).is_err());
+        assert!(sim
+            .acknowledge_amendment("a", 1, 2, &Amendment::CancelEntry)
+            .is_err());
+        assert!(sim
+            .acknowledge_amendment("a", 2, 1, &Amendment::CancelEntry)
+            .is_err());
+        assert_eq!(sim.positions()[0].active_stop, 90);
+        sim.acknowledge_amendment("a", 1, 1, &Amendment::CancelEntry)
+            .unwrap();
+    }
     fn bracket(id: &str, side: Side) -> Bracket {
         Bracket {
             command_id: id.into(),
@@ -121,12 +164,20 @@ pub struct Fill {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Position {
     pub bracket: Bracket,
+    pub active_stop: i64,
+    pub active_target: i64,
     pub entry_filled: u64,
     pub exit_filled: u64,
     pub entry_cancelled: bool,
     pub stop_triggered: bool,
     ready_ns: u64,
     submitted_sequence: u64,
+    amendment: Option<(u64, String)>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Amendment {
+    CancelEntry,
+    ReplaceProtection { stop: i64, target: i64 },
 }
 pub struct Simulator {
     instrument: u64,
@@ -163,6 +214,82 @@ impl Simulator {
     }
     pub fn positions(&self) -> &[Position] {
         &self.orders
+    }
+    /// Apply a modeled broker acknowledgment after the current quote. The caller
+    /// schedules acknowledgment latency and shared OMS authorization. No retroactive
+    /// fills occur; old protection governed the quote already consumed.
+    pub fn acknowledge_amendment(
+        &mut self,
+        command: &str,
+        revision: u64,
+        at_ns: u64,
+        amendment: &Amendment,
+    ) -> Result<()> {
+        if self.last.as_ref().map(|(_, at, _)| *at) != Some(at_ns) || revision == 0 {
+            return Err(Error::Invalid(
+                "amendment must follow the current simulation clock".into(),
+            ));
+        }
+        let hash = content_hash(&(command, revision, at_ns, amendment))?;
+        let order = self
+            .orders
+            .iter_mut()
+            .find(|o| o.bracket.command_id == command)
+            .ok_or_else(|| Error::Invalid("unknown simulation command".into()))?;
+        if let Some((last, previous)) = &order.amendment {
+            if revision == *last {
+                return if hash == *previous {
+                    Ok(())
+                } else {
+                    Err(Error::Conflict("simulation amendment changed".into()))
+                };
+            }
+            if last.checked_add(1) != Some(revision) {
+                return Err(Error::Invalid(
+                    "simulation amendment revision gap or rewind".into(),
+                ));
+            }
+        } else if revision != 1 {
+            return Err(Error::Invalid(
+                "first amendment revision must be one".into(),
+            ));
+        }
+        match *amendment {
+            Amendment::CancelEntry => order.entry_cancelled = true,
+            Amendment::ReplaceProtection { stop, target } => {
+                if order.entry_filled == order.exit_filled || order.stop_triggered {
+                    return Err(Error::Unready("no replaceable protected position".into()));
+                }
+                if stop <= 0
+                    || target <= 0
+                    || stop % order.bracket.tick != 0
+                    || target % order.bracket.tick != 0
+                    || match order.bracket.side {
+                        Side::Long => stop >= target,
+                        Side::Short => target >= stop,
+                    }
+                {
+                    return Err(Error::Invalid(
+                        "invalid replacement protection geometry".into(),
+                    ));
+                }
+                if !order.entry_cancelled
+                    && order.entry_filled < order.bracket.quantity
+                    && match order.bracket.side {
+                        Side::Long => stop >= order.bracket.entry || target <= order.bracket.entry,
+                        Side::Short => target >= order.bracket.entry || stop <= order.bracket.entry,
+                    }
+                {
+                    return Err(Error::Unready(
+                        "replacement incompatible with unfilled entry; cancel entry first".into(),
+                    ));
+                }
+                order.active_stop = stop;
+                order.active_target = target;
+            }
+        }
+        order.amendment = Some((revision, hash));
+        Ok(())
     }
     /// Upstream uses the shared risk/OMS authorization before modeled submission.
     /// Latency is explicitly simulated, never inferred historical receive latency.
@@ -203,6 +330,8 @@ impl Simulator {
             .checked_add(latency_ns)
             .ok_or_else(|| Error::Invalid("simulated latency overflow".into()))?;
         self.orders.push(Position {
+            active_stop: bracket.stop.unwrap(),
+            active_target: bracket.target.unwrap(),
             bracket,
             entry_filled: 0,
             exit_filled: 0,
@@ -210,6 +339,7 @@ impl Simulator {
             stop_triggered: false,
             ready_ns,
             submitted_sequence: self.last.as_ref().map_or(0, |v| v.0),
+            amendment: None,
         });
         Ok(())
     }
@@ -245,14 +375,14 @@ impl Simulator {
             let held = order.entry_filled - order.exit_filled;
             if held > 0 {
                 let stop = if long {
-                    exit_price <= b.stop.unwrap()
+                    exit_price <= order.active_stop
                 } else {
-                    exit_price >= b.stop.unwrap()
+                    exit_price >= order.active_stop
                 };
                 let target = if long {
-                    exit_price >= b.target.unwrap()
+                    exit_price >= order.active_target
                 } else {
-                    exit_price <= b.target.unwrap()
+                    exit_price <= order.active_target
                 };
                 order.stop_triggered |= stop;
                 if order.stop_triggered || target {
