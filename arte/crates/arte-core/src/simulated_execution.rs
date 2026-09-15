@@ -7,7 +7,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
-pub const MODEL: &str = "quote-touch-shared-size-v1";
+pub const MODEL: &str = "quote-touch-shared-size-v2";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Quote {
     pub sequence: u64,
@@ -20,6 +20,49 @@ pub struct Quote {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn restored_partial_exit_matches_continuous_run() {
+        let mut sim = Simulator::new(1, 2, 1, 10000).unwrap();
+        sim.submit(bracket("a", Side::Long), 0, 0).unwrap();
+        sim.quote(&quote(1, 99, 100, 3)).unwrap();
+        sim.acknowledge_amendment("a", 1, 1, &Amendment::ExitPosition)
+            .unwrap();
+        let first = sim.quote(&quote(2, 101, 102, 1)).unwrap();
+        assert_eq!(first[0].leg, Leg::Exit);
+        assert_eq!(first[0].quantity, 1);
+        let (hash, bytes) = sim.checkpoint(100000).unwrap();
+        let mut restored = Simulator::restore(&bytes, &hash, 100000).unwrap();
+        let q = quote(3, 102, 103, 10);
+        let expected = sim.quote(&q).unwrap();
+        let actual = restored.quote(&q).unwrap();
+        assert_eq!(
+            content_hash(&expected).unwrap(),
+            content_hash(&actual).unwrap()
+        );
+        assert_eq!(actual[0].quantity, 2);
+        assert_eq!(
+            sim.checkpoint(100000).unwrap(),
+            restored.checkpoint(100000).unwrap()
+        );
+        assert!(restored.quote(&q).unwrap().is_empty());
+        assert_eq!(restored.positions()[0].entry_filled, 3);
+    }
+    #[test]
+    fn checkpoint_rejects_corruption_wrong_model_and_invalid_quantities() {
+        let mut sim = Simulator::new(1, 2, 1, 10000).unwrap();
+        sim.submit(bracket("a", Side::Long), 0, 0).unwrap();
+        let (hash, bytes) = sim.checkpoint(100000).unwrap();
+        assert!(Simulator::restore(&bytes, &"0".repeat(64), 100000).is_err());
+        assert!(Simulator::restore(&bytes, &hash, 1).is_err());
+        let mut snapshot: Checkpoint = serde_json::from_slice(&bytes).unwrap();
+        snapshot.orders[0].exit_filled = 1;
+        let encoded = serde_json::to_vec(&snapshot).unwrap();
+        assert!(Simulator::restore(&encoded, &content_hash(&snapshot).unwrap(), 100000).is_err());
+        snapshot.orders[0].exit_filled = 0;
+        snapshot.model = "unknown-model".into();
+        let encoded = serde_json::to_vec(&snapshot).unwrap();
+        assert!(Simulator::restore(&encoded, &content_hash(&snapshot).unwrap(), 100000).is_err());
+    }
     #[test]
     fn cancellation_preserves_position_and_replacement_applies_next_quote() {
         let mut sim = Simulator::new(1, 2, 1, 10000).unwrap();
@@ -147,6 +190,7 @@ pub enum Leg {
     Entry,
     Stop,
     Target,
+    Exit,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Fill {
@@ -170,6 +214,7 @@ pub struct Position {
     pub exit_filled: u64,
     pub entry_cancelled: bool,
     pub stop_triggered: bool,
+    pub exit_requested: bool,
     ready_ns: u64,
     submitted_sequence: u64,
     amendment: Option<(u64, String)>,
@@ -177,9 +222,21 @@ pub struct Position {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Amendment {
     CancelEntry,
+    ExitPosition,
     ReplaceProtection { stop: i64, target: i64 },
 }
 pub struct Simulator {
+    instrument: u64,
+    scale: u8,
+    capacity: usize,
+    participation_bps: u32,
+    orders: Vec<Position>,
+    last: Option<(u64, u64, String)>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Checkpoint {
+    model: String,
     instrument: u64,
     scale: u8,
     capacity: usize,
@@ -214,6 +271,96 @@ impl Simulator {
     }
     pub fn positions(&self) -> &[Position] {
         &self.orders
+    }
+    pub fn checkpoint(&self, maximum_bytes: usize) -> Result<(String, Vec<u8>)> {
+        let snapshot = Checkpoint {
+            model: MODEL.into(),
+            instrument: self.instrument,
+            scale: self.scale,
+            capacity: self.capacity,
+            participation_bps: self.participation_bps,
+            orders: self.orders.clone(),
+            last: self.last.clone(),
+        };
+        let bytes =
+            serde_json::to_vec(&snapshot).map_err(|e| Error::Serialization(e.to_string()))?;
+        if maximum_bytes == 0 || maximum_bytes > 64 * 1024 * 1024 || bytes.len() > maximum_bytes {
+            return Err(Error::Capacity("simulation checkpoint byte budget".into()));
+        }
+        Ok((content_hash(&snapshot)?, bytes))
+    }
+    pub fn restore(bytes: &[u8], expected_hash: &str, maximum_bytes: usize) -> Result<Self> {
+        if maximum_bytes == 0 || maximum_bytes > 64 * 1024 * 1024 || bytes.len() > maximum_bytes {
+            return Err(Error::Capacity("simulation checkpoint byte budget".into()));
+        }
+        let snapshot: Checkpoint =
+            serde_json::from_slice(bytes).map_err(|e| Error::Serialization(e.to_string()))?;
+        if snapshot.model != MODEL || content_hash(&snapshot)? != expected_hash {
+            return Err(Error::Conflict(
+                "simulation checkpoint model or hash mismatch".into(),
+            ));
+        }
+        let mut sim = Self::new(
+            snapshot.instrument,
+            snapshot.scale,
+            snapshot.capacity,
+            snapshot.participation_bps,
+        )?;
+        if snapshot.orders.len() > snapshot.capacity {
+            return Err(Error::Capacity("simulation checkpoint order budget".into()));
+        }
+        let valid_hash = |s: &str| {
+            s.len() == 64
+                && s.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        };
+        if snapshot
+            .last
+            .as_ref()
+            .is_some_and(|(seq, _, hash)| *seq == 0 || !valid_hash(hash))
+        {
+            return Err(Error::Invalid("invalid simulation quote checkpoint".into()));
+        }
+        let mut commands = std::collections::BTreeSet::new();
+        for order in &snapshot.orders {
+            let b = &order.bracket;
+            b.validate(
+                0,
+                false,
+                None,
+                &crate::orders::RiskPolicy {
+                    band_buffer_ticks: 3,
+                    max_band_age_ns: 1,
+                },
+            )?;
+            if b.instrument != snapshot.instrument
+                || b.price_scale != snapshot.scale
+                || !commands.insert(&b.command_id)
+                || order.exit_filled > order.entry_filled
+                || order.entry_filled > b.quantity
+                || order.active_stop <= 0
+                || order.active_target <= 0
+                || order.active_stop % b.tick != 0
+                || order.active_target % b.tick != 0
+                || match b.side {
+                    Side::Long => order.active_stop >= order.active_target,
+                    Side::Short => order.active_target >= order.active_stop,
+                }
+                || order.submitted_sequence > snapshot.last.as_ref().map_or(0, |v| v.0)
+                || (order.exit_requested || order.stop_triggered) && !order.entry_cancelled
+                || order
+                    .amendment
+                    .as_ref()
+                    .is_some_and(|(rev, hash)| *rev == 0 || !valid_hash(hash))
+            {
+                return Err(Error::Invalid(
+                    "inconsistent simulation position checkpoint".into(),
+                ));
+            }
+        }
+        sim.orders = snapshot.orders;
+        sim.last = snapshot.last;
+        Ok(sim)
     }
     /// Apply a modeled broker acknowledgment after the current quote. The caller
     /// schedules acknowledgment latency and shared OMS authorization. No retroactive
@@ -256,6 +403,10 @@ impl Simulator {
         }
         match *amendment {
             Amendment::CancelEntry => order.entry_cancelled = true,
+            Amendment::ExitPosition => {
+                order.entry_cancelled = true;
+                order.exit_requested = true;
+            }
             Amendment::ReplaceProtection { stop, target } => {
                 if order.entry_filled == order.exit_filled || order.stop_triggered {
                     return Err(Error::Unready("no replaceable protected position".into()));
@@ -337,6 +488,7 @@ impl Simulator {
             exit_filled: 0,
             entry_cancelled: false,
             stop_triggered: false,
+            exit_requested: false,
             ready_ns,
             submitted_sequence: self.last.as_ref().map_or(0, |v| v.0),
             amendment: None,
@@ -385,7 +537,7 @@ impl Simulator {
                     exit_price <= order.active_target
                 };
                 order.stop_triggered |= stop;
-                if order.stop_triggered || target {
+                if order.stop_triggered || target || order.exit_requested {
                     order.entry_cancelled = true;
                     let remaining = if long { &mut bid_left } else { &mut ask_left };
                     let quantity = held.min(*remaining);
@@ -402,6 +554,8 @@ impl Simulator {
                             at_ns: quote.at_ns,
                             leg: if order.stop_triggered {
                                 Leg::Stop
+                            } else if order.exit_requested {
+                                Leg::Exit
                             } else {
                                 Leg::Target
                             },

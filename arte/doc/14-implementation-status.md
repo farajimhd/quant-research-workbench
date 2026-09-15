@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 185 in-process Rust tests passed (131 core and 54 adapter tests).
+- 187 in-process Rust tests passed (133 core and 54 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -649,3 +649,16 @@ unfilled entry requires entry cancellation first. Two offline tests cover these
 transitions, invalid clocks/revisions and unchanged state after rejection. All 185
 tests pass. The caller must still schedule modeled acknowledgment latency and apply
 shared OMS authorization; actual broker cancel/replace behavior is unverified.
+
+The quote-touch model is now version 2. An acknowledged strategy exit cancels the
+remaining entry and closes only held quantity using subsequent shared quote liquidity.
+Partial exits remain pending; a triggered protective stop retains priority. Component
+checkpoints include model identity, ordered positions, active protection, amendment
+revisions and quote frontier. Restore checks the pinned content hash, byte/order
+bounds, identities, scales, quantities and protection geometry. It does not infer
+missing fields or load another model version. Checkpoints are returned as bytes;
+this component performs no filesystem or database operation.
+Two offline tests prove partial-exit continuation matches checkpoint/restore for the
+fixture, and reject hash/model/quantity corruption. All 187 tests pass. This is not
+whole-engine recovery: market, strategy, portfolio, journal and simulator checkpoints
+still need a single coherent run frontier, durable publication and replay integration.
