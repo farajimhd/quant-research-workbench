@@ -13,6 +13,7 @@ pub mod publication;
 pub mod replay;
 pub mod seed_storage;
 pub mod strategy_adds;
+pub mod strategy_candidate;
 pub mod strategy_dispatch;
 pub mod strategy_early_stop;
 pub mod strategy_encounters;

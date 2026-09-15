@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 109 in-process Rust tests passed (102 core and 7 adapter tests).
+- 110 in-process Rust tests passed (103 core and 7 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -261,6 +261,16 @@ write failure, calculation failure and retries after commit. This runner is gene
 the complete selected-strategy state and live/backtest event loops are not yet wired.
 Prepared state is memory-only; crash recovery and durable OMS submission gating
 remain incomplete. Market arrays must not be placed in the cloned strategy state.
+
+The account-owned candidate now composes completed-bar entry, reconciled fill-risk
+freezing, setup phase/failure tracking, recovery observation, protection proposals
+and resistance adds. Market frames are borrowed; only position state is copied.
+Shared geometry policies must agree. Broker revisions cannot rewind or change
+contents. One integrated offline test exercises entry preparation, journal commit,
+fill reconciliation and rollback on conflicting broker evidence. It does not prove
+full-session strategy parity. Intrabar observations, pending-capital invalidation,
+encounter reset integration, exit/fill dispatch ordering and restart recovery still
+need wiring into the event loop. Global exit arbitration remains a separate stage.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.

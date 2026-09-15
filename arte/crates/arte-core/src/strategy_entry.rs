@@ -413,11 +413,11 @@ pub fn evaluate(f: &Frame<'_>, p: &Policy) -> Result<Evaluation> {
     })
 }
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::strategy_encounters::Level;
     const S: u64 = 1_000_000_000;
-    fn scenario(edit: impl FnOnce(&mut Frame<'_>, &mut Policy)) -> Result<Evaluation> {
+    pub(crate) fn scenario(edit: impl FnOnce(&mut Frame<'_>, &mut Policy)) -> Result<Evaluation> {
         let b = Bar {
             start_ns: 30 * S,
             end_ns: 31 * S,
