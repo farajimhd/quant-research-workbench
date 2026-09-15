@@ -40,7 +40,7 @@ pub struct CausalLevels {
     levels: Vec<TargetLevel>,
     at_ns: u64,
 }
-fn valid_level(level: &TargetLevel) -> Result<()> {
+pub(crate) fn valid_level(level: &TargetLevel) -> Result<()> {
     let g = &level.geometry;
     if g.id.is_empty()
         || [g.lower, g.price, g.upper]
@@ -90,14 +90,14 @@ fn snap(price: f64, tick: f64, up: bool) -> Result<f64> {
     }
     Ok(result)
 }
-fn resistance(level: &TargetLevel, policy: &Policy) -> bool {
+pub(crate) fn resistance(level: &TargetLevel, policy: &Policy) -> bool {
     level.geometry.role == ActiveRole::Resistance
         || (policy.all_origins
             && level.geometry.role == ActiveRole::Transition
             && (level.transition_from == Some(ActiveRole::Resistance)
                 || policy.encounter_transitions))
 }
-fn eligible(level: &TargetLevel, policy: &Policy) -> bool {
+pub(crate) fn eligible(level: &TargetLevel, policy: &Policy) -> bool {
     policy.all_origins || level.historical
 }
 pub fn stop_below(value: f64, policy: &Policy, tick: f64) -> Result<f64> {

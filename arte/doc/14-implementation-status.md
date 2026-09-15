@@ -31,6 +31,7 @@ was started during this implementation. Existing application files remain unchan
 | Strategy primitives | Causal preceding range and candle quality |
 | Strategy evidence | Overhead encounters, trade-only next-opening rejection, grouped recovery and sparse range/progress gates |
 | Strategy target/lifecycle components | Causal resistance targets, synthetic ladder, stop/swing selection, position phase and re-entry recovery |
+| Position management | Frozen contiguous resistance attempts, protective-base updates, rejection-recovery exits and exit-priority evidence |
 | V7 primitives | Student-t analytic objective/gradient and array-based level association |
 | V7 historical evidence | Fixed-band encounters, role timelines, reaction annotation and split-adjusted nonoverlapping observations |
 | V7 historical extraction | Gap-separated extrema, profile peaks, bounded-span candidate clustering and auditable role-based selection |
@@ -75,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 76 in-process Rust tests passed (69 core and 7 adapter tests).
+- 81 in-process Rust tests passed (74 core and 7 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -182,6 +183,14 @@ mandatory. Setup lifecycle code keeps fill evidence, early-failure checks and
 post-exit recovery separate from a new position's breakout phase. Reconciled
 position observations cannot rewind state. Main strategy evaluation, complete
 admission/add/exit management and source-config parity are still missing.
+
+The position-management component now covers the frozen source's resistance
+failure, higher-low base updates, repeated base failures, bearish structural
+confirmation and failed rejection recovery. Resistance-failure exits retain the
+frozen level and both candles. Departed attempts cannot turn unrelated later red
+candles into an exit. Duplicate completed bars do not advance failure counters.
+Future event rejection and capacity errors leave the previous management state
+unchanged. Main evaluator wiring and end-to-end strategy parity are still missing.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.

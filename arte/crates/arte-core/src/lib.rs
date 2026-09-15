@@ -13,6 +13,7 @@ pub mod replay;
 pub mod seed_storage;
 pub mod strategy_encounters;
 pub mod strategy_lifecycle;
+pub mod strategy_management;
 pub mod strategy_setup;
 pub mod strategy_targets;
 pub mod v7_band;
