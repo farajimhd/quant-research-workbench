@@ -66,6 +66,31 @@ def test_fresh_base_can_enter_at_range_break_without_future_swing():
         assert not host.evaluate(a,replace(o,structural_detector_state=market)).evaluation.intents
 
 
+def test_ineligible_closer_swing_does_not_hide_a_fresh_base_support():
+    host,a,obs=prepared()
+    a.parameters['historical_hod']['setup_early_base_enabled']=1
+    o=obs(2,10.11);now=o.observed_at.timestamp()
+    market=deepcopy(o.structural_detector_state)
+    fresh=dict(side='support',state='active',lower=9.99,price=9.995,upper=10.,
+               pivot_at=now-3,confirmed_at=now-1)
+    older=dict(fresh,lower=10.02,price=10.025,upper=10.03,pivot_at=now-40,confirmed_at=now-20)
+    market['row']['local_swings']=[fresh]
+    reference=host.evaluate(a,replace(o,structural_detector_state=market))
+    assert reference.evaluation.signals[0].reason=='v7_fresh_base_entry'
+    market['row']['confirmed_swings']=[older]
+    result=host.evaluate(a,replace(o,structural_detector_state=market))
+    assert result.evaluation.signals[0].reason=='v7_fresh_base_entry'
+    assert result.evaluation.signals[0].metadata['early_base_entry']['swing']==fresh
+    evidence=result.evaluation.signals[0].metadata['early_base_assessment']
+    assert evidence['observed_at']==now and evidence['failed']==[]
+    # A recently confirmed pivot from before this base must also be excluded.
+    market['row']['confirmed_swings']=[dict(older,confirmed_at=now-1)]
+    assert host.evaluate(a,replace(o,structural_detector_state=market)).evaluation.signals[0].reason=='v7_fresh_base_entry'
+    market['row']['local_swings']=[]
+    rejected=host.evaluate(a,replace(o,structural_detector_state=market))
+    assert 'fresh_support' in rejected.evaluation.signals[0].metadata['early_base_assessment']['failed']
+
+
 def test_early_entry_before_resistance_and_hold_rejection_then_stop():
     host,a,obs=prepared()
     # Price above previous close but below next resistance 10.16 and range 10.1.

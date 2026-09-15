@@ -265,7 +265,8 @@ def stop_below(value, s, tick):
     return floor((value-max(tick,value*s['stop_buffer_bps']/10000))/tick+1e-9)*tick
 
 
-def initial_swing_low(row, boundary, now, *, closest=False, confirmed_after=0, price_only=False):
+def initial_swing_low(row, boundary, now, *, closest=False, confirmed_after=0, price_only=False,
+                      pivot_not_before=0, maximum_age_s=None):
     candidates = []
     for level in row.get('local_swings',[]) + row.get('confirmed_swings',[]):
         if (level.get('side') not in (1,'support') or level.get('state','active') != 'active'
@@ -274,7 +275,9 @@ def initial_swing_low(row, boundary, now, *, closest=False, confirmed_after=0, p
             continue
         if (0 < level['lower'] <= level['price'] <= level['upper']
                 and (level['price'] if price_only else level['upper']) < boundary['lower']
-                and 0 < level['pivot_at'] <= level['confirmed_at'] <= now and level['confirmed_at'] > confirmed_after):
+                and 0 < level['pivot_at'] <= level['confirmed_at'] <= now and level['confirmed_at'] > confirmed_after
+                and level['pivot_at'] >= pivot_not_before
+                and (maximum_age_s is None or now-level['confirmed_at'] <= maximum_age_s)):
             candidates.append(level)
     key=(lambda l:(l['lower'],l['pivot_at'],l['confirmed_at'])) if closest else (lambda l:(l['pivot_at'],l['confirmed_at'],l['price']))
     return deepcopy(max(candidates,key=key)) if candidates else None
@@ -1146,13 +1149,19 @@ def evaluate(host, a, o, p, state):
     if setup_enabled and s['setup_early_base_enabled'] and fresh and detector_fresh and d['contiguous']:
         consolidation = setup_state.get('range')
         candidate = initial_swing_low(row,dict(lower=min(o.price,decision_bid)),now,
-            closest=True,price_only=price_only)
-        if (consolidation and candidate and o.price > previous and o.price >= o.bar_open
-                and candidate['pivot_at'] >= consolidation['start']
-                and now-candidate['confirmed_at'] <= s['setup_base_maximum_swing_age_s']
-                and (decision_ask-stop_below(candidate['lower'],s,tick))/decision_ask*100 <= s['setup_base_maximum_risk_pct']
-                and (consolidation['high']/consolidation['low']-1)*100 <= s['setup_base_maximum_range_pct']
-                and o.price <= consolidation['high']+.25*(consolidation['high']-consolidation['low'])):
+            closest=True,price_only=price_only,pivot_not_before=consolidation['start'],
+            maximum_age_s=s['setup_base_maximum_swing_age_s']) if consolidation else None
+        risk_pct=(decision_ask-stop_below(candidate['lower'],s,tick))/decision_ask*100 if candidate else None
+        range_pct=(consolidation['high']/consolidation['low']-1)*100 if consolidation else None
+        checks=dict(prior_range=bool(consolidation),fresh_support=bool(candidate),
+            rising_close=o.price>previous,green_candle=o.price>=o.bar_open,
+            risk_limit=risk_pct is not None and risk_pct<=s['setup_base_maximum_risk_pct'],
+            range_limit=range_pct is not None and range_pct<=s['setup_base_maximum_range_pct'],
+            extension_limit=bool(consolidation and o.price<=consolidation['high']+.25*(consolidation['high']-consolidation['low'])))
+        evidence['early_base_assessment']=dict(observed_at=now,checks=checks,
+            failed=[k for k,v in checks.items() if not v],swing=deepcopy(candidate),
+            range=deepcopy(consolidation),risk_pct=risk_pct,range_pct=range_pct)
+        if all(checks.values()):
             early_base = candidate
             evidence['early_base_entry'] = dict(swing=deepcopy(candidate),range=deepcopy(consolidation),
                 observed_at=now,price=o.price)
