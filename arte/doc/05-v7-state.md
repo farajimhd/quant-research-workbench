@@ -14,6 +14,32 @@ certification. Streaming output must never be relabeled as a historical seed.
 Shared primitives do not make these two algorithms interchangeable. Version the
 historical extractor, streaming updater, and seed compatibility contract separately.
 
+## Initial ARTE historical MLE algorithm
+
+`arte-historical-mle-seed-1` is a new completed-session algorithm. It is not the
+parent application's `historical_checkpoint` export of a streaming object.
+
+- Require a session certificate with matching input hash and completed time bounds.
+- Use whole-session extraction to propose reaction areas. Keep rejected candidates
+  available for evidence collection; a rejected proposal is not a tradeable level.
+- Match today's proposals to at most one prior identity by association distance.
+  Break distance ties by identity. Do not chain-merge prior identities.
+- Re-evaluate prior bands against the completed session. Annotate actual turning
+  extremes. Admit the first nonoverlapping resolved rejection per role.
+- Preserve observations across sessions. Apply explicit split factors to fit
+  coordinates without altering the predecessor seed or original observation IDs.
+- Fit Student-t geometry and evaluate conservative component splits. Keep the
+  closest component under the original identity; assign deterministic child IDs.
+- Retain insufficient candidates without usable fitted geometry. If a previously
+  qualified fit fails, reject the whole seed instead of retaining stale geometry.
+- Hash the resulting state and predecessor identity. Its availability is the
+  completion time of this build, never a retroactive session-open timestamp.
+
+This algorithm has offline boundary tests. It still requires representative
+multi-session validation and integration with certified ClickHouse publication.
+The caller supplies the ingestion certificate; hashing bar inputs alone does not
+prove upstream market coverage. The maintenance authority must certify that.
+
 ## Intraday processing
 
 Every eligible event updates the appropriate ordered market state. Developing bars

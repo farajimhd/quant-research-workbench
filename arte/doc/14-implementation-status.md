@@ -33,6 +33,7 @@ was started during this implementation. Existing application files remain unchan
 | V7 historical evidence | Fixed-band encounters, role timelines, reaction annotation and split-adjusted nonoverlapping observations |
 | V7 historical extraction | Gap-separated extrema, profile peaks, bounded-span candidate clustering and auditable role-based selection |
 | V7 numerical fit | Versioned projected-BFGS Student-t fit, fitted band geometry and two-component BIC partition |
+| Historical MLE seeds | Completed-session builder, predecessor continuity, retained evidence, split audit and availability checks |
 | Provider adapter | REST/WS field normalization and bounded REST pagination implementation |
 | Persistence adapter | ClickHouse identifier checks, policy/part checks and synchronous inserts |
 | Broker adapter | IBKR bracket request construction and confirmation classification |
@@ -44,7 +45,7 @@ not prove provider, broker, or ClickHouse compatibility.
 
 ## Incomplete implementation
 
-- Historical MLE seed builder, broader fit/partition parity, consolidation and streaming state machine.
+- Representative historical-seed validation, broader fit/partition parity and streaming state machine.
 - Complete selected strategy lifecycle, admission, position management and exits.
 - Effective configuration export from the selected current candidate.
 - WebSocket receiver and integration of the complete in-process live path.
@@ -70,7 +71,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 49 in-process Rust tests passed (43 core and 6 adapter tests).
+- 54 in-process Rust tests passed (48 core and 6 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -131,7 +132,13 @@ and floor-classification equality on the current 87-case panel. This is not
 bitwise parity or proof of convergence on every session. Band partition currently
 has unit tests but does not yet have full frozen-source component parity.
 
-Next: partition source parity and a completed-session historical MLE producer, then
-daily consolidation and the streaming state machine. Build shared strategy
+The initial completed-session MLE seed builder now exists. It is independently
+versioned and tested for input integrity, next-session availability, predecessor
+immutability, split adjustment and explicit capacity failure. It has no database
+publication or maintenance integration yet. See the owning V7 design document for
+its exact algorithm and validation limits.
+
+Next: partition source parity, seed publication integration and the streaming
+state machine. Build shared strategy
 execution on these authorities. Do not substitute the current fixed-noise
 extractor for the full historical MLE seed pipeline.
