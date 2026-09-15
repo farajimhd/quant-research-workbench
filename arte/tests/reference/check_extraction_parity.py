@@ -12,9 +12,9 @@ import subprocess
 import types
 
 
-def load_reference(root):
+def load_reference(root, filename="historical_session_levels.py.txt"):
     manifest = json.loads((root / "tests/reference/origin.json").read_text())
-    destination = "tests/reference/src/market_engine/historical_session_levels.py.txt"
+    destination = "tests/reference/src/market_engine/" + filename
     entry = next(row for row in manifest["files"] if row["destination"] == destination)
     path = (root / destination).resolve()
     if not path.is_relative_to(root):
@@ -24,7 +24,7 @@ def load_reference(root):
         raise ValueError("Frozen extractor SHA-256 mismatch")
     # This module uses only stdlib, NumPy and SciPy. Relative parent-app imports
     # are not resolved. Other reference snapshots are not executed by this test.
-    name = "arte_frozen_extraction_oracle"
+    name = "arte_frozen_oracle_" + filename.replace(".", "_")
     module = types.ModuleType(name)
     module.__file__ = str(path)
     sys.modules[name] = module

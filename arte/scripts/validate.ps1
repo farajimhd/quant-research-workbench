@@ -29,6 +29,11 @@ if ($PythonExecutable) {
     $bridgePath = Join-Path $env:CARGO_TARGET_DIR "debug/examples/$bridgeName"
     & $PythonExecutable -I -B (Join-Path $projectRoot 'tests/reference/check_extraction_parity.py') --rust-executable $bridgePath
     if ($LASTEXITCODE -ne 0) { throw 'Frozen-source extraction parity failed.' }
+    & cargo build --manifest-path (Join-Path $projectRoot 'Cargo.toml') --locked --offline -p arte-core --example fit_parity
+    if ($LASTEXITCODE -ne 0) { throw 'Offline fit bridge build failed.' }
+    $fitName = if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) { 'fit_parity.exe' } else { 'fit_parity' }
+    & $PythonExecutable -I -B (Join-Path $projectRoot 'tests/reference/check_fit_parity.py') --rust-executable (Join-Path $env:CARGO_TARGET_DIR "debug/examples/$fitName")
+    if ($LASTEXITCODE -ne 0) { throw 'Frozen-source fit comparison failed.' }
 } else {
     Write-Host 'Source parity not run: supply -PythonExecutable with the offline test dependencies installed.'
 }

@@ -11,9 +11,11 @@ pub mod portfolio;
 pub mod publication;
 pub mod replay;
 pub mod strategy_setup;
+pub mod v7_band;
 pub mod v7_encounters;
 pub mod v7_evidence;
 pub mod v7_extraction;
+pub mod v7_fit;
 pub mod v7_math;
 pub mod v7_peaks;
 

@@ -32,6 +32,7 @@ was started during this implementation. Existing application files remain unchan
 | V7 primitives | Student-t analytic objective/gradient and array-based level association |
 | V7 historical evidence | Fixed-band encounters, role timelines, reaction annotation and split-adjusted nonoverlapping observations |
 | V7 historical extraction | Gap-separated extrema, profile peaks, bounded-span candidate clustering and auditable role-based selection |
+| V7 numerical fit | Versioned projected-BFGS Student-t fit, fitted band geometry and two-component BIC partition |
 | Provider adapter | REST/WS field normalization and bounded REST pagination implementation |
 | Persistence adapter | ClickHouse identifier checks, policy/part checks and synchronous inserts |
 | Broker adapter | IBKR bracket request construction and confirmation classification |
@@ -43,7 +44,7 @@ not prove provider, broker, or ClickHouse compatibility.
 
 ## Incomplete implementation
 
-- Historical MLE seed builder, fit/partition solver, consolidation and streaming state machine.
+- Historical MLE seed builder, broader fit/partition parity, consolidation and streaming state machine.
 - Complete selected strategy lifecycle, admission, position management and exits.
 - Effective configuration export from the selected current candidate.
 - WebSocket receiver and integration of the complete in-process live path.
@@ -69,9 +70,10 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 43 in-process Rust tests passed (37 core and 6 adapter tests).
+- 49 in-process Rust tests passed (43 core and 6 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
+- Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
 - Cargo format checks passed.
 - Clippy passed with warnings denied.
 - All 11 frozen source hashes matched the origin manifest.
@@ -122,7 +124,14 @@ These are incompatible seed geometries. In the current parent implementation,
 copy that publication path: the user requires a completed-session historical
 producer and forbids promotion of streaming state to authoritative daily seeds.
 
-Next: numerical fitting and a completed-session historical MLE producer, then
+The fitter preserves the df=4 objective, tick-coordinate bounds, scale floor and
+three quantile starts. Its solver is `arte-projected-bfgs-2d-1`, not SciPy L-BFGS-B.
+Numerical acceptance uses `max(0.001 ticks, 1e-8 * expected value)` and exact status
+and floor-classification equality on the current 87-case panel. This is not
+bitwise parity or proof of convergence on every session. Band partition currently
+has unit tests but does not yet have full frozen-source component parity.
+
+Next: partition source parity and a completed-session historical MLE producer, then
 daily consolidation and the streaming state machine. Build shared strategy
 execution on these authorities. Do not substitute the current fixed-noise
 extractor for the full historical MLE seed pipeline.
