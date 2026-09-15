@@ -37,6 +37,7 @@ pub mod strategy_protection;
 pub mod strategy_setup;
 pub mod strategy_targets;
 pub mod strategy_transaction;
+pub mod structure_projection;
 pub mod v7_band;
 pub mod v7_encounters;
 pub mod v7_evidence;

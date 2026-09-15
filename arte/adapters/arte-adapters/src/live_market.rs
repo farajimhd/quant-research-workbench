@@ -106,6 +106,14 @@ impl Lane {
         self.available()?;
         self.market.levels()
     }
+    pub fn strategy_levels(
+        &self,
+        at_ns: u64,
+        maximum: usize,
+    ) -> Result<Vec<arte_core::strategy_targets::TargetLevel>> {
+        self.available()?;
+        self.market.strategy_levels(at_ns, maximum)
+    }
     pub fn executable_quote(
         &self,
         check: Check<'_>,

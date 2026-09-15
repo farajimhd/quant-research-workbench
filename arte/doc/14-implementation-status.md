@@ -900,6 +900,16 @@ static checks and source hashes pass. This does not certify all fill-timing scen
 full source parity or per-operand freshness. Full strategy integration remains
 incomplete. No service ran.
 
+Qualified V7 state now maps to the strategy TargetLevel contract. The projection
+uses fitted centers and bounds, preserves segment confirmation clocks and historical
+origin, and derives transition ancestry from prior roles. It rejects future state,
+inconsistent segment geometry, missing qualified evidence and capacity overflow.
+It never stamps levels with query time or marks them synthetic. Market and live
+owners expose this shared mapping. One offline test verifies geometry, unchanged
+confirmation times and failed/future-state rejection. All 218 Rust tests, formatting,
+static checks and source hashes pass. Prior-boundary snapshots, local swings and
+complete frame construction remain unfinished. No service ran.
+
 Ordered-market recovery now includes the pending event queue, eligibility records,
 release watermark and newest input receipt alongside the market/V7 snapshot. Restore
 requires the expected content, seed, configuration and queue capacity. It rejects

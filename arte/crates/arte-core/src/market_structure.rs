@@ -250,6 +250,14 @@ impl Runtime {
         self.available()?;
         self.structure.qualified_levels()
     }
+    pub fn strategy_levels(
+        &self,
+        at_ns: u64,
+        maximum: usize,
+    ) -> Result<Vec<crate::strategy_targets::TargetLevel>> {
+        self.available()?;
+        crate::structure_projection::current(&self.structure, at_ns, maximum)
+    }
     pub fn market(&self) -> Result<&Series> {
         self.available()?;
         Ok(&self.market)
@@ -500,6 +508,14 @@ impl Ordered {
     pub fn levels(&self) -> Result<impl Iterator<Item = &Level>> {
         self.available()?;
         self.runtime.levels()
+    }
+    pub fn strategy_levels(
+        &self,
+        at_ns: u64,
+        maximum: usize,
+    ) -> Result<Vec<crate::strategy_targets::TargetLevel>> {
+        self.available()?;
+        self.runtime.strategy_levels(at_ns, maximum)
     }
     pub fn pending(&self) -> usize {
         self.buffer.pending()

@@ -852,4 +852,42 @@ mod tests {
         recovery.state.as_of += 1;
         assert!(Stream::restore(recovery, &seed.hash).is_err());
     }
+    #[test]
+    fn strategy_projection_preserves_fit_and_does_not_retimestamp_levels() {
+        let seed = seed();
+        let mut stream = Stream::new(
+            &seed,
+            1,
+            20260915,
+            200,
+            500,
+            policy(),
+            &SplitAdjustment::default(),
+        )
+        .unwrap();
+        let projection =
+            crate::structure_projection::current(&stream, 200_000_000_000, 4096).unwrap();
+        assert!(!projection.is_empty());
+        for level in &projection {
+            let source = stream
+                .levels
+                .iter()
+                .find(|source| source.id == level.geometry.id)
+                .unwrap();
+            assert_eq!(Some(level.geometry.price), source.band.fit.center);
+            assert_eq!(level.geometry.confirmed_at_ns, 200_000_000_000);
+            assert_eq!(level.historical, source.historical);
+            assert!(!level.synthetic);
+        }
+        assert!(crate::structure_projection::current(&stream, 199_000_000_000, 4096).is_err());
+        assert_eq!(
+            content_hash(&projection).unwrap(),
+            content_hash(
+                &crate::structure_projection::current(&stream, 210_000_000_000, 4096).unwrap()
+            )
+            .unwrap()
+        );
+        stream.failed = true;
+        assert!(crate::structure_projection::current(&stream, 210_000_000_000, 4096).is_err());
+    }
 }
