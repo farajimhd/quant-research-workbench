@@ -6,6 +6,27 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Persisted quote-policy records
+
+The ClickHouse adapter now publishes immutable quote eligibility policies and loads
+them by exact content hash for startup. There is no latest-row fallback. Readback
+validates provider, availability, canonical JSON, payload bounds and the full policy
+hash. Conflicting or malformed rows fail closed.
+
+Publication requires repository-extraction and durability acceptance plus a matching
+ownership lease. It verifies the explicit live_market_ssd policy and actual active
+part placement through the shared storage verifier. Existing identical records are
+reused. New inserts require verified readback before returning a pinned policy.
+
+Schema 013 defines quote_eligibility_policies_v1 in the configured ARTE database.
+The schema has not been applied. No database calls or services ran.
+
+All 302 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Codec tests cover conflicting rows, modified policies, future availability, invalid
+keys, noncanonical payloads, response limits and maximum supported policy size.
+Source-oracle parity was not rerun. Connected publication, policy source certification
+and startup orchestration remain unverified or unfinished.
+
 ## Shared pinned quote eligibility
 
 The shared quote book now requires a pinned provider-scoped eligibility policy for

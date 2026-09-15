@@ -9,6 +9,7 @@ mod coverage_index;
 mod event_batches;
 mod fills;
 mod order_authorizations;
+mod quote_policies;
 mod references;
 pub use fills::FillPublisher;
 pub use order_authorizations::OrderPublisher;
