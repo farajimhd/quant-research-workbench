@@ -31,6 +31,7 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     setup_acquisition_quality_enabled=0,setup_initial_tranche_fraction=1.,
     setup_early_base_enabled=0,setup_base_maximum_swing_age_s=15.,
     setup_base_maximum_risk_pct=5.,setup_base_maximum_range_pct=10.,
+    setup_maximum_bar_gap_s=0,setup_recovery_stop_gain_guard=0,setup_base_recovery_maximum_range_pct=3.,
     setup_episode_high_entry=0,v7_encounters_enabled=0,breakout_buffer_bps=10.,breakout_buffer_ticks=1.,topping_tail_fraction=.5)
 
 
@@ -52,9 +53,15 @@ def configure(p):
         raise ValueError('Invalid setup acquisition quality or initial tranche fraction')
     if s['setup_early_base_enabled'] not in (0,1) or s['setup_early_base_enabled'] and not s['v7_setup_enabled']:
         raise ValueError('Early base entry requires the V7 setup policy')
+    if s['setup_recovery_stop_gain_guard'] not in (0,1) or s['setup_recovery_stop_gain_guard'] and not s['setup_recovery_enabled']:
+        raise ValueError('Stop-gain recovery requires persistent setup recovery')
+    if not 0<=s['setup_maximum_bar_gap_s']<=5 or int(s['setup_maximum_bar_gap_s'])!=s['setup_maximum_bar_gap_s']:
+        raise ValueError('Setup gaps must be zero to five whole seconds')
+    if s['setup_maximum_bar_gap_s'] and not s['v7_setup_enabled']:
+        raise ValueError('Bounded setup gaps require the V7 setup policy')
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
         raise ValueError('Historical HOD settings must be finite and positive')
     if not 0 <= s['setup_failure_seconds'] <= 5 or int(s['setup_failure_seconds']) != s['setup_failure_seconds']:
         raise ValueError('Initial setup failure window must be zero to five completed seconds')
@@ -767,7 +774,8 @@ def evaluate(host, a, o, p, state):
     recovery_row = None
     if s.get('setup_recovery_enabled'):
         recovery_row = v7_setup.recovery_observe(setup_state,active,d,o,stop,
-            (o.structural_detector_state or {}).get('row',{}),fresh,preserve_peak=bool(s['setup_recovery_preserve_peak']))
+            (o.structural_detector_state or {}).get('row',{}),fresh,preserve_peak=bool(s['setup_recovery_preserve_peak']),
+            stop_gain_guard=bool(s['setup_recovery_stop_gain_guard']))
     acquired = o.position_quantity > 0
     local_clock = o.observed_at.astimezone(NY)
     # TODO(paper-trading halt review): LULD buffers do not guarantee an exit
@@ -1204,7 +1212,9 @@ def evaluate(host, a, o, p, state):
         return result('wait','confirmed_local_swing_low_unavailable')
     entry_phase = 'building'
     if s.get('setup_recovery_enabled'):
-        blocked_reason,entry_phase=v7_setup.recovery_permission(setup_state,swing,d)
+        tight_base=bool(early_base and (consolidation['high']/consolidation['low']-1)*100<=s['setup_base_recovery_maximum_range_pct'])
+        blocked_reason,entry_phase=v7_setup.recovery_permission(setup_state,swing,d,
+            stop_gain_guard=bool(s['setup_recovery_stop_gain_guard']),tight_base=tight_base)
         if blocked_reason:return result('wait',blocked_reason)
     stop = stop_below(swing['lower'],s,tick)
     if s['setup_minimum_quote_clearance_spreads']:

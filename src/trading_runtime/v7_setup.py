@@ -12,8 +12,10 @@ def observe(state, market, settings, fresh):
     if bar['end'] <= state.get('at', 0):
         return
     bars = state['bars']
-    if bars and bars[-1]['end'] != bar['time']:
-        bars = []
+    if bars:
+        gap=bar['time']-bars[-1]['end']
+        if gap<0 or gap>settings.get('setup_maximum_bar_gap_s',0):
+            bars = []
     bars = [b for b in bars if b['end'] > bar['time'] - settings['setup_range_seconds']]
     state['range'] = (dict(high=max(b['high'] for b in bars), low=min(b['low'] for b in bars),
         start=bars[0]['time'], end=bars[-1]['end'], count=len(bars))
@@ -49,16 +51,20 @@ def swing_key(swing):
     return str((swing.get('scale'), swing.get('pivot_at'), swing.get('lower')))
 
 
-def recovery_observe(state, entry, market, observation, stop, row, fresh, *, preserve_peak=False):
+def recovery_observe(state, entry, market, observation, stop, row, fresh, *, preserve_peak=False, stop_gain_guard=False):
     """Persist filled lifecycle failures and retire breached support across positions."""
     if observation.position_quantity > 0 and entry:
         body_high = market.get('body_high', 0)
+        held=state.get('held',{})
         if preserve_peak:
-            held = state.get('held', {})
             previous_peak = held.get('body_high', 0) if held.get('entry_at') == entry['confirmed_at'] else 0
             body_high = max(previous_peak or 0, body_high or 0)
         state['held'] = dict(entry_at=entry['confirmed_at'], setup=deepcopy(entry.get('setup', {})),
             stop=stop, body_high=body_high)
+        if stop_gain_guard:
+            initial=float(entry.get('initial_fill_price') or 0.)
+            remembered=held.get('entry_at')==entry['confirmed_at'] and held.get('stop_above_initial_fill',False)
+            state['held']['stop_above_initial_fill']=bool(remembered or initial>0 and stop>initial+1e-9)
     elif state.get('held'):
         held = state.pop('held')
         state['last_exit'] = dict(at=observation.observed_at.timestamp(), **held)
@@ -73,7 +79,7 @@ def recovery_observe(state, entry, market, observation, stop, row, fresh, *, pre
         for field in ('local_swings', 'confirmed_swings')}}
 
 
-def recovery_permission(state, swing, market):
+def recovery_permission(state, swing, market, *, stop_gain_guard=False, tight_base=False):
     previous = state.get('last_exit')
     if not previous:
         return '', 'building'
@@ -84,10 +90,16 @@ def recovery_permission(state, swing, market):
     failed_entry = previous['setup'].get('entry_failure_recovery')
     if failed_entry and market['bar']['close'] <= failed_entry:
         return 'waiting_for_failed_setup_reclaim', ''
-    if previous['setup'].get('phase') != 'post_breakout':
+    if (previous['setup'].get('phase') != 'post_breakout'
+            and not (stop_gain_guard and previous.get('stop_above_initial_fill'))):
         return '', 'building'
     # A fresh higher base can prepare the next leg without reclaiming the top.
     if swing['lower'] > previous['stop']:
+        return '', 'building'
+    # A compact new base can start a new leg below the previous peak. Fresh
+    # post-exit support and failed-entry reclaim were checked above; a broad
+    # rebound does not get this exception. This never changes position phase.
+    if stop_gain_guard and tight_base:
         return '', 'building'
     # Otherwise require recovery; never relabel a failed mature move as a setup.
     reclaim = max(previous['setup']['breakout_threshold'], previous['body_high'])

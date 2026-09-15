@@ -20,6 +20,22 @@ def test_range_is_prior_only_and_phase_survives_episode_change():
     assert not V.phase(entry,d,True)
 
 
+def test_bounded_missing_seconds_retain_real_prior_bars_only():
+    strict={};bounded={}
+    settings=dict(setup_range_seconds=30,setup_minimum_bars=5)
+    for end in (1,2,4,5,6,7):
+        market=dict(session='day',episode=1,bar=dict(time=end-1,end=end,
+            open=10,close=10.1,low=9.9,high=12 if end==7 else 10.2))
+        V.observe(strict,market,settings,True)
+        V.observe(bounded,market,dict(settings,setup_maximum_bar_gap_s=3),True)
+    assert strict['range'] is None
+    assert bounded['range']['count']==5 and bounded['range']['high']==10.2
+    assert [b['end'] for b in bounded['bars']]==[1,2,4,5,6,7]
+    market['bar']=dict(time=11,end=12,open=10,close=10.1,low=9.9,high=10.2)
+    V.observe(bounded,market,dict(settings,setup_maximum_bar_gap_s=3),True)
+    assert bounded['range'] is None  # Four missing seconds exceed the limit.
+
+
 def prepared():
     host,a,obs=setup()
     p=deepcopy(a.parameters)

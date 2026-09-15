@@ -61,19 +61,23 @@ def prepare(name, overrides=None):
         minimum_session_share_volume=25000., maximum_admission_spread_bps=150.,
         maximum_current_spread_bps=150., maximum_spread_bps=150.)
     profile['parameters']['historical_hod'].update(setup_acquisition_quality_enabled=1,
-        setup_initial_tranche_fraction=1/3, setup_early_base_enabled=int(base_name in ('early-v1','base-v7','trend-v8')))
-    if base_name in ('guarded-v3','phase-v4','burst-v5','full-v6','base-v7','trend-v8','body-v9'):
+        setup_initial_tranche_fraction=1/3, setup_early_base_enabled=int(base_name in ('early-v1','base-v7','trend-v8','recovery-v10')))
+    if base_name in ('guarded-v3','phase-v4','burst-v5','full-v6','base-v7','trend-v8','body-v9','recovery-v10'):
         profile['parameters']['historical_hod']['setup_minimum_quote_clearance_spreads']=1.
-    if base_name in ('burst-v5','full-v6','base-v7','trend-v8','body-v9'):
+    if base_name in ('burst-v5','full-v6','base-v7','trend-v8','body-v9','recovery-v10'):
         profile['parameters']['liquidity_admission']['minimum_current_trade_rate_60s']=3.
-    if base_name in ('full-v6','base-v7','trend-v8','body-v9'):
+    if base_name in ('full-v6','base-v7','trend-v8','body-v9','recovery-v10'):
         profile['parameters']['historical_hod']['setup_initial_tranche_fraction']=1.
     if base_name in ('base-v7','trend-v8'):
         profile['parameters']['historical_hod']['setup_base_maximum_range_pct']=3.
     if base_name=='trend-v8':
         profile['parameters']['historical_hod']['rejection_break_offset_bps']=300.
-    if base_name=='body-v9':
+    if base_name in ('body-v9','recovery-v10'):
         profile['parameters']['historical_hod']['setup_minimum_body_bps']=30.
+    if base_name=='recovery-v10':
+        profile['parameters']['historical_hod'].update(setup_base_maximum_range_pct=8.,setup_base_maximum_risk_pct=8.,
+            setup_maximum_bar_gap_s=3,setup_recovery_stop_gain_guard=1,
+            setup_base_recovery_maximum_range_pct=3.)
     for section,values in (overrides or {}).items():
         profile['parameters'][section].update(values)
     return create_test_candidate(label='Strategy 222 refinement / '+name,
@@ -217,7 +221,7 @@ def main():
     parser.add_argument('--restart-at', help='Optional New York checkpoint time for a real stop/resume parity trial')
     parser.add_argument('--recipe-file',type=Path,help='Supervised research parameter recipe; mutually exclusive with --variants')
     parser.add_argument('--stop-request-file',type=Path,help='Gracefully stop if this supervisor-owned file appears')
-    parser.add_argument('--variants', nargs='+', choices=['corrected-baseline','early-v1','liquidity-v2','guarded-v3','phase-v4','burst-v5','full-v6','base-v7','trend-v8','body-v9'],
+    parser.add_argument('--variants', nargs='+', choices=['corrected-baseline','early-v1','liquidity-v2','guarded-v3','phase-v4','burst-v5','full-v6','base-v7','trend-v8','body-v9','recovery-v10'],
                         default=None)
     args=parser.parse_args()
     args.recipe_parameters=None

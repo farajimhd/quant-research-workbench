@@ -295,11 +295,19 @@ def replay(root):
             process.wait();command.update(status='stopped',exit_code=process.returncode);save(path,plan);raise
         command.update(status='completed' if code==0 else 'failed',exit_code=code);save(path,plan)
         if code:raise RuntimeError('Finalist failed; evidence retained. Inspect before retrying.')
+    assess_replays()
+
+
+def assess_replays():
+    from scripts.summarize_strategy_222_refinement import summarize
+    from scripts.assess_strategy_222_refinement import assess
+    summarize(REPLAYS)
+    assess(REPLAYS)
 
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=('build','screen','replay'))
+    parser.add_argument('action',choices=('build','screen','replay','assess'))
     parser.add_argument('--runtime',type=Path,default=REPLAYS/'supervised-v1')
     parser.add_argument('--top-k',type=int,default=2)
     args=parser.parse_args();root=args.runtime.resolve();root.relative_to(RUNTIME.resolve())
@@ -307,7 +315,8 @@ def main():
     root.mkdir(parents=True,exist_ok=True)
     if args.action=='build':build(root)
     elif args.action=='screen':screen(root,args.top_k)
-    else:replay(root)
+    elif args.action=='replay':replay(root)
+    else:assess_replays()
 
 
 if __name__=='__main__':main()

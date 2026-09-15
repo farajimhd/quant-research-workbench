@@ -38,6 +38,34 @@ def test_breached_anchor_cannot_be_reused_even_if_detector_still_active():
     assert V.swing_key(broken) in state['retired_swings']
 
 
+def test_stop_gain_guard_is_independent_of_position_breakout_phase():
+    state={};entry=dict(confirmed_at=1,initial_fill_price=14.,
+        setup=dict(phase='building',breakout_threshold=14.57))
+    market=dict(body_high=14.6891,bar=dict(end=5,low=14.4,close=14.5))
+    o=SimpleNamespace(position_quantity=100,observed_at=datetime.fromtimestamp(5,timezone.utc))
+    V.recovery_observe(state,entry,market,o,14.39,{},False,stop_gain_guard=True)
+    assert state['held']['stop_above_initial_fill']
+    assert state['held']['setup']['phase']=='building'
+    o.position_quantity=0
+    V.recovery_observe(state,{},market,o,14.39,{},False,stop_gain_guard=True)
+    market['bar']['close']=11.25
+    new=swing(6,10.8469)
+    assert V.recovery_permission(state,new,market)==('', 'building')
+    assert V.recovery_permission(state,new,market,stop_gain_guard=True)[0]=='waiting_for_post_move_recovery_or_higher_base'
+    assert V.recovery_permission(state,new,market,stop_gain_guard=True,tight_base=True)==('', 'building')
+    assert V.recovery_permission(state,swing(4,10.8),market,stop_gain_guard=True,tight_base=True)[0]=='waiting_for_new_support_after_exit'
+    state['last_exit']['setup']['entry_failure_recovery']=11.3
+    assert V.recovery_permission(state,new,market,stop_gain_guard=True,tight_base=True)[0]=='waiting_for_failed_setup_reclaim'
+
+
+def test_stop_gain_guard_never_infers_an_unobserved_initial_fill():
+    state={};entry=dict(confirmed_at=1,setup=dict(phase='building',breakout_threshold=14.57))
+    market=dict(body_high=14.68,bar=dict(end=5,low=14.4,close=14.5))
+    o=SimpleNamespace(position_quantity=100,observed_at=datetime.fromtimestamp(5,timezone.utc))
+    V.recovery_observe(state,entry,market,o,14.39,{},False,stop_gain_guard=True)
+    assert not state['held']['stop_above_initial_fill']
+
+
 def test_setup_add_waits_for_range_breakout():
     host,a,obs=prepared()
     p=deepcopy(a.parameters);p['historical_hod']['setup_recovery_enabled']=1
