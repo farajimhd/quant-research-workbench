@@ -18,7 +18,7 @@ impl Record {
     }
 }
 impl Acquisition {
-    fn plan_hash(&self) -> Result<String> {
+    pub(crate) fn plan_hash(&self) -> Result<String> {
         arte_core::content_hash(&(&self.authority, self.interval, &self.path, &self.first_hash))
     }
     pub(super) fn make_progress(&self) -> Result<Record> {

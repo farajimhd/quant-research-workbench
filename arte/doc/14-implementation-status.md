@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 152 in-process Rust tests passed (120 core and 32 adapter tests).
+- 154 in-process Rust tests passed (120 core and 34 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -447,6 +447,17 @@ durably store the acknowledged head and own the publication lane. That job recor
 cross-process crash acceptance and pending-page recovery policy remain incomplete.
 Restoring progress does not replace final data-backed coverage verification.
 No service, migration, database call or network integration test ran.
+
+Acquisition jobs now have a durable head index keyed by job name and pinned plan.
+Checkpoint acknowledgment follows progress-object readback, head append and head
+readback. Exact retries reuse the same revision. Missing predecessors, skipped
+pages and conflicting latest heads fail before acknowledgement. Recovery resolves
+the indexed head and then validates its linked progress chain. Candidate migration
+006 stores append-only heads on live_market_ssd. Two offline tests cover retry/fork
+rules and conflicting pre-merge readback. No database operations ran.
+One externally fenced owner per job remains mandatory; this is not a distributed
+lock or compare-and-swap service. Ownership fencing, job scheduling and actual
+storage crash/restart acceptance remain incomplete.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.

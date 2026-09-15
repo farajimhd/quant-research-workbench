@@ -8,6 +8,86 @@ const PAYLOADS: &str = "event_payload_staging_v1";
 const OBSERVATIONS: &str = "event_observation_staging_v1";
 const MANIFESTS: &str = "event_batch_staging_v1";
 const PAGE: usize = 256;
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct JobHead {
+    revision: u64,
+    head_hash: String,
+}
+fn job_key(name: &str, plan: &str) -> Result<String> {
+    if name.is_empty()
+        || name.len() > 128
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+        || !valid_hash(plan)
+    {
+        return Err(Error::Invalid("invalid acquisition job identity".into()));
+    }
+    arte_core::content_hash(&("rest-acquisition-job-v1", name, plan))
+}
+fn decode_head(body: &str) -> Result<Option<JobHead>> {
+    let mut latest: Option<JobHead> = None;
+    for (i, line) in body.lines().filter(|s| !s.trim().is_empty()).enumerate() {
+        if i >= 2 {
+            return Err(Error::Capacity("job head readback exceeds bound".into()));
+        }
+        let row: Value = serde_json::from_str(line)
+            .map_err(|_| Error::Invalid("invalid job head row".into()))?;
+        let revision = row
+            .get("revision")
+            .and_then(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            })
+            .filter(|n| *n > 0)
+            .ok_or_else(|| Error::Invalid("invalid job revision".into()))?;
+        let hash = row
+            .get("head_hash")
+            .and_then(Value::as_str)
+            .filter(|h| valid_hash(h))
+            .ok_or_else(|| Error::Invalid("invalid job head hash".into()))?;
+        if let Some(first) = &latest {
+            if revision > first.revision || (revision == first.revision && hash != first.head_hash)
+            {
+                return Err(Error::Conflict(
+                    "job head order or revision conflict".into(),
+                ));
+            }
+        } else {
+            latest = Some(JobHead {
+                revision,
+                head_hash: hash.into(),
+            });
+        }
+    }
+    Ok(latest)
+}
+fn advance_head(
+    current: Option<&JobHead>,
+    id: &str,
+    previous: Option<&str>,
+    page: usize,
+) -> Result<(JobHead, bool)> {
+    let revision =
+        u64::try_from(page).map_err(|_| Error::Invalid("job revision overflow".into()))?;
+    let desired = JobHead {
+        revision,
+        head_hash: id.into(),
+    };
+    if revision == 0 || !valid_hash(id) {
+        return Err(Error::Invalid("invalid next job head".into()));
+    }
+    if current == Some(&desired) {
+        return Ok((desired, false));
+    }
+    let expected_revision = current.map_or(Some(1), |head| head.revision.checked_add(1));
+    if Some(revision) != expected_revision || current.map(|h| h.head_hash.as_str()) != previous {
+        return Err(Error::Conflict(
+            "acquisition job head has moved or predecessor is missing".into(),
+        ));
+    }
+    Ok((desired, true))
+}
 fn writer_gate(passed: &BTreeSet<Acceptance>) -> Result<()> {
     for required in [
         Acceptance::RepositoryExtracted,
@@ -64,6 +144,7 @@ impl ClickHouse {
     pub async fn checkpoint_acquisition(
         &self,
         acquisition: &mut crate::rest_acquisition::Acquisition,
+        job_name: &str,
         passed: &BTreeSet<Acceptance>,
     ) -> Result<String> {
         writer_gate(passed)?;
@@ -71,6 +152,15 @@ impl ClickHouse {
             .progress_record()
             .ok_or_else(|| Error::Unready("no acquisition progress pending".into()))?;
         let id = record.id()?;
+        let job = job_key(job_name, &record.plan_hash)?;
+        self.verify_storage("event_acquisition_jobs_v1").await?;
+        let current = self.acquisition_head(&job).await?;
+        let (desired, append) = advance_head(
+            current.as_ref(),
+            &id,
+            record.previous.as_deref(),
+            record.page_number,
+        )?;
         let json =
             serde_json::to_string(record).map_err(|e| Error::Serialization(e.to_string()))?;
         self.verify_storage("event_acquisition_progress_v1").await?;
@@ -79,8 +169,58 @@ impl ClickHouse {
             &BTreeMap::from([(id.clone(), json)]),
         )
         .await?;
+        if append {
+            self.insert(
+                "event_acquisition_jobs_v1",
+                &[serde_json::json!({"job_hash":job,"revision":desired.revision,"head_hash":id})],
+            )
+            .await?;
+        }
+        if self.acquisition_head(&job).await?.as_ref() != Some(&desired) {
+            return Err(Error::Unready(
+                "acquisition job head readback differs".into(),
+            ));
+        }
         acquisition.acknowledge_progress(&id)?;
         Ok(id)
+    }
+    /// One fenced owner per job is mandatory. This is not a ClickHouse lease/CAS.
+    async fn acquisition_head(&self, job_hash: &str) -> Result<Option<JobHead>> {
+        if !valid_hash(job_hash) {
+            return Err(Error::Invalid("invalid acquisition job hash".into()));
+        }
+        let sql=format!("SELECT DISTINCT revision,head_hash FROM {}.event_acquisition_jobs_v1 WHERE job_hash='{job_hash}' ORDER BY revision DESC LIMIT 2 FORMAT JSONEachRow",self.database);
+        decode_head(&self.request(&sql, String::new()).await?)
+    }
+    /// Resume only the durable head indexed by this named plan. No matching head
+    /// returns the untouched plan; an existing malformed chain is an error.
+    pub async fn recover_acquisition_job(
+        &self,
+        acquisition: crate::rest_acquisition::Acquisition,
+        job_name: &str,
+        maximum_records: usize,
+        maximum_bytes: usize,
+    ) -> Result<crate::rest_acquisition::Acquisition> {
+        let job = job_key(job_name, &acquisition.plan_hash()?)?;
+        match self.acquisition_head(&job).await? {
+            Some(head) => {
+                let recovered = self
+                    .recover_acquisition(
+                        acquisition,
+                        &head.head_hash,
+                        maximum_records,
+                        maximum_bytes,
+                    )
+                    .await?;
+                if recovered.completed_pages() as u64 != head.revision {
+                    return Err(Error::Conflict(
+                        "job revision and recovered page count differ".into(),
+                    ));
+                }
+                Ok(recovered)
+            }
+            None => Ok(acquisition),
+        }
     }
     /// The caller pins the last acknowledged head outside volatile worker state.
     /// Recovered progress does not certify coverage or activate a writer.
@@ -332,6 +472,34 @@ impl ClickHouse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn job_head_retry_is_idempotent_but_fork_or_skipped_page_fails() {
+        let id = "a".repeat(64);
+        let next = "b".repeat(64);
+        let (head, append) = advance_head(None, &id, None, 1).unwrap();
+        assert!(append);
+        assert!(!advance_head(Some(&head), &id, None, 1).unwrap().1);
+        assert!(advance_head(Some(&head), &next, Some(&id), 2).unwrap().1);
+        assert!(advance_head(Some(&head), &next, None, 2).is_err());
+        assert!(advance_head(Some(&head), &next, Some(&id), 3).is_err());
+    }
+    #[test]
+    fn latest_job_head_rejects_conflicts_before_background_merges() {
+        let a = "a".repeat(64);
+        let b = "b".repeat(64);
+        let row = serde_json::json!({"revision":"2","head_hash":a}).to_string();
+        assert_eq!(
+            decode_head(&format!("{row}\n{row}"))
+                .unwrap()
+                .unwrap()
+                .revision,
+            2
+        );
+        let conflicting = serde_json::json!({"revision":2,"head_hash":b}).to_string();
+        assert!(decode_head(&format!("{row}\n{conflicting}")).is_err());
+        assert_ne!(job_key("job", &a).unwrap(), job_key("job", &b).unwrap());
+        assert!(job_key("job'; DROP TABLE x", &a).is_err());
+    }
     #[test]
     fn publisher_requires_every_explicit_acceptance() {
         let mut gates = BTreeSet::new();
