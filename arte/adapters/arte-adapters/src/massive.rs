@@ -195,6 +195,7 @@ pub struct RestClient {
     http: reqwest::Client,
     key: String,
     max_pages: usize,
+    governor: std::sync::Arc<crate::request_governor::Governor>,
 }
 impl RestClient {
     /// One bounded request. Returned cursor is authenticated-origin/path checked and
@@ -205,6 +206,7 @@ impl RestClient {
         }
         let url = validate_page_url(url, expected_path)?;
         let request_hash = arte_core::content_hash(&url.as_str())?;
+        let _permit = self.governor.acquire().await?;
         let mut response = self
             .http
             .get(url)
@@ -213,6 +215,19 @@ impl RestClient {
             .await
             .map_err(|_| Error::Unready("Massive request failed; credentials redacted".into()))?;
         if !response.status().is_success() {
+            if matches!(response.status().as_u16(), 429 | 503) {
+                let values = response.headers().get_all(reqwest::header::RETRY_AFTER);
+                let mut values = values.iter();
+                let header = values
+                    .next()
+                    .map(|value| value.to_str().unwrap_or("invalid"));
+                let header = if values.next().is_some() {
+                    Some("invalid")
+                } else {
+                    header
+                };
+                self.governor.cooldown(header, chrono::Utc::now()).await?;
+            }
             return Err(Error::Unready(format!(
                 "Massive HTTP {}",
                 response.status().as_u16()
@@ -251,7 +266,11 @@ impl RestClient {
             acquired_at_ns,
         })
     }
-    pub fn new(key: String, max_pages: usize) -> Result<Self> {
+    pub fn new(
+        key: String,
+        max_pages: usize,
+        governor: std::sync::Arc<crate::request_governor::Governor>,
+    ) -> Result<Self> {
         if key.is_empty() || max_pages == 0 {
             return Err(Error::Invalid(
                 "REST credential and page budget required".into(),
@@ -265,6 +284,7 @@ impl RestClient {
                 .map_err(|_| Error::Invalid("HTTP client configuration".into()))?,
             key,
             max_pages,
+            governor,
         })
     }
     /// Each page is handed off before the next request. A failed callback stops acquisition.

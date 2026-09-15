@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 164 in-process Rust tests passed (120 core and 44 adapter tests).
+- 167 in-process Rust tests passed (120 core and 47 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -506,8 +506,22 @@ Debug-formatted. Extraction, identity, event-storage, durability and resource-bu
 acceptance are mandatory before constructing the runtime context.
 Two offline tests cover acceptance gating and interrupted-observer state. The real
 campaign compiled but did not run. Host assignment/failover fencing, coordinated
-provider rate limits, measured memory/CPU isolation and executable service wiring
+cross-host provider rate limits, measured memory/CPU isolation and executable service wiring
 remain incomplete. No network or database operation ran.
+
+One runtime context now shares a REST request governor across every maintenance
+worker. An explicit policy bounds concurrent responses and spaces request admission.
+Permits remain held through response consumption. HTTP 429 and 503 responses apply
+a shared cooldown. No automatic retry occurs. Retry-After accepts decimal seconds
+or IMF-fixdate; malformed, obsolete-format, past-date or excessive values halt new
+admissions instead of guessing a delay. Missing headers use the configured cooldown.
+The policy has no production defaults. Status exposes admission count, remaining
+cooldown and the halted state, without credentials. Three deterministic offline tests
+cover spacing, cooldown, response concurrency, cancelled waiters and unsafe delays.
+See [HTTP Retry-After semantics](https://www.rfc-editor.org/rfc/rfc9110.html#section-10.2.3).
+This is process-local coordination, not a provider-account-wide distributed quota.
+Already admitted requests cannot be recalled. Maintenance shutdown during admission
+waiting still needs explicit cancellation integration; full runtime wiring remains open.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.

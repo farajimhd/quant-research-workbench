@@ -5,6 +5,7 @@ use crate::{
     maintenance_pool::{self, Limits, Outcome, Progress, Report},
     massive::RestClient,
     ownership::Lease,
+    request_governor::{Governor, Policy},
 };
 use arte_core::{config::Acceptance, Error, Result};
 use serde::{Deserialize, Serialize};
@@ -37,6 +38,7 @@ pub struct Context {
     passed: BTreeSet<Acceptance>,
     provider_key: String,
     lock_directory: PathBuf,
+    governor: Arc<Governor>,
 }
 impl Context {
     pub fn new(
@@ -44,6 +46,7 @@ impl Context {
         passed: BTreeSet<Acceptance>,
         provider_key: String,
         lock_directory: PathBuf,
+        rate_policy: Policy,
     ) -> Result<Self> {
         gate(&passed)?;
         if provider_key.is_empty() || !lock_directory.is_absolute() || !lock_directory.is_dir() {
@@ -56,7 +59,11 @@ impl Context {
             passed,
             provider_key,
             lock_directory,
+            governor: Arc::new(Governor::new(rate_policy)?),
         })
+    }
+    pub async fn rate_status(&self) -> crate::request_governor::Status {
+        self.governor.status().await
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,8 +180,11 @@ pub async fn execute(
                         return Ok(runner.status().clone());
                     }
                     let mut lease = Lease::acquire(&context.lock_directory, &key)?;
-                    let mut fetcher =
-                        RestClient::new(context.provider_key.clone(), job.maximum_pages)?;
+                    let mut fetcher = RestClient::new(
+                        context.provider_key.clone(),
+                        job.maximum_pages,
+                        context.governor.clone(),
+                    )?;
                     let mut backend =
                         DatabaseBackend::new(&context.database, &context.passed, &mut lease, &job)?;
                     loop {
