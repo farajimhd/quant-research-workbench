@@ -543,6 +543,26 @@ class TradingRuntime:
         if self.order_manager is not None:
             self.order_manager.on_market_snapshot(snapshot)
 
+    def checkpoint_wait_decisions(self):
+        return {'version': 1, 'entries': [dict(account_id=account, ticker=ticker, signature=signature)
+            for (account, ticker), signature in sorted(self._last_wait_decision_signatures.items())]}
+
+    def restore_wait_decisions(self, state):
+        if not isinstance(state, dict) or state.get('version') != 1 or not isinstance(state.get('entries'), list):
+            raise ValueError('Invalid wait-decision checkpoint')
+        def freeze(value):
+            return tuple(freeze(item) for item in value) if isinstance(value, (list, tuple)) else value
+        restored = {}
+        for row in state['entries']:
+            key = (row['account_id'], row['ticker'])
+            signature = freeze(row['signature'])
+            if (not all(isinstance(k, str) and k for k in key) or key in restored
+                    or not isinstance(signature, tuple) or len(signature) != 7
+                    or not isinstance(signature[3], tuple)):
+                raise ValueError('Invalid wait-decision checkpoint entry')
+            restored[key] = signature
+        self._last_wait_decision_signatures = restored
+
     def _record_strategy_signals(
         self, evaluation: StrategyEvaluation, account_id: str
     ) -> None:
