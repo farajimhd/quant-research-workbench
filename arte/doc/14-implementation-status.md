@@ -6,6 +6,39 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Shared broker-session gate and inactive HTTPS transport
+
+One shared gate now covers all account transports for a broker session. Status
+must be fresh, authenticated, established, connected and non-competing. Missing
+flags cannot grant readiness. Direct and documented success.value response forms
+are supported. Malformed data and clock reversal block the gate. Account, mode
+and session identity are checked before a request is claimed.
+
+Claiming a request blocks every account in that session until outcome resolution.
+Status refresh cannot clear the pending request. There is deliberately no generic
+reset. The durable outcome/reply workflow must provide the eventual release path.
+
+The Client Portal HTTPS transport now compiles. Construction requires all existing
+live acceptance gates and an approved hardware profile. URLs must use local HTTPS
+and the /v1/api base path. Credentials, queries, fragments, remote hosts and insecure
+HTTP are rejected. TLS verification remains enabled, with optional explicit trusted
+certificate input. Proxy use, redirects and automatic retries are disabled.
+
+The transport consumes opaque authorized requests, claims the shared gate before
+I/O, preserves HTTP status and bounded response bytes, and leaves the pending gate
+latched on cancellation or failure. Explicit status refresh uses the documented
+authentication-status endpoint and cannot log in or resolve a pending order.
+
+All 274 offline Rust tests, formatting, Clippy and frozen-source hashes pass.
+Tests cover shared-account blocking, status freshness and parsing, scope mismatch,
+invalid hashes and URL restrictions. HTTP methods and certificate connectivity have
+compile coverage only. No HTTP requests, gateways or services were started.
+
+This is not a ready live broker service. Shared pacing, authentication supervision,
+account discovery, durable response handling, reply confirmation and reconciliation
+remain unfinished. Without the outcome-release workflow, a session allows at most
+one claimed order request. The entrypoints remain unarmed.
+
 ## Permit-consuming broker request boundary
 
 IBKR bracket requests now have an immutable prepared representation. Its hash

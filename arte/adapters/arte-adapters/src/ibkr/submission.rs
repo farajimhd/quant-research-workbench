@@ -36,6 +36,12 @@ impl Scope {
     pub fn account(&self) -> &str {
         &self.account
     }
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+    pub fn mode(&self) -> arte_core::strategy_dispatch::Mode {
+        self.mode
+    }
 }
 pub struct Request {
     scope: Scope,
@@ -104,7 +110,8 @@ pub trait Transport {
     /// Owns broker authentication, session freshness, pacing and pending replies.
     fn require_ready(&self, now_monotonic_ns: u64) -> Result<()>;
     /// Exactly one attempt. Implementations must disable redirects and retries.
-    fn send(&mut self, request: AuthorizedRequest) -> impl Future<Output = Result<Vec<u8>>> + Send;
+    fn send(&mut self, request: AuthorizedRequest)
+        -> impl Future<Output = Result<Response>> + Send;
 }
 pub struct Safety<'a> {
     pub now_utc_ns: u64,
@@ -114,9 +121,13 @@ pub struct Safety<'a> {
     pub policy: &'a RiskPolicy,
     pub market: arte_core::exposure::Check<'a>,
 }
+pub struct Response {
+    pub status: u16,
+    pub body: Vec<u8>,
+}
 pub enum Delivery {
     /// Raw bounded evidence, not proof all bracket legs are working.
-    Response(Vec<u8>),
+    Response(Response),
     /// Do not automatically resend. Persist the outcome and reconcile.
     Unknown(String),
 }
@@ -150,7 +161,7 @@ pub async fn submit<'a>(
     }
     transport.require_ready(safety.now_monotonic_ns)?;
     Ok(match transport.send(AuthorizedRequest { request }).await {
-        Ok(body) if body.len() <= 64 * 1024 => Delivery::Response(body),
+        Ok(response) if response.body.len() <= 64 * 1024 => Delivery::Response(response),
         Ok(_) => Delivery::Unknown("broker response exceeded byte limit".into()),
         Err(error) => Delivery::Unknown(error.to_string()),
     })
@@ -254,16 +265,19 @@ mod tests {
             }
             Ok(())
         }
-        async fn send(&mut self, request: AuthorizedRequest) -> Result<Vec<u8>> {
+        async fn send(&mut self, request: AuthorizedRequest) -> Result<Response> {
             self.calls += 1;
             self.sent = Some((request.path().into(), request.body().into()));
             if self.fail {
                 return Err(Error::Unready("transport lost after write".into()));
             }
-            Ok(if self.oversized {
-                vec![0; 64 * 1024 + 1]
-            } else {
-                b"[]".to_vec()
+            Ok(Response {
+                status: 200,
+                body: if self.oversized {
+                    vec![0; 64 * 1024 + 1]
+                } else {
+                    b"[]".to_vec()
+                },
             })
         }
     }
@@ -303,7 +317,8 @@ mod tests {
                 match result.unwrap() {
                     Delivery::Response(body) => {
                         assert_eq!(case, 0);
-                        assert_eq!(body, b"[]");
+                        assert_eq!(body.status, 200);
+                        assert_eq!(body.body, b"[]");
                     }
                     Delivery::Unknown(reason) => {
                         assert!(case == 2 || case == 3);
