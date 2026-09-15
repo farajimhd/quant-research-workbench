@@ -6,6 +6,24 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Dependency-planned quote-policy startup
+
+Quote policy startup now resolves the Quotes nodes in the shared dependency plan.
+Every requested instrument needs a matching quote implementation hash and a policy
+binding that covers all its requested intervals. Missing, duplicate and unused
+bindings fail before loader calls. Instruments sharing a provider must agree on
+the exact policy hash and target-session window; the provider is then loaded once.
+
+Plans without quote consumers return an explicit not-required result and perform
+no policy reads. Conflicting versions or session windows require separate plans.
+This planner does not merge them into an implicit latest-policy authority.
+
+All 307 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Integration tests exercise dependency resolution through the mocked startup loader
+and ready cache, including pre-load rejection and provider deduplication. No services
+or database calls ran. Source-oracle parity was not rerun. The overall service
+coordinator and certified policy producer remain unfinished.
+
 ## Startup quote-policy cache
 
 A bounded startup loader now retrieves one pinned policy per provider through the

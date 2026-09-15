@@ -7,6 +7,7 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::watch;
+pub mod plan;
 
 #[derive(Clone)]
 pub struct Request {
@@ -146,6 +147,24 @@ pub async fn load(
         as_of_ns,
     })
 }
+/// Resolve every requested quote consumer before issuing startup reads.
+/// None means the plan has no quote consumers; no policy loading is needed.
+pub async fn load_planned(
+    loader: &impl Loader,
+    dependencies: &arte_core::dependency_plan::Plan,
+    bindings: Vec<plan::Binding>,
+    as_of_ns: u64,
+    concurrency: usize,
+    stop: watch::Receiver<bool>,
+) -> Result<Option<Report>> {
+    let requests = plan::requests(dependencies, bindings)?;
+    if requests.is_empty() {
+        return Ok(None);
+    }
+    load(loader, requests, as_of_ns, concurrency, stop)
+        .await
+        .map(Some)
+}
 
 #[cfg(test)]
 mod tests {
@@ -178,6 +197,58 @@ mod tests {
     struct Source {
         calls: AtomicUsize,
         wrong: bool,
+    }
+    #[tokio::test]
+    async fn planned_loading_is_required_only_for_quote_consumers_and_is_deduplicated() {
+        use arte_core::{
+            coverage::Dependency,
+            dependency_plan::{Key, Node, Plan},
+        };
+        let source = Source {
+            calls: AtomicUsize::new(0),
+            wrong: false,
+        };
+        let (_sender, stop) = watch::channel(false);
+        let empty = Plan { nodes: vec![] };
+        assert!(load_planned(&source, &empty, vec![], 10, 1, stop.clone())
+            .await
+            .unwrap()
+            .is_none());
+        let nodes = [1, 2]
+            .into_iter()
+            .map(|instrument| Node {
+                key: Key {
+                    instrument,
+                    dependency: Dependency::Quotes,
+                },
+                implementation_hash: "a".repeat(64),
+                intervals: vec![Interval {
+                    start: 100,
+                    end: 200,
+                }],
+                consumers: ["strategy".into()].into(),
+                inputs: vec![],
+            })
+            .collect();
+        let plan = Plan { nodes };
+        assert!(load_planned(&source, &plan, vec![], 10, 1, stop.clone())
+            .await
+            .is_err());
+        assert_eq!(source.calls.load(Ordering::SeqCst), 0);
+        let bindings = [1, 2]
+            .into_iter()
+            .map(|instrument| plan::Binding {
+                instrument,
+                quote_implementation_hash: "a".repeat(64),
+                request: request(1),
+            })
+            .collect();
+        let report = load_planned(&source, &plan, bindings, 10, 1, stop)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(source.calls.load(Ordering::SeqCst), 1);
+        assert!(report.into_cache().unwrap().get(1, 100).is_ok());
     }
     impl Loader for Source {
         async fn load(&self, r: &Request, _: u64) -> Result<Pinned> {
