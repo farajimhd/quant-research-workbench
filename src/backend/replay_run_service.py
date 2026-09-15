@@ -6812,6 +6812,10 @@ class ReplayRunService:
             raise ValueError("Historical run has no complete restart-safe checkpoint")
         if not _checkpoint_has_strategy_observations(state):
             raise ValueError("Restart checkpoint lacks causal strategy observations; start a new run")
+        # Reject legacy or corrupt liquidity state before constructing a controller
+        # that can rewrite the manifest or append lifecycle events to this run.
+        from .historical_liquidity_checkpoint import restore as restore_liquidity
+        restore_liquidity(dict(state.get("controller") or {}).get("historical_liquidity"))
         definition = _definition_from_manifest(manifest, run_dir=run_dir)
         identity = dict(state.get("identity") or {})
         expected_fixture_hash = (

@@ -4,6 +4,8 @@ import unittest
 from copy import deepcopy
 from datetime import date, datetime, time, timedelta, UTC
 from pathlib import Path
+from unittest.mock import patch
+from uuid import uuid4
 
 from src.backend.historical_liquidity_checkpoint import checkpoint, restore
 from src.backend.replay_run_service import (
@@ -14,6 +16,21 @@ from tests.test_replay_run_service import approved_configuration
 
 
 class LiquidityCheckpointTests(unittest.IsolatedAsyncioTestCase):
+    async def test_resume_rejects_missing_liquidity_before_loading_or_starting_run(self):
+        from src.backend.replay_run_service import ReplayRunService, RESTART_CHECKPOINT_SCHEMA_VERSION
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);run_id=str(uuid4());run_dir=root/run_id;run_dir.mkdir()
+            (run_dir/'manifest.json').write_text(json.dumps({'run':{'status':'stopped'}}))
+            (run_dir/'journal.sqlite3').touch()
+            state=dict(schema_version=RESTART_CHECKPOINT_SCHEMA_VERSION,complete=True,
+                       controller={},runtime={},identity={})
+            with patch('src.backend.replay_run_service.TradingJournal') as journal, \
+                    patch('src.backend.replay_run_service._checkpoint_has_strategy_observations',return_value=True), \
+                    patch('src.backend.replay_run_service._definition_from_manifest',side_effect=AssertionError('must reject before loading execution')):
+                journal.return_value.load_checkpoint.return_value={'state':state}
+                with self.assertRaisesRegex(ValueError,'lacks historical liquidity'):
+                    await ReplayRunService(runtime_root=root).resume(run_id)
+
     async def test_controller_restart_preserves_accumulator_and_following_gate_facts(self):
         definition = ReplayRunDefinition(session_date=date(2026, 8, 21),
             start_time=time(4), tickers=('ADXN',),
@@ -78,4 +95,3 @@ class LiquidityCheckpointTests(unittest.IsolatedAsyncioTestCase):
                           ('trade_bucket_head',1),('raw_authority',1),('unexpected',0)]:
             bad=deepcopy(base);bad['tickers']['X'][key]=value
             with self.subTest(key=key),self.assertRaises(ValueError):restore(bad)
-
