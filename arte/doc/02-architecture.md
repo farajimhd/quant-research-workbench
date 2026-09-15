@@ -59,8 +59,16 @@ It does not create a cross product of all instruments and all dependencies.
 Missing definitions, cycles, unpinned implementations, invalid clocks and capacity
 violations reject the plan. Equivalent input ordering produces the same plan hash.
 The plan describes required work; it is not coverage evidence or permission to trade.
-Current declarations are caller-supplied. Exporting the effective strategy contract,
-binding certified coverage, and scheduling repair and warming remain integration work.
+Current declarations are caller-supplied. The `startup_repair` adapter binds trade
+and quote requirements to provider authorities and verified acquisition coverage.
+It creates maintenance jobs only for missing intervals. Source revision, channel,
+instrument and certificate publication time must match the check. Each job uses
+the existing resumable acquisition contract and has a deterministic ownership key.
+Non-event dependencies remain explicitly unresolved in the report.
+
+Exporting the effective strategy contract, checking derived coverage, and scheduling
+the complete repair and warming sequence remain integration work. An empty source
+job list does not mean that the strategy is ready.
 
 ## Startup state machine
 

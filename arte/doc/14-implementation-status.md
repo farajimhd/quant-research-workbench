@@ -757,3 +757,14 @@ All 199 Rust tests, formatting, static checks and copied-source hashes pass.
 The plan does not certify readiness or start workers. Effective strategy declaration
 export, coverage binding and startup repair/warming orchestration remain incomplete.
 No service or network test ran. Source oracle parity was not rerun for this planner.
+
+Startup source repair now connects the dependency graph to the verified acquisition
+catalog and the existing maintenance Job contract. It subtracts only matching
+authority coverage available at the check time. Missing intervals receive stable
+resumable job identities. Channel/instrument/implementation mismatches and job
+budget overflow reject the plan. Non-event dependencies remain explicitly unresolved.
+Three offline tests cover missing intervals, stable retries, source revisions,
+publication clocks, future ranges and invalid bindings. All 202 Rust tests,
+formatting, static checks and copied-source hashes pass. No service ran. This does
+not yet dispatch the startup jobs, certify derived requirements, warm the strategy
+or grant trading readiness. Full startup orchestration remains incomplete.
