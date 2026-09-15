@@ -484,6 +484,7 @@ class TradingRuntime:
                 self.order_manager.working_exit_quantity(observation.ticker, account_id)
                 if self.order_manager is not None else 0.0
             ))
+            account_observation = self._with_completed_trade_outcome(account_observation, account_id)
             evaluation = normalize_strategy_evaluation(await handler(account_observation, account_id))
             self._record_strategy_signals(evaluation, account_id)
             await self._execute_intents(evaluation, account_id, None)
@@ -508,6 +509,7 @@ class TradingRuntime:
             self.order_manager.working_exit_quantity(observation.ticker, account_id)
             if self.order_manager is not None else 0.0
         ))
+        observation = self._with_completed_trade_outcome(observation, account_id)
         evaluation = normalize_strategy_evaluation(await handler(observation, account_id))
         self._record_strategy_signals(evaluation, account_id)
         await self._execute_intents(evaluation, account_id, None)
@@ -516,6 +518,32 @@ class TradingRuntime:
             account_id=account_id,
             ticker=observation.ticker,
         )
+
+    def _with_completed_trade_outcome(self, observation, account_id):
+        # Only derive at a filled-to-flat recovery boundary. The strategy's
+        # checkpointed held state binds the evidence to its own prior entry.
+        # Market observations cannot supply execution-ledger authority.
+        if observation.completed_trade_outcome is not None:
+            observation = replace(observation, completed_trade_outcome=None)
+        if observation.position_quantity != 0 or self._canonical_session is None:
+            return observation
+        assignments = getattr(self.strategy, 'assignments', None)
+        if assignments is None:
+            return observation
+        matches = [a for a in assignments() if a.account_id == account_id
+            and a.ticker == observation.ticker
+            and (a.parameters.get('historical_hod') or {}).get('setup_below_vwap_base_enabled')
+            and (a.state.get('v7_setup') or {}).get('held')]
+        if len(matches) != 1:
+            return observation
+        assignment = matches[0]
+        from .completed_trade_outcome import completed_trade_outcome
+        outcome = completed_trade_outcome(self._canonical_session.projector.executions.values(),
+            account_id=account_id, conid=assignment.conid, run_id=self.run_id,
+            entry_at=assignment.state['v7_setup']['held']['entry_at'],
+            observed_at=observation.observed_at,
+            confirmation_seconds=assignment.parameters['historical_hod'].get('confirmation_lifetime_ms',1000)/1000)
+        return replace(observation, completed_trade_outcome=outcome)
 
     def _update_execution_market_from_observation(
         self, observation: StrategyObservation

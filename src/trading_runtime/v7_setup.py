@@ -148,6 +148,10 @@ def recovery_observe(state, entry, market, observation, stop, row, fresh, *, pre
             state['held']['stop_above_initial_fill']=bool(remembered or initial>0 and stop>initial+1e-9)
     elif state.get('held'):
         held = state.pop('held')
+        outcome = getattr(observation, 'completed_trade_outcome', None)
+        if (outcome and outcome.get('entry_at') == held['entry_at']
+                and outcome.get('observed_at') == observation.observed_at.timestamp()):
+            held['completed_trade_outcome'] = deepcopy(outcome)
         state['last_exit'] = dict(at=observation.observed_at.timestamp(), **held)
     retired = state.setdefault('retired_swings', {})
     if fresh and market.get('bar'):
@@ -175,10 +179,14 @@ def recovery_permission(state, swing, market, *, stop_gain_guard=False, tight_ba
     # early base. Keep prior recovery evidence and require a new post-open
     # support; a position exited after the open cannot use this exception.
     base_range = state.get('range') or {}
+    outcome = previous.get('completed_trade_outcome') or {}
     # The opt-in below-VWAP branch can treat a complete post-exit base as
     # independent of an unprotected attempt. Failed-entry reclaim above and
     # previously protected profits keep their existing recovery requirements.
     if (independent_base and stop_gain_guard and unprotected_reentry
+            and outcome.get('status') == 'verified' and outcome.get('net_pnl',0) < 0
+            and outcome.get('entry_at') == previous.get('entry_at')
+            and outcome.get('closed_at',float('inf')) <= previous['at']
             and previous.get('initial_fill_price',0)>0
             and previous.get('stop_above_initial_fill') is False
             and previous['at'] < base_range.get('start',0)
