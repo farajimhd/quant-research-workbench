@@ -28,7 +28,7 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     v7_center_swing_enabled=0,v7_transition_entries_enabled=0,v7_price_only_enabled=0,rejection_break_offset_bps=0.,
     v7_setup_enabled=0,setup_failure_seconds=0,setup_failure_buffer_ticks=1.,setup_minimum_body_bps=0.,setup_trail_requires_breakout=0,setup_trail_activation_r=0.,setup_recovery_preserve_peak=0,setup_recovery_enabled=0,setup_add_requires_range_breakout=1,setup_range_seconds=30,setup_minimum_bars=5,
     setup_minimum_quote_clearance_spreads=0.,setup_trail_requires_current_gain=0,setup_trail_current_gain_requires_bid=1,setup_phase_minimum_progress_r=0.,
-    setup_failure_exit_enabled=1,setup_recovery_unprotected_reentry=0,setup_recovery_entry_reclaim=0,setup_recovery_regular_base=0,
+    setup_failure_exit_enabled=1,setup_recovery_unprotected_reentry=0,setup_recovery_entry_reclaim=0,setup_recovery_regular_base=0,setup_recovery_regular_full_range=0,
     setup_minimum_60s_progress_pct=0.,setup_minimum_300s_range_pct=0.,setup_add_maximum_upper_wick_fraction=1.,
     setup_acquisition_quality_enabled=0,setup_initial_tranche_fraction=1.,
     setup_early_base_enabled=0,setup_base_maximum_swing_age_s=15.,
@@ -63,6 +63,9 @@ def configure(p):
         raise ValueError('Entry-price reclaim requires unprotected reentry')
     if s['setup_recovery_regular_base'] not in (0,1) or s['setup_recovery_regular_base'] and not (s['setup_recovery_enabled'] and s['setup_early_base_enabled']):
         raise ValueError('Regular-session recovery requires persistent recovery and early bases')
+    if (type(s['setup_recovery_regular_full_range']) not in (int,float) or s['setup_recovery_regular_full_range'] not in (0,1)
+            or s['setup_recovery_regular_full_range'] and not s['setup_recovery_regular_base']):
+        raise ValueError('Full regular-session range requires the regular-base exception and a numeric boolean switch')
     if type(s['setup_failure_exit_enabled']) not in (int,float) or s['setup_failure_exit_enabled'] not in (0,1):
         raise ValueError('Setup failure exit must be a numeric boolean switch')
     if not s['setup_failure_exit_enabled'] and not (s['v7_setup_enabled'] and s['setup_recovery_enabled']):
@@ -87,7 +90,7 @@ def configure(p):
         raise ValueError('Phase progress requires V7 setup')
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_trail_current_gain_requires_bid','setup_phase_minimum_progress_r','setup_trail_requires_current_gain','setup_recovery_regular_base','setup_base_maximum_extension_fraction','setup_recovery_entry_reclaim','setup_recovery_unprotected_reentry','setup_minimum_300s_range_pct','setup_minimum_60s_progress_pct','setup_add_maximum_upper_wick_fraction','setup_failure_exit_enabled','setup_base_recovery_maximum_range_pct','setup_minimum_trail_progress_r','setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_recovery_regular_full_range','setup_trail_current_gain_requires_bid','setup_phase_minimum_progress_r','setup_trail_requires_current_gain','setup_recovery_regular_base','setup_base_maximum_extension_fraction','setup_recovery_entry_reclaim','setup_recovery_unprotected_reentry','setup_minimum_300s_range_pct','setup_minimum_60s_progress_pct','setup_add_maximum_upper_wick_fraction','setup_failure_exit_enabled','setup_base_recovery_maximum_range_pct','setup_minimum_trail_progress_r','setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
         raise ValueError('Historical HOD settings must be finite and positive')
     if not 0 <= s['setup_failure_seconds'] <= 5 or int(s['setup_failure_seconds']) != s['setup_failure_seconds']:
         raise ValueError('Initial setup failure window must be zero to five completed seconds')
@@ -1295,7 +1298,8 @@ def evaluate(host, a, o, p, state):
         blocked_reason,entry_phase=v7_setup.recovery_permission(setup_state,swing,d,
             stop_gain_guard=bool(s['setup_recovery_stop_gain_guard']),tight_base=tight_base,
             unprotected_reentry=bool(s['setup_recovery_unprotected_reentry']),
-            entry_reclaim=bool(s['setup_recovery_entry_reclaim']),regular_session_start=regular_start)
+            entry_reclaim=bool(s['setup_recovery_entry_reclaim']),regular_session_start=regular_start,
+            regular_full_range=bool(s['setup_recovery_regular_full_range']))
         if blocked_reason:return result('wait',blocked_reason)
     stop = stop_below(swing['lower'],s,tick)
     if s['setup_minimum_quote_clearance_spreads']:

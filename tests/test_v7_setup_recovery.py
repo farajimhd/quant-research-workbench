@@ -200,7 +200,8 @@ def test_regular_base_runtime_boundary_and_configuration():
     host,a,obs=prepared()
     a.parameters['historical_hod'].update(setup_recovery_enabled=1,
         setup_recovery_stop_gain_guard=1,setup_early_base_enabled=1,
-        setup_base_recovery_maximum_range_pct=0,setup_recovery_regular_base=1)
+        setup_base_recovery_maximum_range_pct=0,setup_recovery_regular_base=1,
+        setup_recovery_regular_full_range=1)
     configure(a.parameters)
     for value in (-1,2,True,float('nan'),float('inf')):
         a.parameters['historical_hod']['setup_recovery_regular_base']=value
@@ -222,7 +223,7 @@ def test_regular_base_runtime_boundary_and_configuration():
     previous['at']=boundary+10
     assert not host.evaluate(a,o).evaluation.intents
     previous['at']=boundary-10
-    a.parameters['historical_hod']['setup_recovery_regular_base']=0
+    a.parameters['historical_hod'].update(setup_recovery_regular_base=0,setup_recovery_regular_full_range=0)
     assert not host.evaluate(a,o).evaluation.intents
 
 
@@ -285,3 +286,39 @@ def test_recovery_can_retain_individual_resistance_adds_before_range_breakout():
     r=host.evaluate(a,replace(obs(3,10.19),position_quantity=100,average_price=10.02))
     assert any(i.action=='add_long' for i in r.evaluation.intents)
     assert r.state['historical_hod_entry']['setup']['phase']=='building'
+
+
+def test_regular_recovery_full_range_requires_post_open_origin():
+    previous=dict(at=90,stop=10.03,body_high=10.3,stop_above_initial_fill=True,
+        setup=dict(phase='post_breakout',breakout_threshold=10.2))
+    market=dict(bar=dict(end=140,close=10.11))
+    support=swing(130,9.99)
+    for start,allowed in ((99,False),(100,True),(101,True)):
+        state=dict(last_exit=previous,range=dict(start=start,end=139))
+        reason,_=V.recovery_permission(state,support,market,stop_gain_guard=True,
+            regular_session_start=100,regular_full_range=True)
+        assert (not reason)==allowed
+    for base in ({},dict(start=100,end=141),dict(start=139,end=139)):
+        reason,_=V.recovery_permission(dict(last_exit=previous,range=base),support,market,
+            stop_gain_guard=True,regular_session_start=100,regular_full_range=True)
+        assert reason=='waiting_for_post_move_recovery_or_higher_base'
+    state=dict(last_exit=previous,range=dict(start=99,end=139))
+    assert not V.recovery_permission(state,support,market,stop_gain_guard=True,
+        regular_session_start=100)[0]  # Prior variants preserve support-only admission.
+    assert not V.recovery_permission(state,swing(130,10.04),market,stop_gain_guard=True,
+        regular_session_start=100,regular_full_range=True)[0]  # Normal higher base still qualifies.
+
+
+def test_regular_full_range_configuration():
+    from src.trading_runtime.historical_hod import configure
+    import pytest
+    host,a,obs=prepared()
+    p=a.parameters['historical_hod']
+    p.update(setup_recovery_enabled=1,setup_early_base_enabled=1,
+        setup_recovery_regular_base=1,setup_recovery_regular_full_range=1)
+    configure(a.parameters)
+    for value in (-1,2,True,float('nan'),float('inf')):
+        a.parameters['historical_hod']['setup_recovery_regular_full_range']=value
+        with pytest.raises(ValueError):configure(a.parameters)
+    a.parameters['historical_hod'].update(setup_recovery_regular_full_range=1,setup_recovery_regular_base=0)
+    with pytest.raises(ValueError):configure(a.parameters)

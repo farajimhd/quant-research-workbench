@@ -138,7 +138,7 @@ def recovery_observe(state, entry, market, observation, stop, row, fresh, *, pre
         for field in ('local_swings', 'confirmed_swings')}}
 
 
-def recovery_permission(state, swing, market, *, stop_gain_guard=False, tight_base=False, unprotected_reentry=False, entry_reclaim=False, regular_session_start=0.):
+def recovery_permission(state, swing, market, *, stop_gain_guard=False, tight_base=False, unprotected_reentry=False, entry_reclaim=False, regular_session_start=0., regular_full_range=False):
     previous = state.get('last_exit')
     if not previous:
         return '', 'building'
@@ -152,7 +152,11 @@ def recovery_permission(state, swing, market, *, stop_gain_guard=False, tight_ba
     # The caller supplies a boundary only for a qualified regular-session
     # early base. Keep prior recovery evidence and require a new post-open
     # support; a position exited after the open cannot use this exception.
-    if (regular_session_start>0 and previous['at']<regular_session_start
+    base_range = state.get('range') or {}
+    full_regular_range = (base_range.get('start',0)>=regular_session_start
+        and base_range.get('start',0)<base_range.get('end',0)<=market['bar'].get('end',0))
+    if ((not regular_full_range or full_regular_range)
+            and regular_session_start>0 and previous['at']<regular_session_start
             <=swing['pivot_at']<=swing['confirmed_at']<=market['bar']['end']):
         return '', 'building'
     # A preliminary attempt can cross its range without ever protecting a
