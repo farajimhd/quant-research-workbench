@@ -6,6 +6,8 @@ use arte_core::coverage::Interval;
 use arte_core::event_storage::{Batch, MAX_OBSERVATIONS};
 use arte_core::{Error, Result};
 use std::{collections::BTreeSet, future::Future};
+mod recovery;
+pub use recovery::Record as ProgressRecord;
 pub trait Fetcher {
     fn fetch(&mut self, url: &str, path: &str) -> impl Future<Output = Result<FetchedPage>> + Send;
 }
@@ -27,6 +29,8 @@ pub struct Acquisition {
     visited: BTreeSet<String>,
     last_sip: Option<u64>,
     maximum_pages: usize,
+    last_checkpoint: Option<String>,
+    checkpoint_to_ack: Option<ProgressRecord>,
 }
 impl Acquisition {
     /// Reference authority must bind this symbol to the instrument over the entire
@@ -79,6 +83,8 @@ impl Acquisition {
             visited: BTreeSet::new(),
             last_sip: None,
             maximum_pages,
+            last_checkpoint: None,
+            checkpoint_to_ack: None,
         })
     }
     pub fn completed_pages(&self) -> usize {
@@ -94,6 +100,11 @@ impl Acquisition {
         fetcher: &mut impl Fetcher,
         publisher: &mut impl Publisher,
     ) -> Result<bool> {
+        if self.checkpoint_to_ack.is_some() {
+            return Err(Error::Unready(
+                "acquisition page progress is not durable".into(),
+            ));
+        }
         let Some(url) = self.next.as_ref() else {
             return Ok(false);
         };
@@ -146,11 +157,12 @@ impl Acquisition {
         self.last_sip = pending.last_sip_ns;
         self.next = pending.next_url;
         self.pages.push(pending.proof);
+        self.checkpoint_to_ack = Some(self.make_progress()?);
         Ok(true)
     }
     /// Result is an unverified certificate until persisted batches are read back.
     pub fn certificate(&self, published_at_ns: u64) -> Result<arte_core::acquisition::Certificate> {
-        if self.next.is_some() || self.pending.is_some() {
+        if self.next.is_some() || self.pending.is_some() || self.checkpoint_to_ack.is_some() {
             return Err(Error::Unready("historical acquisition incomplete".into()));
         }
         let certificate = arte_core::acquisition::Certificate {
@@ -330,8 +342,12 @@ mod tests {
         assert_eq!(source.calls, 1);
         assert_eq!(run.completed_pages(), 1);
         assert!(run.certificate(40).is_err());
+        let checkpoint = run.progress_record().unwrap().id().unwrap();
+        run.acknowledge_progress(&checkpoint).unwrap();
         run.step(&mut source, &mut sink).await.unwrap();
         assert_eq!(source.calls, 2);
+        let checkpoint = run.progress_record().unwrap().id().unwrap();
+        run.acknowledge_progress(&checkpoint).unwrap();
         assert!(!run.step(&mut source, &mut sink).await.unwrap());
         let mut verifier =
             arte_core::acquisition::Verifier::new(run.certificate(40).unwrap()).unwrap();
@@ -340,5 +356,43 @@ mod tests {
             verifier.observe(batch).unwrap();
         }
         verifier.finish().unwrap();
+    }
+    #[tokio::test]
+    async fn progress_ack_blocks_advance_and_restored_prefix_resumes_next_cursor() {
+        let (_, authority, interval) = inputs();
+        let mut run = Acquisition::new(authority.clone(), interval, "AAPL", 3).unwrap();
+        let mut source = Source { calls: 0 };
+        let mut sink = Sink {
+            fail: false,
+            batches: Default::default(),
+        };
+        run.step(&mut source, &mut sink).await.unwrap();
+        assert!(run.step(&mut source, &mut sink).await.is_err());
+        assert_eq!(source.calls, 1);
+        let first = run.progress_record().unwrap().clone();
+        let head = first.id().unwrap();
+        assert!(run.acknowledge_progress("wrong").is_err());
+        let mut restored = Acquisition::new(authority.clone(), interval, "AAPL", 3)
+            .unwrap()
+            .restore(&head, std::slice::from_ref(&first))
+            .unwrap();
+        restored.step(&mut source, &mut sink).await.unwrap();
+        assert_eq!(source.calls, 2);
+        assert_eq!(restored.completed_pages(), 2);
+        let second = restored.progress_record().unwrap().clone();
+        assert_eq!(second.previous, Some(head));
+        let new_head = second.id().unwrap();
+        restored.acknowledge_progress(&new_head).unwrap();
+        let again = Acquisition::new(authority.clone(), interval, "AAPL", 3)
+            .unwrap()
+            .restore(&new_head, &[first.clone(), second.clone()])
+            .unwrap();
+        again.certificate(40).unwrap();
+        let mut corrupt = second;
+        corrupt.last_sip_ns = Some(19);
+        assert!(Acquisition::new(authority, interval, "AAPL", 3)
+            .unwrap()
+            .restore(&new_head, &[first, corrupt])
+            .is_err());
     }
 }

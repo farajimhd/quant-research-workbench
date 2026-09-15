@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 151 in-process Rust tests passed (120 core and 31 adapter tests).
+- 152 in-process Rust tests passed (120 core and 32 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -433,6 +433,20 @@ rate-limit retry policy, derived repair and executable maintenance routing remai
 The implemented query/pagination fields were checked against the official
 [Massive trades](https://www.massive.com/docs/rest/stocks/trades-quotes/trades) and
 [quotes](https://www.massive.com/docs/rest/stocks/trades-quotes/quotes) documentation.
+
+REST progress now uses linked immutable one-page records. A page's progress must
+be acknowledged before fetching another page or producing a final certificate.
+Restoration checks the pinned plan/head, complete predecessor chain, request cursors,
+page numbers, source frontier and metadata prefix. Prefix validation cannot construct
+a coverage certificate. One new offline test covers blocked advancement, restart at
+the next cursor, completed-chain recovery and corrupted-head rejection.
+
+ClickHouse checkpoint/recovery methods and candidate migration 005 are implemented
+but unexecuted. Recovery bounds both record count and bytes. The job controller must
+durably store the acknowledged head and own the publication lane. That job record,
+cross-process crash acceptance and pending-page recovery policy remain incomplete.
+Restoring progress does not replace final data-backed coverage verification.
+No service, migration, database call or network integration test ran.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.

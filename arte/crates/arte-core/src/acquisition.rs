@@ -51,6 +51,13 @@ impl Certificate {
     /// The acquisition owner supplies actual request/response evidence and only
     /// readback-acknowledged batch IDs. These checks cannot replace those duties.
     pub fn validate(&self, acknowledged: &BTreeSet<String>) -> Result<()> {
+        self.validate_inner(acknowledged, true)
+    }
+    /// Progress validation only. Never grants a VerifiedCertificate or coverage.
+    pub fn validate_prefix(&self, acknowledged: &BTreeSet<String>) -> Result<()> {
+        self.validate_inner(acknowledged, false)
+    }
+    fn validate_inner(&self, acknowledged: &BTreeSet<String>, complete: bool) -> Result<()> {
         self.interval.validate()?;
         if self.schema_version != 1
             || self.authority.provider == 0
@@ -124,7 +131,7 @@ impl Certificate {
             expected = page.next_request_hash.as_deref();
             previous_at = page.acquired_at_ns;
         }
-        if expected.is_some() {
+        if complete && expected.is_some() {
             return Err(Error::Unready("provider pagination not exhausted".into()));
         }
         Ok(())

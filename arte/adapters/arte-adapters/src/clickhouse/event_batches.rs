@@ -61,6 +61,76 @@ fn decode_rows(body: &str, requested: &[String]) -> Result<BTreeMap<String, Stri
     Ok(values)
 }
 impl ClickHouse {
+    pub async fn checkpoint_acquisition(
+        &self,
+        acquisition: &mut crate::rest_acquisition::Acquisition,
+        passed: &BTreeSet<Acceptance>,
+    ) -> Result<String> {
+        writer_gate(passed)?;
+        let record = acquisition
+            .progress_record()
+            .ok_or_else(|| Error::Unready("no acquisition progress pending".into()))?;
+        let id = record.id()?;
+        let json =
+            serde_json::to_string(record).map_err(|e| Error::Serialization(e.to_string()))?;
+        self.verify_storage("event_acquisition_progress_v1").await?;
+        self.stage_event_values(
+            "event_acquisition_progress_v1",
+            &BTreeMap::from([(id.clone(), json)]),
+        )
+        .await?;
+        acquisition.acknowledge_progress(&id)?;
+        Ok(id)
+    }
+    /// The caller pins the last acknowledged head outside volatile worker state.
+    /// Recovered progress does not certify coverage or activate a writer.
+    pub async fn recover_acquisition(
+        &self,
+        acquisition: crate::rest_acquisition::Acquisition,
+        head: &str,
+        maximum_records: usize,
+        maximum_bytes: usize,
+    ) -> Result<crate::rest_acquisition::Acquisition> {
+        if maximum_records == 0
+            || maximum_records > arte_core::acquisition::MAX_PAGES
+            || maximum_bytes == 0
+            || maximum_bytes > 1024 * 1024 * 1024
+        {
+            return Err(Error::Invalid("invalid acquisition recovery budget".into()));
+        }
+        let mut next = Some(head.to_owned());
+        let mut records = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut bytes = 0usize;
+        while let Some(id) = next {
+            if records.len() >= maximum_records || !seen.insert(id.clone()) {
+                return Err(Error::Capacity(
+                    "acquisition recovery bound or cycle".into(),
+                ));
+            }
+            let values = self
+                .event_values("event_acquisition_progress_v1", std::slice::from_ref(&id))
+                .await?;
+            let json = values
+                .get(&id)
+                .ok_or_else(|| Error::Unready("acquisition progress record missing".into()))?;
+            bytes = bytes
+                .checked_add(json.len())
+                .ok_or_else(|| Error::Capacity("acquisition recovery byte overflow".into()))?;
+            if bytes > maximum_bytes {
+                return Err(Error::Capacity("acquisition recovery byte budget".into()));
+            }
+            let record: crate::rest_acquisition::ProgressRecord =
+                serde_json::from_str(json).map_err(|e| Error::Serialization(e.to_string()))?;
+            if record.id()? != id {
+                return Err(Error::Conflict("acquisition progress hash mismatch".into()));
+            }
+            next = record.previous.clone();
+            records.push(record);
+        }
+        records.reverse();
+        acquisition.restore(head, &records)
+    }
     /// Revalidates one batch at a time; does not retain the session in memory.
     pub async fn verify_acquisition(
         &self,
