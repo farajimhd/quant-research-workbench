@@ -377,6 +377,80 @@ def diagnose(root):
     print(f'Diagnostics completed: {len(results)} screens, {len(rows)} frozen decision rows; no strategy changes',flush=True)
 
 
+def completed_close_progress(rows,bars,lookback=60.,maximum_staleness=5.):
+    """As-of progress: never substitute the first bar after the reference time."""
+    if not np.isfinite(lookback) or lookback<=0 or not np.isfinite(maximum_staleness) or maximum_staleness<0:
+        raise ValueError('Invalid progress horizon')
+    indexes={}
+    for symbol in {r['symbol'] for r in rows}:
+        source=[b for b in bars.get(symbol,[]) if b['timeframe']=='1s']
+        times=np.asarray([b['at'] for b in source],dtype=float)
+        closes=np.asarray([b['close'] for b in source],dtype=float)
+        if not np.all(np.isfinite(times)) or np.any(np.diff(times)<=0):
+            raise ValueError('Unordered or duplicate completed bars')
+        if not np.all(np.isfinite(closes)) or np.any(closes<=0):
+            raise ValueError('Invalid completed close')
+        indexes[symbol]=(times,closes)
+    result=[]
+    for row in rows:
+        at=row['at'];times,closes=indexes[row['symbol']]
+        if not np.isfinite(at):raise ValueError('Invalid decision clock')
+        current=int(np.searchsorted(times,at));prior=int(np.searchsorted(times,at-lookback,side='right'))-1
+        if current==len(times) or times[current]!=at:
+            result.append(dict(valid=False,reason='current_completed_bar_missing'));continue
+        if prior<0 or at-lookback-times[prior]>maximum_staleness:
+            result.append(dict(valid=False,reason='historical_reference_missing_or_stale'));continue
+        result.append(dict(valid=True,reference_at=float(times[prior]),
+            reference_age_seconds=float(at-times[prior]),progress_pct=float(100*(closes[current]/closes[prior]-1))))
+    return result
+
+
+def diagnose_trend(root):
+    if json.loads((root/'dataset-manifest.json').read_text()).get('status')!='screenable':
+        raise ValueError('Dataset is not accepted for screening')
+    rows=json.loads((root/'features.json').read_text());labels=json.loads((root/'labels.json').read_text())
+    if not rows or [r['id'] for r in rows]!=[r['id'] for r in labels] or len({r['id'] for r in rows})!=len(rows):
+        raise ValueError('Missing, duplicate or misaligned supervision')
+    bars_path=STUDY/'bars.json'
+    progress=completed_close_progress(rows,json.loads(bars_path.read_text()))
+    x={key:np.asarray([r['features'][key] for r in rows]) for key in FEATURES}
+    base=(x['fresh_quote']&x['detector_fresh']&x['liquidity_facts_fresh']
+          &(x['macd_histogram']>0)&(x['rate10']>=5)&(x['rate60']>=3)
+          &(x['spread_bps']<=150)&(x['session_dollars']>=200000)
+          &(x['session_shares']>=25000)&(x['body_bps']>=5))
+    def first(mask):
+        found={}
+        for i in sorted(np.flatnonzero(mask),key=lambda i:rows[i]['at']):
+            if labels[i]['major_good']:found.setdefault(labels[i]['opportunity_id'],int(i))
+        return found
+    reference=first(base);results=[]
+    for cutoff in (0,1,2,3):
+        mask=base&np.asarray([p['valid'] and p['progress_pct']>=cutoff for p in progress])
+        found=first(mask);lost=[];delayed=[]
+        for key,i in reference.items():
+            detail=dict(opportunity_id=key,symbol=rows[i]['symbol'],reference_at=rows[i]['at'],
+                        reference_ask=labels[i]['entry_ask'])
+            if key not in found:lost.append(detail)
+            elif rows[found[key]]['at']>rows[i]['at']:
+                j=found[key];delayed.append(dict(**detail,delay_seconds=rows[j]['at']-rows[i]['at'],
+                    filtered_ask=labels[j]['entry_ask']))
+        results.append(dict(minimum_progress_pct=cutoff,
+            metrics=metrics(mask,np.ones(len(rows),dtype=bool),labels,rows),lost=lost,delayed=delayed))
+    method=('Static decisions, not realized trades. Latest completed close at or before60seconds ago, '
+        'reference at most5seconds stale. Fixed screen:200k dollars/25k shares/150bps spread/5-3 trade '
+        'rates/5bps body/fresh inputs/positive MACD. Future labels score only; range, recovery, '
+        'replacement entries, adds and shared capital still require causal replay. No promotion.')
+    save(root/'trend-diagnostics.json',dict(method=method,rows=len(rows),base_rows=int(sum(base)),
+        base_major=len(reference),exclusions=dict(Counter(p['reason'] for b,p in zip(base,progress) if b and not p['valid'])),
+        source_hashes={str(p):digest(p) for p in (root/'features.json',root/'labels.json',bars_path,Path(__file__))},
+        progress=[dict(id=r['id'],**p) for r,p in zip(rows,progress)],results=results))
+    for result in results:
+        m=result['metrics']
+        print(f"Progress>={result['minimum_progress_pct']}%: {m['admitted_rows']} decisions, "
+              f"{len(result['lost'])} lost / {len(result['delayed'])} delayed major opportunities",flush=True)
+    print(f"Trend diagnosis completed: {len(rows)} decisions; no strategy changes",flush=True)
+
+
 def diagnose_episode_exit(episode,quotes):
     """Compare an actual episode with an explicitly separate fixed-size label."""
     first=episode['fills'][0]
@@ -461,7 +535,7 @@ def diagnose_exits(root,variant):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=('build','screen','replay','assess','diagnose','diagnose-exits'))
+    parser.add_argument('action',choices=('build','screen','replay','assess','diagnose','diagnose-exits','diagnose-trend'))
     parser.add_argument('--runtime',type=Path,default=REPLAYS/'supervised-v1')
     parser.add_argument('--top-k',type=int,default=2)
     parser.add_argument('--variant',help='Completed isolated replay variant for diagnose-exits')
@@ -473,6 +547,7 @@ def main():
     elif args.action=='screen':screen(root,args.top_k)
     elif args.action=='replay':replay(root)
     elif args.action=='diagnose':diagnose(root)
+    elif args.action=='diagnose-trend':diagnose_trend(root)
     elif args.action=='diagnose-exits':diagnose_exits(root,args.variant)
     else:assess_replays()
 

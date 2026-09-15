@@ -3,7 +3,7 @@ import json
 import numpy as np
 import pytest
 from scripts.strategy_222_supervised_research import (
-    FEATURES,causal_features,hindsight_label,label_opportunities,metrics,flat_entry_state,diagnostic_screens,diagnose_episode_exit,
+    FEATURES,causal_features,hindsight_label,label_opportunities,metrics,flat_entry_state,diagnostic_screens,diagnose_episode_exit,completed_close_progress,
 )
 from scripts.run_strategy_222_refinement import load_recipe
 
@@ -26,6 +26,31 @@ def test_features_reject_future_bars_and_macd_and_have_no_label_fields():
 
 def quotes(prices):
     return np.array([[stamp*1e6,bid,ask,100,100,i] for i,(stamp,bid,ask) in enumerate(prices)],dtype=float)
+
+
+def test_progress_uses_asof_reference_and_is_invariant_to_future_bars():
+    rows=[dict(symbol='X',at=100)]
+    bars={'X':[dict(timeframe='1s',at=t,close=p) for t,p in [(35,10),(41,20),(100,10.2)]]}
+    original=deepcopy(bars)
+    result=completed_close_progress(rows,bars)
+    assert result==[dict(valid=True,reference_at=35.,reference_age_seconds=65.,progress_pct=pytest.approx(2.))]
+    assert bars==original
+    bars['X'].append(dict(timeframe='1s',at=101,close=1000))
+    assert completed_close_progress(rows,bars)==result
+    # The 41-second bar is after the target reference clock of40; it must
+    # never replace an absent or stale as-of reference.
+    bars['X'][0]['at']=34
+    assert completed_close_progress(rows,bars)==[dict(valid=False,reason='historical_reference_missing_or_stale')]
+    assert completed_close_progress([dict(symbol='X',at=99)],bars)==[dict(valid=False,reason='current_completed_bar_missing')]
+
+
+@pytest.mark.parametrize('times,prices',[
+    ([40,40,100],[10,10,11]),([40,39,100],[10,10,11]),
+    ([40,100],[0,11]),([40,100],[float('nan'),11]),
+])
+def test_progress_rejects_ambiguous_or_invalid_bar_authority(times,prices):
+    bars={'X':[dict(timeframe='1s',at=t,close=p) for t,p in zip(times,prices)]}
+    with pytest.raises(ValueError):completed_close_progress([dict(symbol='X',at=100)],bars)
 
 
 def test_reentry_cooldown_is_flat_but_pending_orders_and_held_positions_are_not():
