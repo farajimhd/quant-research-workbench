@@ -106,6 +106,12 @@ impl Lane {
         self.available()?;
         self.market.levels()
     }
+    pub fn prior_strategy_levels(
+        &self,
+    ) -> Result<(u64, &[arte_core::strategy_targets::TargetLevel])> {
+        self.available()?;
+        self.market.prior_strategy_levels()
+    }
     pub fn strategy_levels(
         &self,
         at_ns: u64,

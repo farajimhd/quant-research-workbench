@@ -7,7 +7,7 @@ use crate::{
     Error, Result,
 };
 const SECOND: u64 = 1_000_000_000;
-const RECOVERY_VERSION: &str = "market-structure-recovery-v3";
+const RECOVERY_VERSION: &str = "market-structure-recovery-v4";
 const MAX_RECOVERY_BYTES: usize = 64 * 1024 * 1024;
 use crate::events::{EventKey, Observation, Payload};
 use serde::{Deserialize, Serialize};
@@ -41,6 +41,9 @@ pub struct Runtime {
     configuration_hash: String,
     applied: BTreeMap<EventKey, String>,
     maximum_market_events: usize,
+    prior_levels: Vec<crate::strategy_targets::TargetLevel>,
+    prior_levels_at_ns: u64,
+    maximum_levels: usize,
 }
 /// Bytes must be persisted with their hash in an independently verified manifest.
 /// This snapshot is streaming recovery, never a historical next-session seed.
@@ -60,6 +63,9 @@ struct Recovery {
     observed_at_ns: u64,
     applied: Vec<(EventKey, String)>,
     maximum_market_events: usize,
+    prior_levels: Vec<crate::strategy_targets::TargetLevel>,
+    prior_levels_at_ns: u64,
+    maximum_levels: usize,
 }
 impl Runtime {
     pub fn new(seed: &HistoricalSeed, config: Config, split: &SplitAdjustment) -> Result<Self> {
@@ -79,6 +85,7 @@ impl Runtime {
             .end_second
             .checked_mul(SECOND)
             .ok_or_else(|| Error::Invalid("session clock overflow".into()))?;
+        let maximum_levels = config.structure.maximum_levels;
         let structure = Stream::new(
             seed,
             config.instrument,
@@ -89,6 +96,8 @@ impl Runtime {
             split,
         )?;
         let (fast, slow, signal) = config.macd_periods;
+        let prior_levels =
+            crate::structure_projection::current(&structure, start_ns, maximum_levels)?;
         Ok(Self {
             provider: config.provider,
             market: Series::new(SECOND, fast, slow, signal, config.maximum_bars)?,
@@ -100,6 +109,9 @@ impl Runtime {
             configuration_hash,
             applied: BTreeMap::new(),
             maximum_market_events: config.maximum_market_events,
+            prior_levels,
+            prior_levels_at_ns: start_ns,
+            maximum_levels,
         })
     }
     fn available(&self) -> Result<()> {
@@ -125,6 +137,16 @@ impl Runtime {
     }
     fn update_structure(&mut self, previous: usize, observed_at_ns: u64) -> Result<()> {
         if self.market.completed().len() > previous {
+            let prior_at = self
+                .structure
+                .as_of
+                .checked_mul(SECOND)
+                .ok_or_else(|| Error::Invalid("prior V7 clock overflow".into()))?;
+            let prior_levels = crate::structure_projection::current(
+                &self.structure,
+                prior_at,
+                self.maximum_levels,
+            )?;
             let bar = &self.market.completed().last().unwrap().bar;
             self.structure.update(
                 Candle {
@@ -137,6 +159,8 @@ impl Runtime {
                 },
                 observed_at_ns / SECOND,
             )?;
+            self.prior_levels = prior_levels;
+            self.prior_levels_at_ns = prior_at;
         }
         self.observed_at_ns = observed_at_ns;
         Ok(())
@@ -258,6 +282,10 @@ impl Runtime {
         self.available()?;
         crate::structure_projection::current(&self.structure, at_ns, maximum)
     }
+    pub fn prior_strategy_levels(&self) -> Result<(u64, &[crate::strategy_targets::TargetLevel])> {
+        self.available()?;
+        Ok((self.prior_levels_at_ns, &self.prior_levels))
+    }
     pub fn market(&self) -> Result<&Series> {
         self.available()?;
         Ok(&self.market)
@@ -285,6 +313,9 @@ impl Runtime {
                 .map(|(key, hash)| (key.clone(), hash.clone()))
                 .collect(),
             maximum_market_events: self.maximum_market_events,
+            prior_levels: self.prior_levels.clone(),
+            prior_levels_at_ns: self.prior_levels_at_ns,
+            maximum_levels: self.maximum_levels,
         };
         let bytes =
             serde_json::to_vec(&recovery).map_err(|e| Error::Serialization(e.to_string()))?;
@@ -320,6 +351,29 @@ impl Runtime {
             ));
         }
         let structure = Stream::restore(recovery.structure, seed_hash)?;
+        let structure_at_ns = structure
+            .as_of
+            .checked_mul(SECOND)
+            .ok_or_else(|| Error::Conflict("recovered V7 clock overflow".into()))?;
+        if recovery.maximum_levels == 0
+            || recovery.maximum_levels > 100_000
+            || recovery.prior_levels.len() > recovery.maximum_levels
+            || recovery.prior_levels_at_ns < recovery.start_ns
+            || recovery.prior_levels_at_ns > structure_at_ns
+        {
+            return Err(Error::Conflict("prior level recovery boundary".into()));
+        }
+        let mut level_ids = std::collections::BTreeSet::new();
+        for level in &recovery.prior_levels {
+            crate::strategy_targets::valid_level(level)?;
+            if level.geometry.confirmed_at_ns > recovery.prior_levels_at_ns
+                || !level_ids.insert(&level.geometry.id)
+            {
+                return Err(Error::Conflict(
+                    "prior level recovery contains future or duplicate levels".into(),
+                ));
+            }
+        }
         let applied_count = recovery.applied.len();
         let applied: BTreeMap<_, _> = recovery.applied.into_iter().collect();
         if recovery.provider == 0
@@ -366,6 +420,9 @@ impl Runtime {
             configuration_hash: recovery.configuration_hash,
             applied,
             maximum_market_events: recovery.maximum_market_events,
+            prior_levels: recovery.prior_levels,
+            prior_levels_at_ns: recovery.prior_levels_at_ns,
+            maximum_levels: recovery.maximum_levels,
         })
     }
 }
@@ -516,6 +573,10 @@ impl Ordered {
     ) -> Result<Vec<crate::strategy_targets::TargetLevel>> {
         self.available()?;
         self.runtime.strategy_levels(at_ns, maximum)
+    }
+    pub fn prior_strategy_levels(&self) -> Result<(u64, &[crate::strategy_targets::TargetLevel])> {
+        self.available()?;
+        self.runtime.prior_strategy_levels()
     }
     pub fn pending(&self) -> usize {
         self.buffer.pending()
@@ -705,6 +766,7 @@ mod tests {
             .trade(200 * SECOND + 1, 200 * SECOND + 1, 10., 1., true)
             .unwrap();
         original.advance(201 * SECOND, 201 * SECOND).unwrap();
+        assert_eq!(original.prior_strategy_levels().unwrap().0, 200 * SECOND);
         original
             .trade(201 * SECOND + 1, 201 * SECOND + 1, 11., 2., true)
             .unwrap();
@@ -713,6 +775,7 @@ mod tests {
         let config = original.configuration_hash().to_owned();
         let mut restored =
             Runtime::restore(&checkpoint.bytes, &checkpoint.hash, &seed, &config).unwrap();
+        assert_eq!(restored.prior_strategy_levels().unwrap().0, 200 * SECOND);
         assert!(Runtime::restore(&checkpoint.bytes, "wrong", &seed, &config).is_err());
         assert!(Runtime::restore(&checkpoint.bytes, &checkpoint.hash, "wrong", &config).is_err());
         assert!(Runtime::restore(&checkpoint.bytes, &checkpoint.hash, &seed, "wrong").is_err());
@@ -728,6 +791,10 @@ mod tests {
                     )
                     .unwrap();
             }
+            assert_eq!(
+                original.prior_strategy_levels().unwrap().0,
+                (second - 1) * SECOND
+            );
             assert_eq!(
                 original.checkpoint().unwrap().hash,
                 restored.checkpoint().unwrap().hash

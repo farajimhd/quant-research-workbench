@@ -880,6 +880,22 @@ not yet restore its pending queue or establish live watermarks. Condition-policy
 production, latency-gated actor wiring and full strategy execution remain incomplete.
 No service ran.
 
+The market/V7 owner now retains the qualified level projection from immediately
+before its latest completed-bar update. The live lane exposes that snapshot with
+its original boundary timestamp. Strategy consumers can distinguish prior levels
+from levels confirmed by the newly completed bar. This retains one prior snapshot,
+not an arbitrary historical query index.
+
+Combined market recovery is version 4. It includes the prior projection and rejects
+invalid geometry, duplicate IDs, future confirmations and invalid bounds. Offline
+tests check prior-boundary timestamps before and after recovery and identical
+subsequent recovery hashes. All 218 Rust tests, formatting, static checks and copied
+source hashes pass. Source-oracle parity was not rerun for this change.
+
+Per-event strategy scheduling remains incomplete. Releasing several events must
+eventually evaluate each causal boundary, rather than evaluating only the final
+state of the released batch. No service or network integration test ran.
+
 Completed-candidate policy now pins a maximum completed-bar age at actual evaluation
 time. At or beyond the limit, the journal receives a stale-bar wait or pending-entry
 cancellation instead of calling the strategy calculation. Exit-priority arbitration
