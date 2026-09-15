@@ -31,7 +31,7 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     setup_acquisition_quality_enabled=0,setup_initial_tranche_fraction=1.,
     setup_early_base_enabled=0,setup_base_maximum_swing_age_s=15.,
     setup_base_maximum_risk_pct=5.,setup_base_maximum_range_pct=10.,
-    setup_maximum_bar_gap_s=0,setup_recovery_stop_gain_guard=0,setup_base_recovery_maximum_range_pct=3.,
+    setup_maximum_bar_gap_s=0,setup_recovery_stop_gain_guard=0,setup_base_recovery_maximum_range_pct=3.,setup_minimum_trail_progress_r=0.,
     setup_episode_high_entry=0,v7_encounters_enabled=0,breakout_buffer_bps=10.,breakout_buffer_ticks=1.,topping_tail_fraction=.5)
 
 
@@ -59,9 +59,11 @@ def configure(p):
         raise ValueError('Setup gaps must be zero to five whole seconds')
     if s['setup_maximum_bar_gap_s'] and not s['v7_setup_enabled']:
         raise ValueError('Bounded setup gaps require the V7 setup policy')
+    if s['setup_minimum_trail_progress_r'] and not (s['v7_setup_enabled'] and s['v7_center_swing_enabled']):
+        raise ValueError('Minimum trail progress requires V7 setup swing protection')
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_minimum_trail_progress_r','setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
         raise ValueError('Historical HOD settings must be finite and positive')
     if not 0 <= s['setup_failure_seconds'] <= 5 or int(s['setup_failure_seconds']) != s['setup_failure_seconds']:
         raise ValueError('Initial setup failure window must be zero to five completed seconds')
@@ -1014,10 +1016,16 @@ def evaluate(host, a, o, p, state):
             if len(pending_levels)>4096:
                 raise ValueError('Historical stop confirmation capacity exceeded')
             active['best_close'] = max(active.get('best_close',o.price),o.price)
+            minimum_progress=s['setup_minimum_trail_progress_r']
+            progress_ready=not minimum_progress or v7_setup.risk_progress_ready(active,minimum_progress)
+            if minimum_progress:
+                evidence['setup_trail_progress']=dict(required_r=minimum_progress,ready=progress_ready,
+                    initial_fill=active.get('initial_fill_price'),initial_risk=active.get('initial_risk'),
+                    best_completed_close=active['best_close'],observed_at=now)
             if not s.get('v7_center_swing_enabled') and not any(eligible_origin(r,session) and resistance(r) and r['upper'] < o.price for r in d['rows']):
                 trailing = floor((active['best_close']-active['initial_risk'])/tick+1e-9)*tick
                 active['desired_stop'] = max(active.get('desired_stop',0),trailing)
-            if (s.get('v7_center_swing_enabled') and detector_fresh
+            if (s.get('v7_center_swing_enabled') and detector_fresh and progress_ready
                     and (not s['setup_trail_requires_breakout'] or post_breakout
                          or v7_setup.risk_trail_ready(active,s))):
                 swing=initial_swing_low(row,dict(lower=min(o.price,decision_bid)),now,

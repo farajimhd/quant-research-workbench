@@ -194,3 +194,47 @@ def test_half_r_can_activate_swing_trailing_before_full_range_breakout():
     later=host.evaluate(replace(a,state=result.state),replace(obs(4,10.07),position_quantity=200,average_price=10.04))
     assert later.state['historical_hod_entry']['initial_fill_price']==10.02
     assert later.state['historical_hod_entry']['initial_risk']==pytest.approx(.04)
+
+
+def test_minimum_trail_progress_applies_after_range_break_and_keeps_initial_protection():
+    host,a,obs=prepared()
+    p=deepcopy(a.parameters);p['historical_hod']['setup_minimum_trail_progress_r']=1.
+    state=deepcopy(a.state)
+    for bar in state['v7_setup']['bars']:bar['high']=10.025
+    a=replace(a,parameters=p,state=state)
+    entered=host.evaluate(a,obs(2,10.02))
+    a=replace(a,state=entered.state,status=S.AssignmentStatus.MANAGING)
+    o=replace(obs(3,10.04),position_quantity=100,average_price=10.02)
+    market=deepcopy(o.structural_detector_state);now=o.observed_at.timestamp()
+    market['row']['local_swings']=[dict(side='support',lower=10.01,price=10.012,upper=10.015,
+        pivot_at=now-1,confirmed_at=now)]
+    result=host.evaluate(a,replace(o,structural_detector_state=market))
+    assert result.state['historical_hod_entry']['setup']['phase']=='post_breakout'
+    assert result.state['active_stop']==pytest.approx(9.98)
+    assert not any(i.action=='replace_protective_stop' for i in result.evaluation.intents)
+    intrabar=host.evaluate(replace(a,state=result.state),replace(obs(4,10.08),position_quantity=100,
+        average_price=10.02,evaluation_events=('market_data_update',)))
+    assert intrabar.state['active_stop']==pytest.approx(9.98)
+    stopped=host.evaluate(replace(a,state=result.state),replace(obs(4,9.97),position_quantity=100,average_price=10.02))
+    assert any(i.action=='exit' and i.reason=='protective_stop' for i in stopped.evaluation.intents)
+    later=replace(obs(4,10.06),position_quantity=100,average_price=10.02)
+    market=deepcopy(later.structural_detector_state)
+    market['row']['local_swings']=[dict(side='support',lower=10.01,price=10.012,upper=10.015,
+        pivot_at=now,confirmed_at=now+1)]
+    trailed=host.evaluate(replace(a,state=result.state),replace(later,structural_detector_state=market))
+    assert any(i.action=='replace_protective_stop' for i in trailed.evaluation.intents)
+
+
+@pytest.mark.parametrize('value',[-1,float('nan'),float('inf'),True])
+def test_minimum_trail_progress_rejects_invalid_values(value):
+    from src.trading_runtime.historical_hod import configure
+    _,a,_=prepared()
+    p=deepcopy(a.parameters);p['historical_hod']['setup_minimum_trail_progress_r']=value
+    with pytest.raises(ValueError):configure(p)
+
+
+def test_minimum_trail_progress_requires_actual_fill_and_positive_initial_risk():
+    assert not V.risk_progress_ready(dict(initial_risk=.25,best_close=7),.5)
+    assert not V.risk_progress_ready(dict(initial_fill_price=6,initial_risk=0,best_close=7),.5)
+    assert not V.risk_progress_ready(dict(initial_fill_price=6,initial_risk=.25,best_close=6.12),.5)
+    assert V.risk_progress_ready(dict(initial_fill_price=6,initial_risk=.25,best_close=6.125),.5)

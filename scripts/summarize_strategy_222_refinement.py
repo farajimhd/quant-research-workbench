@@ -16,10 +16,17 @@ def episodes(path):
     if wal.exists() and wal.stat().st_size:
         raise ValueError(f'Journal still has a WAL; wait for the writer to close: {path}')
     connection=sqlite3.connect(path.as_uri()+'?mode=ro&immutable=1',uri=True)
-    result=[];active_by_symbol={}
+    result=[];active_by_symbol={};effective_stops={}
     try:
-        for sequence,stamp,raw in connection.execute("select sequence,event_time,payload_json from journal where category='execution' and entity_type='fill' order by sequence"):
-            fill=json.loads(raw);quantity=float(fill['size']);price=float(fill['price'])
+        for sequence,stamp,category,raw in connection.execute("select sequence,event_time,category,payload_json from journal where (category='execution' and entity_type='fill') or category='protection' order by sequence"):
+            fill=json.loads(raw)
+            if category=='protection':
+                if fill.get('kind')=='stop' and fill.get('phase')=='effective' and fill.get('active'):
+                    for key in ('order_id','client_order_id'):
+                        if fill.get(key):
+                            effective_stops[(fill.get('ticker'),str(fill[key]))]=dict(price=fill['price'],sequence=sequence,time=stamp)
+                continue
+            quantity=float(fill['size']);price=float(fill['price'])
             symbol=fill['symbol']
             active=active_by_symbol.get(symbol)
             buy=fill['side']=='B'
@@ -34,8 +41,12 @@ def episodes(path):
             active['buy' if buy else 'sell']+=quantity*price
             active['fees']+=float(fill['commission'])
             metadata=fill.get('canonical_metadata') or {}
+            # Entry metadata can retain the original stop after replacements.
+            # Match only this order's preceding effective protection record.
+            effective=effective_stops.get((symbol,str(fill.get('order_ref')))) or effective_stops.get((symbol,str(fill.get('order_id'))))
             active['fills'].append(dict(sequence=sequence,time=stamp,side=fill['side'],quantity=quantity,
-                price=price,fee=fill['commission'],reason=metadata.get('reason'),stop=metadata.get('active_stop')))
+                price=price,fee=fill['commission'],reason=metadata.get('reason'),stop=metadata.get('active_stop'),
+                stop_reference='frozen_order_metadata',effective_order_stop=effective))
             if active['quantity'] < -1e-8:raise ValueError('Oversold position')
             if abs(active['quantity'])<1e-8:
                 active.update(closed_at=stamp,net=active['sell']-active['buy']-active['fees'])

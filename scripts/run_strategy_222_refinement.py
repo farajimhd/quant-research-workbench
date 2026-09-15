@@ -46,7 +46,7 @@ def prepare(name, overrides=None):
         raise ValueError('Baseline identity changed')
     if name == 'corrected-baseline':
         return baseline
-    base_name='full-v6' if overrides is not None else ('recovery-v10' if name in ('support-v11','support-body-v12') else name)
+    base_name='full-v6' if overrides is not None else ('recovery-v10' if name in ('support-v11','support-body-v12','trail-v13') else name)
     payload = deepcopy(baseline['payload'])
     original = next(p for p in payload['strategy']['profiles'] if p['profile_id'] == PROFILE)
     profile = deepcopy(original)
@@ -78,8 +78,10 @@ def prepare(name, overrides=None):
         profile['parameters']['historical_hod'].update(setup_base_maximum_range_pct=8.,setup_base_maximum_risk_pct=8.,
             setup_maximum_bar_gap_s=3,setup_recovery_stop_gain_guard=1,
             setup_base_recovery_maximum_range_pct=3.)
-    if name=='support-body-v12':
+    if name in ('support-body-v12','trail-v13'):
         profile['parameters']['historical_hod']['setup_minimum_body_bps']=5.
+    if name=='trail-v13':
+        profile['parameters']['historical_hod']['setup_minimum_trail_progress_r']=.5
     for section,values in (overrides or {}).items():
         profile['parameters'][section].update(values)
     return create_test_candidate(label='Strategy 222 refinement / '+name,
@@ -223,7 +225,7 @@ def main():
     parser.add_argument('--restart-at', help='Optional New York checkpoint time for a real stop/resume parity trial')
     parser.add_argument('--recipe-file',type=Path,help='Supervised research parameter recipe; mutually exclusive with --variants')
     parser.add_argument('--stop-request-file',type=Path,help='Gracefully stop if this supervisor-owned file appears')
-    parser.add_argument('--variants', nargs='+', choices=['corrected-baseline','early-v1','liquidity-v2','guarded-v3','phase-v4','burst-v5','full-v6','base-v7','trend-v8','body-v9','recovery-v10','support-v11','support-body-v12'],
+    parser.add_argument('--variants', nargs='+', choices=['corrected-baseline','early-v1','liquidity-v2','guarded-v3','phase-v4','burst-v5','full-v6','base-v7','trend-v8','body-v9','recovery-v10','support-v11','support-body-v12','trail-v13'],
                         default=None)
     args=parser.parse_args()
     args.recipe_parameters=None

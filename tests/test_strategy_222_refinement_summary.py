@@ -37,3 +37,24 @@ def test_interleaved_symbols_keep_independent_positions_and_costs(tmp_path):
     connection.commit();connection.close()
     result=episodes(path)['episodes']
     assert [(e['symbol'],e['net']) for e in result]==[('X',8.),('Y',-22.)]
+
+
+def test_exit_uses_preceding_effective_stop_not_frozen_metadata_or_future_updates(tmp_path):
+    path=tmp_path/'journal.sqlite3';connection=sqlite3.connect(path)
+    connection.execute('create table journal(sequence integer,event_time text,payload_json text,category text,entity_type text)')
+    def fill(side,order):
+        return dict(symbol='X',side=side,size=10,price=6 if side=='B' else 5.79,commission=1,
+                    order_id=order,canonical_metadata=dict(active_stop=5.77))
+    def stop(price,phase='effective'):
+        return dict(ticker='X',order_id='stop',kind='stop',phase=phase,active=True,price=price)
+    records=[('execution','fill',fill('B','entry')),('protection','protection_change',stop(5.77)),
+        ('protection','protection_change',stop(5.84)),('protection','protection_change',stop(5.9,'requested')),
+        ('execution','fill',fill('S','stop')),('protection','protection_change',stop(6.1))]
+    for i,(category,kind,payload) in enumerate(records):
+        connection.execute('insert into journal values(?,?,?,?,?)',(i,f'2026-08-21T08:00:0{i}+00:00',json.dumps(payload),category,kind))
+    connection.commit();connection.close()
+    buys,sells=episodes(path)['episodes'][0]['fills']
+    assert buys['effective_order_stop'] is None
+    assert sells['stop']==5.77 and sells['stop_reference']=='frozen_order_metadata'
+    assert sells['effective_order_stop']['price']==5.84
+    assert sells['effective_order_stop']['sequence']==2

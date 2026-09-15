@@ -132,7 +132,10 @@ def entry_failure(entry, market, settings, tick, fresh):
 
 
 def risk_trail_ready(entry, settings):
-    multiple = settings.get('setup_trail_activation_r', 0)
+    return risk_progress_ready(entry,settings.get('setup_trail_activation_r',0))
+
+
+def risk_progress_ready(entry, multiple):
     fill = entry.get('initial_fill_price', 0)
     risk = entry.get('initial_risk', 0)
     return bool(multiple and fill > 0 and risk > 0
