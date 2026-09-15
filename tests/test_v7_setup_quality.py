@@ -421,3 +421,40 @@ def test_minimum_trail_progress_requires_actual_fill_and_positive_initial_risk()
     assert not V.risk_progress_ready(dict(initial_fill_price=6,initial_risk=0,best_close=7),.5)
     assert not V.risk_progress_ready(dict(initial_fill_price=6,initial_risk=.25,best_close=6.12),.5)
     assert V.risk_progress_ready(dict(initial_fill_price=6,initial_risk=.25,best_close=6.125),.5)
+
+
+@pytest.mark.parametrize('pending',[False,True])
+@pytest.mark.parametrize('enabled,price,bid,allowed',[
+    (0,10.04,10.03,True),(1,10.04,10.03,False),
+    (1,10.06,10.04,False),(1,10.06,10.05,True)])
+def test_current_gain_guards_new_and_pending_swing_stops(pending,enabled,price,bid,allowed):
+    host,a,obs=prepared()
+    a.parameters['historical_hod'].update(setup_trail_requires_current_gain=enabled,
+        setup_minimum_trail_progress_r=.5)
+    for bar in a.state['v7_setup']['bars']:bar['high']=10.025
+    entered=host.evaluate(a,obs(2,10.02))
+    state=deepcopy(entered.state)
+    state['historical_hod_entry']['best_close']=10.2
+    o=replace(obs(3,price),position_quantity=100,average_price=10.05,bid=bid)
+    market=deepcopy(o.structural_detector_state);now=o.observed_at.timestamp()
+    swing=dict(side='support',lower=10.01,price=10.012,upper=10.015,
+        pivot_at=now-1,confirmed_at=now)
+    market['row']['local_swings']=[swing]
+    if pending:
+        state['historical_hod_entry'].update(desired_stop=10.,stop_swing=swing)
+    a=replace(a,state=json.loads(json.dumps(state)),status=S.AssignmentStatus.MANAGING)
+    result=host.evaluate(a,replace(o,structural_detector_state=market))
+    assert any(i.action=='replace_protective_stop' for i in result.evaluation.intents)==allowed
+    if not allowed:
+        assert result.state['active_stop']==pytest.approx(9.98)
+        stopped=host.evaluate(replace(a,state=result.state),
+            replace(obs(4,9.97),position_quantity=100,average_price=10.05))
+        assert any(i.action=='exit' and i.reason=='protective_stop' for i in stopped.evaluation.intents)
+
+
+@pytest.mark.parametrize('value',[-1,2,float('nan'),float('inf'),True])
+def test_current_gain_switch_validation(value):
+    from src.trading_runtime.historical_hod import configure
+    _,a,_=prepared()
+    a.parameters['historical_hod']['setup_trail_requires_current_gain']=value
+    with pytest.raises(ValueError):configure(a.parameters)
