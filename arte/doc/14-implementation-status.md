@@ -879,3 +879,13 @@ All 214 Rust tests, formatting, static checks and source hashes pass. The owner 
 not yet restore its pending queue or establish live watermarks. Condition-policy
 production, latency-gated actor wiring and full strategy execution remain incomplete.
 No service ran.
+
+Ordered-market recovery now includes the pending event queue, eligibility records,
+release watermark and newest input receipt alongside the market/V7 snapshot. Restore
+requires the expected content, seed, configuration and queue capacity. It rejects
+duplicate/already-applied pending identities and inconsistent clocks. The combined
+input test now checkpoints two out-of-order pending trades and verifies identical
+post-release hashes after restore. All 214 Rust tests, formatting, static checks and
+source hashes pass. Feed freshness and trading permission are never restored by
+this snapshot. Durable publication, memory-allocation budgets and full-engine
+recovery remain incomplete. No service or network test ran.

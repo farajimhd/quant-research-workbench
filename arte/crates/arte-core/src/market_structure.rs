@@ -371,6 +371,16 @@ pub struct Ordered {
     newest_receipt_ns: u64,
     failed: bool,
 }
+#[derive(Serialize, Deserialize)]
+struct OrderedRecovery {
+    version: String,
+    runtime_json: String,
+    runtime_hash: String,
+    pending: Vec<(Observation, bool)>,
+    watermark_ns: u64,
+    maximum_pending: usize,
+    newest_receipt_ns: u64,
+}
 impl Ordered {
     pub fn new(runtime: Runtime, maximum_pending: usize) -> Result<Self> {
         runtime.available()?;
@@ -483,6 +493,108 @@ impl Ordered {
     }
     pub fn pending(&self) -> usize {
         self.buffer.pending()
+    }
+    pub fn checkpoint(&self) -> Result<Checkpoint> {
+        self.available()?;
+        let runtime = self.runtime.checkpoint()?;
+        let pending =
+            self.buffer
+                .pending_events()
+                .map(|event| {
+                    let eligible = self.eligibility.get(&event.key).ok_or_else(|| {
+                        Error::Unready("pending recovery eligibility missing".into())
+                    })?;
+                    Ok((event.clone(), *eligible))
+                })
+                .collect::<Result<Vec<_>>>()?;
+        let recovery = OrderedRecovery {
+            version: "ordered-market-recovery-v1".into(),
+            runtime_json: String::from_utf8(runtime.bytes)
+                .map_err(|_| Error::Invalid("runtime recovery encoding".into()))?,
+            runtime_hash: runtime.hash,
+            pending,
+            watermark_ns: self.buffer.watermark_ns(),
+            maximum_pending: self.buffer.maximum(),
+            newest_receipt_ns: self.newest_receipt_ns,
+        };
+        let bytes =
+            serde_json::to_vec(&recovery).map_err(|e| Error::Serialization(e.to_string()))?;
+        if bytes.len() > MAX_RECOVERY_BYTES {
+            return Err(Error::Capacity(
+                "ordered market recovery byte budget".into(),
+            ));
+        }
+        let hash = format!("{:x}", Sha256::digest(&bytes));
+        Ok(Checkpoint { bytes, hash })
+    }
+    /// Expected identities must come from the approved durable recovery manifest.
+    /// Restoring calculations never restores permission to trade or feed freshness.
+    pub fn restore(
+        bytes: &[u8],
+        expected_hash: &str,
+        seed_hash: &str,
+        configuration_hash: &str,
+        maximum_pending: usize,
+    ) -> Result<Self> {
+        if bytes.len() > MAX_RECOVERY_BYTES
+            || format!("{:x}", Sha256::digest(bytes)) != expected_hash
+        {
+            return Err(Error::Invalid(
+                "ordered recovery content hash or size".into(),
+            ));
+        }
+        let recovery: OrderedRecovery =
+            serde_json::from_slice(bytes).map_err(|e| Error::Serialization(e.to_string()))?;
+        if recovery.version != "ordered-market-recovery-v1"
+            || recovery.maximum_pending != maximum_pending
+            || recovery.pending.len() > maximum_pending
+        {
+            return Err(Error::Conflict(
+                "ordered recovery version or queue budget".into(),
+            ));
+        }
+        let runtime = Runtime::restore(
+            recovery.runtime_json.as_bytes(),
+            &recovery.runtime_hash,
+            seed_hash,
+            configuration_hash,
+        )?;
+        if recovery.watermark_ns < runtime.start_ns
+            || recovery.watermark_ns > runtime.end_ns
+            || recovery.watermark_ns > runtime.observed_at_ns
+            || recovery.newest_receipt_ns < runtime.start_ns
+        {
+            return Err(Error::Conflict("ordered recovery clock boundary".into()));
+        }
+        let mut buffer = crate::event_order::Buffer::new(
+            crate::event_order::Scope {
+                provider: runtime.provider,
+                instrument: runtime.structure.instrument,
+                session: runtime.structure.session,
+            },
+            maximum_pending,
+            recovery.watermark_ns,
+        )?;
+        let mut eligibility = BTreeMap::new();
+        for (event, eligible) in recovery.pending {
+            if runtime.applied.contains_key(&event.key)
+                || event.available_at_ns > recovery.newest_receipt_ns
+                || !matches!(event.payload, Payload::Trade { .. })
+                || !buffer.push(&event)?
+            {
+                return Err(Error::Conflict(
+                    "ordered recovery duplicate or invalid pending input".into(),
+                ));
+            }
+            eligibility.insert(event.key, eligible);
+        }
+        Ok(Self {
+            runtime,
+            buffer,
+            eligibility,
+            newest_receipt_ns: recovery.newest_receipt_ns,
+            failed: false,
+        })
     }
 }
 
@@ -657,9 +769,32 @@ mod tests {
         later.available_at_ns = event.available_at_ns - 1;
         ordered.enqueue(&later, true).unwrap();
         ordered.enqueue(&event, true).unwrap();
+        let pending = ordered.checkpoint().unwrap();
+        let mut recovered = Ordered::restore(
+            &pending.bytes,
+            &pending.hash,
+            &ordered.runtime.structure.seed_hash,
+            ordered.runtime.configuration_hash(),
+            10,
+        )
+        .unwrap();
+        assert!(Ordered::restore(
+            &pending.bytes,
+            &pending.hash,
+            &ordered.runtime.structure.seed_hash,
+            ordered.runtime.configuration_hash(),
+            9
+        )
+        .is_err());
+        assert_eq!(recovered.pending(), 2);
+        recovered.advance(201 * SECOND, 201 * SECOND).unwrap();
         assert_eq!(ordered.advance(201 * SECOND, 201 * SECOND).unwrap(), 2);
         assert_eq!(ordered.market().unwrap().completed()[0].bar.trades, 2);
         assert_eq!(ordered.pending(), 0);
+        assert_eq!(
+            ordered.checkpoint().unwrap().hash,
+            recovered.checkpoint().unwrap().hash
+        );
         assert!(!ordered.enqueue(&event, true).unwrap());
         assert!(ordered.enqueue(&event, false).is_err());
         assert!(ordered.levels().is_err());

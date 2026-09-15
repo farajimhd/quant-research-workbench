@@ -106,6 +106,12 @@ impl Buffer {
     pub fn pending(&self) -> usize {
         self.pending.len()
     }
+    pub(crate) fn pending_events(&self) -> impl Iterator<Item = &Observation> {
+        self.pending.values()
+    }
+    pub(crate) fn maximum(&self) -> usize {
+        self.maximum
+    }
     pub fn watermark_ns(&self) -> u64 {
         self.watermark_ns
     }
