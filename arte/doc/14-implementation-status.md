@@ -6,6 +6,34 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Shared broker pacing and non-waiting order admission
+
+The HTTP transport now receives a shared session owner containing both its broker
+gate and request governor. Account transports must share this owner. Status refresh
+and order submission consume the same global pacing budget. The policy rejects
+spacing below 100 ms, more than 10 concurrent requests, or a default penalty below
+15 minutes. Future endpoints with stricter limits need additional endpoint budgets.
+
+Orders use non-waiting admission. If a slot, pacing deadline or cooldown blocks the
+request, the transport does not wait and does not issue HTTP. The current conservative
+outcome is Unknown; the consumed order permit is not recreated. Runtime scheduling
+still needs to reserve capacity before expensive order preparation where possible.
+Control status refresh may wait under the governor.
+
+HTTP 429 applies at least the documented 15-minute penalty. A longer valid Retry-After
+extends it. Invalid or out-of-policy retry instructions halt the shared governor and
+invalidate readiness while retaining a complete HTTP response for later audit.
+No request is automatically retried. Admission permits remain held through response
+consumption or cancellation.
+
+All 276 offline Rust tests, formatting, Clippy and frozen-source hashes pass.
+Paused-clock tests cover immediate rejection without waiting, admission counts,
+inflight limits, lock contention, shared cooldown, the penalty floor and invalid
+retry instructions. No network calls or services ran.
+
+Durable response handling, reply resolution and startup ownership are still missing.
+The shared pacing implementation does not make the full trading runtime ready.
+
 ## Shared broker-session gate and inactive HTTPS transport
 
 One shared gate now covers all account transports for a broker session. Status

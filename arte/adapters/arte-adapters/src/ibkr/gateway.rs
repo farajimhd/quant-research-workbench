@@ -3,6 +3,7 @@ use super::{
     session::Gate,
     submission::{AuthorizedRequest, Response, Scope, Transport},
 };
+use crate::request_governor::{Governor, Policy};
 use arte_core::{
     config::{Acceptance, HardwareProfile},
     Error, Result,
@@ -13,11 +14,54 @@ use std::{
     time::Duration,
 };
 
+/// Create once per broker session; all account transports share this owner.
+pub struct SharedSession {
+    gate: Mutex<Gate>,
+    pacing: Governor,
+}
+impl SharedSession {
+    pub fn new(gate: Gate, policy: Policy) -> Result<Self> {
+        if policy.minimum_interval_ms < 100
+            || policy.maximum_inflight > 10
+            || policy.default_cooldown_ms < 900_000
+        {
+            return Err(Error::Invalid(
+                "broker pacing requires at most 10 requests/second and 15-minute default penalty"
+                    .into(),
+            ));
+        }
+        Ok(Self {
+            gate: Mutex::new(gate),
+            pacing: Governor::new(policy)?,
+        })
+    }
+    pub async fn pacing_status(&self) -> crate::request_governor::Status {
+        self.pacing.status().await
+    }
+    async fn rate_limited(
+        &self,
+        retry_after: Option<&str>,
+        utc_now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        self.pacing.cooldown(None, utc_now).await?;
+        if let Some(header) = retry_after {
+            if self.pacing.cooldown(Some(header), utc_now).await.is_err() {
+                // The governor has halted. Retain the HTTP response for audit
+                // instead of replacing it with a parsing error.
+                self.gate
+                    .lock()
+                    .map_err(|_| Error::Unready("broker gate poisoned".into()))?
+                    .invalidate();
+            }
+        }
+        Ok(())
+    }
+}
 pub struct Http {
     client: reqwest::Client,
     base: String,
     scope: Scope,
-    gate: Arc<Mutex<Gate>>,
+    shared: Arc<SharedSession>,
     monotonic_now: Arc<dyn Fn() -> u64 + Send + Sync>,
 }
 fn endpoint(value: &str) -> Result<String> {
@@ -47,7 +91,7 @@ impl Http {
     pub fn new(
         base: &str,
         scope: Scope,
-        gate: Arc<Mutex<Gate>>,
+        shared: Arc<SharedSession>,
         monotonic_now: Arc<dyn Fn() -> u64 + Send + Sync>,
         timeout: Duration,
         trusted_certificate_pem: Option<&[u8]>,
@@ -85,7 +129,7 @@ impl Http {
             client,
             base,
             scope,
-            gate,
+            shared,
             monotonic_now,
         })
     }
@@ -99,6 +143,14 @@ impl Http {
             .await
             .map_err(|_| Error::Unready("broker HTTP outcome unknown".into()))?;
         let status = response.status().as_u16();
+        if status == 429 {
+            // The documented penalty is a floor, even when Retry-After says less.
+            let retry = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .map(|header| header.to_str().unwrap_or("invalid-header"));
+            self.shared.rate_limited(retry, chrono::Utc::now()).await?;
+        }
         let mut body = Vec::new();
         while let Some(chunk) = response
             .chunk()
@@ -113,10 +165,12 @@ impl Http {
         Ok(Response { status, body })
     }
     /// Uses the documented status endpoint. Does not log in, resolve prompts or
-    /// clear pending requests. The session owner must pace these control calls.
+    /// clear pending requests. Shares global pacing with order sends.
     pub async fn refresh_status(&self) -> Result<()> {
+        let _admission = self.shared.pacing.acquire().await?;
         let result = self.post("/iserver/auth/status", "{}".into()).await;
         let mut gate = self
+            .shared
             .gate
             .lock()
             .map_err(|_| Error::Unready("broker gate poisoned".into()))?;
@@ -136,7 +190,8 @@ impl Transport for Http {
         &self.scope
     }
     fn require_ready(&self, now_monotonic_ns: u64) -> Result<()> {
-        self.gate
+        self.shared
+            .gate
             .lock()
             .map_err(|_| Error::Unready("broker gate poisoned".into()))?
             .require(&self.scope, now_monotonic_ns)
@@ -145,9 +200,11 @@ impl Transport for Http {
         if request.scope() != &self.scope {
             return Err(Error::Conflict("broker request transport mismatch".into()));
         }
+        let _admission = self.shared.pacing.try_acquire()?;
         // The guard is released before I/O, but pending_request remains latched.
         // Cancellation or a lost response cannot permit another account to send.
-        self.gate
+        self.shared
+            .gate
             .lock()
             .map_err(|_| Error::Unready("broker gate poisoned".into()))?
             .begin(&self.scope, request.hash(), (self.monotonic_now)())?;
@@ -157,6 +214,53 @@ impl Transport for Http {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test(start_paused = true)]
+    async fn broker_penalty_floor_and_invalid_retry_halt_are_shared() {
+        use arte_core::strategy_dispatch::Mode;
+        let policy = Policy {
+            maximum_inflight: 2,
+            minimum_interval_ms: 100,
+            default_cooldown_ms: 900_000,
+            maximum_cooldown_ms: 3_600_000,
+        };
+        let gate =
+            || Gate::new(Mode::Paper, "s".into(), BTreeSet::from(["DU1".into()]), 100).unwrap();
+        assert!(SharedSession::new(
+            gate(),
+            Policy {
+                minimum_interval_ms: 99,
+                ..policy
+            }
+        )
+        .is_err());
+        assert!(SharedSession::new(
+            gate(),
+            Policy {
+                default_cooldown_ms: 100,
+                ..policy
+            }
+        )
+        .is_err());
+        let shared = Arc::new(SharedSession::new(gate(), policy).unwrap());
+        let other = shared.clone();
+        shared
+            .rate_limited(Some("1"), chrono::Utc::now())
+            .await
+            .unwrap();
+        assert_eq!(other.pacing_status().await.cooldown_remaining_ms, 900_000);
+        assert!(other.pacing.try_acquire().is_err());
+        shared
+            .rate_limited(Some("1800"), chrono::Utc::now())
+            .await
+            .unwrap();
+        assert_eq!(other.pacing_status().await.cooldown_remaining_ms, 1_800_000);
+        shared
+            .rate_limited(Some("invalid"), chrono::Utc::now())
+            .await
+            .unwrap();
+        assert!(other.pacing_status().await.halted);
+        assert!(other.pacing.try_acquire().is_err());
+    }
     #[test]
     fn gateway_url_cannot_redirect_scope_to_remote_or_insecure_endpoint() {
         assert_eq!(

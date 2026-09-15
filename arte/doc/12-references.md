@@ -20,7 +20,7 @@ implementation release. Account entitlements and live payloads still require tes
 | [IBKR submit new order](https://www.interactivebrokers.com/docs/web-api/api-reference/trading/trading-orders/submit-new-order) | Account-specific POST endpoint and orders object; checked during request-boundary implementation |
 | [IBKR brokerage session status](https://www.interactivebrokers.com/docs/web-api/api-reference/trading/trading-session/get-brokerage-status) | Authentication-status endpoint, established/connected/competing flags and response wrapper |
 | [IBKR bracket orders](https://www.interactivebrokers.com/docs/web-api/v1/endpoints/orders/bracket-orders-oca-groups) | Bracket request relationships; exact broker protection still needs acceptance tests |
-| [IBKR pacing](https://ibkrcampus.com/docs/web-api/v1/pacing-limitations) | Global and endpoint request limits |
+| [IBKR pacing](https://www.interactivebrokers.com/docs/web-api/v1/pacing-limitations) | Global and endpoint request limits; 15-minute penalty reviewed during transport pacing implementation |
 | [IBKR account discovery](https://ibkrcampus.com/docs/web-api/v1/endpoints/accounts/receive-brokerage-accounts) | Tradeable account discovery |
 | [IBKR Paper](https://ibkrcampus.com/campus/glossary-terms/paper-trading-account/) | Paper behavior and execution-model limitations |
 

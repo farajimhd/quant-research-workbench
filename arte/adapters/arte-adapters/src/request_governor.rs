@@ -59,6 +59,32 @@ impl Governor {
         })
     }
     /// Hold this permit until the entire response has been consumed or abandoned.
+    /// Non-waiting admission for latency-sensitive operations. A failed attempt
+    /// neither queues nor advances the pacing deadline/admission count.
+    pub fn try_acquire(&self) -> Result<OwnedSemaphorePermit> {
+        let permit = self
+            .slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| Error::Unready("REST capacity unavailable".into()))?;
+        let mut state = self
+            .state
+            .try_lock()
+            .map_err(|_| Error::Unready("REST admission busy".into()))?;
+        let now = Instant::now();
+        if state.halted || now < state.next.max(state.cooldown) {
+            return Err(Error::Unready(
+                "REST pacing or cooldown blocks immediate admission".into(),
+            ));
+        }
+        state.admitted = state
+            .admitted
+            .checked_add(1)
+            .ok_or_else(|| Error::Capacity("REST admission counter exhausted".into()))?;
+        state.next = now + Duration::from_millis(self.policy.minimum_interval_ms);
+        Ok(permit)
+    }
+    /// Hold this permit until the entire response has been consumed or abandoned.
     pub async fn acquire(&self) -> Result<OwnedSemaphorePermit> {
         let permit = self
             .slots
@@ -156,6 +182,38 @@ mod tests {
         let _third = governor.acquire().await.unwrap();
         assert_eq!(start.elapsed(), Duration::from_millis(2100));
         assert_eq!(governor.status().await.admitted, 3);
+    }
+    #[tokio::test(start_paused = true)]
+    async fn immediate_admission_never_waits_or_advances_on_rejection() {
+        let governor = governor();
+        let start = Instant::now();
+        let first = governor.try_acquire().unwrap();
+        assert!(governor.try_acquire().is_err());
+        assert_eq!(start.elapsed(), Duration::ZERO);
+        assert_eq!(governor.status().await.admitted, 1);
+        tokio::time::advance(Duration::from_millis(100)).await;
+        let second = governor.try_acquire().unwrap();
+        tokio::time::advance(Duration::from_millis(100)).await;
+        assert!(governor.try_acquire().is_err());
+        drop(first);
+        let third = governor.try_acquire().unwrap();
+        drop((second, third));
+        governor
+            .cooldown(Some("2"), chrono::Utc::now())
+            .await
+            .unwrap();
+        assert!(governor.try_acquire().is_err());
+        assert_eq!(governor.status().await.admitted, 3);
+        tokio::time::advance(Duration::from_secs(2)).await;
+        let guard = governor.state.lock().await;
+        assert!(governor.try_acquire().is_err());
+        drop(guard);
+        drop(governor.try_acquire().unwrap());
+        assert!(governor
+            .cooldown(Some("invalid"), chrono::Utc::now())
+            .await
+            .is_err());
+        assert!(governor.try_acquire().is_err());
     }
     #[tokio::test(start_paused = true)]
     async fn inflight_bound_and_cancellation_release() {
