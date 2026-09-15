@@ -504,3 +504,20 @@ def test_phase_progress_validation(value):
     _,a,_=prepared()
     a.parameters['historical_hod']['setup_phase_minimum_progress_r']=value
     with pytest.raises(ValueError):configure(a.parameters)
+
+
+@pytest.mark.parametrize('gate,allowed',[(0,True),(1,False)])
+def test_add_gate_respects_position_progress_phase(gate,allowed):
+    host,a,obs=prepared()
+    a.parameters['historical_hod'].update(setup_recovery_enabled=1,
+        setup_add_requires_range_breakout=gate,setup_phase_minimum_progress_r=.5)
+    entered=host.evaluate(a,obs(2,10.02))
+    state=deepcopy(entered.state)
+    # Freeze an actual filled position whose range can break before0.5R.
+    state['historical_hod_entry'].update(initial_fill_price=10.02,
+        initial_risk=.5,fill_risk_frozen=True)
+    a=replace(a,state=state,status=S.AssignmentStatus.MANAGING)
+    result=host.evaluate(a,replace(obs(3,10.19),position_quantity=100,average_price=10.02))
+    assert result.state['historical_hod_entry']['setup']['phase']=='building'
+    assert result.state['historical_hod_entry']['setup']['phase_progress']['threshold']==pytest.approx(10.27)
+    assert any(i.action=='add_long' for i in result.evaluation.intents)==allowed
