@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([Parameter(Mandatory=$true)][string]$RuntimeRoot)
+param([Parameter(Mandatory=$true)][string]$RuntimeRoot, [string]$PythonExecutable)
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $outputRoot = [IO.Path]::GetFullPath($RuntimeRoot)
@@ -21,4 +21,15 @@ foreach ($entry in $manifest.files) {
     if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant() -ne $entry.sha256) { throw "Reference snapshot changed: $($entry.destination)" }
 }
 Write-Host 'Passed: formatting, unit tests, static checks and copied-source hashes.'
+if ($PythonExecutable) {
+    if (-not (Test-Path -LiteralPath $PythonExecutable -PathType Leaf)) { throw 'PythonExecutable does not exist.' }
+    & cargo build --manifest-path (Join-Path $projectRoot 'Cargo.toml') --locked --offline -p arte-core --example extraction_parity
+    if ($LASTEXITCODE -ne 0) { throw 'Offline parity bridge build failed.' }
+    $bridgeName = if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) { 'extraction_parity.exe' } else { 'extraction_parity' }
+    $bridgePath = Join-Path $env:CARGO_TARGET_DIR "debug/examples/$bridgeName"
+    & $PythonExecutable -I -B (Join-Path $projectRoot 'tests/reference/check_extraction_parity.py') --rust-executable $bridgePath
+    if ($LASTEXITCODE -ne 0) { throw 'Frozen-source extraction parity failed.' }
+} else {
+    Write-Host 'Source parity not run: supply -PythonExecutable with the offline test dependencies installed.'
+}
 Write-Host 'Not tested: service startup, network APIs, database writes, broker execution and browser UI.'

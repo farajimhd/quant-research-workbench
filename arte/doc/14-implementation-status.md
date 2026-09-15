@@ -43,7 +43,7 @@ not prove provider, broker, or ClickHouse compatibility.
 
 ## Incomplete implementation
 
-- Historical V7 source-parity fixtures, fit/partition solver, consolidation and streaming state machine.
+- Historical MLE seed builder, fit/partition solver, consolidation and streaming state machine.
 - Complete selected strategy lifecycle, admission, position management and exits.
 - Effective configuration export from the selected current candidate.
 - WebSocket receiver and integration of the complete in-process live path.
@@ -71,6 +71,7 @@ Checks executed for this slice:
 
 - 43 in-process Rust tests passed (37 core and 6 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
+- Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Cargo format checks passed.
 - Clippy passed with warnings denied.
 - All 11 frozen source hashes matched the origin manifest.
@@ -110,6 +111,18 @@ to a local window. Semantic references: SciPy
 [find_peaks](https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.find_peaks.html)
 and [peak_prominences](https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.peak_prominences.html).
 
-Next: source-parity fixtures and numerical fitting, then daily consolidation and
-the streaming state machine. Build shared strategy execution on these authorities.
-Do not substitute the current extractor for the full historical seed pipeline.
+The offline source comparison covers geometry, level identity, selection, encounters,
+role segments, profile volume and rejection evidence. It excludes the deliberately
+different typed-input hash and does not establish full-session capacity.
+
+The frozen streaming source requires `historical-session-reaction-mle-1`.
+The fixed-noise extractor produces `historical-session-reaction-zones-2`.
+These are incompatible seed geometries. In the current parent implementation,
+`historical_checkpoint` exports streaming rows as the MLE daily book. ARTE must not
+copy that publication path: the user requires a completed-session historical
+producer and forbids promotion of streaming state to authoritative daily seeds.
+
+Next: numerical fitting and a completed-session historical MLE producer, then
+daily consolidation and the streaming state machine. Build shared strategy
+execution on these authorities. Do not substitute the current fixed-noise
+extractor for the full historical MLE seed pipeline.
