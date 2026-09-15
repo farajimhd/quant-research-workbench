@@ -737,3 +737,13 @@ therefore bind this scope too. The reserved-submission test now rejects another 
 Live/Paper modes and account mismatch. All 196 offline tests pass. This contract
 change has not been deployed or migrated. Full release provenance validation and
 the shared strategy scheduling loop remain incomplete; no service ran.
+
+Frozen-source validation was rerun after the execution integration changes. With
+verified NumPy 2.4.4 and SciPy 1.18.1, all 70 extraction cases passed (44 selected
+and 330 rejected levels). All 87 fit cases passed matching statuses and the existing
+tolerance: max(0.001 ticks, 1e-8 of expected value). Maximum observed difference was
+0.00140556 ticks. The loader now checks installed dependency versions before source
+execution; an offline injected-version test confirms drift is rejected. No dependency
+was installed. The 196 Rust tests, formatting, static checks and source hashes also
+passed. These fixtures do not certify all-session fitting, consolidation, streaming,
+full strategy decisions or trading robustness. No services or network tests ran.

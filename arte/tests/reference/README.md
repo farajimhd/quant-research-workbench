@@ -19,9 +19,11 @@ then evaluates that snapshot in an isolated module with NumPy and SciPy. This is
 test-only execution, not a production Python dependency. It compares 70 deterministic
 cases with the Rust example executable. Generated build output stays outside source.
 Use `scripts/validate.ps1 -RuntimeRoot <external-directory> -PythonExecutable <python-path>`.
-Test dependencies are pinned in `requirements.txt`; the validator does not install them.
+Test dependencies are pinned in `requirements.txt`. The source loader verifies installed
+versions against those pins before executing an oracle. The validator does not install them.
 
 The frozen fixed-noise extractor is not the MLE historical book required by the
 streaming source. Passing its tests does not establish compatible daily seeds.
-The MLE seed builder, fitter, streaming engine and complete strategy still require
-implementation and their own parity checks.
+The MLE seed builder, fitter and streaming engine have partial Rust implementations.
+The separate fit comparison covers 87 deterministic cases. These checks do not
+establish all-session convergence, streaming parity or complete strategy parity.

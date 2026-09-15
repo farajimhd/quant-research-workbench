@@ -4,6 +4,7 @@ sys.dont_write_bytecode = True
 
 import argparse
 import hashlib
+from importlib import metadata
 import json
 import math
 from pathlib import Path
@@ -12,7 +13,31 @@ import subprocess
 import types
 
 
+def verify_dependencies(root):
+    verified = {}
+    requirements = root / "tests/reference/requirements.txt"
+    for raw in requirements.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("==")
+        if len(parts) != 2 or not all(parts):
+            raise ValueError("Offline oracle dependencies must have exact version pins")
+        name, expected = parts
+        try:
+            actual = metadata.version(name)
+        except metadata.PackageNotFoundError as error:
+            raise ValueError(f"Offline oracle dependency missing: {name}=={expected}") from error
+        if actual != expected:
+            raise ValueError(f"Offline oracle dependency mismatch: {name} expected {expected}, found {actual}")
+        verified[name] = actual
+    if set(verified) != {"numpy", "scipy"}:
+        raise ValueError("Offline oracle requires explicit NumPy and SciPy pins")
+    print("Oracle dependencies: " + ", ".join(f"{name}=={version}" for name, version in sorted(verified.items())))
+
+
 def load_reference(root, filename="historical_session_levels.py.txt"):
+    verify_dependencies(root)
     manifest = json.loads((root / "tests/reference/origin.json").read_text())
     destination = "tests/reference/src/market_engine/" + filename
     entry = next(row for row in manifest["files"] if row["destination"] == destination)
