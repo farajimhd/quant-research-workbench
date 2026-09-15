@@ -18,6 +18,7 @@ import sqlite3
 from statistics import median
 
 from strategy_222_supervised_research import digest, save
+from strategy_222_market_state_features import MarketStates
 
 ROOT = Path('D:/TradingML/runtimes/analysis/strategy-222-refinement')
 OFFSETS = (-10, -5, 0, 5, 10)
@@ -113,6 +114,19 @@ def features(metadata, at):
     gain = metadata.get('setup_trail_current_gain') or {}
     if timed(gain):
         relative('price_gain_from_initial_fill_pct', gain.get('current_price'), gain.get('initial_fill'))
+    encounters = metadata.get('level_encounters') or {}
+    if encounters:
+        # v7_encounters.summary exports blocked encounters only. Absence here
+        # does not mean there are no other nearby levels or successful breaks.
+        states = ('warning','failed')
+        for state in states:
+            put('level_state_count.'+state, sum(v.get('status')==state for v in encounters.values()))
+        levels = [v for v in encounters.values() if isinstance(v.get('center'),(int,float))]
+        if price and levels:
+            above = [v for v in levels if v['center']>price]
+            below = [v for v in levels if v['center']<price]
+            if above: relative('nearest_encounter_above_pct',min(v['center'] for v in above),price)
+            if below: relative('nearest_encounter_below_pct',max(v['center'] for v in below),price)
     return out
 
 
@@ -139,7 +153,7 @@ def anchors(cases, trial):
     return result
 
 
-def sample(anchor, offset, decisions, maximum_age=2.):
+def sample(anchor, offset, decisions, maximum_age=2., market_states=None):
     target = anchor['at'] + offset
     # For execution anchors at offset zero, reject decisions after the fill,
     # even when their event timestamps are identical.
@@ -150,9 +164,14 @@ def sample(anchor, offset, decisions, maximum_age=2.):
     if index < 0 or target - decisions[index][0] > maximum_age:
         return dict(status='missing_fresh_completed_decision')
     at, sequence, decision = decisions[index]
-    return dict(status='sampled', decision_at=at, decision_sequence=sequence,
+    result = dict(status='sampled', decision_at=at, decision_sequence=sequence,
         decision_age_s=target-at, action=decision['action'], reason=decision['reason'],
         features=features(decision.get('metadata') or {}, at))
+    if market_states is not None:
+        extra, evidence = market_states.at(anchor['symbol'],decision,at)
+        result['features'].update(extra)
+        result['market_state_authority'] = evidence
+    return result
 
 
 def auc(positive, negative):
@@ -197,11 +216,12 @@ def contrasts(rows):
     return output
 
 
-def run(source, output, variant):
+def run(source, output, variant, cache=None):
     output = output.resolve(); output.relative_to(Path('D:/TradingML/runtimes').resolve())
     output.mkdir(parents=True, exist_ok=True)
     inputs = [source/'comparison.json', source/'position-comparison.json', Path(__file__),
               Path(__file__).with_name('strategy_222_supervised_research.py')]
+    inputs.extend(Path(__file__).with_name(n) for n in ('strategy_222_market_state_features.py','strategy_222_macd_episodes.py'))
     identity = {str(p.resolve()): digest(p) for p in inputs}
     trials = [t for t in json.loads(inputs[0].read_text()) if t['name'] == variant]
     if len(trials) != 1 or trials[0]['symbol'] != 'PORTFOLIO':
@@ -214,6 +234,10 @@ def run(source, output, variant):
     if wal.exists() and wal.stat().st_size:
         raise ValueError('Journal still open')
     identity[str(journal)] = digest(journal)
+    summary_path = journal.parent/'run-summary.json'
+    if cache is not None:
+        identity[str(cache.resolve())] = digest(cache)
+        identity[str(summary_path)] = digest(summary_path)
     provenance = source/'provenance.json'
     if provenance.exists():
         identity[str(provenance.resolve())] = digest(provenance)
@@ -236,6 +260,7 @@ def run(source, output, variant):
                  skipped=0, retried=int(manifest.exists()), failed=0)
     save(manifest, state)
     try:
+        market_states = MarketStates(cache,json.loads(summary_path.read_text())) if cache is not None else None
         points = anchors(json.loads(inputs[1].read_text())['cases'], trial)
         bounds = defaultdict(list)
         for point in points:
@@ -258,13 +283,16 @@ def run(source, output, variant):
         rows = []
         for point in points:
             for offset in OFFSETS:
-                rows.append(dict(point, offset_s=offset, **sample(point, offset, decisions[point['symbol']])))
+                rows.append(dict(point, offset_s=offset, **sample(point, offset, decisions[point['symbol']],market_states=market_states)))
         save(output/'samples.json', rows)
         summary = dict(method='Descriptive, outcome-selected development samples. One value per anchor group and offset. AUC is a rank association, not classifier accuracy. Leave-one-ticker-out values measure sensitivity only; this is not held-out prediction. Repeated moves within a ticker/session remain dependent; many features were screened without multiple-testing correction. Missing branch-dependent features are not imputed. Positive offsets are after the anchor and cannot justify decisions before it. Hindsight peak bids are labels, not executable exits. Price gain measured near actual exit is mechanically related to realized profit and is not evidence of an early-exit predictor. Quote/trade pressure and native 2s MACD were not delivered to this strategy and are not silently joined as available features.',
             anchors=len(points), samples=len(rows), coverage=dict(Counter(r['status'] for r in rows)),
             contrasts=contrasts(rows))
+        summary['feature_count'] = len({name for row in rows for name in row.get('features',{})})
+        summary['market_state_scope'] = ('Completed 1s/5s candle patterns, ATR, execution VWAP and MACD episode state are derived from certified frames using recorded delivery watermarks. Episode ages and peaks are observed-to-date only. Level encounter summaries expose warning/failed encounters, not the complete level book; their distances must not be interpreted as nearest support/resistance overall. Additional candlestick pattern definitions are descriptive geometry, not reversal predictions.' if cache is not None else 'Journal-only features; canonical market-state extension not requested.')
         save(output/'comparison.json', summary)
-        lines = ['# Strategy 222 feature comparison', '', summary['method'], '',
+        lines = ['# Strategy 222 feature comparison', '', summary['method'], '', summary['market_state_scope'], '',
+                 f"Features: {summary['feature_count']}.", '',
                  f"Anchors: {len(points)}; samples: {len(rows)}; coverage: {summary['coverage']}.", '',
                  '## Associations at the anchor', '',
                  'Exploratory ranking only. Each side needs at least five observed groups; all missing counts remain in the JSON report.', '',
@@ -274,6 +302,18 @@ def run(source, output, variant):
             ranked = sorted((r for r in summary['contrasts'] if r['kind']==kind and r['offset_s']==0 and min(r['positive_n'],r['negative_n'])>=5), key=lambda r:abs(r['auc']-.5), reverse=True)[:8]
             for r in ranked:
                 lines.append(f"| {kind} | {r['feature']} | {r['positive_n']}/{r['positive_total']} / {r['negative_n']}/{r['negative_total']} | {r['positive_median']:.3g} / {r['negative_median']:.3g} | {r['auc']:.3f} | {r['direction_survives_every_ticker_removal']} |")
+        if cache is not None:
+            lines.extend(['','## Volatility check','','Compare raw and ATR-normalized associations before inferring a distinctive setup. An AUC near 0.5 indicates little rank separation in this sample. These are associations, not trading accuracy.','',
+                '| Anchor | Feature | Raw AUC | ATR-normalized AUC | Normalized direction survives ticker removal |',
+                '|---|---|---:|---:|---|'])
+            index={(r['kind'],r['offset_s'],r['feature']):r for r in summary['contrasts']}
+            for kind in ('move_onset','actual_entry'):
+                for tf in ('1s','5s'):
+                    for name in ('histogram_bps','histogram_slope_bps_per_second'):
+                        key=f'completed_{tf}.{name}'
+                        raw=index.get((kind,0,key)); normalized=index.get((kind,0,key+'_per_atr_bps'))
+                        if raw and normalized:
+                            lines.append(f"| {kind} | {key} | {raw['auc']:.3f} | {normalized['auc']:.3f} | {normalized['direction_survives_every_ticker_removal']} |")
         (output/'report.md').write_text('\n'.join(lines)+'\n', encoding='utf-8')
         state.update(status='completed', active=0, completed=1,
             outputs={name:digest(output/name) for name in ('samples.json','comparison.json','report.md')})
@@ -288,7 +328,8 @@ def run(source, output, variant):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, default=ROOT/'shared15-v31-focused-audit')
-    parser.add_argument('--output', type=Path, default=ROOT/'v31-feature-comparison-v2')
+    parser.add_argument('--output', type=Path, default=ROOT/'v31-market-state-comparison-v3')
+    parser.add_argument('--cache',type=Path,required=True,help='Certified canonical prepared-frame SQLite cache matching the replay authority')
     parser.add_argument('--variant', default='regular-origin-v31')
     args = parser.parse_args()
-    run(args.source, args.output, args.variant)
+    run(args.source, args.output, args.variant,args.cache)
