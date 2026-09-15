@@ -16,12 +16,21 @@ pub struct AuditedEvent {
 struct Monitors {
     sip: LatencyMonitor,
     participant: LatencyMonitor,
+    source_high_water: Option<(u32, u64)>,
+    last_sample: Option<(u64, u64, u64, u32)>,
+}
+#[derive(Debug)]
+pub struct SilenceAssessment {
+    pub instrument: u64,
+    pub kind: EventKind,
+    pub sip_latency: Assessment,
 }
 pub struct Decoder {
     run_id: String,
     lane: u16,
     sequence: u64,
     last_monotonic_ns: u64,
+    last_processed_ns: u64,
     maximum_events: usize,
     maximum_lanes: usize,
     policy: LatencyPolicy,
@@ -48,6 +57,7 @@ impl Decoder {
             lane,
             sequence: 0,
             last_monotonic_ns: 0,
+            last_processed_ns: 0,
             maximum_events,
             maximum_lanes,
             policy,
@@ -58,6 +68,52 @@ impl Decoder {
     }
     pub fn failed(&self) -> bool {
         self.failed
+    }
+    /// Periodic caller-driven watchdog. Reuses original receipt and source clocks;
+    /// it does not fabricate an event or contribute any recovery samples.
+    pub fn audit_silence(
+        &mut self,
+        now_monotonic_ns: u64,
+        clock_uncertainty_ns: u64,
+    ) -> Result<Vec<SilenceAssessment>> {
+        if self.failed {
+            return Err(Error::Unready(
+                "decoder failed; exposure remains blocked".into(),
+            ));
+        }
+        if now_monotonic_ns < self.last_processed_ns {
+            self.failed = true;
+            return Err(Error::Invalid("silence processing clock rewind".into()));
+        }
+        if self.monitors.values().any(|m| {
+            m.last_sample
+                .is_some_and(|(_, _, at, _)| now_monotonic_ns < at)
+        }) {
+            return Err(Error::Invalid("silence audit clock rewind".into()));
+        }
+        let mut assessments = Vec::with_capacity(self.monitors.len());
+        for (&(instrument, kind), monitor) in &mut self.monitors {
+            if let Some((sip, receipt, mono, precision)) = monitor.last_sample {
+                let mut assessment = monitor.sip.observe_sample(
+                    sip,
+                    receipt,
+                    clock_uncertainty_ns,
+                    now_monotonic_ns - mono,
+                    now_monotonic_ns,
+                    false,
+                );
+                assessment.lower_age_ns = assessment
+                    .lower_age_ns
+                    .saturating_sub(u64::from(precision) - 1);
+                assessments.push(SilenceAssessment {
+                    instrument,
+                    kind,
+                    sip_latency: assessment,
+                });
+            }
+        }
+        self.last_processed_ns = now_monotonic_ns;
+        Ok(assessments)
     }
     /// Resolver must use source-time instrument identity known by receive time.
     /// Errors return no partial frame. Caller retains the raw frame for audit/repair.
@@ -88,6 +144,7 @@ impl Decoder {
         resolve: &mut impl FnMut(&str, u64, u64) -> Result<u64>,
     ) -> Result<Vec<AuditedEvent>> {
         if frame.text.len() > 32 * 1024 * 1024
+            || now < self.last_processed_ns
             || now < frame.monotonic_ns
             || frame.monotonic_ns < self.last_monotonic_ns
         {
@@ -154,24 +211,47 @@ impl Decoder {
                     Monitors {
                         sip: LatencyMonitor::new(self.policy.clone())?,
                         participant: LatencyMonitor::new(self.policy.clone())?,
+                        source_high_water: None,
+                        last_sample: None,
                     }
                 };
                 slot.insert(monitors);
             }
             let monitors = touched.get_mut(&key).unwrap();
+            let cursor = (observation.key.session, observation.key.sequence);
+            let advances = monitors
+                .source_high_water
+                .is_none_or(|prior| cursor > prior);
+            if advances {
+                monitors.source_high_water = Some(cursor);
+            }
             let queue = now - frame.monotonic_ns;
-            let mut sip_latency =
-                monitors
-                    .sip
-                    .observe(observation.sip.ns, frame.utc_ns, uncertainty, queue, now);
+            monitors.last_sample = Some((
+                observation.sip.ns,
+                frame.utc_ns,
+                frame.monotonic_ns,
+                observation.sip.precision_ns,
+            ));
+            let mut sip_latency = monitors.sip.observe_sample(
+                observation.sip.ns,
+                frame.utc_ns,
+                uncertainty,
+                queue,
+                now,
+                advances,
+            );
             sip_latency.lower_age_ns = sip_latency
                 .lower_age_ns
                 .saturating_sub(u64::from(observation.sip.precision_ns) - 1);
             let participant_latency = observation.participant.map(|t| {
-                let mut assessment =
-                    monitors
-                        .participant
-                        .observe(t.ns, frame.utc_ns, uncertainty, queue, now);
+                let mut assessment = monitors.participant.observe_sample(
+                    t.ns,
+                    frame.utc_ns,
+                    uncertainty,
+                    queue,
+                    now,
+                    advances,
+                );
                 assessment.lower_age_ns = assessment
                     .lower_age_ns
                     .saturating_sub(u64::from(t.precision_ns) - 1);
@@ -192,6 +272,7 @@ impl Decoder {
         self.monitors.extend(touched);
         self.sequence = sequence;
         self.last_monotonic_ns = frame.monotonic_ns;
+        self.last_processed_ns = now;
         Ok(output)
     }
 }
@@ -265,5 +346,50 @@ mod tests {
         assert_eq!(d.sequence, 0);
         assert!(d.failed());
         assert!(d.monitors.is_empty());
+    }
+    #[test]
+    fn repeated_deliveries_cannot_recover_but_can_block() {
+        let mut d = decoder(false);
+        d.policy.recovery_samples = 2;
+        let original = frame();
+        assert!(!d.decode(&original, 100, 0, |_, _, _| Ok(1)).unwrap()[0].exposure_permitted);
+        assert!(!d.decode(&original, 100, 0, |_, _, _| Ok(1)).unwrap()[0].exposure_permitted);
+        let mut fresh = original.clone();
+        fresh.text = fresh
+            .text
+            .replace("\"q\":1", "\"q\":3")
+            .replace("\"q\":2", "\"q\":4");
+        assert!(d
+            .decode(&fresh, 100, 0, |_, _, _| Ok(1))
+            .unwrap()
+            .iter()
+            .all(|e| e.exposure_permitted));
+        let mut delayed = original;
+        delayed.utc_ns += 10_000_000;
+        delayed.monotonic_ns += 10_000_000;
+        assert!(
+            !d.decode(&delayed, delayed.monotonic_ns, 0, |_, _, _| Ok(1))
+                .unwrap()[0]
+                .exposure_permitted
+        );
+    }
+    #[test]
+    fn silence_repeats_alerts_without_new_market_data() {
+        let mut d = decoder(false);
+        d.decode(&frame(), 100, 0, |_, _, _| Ok(1)).unwrap();
+        let first = d.audit_silence(10_000_100, 0).unwrap();
+        assert!(first.iter().all(|a| a.sip_latency.state
+            == arte_core::latency::Health::ExposureBlocked
+            && a.sip_latency.notify));
+        assert!(d
+            .audit_silence(10_000_101, 0)
+            .unwrap()
+            .iter()
+            .all(|a| !a.sip_latency.notify));
+        assert!(d
+            .audit_silence(11_000_100, 0)
+            .unwrap()
+            .iter()
+            .all(|a| a.sip_latency.notify));
     }
 }

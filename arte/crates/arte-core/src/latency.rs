@@ -61,6 +61,25 @@ impl LatencyMonitor {
         local_queue_ns: u64,
         now_mono: u64,
     ) -> Assessment {
+        self.observe_sample(
+            sip_ns,
+            receive_ns,
+            clock_uncertainty_ns,
+            local_queue_ns,
+            now_mono,
+            true,
+        )
+    }
+    /// Non-advancing source deliveries may worsen health, but cannot prove recovery.
+    pub fn observe_sample(
+        &mut self,
+        sip_ns: u64,
+        receive_ns: u64,
+        clock_uncertainty_ns: u64,
+        local_queue_ns: u64,
+        now_mono: u64,
+        recovery_sample: bool,
+    ) -> Assessment {
         let age = receive_ns.saturating_sub(sip_ns);
         let upper = age
             .saturating_add(clock_uncertainty_ns)
@@ -79,7 +98,7 @@ impl LatencyMonitor {
             } else {
                 Health::Warning
             };
-        } else {
+        } else if recovery_sample {
             self.good = self.good.saturating_add(1);
             self.state = if matches!(previous, Health::ExposureBlocked | Health::Recovering)
                 && self.good < self.policy.recovery_samples
@@ -135,5 +154,22 @@ mod tests {
         assert!(m.observe(100, 500, 0, 0, 1).notify);
         assert!(!m.observe(100, 500, 0, 0, 2).notify);
         assert!(m.observe(100, 500, 0, 0, 1001).notify);
+    }
+    #[test]
+    fn repeated_samples_do_not_advance_recovery() {
+        let mut m = monitor();
+        m.observe(100, 110, 0, 0, 1);
+        assert_eq!(
+            m.observe_sample(100, 110, 0, 0, 2, false).state,
+            Health::Recovering
+        );
+        assert_eq!(
+            m.observe_sample(100, 110, 0, 0, 3, true).state,
+            Health::Healthy
+        );
+        assert_eq!(
+            m.observe_sample(100, 500, 0, 0, 4, false).state,
+            Health::ExposureBlocked
+        );
     }
 }
