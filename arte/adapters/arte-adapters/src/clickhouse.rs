@@ -8,8 +8,10 @@ use std::time::Duration;
 mod coverage_index;
 mod event_batches;
 mod fills;
+mod order_authorizations;
 mod references;
 pub use fills::FillPublisher;
+pub use order_authorizations::OrderPublisher;
 
 pub fn identifier(value: &str) -> Result<&str> {
     if value.is_empty()

@@ -182,6 +182,25 @@ pub struct AuthorizationContext {
     pub allow_extended: bool,
     pub risk_policy_hash: String,
 }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Authorization {
+    pub bracket: Bracket,
+    pub context: AuthorizationContext,
+}
+impl Authorization {
+    pub fn hash(&self) -> Result<String> {
+        content_hash(&("arte.order-authorization.v2", &self.bracket, &self.context))
+    }
+    /// Stable slot: changed prices, quantity or policy cannot select a new slot.
+    pub fn key(&self) -> Result<String> {
+        content_hash(&(
+            "arte.order-slot.v1",
+            &self.bracket.account,
+            &self.bracket.command_id,
+        ))
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OrderRecord {
@@ -228,12 +247,24 @@ impl OrderLedger {
         Ok(&self.records[&id])
     }
     pub fn envelope_hash(&self, id: &str) -> Result<String> {
+        self.authorization(id)?.hash()
+    }
+    pub fn authorization(&self, id: &str) -> Result<Authorization> {
         let record = self.record(id)?;
-        content_hash(&(
-            "arte.order-authorization.v2",
-            &record.bracket,
-            &record.authorization,
-        ))
+        Ok(Authorization {
+            bracket: record.bracket.clone(),
+            context: record.authorization.clone(),
+        })
+    }
+    /// Readback must match the entire prepared authorization, not just a caller's
+    /// hash string. The persistence adapter owns external durability evidence.
+    pub fn acknowledge_authorization(&mut self, id: &str, readback: &Authorization) -> Result<()> {
+        if self.authorization(id)? != *readback {
+            return Err(Error::Conflict(
+                "order authorization readback mismatch".into(),
+            ));
+        }
+        self.mark_durable(id, &readback.hash()?)
     }
     pub fn record(&self, id: &str) -> Result<&OrderRecord> {
         self.records
@@ -245,7 +276,7 @@ impl OrderLedger {
             .get_mut(id)
             .ok_or_else(|| Error::Invalid("unknown command".into()))
     }
-    pub fn mark_durable(&mut self, id: &str, ack_hash: &str) -> Result<()> {
+    fn mark_durable(&mut self, id: &str, ack_hash: &str) -> Result<()> {
         if self.envelope_hash(id)? != ack_hash {
             return Err(Error::Conflict("durable acknowledgment hash".into()));
         }

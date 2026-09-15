@@ -6,6 +6,29 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Authorization publication and verified readback
+
+The order journal now publishes a complete immutable authorization before marking
+the ledger durable. Its asynchronous commit keeps the order authorized on failure,
+conflicting readback or cancellation. Retry uses the original account/command slot
+and exact envelope. The public hash-only durability transition has been removed.
+
+The ClickHouse publisher requires repository-extraction and durability acceptance,
+plus cooperative account ownership. It checks the required storage policy and
+actual part placement. It reads the stable slot before insertion, reuses identical
+content, rejects conflicting versions and verifies synchronous insert readback.
+Payload and response bounds apply. Source schema 010 defines
+`order_authorizations_v2` on `live_market_ssd`; it has not been applied.
+
+All 262 offline Rust tests, formatting, Clippy and frozen-source hashes pass.
+New tests cover ambiguous writes, mismatched readback, cancellation after a simulated
+write, exact retry, canonical payloads, conflicting slots and response limits.
+No database calls, migrations or services ran.
+
+This does not prove power-loss durability. The lease is single-host cooperative
+ownership, not distributed fencing. Restart discovery, persisted submission states,
+broker reconciliation and connection to the full execution driver remain required.
+
 ## Durable order identity includes authorization context
 
 Each order record now stores the pinned calendar hash, extended-hours permission
