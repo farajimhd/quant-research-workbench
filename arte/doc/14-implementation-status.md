@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 133 in-process Rust tests passed (111 core and 22 adapter tests).
+- 137 in-process Rust tests passed (115 core and 22 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -349,6 +349,19 @@ must fail if evidence is missing. Receiver supervision, clock synchronization,
 certified handover, ticker fan-out, persistence and observer delivery remain unwired.
 The actor is not yet an executable Live service. It does not make queued strategy
 operands fresh or replace revalidation at actual broker submission.
+
+Event persistence now has a bounded lossless staging contract. Payload objects are
+content-addressed; thin observations retain source clocks, optional live receipt
+and knowledge time. A pinned versioned manifest preserves batch application order.
+Restoration verifies complete readback and tolerates identical physical retry rows
+before database merges. Reused live receipt slots with different contents fail.
+Payload corrections remain separate observations, not destructive replacements.
+Four offline tests cover live/REST sharing, missing/corrupt readback, receipt
+collisions and ordered restoration. The batch uses the existing EventStore retry
+rules; cross-batch deduplication and receipt-slot enforcement remain writer duties.
+This is a staging contract, not the final compact ClickHouse layout. No event DDL
+or writer is enabled. Provider identity overlap, physical codec/storage acceptance,
+batch publication and the persistence worker remain incomplete.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.

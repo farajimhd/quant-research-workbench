@@ -3,6 +3,7 @@
 
 pub mod config;
 pub mod coverage;
+pub mod event_storage;
 pub mod events;
 pub mod exposure;
 pub mod journal;
