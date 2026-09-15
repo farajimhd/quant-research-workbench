@@ -80,8 +80,8 @@ def run(source,cache_map,output):
                     sequences=sorted(by_sequence)
                     for start in range(0,len(sequences),500):
                         chunk=sequences[start:start+500]
-                        query='select sequence,event_time,payload_json from journal where category=\'strategy_decision\' and sequence in ('+','.join('?' for _ in chunk)+')'
-                        for sequence,stamp,raw in connection.execute(query,chunk):
+                        query='select sequence,event_time,payload_json from journal where run_id=? and category=\'strategy_decision\' and sequence in ('+','.join('?' for _ in chunk)+')'
+                        for sequence,stamp,raw in connection.execute(query,[rid,*chunk]):
                             found[sequence]=enrich(by_sequence[sequence],sequence,stamp,json.loads(raw),market)
                 finally:connection.close()
                 if set(found)!=set(by_sequence):raise ValueError('Missing source decisions')

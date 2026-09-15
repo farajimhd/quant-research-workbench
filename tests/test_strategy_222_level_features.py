@@ -1,11 +1,12 @@
 import copy
+import sqlite3
 import sys
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from strategy_222_level_features import level_features
+from strategy_222_level_features import level_features, decision_rows
 
 
 def fixture():
@@ -96,3 +97,20 @@ def test_missing_atr_does_not_fill_normalized_distances():
         settings=summary['configuration_revision']['payload']['strategy']['parameters']['historical_hod'])
     assert f['levels.resistance.above.lower_distance_pct'] == pytest.approx(1)
     assert not any('atr' in k for k in f)
+
+
+def test_decision_lookup_requires_run_identity_and_complete_coverage():
+    connection = sqlite3.connect(':memory:')
+    try:
+        connection.execute('create table journal(run_id text, sequence integer, category text, event_time text, payload_json text, unique(run_id,sequence))')
+        connection.executemany('insert into journal values(?,?,?,?,?)', [
+            ('a', 1, 'strategy_decision', 'first', '{}'),
+            ('b', 1, 'strategy_decision', 'other', '{}'),
+            ('a', 2, 'fill', 'fill', '{}')])
+        assert decision_rows(connection, 'a', [1, 1]) == {1: ('first', '{}')}
+        with pytest.raises(ValueError, match='Missing source decisions'):
+            decision_rows(connection, 'a', [1, 2])
+        with pytest.raises(ValueError, match='Missing source decisions'):
+            decision_rows(connection, 'wrong', [1])
+    finally:
+        connection.close()

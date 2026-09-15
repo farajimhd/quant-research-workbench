@@ -27,6 +27,21 @@ from src.trading_runtime.historical_hod import selected_levels
 from src.runtime_paths import runtime_root
 
 
+def decision_rows(connection, run_id, sequences):
+    """Use the journal's run/sequence identity index, not a category-wide scan."""
+    sequences = sorted(set(sequences))
+    result = {}
+    for start in range(0, len(sequences), 500):
+        chunk = sequences[start:start + 500]
+        query = "select sequence,event_time,payload_json from journal where run_id=? and category='strategy_decision' and sequence in (" + ','.join('?' for _ in chunk) + ')'
+        for sequence, at, payload in connection.execute(query, [run_id, *chunk]):
+            if sequence in result: raise ValueError('Duplicate source decision identity')
+            result[sequence] = (at, payload)
+    if set(result) != set(sequences):
+        raise ValueError('Missing source decisions for run identity')
+    return result
+
+
 def level_features(snapshot, *, symbol, at, price, atr_pct, summary, settings):
     """Only as-of market inputs enter this function; labels are not arguments."""
     if not math.isfinite(at) or not math.isfinite(price) or price <= 0:
@@ -183,8 +198,9 @@ def run(source, cache, summary_path, output):
                     snapshot = pool.cursors[symbol].snapshot(datetime.fromtimestamp(at, timezone.utc))
                     snapshots[str(at)] = {k: v for k, v in snapshot.items() if k != 'qmd_structure_unified_levels'}
                 print(f"{symbol}: level snapshots {min(start + 32, len(times))}/{len(times)}", flush=True)
+            decisions = decision_rows(connection, summary['run_id'], [row['decision_sequence'] for _, row in by_symbol[symbol]])
             for index, row in by_symbol[symbol]:
-                record = connection.execute("select event_time,payload_json from journal where category='strategy_decision' and sequence=?", (row['decision_sequence'],)).fetchone()
+                record = decisions[row['decision_sequence']]
                 if record is None or epoch(record[0]) != row['decision_at']:
                     raise ValueError('Decision timestamp/sequence mismatch')
                 decision = json.loads(record[1])
