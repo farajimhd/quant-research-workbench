@@ -7,7 +7,7 @@ use crate::{
     Error, Result,
 };
 const SECOND: u64 = 1_000_000_000;
-const RECOVERY_VERSION: &str = "market-structure-recovery-v2";
+const RECOVERY_VERSION: &str = "market-structure-recovery-v3";
 const MAX_RECOVERY_BYTES: usize = 64 * 1024 * 1024;
 use crate::events::{EventKey, Observation, Payload};
 use serde::{Deserialize, Serialize};

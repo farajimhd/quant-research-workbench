@@ -166,6 +166,9 @@ impl Macd {
 pub struct Completed {
     pub bar: Bar,
     pub macd: (f64, f64, f64),
+    pub session_vwap: f64,
+    pub session_high: f64,
+    pub prior_session_high: Option<f64>,
 }
 /// One instrument/timeframe's retained session series. The same update path serves
 /// historical warming and live events; it has no strategy or broker capability.
@@ -175,6 +178,9 @@ pub struct Series {
     macd: Macd,
     completed: Vec<Completed>,
     maximum_bars: usize,
+    completed_volume: f64,
+    completed_notional: f64,
+    session_high: Option<f64>,
 }
 impl Series {
     pub fn new(
@@ -192,6 +198,9 @@ impl Series {
             macd: Macd::new(fast, slow, signal)?,
             completed: vec![],
             maximum_bars,
+            completed_volume: 0.,
+            completed_notional: 0.,
+            session_high: None,
         })
     }
     fn commit(&mut self, builder: BarBuilder, complete: Option<Bar>) -> Result<()> {
@@ -202,11 +211,28 @@ impl Series {
                 ));
             }
             let mut macd = self.macd.clone();
+            let volume = self.completed_volume + bar.volume;
+            let notional = self.completed_notional + bar.notional;
+            if !volume.is_finite() || !notional.is_finite() || volume <= 0. || notional <= 0. {
+                return Err(Error::Capacity("session market aggregates overflow".into()));
+            }
+            let session_high = self
+                .session_high
+                .map_or(bar.high, |high| high.max(bar.high));
             let values = macd.update(bar.close)?;
             if !values.0.is_finite() || !values.1.is_finite() || !values.2.is_finite() {
                 return Err(Error::Invalid("nonfinite series indicator".into()));
             }
-            self.completed.push(Completed { bar, macd: values });
+            self.completed.push(Completed {
+                bar,
+                macd: values,
+                session_vwap: notional / volume,
+                session_high,
+                prior_session_high: self.session_high,
+            });
+            self.completed_volume = volume;
+            self.completed_notional = notional;
+            self.session_high = Some(session_high);
             self.macd = macd;
         }
         self.builder = builder;
@@ -237,6 +263,17 @@ impl Series {
         self.developing()
             .map(|bar| self.macd.preview(bar.close))
             .transpose()
+    }
+    /// Developing-session VWAP, distinct from each completed bar's frozen value.
+    pub fn session_vwap(&self) -> Result<Option<f64>> {
+        let volume = self.completed_volume + self.developing().map_or(0., |bar| bar.volume);
+        let notional = self.completed_notional + self.developing().map_or(0., |bar| bar.notional);
+        if !volume.is_finite() || !notional.is_finite() {
+            return Err(Error::Capacity(
+                "developing session aggregate overflow".into(),
+            ));
+        }
+        Ok((volume > 0.).then(|| notional / volume))
     }
 }
 
@@ -313,7 +350,14 @@ mod tests {
         assert_eq!(series.completed()[0].macd, expected.update(10.).unwrap());
         series.advance(20).unwrap();
         assert_eq!(series.completed()[1].macd, expected.update(11.).unwrap());
+        assert_eq!(series.completed()[0].session_vwap, 10.);
+        assert_eq!(series.completed()[0].prior_session_high, None);
+        assert_eq!(series.completed()[1].session_vwap, 10.5);
+        assert_eq!(series.completed()[1].prior_session_high, Some(10.));
+        assert_eq!(series.completed()[1].session_high, 11.);
         series.trade(21, 12., 1., true).unwrap();
+        assert_eq!(series.session_vwap().unwrap(), Some(11.));
+        assert_eq!(series.completed()[1].session_vwap, 10.5);
         let before = series.completed().to_vec();
         let developing = series.developing().cloned();
         assert!(series.advance(30).is_err());

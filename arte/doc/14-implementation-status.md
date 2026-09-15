@@ -912,3 +912,13 @@ covers mixed decimal scales, retransmission age, crossed updates and old/conflic
 input. All 216 Rust tests, formatting, static checks and source hashes pass. Raw
 quote persistence, quote recovery, strategy frame wiring and account execution remain
 incomplete. No service ran.
+
+The retained market series now calculates completed-session volume/notional,
+VWAP, high-of-day and prior high-of-day incrementally. Each completed bar keeps its
+causal facts frozen; developing-session VWAP is a separate projection. Aggregate
+overflow rejects the transition before commit. Existing series tests now verify
+these values and that developing trades do not rewrite completed facts. Market
+recovery is version 3 because its required state changed. All 216 Rust tests,
+formatting, static checks and source hashes pass. Full entry-frame production still
+needs admission, local swings, level mapping and explicit evaluation-clock handling.
+No service ran.
