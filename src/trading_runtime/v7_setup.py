@@ -1,5 +1,6 @@
 """Causal setup entry and position-owned consolidation breakout phase."""
 from copy import deepcopy
+from math import isfinite
 
 
 def observe(state, market, settings, fresh):
@@ -11,6 +12,11 @@ def observe(state, market, settings, fresh):
     bar = market['bar']
     if bar['end'] <= state.get('at', 0):
         return
+    if settings.get('setup_minimum_300s_range_pct',0):
+        # This activity window is independent of short-range gaps and MACD
+        # episodes. Store only observed completed bars, never synthetic bars.
+        history=[b for b in state.get('range_bars_300s',[]) if bar['end']-300<b['end']<bar['end']]
+        state['range_bars_300s']=[*history,dict(end=bar['end'],high=bar['high'],low=bar['low'])]
     if settings.get('setup_minimum_60s_progress_pct',0):
         # Separate from the short consolidation range: sparse observed bars
         # remain usable as as-of references, but are never manufactured.
@@ -33,6 +39,22 @@ def observe(state, market, settings, fresh):
         state['episode_high'] = max(state.get('episode_high') or bar['high'], bar['high'])
         state['episode_low'] = min(state.get('episode_low') or bar['low'], bar['low'])
         state['body_high'] = max(state.get('body_high') or 0, bar['open'], bar['close'])
+
+
+def entry_range(state,market,minimum):
+    at=market['bar']['end'];history=state.get('range_bars_300s',[])
+    evidence=dict(observed_at=at,minimum_pct=minimum,lookback_seconds=300,observed_bars=len(history))
+    if not history or history[-1]['end']!=at:
+        return dict(**evidence,passed=False,reason='current_completed_bar_missing')
+    if any(not all(isfinite(b[k]) for k in ('end','low','high'))
+            or not at-300<b['end']<=at or not 0<b['low']<=b['high'] for b in history) or any(
+            a['end']>=b['end'] for a,b in zip(history,history[1:])):
+        return dict(**evidence,passed=False,reason='invalid_completed_history')
+    low=min(b['low'] for b in history);high=max(b['high'] for b in history)
+    span=(high/low-1)*100
+    return dict(**evidence,passed=span+1e-9>=minimum,
+        reason='' if span+1e-9>=minimum else 'range_below_minimum',
+        oldest_at=history[0]['end'],high=high,low=low,range_pct=span)
 
 
 def entry_progress(state,market,minimum):

@@ -9,6 +9,76 @@ from src.trading_runtime import v7_setup as V, strategy_engine as S
 from tests.test_v7_setup import prepared
 
 
+@pytest.mark.parametrize('low,enters',[(9.5,True),(10.,False)])
+def test_initial_range_gate_uses_completed_history_only(low,enters):
+    host,a,obs=prepared()
+    a.parameters['historical_hod']['setup_minimum_300s_range_pct']=5.
+    o=obs(2,10.02);at=o.observed_at.timestamp()
+    a.state['v7_setup']['range_bars_300s']=[dict(end=at-100,high=10.02,low=low)]
+    result=host.evaluate(a,o)
+    assert any(i.action=='enter_long' for i in result.evaluation.intents)==enters
+    evidence=result.evaluation.signals[0].metadata['entry_range']
+    assert evidence['passed']==enters
+    assert evidence['observed_at']==at
+    assert evidence['oldest_at']==at-100
+    if not enters:assert result.evaluation.signals[0].reason=='setup_range_range_below_minimum'
+
+
+def test_range_history_expires_exact_boundary_survives_gaps_and_checkpoint():
+    settings=dict(setup_range_seconds=30,setup_minimum_bars=5,setup_minimum_300s_range_pct=5.)
+    state={}
+    def market(end,session='day',episode=1,high=10.02):
+        return dict(session=session,episode=episode,
+            bar=dict(time=end-1,end=end,open=10,close=10.01,high=high,low=10))
+    V.observe(state,market(1,high=11),settings,True)
+    state=json.loads(json.dumps(state))
+    V.observe(state,market(300,episode=2),settings,True)
+    assert V.entry_range(state,market(300),5)['passed']
+    assert state['range'] is None  # Short range gaps do not erase the long window.
+    unchanged=deepcopy(state)
+    V.observe(state,market(301,high=100),settings,False)
+    V.observe(state,market(299,high=100),settings,True)
+    assert state==unchanged
+    V.observe(state,market(301),settings,True)
+    evidence=V.entry_range(state,market(301),5)
+    assert not evidence['passed']
+    assert evidence['oldest_at']==300  # Exactly 300 seconds old is excluded.
+    for end in range(302,650):V.observe(state,market(end),settings,True)
+    assert len(state['range_bars_300s'])==300
+    V.observe(state,market(650,session='next'),settings,True)
+    assert len(state['range_bars_300s'])==1
+    assert not V.entry_range(state,market(650,session='next'),5)['passed']
+
+
+def test_range_gate_does_not_block_management_of_an_existing_position():
+    host,a,obs=prepared()
+    entered=host.evaluate(a,obs(2,10.02))
+    assert any(i.action=='enter_long' for i in entered.evaluation.intents)
+    a=replace(a,state=entered.state,status=S.AssignmentStatus.MANAGING)
+    a.parameters['historical_hod']['setup_minimum_300s_range_pct']=5.
+    result=host.evaluate(a,replace(obs(3,10.19),position_quantity=100,average_price=10.02))
+    assert all(not s.reason.startswith('setup_range_') for s in result.evaluation.signals)
+    assert any(i.action=='add_long' for i in result.evaluation.intents)
+
+
+@pytest.mark.parametrize('bad',[
+    dict(end=301,high=100,low=10),dict(end=0,high=100,low=10),
+    dict(end=299,high=float('inf'),low=10),dict(end=299,high=10,low=0),
+    dict(end=300,high=100,low=10),
+])
+def test_range_gate_fails_closed_for_future_expired_or_invalid_history(bad):
+    state=dict(range_bars_300s=[bad,dict(end=300,high=10.02,low=10)])
+    result=V.entry_range(state,dict(bar=dict(end=300)),5)
+    assert not result['passed']
+    assert result['reason']=='invalid_completed_history'
+
+
+def test_range_gate_missing_current_bar_is_explicit():
+    result=V.entry_range({},dict(bar=dict(end=300)),5)
+    assert not result['passed']
+    assert result['reason']=='current_completed_bar_missing'
+
+
 @pytest.mark.parametrize('reference,enters',[(9.8,True),(10.1,False),(None,False)])
 def test_initial_entry_progress_requires_a_fresh_asof_reference(reference,enters):
     host,a,obs=prepared()
@@ -66,6 +136,8 @@ def test_add_wick_gate_consumes_rejected_confirmation_without_late_replay(maximu
 
 
 @pytest.mark.parametrize('key,value',[
+    ('setup_minimum_300s_range_pct',-1),('setup_minimum_300s_range_pct',True),
+    ('setup_minimum_300s_range_pct',float('inf')),('setup_minimum_300s_range_pct',float('nan')),
     ('setup_minimum_60s_progress_pct',-1),('setup_minimum_60s_progress_pct',True),
     ('setup_minimum_60s_progress_pct',float('inf')),('setup_minimum_60s_progress_pct',float('nan')),
     ('setup_add_maximum_upper_wick_fraction',-1),('setup_add_maximum_upper_wick_fraction',1.01),

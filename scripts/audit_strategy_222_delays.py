@@ -65,6 +65,7 @@ def audit(root,variant,portfolio=False):
                     reference=metadata.get('historical_hod_reference'),macd=metadata.get('macd'),
                     body=metadata.get('entry_body'),quote_clearance=metadata.get('entry_quote_clearance'),
                     progress=metadata.get('entry_progress'),
+                    entry_range=metadata.get('entry_range'),
                     early_base=metadata.get('early_base_assessment'),
                     recovery=metadata.get('setup_recovery')))
         finally:
