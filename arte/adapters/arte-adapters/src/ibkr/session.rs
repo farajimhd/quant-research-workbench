@@ -18,6 +18,7 @@ pub struct Gate {
     observed_at: Option<u64>,
     ready: bool,
     pending_request: Option<String>,
+    pending_outcome: Option<super::classification::Classified>,
 }
 impl Gate {
     pub fn new(
@@ -40,6 +41,7 @@ impl Gate {
             observed_at: None,
             ready: false,
             pending_request: None,
+            pending_outcome: None,
         })
     }
     /// Caller stamps completion using the same monotonic clock as transports.
@@ -110,6 +112,22 @@ impl Gate {
     }
     pub fn pending_request(&self) -> Option<&str> {
         self.pending_request.as_deref()
+    }
+    pub fn pending_outcome(&self) -> Option<&super::classification::Classified> {
+        self.pending_outcome.as_ref()
+    }
+    /// Preserve the unresolved request. An acknowledgment is not protection proof,
+    /// and an approved notice still requires a separately journaled reply.
+    pub fn observe_outcome(&mut self, classified: super::classification::Classified) -> Result<()> {
+        if self.pending_request.as_deref() != Some(classified.request_hash())
+            || self.pending_outcome.is_some()
+        {
+            return Err(Error::Conflict(
+                "broker outcome does not match unresolved session request".into(),
+            ));
+        }
+        self.pending_outcome = Some(classified);
+        Ok(())
     }
     // No generic reset: durable response/reply reconciliation must own release.
 }

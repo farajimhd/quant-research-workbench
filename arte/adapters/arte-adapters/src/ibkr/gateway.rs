@@ -38,6 +38,12 @@ impl SharedSession {
     pub async fn pacing_status(&self) -> crate::request_governor::Status {
         self.pacing.status().await
     }
+    pub fn observe_outcome(&self, classified: super::classification::Classified) -> Result<()> {
+        self.gate
+            .lock()
+            .map_err(|_| Error::Unready("broker gate poisoned".into()))?
+            .observe_outcome(classified)
+    }
     async fn rate_limited(
         &self,
         retry_after: Option<&str>,

@@ -2,6 +2,7 @@ use arte_core::orders::{Bracket, Side};
 use arte_core::{Error, Result};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
+pub mod classification;
 pub mod gateway;
 pub mod session;
 pub mod submission;
@@ -65,25 +66,42 @@ pub fn bracket_payload(order: &Bracket, conid: u64) -> Result<Value> {
     ]}))
 }
 #[derive(Debug, PartialEq, Eq)]
+pub struct OrderAcknowledgment {
+    pub id: String,
+    pub status: String,
+}
+#[derive(Debug, PartialEq, Eq)]
 pub enum Reply {
-    Acknowledged(Vec<String>),
-    Confirm { id: String, categories: Vec<String> },
+    /// Receipt of broker identifiers/statuses, not proof of bracket protection.
+    Acknowledged(Vec<OrderAcknowledgment>),
+    Confirm {
+        id: String,
+        categories: Vec<String>,
+    },
     Blocked,
 }
 pub fn interpret_reply(value: &Value, allowlist: &BTreeSet<String>) -> Result<Reply> {
     let rows = value
         .as_array()
         .ok_or_else(|| Error::Invalid("IBKR reply is not an array".into()))?;
-    if rows.is_empty() {
+    if rows.is_empty() || rows.len() > 64 {
         return Err(Error::Unready("empty IBKR acknowledgment".into()));
     }
     let mut acknowledgments = vec![];
+    let mut ids = BTreeSet::new();
     for row in rows {
         if row.get("error").is_some() {
             return Ok(Reply::Blocked);
         }
         if let Some(id) = row.get("id").and_then(Value::as_str) {
-            if rows.len() != 1 {
+            if rows.len() != 1
+                || row.get("order_id").is_some()
+                || id.is_empty()
+                || id.len() > 128
+                || !id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            {
                 return Err(Error::Unready(
                     "ambiguous mixed confirmation response".into(),
                 ));
@@ -92,6 +110,9 @@ pub fn interpret_reply(value: &Value, allowlist: &BTreeSet<String>) -> Result<Re
                 .get("messageIds")
                 .and_then(Value::as_array)
                 .ok_or_else(|| Error::Unready("uncategorized broker warning".into()))?;
+            if categories.len() > 64 {
+                return Err(Error::Capacity("broker warning category limit".into()));
+            }
             let categories: Vec<String> = categories
                 .iter()
                 .map(|v| {
@@ -100,7 +121,11 @@ pub fn interpret_reply(value: &Value, allowlist: &BTreeSet<String>) -> Result<Re
                         .ok_or_else(|| Error::Invalid("invalid message category".into()))
                 })
                 .collect::<Result<_>>()?;
-            if categories.is_empty() || categories.iter().any(|c| !allowlist.contains(c)) {
+            if categories.is_empty()
+                || categories
+                    .iter()
+                    .any(|c| c.is_empty() || c.len() > 128 || !allowlist.contains(c))
+            {
                 return Ok(Reply::Blocked);
             }
             return Ok(Reply::Confirm {
@@ -116,7 +141,33 @@ pub fn interpret_reply(value: &Value, allowlist: &BTreeSet<String>) -> Result<Re
                     .or_else(|| v.as_u64().map(|n| n.to_string()))
             })
             .ok_or_else(|| Error::Unready("broker order ID missing".into()))?;
-        acknowledgments.push(id);
+        if id.is_empty() || id.len() > 128 || !ids.insert(id.clone()) {
+            return Err(Error::Conflict(
+                "empty, oversized or duplicate broker order ID".into(),
+            ));
+        }
+        let status = row
+            .get("order_status")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::Unready("broker order status missing".into()))?;
+        if !matches!(
+            status,
+            "Inactive"
+                | "PendingSubmit"
+                | "PreSubmitted"
+                | "Submitted"
+                | "Filled"
+                | "PendingCancel"
+                | "PreCancelled"
+                | "Cancelled"
+                | "WarnState"
+        ) {
+            return Err(Error::Unready("unrecognized broker order status".into()));
+        }
+        acknowledgments.push(OrderAcknowledgment {
+            id,
+            status: status.into(),
+        });
     }
     Ok(Reply::Acknowledged(acknowledgments))
 }

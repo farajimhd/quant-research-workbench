@@ -6,6 +6,32 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Classification of committed broker responses
+
+Initial response classification now requires the committed-outcome token and its
+matching submission marker. HTTP failures, invalid JSON and malformed acknowledgments
+remain Unknown. Broker errors and unapproved warning categories are Blocked. Approved
+categories produce ConfirmationRequired, never an automatic confirmation.
+
+Order identifiers retain their supplied documented status and produce ReconcileOrders.
+They do not prove working protection. The parser rejects empty or duplicate IDs,
+missing or unknown statuses, ambiguous mixed confirmation rows, invalid reply IDs
+and oversized response/category collections. The warning-policy hash is retained
+alongside the original outcome hash.
+
+The shared HTTP session owner can receive the classification only for its unresolved
+request. It stores the classification without clearing the gate. Repeated or foreign
+classification cannot overwrite it. This supplies evidence for the next reply or
+reconciliation step, not permission for another order.
+
+All 287 offline Rust tests, formatting, Clippy and frozen-source hashes pass.
+Tests cover malformed acknowledgments, failed HTTP status, duplicate IDs, approved
+and unapproved notices, policy identity and continued session blocking after an
+acknowledgment. No services or broker calls ran.
+
+The classifier is not the reply executor or protection reconciler. Those workflows,
+their durable transitions, restart recovery and eventual gate release remain required.
+
 ## One-send execution and retryable publication workflow
 
 An execution attempt now owns the prepared request, single-use send permit,
