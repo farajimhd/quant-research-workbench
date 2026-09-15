@@ -30,6 +30,52 @@ pub struct RiskPolicy {
     pub band_buffer_ticks: u32,
     pub max_band_age_ns: u64,
 }
+/// Pinned calendar policy shared by authorization and submission. The source
+/// adapter owns exchange certification and timezone validation.
+pub struct TradingSession {
+    session: crate::session::Session,
+    hash: String,
+    allow_extended: bool,
+}
+impl TradingSession {
+    pub fn new(
+        session: crate::session::Session,
+        hash: String,
+        as_of_ns: u64,
+        allow_extended: bool,
+    ) -> Result<Self> {
+        session.require(&hash, as_of_ns)?;
+        Ok(Self {
+            session,
+            hash,
+            allow_extended,
+        })
+    }
+    pub fn validate(
+        &self,
+        order: &Bracket,
+        now_ns: u64,
+        bands: Option<&Bands>,
+        policy: &RiskPolicy,
+    ) -> Result<()> {
+        use crate::session::Phase;
+        if policy.band_session != self.session.session || policy.band_provider == 0 {
+            return Err(Error::Conflict(
+                "order risk scope differs from pinned session".into(),
+            ));
+        }
+        let regular = match self.session.phase(&self.hash, now_ns)? {
+            Phase::Regular => true,
+            Phase::Premarket | Phase::Postmarket if self.allow_extended => false,
+            _ => {
+                return Err(Error::Unready(
+                    "order outside permitted trading hours".into(),
+                ))
+            }
+        };
+        order.validate(now_ns, regular, bands, policy)
+    }
+}
 impl Bracket {
     /// Structural check only; never sufficient to authorize an order.
     pub fn validate_geometry(&self, now_ns: u64) -> Result<()> {
@@ -139,13 +185,13 @@ impl OrderLedger {
         &mut self,
         bracket: Bracket,
         now_ns: u64,
-        regular: bool,
+        session: &TradingSession,
         bands: Option<&Bands>,
         policy: &RiskPolicy,
         market: crate::exposure::Check<'_>,
     ) -> Result<&OrderRecord> {
         market.require(bracket.instrument)?;
-        bracket.validate(now_ns, regular, bands, policy)?;
+        session.validate(&bracket, now_ns, bands, policy)?;
         let id = bracket.command_id.clone();
         if let Some(old) = self.records.get(&id) {
             if old.bracket != bracket {
@@ -192,15 +238,13 @@ impl OrderLedger {
         &mut self,
         id: &str,
         now_ns: u64,
-        regular: bool,
+        session: &TradingSession,
         bands: Option<&Bands>,
         policy: &RiskPolicy,
         market: crate::exposure::Check<'_>,
     ) -> Result<()> {
         market.require(self.record(id)?.bracket.instrument)?;
-        self.record(id)?
-            .bracket
-            .validate(now_ns, regular, bands, policy)?;
+        session.validate(&self.record(id)?.bracket, now_ns, bands, policy)?;
         let r = self.record_mut(id)?;
         if r.state != OrderState::Durable {
             return Err(Error::Unready(
@@ -252,6 +296,26 @@ impl OrderLedger {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn session(regular: bool) -> TradingSession {
+        // Synthetic nanosecond geometry tests the core without timezone I/O.
+        let session = crate::session::Session {
+            exchange: "XNYS".into(),
+            session: 20260915,
+            previous_trading_session: 20260914,
+            extended: crate::coverage::Interval {
+                start: 1,
+                end: 2000,
+            },
+            regular: crate::coverage::Interval {
+                start: if regular { 1 } else { 500 },
+                end: 1500,
+            },
+            available_at_ns: 1,
+            source_manifest_hash: "a".repeat(64),
+        };
+        let hash = content_hash(&session).unwrap();
+        TradingSession::new(session, hash, 1, true).unwrap()
+    }
     fn b() -> Bracket {
         Bracket {
             price_scale: 2,
@@ -340,7 +404,7 @@ mod tests {
         let gate = ready_gate();
         let mut ledger = OrderLedger::default();
         ledger
-            .authorize(b(), 10, true, Some(&bands), &policy, gate.at(10))
+            .authorize(b(), 10, &session(true), Some(&bands), &policy, gate.at(10))
             .unwrap();
         ledger
             .mark_durable("c", &ledger.envelope_hash("c").unwrap())
@@ -348,17 +412,31 @@ mod tests {
         let mut restamped = bands.clone();
         restamped.available_at_ns = 102;
         assert!(ledger
-            .begin_submit("c", 102, true, Some(&restamped), &policy, gate.at(10))
+            .begin_submit(
+                "c",
+                102,
+                &session(true),
+                Some(&restamped),
+                &policy,
+                gate.at(10)
+            )
             .is_err());
         assert_eq!(ledger.records["c"].state, OrderState::Durable);
         let mut wrong_session = bands.clone();
         wrong_session.session -= 1;
         assert!(ledger
-            .begin_submit("c", 10, true, Some(&wrong_session), &policy, gate.at(10))
+            .begin_submit(
+                "c",
+                10,
+                &session(true),
+                Some(&wrong_session),
+                &policy,
+                gate.at(10)
+            )
             .is_err());
         assert_eq!(ledger.records["c"].state, OrderState::Durable);
         ledger
-            .begin_submit("c", 10, true, Some(&bands), &policy, gate.at(10))
+            .begin_submit("c", 10, &session(true), Some(&bands), &policy, gate.at(10))
             .unwrap();
         assert_eq!(ledger.records["c"].state, OrderState::Submitting);
         for field in [
@@ -388,18 +466,18 @@ mod tests {
             max_band_age_ns: 100,
         };
         let mut l = OrderLedger::default();
-        l.authorize(b(), 10, false, None, &policy, gate.at(10))
+        l.authorize(b(), 10, &session(false), None, &policy, gate.at(10))
             .unwrap();
         assert!(l
-            .begin_submit("c", 10, false, None, &policy, gate.at(10))
+            .begin_submit("c", 10, &session(false), None, &policy, gate.at(10))
             .is_err());
         let hash = l.envelope_hash("c").unwrap();
         l.mark_durable("c", &hash).unwrap();
-        l.begin_submit("c", 10, false, None, &policy, gate.at(10))
+        l.begin_submit("c", 10, &session(false), None, &policy, gate.at(10))
             .unwrap();
         l.submission_unknown("c").unwrap();
         assert!(l
-            .begin_submit("c", 10, false, None, &policy, gate.at(10))
+            .begin_submit("c", 10, &session(false), None, &policy, gate.at(10))
             .is_err());
         l.reconcile("c", "broker-1".into(), 2).unwrap();
         assert_eq!(l.records["c"].state, OrderState::PartiallyFilled);
@@ -414,13 +492,56 @@ mod tests {
             max_band_age_ns: 100,
         };
         let mut l = OrderLedger::default();
-        l.authorize(b(), 10, false, None, &policy, gate.at(10))
+        l.authorize(b(), 10, &session(false), None, &policy, gate.at(10))
             .unwrap();
         let hash = l.envelope_hash("c").unwrap();
         l.mark_durable("c", &hash).unwrap();
         assert!(l
-            .begin_submit("c", 1000, false, None, &policy, gate.at(10))
+            .begin_submit("c", 1000, &session(false), None, &policy, gate.at(10))
             .is_err());
+    }
+    #[test]
+    fn phase_is_rechecked_after_durability_without_changing_order_state() {
+        let gate = ready_gate();
+        let calendar = session(false);
+        let policy = RiskPolicy {
+            band_provider: 1,
+            band_session: 20260915,
+            band_buffer_ticks: 3,
+            max_band_age_ns: 100,
+        };
+        let mut order = b();
+        order.deadline_ns = 3000;
+        let mut ledger = OrderLedger::default();
+        ledger
+            .authorize(order, 10, &calendar, None, &policy, gate.at(10))
+            .unwrap();
+        ledger
+            .mark_durable("c", &ledger.envelope_hash("c").unwrap())
+            .unwrap();
+        // UTC and local monotonic clocks are independent. Keep healthy monotonic
+        // evidence so failure specifically exercises the calendar/LULD gate.
+        for utc in [500, 2000] {
+            assert!(ledger
+                .begin_submit("c", utc, &calendar, None, &policy, gate.at(10))
+                .is_err());
+            assert_eq!(ledger.records["c"].state, OrderState::Durable);
+        }
+        let bands = Bands {
+            provider: 1,
+            instrument: 1,
+            session: 20260915,
+            scale: 2,
+            lower: 85,
+            upper: 115,
+            effective_at_ns: 500,
+            available_at_ns: 500,
+            official: true,
+        };
+        ledger
+            .begin_submit("c", 500, &calendar, Some(&bands), &policy, gate.at(10))
+            .unwrap();
+        assert_eq!(ledger.records["c"].state, OrderState::Submitting);
     }
     fn ready_gate() -> crate::exposure::Gate {
         let mut g = crate::exposure::Gate::new(100, 4).unwrap();
@@ -444,14 +565,14 @@ mod tests {
         };
         let mut ledger = OrderLedger::default();
         ledger
-            .authorize(b(), 10, false, None, &policy, gate.at(10))
+            .authorize(b(), 10, &session(false), None, &policy, gate.at(10))
             .unwrap();
         let hash = ledger.envelope_hash("c").unwrap();
         ledger.mark_durable("c", &hash).unwrap();
         gate.update(1, crate::events::EventKind::Quote, 11, false)
             .unwrap();
         assert!(ledger
-            .begin_submit("c", 12, false, None, &policy, gate.at(12))
+            .begin_submit("c", 12, &session(false), None, &policy, gate.at(12))
             .is_err());
         assert_eq!(ledger.records["c"].state, OrderState::Durable);
     }

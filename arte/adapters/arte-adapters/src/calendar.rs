@@ -29,6 +29,14 @@ impl PinnedSession {
     pub fn hash(&self) -> &str {
         &self.hash
     }
+    pub fn order_session(&self, allow_extended: bool) -> Result<arte_core::orders::TradingSession> {
+        arte_core::orders::TradingSession::new(
+            self.session.clone(),
+            self.hash.clone(),
+            self.session.available_at_ns,
+            allow_extended,
+        )
+    }
     /// Price/session safety only. Funding, feed health, durable authorization and
     /// broker protection acceptance remain separate required checks.
     pub fn validate_bracket(
@@ -39,22 +47,8 @@ impl PinnedSession {
         bands: Option<&arte_core::orders::Bands>,
         policy: &arte_core::orders::RiskPolicy,
     ) -> Result<()> {
-        use arte_core::session::Phase;
-        if policy.band_session != self.session.session || policy.band_provider == 0 {
-            return Err(Error::Conflict(
-                "order risk scope differs from pinned session".into(),
-            ));
-        }
-        let regular = match self.session.phase(&self.hash, now_ns)? {
-            Phase::Regular => true,
-            Phase::Premarket | Phase::Postmarket if allow_extended => false,
-            _ => {
-                return Err(Error::Unready(
-                    "order outside permitted trading hours".into(),
-                ))
-            }
-        };
-        order.validate(now_ns, regular, bands, policy)
+        self.order_session(allow_extended)?
+            .validate(order, now_ns, bands, policy)
     }
     pub fn require_regular(&self, scope: arte_core::event_order::Scope, now_ns: u64) -> Result<()> {
         if scope.session != self.session.session || scope.instrument == 0 || scope.provider == 0 {

@@ -6,6 +6,25 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Mandatory session policy in the order ledger
+
+Order authorization and submission now require a pinned `TradingSession`.
+Neither ledger operation accepts a caller-supplied regular-hours boolean.
+Both re-evaluate the actual phase and check the risk policy's session identity.
+The adapter constructs this reusable policy from its timezone-validated calendar.
+The adapter's bracket helper delegates to the same core validation authority.
+
+All 257 offline Rust tests, formatting, Clippy and frozen-source hashes pass.
+A new regression authorizes a bracket in premarket, records durability, then
+attempts submission at the regular open without LULD evidence. Submission fails
+and the order remains durable. Closed-session submission also fails. Fresh valid
+bands permit the regular-hours transition. Existing ambiguity, expiry and feed
+health tests use the new mandatory session contract.
+
+This proves the in-process ledger gate, not a complete broker workflow. Calendar
+source certification, immutable authorization-context persistence, broker transport
+and full account reconciliation remain incomplete. No services were started.
+
 ## Pinned runtime session and bracket phase checks
 
 The adapter now provides an immutable pinned session handle. Construction checks
