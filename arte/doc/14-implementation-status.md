@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 195 in-process Rust tests passed (136 core and 59 adapter tests).
+- 196 in-process Rust tests passed (136 core and 60 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -718,3 +718,13 @@ accounts, ambiguous-write retry, blocked overtaking, strategy exit and capacity.
 All 195 tests pass. Tests use an in-memory publisher, not ClickHouse. Market/V7 and
 candidate scheduling, portfolio cash updates, coherent restart, byte-level memory
 budgets and the executable backtest driver remain incomplete. No service ran.
+
+The historical execution lane's production submission entry point now requires a
+funded plan. It recomputes exact cash/risk requirements, matches funding evidence
+and requires the matching reservation to remain held. Balance freshness and total
+reserved cash are checked while holding the account mutex through the bounded
+simulator transition. The direct raw-bracket shortcut exists only in unit tests.
+One offline test covers missing/released reservations, changed funding, stale
+balances and exact submission retry. All 196 tests pass. This adds no broker or
+network capability. Durable account recovery, run/mandate provenance, fill-driven
+cash updates and full strategy-to-execution scheduling remain incomplete.

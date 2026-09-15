@@ -83,6 +83,43 @@ impl Portfolio {
             .map_err(|_| Error::Unready("account lock poisoned".into()))?;
         Ok(a.reservations.remove(command).is_some())
     }
+    /// Execute a bounded, non-I/O transition while the exact reservation is held.
+    /// The callback must not re-enter this account's portfolio methods.
+    pub fn with_reservation<T>(
+        &self,
+        account: &str,
+        expected: &Reservation,
+        now_ns: u64,
+        execute: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        let a = self
+            .accounts
+            .get(account)
+            .ok_or_else(|| Error::Invalid("account not allowed".into()))?
+            .lock()
+            .map_err(|_| Error::Unready("account lock poisoned".into()))?;
+        if a.reservations.get(&expected.command_id) != Some(expected) {
+            return Err(Error::Unready(
+                "matching cash reservation is not held".into(),
+            ));
+        }
+        if a.balance_at_ns > now_ns || now_ns - a.balance_at_ns > a.max_balance_age_ns {
+            return Err(Error::Unready(
+                "account balance stale at execution transition".into(),
+            ));
+        }
+        let total = a
+            .reservations
+            .values()
+            .try_fold(0_u64, |sum, r| sum.checked_add(r.cash_minor))
+            .ok_or_else(|| Error::Invalid("reserved cash overflow".into()))?;
+        if total > a.budget_minor.min(a.broker_available_minor) {
+            return Err(Error::Unready(
+                "held cash exceeds current account allowance".into(),
+            ));
+        }
+        execute()
+    }
     pub fn snapshot(&self, account: &str) -> Result<Account> {
         Ok(self
             .accounts

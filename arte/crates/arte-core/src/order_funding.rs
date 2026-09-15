@@ -15,7 +15,7 @@ pub struct Policy {
     pub maximum_order_risk_minor: u64,
     pub fee_reserve_minor: u64,
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Funding {
     pub command_id: String,
     pub account: String,
@@ -135,8 +135,7 @@ fn money(price: u64, quantity: u64, price_scale: u8, currency_scale: u8) -> Resu
 }
 /// Caller must certify account and instrument settlement currency equality. Risk
 /// here is nominal entry-to-stop distance, not a guaranteed maximum realized loss.
-pub fn reserve(
-    portfolio: &Portfolio,
+pub fn requirements(
     plan: &Plan,
     policy: &Policy,
     now_ns: u64,
@@ -187,12 +186,25 @@ pub fn reserve(
         stop_risk_minor: stop_risk,
         plan_hash: crate::content_hash(plan)?,
     };
+    Ok(funding)
+}
+pub fn reserve(
+    portfolio: &Portfolio,
+    plan: &Plan,
+    policy: &Policy,
+    now_ns: u64,
+    regular: bool,
+    bands: Option<&Bands>,
+    risk: &RiskPolicy,
+) -> Result<Funding> {
+    let funding = requirements(plan, policy, now_ns, regular, bands, risk)?;
+    let bracket = &plan.bracket;
     portfolio.reserve(
         &bracket.account,
         Reservation {
             command_id: bracket.command_id.clone(),
             instrument: bracket.instrument,
-            cash_minor: cash,
+            cash_minor: funding.cash_minor,
         },
         now_ns,
     )?;

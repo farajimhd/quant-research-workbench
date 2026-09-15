@@ -5,7 +5,6 @@ use arte_core::{
     content_hash,
     execution_events::Fill,
     execution_positions::{Key, Position, Projection},
-    orders::Bracket,
     simulated_execution::{Amendment, Quote, Simulator},
     Error, Result,
 };
@@ -25,6 +24,17 @@ pub struct Runtime {
     simulator: Simulator,
     projection: Projection,
     pending: Option<Pending>,
+}
+pub struct Submission<'a> {
+    pub plan: &'a arte_core::decision_orders::Plan,
+    pub funding: &'a arte_core::order_funding::Funding,
+    pub portfolio: &'a arte_core::portfolio::Portfolio,
+    pub cash_policy: &'a arte_core::order_funding::Policy,
+    pub risk_policy: &'a arte_core::orders::RiskPolicy,
+    pub bands: Option<&'a arte_core::orders::Bands>,
+    pub regular: bool,
+    pub now_ns: u64,
+    pub latency_ns: u64,
 }
 impl Runtime {
     pub fn new(
@@ -72,9 +82,45 @@ impl Runtime {
     pub fn position(&self, key: &Key) -> Option<&Position> {
         self.projection.position(key)
     }
-    pub fn submit(&mut self, bracket: Bracket, now_ns: u64, latency_ns: u64) -> Result<()> {
+    #[cfg(test)]
+    fn submit(
+        &mut self,
+        bracket: arte_core::orders::Bracket,
+        now_ns: u64,
+        latency_ns: u64,
+    ) -> Result<()> {
         self.ready()?;
         self.simulator.submit(bracket, now_ns, latency_ns)
+    }
+    pub fn submit_reserved(&mut self, request: Submission<'_>) -> Result<()> {
+        self.ready()?;
+        let expected = arte_core::order_funding::requirements(
+            request.plan,
+            request.cash_policy,
+            request.now_ns,
+            request.regular,
+            request.bands,
+            request.risk_policy,
+        )?;
+        if &expected != request.funding {
+            return Err(Error::Conflict(
+                "simulation funding differs from approved plan requirements".into(),
+            ));
+        }
+        let b = &request.plan.bracket;
+        request.portfolio.with_reservation(
+            &b.account,
+            &arte_core::portfolio::Reservation {
+                command_id: b.command_id.clone(),
+                instrument: b.instrument,
+                cash_minor: expected.cash_minor,
+            },
+            request.now_ns,
+            || {
+                self.simulator
+                    .submit(b.clone(), request.now_ns, request.latency_ns)
+            },
+        )
     }
     pub fn amend(
         &mut self,
@@ -147,6 +193,68 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arte_core::orders::Bracket;
+    #[test]
+    fn reserved_submission_requires_matching_funding_and_held_cash() {
+        let mut runtime = Runtime::new(
+            Simulator::new_scoped("r", 1, 2, 2, 10000).unwrap(),
+            Projection::new(2, 10, 4).unwrap(),
+            4,
+        )
+        .unwrap();
+        let plan = arte_core::decision_orders::Plan {
+            decision_id: "d".into(),
+            action_index: 0,
+            bracket: bracket("a"),
+        };
+        let portfolio = arte_core::portfolio::Portfolio::new(BTreeMap::from([(
+            "a".into(),
+            arte_core::portfolio::Account {
+                budget_minor: 1000,
+                broker_available_minor: 1000,
+                balance_at_ns: 0,
+                max_balance_age_ns: 10,
+                reservations: BTreeMap::new(),
+            },
+        )]))
+        .unwrap();
+        let cash = arte_core::order_funding::Policy {
+            currency_scale: 2,
+            maximum_order_cash_minor: 1000,
+            maximum_order_risk_minor: 100,
+            fee_reserve_minor: 1,
+        };
+        let risk = arte_core::orders::RiskPolicy {
+            band_buffer_ticks: 3,
+            max_band_age_ns: 10,
+        };
+        let funding =
+            arte_core::order_funding::requirements(&plan, &cash, 1, false, None, &risk).unwrap();
+        let submit =
+            |runtime: &mut Runtime, funding: &arte_core::order_funding::Funding, now_ns| {
+                runtime.submit_reserved(Submission {
+                    plan: &plan,
+                    funding,
+                    portfolio: &portfolio,
+                    cash_policy: &cash,
+                    risk_policy: &risk,
+                    bands: None,
+                    regular: false,
+                    now_ns,
+                    latency_ns: 0,
+                })
+            };
+        assert!(submit(&mut runtime, &funding, 1).is_err());
+        arte_core::order_funding::reserve(&portfolio, &plan, &cash, 1, false, None, &risk).unwrap();
+        let mut wrong = funding.clone();
+        wrong.cash_minor -= 1;
+        assert!(submit(&mut runtime, &wrong, 1).is_err());
+        assert!(submit(&mut runtime, &funding, 11).is_err());
+        submit(&mut runtime, &funding, 1).unwrap();
+        submit(&mut runtime, &funding, 1).unwrap();
+        portfolio.release("a", "a").unwrap();
+        assert!(submit(&mut runtime, &funding, 1).is_err());
+    }
     use std::collections::BTreeMap;
     fn bracket(account: &str) -> Bracket {
         Bracket {
