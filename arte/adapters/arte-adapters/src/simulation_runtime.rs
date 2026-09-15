@@ -24,6 +24,8 @@ pub struct Runtime {
     simulator: Simulator,
     projection: Projection,
     pending: Option<Pending>,
+    source: Option<arte_core::event_order::Scope>,
+    last_source_quote: Option<(arte_core::events::Observation, u64, u64)>,
 }
 pub struct Submission<'a> {
     pub plan: &'a arte_core::decision_orders::Plan,
@@ -54,6 +56,8 @@ impl Runtime {
             simulator,
             projection,
             pending: None,
+            source: None,
+            last_source_quote: None,
         })
     }
     fn ready(&self) -> Result<()> {
@@ -81,6 +85,61 @@ impl Runtime {
     }
     pub fn position(&self, key: &Key) -> Option<&Position> {
         self.projection.position(key)
+    }
+    /// Bind the historical provider/session once. Changing source needs a new run.
+    pub fn bind_source(&mut self, scope: arte_core::event_order::Scope) -> Result<()> {
+        arte_core::quote_state::Book::new(scope)?;
+        if scope.instrument != self.simulator.instrument()
+            || self.source.is_some_and(|previous| previous != scope)
+        {
+            return Err(Error::Conflict("simulation source binding differs".into()));
+        }
+        self.source = Some(scope);
+        Ok(())
+    }
+    /// Production historical input uses the same executable quote checks as live.
+    /// Retry with the original replay sequence and modeled clock while fills await
+    /// publication. A later quote cannot overtake those pending fills.
+    pub fn quote_book(
+        &mut self,
+        book: &arte_core::quote_state::Book,
+        sequence: u64,
+        at_ns: u64,
+        maximum_age_ns: u64,
+    ) -> Result<()> {
+        let scope = self
+            .source
+            .ok_or_else(|| Error::Unready("simulation source not bound".into()))?;
+        let quote = Quote::from_book(
+            book,
+            scope,
+            self.simulator.price_scale(),
+            sequence,
+            at_ns,
+            maximum_age_ns,
+        )?;
+        let event = book.require_executable(at_ns, maximum_age_ns)?;
+        if let Some((previous, previous_sequence, previous_at)) = &self.last_source_quote {
+            if event.key == previous.key {
+                if event.payload != previous.payload
+                    || event.sip != previous.sip
+                    || sequence != *previous_sequence
+                    || at_ns != *previous_at
+                {
+                    return Err(Error::Conflict(
+                        "source quote cannot acquire a new simulation identity".into(),
+                    ));
+                }
+            } else if (event.sip.ns, event.key.sequence) <= (previous.sip.ns, previous.key.sequence)
+            {
+                return Err(Error::Invalid(
+                    "simulation source quote order regressed".into(),
+                ));
+            }
+        }
+        self.quote(&quote)?;
+        self.last_source_quote = Some((event.clone(), sequence, at_ns));
+        Ok(())
     }
     #[cfg(test)]
     fn submit(
@@ -140,7 +199,7 @@ impl Runtime {
         self.simulator
             .acknowledge_amendment(command, revision, at_ns, amendment)
     }
-    pub fn quote(&mut self, quote: &Quote) -> Result<()> {
+    fn quote(&mut self, quote: &Quote) -> Result<()> {
         let hash = content_hash(quote)?;
         if let Some(p) = &self.pending {
             return if p.quote_hash == hash {
@@ -299,6 +358,144 @@ mod tests {
         assert!(submit(&mut runtime, &funding, 1).is_err());
     }
     use std::collections::BTreeMap;
+    fn source_quote() -> arte_core::events::Observation {
+        use arte_core::events::*;
+        Observation {
+            key: EventKey {
+                provider: 1,
+                instrument: 1,
+                session: 20260915,
+                kind: EventKind::Quote,
+                sequence: 8,
+            },
+            sip: SourceTime {
+                ns: 1,
+                precision_ns: 1,
+            },
+            participant: None,
+            receipt: None,
+            available_at_ns: 2,
+            payload: Payload::Quote {
+                bid: Decimal {
+                    atoms: 99,
+                    scale: 2,
+                },
+                ask: Decimal { atoms: 1, scale: 0 },
+                bid_size: Decimal {
+                    atoms: 10,
+                    scale: 0,
+                },
+                ask_size: Decimal {
+                    atoms: 10,
+                    scale: 0,
+                },
+                bid_exchange: 1,
+                ask_exchange: 1,
+                conditions: vec![],
+                indicators: vec![],
+            },
+        }
+    }
+    fn source_scope() -> arte_core::event_order::Scope {
+        arte_core::event_order::Scope {
+            provider: 1,
+            instrument: 1,
+            session: 20260915,
+        }
+    }
+    #[tokio::test]
+    async fn normalized_quote_uses_exact_prices_and_replay_clock_with_retry_safe_fills() {
+        let mut runtime = Runtime::new(
+            Simulator::new_scoped("r", 1, 2, 2, 10000).unwrap(),
+            Projection::new(2, 10, 4).unwrap(),
+            4,
+        )
+        .unwrap();
+        runtime.submit(bracket("a"), 0, 0).unwrap();
+        let mut book = arte_core::quote_state::Book::new(source_scope()).unwrap();
+        let raw = source_quote();
+        let raw_hash = content_hash(&raw).unwrap();
+        book.observe(&raw).unwrap();
+        assert!(runtime.quote_book(&book, 1, 2, 10).is_err());
+        runtime.bind_source(source_scope()).unwrap();
+        runtime.bind_source(source_scope()).unwrap();
+        assert!(runtime
+            .bind_source(arte_core::event_order::Scope {
+                provider: 2,
+                ..source_scope()
+            })
+            .is_err());
+        assert!(runtime.quote_book(&book, 1, 1, 10).is_err());
+        assert!(runtime.quote_book(&book, 1, 11, 10).is_err());
+        assert_eq!(runtime.status().pending_fills, 0);
+        runtime.quote_book(&book, 1, 2, 10).unwrap();
+        assert_eq!(runtime.status().pending_fills, 1);
+        runtime.quote_book(&book, 1, 2, 10).unwrap();
+        assert!(runtime.quote_book(&book, 1, 3, 10).is_err());
+        let mut store = Store {
+            fail: true,
+            calls: 0,
+            rows: BTreeMap::new(),
+        };
+        assert!(runtime.commit_next(&mut store).await.is_err());
+        runtime.quote_book(&book, 1, 2, 10).unwrap();
+        runtime.commit_next(&mut store).await.unwrap();
+        let fill: Fill = serde_json::from_str(store.rows.values().next().unwrap()).unwrap();
+        assert_eq!((fill.price, fill.at_ns, fill.sequence), (100, 2, 1));
+        assert_eq!(
+            runtime
+                .position(&Key::from_fill(&fill).unwrap())
+                .unwrap()
+                .quantity,
+            1
+        );
+        runtime.quote_book(&book, 1, 2, 10).unwrap();
+        assert_eq!(runtime.status().pending_fills, 0);
+        assert!(runtime.quote_book(&book, 2, 3, 10).is_err());
+        assert_eq!(runtime.status().pending_fills, 0);
+        assert_eq!(content_hash(book.latest().unwrap()).unwrap(), raw_hash);
+        assert!(book.latest().unwrap().receipt.is_none());
+    }
+    #[test]
+    fn normalized_quote_rejects_wrong_scope_precision_and_non_executable_book() {
+        use arte_core::events::{Decimal, Payload};
+        let convert = |event: arte_core::events::Observation, scale| {
+            let mut book = arte_core::quote_state::Book::new(source_scope()).unwrap();
+            book.observe(&event).unwrap();
+            Quote::from_book(&book, source_scope(), scale, 1, 2, 10)
+        };
+        assert!(convert(source_quote(), 1).is_err());
+        let mut fractional = source_quote();
+        if let Payload::Quote { ask_size, .. } = &mut fractional.payload {
+            *ask_size = Decimal {
+                atoms: 15,
+                scale: 1,
+            };
+        }
+        assert!(convert(fractional, 2).is_err());
+        for bid in [100, 101] {
+            let mut crossed = source_quote();
+            if let Payload::Quote { bid: value, .. } = &mut crossed.payload {
+                value.atoms = bid;
+            }
+            assert!(convert(crossed, 2).is_err());
+        }
+        let mut book = arte_core::quote_state::Book::new(source_scope()).unwrap();
+        book.observe(&source_quote()).unwrap();
+        assert!(Quote::from_book(
+            &book,
+            arte_core::event_order::Scope {
+                session: 20260916,
+                ..source_scope()
+            },
+            2,
+            1,
+            2,
+            10
+        )
+        .is_err());
+        assert!(Quote::from_book(&book, source_scope(), 2, 0, 2, 10).is_err());
+    }
     #[test]
     fn pinned_calendar_controls_historical_submission_before_simulator_mutation() {
         use arte_core::{

@@ -6,6 +6,31 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Normalized quotes feed historical execution
+
+The historical execution adapter now accepts the shared quote book instead of
+public raw integer quotes. Its source is bound once to provider, instrument and
+session. Conversion uses the simulator's instrument price scale and the shared
+quote freshness and executability checks. Locked, crossed, empty, stale and future
+quotes cannot generate fills through this path.
+
+Prices are rescaled exactly. Fractional displayed sizes that the current whole-share
+fill model cannot represent are rejected, not rounded. Source timestamps remain
+unchanged. Simulation sequence and time are explicitly supplied replay-clock values.
+The same source quote cannot acquire a new simulation identity to replenish its
+displayed liquidity. Exact retries retain the original pending fills through journal
+failure and subsequent publication.
+
+Offline tests cover normalized quote-to-fill-to-position processing, source binding,
+exact conversion, freshness failures, duplicate liquidity prevention and publication
+retry. All 298 Rust tests, formatting, Clippy and copied-source hash checks pass.
+No services, broker calls or database writes ran. Source-oracle parity was not rerun.
+
+The merged trade/quote playback controller and complete source-bound restart state
+remain unfinished. Quote-condition eligibility, full-run manifests and end-to-end
+strategy scheduling still need integration. The shared book checks are not a claim
+that all exchange-specific quote eligibility rules have been implemented.
+
 ## Offline playback and debug controls
 
 The shared market scheduler now has an in-process playback controller. It supports

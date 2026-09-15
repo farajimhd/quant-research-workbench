@@ -19,6 +19,53 @@ pub struct Quote {
     pub bid_size: u64,
     pub ask_size: u64,
 }
+impl Quote {
+    /// Convert the shared executable quote view without modifying source clocks.
+    /// `sequence` and `at_ns` belong to the explicitly modeled replay clock.
+    pub fn from_book(
+        book: &crate::quote_state::Book,
+        scope: crate::event_order::Scope,
+        scale: u8,
+        sequence: u64,
+        at_ns: u64,
+        maximum_age_ns: u64,
+    ) -> Result<Self> {
+        let event = book.require_executable(at_ns, maximum_age_ns)?;
+        if sequence == 0
+            || event.key.provider != scope.provider
+            || event.key.instrument != scope.instrument
+            || event.key.session != scope.session
+        {
+            return Err(Error::Conflict(
+                "simulation quote source or replay sequence differs".into(),
+            ));
+        }
+        let crate::events::Payload::Quote {
+            bid,
+            ask,
+            bid_size,
+            ask_size,
+            ..
+        } = event.payload
+        else {
+            return Err(Error::Invalid(
+                "simulation quote source is not a quote".into(),
+            ));
+        };
+        let size = |value: crate::events::Decimal| -> Result<u64> {
+            u64::try_from(value.atoms_at_scale(0)?)
+                .map_err(|_| Error::Invalid("negative simulated size".into()))
+        };
+        Ok(Self {
+            sequence,
+            at_ns,
+            bid: bid.atoms_at_scale(scale)?,
+            ask: ask.atoms_at_scale(scale)?,
+            bid_size: size(bid_size)?,
+            ask_size: size(ask_size)?,
+        })
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,6 +313,12 @@ impl Simulator {
     }
     pub fn run_id(&self) -> &str {
         &self.run_id
+    }
+    pub fn instrument(&self) -> u64 {
+        self.instrument
+    }
+    pub fn price_scale(&self) -> u8 {
+        self.scale
     }
     pub fn maximum_quote_fills(&self) -> usize {
         self.capacity * 2
