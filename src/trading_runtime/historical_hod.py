@@ -27,7 +27,7 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     luld_buffer_bps=25.,luld_buffer_ticks=2,luld_maximum_age_ms=60000.,v7_zone_enabled=0,entry_zone_fraction=.30,
     v7_center_swing_enabled=0,v7_transition_entries_enabled=0,v7_price_only_enabled=0,rejection_break_offset_bps=0.,
     v7_setup_enabled=0,setup_failure_seconds=0,setup_failure_buffer_ticks=1.,setup_minimum_body_bps=0.,setup_trail_requires_breakout=0,setup_trail_activation_r=0.,setup_recovery_preserve_peak=0,setup_recovery_enabled=0,setup_add_requires_range_breakout=1,setup_range_seconds=30,setup_minimum_bars=5,
-    setup_minimum_quote_clearance_spreads=0.,setup_trail_requires_current_gain=0,setup_phase_minimum_progress_r=0.,
+    setup_minimum_quote_clearance_spreads=0.,setup_trail_requires_current_gain=0,setup_trail_current_gain_requires_bid=1,setup_phase_minimum_progress_r=0.,
     setup_failure_exit_enabled=1,setup_recovery_unprotected_reentry=0,setup_recovery_entry_reclaim=0,setup_recovery_regular_base=0,
     setup_minimum_60s_progress_pct=0.,setup_minimum_300s_range_pct=0.,setup_add_maximum_upper_wick_fraction=1.,
     setup_acquisition_quality_enabled=0,setup_initial_tranche_fraction=1.,
@@ -79,13 +79,15 @@ def configure(p):
         raise ValueError('Minimum trail progress requires V7 setup swing protection')
     if type(s['setup_trail_requires_current_gain']) not in (int,float) or s['setup_trail_requires_current_gain'] not in (0,1):
         raise ValueError('Current trail gain must be a numeric boolean switch')
+    if type(s['setup_trail_current_gain_requires_bid']) not in (int,float) or s['setup_trail_current_gain_requires_bid'] not in (0,1):
+        raise ValueError('Current trail bid requirement must be a numeric boolean switch')
     if s['setup_trail_requires_current_gain'] and not (s['v7_setup_enabled'] and s['v7_center_swing_enabled']):
         raise ValueError('Current trail gain requires V7 setup swing protection')
     if s['setup_phase_minimum_progress_r'] and not s['v7_setup_enabled']:
         raise ValueError('Phase progress requires V7 setup')
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_phase_minimum_progress_r','setup_trail_requires_current_gain','setup_recovery_regular_base','setup_base_maximum_extension_fraction','setup_recovery_entry_reclaim','setup_recovery_unprotected_reentry','setup_minimum_300s_range_pct','setup_minimum_60s_progress_pct','setup_add_maximum_upper_wick_fraction','setup_failure_exit_enabled','setup_base_recovery_maximum_range_pct','setup_minimum_trail_progress_r','setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_trail_current_gain_requires_bid','setup_phase_minimum_progress_r','setup_trail_requires_current_gain','setup_recovery_regular_base','setup_base_maximum_extension_fraction','setup_recovery_entry_reclaim','setup_recovery_unprotected_reentry','setup_minimum_300s_range_pct','setup_minimum_60s_progress_pct','setup_add_maximum_upper_wick_fraction','setup_failure_exit_enabled','setup_base_recovery_maximum_range_pct','setup_minimum_trail_progress_r','setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
         raise ValueError('Historical HOD settings must be finite and positive')
     if not 0 <= s['setup_failure_seconds'] <= 5 or int(s['setup_failure_seconds']) != s['setup_failure_seconds']:
         raise ValueError('Initial setup failure window must be zero to five completed seconds')
@@ -971,10 +973,12 @@ def evaluate(host, a, o, p, state):
             active['fill_risk_frozen'] = True
         initial_fill = active.get('initial_fill_price',0)
         trail_current_ready = (not s['setup_trail_requires_current_gain'] or
-            initial_fill > 0 and min(o.price,o.bid) >= initial_fill)
+            initial_fill > 0 and o.price >= initial_fill and
+            (not s['setup_trail_current_gain_requires_bid'] or o.bid >= initial_fill))
         if s['setup_trail_requires_current_gain']:
             evidence['setup_trail_current_gain']=dict(initial_fill=initial_fill,
-                current_price=o.price,bid=o.bid,ready=trail_current_ready,observed_at=now)
+                current_price=o.price,bid=o.bid,requires_bid=bool(s['setup_trail_current_gain_requires_bid']),
+                ready=trail_current_ready,observed_at=now)
         if fresh:
             active.pop('desired_target',None)
             if s['early_green_stop_enabled']:

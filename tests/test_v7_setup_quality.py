@@ -424,13 +424,15 @@ def test_minimum_trail_progress_requires_actual_fill_and_positive_initial_risk()
 
 
 @pytest.mark.parametrize('pending',[False,True])
-@pytest.mark.parametrize('enabled,price,bid,allowed',[
-    (0,10.04,10.03,True),(1,10.04,10.03,False),
-    (1,10.06,10.04,False),(1,10.06,10.05,True)])
-def test_current_gain_guards_new_and_pending_swing_stops(pending,enabled,price,bid,allowed):
+@pytest.mark.parametrize('enabled,requires_bid,price,bid,allowed',[
+    (0,1,10.04,10.03,True),(1,1,10.04,10.03,False),
+    (1,1,10.06,10.04,False),(1,1,10.06,10.05,True),
+    (1,0,10.06,10.04,True),(1,0,10.04,10.03,False),
+    (1,0,10.05,10.04,True)])
+def test_current_gain_guards_new_and_pending_swing_stops(pending,enabled,requires_bid,price,bid,allowed):
     host,a,obs=prepared()
     a.parameters['historical_hod'].update(setup_trail_requires_current_gain=enabled,
-        setup_minimum_trail_progress_r=.5)
+        setup_trail_current_gain_requires_bid=requires_bid,setup_minimum_trail_progress_r=.5)
     for bar in a.state['v7_setup']['bars']:bar['high']=10.025
     entered=host.evaluate(a,obs(2,10.02))
     state=deepcopy(entered.state)
@@ -453,10 +455,11 @@ def test_current_gain_guards_new_and_pending_swing_stops(pending,enabled,price,b
 
 
 @pytest.mark.parametrize('value',[-1,2,float('nan'),float('inf'),True])
-def test_current_gain_switch_validation(value):
+@pytest.mark.parametrize('setting',['setup_trail_requires_current_gain','setup_trail_current_gain_requires_bid'])
+def test_current_gain_switch_validation(value,setting):
     from src.trading_runtime.historical_hod import configure
     _,a,_=prepared()
-    a.parameters['historical_hod']['setup_trail_requires_current_gain']=value
+    a.parameters['historical_hod'][setting]=value
     with pytest.raises(ValueError):configure(a.parameters)
 
 
