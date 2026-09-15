@@ -93,9 +93,10 @@ def test_pending_acquisition_rechecks_alternative_evidence(failure):
     assert result.evaluation.signals[0].reason == ('entry_acquisition_invalidated' if failure else 'historical_hod_entry')
 
 
-@pytest.mark.parametrize('failure', [None, 'protected', 'unknown_protection', 'old_base', 'failed_entry', 'disabled'])
+@pytest.mark.parametrize('failure', [None, 'protected', 'unknown_protection', 'old_base', 'failed_entry', 'disabled', 'profitable', 'unknown_outcome', 'future_outcome', 'wrong_entry'])
 def test_independent_base_only_releases_unprotected_prior_attempt(failure):
-    prior = dict(at=10., initial_fill_price=11., stop_above_initial_fill=False,
+    prior = dict(at=10., entry_at=1., initial_fill_price=11., stop_above_initial_fill=False,
+        completed_trade_outcome=dict(status='verified', entry_at=1., closed_at=9., net_pnl=-1.),
         stop=10.8, body_high=12., setup=dict(phase='post_breakout', breakout_threshold=12.))
     state = dict(last_exit=prior, range=dict(start=11., end=18.))
     swing = dict(pivot_at=15., confirmed_at=19., lower=9.9)
@@ -107,6 +108,14 @@ def test_independent_base_only_releases_unprotected_prior_attempt(failure):
         state['range']['start'] = 9.
     elif failure == 'failed_entry':
         prior['setup']['entry_failure_recovery'] = 11.
+    elif failure == 'profitable':
+        prior['completed_trade_outcome']['net_pnl'] = 1.
+    elif failure == 'unknown_outcome':
+        prior.pop('completed_trade_outcome')
+    elif failure == 'future_outcome':
+        prior['completed_trade_outcome']['closed_at'] = 11.
+    elif failure == 'wrong_entry':
+        prior['completed_trade_outcome']['entry_at'] = 2.
     reason, phase = V.recovery_permission(state, swing, dict(bar=dict(end=20., close=10.1)),
         independent_base=failure != 'disabled', stop_gain_guard=True,
         unprotected_reentry=True, entry_reclaim=True)

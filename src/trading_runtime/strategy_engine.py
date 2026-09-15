@@ -312,6 +312,7 @@ class StrategyObservation:
     position_quantity: float = 0.0
     pending_exit_quantity: float = 0.0
     average_price: float = 0.0
+    completed_trade_outcome: dict[str, Any] | None = None
     previous_close: float | None = None
     previous_high: float | None = None
     swing_high: float | None = None
