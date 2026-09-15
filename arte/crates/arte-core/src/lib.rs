@@ -15,6 +15,7 @@ pub mod exposure;
 pub mod journal;
 pub mod latency;
 pub mod market;
+pub mod market_structure;
 pub mod order_funding;
 pub mod orders;
 pub mod portfolio;

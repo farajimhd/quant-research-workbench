@@ -825,3 +825,12 @@ with the shared indicator implementation. All 209 Rust tests, formatting, static
 checks and source hashes pass. The first static-check run found an unnecessary
 binding; it was removed and full validation passed. V7 warming, certified handover,
 series persistence and strategy scheduling remain incomplete. No service ran.
+
+The market/structure bridge now initializes streaming V7 from its historical seed
+and feeds completed one-second bars from the retained market series. Its clock
+contract explicitly uses bar-end seconds. Session and observation clocks are checked.
+Late events and calculation failures latch a recovery requirement and hide both
+market and level projections. One offline test covers completed-bar advancement
+and projection blocking after capacity failure. All 210 Rust tests, formatting,
+static checks and source hashes pass. Full historical/live clock parity, certified
+handover, coherent restart and strategy scheduling remain incomplete. No service ran.

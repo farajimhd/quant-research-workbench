@@ -46,6 +46,18 @@ Every eligible event updates the appropriate ordered market state. Developing ba
 update on arrival. Streaming V7 advances on its defined completed causal one-second
 observations. This does not require refitting V7 on every tick.
 
+The `market_structure` bridge uses end-stamped one-second observations. A market
+bar `[start_ns, end_ns)` becomes a V7 candle at `end_ns / 1_000_000_000`, only after
+completion. The bridge accepts no trade at the session's exclusive end. Historical
+adapters must use the same coordinate convention before creating input hashes;
+start-stamped source arrays must not be relabeled without an explicit conversion.
+This bridge is a new contract, not evidence of full legacy streaming parity.
+
+Market and structure updates share an owned runtime. A calculation failure or late
+event blocks both strategy-facing projections until recovery. Partial state remains
+internal and cannot supply stale levels to a strategy. The bridge itself does not
+certify coverage, establish watermarks, activate strategies or send orders.
+
 Keep detector/local-swing state, indicator state, and strategy state separate from
 the level-book authority. Include each in recovery when the strategy depends on it.
 Do not use retrospective chart candles as strategy inputs.
