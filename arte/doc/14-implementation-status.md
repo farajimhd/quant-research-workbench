@@ -747,3 +747,13 @@ execution; an offline injected-version test confirms drift is rejected. No depen
 was installed. The 196 Rust tests, formatting, static checks and source hashes also
 passed. These fixtures do not certify all-session fitting, consolidation, streaming,
 full strategy decisions or trading robustness. No services or network tests ran.
+
+The shared startup dependency planner now keeps requirements per instrument. It
+propagates declared lookbacks, merges shared work, preserves disjoint intervals,
+and records consumers and pinned implementation hashes. Missing definitions,
+cycles, invalid scopes, epoch underflow and configured node limits fail closed.
+Three new offline tests cover those cases and deterministic dependency-first plans.
+All 199 Rust tests, formatting, static checks and copied-source hashes pass.
+The plan does not certify readiness or start workers. Effective strategy declaration
+export, coverage binding and startup repair/warming orchestration remain incomplete.
+No service or network test ran. Source oracle parity was not rerun for this planner.

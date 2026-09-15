@@ -49,6 +49,19 @@ Discovery needed for admissions is included only when declared. It does not
 require the parent scanner. Newly admitted instruments cannot trade until warm.
 Lookback calculations include required pre-admission history.
 
+The shared `dependency_plan` contract represents each requested instrument,
+dependency and half-open interval explicitly. Definitions pin implementation hashes
+and declare their input dependencies and extra history. The planner propagates
+those requirements through the dependency graph. It merges overlapping or adjacent
+intervals, preserves gaps, and emits dependency-first work with strategy consumers.
+It does not create a cross product of all instruments and all dependencies.
+
+Missing definitions, cycles, unpinned implementations, invalid clocks and capacity
+violations reject the plan. Equivalent input ordering produces the same plan hash.
+The plan describes required work; it is not coverage evidence or permission to trade.
+Current declarations are caller-supplied. Exporting the effective strategy contract,
+binding certified coverage, and scheduling repair and warming remain integration work.
+
 ## Startup state machine
 
 `STOPPED -> VALIDATING -> RECEIVING_BUFFERED -> REPAIRING -> WARMING -> READY`
