@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 139 in-process Rust tests passed (115 core and 24 adapter tests).
+- 143 in-process Rust tests passed (115 core and 28 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -378,6 +378,17 @@ gate and bulk readback conflict handling. Network methods only compiled. The fin
 compact event codec, range-query index, coverage catalog, cross-batch receipt-slot
 validation, writer ownership and ingestion persistence worker remain incomplete.
 Staging storage must not be presented as the complete canonical event authority.
+
+A bounded serial event-publication worker now connects prepared batches to the
+gated ClickHouse publisher. It retains an Arc-owned pending batch through failed
+or cancelled publication futures. Exact pending work is retried before dequeuing
+another batch. Wrong batch acknowledgments fail. Progress exposes pending identity,
+attempt count and acknowledged batch identity before a slow write completes.
+Shutdown retains pending/queued work; closing input supports draining. Four offline
+fake-publisher tests cover retry order, incorrect acknowledgments, cancellation and
+in-flight progress. No database function ran. This is not process-crash durability
+or certified source coverage. Durable acquisition catalog, ingestion fan-out,
+supervisor recovery and real storage acceptance remain incomplete.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.
