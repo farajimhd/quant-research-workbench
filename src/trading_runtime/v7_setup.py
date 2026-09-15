@@ -3,6 +3,28 @@ from copy import deepcopy
 from math import isfinite
 
 
+def fresh_support_momentum(assessment, facts, *, now, maximum_age, minimum_acceleration):
+    """Alternative entry evidence; never manufactures a MACD episode."""
+    checks = assessment.get('checks') or {}
+    swing = assessment.get('swing') or {}
+    stamp = assessment.get('observed_at')
+    confirmed = swing.get('confirmed_at')
+    pivot = swing.get('pivot_at')
+    fast, slow = facts.get('trade_rate_10s'), facts.get('trade_rate_60s')
+    values = (now, stamp, confirmed, pivot, fast, slow)
+    valid = all(type(v) in (int, float) and isfinite(v) for v in values)
+    required = {'prior_range', 'fresh_support', 'rising_close', 'green_candle',
+        'risk_limit', 'range_limit', 'extension_limit'}
+    passed = bool(valid and required <= checks.keys() and all(v is True for v in checks.values())
+        and pivot <= confirmed <= stamp <= now
+        and 0 <= now-confirmed <= maximum_age and slow > 0
+        and fast/slow >= minimum_acceleration)
+    return dict(passed=passed, observed_at=stamp, support_confirmed_at=confirmed,
+        support_age_s=now-confirmed if valid else None,
+        trade_rate_acceleration=fast/slow if valid and slow > 0 else None,
+        maximum_support_age_s=maximum_age, minimum_trade_rate_acceleration=minimum_acceleration)
+
+
 def observe(state, market, settings, fresh):
     if state.get('session') != market.get('session'):
         state.clear()
@@ -138,7 +160,7 @@ def recovery_observe(state, entry, market, observation, stop, row, fresh, *, pre
         for field in ('local_swings', 'confirmed_swings')}}
 
 
-def recovery_permission(state, swing, market, *, stop_gain_guard=False, tight_base=False, unprotected_reentry=False, entry_reclaim=False, regular_session_start=0., regular_full_range=False):
+def recovery_permission(state, swing, market, *, stop_gain_guard=False, tight_base=False, unprotected_reentry=False, entry_reclaim=False, regular_session_start=0., regular_full_range=False, independent_base=False):
     previous = state.get('last_exit')
     if not previous:
         return '', 'building'
@@ -153,6 +175,15 @@ def recovery_permission(state, swing, market, *, stop_gain_guard=False, tight_ba
     # early base. Keep prior recovery evidence and require a new post-open
     # support; a position exited after the open cannot use this exception.
     base_range = state.get('range') or {}
+    # The opt-in below-VWAP branch can treat a complete post-exit base as
+    # independent of an unprotected attempt. Failed-entry reclaim above and
+    # previously protected profits keep their existing recovery requirements.
+    if (independent_base and stop_gain_guard and unprotected_reentry
+            and previous.get('initial_fill_price',0)>0
+            and previous.get('stop_above_initial_fill') is False
+            and previous['at'] < base_range.get('start',0)
+            < base_range.get('end',0) <= market['bar']['end']):
+        return '', 'building'
     full_regular_range = (base_range.get('start',0)>=regular_session_start
         and base_range.get('start',0)<base_range.get('end',0)<=market['bar'].get('end',0))
     if ((not regular_full_range or full_regular_range)
