@@ -45,6 +45,23 @@ impl Decimal {
     pub fn positive(self) -> bool {
         self.atoms > 0 && self.scale <= 9
     }
+    /// Convert to an instrument scale without rounding or loss of information.
+    pub fn atoms_at_scale(self, scale: u8) -> Result<i64> {
+        if self.scale > 9 || scale > 9 {
+            return Err(Error::Invalid("decimal scale exceeds nine places".into()));
+        }
+        if scale >= self.scale {
+            self.atoms
+                .checked_mul(10_i64.pow(u32::from(scale - self.scale)))
+                .ok_or_else(|| Error::Invalid("decimal rescale overflow".into()))
+        } else {
+            let divisor = 10_i64.pow(u32::from(self.scale - scale));
+            if self.atoms % divisor != 0 {
+                return Err(Error::Invalid("decimal rescale loses precision".into()));
+            }
+            Ok(self.atoms / divisor)
+        }
+    }
     pub fn to_f64(self) -> f64 {
         self.atoms as f64 / 10_f64.powi(self.scale as i32)
     }
@@ -307,6 +324,46 @@ mod tests {
             available_at_ns: 2_000_000,
             receipt: None,
         }
+    }
+    #[test]
+    fn decimal_rescale_is_exact_in_both_directions() {
+        assert_eq!(
+            Decimal {
+                atoms: 100,
+                scale: 2
+            }
+            .atoms_at_scale(0)
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            Decimal {
+                atoms: -123,
+                scale: 1
+            }
+            .atoms_at_scale(2)
+            .unwrap(),
+            -1230
+        );
+        assert!(Decimal {
+            atoms: 101,
+            scale: 2
+        }
+        .atoms_at_scale(1)
+        .is_err());
+        assert!(Decimal {
+            atoms: i64::MAX,
+            scale: 0
+        }
+        .atoms_at_scale(1)
+        .is_err());
+        assert!(Decimal {
+            atoms: 1,
+            scale: 10
+        }
+        .atoms_at_scale(1)
+        .is_err());
+        assert!(Decimal { atoms: 1, scale: 0 }.atoms_at_scale(10).is_err());
     }
     #[test]
     fn decimal_exact() {

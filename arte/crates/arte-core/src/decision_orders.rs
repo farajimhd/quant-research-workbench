@@ -27,15 +27,7 @@ fn exact_price(price: f64, scale: u8) -> Result<i64> {
         ));
     }
     let decimal = Decimal::parse(&price.to_string())?;
-    if decimal.scale > scale {
-        return Err(Error::Invalid(
-            "strategy price loses precision at instrument scale".into(),
-        ));
-    }
-    decimal
-        .atoms
-        .checked_mul(10_i64.pow(u32::from(scale - decimal.scale)))
-        .ok_or_else(|| Error::Invalid("strategy price conversion overflow".into()))
+    decimal.atoms_at_scale(scale)
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Plan {

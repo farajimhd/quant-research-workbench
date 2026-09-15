@@ -296,6 +296,32 @@ impl Lane {
         self.quotes
             .require_executable(now_ns, self.maximum_quote_age_ns)
     }
+    /// Session scheduling and previous-close provenance remain upstream duties.
+    /// Uses the same current quote/band owners as execution. No HTTP or floats.
+    pub fn regular_admission(
+        &self,
+        check: Check<'_>,
+        now_ns: u64,
+        previous_close: Option<arte_core::events::Decimal>,
+        policy: &arte_core::luld::Policy,
+    ) -> Result<arte_core::luld::Admission> {
+        let quote = self.executable_quote(check, now_ns)?;
+        let arte_core::events::Payload::Quote { bid, ask, .. } = quote.payload else {
+            return Err(Error::Conflict("quote owner returned a non-quote".into()));
+        };
+        let band = self.current_luld(check, now_ns, policy.scale, policy.maximum_age_ns)?;
+        arte_core::luld::regular_admission(
+            self.market.scope(),
+            now_ns,
+            previous_close
+                .map(|price| price.atoms_at_scale(policy.scale))
+                .transpose()?,
+            bid.atoms_at_scale(policy.scale)?,
+            ask.atoms_at_scale(policy.scale)?,
+            Some(band),
+            policy,
+        )
+    }
 }
 fn frontier(high: &BTreeMap<EventKind, u64>, allowance: u64, previous: u64) -> Result<u64> {
     let trade = high
@@ -535,32 +561,110 @@ mod tests {
             provider: 1,
             instrument: 1,
             session: 20260915,
-            lower: 9,
-            upper: 11,
-            scale: 0,
+            lower: 900,
+            upper: 1100,
+            scale: 2,
             effective_at_ns: 202 * SECOND,
             available_at_ns: 202 * SECOND,
             official: true,
         };
         assert!(lane
-            .current_luld(gate.at(101), 202 * SECOND, 0, SECOND)
+            .current_luld(gate.at(101), 202 * SECOND, 2, SECOND)
             .is_err());
         lane.observe_luld(&band, 202 * SECOND).unwrap();
         assert_eq!(
-            lane.current_luld(gate.at(101), 202 * SECOND, 0, SECOND)
+            lane.current_luld(gate.at(101), 202 * SECOND, 2, SECOND)
                 .unwrap(),
             &band
         );
         assert!(lane
-            .current_luld(gate.at(201), 202 * SECOND, 0, SECOND)
+            .current_luld(gate.at(201), 202 * SECOND, 2, SECOND)
             .is_err());
         assert!(lane
-            .current_luld(gate.at(101), 203 * SECOND + 1, 0, SECOND)
+            .current_luld(gate.at(101), 203 * SECOND + 1, 2, SECOND)
             .is_err());
         assert!(!lane.prepare_next(gate.at(101), 202 * SECOND).unwrap());
+        let policy = arte_core::luld::Policy {
+            tick: 1,
+            scale: 2,
+            buffer_ticks: 3,
+            buffer_bps: Decimal { atoms: 0, scale: 0 },
+            include_spread: true,
+            maximum_age_ns: SECOND,
+            minimum_previous_close: 500,
+        };
+        let prior = Some(Decimal {
+            atoms: 10,
+            scale: 0,
+        });
+        assert!(lane
+            .regular_admission(gate.at(101), 202 * SECOND, prior, &policy)
+            .is_err());
+        let quote = Observation {
+            key: EventKey {
+                provider: 1,
+                instrument: 1,
+                session: 20260915,
+                kind: EventKind::Quote,
+                sequence: 1,
+            },
+            payload: Payload::Quote {
+                bid: Decimal {
+                    atoms: 99,
+                    scale: 1,
+                },
+                ask: Decimal {
+                    atoms: 10,
+                    scale: 0,
+                },
+                bid_size: Decimal { atoms: 1, scale: 0 },
+                ask_size: Decimal { atoms: 1, scale: 0 },
+                bid_exchange: 1,
+                ask_exchange: 1,
+                conditions: vec![],
+                indicators: vec![],
+            },
+            sip: SourceTime {
+                ns: 202 * SECOND,
+                precision_ns: 1,
+            },
+            participant: None,
+            available_at_ns: 202 * SECOND,
+            receipt: None,
+        };
+        // Direct offline fixture; does not claim provider ingestion certification.
+        lane.quotes.observe(&quote).unwrap();
+        let admitted = lane
+            .regular_admission(gate.at(101), 202 * SECOND, prior, &policy)
+            .unwrap();
+        assert!(admitted.block.is_none());
+        assert_eq!(admitted.bands.unwrap().target, 1090);
+        assert_eq!(
+            lane.regular_admission(gate.at(101), 202 * SECOND, None, &policy)
+                .unwrap()
+                .block,
+            Some(arte_core::luld::Block::RegularPreviousCloseUnavailable)
+        );
+        assert!(lane
+            .regular_admission(gate.at(201), 202 * SECOND, prior, &policy)
+            .is_err());
+        assert!(lane
+            .regular_admission(gate.at(101), 203 * SECOND, prior, &policy)
+            .is_err());
+        assert!(lane
+            .regular_admission(
+                gate.at(101),
+                202 * SECOND,
+                Some(Decimal {
+                    atoms: 10001,
+                    scale: 3
+                }),
+                &policy
+            )
+            .is_err());
         lane.transport_lost();
         assert!(lane
-            .current_luld(gate.at(101), 202 * SECOND, 0, SECOND)
+            .current_luld(gate.at(101), 202 * SECOND, 2, SECOND)
             .is_err());
     }
 }

@@ -6,6 +6,28 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Live-lane regular admission integration
+
+The live lane now calculates regular-session admission using its own fresh quote
+and current LULD state. The caller supplies previous close and the pinned policy,
+not bid/ask prices or a caller-assembled band. Feed permission, quote age and band
+age are checked at the requested evaluation time. Missing or invalid quote/band
+state returns an error; it is never replaced with stale evidence.
+
+Decimal conversion to instrument atoms is shared with order-plan price conversion.
+Both scale increases and exact scale decreases are supported. Precision loss,
+invalid scales and overflow are rejected. No float conversion occurs on this path.
+
+All 242 offline Rust tests, formatting, Clippy and frozen-source hashes pass.
+The expanded live-lane test calculates a buffered target from mixed-scale quote
+prices, checks missing previous close, and rejects stale quotes, denied feed
+permission and inexact previous-close conversion. No services ran.
+
+Previous-close provenance and applicable-session determination remain upstream
+requirements. Candidate-frame wiring, effective configuration binding for this
+policy and end-to-end orchestration are still incomplete. This method calculates
+admission evidence; it does not authorize or submit an order.
+
 ## Shared in-memory LULD state
 
 The live lane now owns one bounded LULD projection for its provider, instrument and
