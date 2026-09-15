@@ -324,17 +324,7 @@ impl Simulator {
         let mut commands = std::collections::BTreeSet::new();
         for order in &snapshot.orders {
             let b = &order.bracket;
-            b.validate(
-                0,
-                false,
-                None,
-                &crate::orders::RiskPolicy {
-                    band_provider: 1,
-                    band_session: 20260915,
-                    band_buffer_ticks: 3,
-                    max_band_age_ns: 1,
-                },
-            )?;
+            b.validate_geometry(0)?;
             if b.instrument != snapshot.instrument
                 || b.price_scale != snapshot.scale
                 || !commands.insert(&b.command_id)
@@ -456,17 +446,7 @@ impl Simulator {
             ));
         }
         // Geometry only here. Session/LULD authorization belongs to the shared OMS.
-        bracket.validate(
-            now_ns,
-            false,
-            None,
-            &crate::orders::RiskPolicy {
-                band_provider: 1,
-                band_session: 20260915,
-                band_buffer_ticks: 3,
-                max_band_age_ns: 1,
-            },
-        )?;
+        bracket.validate_geometry(now_ns)?;
         if let Some(existing) = self
             .orders
             .iter()

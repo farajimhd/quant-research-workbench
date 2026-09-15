@@ -32,6 +32,8 @@ Provider certification, session-policy production, continuous band delivery and
 full broker orchestration remain incomplete. This does not establish live readiness.
 Order risk still applies its configured tick buffer; the strategy admission's
 additional basis-point/spread buffers are not silently substituted for that policy.
+Simulation geometry checks use a separate non-authorizing method and do not
+invent a provider/session policy. Shared OMS validation still owns authorization.
 
 ## Exact regular-session LULD admission
 

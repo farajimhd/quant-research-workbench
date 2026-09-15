@@ -31,13 +31,8 @@ pub struct RiskPolicy {
     pub max_band_age_ns: u64,
 }
 impl Bracket {
-    pub fn validate(
-        &self,
-        now_ns: u64,
-        regular: bool,
-        bands: Option<&Bands>,
-        policy: &RiskPolicy,
-    ) -> Result<()> {
+    /// Structural check only; never sufficient to authorize an order.
+    pub fn validate_geometry(&self, now_ns: u64) -> Result<()> {
         if self.command_id.is_empty()
             || self.account.is_empty()
             || self.instrument == 0
@@ -67,6 +62,17 @@ impl Bracket {
         if !correct {
             return Err(Error::Invalid("bracket direction".into()));
         }
+        Ok(())
+    }
+    pub fn validate(
+        &self,
+        now_ns: u64,
+        regular: bool,
+        bands: Option<&Bands>,
+        policy: &RiskPolicy,
+    ) -> Result<()> {
+        self.validate_geometry(now_ns)?;
+        let (stop, target) = self.stop.zip(self.target).unwrap();
         if regular {
             if policy.band_buffer_ticks < 3 || policy.max_band_age_ns == 0 {
                 return Err(Error::Invalid(
