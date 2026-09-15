@@ -7,13 +7,7 @@ pub enum Side {
     Long,
     Short,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Bands {
-    pub lower: i64,
-    pub upper: i64,
-    pub available_at_ns: u64,
-    pub official: bool,
-}
+pub use crate::luld::Evidence as Bands;
 /// Prices use one explicit integer scale shared with the instrument's tick rule.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bracket {
@@ -31,6 +25,8 @@ pub struct Bracket {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RiskPolicy {
+    pub band_provider: u16,
+    pub band_session: u32,
     pub band_buffer_ticks: u32,
     pub max_band_age_ns: u64,
 }
@@ -78,14 +74,16 @@ impl Bracket {
                 ));
             }
             let bands = bands.ok_or_else(|| Error::Unready("official LULD missing".into()))?;
-            if !bands.official
-                || bands.available_at_ns > now_ns
-                || now_ns - bands.available_at_ns > policy.max_band_age_ns
-                || bands.lower <= 0
-                || bands.lower >= bands.upper
-            {
-                return Err(Error::Unready("LULD unavailable, invalid or stale".into()));
-            }
+            bands.require(
+                crate::event_order::Scope {
+                    provider: policy.band_provider,
+                    instrument: self.instrument,
+                    session: policy.band_session,
+                },
+                self.price_scale,
+                now_ns,
+                policy.max_band_age_ns,
+            )?;
             let buffer = self
                 .tick
                 .checked_mul(policy.band_buffer_ticks as i64)
@@ -273,6 +271,8 @@ mod tests {
                 false,
                 None,
                 &RiskPolicy {
+                    band_provider: 1,
+                    band_session: 20260915,
                     band_buffer_ticks: 3,
                     max_band_age_ns: 100
                 }
@@ -295,10 +295,17 @@ mod tests {
     #[test]
     fn bands_direction_and_freshness() {
         let policy = RiskPolicy {
+            band_provider: 1,
+            band_session: 20260915,
             band_buffer_ticks: 3,
             max_band_age_ns: 100,
         };
         let bands = Bands {
+            provider: 1,
+            instrument: 1,
+            session: 20260915,
+            scale: 2,
+            effective_at_ns: 1,
             lower: 85,
             upper: 115,
             available_at_ns: 1,
@@ -311,11 +318,66 @@ mod tests {
         short.stop = Some(110);
         short.target = Some(90);
         assert!(short.validate(10, true, Some(&bands), &policy).is_ok());
+        for case in 0..6 {
+            let mut invalid = bands.clone();
+            match case {
+                0 => invalid.instrument = 2,
+                1 => invalid.provider = 2,
+                2 => invalid.session -= 1,
+                3 => invalid.scale = 3,
+                4 => invalid.effective_at_ns = 2,
+                _ => invalid.official = false,
+            }
+            assert!(b().validate(10, true, Some(&invalid), &policy).is_err());
+            assert!(short.validate(10, true, Some(&invalid), &policy).is_err());
+        }
+        let gate = ready_gate();
+        let mut ledger = OrderLedger::default();
+        ledger
+            .authorize(b(), 10, true, Some(&bands), &policy, gate.at(10))
+            .unwrap();
+        ledger
+            .mark_durable("c", &ledger.envelope_hash("c").unwrap())
+            .unwrap();
+        let mut restamped = bands.clone();
+        restamped.available_at_ns = 102;
+        assert!(ledger
+            .begin_submit("c", 102, true, Some(&restamped), &policy, gate.at(10))
+            .is_err());
+        assert_eq!(ledger.records["c"].state, OrderState::Durable);
+        let mut wrong_session = bands.clone();
+        wrong_session.session -= 1;
+        assert!(ledger
+            .begin_submit("c", 10, true, Some(&wrong_session), &policy, gate.at(10))
+            .is_err());
+        assert_eq!(ledger.records["c"].state, OrderState::Durable);
+        ledger
+            .begin_submit("c", 10, true, Some(&bands), &policy, gate.at(10))
+            .unwrap();
+        assert_eq!(ledger.records["c"].state, OrderState::Submitting);
+        for field in [
+            "effective_at_ns",
+            "provider",
+            "instrument",
+            "session",
+            "scale",
+        ] {
+            let mut serialized = serde_json::to_value(&bands).unwrap();
+            serialized.as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<Bands>(serialized).is_err());
+        }
+        for field in ["band_provider", "band_session"] {
+            let mut serialized = serde_json::to_value(&policy).unwrap();
+            serialized.as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<RiskPolicy>(serialized).is_err());
+        }
     }
     #[test]
     fn ambiguous_submit_cannot_retry() {
         let gate = ready_gate();
         let policy = RiskPolicy {
+            band_provider: 1,
+            band_session: 20260915,
             band_buffer_ticks: 3,
             max_band_age_ns: 100,
         };
@@ -340,6 +402,8 @@ mod tests {
     fn expiration_rechecked_after_durability() {
         let gate = ready_gate();
         let policy = RiskPolicy {
+            band_provider: 1,
+            band_session: 20260915,
             band_buffer_ticks: 3,
             max_band_age_ns: 100,
         };
@@ -367,6 +431,8 @@ mod tests {
     fn market_health_rechecked_between_authorization_and_submission() {
         let mut gate = ready_gate();
         let policy = RiskPolicy {
+            band_provider: 1,
+            band_session: 20260915,
             band_buffer_ticks: 3,
             max_band_age_ns: 100,
         };

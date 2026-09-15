@@ -259,6 +259,8 @@ mod tests {
             fee_reserve_minor: 1,
         };
         let risk = arte_core::orders::RiskPolicy {
+            band_provider: 1,
+            band_session: 20260915,
             band_buffer_ticks: 3,
             max_band_age_ns: 10,
         };

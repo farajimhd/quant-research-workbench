@@ -2,7 +2,7 @@
 use crate::{event_order::Scope, events::Decimal, Error, Result};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Evidence {
     pub provider: u16,
     pub instrument: u64,
@@ -13,6 +13,31 @@ pub struct Evidence {
     pub effective_at_ns: u64,
     pub available_at_ns: u64,
     pub official: bool,
+}
+impl Evidence {
+    pub fn require(&self, scope: Scope, scale: u8, now_ns: u64, maximum_age_ns: u64) -> Result<()> {
+        if scope.provider == 0
+            || scope.instrument == 0
+            || !(19000101..=29991231).contains(&scope.session)
+            || scale > 9
+            || maximum_age_ns == 0
+            || !self.official
+            || self.provider != scope.provider
+            || self.instrument != scope.instrument
+            || self.session != scope.session
+            || self.scale != scale
+            || self.lower <= 0
+            || self.upper <= self.lower
+            || self.effective_at_ns > self.available_at_ns
+            || self.available_at_ns > now_ns
+            || now_ns - self.effective_at_ns > maximum_age_ns
+        {
+            return Err(Error::Unready(
+                "official LULD scope, clocks or geometry invalid".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Policy {
@@ -94,16 +119,8 @@ pub fn regular_admission(
         return Ok(blocked(Block::RegularPreviousCloseBelowMinimum));
     }
     let Some(band) = evidence.filter(|band| {
-        band.official
-            && band.provider == scope.provider
-            && band.instrument == scope.instrument
-            && band.session == scope.session
-            && band.scale == policy.scale
-            && band.lower > 0
-            && band.upper > band.lower
-            && band.effective_at_ns <= band.available_at_ns
-            && band.available_at_ns <= evaluated_at_ns
-            && evaluated_at_ns - band.effective_at_ns <= policy.maximum_age_ns
+        band.require(scope, policy.scale, evaluated_at_ns, policy.maximum_age_ns)
+            .is_ok()
     }) else {
         return Ok(blocked(Block::OfficialLuldUnavailable));
     };

@@ -6,6 +6,33 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Shared LULD evidence at order validation
+
+Order validation now uses the same scoped LULD evidence type as admission. The old
+thin `Bands` record is removed; its name aliases the shared contract. The risk
+policy must pin the expected provider and session. The bracket supplies instrument
+and price scale. Effective time, availability time, official status, geometry and
+scope are checked by one shared validator.
+
+Regular-session bracket planning, cash reservation, order authorization and
+pre-submission validation therefore reject expired or wrong-scope bands. Refreshing
+availability cannot extend the original effective-time age. Both long and short
+brackets retain their existing mandatory protection and tick-buffer rules.
+
+This is an incompatible input-contract change: serialized band records missing
+scope, scale or effective time are rejected. Risk policies missing provider/session
+are rejected. There is no default or migration that invents missing provenance.
+
+All 239 offline Rust tests, formatting, Clippy and frozen-source hashes pass.
+Expanded order tests verify both directions, reject altered scopes and clocks,
+recheck bands after durability, and preserve the durable state on failed submission
+validation. No service, database or broker test ran.
+
+Provider certification, session-policy production, continuous band delivery and
+full broker orchestration remain incomplete. This does not establish live readiness.
+Order risk still applies its configured tick buffer; the strategy admission's
+additional basis-point/spread buffers are not silently substituted for that policy.
+
 ## Exact regular-session LULD admission
 
 The shared core now calculates regular-session admission from explicit previous
