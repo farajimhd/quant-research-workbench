@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 95 in-process Rust tests passed (88 core and 7 adapter tests).
+- 100 in-process Rust tests passed (93 core and 7 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -220,6 +220,16 @@ or execution geometry rejects it. Tranche counts track proposals, not fills.
 Capacity errors preserve the prior state. Four offline tests cover selection,
 one-shot consumption, red/gap behavior and capacity rollback. Admission producers,
 portfolio allocation and bracket authorization still need dispatcher integration.
+
+Protection management now composes confirmed swing trailing, fill-risk progress,
+current-gain guards, target-break confirmation and regular/extended target changes.
+It emits replacement proposals without changing the broker-confirmed stop or target.
+This deliberately separates intent from acknowledgment where the frozen source
+updated active protection optimistically. OMS reconciliation must supply active
+protection on each evaluation. Missing official targets are never synthesized in
+regular hours. Five offline tests cover proposals, quote guards, detector freshness,
+session target policy and red-to-green target confirmation. Broker modification
+safety and dispatcher wiring remain unimplemented.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.

@@ -17,6 +17,7 @@ pub mod strategy_encounters;
 pub mod strategy_entry;
 pub mod strategy_lifecycle;
 pub mod strategy_management;
+pub mod strategy_protection;
 pub mod strategy_setup;
 pub mod strategy_targets;
 pub mod v7_band;
