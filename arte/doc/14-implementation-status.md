@@ -6,6 +6,30 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Settled-parent bracket evidence checks
+
+The shared core now checks normalized broker protection snapshots against the exact
+authorization, account, instrument, broker session, paper/live mode and parent ID.
+Both children must have distinct broker IDs, the correct parent link, exit direction,
+price scale, approved prices and order types. The stop must be StopMarket; the target
+must be Limit. Both must be working with remaining quantity equal to the command's
+attributed open position. Parent fills minus child fills must equal that position.
+
+The check requires fresh observations and explicit evidence of broker residence and
+sibling quantity management. These fields are adapter assertions, not proof supplied
+by this module. A broker adapter must establish them from authoritative evidence.
+The result is an audit hash, not an order permit or session-gate release.
+
+This first check accepts filled parents and cancelled partial entries with remaining
+exposure. Still-fillable parents fail closed. Their changing coverage, replacement
+orders, closed-position reconciliation, evidence persistence and broker wiring remain
+required. The check does not replace session, feed, LULD or exposure admission checks.
+
+All 291 offline Rust tests, formatting, Clippy and frozen-source hashes pass.
+New tests cover long/short protection, partial exits, cancelled partial entries,
+authorization changes and 24 malformed or insufficient evidence cases. No services,
+database writes or broker calls ran. Source-oracle parity was not rerun.
+
 ## Classification of committed broker responses
 
 Initial response classification now requires the committed-outcome token and its
