@@ -868,3 +868,14 @@ The market bridge also accepts a separate processing clock without rewriting sou
 availability or receipts. All 214 Rust tests, formatting, static checks and source
 hashes pass. Watermark production, already-released duplicate routing, queue recovery
 and live actor wiring remain incomplete. No service ran.
+
+The ordered market owner now joins the input buffer, eligibility records, retained
+market series and seeded V7 runtime. It recognizes already-applied retransmissions
+before watermark checks, and preserves original receipt clocks while using a shared
+processing clock for a released prefix. Errors block all strategy-facing projections.
+The normalized-input test now covers reverse arrival order through this combined
+path, completed-bar counts, duplicate release and changed-eligibility rejection.
+All 214 Rust tests, formatting, static checks and source hashes pass. The owner does
+not yet restore its pending queue or establish live watermarks. Condition-policy
+production, latency-gated actor wiring and full strategy execution remain incomplete.
+No service ran.

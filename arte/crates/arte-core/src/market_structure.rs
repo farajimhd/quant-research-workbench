@@ -362,6 +362,130 @@ impl Runtime {
     }
 }
 
+/// Ordered single-instrument calculation owner. Freshness and certified watermark
+/// generation are external responsibilities; this type cannot authorize orders.
+pub struct Ordered {
+    runtime: Runtime,
+    buffer: crate::event_order::Buffer,
+    eligibility: BTreeMap<EventKey, bool>,
+    newest_receipt_ns: u64,
+    failed: bool,
+}
+impl Ordered {
+    pub fn new(runtime: Runtime, maximum_pending: usize) -> Result<Self> {
+        runtime.available()?;
+        if !runtime.applied.is_empty()
+            || runtime.structure.bars_processed != 0
+            || runtime.market.developing().is_some()
+        {
+            return Err(Error::Invalid(
+                "ordered owner requires an unwarmed runtime; restore must include its queue".into(),
+            ));
+        }
+        let buffer = crate::event_order::Buffer::new(
+            crate::event_order::Scope {
+                provider: runtime.provider,
+                instrument: runtime.structure.instrument,
+                session: runtime.structure.session,
+            },
+            maximum_pending,
+            runtime.start_ns,
+        )?;
+        let newest_receipt_ns = runtime.start_ns;
+        Ok(Self {
+            runtime,
+            buffer,
+            eligibility: BTreeMap::new(),
+            newest_receipt_ns,
+            failed: false,
+        })
+    }
+    fn available(&self) -> Result<()> {
+        if self.failed {
+            return Err(Error::Unready(
+                "ordered market owner requires repair".into(),
+            ));
+        }
+        self.runtime.available()
+    }
+    /// Caller retains original input for persistence and audit, including rejects.
+    pub fn enqueue(&mut self, event: &Observation, eligible: bool) -> Result<bool> {
+        self.available()?;
+        let result = (|| {
+            event.validate()?;
+            if event.key.provider != self.runtime.provider
+                || event.key.instrument != self.runtime.structure.instrument
+                || event.key.session != self.runtime.structure.session
+                || !matches!(event.payload, Payload::Trade { .. })
+            {
+                return Err(Error::Conflict("ordered market trade scope differs".into()));
+            }
+            let hash = crate::content_hash(&(&event.key, &event.payload, event.sip, eligible))?;
+            if let Some(previous) = self.runtime.applied.get(&event.key) {
+                if previous == &hash {
+                    return Ok(false);
+                }
+                return Err(Error::Conflict("released source identity changed".into()));
+            }
+            if self
+                .eligibility
+                .get(&event.key)
+                .is_some_and(|previous| *previous != eligible)
+            {
+                return Err(Error::Conflict("pending source eligibility changed".into()));
+            }
+            let added = self.buffer.push(event)?;
+            if added {
+                self.eligibility.insert(event.key.clone(), eligible);
+                self.newest_receipt_ns = self.newest_receipt_ns.max(event.available_at_ns);
+            }
+            Ok(added)
+        })();
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+    pub fn advance(&mut self, watermark_ns: u64, processed_at_ns: u64) -> Result<usize> {
+        self.available()?;
+        self.runtime.clock(watermark_ns, processed_at_ns)?;
+        if processed_at_ns < self.newest_receipt_ns {
+            return Err(Error::Invalid(
+                "ordered processing precedes received input".into(),
+            ));
+        }
+        let result = (|| {
+            let runtime = &mut self.runtime;
+            let eligibility = &mut self.eligibility;
+            let count = self.buffer.release(watermark_ns, |event| {
+                let eligible = *eligibility
+                    .get(&event.key)
+                    .ok_or_else(|| Error::Unready("ordered event eligibility missing".into()))?;
+                runtime.observe_ordered_trade(event, eligible, processed_at_ns)?;
+                eligibility.remove(&event.key);
+                Ok(())
+            })?;
+            self.runtime.advance(watermark_ns, processed_at_ns)?;
+            Ok(count)
+        })();
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+    pub fn market(&self) -> Result<&Series> {
+        self.available()?;
+        self.runtime.market()
+    }
+    pub fn levels(&self) -> Result<impl Iterator<Item = &Level>> {
+        self.available()?;
+        self.runtime.levels()
+    }
+    pub fn pending(&self) -> usize {
+        self.buffer.pending()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -524,5 +648,20 @@ mod tests {
         assert_eq!(restored.market().unwrap().developing().unwrap().trades, 1);
         assert!(restored.observe_trade(&event, false).is_err());
         assert!(restored.market().is_err());
+
+        let mut ordered = Ordered::new(self::runtime(10), 10).unwrap();
+        let mut later = event.clone();
+        later.key.sequence = 2;
+        later.sip.ns += 1;
+        // The later source event arrived first. Neither receipt is rewritten.
+        later.available_at_ns = event.available_at_ns - 1;
+        ordered.enqueue(&later, true).unwrap();
+        ordered.enqueue(&event, true).unwrap();
+        assert_eq!(ordered.advance(201 * SECOND, 201 * SECOND).unwrap(), 2);
+        assert_eq!(ordered.market().unwrap().completed()[0].bar.trades, 2);
+        assert_eq!(ordered.pending(), 0);
+        assert!(!ordered.enqueue(&event, true).unwrap());
+        assert!(ordered.enqueue(&event, false).is_err());
+        assert!(ordered.levels().is_err());
     }
 }
