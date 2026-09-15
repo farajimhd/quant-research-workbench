@@ -7,3 +7,4 @@ pub mod live_decode;
 pub mod live_pipeline;
 pub mod massive;
 pub mod massive_stream;
+pub mod rest_acquisition;

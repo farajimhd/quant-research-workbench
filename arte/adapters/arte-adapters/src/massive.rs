@@ -2,8 +2,17 @@ use arte_core::events::*;
 use arte_core::{Error, Result};
 use chrono::{Datelike, TimeZone, Utc};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::time::Duration;
+
+pub struct FetchedPage {
+    pub rows: Vec<Value>,
+    pub next_url: Option<String>,
+    pub request_hash: String,
+    pub response_hash: String,
+    pub acquired_at_ns: u64,
+}
 
 fn field<'a>(v: &'a Value, name: &str) -> Result<&'a Value> {
     v.get(name)
@@ -188,6 +197,60 @@ pub struct RestClient {
     max_pages: usize,
 }
 impl RestClient {
+    /// One bounded request. Returned cursor is authenticated-origin/path checked and
+    /// stripped of apiKey. Caller retains the current URL until its page is durable.
+    pub async fn fetch_page(&self, url: &str, expected_path: &str) -> Result<FetchedPage> {
+        if !(expected_path.starts_with("/v3/trades/") || expected_path.starts_with("/v3/quotes/")) {
+            return Err(Error::Invalid("unsupported historical endpoint".into()));
+        }
+        let url = validate_page_url(url, expected_path)?;
+        let request_hash = arte_core::content_hash(&url.as_str())?;
+        let mut response = self
+            .http
+            .get(url)
+            .bearer_auth(&self.key)
+            .send()
+            .await
+            .map_err(|_| Error::Unready("Massive request failed; credentials redacted".into()))?;
+        if !response.status().is_success() {
+            return Err(Error::Unready(format!(
+                "Massive HTTP {}",
+                response.status().as_u16()
+            )));
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| Error::Unready("Massive response interrupted".into()))?
+        {
+            if bytes.len().saturating_add(chunk.len()) > 32 * 1024 * 1024 {
+                return Err(Error::Capacity(
+                    "REST page exceeds 32 MiB; interval remains uncertified".into(),
+                ));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let acquired_at_ns = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| Error::Invalid("acquisition UTC before epoch".into()))?
+                .as_nanos(),
+        )
+        .map_err(|_| Error::Invalid("acquisition UTC overflow".into()))?;
+        let response_hash = format!("{:x}", Sha256::digest(&bytes));
+        let (rows, next_url) = decode_page(&bytes)?;
+        let next_url = next_url
+            .map(|next| validate_page_url(&next, expected_path).map(|url| url.to_string()))
+            .transpose()?;
+        Ok(FetchedPage {
+            rows,
+            next_url,
+            request_hash,
+            response_hash,
+            acquired_at_ns,
+        })
+    }
     pub fn new(key: String, max_pages: usize) -> Result<Self> {
         if key.is_empty() || max_pages == 0 {
             return Err(Error::Invalid(
@@ -229,38 +292,10 @@ impl RestClient {
             if !visited.insert(url.to_string()) {
                 return Err(Error::Conflict("pagination loop".into()));
             }
-            let mut response = self
-                .http
-                .get(url)
-                .bearer_auth(&self.key)
-                .send()
-                .await
-                .map_err(|_| {
-                    Error::Unready("Massive request failed; credentials redacted".into())
-                })?;
-            if !response.status().is_success() {
-                return Err(Error::Unready(format!(
-                    "Massive HTTP {}",
-                    response.status().as_u16()
-                )));
-            }
-            let mut bytes = Vec::new();
-            while let Some(chunk) = response
-                .chunk()
-                .await
-                .map_err(|_| Error::Unready("Massive response interrupted".into()))?
-            {
-                if bytes.len().saturating_add(chunk.len()) > 32 * 1024 * 1024 {
-                    return Err(Error::Capacity(
-                        "REST page exceeds 32 MiB; interval remains uncertified".into(),
-                    ));
-                }
-                bytes.extend_from_slice(&chunk);
-            }
-            let (rows, next_url) = decode_page(&bytes)?;
-            consume(&rows)?;
+            let fetched = self.fetch_page(url.as_str(), &path).await?;
+            consume(&fetched.rows)?;
             pages += 1;
-            next = next_url;
+            next = fetched.next_url;
         }
         Ok(pages)
     }

@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 148 in-process Rust tests passed (120 core and 28 adapter tests).
+- 151 in-process Rust tests passed (120 core and 31 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -416,6 +416,23 @@ last and rejects future publication times. Candidate migration 004 provides hash
 coverage staging, not range discovery. These methods compiled but were not called.
 REST orchestration, persisted interval discovery, derived certification and runtime
 handover remain incomplete. No migration or network call ran.
+
+REST acquisition now has a bounded one-page fetch API and single-interval state
+machine. Requests use explicit ascending timestamp order and half-open bounds.
+Each response retains request/response hashes and acquisition time. Cursors are
+origin/path checked and API-key parameters removed. Normalization rejects timestamp
+rewinds and out-of-range rows before publication; equal-timestamp boundaries remain
+valid. The state machine retains prepared pages and batch progress through ambiguous
+publication, advances only after acknowledgments, and produces a certificate only
+after pagination ends. Three offline tests cover duplicate counts, timestamp bounds
+and a two-page retry-to-coverage workflow with fake adapters. No REST call ran.
+
+The caller must resolve symbol-to-instrument identity for the whole request interval.
+Durable restart checkpoints, rejected-response audit storage, bounded worker scheduling,
+rate-limit retry policy, derived repair and executable maintenance routing remain open.
+The implemented query/pagination fields were checked against the official
+[Massive trades](https://www.massive.com/docs/rest/stocks/trades-quotes/trades) and
+[quotes](https://www.massive.com/docs/rest/stocks/trades-quotes/quotes) documentation.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.
