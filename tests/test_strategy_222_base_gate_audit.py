@@ -3,7 +3,18 @@ from pathlib import Path
 from copy import deepcopy
 import pytest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
-from strategy_222_base_gate_audit import recovery_audit,H
+from strategy_222_base_gate_audit import recovery_audit,label_bases,decision_rows,H,digest
+
+
+def test_prefix_compares_instants_across_timezone_offsets():
+    import sqlite3
+    with sqlite3.connect(':memory:') as connection:
+        connection.execute('create table journal(sequence integer,event_time text,payload_json text,category text)')
+        connection.executemany('insert into journal values(?,?,?,?)', [
+            (1,'2026-08-21T04:20:00-07:00','{}','strategy_decision'),
+            (2,'2026-08-21T04:20:01-07:00','{}','strategy_decision'),
+            (3,'2026-08-21T11:19:59+00:00','{}','strategy_decision')])
+        assert [r[0] for r in decision_rows(connection,'2026-08-21T11:20:00+00:00')]==[1,3]
 
 
 def sample():
@@ -40,3 +51,26 @@ def test_future_or_missing_recovery_evidence_fails_closed():
     with pytest.raises(ValueError,match='Future'):recovery_audit(metadata,100.,settings)
     metadata.pop('setup_recovery')
     with pytest.raises(ValueError,match='authority'):recovery_audit(metadata,100.,settings)
+
+
+def test_future_quotes_change_labels_not_recorded_stop_and_hash_drift_is_rejected(tmp_path):
+    import json
+    import numpy as np
+    from datetime import datetime,timezone
+    stamp=lambda t:datetime.fromtimestamp(t,timezone.utc).isoformat()
+    row=dict(sequence=1,time=stamp(100),symbol='X',support_lower=9.8,first_blocker='macd',recovery_reason='')
+    quotes=np.array([[100200000,10.,10.01,200.,200.],[101000000,10.6,10.61,200.,200.],[401000000,10.6,10.61,200.,200.]])
+    path=tmp_path/'quotes-one.npz';ledger=tmp_path/'quote-ledger.json'
+    def write():
+        np.savez(path,data=quotes)
+        ledger.write_text(json.dumps({'one':dict(status='completed',window=dict(symbol='X',start=stamp(99),end=stamp(410)),
+            source_revision={'complete_for_history':True},sha256=digest(path))}))
+    write();before=deepcopy(row)
+    first,_=label_bases([row],H.DEFAULTS,.01,ledger)
+    assert first[0]['stop']==pytest.approx(9.79) and first[0]['label']['profitable']
+    quotes[1:,1:3]=[9.,9.01];write()
+    second,_=label_bases([row],H.DEFAULTS,.01,ledger)
+    assert second[0]['stop']==first[0]['stop'] and not second[0]['label']['profitable']
+    assert row==before
+    path.write_bytes(path.read_bytes()+b'changed')
+    with pytest.raises(ValueError,match='source changed'):label_bases([row],H.DEFAULTS,.01,ledger)

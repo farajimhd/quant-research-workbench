@@ -15,6 +15,41 @@ from src.trading_runtime import historical_hod as H, v7_setup as V
 from strategy_222_supervised_research import digest,save
 
 
+def decision_rows(connection, cutoff):
+    """Compare instants, not ISO text with potentially different UTC offsets."""
+    return connection.execute("select sequence,event_time,payload_json from journal where category='strategy_decision' and julianday(event_time)<=julianday(?) order by sequence", (cutoff,))
+
+
+def label_bases(rows,settings,tick,ledger_path):
+    """Future quotes label a recorded support stop; they never construct it."""
+    import numpy as np
+    from strategy_222_supervised_research import hindsight_label
+    ledger=json.loads(ledger_path.read_text());cache={};hashes={};result=[]
+    for row in rows:
+        at=datetime.fromisoformat(row['time']).timestamp()
+        stop=H.stop_below(row['support_lower'],settings,tick)
+        windows=[(key,value) for key,value in ledger.items() if value['window']['symbol']==row['symbol']
+            and datetime.fromisoformat(value['window']['start']).timestamp()<=at
+            <=datetime.fromisoformat(value['window']['end']).timestamp()]
+        label={'valid':False,'reason':'outside_frozen_quote_windows'}
+        window=None
+        if windows:
+            window,authority=max(windows,key=lambda item:(item[1]['window']['end'],item[0]))
+            if authority['status']!='completed' or not authority['source_revision']['complete_for_history']:
+                raise ValueError('Incomplete quote authority')
+            if window not in cache:
+                path=ledger_path.parent/f'quotes-{window}.npz';hashes[window]=digest(path)
+                if hashes[window]!=authority['sha256']:raise ValueError('Quote source changed')
+                with np.load(path) as archive:cache[window]=archive['data']
+                if not len(cache[window]) or (np.diff(cache[window][:,0])<0).any():raise ValueError('Empty or unordered quotes')
+            label=hindsight_label(cache[window],at,stop)
+        result.append(dict(sequence=row['sequence'],time=row['time'],symbol=row['symbol'],
+            first_blocker=row['first_blocker'],recovery_reason=row['recovery_reason'],
+            recorded_liquidity_failed=row.get('recorded_liquidity_failed'),spread_bps=row.get('spread_bps'),
+            stop=stop,window=window,label=label))
+    return result,hashes
+
+
 def recovery_audit(metadata,at,settings):
     base=metadata.get('research_base_assessment') or {}
     if base.get('status')!='measured':return {'status':'unavailable','reason':base.get('reason','assessment_missing')}
@@ -41,10 +76,12 @@ def recovery_audit(metadata,at,settings):
         regular_full_range=bool(settings['setup_recovery_regular_full_range'])) if settings['setup_recovery_enabled'] else ('','building')
     return dict(status='base_passed',recovery_reason=reason,recovery_phase=phase,
         price=metadata['reference_price'],risk_pct=base['risk_pct'],range_pct=base['range_pct'],
-        support_lower=swing['lower'],support_confirmed_at=swing['confirmed_at'])
+        support_lower=swing['lower'],support_confirmed_at=swing['confirmed_at'],
+        recorded_liquidity_failed=(metadata.get('liquidity_admission') or {}).get('failed'),
+        spread_bps=((metadata.get('liquidity_admission') or {}).get('facts') or {}).get('spread_bps'))
 
 
-def run(manifest_path,output,cutoff=None):
+def run(manifest_path,output,cutoff=None,quote_ledger=None):
     output=output.resolve();output.relative_to(Path('D:/TradingML/runtimes').resolve())
     manifest=json.loads(manifest_path.read_text());trials=manifest['trials']
     if len(trials)!=1:raise ValueError('Select a single trial manifest')
@@ -55,7 +92,8 @@ def run(manifest_path,output,cutoff=None):
             raise ValueError('Recovery source differs from recorded replay')
     run_root=Path('D:/TradingML/runtimes/trading/backtest')/trial['run_id']
     config_path=run_root/'approved-configuration.json'
-    settings=dict(H.DEFAULTS,**json.loads(config_path.read_text())['payload']['strategy']['parameters']['historical_hod'])
+    parameters=json.loads(config_path.read_text())['payload']['strategy']['parameters']
+    settings=dict(H.DEFAULTS,**parameters['historical_hod'])
     if not settings['setup_base_diagnostics_enabled']:raise ValueError('Diagnostics were not enabled')
     journal=run_root/'journal.sqlite3'
     if cutoff is None:
@@ -72,7 +110,7 @@ def run(manifest_path,output,cutoff=None):
         maximum_sequence=c.execute('select max(sequence) from journal').fetchone()[0]
         counts=Counter();first=Counter();combinations=Counter();rows=[]
         unavailable=Counter();failed_checks=Counter()
-        for sequence,stamp,raw in c.execute("select sequence,event_time,payload_json from journal where category='strategy_decision' and event_time<=? order by sequence",(cutoff or last,)):
+        for sequence,stamp,raw in decision_rows(c,cutoff or last):
             d=json.loads(raw);m=d.get('metadata') or {}
             if m.get('status') not in ('watching','reentry_cooldown'):continue
             if not any(str(x).startswith(f"qmd-derived:{d['ticker']}:1s:") for x in d.get('source_signal_ids',[])):continue
@@ -91,6 +129,18 @@ def run(manifest_path,output,cutoff=None):
         rows=rows,inputs={str(p):digest(p) for p in (manifest_path,config_path,Path(__file__),root/'src/trading_runtime/v7_setup.py')},
         method='Flat-state 1s decisions only. Evaluate recorded measured base geometry, then the shared recovery function with recorded last exit and configured switches. Selected support already passed retired-support filtering in recovery_observe. No outcome labels, future price, ticker-specific rules, or gate overrides. Other entry and execution gates are not certified by a passing base/recovery assessment. Counts are dependent decisions, not opportunities or trades.')
     if not cutoff:report['journal_sha256']=digest(journal)
+    if quote_ledger:
+        labels,hashes=label_bases(rows,settings,parameters['execution']['tick_size'],quote_ledger)
+        report['support_stop_labels']=labels
+        report['label_sources']={'ledger_sha256':digest(quote_ledger),'quote_sha256':hashes,
+            'helper_sha256':digest(Path(__file__).with_name('strategy_222_supervised_research.py'))}
+        report['label_policy']='Hypothetical 100-share entry after100ms,5bps slippage per side, minimum$1 fee per side, fixed recorded-support stop and2R target within300seconds. Stop uses exact configured buffer/tick and shared stop_below function. Quotes are future labels only. This is not an OMS replay: actual order ceilings, fills, sizing, position changes and later management differ. Overlapping row results must not be summed as portfolio profit.'
+        totals=Counter()
+        for r in labels:
+            l=r['label'];totals['valid' if l['valid'] else 'invalid']+=1
+            if l['valid']:totals['profitable' if l['profitable'] else 'nonprofitable']+=1
+            else:totals['invalid:'+l['reason']]+=1
+        report['label_counts']=dict(totals)
     save(output,report)
     print(f"Audit {report['status']}: {sum(counts.values())} decisions, {counts['base_passed']} passing bases; output={output}",flush=True)
 
@@ -100,4 +150,5 @@ if __name__=='__main__':
     parser.add_argument('--manifest',required=True,type=Path)
     parser.add_argument('--output',required=True,type=Path)
     parser.add_argument('--cutoff',help='Timezone-aware cutoff for a consistent live-journal prefix')
-    args=parser.parse_args();run(args.manifest,args.output,args.cutoff)
+    parser.add_argument('--quote-ledger',type=Path,help='Optionally add separate hindsight labels using recorded support stops')
+    args=parser.parse_args();run(args.manifest,args.output,args.cutoff,args.quote_ledger)
