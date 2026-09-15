@@ -38,7 +38,7 @@ fn unique_records<'de, D: serde::Deserializer<'de>>(
     }
     deserializer.deserialize_map(Records)
 }
-fn hash_valid(value: &str) -> bool {
+pub(super) fn hash_valid(value: &str) -> bool {
     value.len() == 64
         && value
             .bytes()
@@ -65,6 +65,23 @@ impl TryFrom<StoredLedger> for OrderLedger {
                 bracket: record.bracket.clone(),
                 context: record.authorization.clone(),
             };
+            if let Some(marker) = &record.submission {
+                marker.require(&authorization)?;
+                if matches!(record.state, OrderState::Authorized | OrderState::Durable) {
+                    return Err(Error::Conflict(
+                        "submission marker before submitting state".into(),
+                    ));
+                }
+                if let Some(receipt) = &record.submission_receipt {
+                    if receipt != &marker.hash()? {
+                        return Err(Error::Conflict(
+                            "recovered submission receipt mismatch".into(),
+                        ));
+                    }
+                }
+            } else if record.submission_receipt.is_some() {
+                return Err(Error::Conflict("submission receipt without marker".into()));
+            }
             let broker = record.broker_id.as_ref().is_some_and(|id| !id.is_empty());
             if record.broker_id.is_some() && !broker {
                 return Err(Error::Invalid("empty recovered broker identity".into()));

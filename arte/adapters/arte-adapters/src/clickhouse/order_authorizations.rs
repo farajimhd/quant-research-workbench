@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 const TABLE: &str = "order_authorizations_v2";
+const SUBMISSION_TABLE: &str = "order_submissions_v1";
 const MAX_PAYLOAD: usize = 16 * 1024;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -137,11 +138,126 @@ impl crate::order_journal::Publisher for OrderPublisher<'_> {
             .await
     }
 }
+fn decode_submission(
+    body: &str,
+    expected: &arte_core::orders::submission::Marker,
+) -> Result<Option<arte_core::orders::submission::Marker>> {
+    if body.len() > 4 * MAX_PAYLOAD {
+        return Err(Error::Capacity("submission readback byte limit".into()));
+    }
+    let mut result = None;
+    for line in body.lines().filter(|line| !line.trim().is_empty()) {
+        if result.is_some() {
+            return Err(Error::Conflict(
+                "multiple submission marker versions".into(),
+            ));
+        }
+        let row: Row =
+            serde_json::from_str(line).map_err(|e| Error::Serialization(e.to_string()))?;
+        let canonical =
+            serde_json::to_string(expected).map_err(|e| Error::Serialization(e.to_string()))?;
+        if row.order_key != expected.order_key
+            || row.envelope_hash != expected.hash()?
+            || row.payload_json != canonical
+        {
+            return Err(Error::Conflict("submission marker readback differs".into()));
+        }
+        result = Some(expected.clone());
+    }
+    Ok(result)
+}
+impl ClickHouse {
+    async fn find_submission(
+        &self,
+        expected: &arte_core::orders::submission::Marker,
+    ) -> Result<Option<arte_core::orders::submission::Marker>> {
+        self.verify_storage(SUBMISSION_TABLE).await?;
+        // The caller binds order_key to the SHA-256 authorization slot before I/O.
+        let query = format!("SELECT DISTINCT order_key,envelope_hash,payload_json FROM {}.{SUBMISSION_TABLE} WHERE order_key='{}' LIMIT 2 FORMAT JSONEachRow", self.database, expected.order_key);
+        decode_submission(&self.request(&query, String::new()).await?, expected)
+    }
+}
+impl crate::order_journal::SubmissionPublisher for OrderPublisher<'_> {
+    async fn append_submission(
+        &mut self,
+        authorization: &Authorization,
+        marker: &arte_core::orders::submission::Marker,
+    ) -> Result<arte_core::orders::submission::Marker> {
+        self.lease.require(&self.ownership_hash)?;
+        if authorization.bracket.account != self.account
+            || marker.order_key != authorization.key()?
+            || marker.authorization_hash != authorization.hash()?
+        {
+            return Err(Error::Conflict(
+                "submission writer identity mismatch".into(),
+            ));
+        }
+        if self
+            .database
+            .find_order_authorization(authorization)
+            .await?
+            .is_none()
+        {
+            return Err(Error::Unready(
+                "authorization must be persisted before submission marker".into(),
+            ));
+        }
+        let payload_json =
+            serde_json::to_string(marker).map_err(|e| Error::Serialization(e.to_string()))?;
+        if payload_json.len() > MAX_PAYLOAD {
+            return Err(Error::Capacity("submission marker byte limit".into()));
+        }
+        if let Some(existing) = self.database.find_submission(marker).await? {
+            return Ok(existing);
+        }
+        let row = Row {
+            order_key: marker.order_key.clone(),
+            envelope_hash: marker.hash()?,
+            payload_json,
+        };
+        self.database
+            .insert(
+                SUBMISSION_TABLE,
+                &[serde_json::to_value(row).map_err(|e| Error::Serialization(e.to_string()))?],
+            )
+            .await?;
+        self.database
+            .find_submission(marker)
+            .await?
+            .ok_or_else(|| Error::Unready("submission marker readback missing".into()))
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use arte_core::orders::*;
+    #[test]
+    fn submission_marker_readback_rejects_changed_request_and_duplicate_versions() {
+        let marker = submission::Marker {
+            order_key: "a".repeat(64),
+            authorization_hash: "b".repeat(64),
+            request_hash: "c".repeat(64),
+            prepared_at_ns: 10,
+        };
+        let mut row = Row {
+            order_key: marker.order_key.clone(),
+            envelope_hash: marker.hash().unwrap(),
+            payload_json: serde_json::to_string(&marker).unwrap(),
+        };
+        let body = serde_json::to_string(&row).unwrap();
+        assert!(decode_submission("", &marker).unwrap().is_none());
+        assert_eq!(
+            decode_submission(&body, &marker).unwrap(),
+            Some(marker.clone())
+        );
+        assert!(decode_submission(&format!("{body}\n{body}"), &marker).is_err());
+        row.payload_json.push(' ');
+        assert!(decode_submission(&serde_json::to_string(&row).unwrap(), &marker).is_err());
+        let mut changed = marker;
+        changed.request_hash = "d".repeat(64);
+        assert!(decode_submission(&body, &changed).is_err());
+    }
     #[test]
     fn readback_requires_exact_canonical_authorization_in_stable_slot() {
         let authorization = Authorization {

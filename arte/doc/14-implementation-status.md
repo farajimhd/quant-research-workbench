@@ -6,6 +6,36 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Persisted submission markers and single-use send permission
+
+The submission preparation path now creates an immutable marker containing the
+order slot, authorization hash, broker-request hash and original preparation time.
+Retries preserve the marker. Changing the request hash or reversing its clock
+fails. Exact marker readback issues one non-copyable, non-serializable send permit.
+The ledger itself is no longer cloneable. Repeated acknowledgments cannot issue
+another permit. Recovery retains marker evidence but never recreates permission.
+
+The permit validates the actual request hash, current time, pinned authorization
+context, current feed health and session/bracket policy after persistence. It is
+consumed even when those checks fail. Such orders require reconciliation or an
+explicit future resolution workflow; they are not automatically retried.
+
+The asynchronous journal commit and ClickHouse publisher support this marker.
+Publication requires the authorization to be present first. The account-owned
+publisher verifies placement, rejects conflicting marker versions and reads back
+the synchronous insert. Schema 011 adds `order_submissions_v1` with the explicit
+`live_market_ssd` policy. It has not been applied.
+
+All 268 offline Rust tests, formatting, Clippy and frozen-source hashes pass.
+Tests cover exact retry after an ambiguous marker write, single permission issue,
+changed request rejection, expiry, disconnected feed, policy changes, recovered
+permission denial and canonical marker readback. No database or broker calls ran.
+
+The actual broker transport must still require and consume this permit. Restart
+discovery must query submission markers before deciding whether an authorization
+can be sent. Neither integration is complete. This gate is not yet an end-to-end
+exactly-once execution guarantee or verified power-loss durability.
+
 ## Validated ledger recovery and interrupted submissions
 
 Ledger deserialization now validates records before exposing execution methods.

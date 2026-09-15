@@ -11,6 +11,29 @@ pub trait Publisher {
         authorization: &Authorization,
     ) -> impl Future<Output = Result<Authorization>> + Send;
 }
+pub trait SubmissionPublisher {
+    fn append_submission(
+        &mut self,
+        authorization: &Authorization,
+        marker: &arte_core::orders::submission::Marker,
+    ) -> impl Future<Output = Result<arte_core::orders::submission::Marker>> + Send;
+}
+/// The marker remains prepared across cancellation. Permission is issued once,
+/// only after exact readback. No broker request is performed by this function.
+pub async fn commit_submission(
+    ledger: &mut OrderLedger,
+    id: &str,
+    request_hash: &str,
+    now_ns: u64,
+    publisher: &mut impl SubmissionPublisher,
+) -> Result<arte_core::orders::submission::SendPermit> {
+    let marker = ledger
+        .prepare_submission_marker(id, request_hash, now_ns)?
+        .clone();
+    let authorization = ledger.authorization(id)?;
+    let readback = publisher.append_submission(&authorization, &marker).await?;
+    ledger.acknowledge_submission(id, &readback)
+}
 
 /// Cancellation, ambiguous writes and conflicting readback leave Authorized
 /// unchanged. A retry publishes the same stable slot and exact envelope.
@@ -123,6 +146,84 @@ mod tests {
     }
     struct InterruptedStore {
         saved: Option<Authorization>,
+    }
+    struct SubmissionStore {
+        saved: Option<arte_core::orders::submission::Marker>,
+        fail: bool,
+    }
+    impl SubmissionPublisher for SubmissionStore {
+        async fn append_submission(
+            &mut self,
+            authorization: &Authorization,
+            marker: &arte_core::orders::submission::Marker,
+        ) -> Result<arte_core::orders::submission::Marker> {
+            assert_eq!(authorization.hash().unwrap(), marker.authorization_hash);
+            if let Some(old) = &self.saved {
+                assert_eq!(old, marker);
+            }
+            self.saved = Some(marker.clone());
+            if self.fail {
+                self.fail = false;
+                return Err(Error::Unready("ambiguous marker write".into()));
+            }
+            Ok(marker.clone())
+        }
+    }
+    #[tokio::test]
+    async fn submission_commit_retries_original_marker_and_issues_permission_once() {
+        let mut ledger = prepared();
+        let authorization = ledger.authorization("c").unwrap();
+        ledger
+            .acknowledge_authorization("c", &authorization)
+            .unwrap();
+        let record = Session {
+            exchange: "XNYS".into(),
+            session: 20260915,
+            previous_trading_session: 20260914,
+            extended: Interval { start: 1, end: 100 },
+            regular: Interval { start: 50, end: 80 },
+            available_at_ns: 1,
+            source_manifest_hash: "a".repeat(64),
+        };
+        let hash = arte_core::content_hash(&record).unwrap();
+        let session = TradingSession::new(record, hash, 1, true).unwrap();
+        let policy = RiskPolicy {
+            band_provider: 1,
+            band_session: 20260915,
+            band_buffer_ticks: 3,
+            max_band_age_ns: 10,
+        };
+        let mut gate = arte_core::exposure::Gate::new(100, 2).unwrap();
+        gate.transport(true);
+        for kind in [EventKind::Trade, EventKind::Quote] {
+            gate.update(1, kind, 1, true).unwrap();
+        }
+        ledger
+            .begin_submit("c", 10, &session, None, &policy, gate.at(10))
+            .unwrap();
+        let mut store = SubmissionStore {
+            saved: None,
+            fail: true,
+        };
+        let request = "a".repeat(64);
+        assert!(
+            commit_submission(&mut ledger, "c", &request, 10, &mut store)
+                .await
+                .is_err()
+        );
+        assert!(ledger.record("c").unwrap().submission_receipt.is_none());
+        let permit = commit_submission(&mut ledger, "c", &request, 11, &mut store)
+            .await
+            .unwrap();
+        assert_eq!(permit.marker().prepared_at_ns, 10);
+        assert!(
+            commit_submission(&mut ledger, "c", &request, 12, &mut store)
+                .await
+                .is_err()
+        );
+        permit
+            .validate_request(&request, 12, &session, None, &policy, gate.at(12))
+            .unwrap();
     }
     impl Publisher for InterruptedStore {
         async fn append(&mut self, authorization: &Authorization) -> Result<Authorization> {

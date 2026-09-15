@@ -2,6 +2,7 @@ use crate::{content_hash, Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 mod recovery;
+pub mod submission;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Side {
@@ -211,8 +212,10 @@ pub struct OrderRecord {
     pub filled: u64,
     pub broker_id: Option<String>,
     pub durable_receipt: Option<String>,
+    pub submission: Option<submission::Marker>,
+    pub submission_receipt: Option<String>,
 }
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(try_from = "recovery::StoredLedger")]
 pub struct OrderLedger {
     records: BTreeMap<String, OrderRecord>,
@@ -253,6 +256,8 @@ impl OrderLedger {
             filled: 0,
             broker_id: None,
             durable_receipt: None,
+            submission: None,
+            submission_receipt: None,
         });
         Ok(&self.records[&id])
     }
@@ -732,6 +737,96 @@ mod tests {
                 _ => data["records"]["c"]["state"] = "Filled".into(),
             }
             assert!(serde_json::from_value::<OrderLedger>(data).is_err());
+        }
+    }
+    #[test]
+    fn submission_permission_is_exact_single_use_and_not_recovered() {
+        let gate = ready_gate();
+        let calendar = session(false);
+        let policy = RiskPolicy {
+            band_provider: 1,
+            band_session: 20260915,
+            band_buffer_ticks: 3,
+            max_band_age_ns: 100,
+        };
+        let mut ledger = OrderLedger::default();
+        ledger
+            .authorize(b(), 10, &calendar, None, &policy, gate.at(10))
+            .unwrap();
+        ledger
+            .mark_durable("c", &ledger.envelope_hash("c").unwrap())
+            .unwrap();
+        let request = "a".repeat(64);
+        assert!(ledger.prepare_submission_marker("c", &request, 10).is_err());
+        ledger
+            .begin_submit("c", 10, &calendar, None, &policy, gate.at(10))
+            .unwrap();
+        let marker = ledger
+            .prepare_submission_marker("c", &request, 10)
+            .unwrap()
+            .clone();
+        assert_eq!(
+            &marker,
+            ledger.prepare_submission_marker("c", &request, 11).unwrap()
+        );
+        assert!(ledger
+            .prepare_submission_marker("c", &"b".repeat(64), 11)
+            .is_err());
+        let mut wrong = marker.clone();
+        wrong.prepared_at_ns += 1;
+        assert!(ledger.acknowledge_submission("c", &wrong).is_err());
+        let permit = ledger.acknowledge_submission("c", &marker).unwrap();
+        assert!(ledger.acknowledge_submission("c", &marker).is_err());
+        assert!(ledger.prepare_submission_marker("c", &request, 12).is_err());
+        let mut restored: OrderLedger =
+            serde_json::from_slice(&serde_json::to_vec(&ledger).unwrap()).unwrap();
+        assert_eq!(restored.record("c").unwrap().state, OrderState::Unknown);
+        assert!(restored.acknowledge_submission("c", &marker).is_err());
+        assert!(restored
+            .prepare_submission_marker("c", &request, 12)
+            .is_err());
+        permit
+            .validate_request(&request, 12, &calendar, None, &policy, gate.at(12))
+            .unwrap();
+    }
+    #[test]
+    fn send_permission_rechecks_actual_request_clock_and_safety() {
+        for case in 0..4 {
+            let mut gate = ready_gate();
+            let calendar = session(false);
+            let mut policy = RiskPolicy {
+                band_provider: 1,
+                band_session: 20260915,
+                band_buffer_ticks: 3,
+                max_band_age_ns: 100,
+            };
+            let mut ledger = OrderLedger::default();
+            ledger
+                .authorize(b(), 10, &calendar, None, &policy, gate.at(10))
+                .unwrap();
+            ledger
+                .mark_durable("c", &ledger.envelope_hash("c").unwrap())
+                .unwrap();
+            ledger
+                .begin_submit("c", 10, &calendar, None, &policy, gate.at(10))
+                .unwrap();
+            let request = "a".repeat(64);
+            let marker = ledger
+                .prepare_submission_marker("c", &request, 10)
+                .unwrap()
+                .clone();
+            let permit = ledger.acknowledge_submission("c", &marker).unwrap();
+            let mut request = request;
+            let mut now = 12;
+            match case {
+                0 => request = "b".repeat(64),
+                1 => now = 1000,
+                2 => gate.transport(false),
+                _ => policy.max_band_age_ns += 1,
+            }
+            assert!(permit
+                .validate_request(&request, now, &calendar, None, &policy, gate.at(12))
+                .is_err());
         }
     }
     #[test]
