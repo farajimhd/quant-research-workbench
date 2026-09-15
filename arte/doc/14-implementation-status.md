@@ -53,7 +53,7 @@ not prove provider, broker, or ClickHouse compatibility.
 - Representative historical-seed validation and full streaming/fit/partition source-decision parity.
 - Complete selected strategy lifecycle, admission, position management and exits.
 - Effective configuration export from the selected current candidate.
-- WebSocket receiver and integration of the complete in-process live path.
+- Integration of the receiver with the complete in-process live path.
 - Durable maintenance jobs, source certification and repair/publication integration.
 - Final event schema and migrations after source-identity validation.
 - Complete broker session, warning chain, pacing, protection and restart integration.
@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 154 in-process Rust tests passed (120 core and 34 adapter tests).
+- 155 in-process Rust tests passed (120 core and 35 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -458,6 +458,17 @@ rules and conflicting pre-merge readback. No database operations ran.
 One externally fenced owner per job remains mandatory; this is not a distributed
 lock or compare-and-swap service. Ownership fencing, job scheduling and actual
 storage crash/restart acceptance remain incomplete.
+
+A maintenance-job runner now composes durable-head recovery, REST acquisition,
+batch publication, progress checkpoints and final coverage publication. It exposes
+recovering/acquiring/checkpointing/verifying/complete phases. Failed checkpoints do
+not refetch already prepared data. Ambiguous coverage publication retains the same
+certificate identity for retry. Completion requires the expected coverage ID.
+One integrated offline test uses fake adapters through checkpoint and coverage
+failures, retries and completion. The real database adapter binding only compiled.
+Multi-job scheduling, ownership fencing, retry policy and executable service routing
+remain incomplete. Publication-clock semantics and storage durability still need
+real integration acceptance. No service or network/database call ran.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.
