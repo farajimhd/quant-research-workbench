@@ -1,6 +1,7 @@
 //! Official regular-session band admission. No estimates or refreshed timestamps.
 use crate::{event_order::Scope, events::Decimal, Error, Result};
 use serde::{Deserialize, Serialize};
+pub mod book;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Evidence {

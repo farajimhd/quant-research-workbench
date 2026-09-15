@@ -6,6 +6,29 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Shared in-memory LULD state
+
+The live lane now owns one bounded LULD projection for its provider, instrument and
+session. Executable reads validate the current feed gate, scope, scale and original
+band age. Duplicate delivery preserves the first availability timestamp. Older
+effective-time updates are reported without replacing the latest band.
+
+Conflicting same-time geometry, malformed evidence and wrong-scope updates latch
+the book closed. Disconnection invalidates it. The last observation remains an
+audit view only; consumers cannot fall back to it for execution. Recovery requires
+explicit replacement of the invalidated owner. No implicit reset is provided.
+
+All 241 offline Rust tests, formatting, Clippy and frozen-source hashes pass.
+Two new state-owner tests cover duplicate, older, conflict, invalidation and expiry
+behavior. The expanded live-lane test checks current feed permission, expiry,
+disconnects and that band updates do not advance trade/quote watermarks.
+No services or network tests ran.
+
+The provider adapter must still certify original effective times and supply bands.
+Same-time corrections need an explicit provider ordering contract; this version
+rejects ambiguity rather than inventing that order. Band persistence and recovery,
+candidate admission wiring and the continuous runtime driver remain incomplete.
+
 ## Shared LULD evidence at order validation
 
 Order validation now uses the same scoped LULD evidence type as admission. The old

@@ -18,6 +18,7 @@ pub struct Lane {
     allowed_lateness_ns: u64,
     failed: bool,
     quotes: arte_core::quote_state::Book,
+    bands: arte_core::luld::book::Book,
     maximum_quote_age_ns: u64,
     features: candidate_features::State,
 }
@@ -39,6 +40,7 @@ impl Lane {
         Ok(Self {
             features: candidate_features::State::new(market.state()?, feature_config)?,
             quotes: arte_core::quote_state::Book::new(market.scope())?,
+            bands: arte_core::luld::book::Book::new(market.scope())?,
             maximum_quote_age_ns,
             market,
             high: BTreeMap::new(),
@@ -233,8 +235,30 @@ impl Lane {
         self.market.acknowledge(id)
     }
     pub fn transport_lost(&mut self) {
+        self.bands.invalidate();
         self.high.clear();
         self.failed = true;
+    }
+    /// Separate official-band input. Does not advance trade/quote watermarks or
+    /// imply that the market provider adapter has certified this evidence.
+    pub fn observe_luld(
+        &mut self,
+        evidence: &arte_core::luld::Evidence,
+        received_at_ns: u64,
+    ) -> Result<arte_core::luld::book::Update> {
+        self.available()?;
+        self.bands.observe(evidence, received_at_ns)
+    }
+    pub fn current_luld(
+        &self,
+        check: Check<'_>,
+        now_ns: u64,
+        scale: u8,
+        maximum_age_ns: u64,
+    ) -> Result<&arte_core::luld::Evidence> {
+        self.available()?;
+        check.require(self.market.scope().instrument)?;
+        self.bands.require_current(now_ns, scale, maximum_age_ns)
     }
     pub fn market(&self) -> Result<&Series> {
         self.available()?;
@@ -507,5 +531,36 @@ mod tests {
         assert!(barrier.finished());
         assert!(lane.pending_boundary().unwrap().is_none());
         assert!(!lane.prepare_next(gate.at(101), 202 * SECOND).unwrap());
+        let band = arte_core::luld::Evidence {
+            provider: 1,
+            instrument: 1,
+            session: 20260915,
+            lower: 9,
+            upper: 11,
+            scale: 0,
+            effective_at_ns: 202 * SECOND,
+            available_at_ns: 202 * SECOND,
+            official: true,
+        };
+        assert!(lane
+            .current_luld(gate.at(101), 202 * SECOND, 0, SECOND)
+            .is_err());
+        lane.observe_luld(&band, 202 * SECOND).unwrap();
+        assert_eq!(
+            lane.current_luld(gate.at(101), 202 * SECOND, 0, SECOND)
+                .unwrap(),
+            &band
+        );
+        assert!(lane
+            .current_luld(gate.at(201), 202 * SECOND, 0, SECOND)
+            .is_err());
+        assert!(lane
+            .current_luld(gate.at(101), 203 * SECOND + 1, 0, SECOND)
+            .is_err());
+        assert!(!lane.prepare_next(gate.at(101), 202 * SECOND).unwrap());
+        lane.transport_lost();
+        assert!(lane
+            .current_luld(gate.at(101), 202 * SECOND, 0, SECOND)
+            .is_err());
     }
 }
