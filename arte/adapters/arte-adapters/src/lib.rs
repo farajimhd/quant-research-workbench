@@ -13,3 +13,4 @@ pub mod massive_stream;
 pub mod ownership;
 pub mod request_governor;
 pub mod rest_acquisition;
+pub mod stoppable_fetcher;

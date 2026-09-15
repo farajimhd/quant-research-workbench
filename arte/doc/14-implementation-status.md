@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 167 in-process Rust tests passed (120 core and 47 adapter tests).
+- 171 in-process Rust tests passed (120 core and 51 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -520,8 +520,15 @@ cooldown and the halted state, without credentials. Three deterministic offline 
 cover spacing, cooldown, response concurrency, cancelled waiters and unsafe delays.
 See [HTTP Retry-After semantics](https://www.rfc-editor.org/rfc/rfc9110.html#section-10.2.3).
 This is process-local coordination, not a provider-account-wide distributed quota.
-Already admitted requests cannot be recalled. Maintenance shutdown during admission
-waiting still needs explicit cancellation integration; full runtime wiring remains open.
+Already admitted requests cannot be recalled at the provider. Maintenance shutdown
+now cancels local read-only REST futures, including semaphore waits, cooldown waits
+and response reads. Cancellation drops the request permit and is reported as stopped,
+not a provider failure. Closed control channels also stop acquisition. Cancellation
+is latched; clearing a stop flag cannot restart that fetcher. Database publication,
+recovery and checkpoint futures are not cancelled by this boundary. A completed page
+still finishes its pending progress checkpoint before stopping. Four offline tests
+cover pending-read cancellation, closed control channels, ordinary errors and shared
+request-slot release. Full runtime wiring remains open.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.

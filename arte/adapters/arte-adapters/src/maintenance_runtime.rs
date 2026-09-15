@@ -6,6 +6,7 @@ use crate::{
     massive::RestClient,
     ownership::Lease,
     request_governor::{Governor, Policy},
+    stoppable_fetcher::StoppableFetcher,
 };
 use arte_core::{config::Acceptance, Error, Result};
 use serde::{Deserialize, Serialize};
@@ -180,11 +181,12 @@ pub async fn execute(
                         return Ok(runner.status().clone());
                     }
                     let mut lease = Lease::acquire(&context.lock_directory, &key)?;
-                    let mut fetcher = RestClient::new(
+                    let client = RestClient::new(
                         context.provider_key.clone(),
                         job.maximum_pages,
                         context.governor.clone(),
                     )?;
+                    let mut fetcher = StoppableFetcher::new(client, stopping.clone());
                     let mut backend =
                         DatabaseBackend::new(&context.database, &context.passed, &mut lease, &job)?;
                     loop {
@@ -192,12 +194,15 @@ pub async fn execute(
                         if *stopping.borrow() && runner.status().phase != Phase::Checkpointing {
                             return Ok(runner.status().clone());
                         }
-                        if !runner
+                        let advanced = runner
                             .advance(&mut fetcher, &mut backend, now, |status| {
                                 sender.send_modify(|view| view.status = Some(status.clone()))
                             })
-                            .await?
-                        {
+                            .await;
+                        if fetcher.cancelled() {
+                            return Ok(runner.status().clone());
+                        }
+                        if !advanced? {
                             return Ok(runner.status().clone());
                         }
                     }
