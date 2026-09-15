@@ -1,5 +1,9 @@
+use arte_core::publication::SeedManifest;
+use arte_core::seed_storage::{Bundle, Object};
+use arte_core::v7_seed::HistoricalSeed;
 use arte_core::{Error, Result};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 pub fn identifier(value: &str) -> Result<&str> {
@@ -53,7 +57,7 @@ impl ClickHouse {
         })
     }
     async fn request(&self, query: &str, body: String) -> Result<String> {
-        let response = self
+        let mut response = self
             .http
             .post(self.url.clone())
             .basic_auth(&self.user, Some(&self.password))
@@ -75,10 +79,22 @@ impl ClickHouse {
                 response.status().as_u16()
             )));
         }
-        response
-            .text()
+        const MAX_RESPONSE: usize = 32 * 1024 * 1024;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
             .await
-            .map_err(|_| Error::Unready("ClickHouse response incomplete".into()))
+            .map_err(|_| Error::Unready("ClickHouse response incomplete".into()))?
+        {
+            if chunk.len() > MAX_RESPONSE - bytes.len() {
+                return Err(Error::Capacity(
+                    "ClickHouse response exceeds 32 MiB; use a bounded page".into(),
+                ));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        String::from_utf8(bytes)
+            .map_err(|_| Error::Invalid("ClickHouse response is not UTF-8".into()))
     }
     /// Read-only storage preflight. Does not create or migrate tables.
     pub async fn verify_storage(&self, table: &str) -> Result<()> {
@@ -149,6 +165,161 @@ impl ClickHouse {
         .await?;
         Ok(())
     }
+    async fn immutable_value(
+        &self,
+        table: &str,
+        key_column: &str,
+        key: &str,
+        value_column: &str,
+    ) -> Result<Option<String>> {
+        identifier(table)?;
+        identifier(key_column)?;
+        identifier(value_column)?;
+        if key.len() != 64 || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(Error::Invalid("invalid immutable SHA-256 key".into()));
+        }
+        let query=format!("SELECT DISTINCT {value_column} AS value FROM {}.{table} WHERE {key_column}='{key}' LIMIT 2 FORMAT JSONEachRow",self.database);
+        let body = self.request(&query, String::new()).await?;
+        decode_immutable_rows(&body)
+    }
+    /// No DDL and no background writer is started. Caller must have installed
+    /// the reviewed schema and hold exclusive publication ownership for a seed.
+    pub async fn publish_seed(&self, bundle: &Bundle, now_ns: u64) -> Result<()> {
+        let seed = bundle.hydrate()?;
+        if now_ns < bundle.manifest.available_at_ns {
+            return Err(Error::Unready(
+                "seed publication precedes availability".into(),
+            ));
+        }
+        for table in ["seed_objects_v1", "seed_manifests_v1"] {
+            self.verify_storage(table).await?;
+        }
+        if let Some(previous) = &seed.previous_seed {
+            let start = seed
+                .source
+                .start_second
+                .checked_mul(1_000_000_000)
+                .ok_or_else(|| Error::Invalid("seed start overflow".into()))?;
+            self.load_seed(previous, seed.source.instrument, seed.source.session, start)
+                .await?;
+        }
+        for object in bundle.objects.values() {
+            let payload = std::str::from_utf8(&object.payload)
+                .map_err(|_| Error::Invalid("seed object is not UTF-8 JSON".into()))?;
+            if let Some(existing) = self
+                .immutable_value("seed_objects_v1", "object_hash", &object.id, "payload_json")
+                .await?
+            {
+                if existing.as_bytes() != object.payload {
+                    return Err(Error::Conflict("stored seed object differs".into()));
+                }
+            } else {
+                self.insert(
+                    "seed_objects_v1",
+                    &[serde_json::json!({"object_hash":object.id,"payload_json":payload})],
+                )
+                .await?;
+            }
+            let verified = self
+                .immutable_value("seed_objects_v1", "object_hash", &object.id, "payload_json")
+                .await?
+                .ok_or_else(|| Error::Unready("seed object readback missing".into()))?;
+            if verified.as_bytes() != object.payload {
+                return Err(Error::Conflict("seed object readback mismatch".into()));
+            }
+        }
+        let serialized = serde_json::to_string(&bundle.manifest)
+            .map_err(|e| Error::Serialization(e.to_string()))?;
+        if let Some(existing) = self
+            .immutable_value(
+                "seed_manifests_v1",
+                "seed_hash",
+                &bundle.manifest.id,
+                "manifest_json",
+            )
+            .await?
+        {
+            if existing != serialized {
+                return Err(Error::Conflict("seed manifest already differs".into()));
+            }
+        } else {
+            self.insert(
+                "seed_manifests_v1",
+                &[serde_json::json!({"seed_hash":bundle.manifest.id,"manifest_json":serialized})],
+            )
+            .await?;
+        }
+        let verified = self
+            .immutable_value(
+                "seed_manifests_v1",
+                "seed_hash",
+                &bundle.manifest.id,
+                "manifest_json",
+            )
+            .await?;
+        if verified.as_deref() != Some(serialized.as_str()) {
+            return Err(Error::Unready(
+                "seed manifest readback missing or different".into(),
+            ));
+        }
+        Ok(())
+    }
+    pub async fn load_seed(
+        &self,
+        id: &str,
+        instrument: u64,
+        session: u32,
+        start_ns: u64,
+    ) -> Result<HistoricalSeed> {
+        let payload = self
+            .immutable_value("seed_manifests_v1", "seed_hash", id, "manifest_json")
+            .await?
+            .ok_or_else(|| Error::Unready("historical seed is not published".into()))?;
+        let manifest: SeedManifest =
+            serde_json::from_str(&payload).map_err(|e| Error::Serialization(e.to_string()))?;
+        if manifest.id != id
+            || manifest.instrument != instrument
+            || manifest.session >= session
+            || manifest.available_at_ns > start_ns
+        {
+            return Err(Error::Unready(
+                "seed identity or availability mismatch".into(),
+            ));
+        }
+        let mut objects = BTreeMap::new();
+        for id in &manifest.objects {
+            let payload = self
+                .immutable_value("seed_objects_v1", "object_hash", id, "payload_json")
+                .await?
+                .ok_or_else(|| Error::Unready("published seed references missing object".into()))?;
+            objects.insert(
+                id.clone(),
+                Object {
+                    id: id.clone(),
+                    payload: payload.into_bytes(),
+                },
+            );
+        }
+        Bundle { manifest, objects }.hydrate()
+    }
+}
+fn decode_immutable_rows(body: &str) -> Result<Option<String>> {
+    let mut value = None;
+    for line in body.lines().filter(|line| !line.trim().is_empty()) {
+        let row: Value = serde_json::from_str(line)
+            .map_err(|_| Error::Invalid("invalid immutable readback row".into()))?;
+        let current = row
+            .get("value")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::Invalid("missing immutable value".into()))?;
+        if value.as_ref().is_some_and(|previous| previous != current) {
+            return Err(Error::Conflict(
+                "multiple payloads for immutable identity".into(),
+            ));
+        }
+        value = Some(current.to_owned());
+    }
+    Ok(value)
 }
 #[cfg(test)]
 mod tests {
@@ -164,5 +335,15 @@ mod tests {
             "p".into()
         )
         .is_err());
+    }
+    #[test]
+    fn immutable_readback_accepts_retries_but_not_conflicts() {
+        assert_eq!(decode_immutable_rows("").unwrap(), None);
+        assert_eq!(
+            decode_immutable_rows("{\"value\":\"same\"}\n{\"value\":\"same\"}").unwrap(),
+            Some("same".into())
+        );
+        assert!(decode_immutable_rows("{\"value\":\"first\"}\n{\"value\":\"second\"}").is_err());
+        assert!(decode_immutable_rows("{\"missing\":1}").is_err());
     }
 }

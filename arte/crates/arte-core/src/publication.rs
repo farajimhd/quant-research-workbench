@@ -1,5 +1,6 @@
 use crate::{content_hash, Error, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -19,6 +20,7 @@ pub struct SeedManifest {
     pub source_generation: String,
     pub previous_seed: Option<String>,
     pub objects: BTreeSet<String>,
+    pub root_object: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LevelVersion {
@@ -44,9 +46,19 @@ pub struct SeedCatalog {
 }
 impl SeedCatalog {
     pub fn add_object(&mut self, value: Vec<u8>) -> Result<String> {
-        let id = content_hash(&value)?;
+        let id = format!("{:x}", Sha256::digest(&value));
         self.objects.entry(id.clone()).or_insert(value);
         Ok(id)
+    }
+    pub fn object(&self, id: &str) -> Result<&[u8]> {
+        let bytes = self
+            .objects
+            .get(id)
+            .ok_or_else(|| Error::Unready("seed object missing".into()))?;
+        if format!("{:x}", Sha256::digest(bytes)) != id {
+            return Err(Error::Invalid("seed object hash mismatch".into()));
+        }
+        Ok(bytes)
     }
     pub fn publish(&mut self, seed: SeedManifest, now: u64) -> Result<()> {
         if seed.producer != SeedProducer::HistoricalV7 {
@@ -63,7 +75,9 @@ impl SeedCatalog {
         {
             return Err(Error::Invalid("invalid seed publication boundary".into()));
         }
-        if seed.objects.iter().any(|id| !self.objects.contains_key(id)) {
+        if !seed.objects.contains(&seed.root_object)
+            || seed.objects.iter().any(|id| !self.objects.contains_key(id))
+        {
             return Err(Error::Unready("seed objects incomplete".into()));
         }
         if let Some(prior) = &seed.previous_seed {
@@ -106,6 +120,7 @@ mod tests {
     #[test]
     fn future_and_streaming_seeds_rejected() {
         let mut c = SeedCatalog::default();
+        let root = c.add_object(b"test seed root".to_vec()).unwrap();
         let mut s = SeedManifest {
             id: "seed".into(),
             instrument: 1,
@@ -116,7 +131,8 @@ mod tests {
             algorithm: "v7".into(),
             source_generation: "g".into(),
             previous_seed: None,
-            objects: BTreeSet::new(),
+            objects: BTreeSet::from([root.clone()]),
+            root_object: root,
         };
         assert!(c.publish(s.clone(), 110).is_err());
         s.producer = SeedProducer::HistoricalV7;

@@ -34,6 +34,7 @@ was started during this implementation. Existing application files remain unchan
 | V7 historical extraction | Gap-separated extrema, profile peaks, bounded-span candidate clustering and auditable role-based selection |
 | V7 numerical fit | Versioned projected-BFGS Student-t fit, fitted band geometry and two-component BIC partition |
 | Historical MLE seeds | Completed-session builder, predecessor continuity, retained evidence, split audit and availability checks |
+| Seed persistence | Immutable object graph, manifest-last publication, reconstruction checks and ClickHouse adapter methods |
 | Provider adapter | REST/WS field normalization and bounded REST pagination implementation |
 | Persistence adapter | ClickHouse identifier checks, policy/part checks and synchronous inserts |
 | Broker adapter | IBKR bracket request construction and confirmation classification |
@@ -71,7 +72,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 54 in-process Rust tests passed (48 core and 6 adapter tests).
+- 58 in-process Rust tests passed (51 core and 7 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -134,11 +135,26 @@ has unit tests but does not yet have full frozen-source component parity.
 
 The initial completed-session MLE seed builder now exists. It is independently
 versioned and tested for input integrity, next-session availability, predecessor
-immutability, split adjustment and explicit capacity failure. It has no database
-publication or maintenance integration yet. See the owning V7 design document for
+immutability, split adjustment and explicit capacity failure. Database publication
+methods now compile but have not connected to ClickHouse. Maintenance integration
+is still missing. See the owning V7 design document for
 its exact algorithm and validation limits.
 
-Next: partition source parity, seed publication integration and the streaming
+Seed objects contain one level each, plus a small root envelope. The envelope
+does not duplicate the levels. Unchanged level objects reuse their hashes.
+Changed levels still serialize their complete observation history; finer-grained
+observation sharing and batched database reads remain performance work.
+The initial two-table seed migration is source-only and has not been applied.
+The adapter writes objects, checks readback, and publishes the manifest last.
+Readers reject missing objects and distinct payload conflicts. A single publisher
+must own a seed; a distributed publication lease is not implemented.
+
+The first storage round-trip test exposed floating-point JSON parse drift.
+Enabling exact `float_roundtrip` parsing restored the original seed hash.
+Offline tests now cover interrupted object staging, retries and corruption.
+They do not prove ClickHouse power-loss durability or connected recovery.
+
+Next: partition source parity, batched seed persistence and the streaming
 state machine. Build shared strategy
 execution on these authorities. Do not substitute the current fixed-noise
 extractor for the full historical MLE seed pipeline.

@@ -104,3 +104,20 @@ This saves snapshot storage but increases restart time.
 There is no arbitrary older-seed fallback. Missing required sessions must be built
 and certified. A corrupt seed or a qualified failed fit blocks readiness; do not
 silently substitute a fixed-width book or stale fitted values.
+
+## Seed object envelope
+
+The initial persistence format is `arte-seed-objects-1`. A root object lists
+ordered level-object hashes and the historical seed metadata. Level objects
+contain the fit and observations needed to resume. Raw object bytes use SHA-256.
+Historical seed identity continues to use its versioned typed-content hash.
+Exact floating-point JSON round trips are required before hash verification.
+
+Publication writes and reads back all objects before inserting the manifest.
+Repeated identical rows are accepted. Multiple distinct payloads for one immutable
+identity are an error. Loading verifies every object and reconstructs the seed
+before returning it. Table merges must not conceal conflicting payloads.
+
+`schemas/001-seed-storage.sql` defines the initial tables with `live_market_ssd`.
+It is not applied by build or validation commands. Existing tables require schema
+review; `IF NOT EXISTS` is not proof that a deployed schema matches the contract.
