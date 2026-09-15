@@ -53,10 +53,10 @@ def plot(root,variant,portfolio=False):
             ax.annotate(f"#{p['n']}",(at,p['entry']),xytext=(3,13+12*(i%2)),textcoords='offset points',fontsize=8,color='#9a3412')
         fills=[f for e in trial['episodes'] if e.get('symbol',symbol)==symbol
                for f in e['fills'] if start<=datetime.fromisoformat(f['time'])<=end]
-        for side,marker,color,label in [('B','^','#2563eb','Candidate buy'),('S','x','#dc2626','Candidate sell')]:
+        for side,marker,color,fill_label in [('B','^','#2563eb','Candidate buy'),('S','x','#dc2626','Candidate sell')]:
             matching=[f for f in fills if f['side']==side]
             ax.scatter([md.date2num(datetime.fromisoformat(f['time'])) for f in matching],
-                       [f['price'] for f in matching],s=32,marker=marker,color=color,zorder=6,label=label)
+                       [f['price'] for f in matching],s=32,marker=marker,color=color,zorder=6,label=fill_label)
         ax.xaxis.set_major_locator(md.AutoDateLocator(minticks=5,maxticks=10))
         ax.xaxis.set_major_formatter(md.DateFormatter('%H:%M:%S',tz=NY))
         ax.set(xlabel='New York time',ylabel='Price ($)',title=f"{symbol} | {variant} | Original positions {', '.join('#'+str(p['n']) for p in positions)}")
