@@ -6,6 +6,29 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Shared pinned quote eligibility
+
+The shared quote book now requires a pinned provider-scoped eligibility policy for
+executable reads. This applies to live quote/admission consumers, candidate feature
+reads and normalized historical simulation. Raw observations remain available for
+audit even when execution is blocked.
+
+Policies include explicit allowed condition and indicator sets, explicit empty-set
+permissions, a half-open effective interval, causal availability and source manifest
+identity. Unknown codes, unavailable policies and mismatched providers block reads.
+Policy identity cannot change inside an existing book. A disallowed latest quote
+does not cause fallback to an earlier eligible quote.
+
+The first validation run exposed a feature fixture without a policy. Synthetic
+fixtures now declare test-only policies. Production has no permissive default.
+All 300 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+No services or network tests ran. Source-oracle parity was not rerun.
+
+Provider-specific numeric mappings, source certification, policy publication and
+run-manifest binding remain required. A hash confirms identity, not correctness of
+the chosen allowlist. This conservative all-codes-approved rule may need a versioned
+extension if certified provider rules require combinations or venue-specific context.
+
 ## Normalized quotes feed historical execution
 
 The historical execution adapter now accepts the shared quote book instead of

@@ -413,6 +413,7 @@ mod tests {
         .unwrap();
         runtime.submit(bracket("a"), 0, 0).unwrap();
         let mut book = arte_core::quote_state::Book::new(source_scope()).unwrap();
+        book.bind_policy(crate::test_quote_policy()).unwrap();
         let raw = source_quote();
         let raw_hash = content_hash(&raw).unwrap();
         book.observe(&raw).unwrap();
@@ -461,6 +462,7 @@ mod tests {
         use arte_core::events::{Decimal, Payload};
         let convert = |event: arte_core::events::Observation, scale| {
             let mut book = arte_core::quote_state::Book::new(source_scope()).unwrap();
+            book.bind_policy(crate::test_quote_policy()).unwrap();
             book.observe(&event).unwrap();
             Quote::from_book(&book, source_scope(), scale, 1, 2, 10)
         };
@@ -481,6 +483,7 @@ mod tests {
             assert!(convert(crossed, 2).is_err());
         }
         let mut book = arte_core::quote_state::Book::new(source_scope()).unwrap();
+        book.bind_policy(crate::test_quote_policy()).unwrap();
         book.observe(&source_quote()).unwrap();
         assert!(Quote::from_book(
             &book,

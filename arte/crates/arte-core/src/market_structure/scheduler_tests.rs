@@ -1,6 +1,22 @@
 use super::*;
 use crate::events::{Decimal, EventKind, Payload, SourceTime};
 const SECOND: u64 = 1_000_000_000;
+fn empty_quote_policy(provider: u16) -> crate::quote_state::eligibility::Pinned {
+    use crate::quote_state::eligibility::{Pinned, Policy};
+    let p = Policy {
+        provider,
+        valid_from_ns: 0,
+        valid_to_ns: u64::MAX,
+        available_at_ns: 0,
+        source_manifest_hash: "a".repeat(64),
+        allowed_conditions: Default::default(),
+        allowed_indicators: Default::default(),
+        allow_empty_conditions: true,
+        allow_empty_indicators: true,
+    };
+    let hash = crate::content_hash(&p).unwrap();
+    Pinned::new(p, &hash).unwrap()
+}
 fn prepared_playback() -> playback::Prepared {
     use playback::{Frame, Input, Limits, Prepared};
     Prepared::new(
@@ -630,6 +646,9 @@ fn check_entry_frame(
         recovery_policy: &recovery_policy,
     };
     let mut quotes = crate::quote_state::Book::new(market.source_scope()).unwrap();
+    quotes
+        .bind_policy(empty_quote_policy(market.source_scope().provider))
+        .unwrap();
     assert!(features
         .entry_frame(boundary, boundary.evaluated_at_ns, market, &quotes, context)
         .is_err());
@@ -732,6 +751,9 @@ fn check_entry_frame(
     later_quote.sip.ns = later_at - 1;
     later_quote.available_at_ns = later_at;
     let mut later_quotes = crate::quote_state::Book::new(market.source_scope()).unwrap();
+    later_quotes
+        .bind_policy(empty_quote_policy(market.source_scope().provider))
+        .unwrap();
     later_quotes.observe(&later_quote).unwrap();
     assert!(
         !features
@@ -747,6 +769,9 @@ fn check_entry_frame(
     let mut other_quote = quote.clone();
     other_quote.key.instrument = 2;
     let mut other_quotes = crate::quote_state::Book::new(other_scope).unwrap();
+    other_quotes
+        .bind_policy(empty_quote_policy(other_scope.provider))
+        .unwrap();
     other_quotes.observe(&other_quote).unwrap();
     assert!(features
         .entry_frame(
@@ -761,6 +786,9 @@ fn check_entry_frame(
     stale.sip.ns -= SECOND;
     stale.available_at_ns -= SECOND;
     let mut stale_quotes = crate::quote_state::Book::new(market.source_scope()).unwrap();
+    stale_quotes
+        .bind_policy(empty_quote_policy(market.source_scope().provider))
+        .unwrap();
     stale_quotes.observe(&stale).unwrap();
     assert!(features
         .entry_frame(

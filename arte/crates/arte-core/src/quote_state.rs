@@ -4,6 +4,7 @@ use crate::{
     events::{Decimal, EventKind, Observation, Payload},
     Error, Result,
 };
+pub mod eligibility;
 #[derive(Debug, PartialEq, Eq)]
 pub enum Update {
     Applied,
@@ -14,6 +15,7 @@ pub struct Book {
     scope: Scope,
     latest: Option<Observation>,
     failed: bool,
+    policy: Option<eligibility::Pinned>,
 }
 impl Book {
     pub fn new(scope: Scope) -> Result<Self> {
@@ -27,7 +29,23 @@ impl Book {
             scope,
             latest: None,
             failed: false,
+            policy: None,
         })
+    }
+    /// Policy identity is immutable for this book. A new version needs a new owner.
+    pub fn bind_policy(&mut self, policy: eligibility::Pinned) -> Result<()> {
+        if policy.provider() != self.scope.provider
+            || self
+                .policy
+                .as_ref()
+                .is_some_and(|old| old.hash() != policy.hash())
+        {
+            return Err(Error::Conflict(
+                "quote eligibility policy binding differs".into(),
+            ));
+        }
+        self.policy = Some(policy);
+        Ok(())
     }
     pub fn observe(&mut self, event: &Observation) -> Result<Update> {
         if self.failed {
@@ -69,6 +87,10 @@ impl Book {
             .latest
             .as_ref()
             .ok_or_else(|| Error::Unready("quote missing".into()))?;
+        self.policy
+            .as_ref()
+            .ok_or_else(|| Error::Unready("quote eligibility policy missing".into()))?
+            .require(quote, now_ns)?;
         for at in [quote.sip.ns, quote.available_at_ns] {
             if now_ns < at || now_ns - at >= maximum_age_ns {
                 return Err(Error::Unready("quote clock stale or future".into()));
@@ -105,6 +127,23 @@ fn compare(left: Decimal, right: Decimal) -> std::cmp::Ordering {
 mod tests {
     use super::*;
     use crate::events::{EventKey, SourceTime};
+    fn policy() -> eligibility::Policy {
+        eligibility::Policy {
+            provider: 1,
+            valid_from_ns: 100,
+            valid_to_ns: 200,
+            available_at_ns: 100,
+            source_manifest_hash: "a".repeat(64),
+            allowed_conditions: [1].into(),
+            allowed_indicators: [2].into(),
+            allow_empty_conditions: true,
+            allow_empty_indicators: true,
+        }
+    }
+    fn pinned(p: eligibility::Policy) -> eligibility::Pinned {
+        let hash = crate::content_hash(&p).unwrap();
+        eligibility::Pinned::new(p, &hash).unwrap()
+    }
     fn quote(sequence: u64, at: u64, bid: i64, ask: i64) -> Observation {
         Observation {
             key: EventKey {
@@ -148,6 +187,7 @@ mod tests {
         })
         .unwrap();
         let mut first = quote(1, 100, 100, 1001);
+        book.bind_policy(pinned(policy())).unwrap();
         assert_eq!(book.observe(&first).unwrap(), Update::Applied);
         book.require_executable(101, 10).unwrap();
         first.available_at_ns = 109;
@@ -165,5 +205,74 @@ mod tests {
         );
         assert_eq!(book.latest().unwrap().key.sequence, 2);
         assert!(book.observe(&quote(2, 110, 100, 1001)).is_err());
+    }
+    #[test]
+    fn quote_policy_is_required_and_cannot_be_replaced_silently() {
+        let mut book = Book::new(Scope {
+            provider: 1,
+            instrument: 1,
+            session: 20260915,
+        })
+        .unwrap();
+        book.observe(&quote(1, 100, 100, 1001)).unwrap();
+        assert!(book.require_executable(101, 10).is_err());
+        book.bind_policy(pinned(policy())).unwrap();
+        book.bind_policy(pinned(policy())).unwrap();
+        assert!(book.require_executable(101, 10).is_ok());
+        let mut changed = policy();
+        changed.allow_empty_conditions = false;
+        assert!(book.bind_policy(pinned(changed)).is_err());
+        let mut foreign = policy();
+        foreign.provider = 2;
+        assert!(book.bind_policy(pinned(foreign)).is_err());
+        assert!(eligibility::Pinned::new(policy(), &"0".repeat(64)).is_err());
+        let mut disallowed = quote(2, 105, 100, 1001);
+        if let Payload::Quote { conditions, .. } = &mut disallowed.payload {
+            conditions.push(9);
+        }
+        book.observe(&disallowed).unwrap();
+        assert_eq!(book.latest().unwrap().key.sequence, 2);
+        assert!(book.require_executable(106, 10).is_err());
+    }
+    #[test]
+    fn policy_checks_unknown_codes_effective_interval_and_causal_availability() {
+        let p = pinned(policy());
+        let mut event = quote(1, 100, 100, 1001);
+        if let Payload::Quote {
+            conditions,
+            indicators,
+            ..
+        } = &mut event.payload
+        {
+            *conditions = vec![1];
+            *indicators = vec![2];
+        }
+        assert!(p.require(&event, 101).is_ok());
+        for change in 0..5 {
+            let mut event = event.clone();
+            match change {
+                0 => {
+                    if let Payload::Quote { conditions, .. } = &mut event.payload {
+                        conditions.push(9);
+                    }
+                }
+                1 => {
+                    if let Payload::Quote { indicators, .. } = &mut event.payload {
+                        indicators.push(9);
+                    }
+                }
+                2 => event.sip.ns = 99,
+                3 => event.sip.ns = 200,
+                _ => event.key.provider = 2,
+            }
+            assert!(p.require(&event, 201).is_err());
+        }
+        assert!(p.require(&event, 99).is_err());
+        let mut strict = policy();
+        strict.allow_empty_conditions = false;
+        strict.allow_empty_indicators = false;
+        assert!(pinned(strict)
+            .require(&quote(1, 100, 100, 1001), 101)
+            .is_err());
     }
 }

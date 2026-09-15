@@ -54,6 +54,13 @@ impl Lane {
         }
         Ok(())
     }
+    pub fn bind_quote_policy(
+        &mut self,
+        policy: arte_core::quote_state::eligibility::Pinned,
+    ) -> Result<()> {
+        self.available()?;
+        self.quotes.bind_policy(policy)
+    }
     /// Persist/audit every observation independently, including duplicate/rejected
     /// input. Eligibility comes from the pinned trade-condition policy, not health.
     pub fn ingest(&mut self, event: &AuditedEvent, eligible: bool) -> Result<()> {
@@ -461,6 +468,7 @@ mod tests {
             },
         )
         .unwrap();
+        lane.bind_quote_policy(crate::test_quote_policy()).unwrap();
         // This fixture exercises release and current-gate binding, not decoding or
         // ingestion. No real live receipt or provider health evidence is claimed.
         lane.market
