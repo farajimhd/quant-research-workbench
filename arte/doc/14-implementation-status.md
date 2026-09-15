@@ -768,3 +768,15 @@ publication clocks, future ranges and invalid bindings. All 202 Rust tests,
 formatting, static checks and copied-source hashes pass. No service ran. This does
 not yet dispatch the startup jobs, certify derived requirements, warm the strategy
 or grant trading readiness. Full startup orchestration remains incomplete.
+
+The source startup coordinator now dispatches planned jobs through the bounded
+maintenance pool. After each completed worker, it requires a verified certificate
+from the supplied durable loader. Certificate identity, authority, interval and
+publication clock must match before the catalog advances. It then recalculates
+remaining source gaps. Worker and verification failures remain visible; neither a
+completion label nor a coverage ID alone grants source completion. An offline test
+covers matching publication and wrong-instrument publication through the real pool.
+All 203 Rust tests, formatting, static checks and copied-source hashes pass.
+Production worker/loader wiring, persisted startup recovery, derived materialization
+and warming remain incomplete. Source completion is not trading readiness. No
+service or network test ran.

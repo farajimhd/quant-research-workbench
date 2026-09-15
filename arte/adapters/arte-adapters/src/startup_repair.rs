@@ -12,6 +12,7 @@ use arte_core::{
 use serde::Serialize;
 use std::collections::BTreeMap;
 
+#[derive(Clone)]
 pub struct Binding {
     pub key: Key,
     pub implementation_hash: String,
