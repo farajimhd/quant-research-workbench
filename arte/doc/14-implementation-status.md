@@ -6,6 +6,31 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Exact regular-session LULD admission
+
+The shared core now calculates regular-session admission from explicit previous
+close, quote prices and official band evidence. The calculation follows the frozen
+candidate's previous-close gates and maximum of basis-point, tick and optional
+spread buffers. It uses exact integer arithmetic and inward tick rounding instead
+of float epsilon. At least three buffer ticks are required by ARTE's safety policy.
+This intentionally excludes the legacy research-estimate fallback.
+
+Band evidence carries provider, instrument, session, scale, effective time and
+availability time. Mismatches, future availability, inverted clocks and expired
+effective time block admission. Updating availability cannot rejuvenate old bands.
+Quotes on either buffered boundary are blocked. Missing previous close, low previous
+close, missing official evidence and infeasible buffers have explicit reasons.
+
+All 239 offline Rust tests, formatting, Clippy and frozen-source hashes pass.
+Three new tests cover rounding, independent buffers, identity, timestamps and
+missing dependencies. No service ran. Python source-parity comparisons were not run.
+
+This is a pure admission calculation, not a provider-evidence certificate. The
+caller must still supply certified previous-close provenance, a fresh scoped quote,
+and the applicable session. Feed ingestion, candidate-frame integration, and the
+execution validator's adoption of the effective-time contract remain unfinished.
+The existing order validator is not claimed to enforce this new contract yet.
+
 ## Entry operand expiry at the actual decision clock
 
 Inspection found that completed-entry admission and MACD age used candle close,
