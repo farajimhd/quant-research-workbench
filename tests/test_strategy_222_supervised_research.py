@@ -3,7 +3,7 @@ import json
 import numpy as np
 import pytest
 from scripts.strategy_222_supervised_research import (
-    FEATURES,causal_features,hindsight_label,label_opportunities,metrics,flat_entry_state,
+    FEATURES,causal_features,hindsight_label,label_opportunities,metrics,flat_entry_state,diagnostic_screens,
 )
 from scripts.run_strategy_222_refinement import load_recipe
 
@@ -69,3 +69,27 @@ def test_recipe_accepts_only_bounded_parameter_paths(tmp_path):
     assert load_recipe(path)['historical_hod']['setup_minimum_body_bps']==30
     path.write_text(json.dumps(dict(parameters=dict(command=dict(shell='anything')))))
     with pytest.raises(ValueError,match='unapproved parameter'):load_recipe(path)
+
+
+def test_diagnostics_expose_lost_and_delayed_opportunities_without_mutating_labels():
+    features={key:1. for key in FEATURES}
+    features.update(fresh_quote=True,detector_fresh=True,liquidity_facts_fresh=True,
+        post_exit=False,session_dollars=200000,session_shares=25000,spread_bps=100,
+        body_bps=30,rate10=6,rate60=3)
+    rows=[dict(id=str(i),symbol=s,at=t,features=dict(features,prior_range_pct=width))
+          for i,(s,t,width) in enumerate([('X',10,1),('X',20,4),('Y',10,1),('Z',10,5)])]
+    labels=[dict(id=str(i),major_good=i<3,profitable=i<3,opportunity_id=key,
+                 timing_quality=1,entry_ask=10+i)
+            for i,key in enumerate(['X:10','X:10','Y:10','Z:10'])]
+    original=deepcopy((rows,labels))
+    result=next(r for r in diagnostic_screens(rows,labels)
+                if r['feature']=='prior_range_pct' and r['minimum']==3)
+    assert result['metrics']['admitted_rows']==2
+    assert result['metrics']['profitable_fraction']==.5
+    assert result['metrics']['major_opportunity_coverage']==.5
+    assert [r['symbol'] for r in result['lost_opportunities']]==['Y']
+    assert result['delayed_opportunities'][0]['delay_seconds']==10
+    assert result['delayed_opportunities'][0]['filtered_ask']==11
+    assert (rows,labels)==original
+    with pytest.raises(ValueError,match='misaligned'):
+        diagnostic_screens(rows,labels[::-1])

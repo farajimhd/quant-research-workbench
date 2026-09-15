@@ -305,9 +305,81 @@ def assess_replays():
     assess(REPLAYS)
 
 
+def diagnostic_screens(rows,labels):
+    """Expose opportunity losses from one-factor filters; never export a recipe."""
+    if not rows or [r['id'] for r in rows]!=[r['id'] for r in labels]:
+        raise ValueError('Missing or misaligned supervision')
+    if len({r['id'] for r in rows})!=len(rows):
+        raise ValueError('Duplicate supervised decision rows')
+    x={key:np.asarray([r['features'][key] for r in rows]) for key in FEATURES}
+    base=(x['fresh_quote']&x['detector_fresh']&x['liquidity_facts_fresh']
+          &(x['macd_histogram']>0)&(x['rate10']>=5)&(x['rate60']>=3)
+          &(x['spread_bps']<=150)&(x['session_dollars']>=200000)
+          &(x['session_shares']>=25000)&(x['body_bps']>=30))
+    population=np.ones(len(rows),dtype=bool)
+    def first_opportunities(mask):
+        first={}
+        for i in sorted(np.flatnonzero(mask),key=lambda i:rows[i]['at']):
+            if labels[i]['major_good']:first.setdefault(labels[i]['opportunity_id'],int(i))
+        return first
+    reference=first_opportunities(base)
+    results=[]
+    for feature,thresholds in (('prior_range_pct',(0,1,2,3,5,8)),
+                               ('trade_rate_ratio',(0,1,1.5,2,3))):
+        for threshold in thresholds:
+            condition=(x['prior_range_pct']>=threshold if feature=='prior_range_pct'
+                       else x['rate10']>=threshold*x['rate60'])
+            mask=base&condition;retained=first_opportunities(mask)
+            lost=[];delayed=[]
+            for key,i in reference.items():
+                detail=dict(opportunity_id=key,symbol=rows[i]['symbol'],
+                            reference_at=rows[i]['at'],reference_ask=labels[i]['entry_ask'])
+                if key not in retained:lost.append(detail)
+                elif rows[retained[key]]['at']>rows[i]['at']:
+                    j=retained[key]
+                    delayed.append(dict(**detail,filtered_at=rows[j]['at'],
+                        filtered_ask=labels[j]['entry_ask'],delay_seconds=rows[j]['at']-rows[i]['at']))
+            results.append(dict(feature=feature,minimum=threshold,
+                metrics=metrics(mask,population,labels,rows),lost_opportunities=lost,
+                delayed_opportunities=delayed,
+                by_symbol={s:metrics(mask,np.asarray([r['symbol']==s for r in rows]),labels,rows)
+                           for s in sorted({r['symbol'] for r in rows})}))
+    return results
+
+
+def diagnose(root):
+    if json.loads((root/'dataset-manifest.json').read_text()).get('status')!='screenable':
+        raise ValueError('Dataset is not accepted for screening')
+    rows=json.loads((root/'features.json').read_text());labels=json.loads((root/'labels.json').read_text())
+    results=diagnostic_screens(rows,labels)
+    method=('One-factor diagnostics hold the research liquidity/body screen fixed: '
+        '$200,000 session dollars, 25,000 shares, 150bps spread, 5/3 trades per second '
+        'over 10/60 seconds, 30bps candle body, fresh inputs and positive MACD histogram. '
+        'Future labels only score the causal features. Lost/delayed opportunities are '
+        'relative to that unfiltered screen, not to actual strategy entries.')
+    limits=('These are labeled decision rows, not trades or a strategy win rate. '
+        'Position-selected familiar-session evidence uses research stops. No recipe, '
+        'source change, parameter promotion or live activation is produced.')
+    save(root/'diagnostics.json',dict(method=method,limitations=limits,
+        features_sha256=digest(root/'features.json'),labels_sha256=digest(root/'labels.json'),
+        source_sha256=digest(Path(__file__)),results=results))
+    lines=['# Hindsight supervision: filter trade-offs','',method,'',limits,'',
+        '| Filter | Minimum | Rows | Profitable labels | Major coverage | Lost major opportunities | Delayed major opportunities |',
+        '|---|---:|---:|---:|---:|---:|---:|']
+    for row in results:
+        m=row['metrics']
+        lines.append(f"| {row['feature']} | {row['minimum']} | {m['admitted_rows']} | {m['profitable_fraction']:.1%} | {m['major_opportunity_coverage']:.1%} | {len(row['lost_opportunities'])} | {len(row['delayed_opportunities'])} |")
+    lines.extend(['','## Lost opportunity details',''])
+    for row in results:
+        for loss in row['lost_opportunities']:
+            lines.append(f"- {row['feature']} >= {row['minimum']}: {loss['symbol']}, opportunity `{loss['opportunity_id']}`.")
+    (root/'diagnostics.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
+    print(f'Diagnostics completed: {len(results)} screens, {len(rows)} frozen decision rows; no strategy changes',flush=True)
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=('build','screen','replay','assess'))
+    parser.add_argument('action',choices=('build','screen','replay','assess','diagnose'))
     parser.add_argument('--runtime',type=Path,default=REPLAYS/'supervised-v1')
     parser.add_argument('--top-k',type=int,default=2)
     args=parser.parse_args();root=args.runtime.resolve();root.relative_to(RUNTIME.resolve())
@@ -316,6 +388,7 @@ def main():
     if args.action=='build':build(root)
     elif args.action=='screen':screen(root,args.top_k)
     elif args.action=='replay':replay(root)
+    elif args.action=='diagnose':diagnose(root)
     else:assess_replays()
 
 
