@@ -1,6 +1,7 @@
 //! Network-free shared domain contracts for ARTE Live and historical execution.
 #![forbid(unsafe_code)]
 
+pub mod account_boundary;
 pub mod acquisition;
 pub mod candidate_features;
 pub mod candidate_runtime;

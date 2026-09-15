@@ -190,6 +190,44 @@ impl Lane {
             &self.features,
         )
     }
+    /// Freeze the complete configured consumer set before account workers run.
+    pub fn account_boundary(
+        &self,
+        scopes: &[arte_core::strategy_dispatch::Scope],
+        maximum_accounts: usize,
+    ) -> Result<arte_core::account_boundary::Barrier> {
+        self.available()?;
+        if scopes
+            .iter()
+            .any(|scope| scope.instrument != self.market.scope().instrument)
+        {
+            return Err(Error::Conflict(
+                "live account boundary instrument mismatch".into(),
+            ));
+        }
+        let boundary = self
+            .market
+            .pending()?
+            .ok_or_else(|| Error::Unready("live account boundary missing".into()))?;
+        arte_core::account_boundary::Barrier::new(
+            boundary.input(String::new()),
+            scopes,
+            maximum_accounts,
+        )
+    }
+    pub fn acknowledge_accounts(
+        &mut self,
+        barrier: &mut arte_core::account_boundary::Barrier,
+    ) -> Result<()> {
+        self.available()?;
+        let input = self
+            .market
+            .pending()?
+            .ok_or_else(|| Error::Unready("live account boundary missing".into()))?
+            .input(String::new());
+        barrier.acknowledge_market(&input, |id| self.market.acknowledge(id))
+    }
+    /// Market-only acknowledgment. Strategy consumers must use acknowledge_accounts.
     pub fn acknowledge_boundary(&mut self, id: &str) -> Result<()> {
         self.available()?;
         self.market.acknowledge(id)
@@ -416,7 +454,58 @@ mod tests {
             features.macd.as_ref().unwrap().kind,
             arte_core::strategy_macd::Kind::Unavailable
         );
-        lane.acknowledge_boundary(&bar_id).unwrap();
+        use arte_core::strategy_dispatch::{Action, Mode, Safety, Scope};
+        let scopes = ["a", "b"].map(|account| Scope {
+            run_id: "live-test".into(),
+            mode: Mode::Paper,
+            account: account.into(),
+            strategy_instance: "candidate".into(),
+            instrument: 1,
+            code_hash: "code".into(),
+            config_hash: "config".into(),
+        });
+        let input = boundary.input("features".into());
+        let mut barrier = lane.account_boundary(&scopes, 2).unwrap();
+        assert!(lane.acknowledge_accounts(&mut barrier).is_err());
+        let safety = Safety {
+            position_quantity: 0,
+            pending_exit_quantity: 0,
+            exit_pending: false,
+            pending_entry: false,
+            last_exit_reason: None,
+            flatten: false,
+            protective_stop_crossed: false,
+            manual_exit: false,
+            completed_macd_reversal: false,
+            setup_phase: arte_core::strategy_lifecycle::Phase::Building,
+            luld_buffer_reached: false,
+            encounter_exit: false,
+            early_setup_failed: false,
+            structural_exit: false,
+        };
+        for (index, scope) in scopes.into_iter().enumerate() {
+            let mut account =
+                arte_core::strategy_transaction::Runtime::new(scope, 0_u64, 1024).unwrap();
+            account
+                .prepare(input.clone(), &safety, "evidence".into(), |_| {
+                    Ok(vec![Action::Wait {
+                        reason: "test".into(),
+                    }])
+                })
+                .unwrap();
+            // Missing readback cannot satisfy this account or advance the lane.
+            assert!(account.acknowledge(&[]).is_err());
+            assert!(lane.acknowledge_accounts(&mut barrier).is_err());
+            let rows = account.pending_batch().unwrap().records().to_vec();
+            barrier
+                .record(&account.acknowledge(&rows).unwrap())
+                .unwrap();
+            assert_eq!(barrier.remaining(), 1 - index);
+            assert_eq!(lane.pending_boundary().unwrap().unwrap().id, bar_id);
+        }
+        lane.acknowledge_accounts(&mut barrier).unwrap();
+        assert!(barrier.finished());
+        assert!(lane.pending_boundary().unwrap().is_none());
         assert!(!lane.prepare_next(gate.at(101), 202 * SECOND).unwrap());
     }
 }

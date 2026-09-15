@@ -6,6 +6,32 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Multi-account market acknowledgment
+
+The shared core now has a bounded account journal barrier. It freezes the consumer
+scopes for one market boundary. Every account/strategy consumer must supply a
+verified transaction receipt before the market boundary can advance. Consumers
+share a run, mode and instrument but retain independent configuration and state.
+
+The barrier binds event identity, source sequence, event time and availability time.
+Accounts may evaluate later without changing those source clocks. Receipts must
+match the exact configured consumer scope. Duplicate receipts are idempotent.
+Conflicting receipts are rejected. A failed market acknowledgment keeps progress.
+Workers can query which consumers still need a decision after a partial commit.
+
+The live lane exposes barrier creation and account-aware market acknowledgment.
+The existing market-only acknowledgment remains a low-level path; a strategy
+runner must use the account-aware path. The complete consumer set still has to be
+provided by the future configuration/runtime coordinator. The barrier does not
+implement concurrent account workers, broker authorization, cross-account atomic
+execution, durable recovery, or emergency-exit processing.
+
+All 232 offline Rust tests pass, including three new barrier tests and an expanded
+live-lane test. The latter prepares two account transactions, rejects incomplete
+readback, preserves the pending market boundary after the first account commits,
+and advances only after both receipts. Formatting, Clippy and frozen-source hashes
+also pass. No service, network, database, broker or browser test ran.
+
 ## Effective candidate configuration and evaluation clock
 
 Effective candidate configuration version 2 includes the shared feature configuration
