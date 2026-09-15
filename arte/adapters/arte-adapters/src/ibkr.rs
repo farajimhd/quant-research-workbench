@@ -2,6 +2,7 @@ use arte_core::orders::{Bracket, Side};
 use arte_core::{Error, Result};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
+pub mod submission;
 
 fn price(atoms: i64, scale: u8) -> Result<Value> {
     if atoms <= 0 || scale > 9 {

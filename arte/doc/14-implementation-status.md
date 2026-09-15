@@ -6,6 +6,33 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Permit-consuming broker request boundary
+
+IBKR bracket requests now have an immutable prepared representation. Its hash
+includes mode, broker-session identity, account, authorization hash, endpoint path
+and exact serialized request body. The supplied contract ID is therefore pinned.
+The factory does not certify that contract mapping; reference authority must do so.
+Only Live and Paper scopes are accepted. Account path components are validated.
+
+The sender consumes the persisted marker's single-use permit. A closure supplies
+current clocks and safety evidence when the future executes. The sender checks
+scope, request identity, authorization, market/session safety and transport readiness
+before handing an opaque, non-copyable request to the transport. It makes one call.
+Errors after that call return Unknown. No retry or reply confirmation is attempted.
+Bounded raw responses remain evidence, not proof of working bracket protection.
+
+All 271 offline Rust tests, formatting, Clippy and frozen-source hashes pass.
+Mocked tests verify exact path/body delivery, one transport call, scope mismatch,
+unready broker, expiration before send, ambiguous failure, oversized responses and
+request identity changes. No broker connections or services ran.
+
+The current IBKR order reference was checked for the account-specific endpoint and
+object containing the orders array. See the linked reference in document 12.
+Authenticated HTTP transport, pacing, reply serialization, protection verification
+and outcome persistence remain unfinished. The transport trait is not itself a
+working gateway or proof of broker readiness. Backtest process isolation still
+requires deployment and runtime integration beyond the scope-type rejection.
+
 ## Known-order restart discovery
 
 The account-owned ClickHouse publisher can now recover a known command. It requires

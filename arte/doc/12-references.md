@@ -17,6 +17,8 @@ implementation release. Account entitlements and live payloads still require tes
 | [Massive streaming overview](https://www.massive.com/docs/websocket/stocks/overview) | Channels, including LULD |
 | [ClickHouse MergeTree](https://github.com/ClickHouse/ClickHouse/blob/master/docs/en/engines/table-engines/mergetree-family/mergetree.md) | Partition and sorting keys; no dense ordinal requirement |
 | [IBKR Web API](https://ibkrcampus.com/campus/ibkr-api-page/webapi-doc/) | Order replies and session-scoped suppression |
+| [IBKR submit new order](https://www.interactivebrokers.com/docs/web-api/api-reference/trading/trading-orders/submit-new-order) | Account-specific POST endpoint and orders object; checked during request-boundary implementation |
+| [IBKR bracket orders](https://www.interactivebrokers.com/docs/web-api/v1/endpoints/orders/bracket-orders-oca-groups) | Bracket request relationships; exact broker protection still needs acceptance tests |
 | [IBKR pacing](https://ibkrcampus.com/docs/web-api/v1/pacing-limitations) | Global and endpoint request limits |
 | [IBKR account discovery](https://ibkrcampus.com/docs/web-api/v1/endpoints/accounts/receive-brokerage-accounts) | Tradeable account discovery |
 | [IBKR Paper](https://ibkrcampus.com/campus/glossary-terms/paper-trading-account/) | Paper behavior and execution-model limitations |
