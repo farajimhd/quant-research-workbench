@@ -6,6 +6,34 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Durable initial broker outcomes
+
+The shared order contract now records one immutable initial outcome per submission
+marker. It preserves either HTTP status and raw response bytes, or an explicit
+unknown-result reason. The original observation time is retained. Binary bytes are
+not coerced to UTF-8. Body, reason and timestamp bounds are validated.
+
+The transport result can become a pending outcome. The asynchronous journal commit
+verifies marker/authorization identity and exact readback before issuing a committed
+outcome token. Failed or ambiguous writes leave the pending observation unchanged.
+A second acknowledgment cannot issue another token. This token proves matching
+readback, not successful order execution or complete bracket protection.
+
+The account-owned ClickHouse publisher requires the submission marker to exist,
+checks storage placement, reuses identical outcomes and rejects conflicting versions.
+Schema 012 defines `broker_initial_outcomes_v1` on `live_market_ssd`; it is unapplied.
+Reconciliation observations must be separate records, not replacements for initial
+unknown outcomes.
+
+All 280 offline Rust tests, formatting, Clippy and frozen-source hashes pass.
+Tests cover raw-byte preservation, invalid time/status/size, exact acknowledgment,
+ambiguous-write retry, mismatched readback and a maximum-sized binary payload.
+No database or broker calls ran.
+
+The full send-and-publish driver, restart outcome discovery, response classification,
+reply workflow and session-gate release remain incomplete. Committing an outcome
+does not yet alter the shared broker gate. No service was started.
+
 ## Shared broker pacing and non-waiting order admission
 
 The HTTP transport now receives a shared session owner containing both its broker

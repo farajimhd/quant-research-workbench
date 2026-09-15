@@ -131,6 +131,25 @@ pub enum Delivery {
     /// Do not automatically resend. Persist the outcome and reconcile.
     Unknown(String),
 }
+impl Delivery {
+    /// Retain this pending value until publication succeeds; never rebuild it
+    /// with a newer timestamp after an ambiguous write.
+    pub fn into_pending(
+        self,
+        marker: &arte_core::orders::submission::Marker,
+        observed_at_ns: u64,
+    ) -> Result<arte_core::orders::outcome::Pending> {
+        use arte_core::orders::outcome::{Observation, Pending};
+        let observation = match self {
+            Self::Response(response) => Observation::Response {
+                status: response.status,
+                body: response.body,
+            },
+            Self::Unknown(reason) => Observation::Unknown { reason },
+        };
+        Pending::new(marker, observed_at_ns, observation)
+    }
+}
 /// The clock/health closure runs on execution, not when a future is queued.
 /// Cancellation after polling transport leaves ledger state Submitting; recovery
 /// converts that state to Unknown. This function never retries or confirms replies.

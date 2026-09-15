@@ -18,6 +18,27 @@ pub trait SubmissionPublisher {
         marker: &arte_core::orders::submission::Marker,
     ) -> impl Future<Output = Result<arte_core::orders::submission::Marker>> + Send;
 }
+pub trait OutcomePublisher {
+    fn append_outcome(
+        &mut self,
+        authorization: &Authorization,
+        marker: &arte_core::orders::submission::Marker,
+        record: &arte_core::orders::outcome::Record,
+    ) -> impl Future<Output = Result<arte_core::orders::outcome::Record>> + Send;
+}
+pub async fn commit_outcome(
+    pending: &mut arte_core::orders::outcome::Pending,
+    authorization: &Authorization,
+    marker: &arte_core::orders::submission::Marker,
+    publisher: &mut impl OutcomePublisher,
+) -> Result<arte_core::orders::outcome::Committed> {
+    marker.require(authorization)?;
+    pending.record()?.require(marker)?;
+    let readback = publisher
+        .append_outcome(authorization, marker, pending.record()?)
+        .await?;
+    pending.acknowledge(&readback)
+}
 /// The marker remains prepared across cancellation. Permission is issued once,
 /// only after exact readback. No broker request is performed by this function.
 pub async fn commit_submission(
@@ -150,6 +171,83 @@ mod tests {
     struct SubmissionStore {
         saved: Option<arte_core::orders::submission::Marker>,
         fail: bool,
+    }
+    struct OutcomeStore {
+        saved: Option<arte_core::orders::outcome::Record>,
+        fail: bool,
+        corrupt: bool,
+    }
+    impl OutcomePublisher for OutcomeStore {
+        async fn append_outcome(
+            &mut self,
+            _: &Authorization,
+            _: &arte_core::orders::submission::Marker,
+            record: &arte_core::orders::outcome::Record,
+        ) -> Result<arte_core::orders::outcome::Record> {
+            if let Some(old) = &self.saved {
+                assert_eq!(old, record);
+            }
+            self.saved = Some(record.clone());
+            if self.fail {
+                self.fail = false;
+                return Err(Error::Unready("ambiguous outcome write".into()));
+            }
+            let mut result = record.clone();
+            if self.corrupt {
+                result.observed_at_ns += 1;
+            }
+            Ok(result)
+        }
+    }
+    #[tokio::test]
+    async fn outcome_write_failures_preserve_original_observation_until_exact_readback() {
+        use arte_core::orders::{
+            outcome::{Observation, Pending},
+            submission::Marker,
+        };
+        let authorization = prepared().authorization("c").unwrap();
+        let marker = Marker {
+            order_key: authorization.key().unwrap(),
+            authorization_hash: authorization.hash().unwrap(),
+            request_hash: "a".repeat(64),
+            prepared_at_ns: 10,
+        };
+        let mut pending = Pending::new(
+            &marker,
+            11,
+            Observation::Unknown {
+                reason: "disconnected".into(),
+            },
+        )
+        .unwrap();
+        let original = pending.record().unwrap().clone();
+        let mut store = OutcomeStore {
+            saved: None,
+            fail: true,
+            corrupt: false,
+        };
+        assert!(
+            commit_outcome(&mut pending, &authorization, &marker, &mut store)
+                .await
+                .is_err()
+        );
+        store.corrupt = true;
+        assert!(
+            commit_outcome(&mut pending, &authorization, &marker, &mut store)
+                .await
+                .is_err()
+        );
+        assert_eq!(pending.record().unwrap(), &original);
+        store.corrupt = false;
+        let committed = commit_outcome(&mut pending, &authorization, &marker, &mut store)
+            .await
+            .unwrap();
+        assert_eq!(committed.record(), &original);
+        assert!(
+            commit_outcome(&mut pending, &authorization, &marker, &mut store)
+                .await
+                .is_err()
+        );
     }
     impl SubmissionPublisher for SubmissionStore {
         async fn append_submission(

@@ -3,6 +3,7 @@ use super::*;
 use arte_core::{config::Acceptance, orders::Authorization};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+mod outcomes;
 
 const TABLE: &str = "order_authorizations_v2";
 const SUBMISSION_TABLE: &str = "order_submissions_v1";

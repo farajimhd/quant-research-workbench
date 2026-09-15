@@ -1,6 +1,7 @@
 use crate::{content_hash, Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+pub mod outcome;
 mod recovery;
 pub mod submission;
 
