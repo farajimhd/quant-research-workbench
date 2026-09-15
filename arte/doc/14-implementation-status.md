@@ -6,6 +6,34 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Latest causal scheduler increment
+
+The shared market scheduler prepares one boundary at a time. It exposes a completed
+bar before applying the next trade. It then exposes each trade, including its
+eligibility and unchanged source/availability clocks. Empty intervals create no bars.
+The strategy input envelope uses a shared bar/trade boundary sequence, separate from
+the provider event sequence.
+
+A pending boundary stays in memory until its exact ID is acknowledged. Dropping a
+borrowed view, attempting another step, or sending a wrong acknowledgment cannot
+dequeue it or recalculate market state. Calculation failures retain queued input and
+block subsequent views. This pause supports asynchronous consumer work. It does not
+prove durable journal completion or provide crash recovery for the whole scheduler.
+
+The live lane now uses this scheduler instead of releasing a batch directly into
+the final market state. It rechecks the current feed gate before each new boundary.
+The existing market-only batch API remains available for non-strategy consumers.
+
+Offline validation passed: 222 Rust tests, formatting, Clippy with warnings denied,
+and copied-source hashes. Four new tests cover causal boundary order, absent empty
+bars, pending acknowledgment behavior, failure retention, and live-gate binding.
+Source-oracle parity was not rerun. No service or network integration test ran.
+
+Still incomplete: full candidate-frame production, journal-bound multi-account
+consumption, quote-triggered strategy evaluation, coherent scheduler recovery, and
+end-to-end live/backtest orchestration. The local boundary acknowledgment is not a
+trading authorization. Performance and representative-session parity are unproven.
+
 ## User instructions for this implementation
 
 - Use the latest strategy source as the starting point. Pin it because it is changing.

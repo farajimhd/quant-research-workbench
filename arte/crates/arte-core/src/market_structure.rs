@@ -1,4 +1,5 @@
 //! End-stamped one-second market/V7 bridge, version 1. Not a trading-ready token.
+pub mod scheduler;
 use crate::{
     market::{Series, Update},
     v7_extraction::Candle,
@@ -689,7 +690,7 @@ impl Ordered {
 mod tests {
     use super::*;
     use crate::v7_seed::{build, input_hash, SeedPolicy, SourceCertificate};
-    fn runtime(maximum_bars: usize) -> Runtime {
+    pub(super) fn runtime(maximum_bars: usize) -> Runtime {
         let bars: Vec<_> = (100..118)
             .map(|t| Candle {
                 t,

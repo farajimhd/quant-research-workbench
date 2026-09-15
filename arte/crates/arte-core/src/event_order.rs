@@ -84,6 +84,17 @@ impl Buffer {
         watermark_ns: u64,
         mut apply: impl FnMut(&Observation) -> Result<()>,
     ) -> Result<usize> {
+        self.begin_release(watermark_ns)?;
+        let mut count = 0;
+        while let Some(event) = self.first_releasable() {
+            apply(event)?;
+            let key = event.key.clone();
+            self.acknowledge_first(&key)?;
+            count += 1;
+        }
+        Ok(count)
+    }
+    pub(crate) fn begin_release(&mut self, watermark_ns: u64) -> Result<()> {
         if self.failed {
             return Err(Error::Unready("event ordering requires recovery".into()));
         }
@@ -91,17 +102,27 @@ impl Buffer {
             return Err(Error::Invalid("event watermark regressed".into()));
         }
         self.watermark_ns = watermark_ns;
-        let mut count = 0;
-        while let Some((order, event)) = self.pending.first_key_value() {
-            if order.0 >= watermark_ns {
-                break;
-            }
-            apply(event)?;
-            let (_, event) = self.pending.pop_first().unwrap();
-            self.identities.remove(&event.key);
-            count += 1;
+        Ok(())
+    }
+    pub(crate) fn first_releasable(&self) -> Option<&Observation> {
+        self.pending
+            .first_key_value()
+            .filter(|(order, _)| order.0 < self.watermark_ns)
+            .map(|(_, event)| event)
+    }
+    pub(crate) fn acknowledge_first(&mut self, key: &EventKey) -> Result<()> {
+        if self.failed
+            || self
+                .first_releasable()
+                .is_none_or(|event| &event.key != key)
+        {
+            return Err(Error::Conflict(
+                "ordered acknowledgment differs from next event".into(),
+            ));
         }
-        Ok(count)
+        let (_, event) = self.pending.pop_first().unwrap();
+        self.identities.remove(&event.key);
+        Ok(())
     }
     pub fn pending(&self) -> usize {
         self.pending.len()
