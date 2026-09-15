@@ -18,20 +18,22 @@ import matplotlib.dates as md
 NY=ZoneInfo('America/New_York')
 
 
-def plot(root,variant):
+def plot(root,variant,portfolio=False):
     root=root.resolve();root.relative_to(Path('D:/TradingML/runtimes').resolve())
     study=Path('D:/TradingML/runtimes/analysis/strategy-222-parameter-study-20260914')
     ledger=json.loads((study/'quote-ledger.json').read_text())
     original=json.loads((study/'positions.json').read_text())
     trials=json.loads((root/'comparison.json').read_text())
-    out=root/'plots'/variant;out.mkdir(parents=True,exist_ok=True)
+    label=variant+('-portfolio' if portfolio else '')
+    out=root/'plots'/label;out.mkdir(parents=True,exist_ok=True)
     index=['# Before/after price-action review','',
            'Orange markers are the original Strategy 222 entries. Blue markers are actual candidate buys; red crosses are actual candidate sells. The gray band is the recorded bid–ask spread. Each chart is a frozen audit window, not a future-dependent strategy input.','']
     completed=0
     for key,item in ledger.items():
         window=item['window'];symbol=window['symbol']
         start=datetime.fromisoformat(window['start']);end=datetime.fromisoformat(window['end'])
-        selected=[t for t in trials if t['name']==variant and t['symbol']==symbol and
+        selected=[t for t in trials if t['name']==variant and symbol in t.get('tickers',[t['symbol']]) and
+            (t['symbol']=='PORTFOLIO')==portfolio and
             datetime.fromisoformat('2026-08-21T'+t['end']).replace(tzinfo=NY)>=end]
         if not selected:continue
         trial=selected[-1]
@@ -49,7 +51,8 @@ def plot(root,variant):
             ax.scatter([at],[p['entry']],s=65,color='#ea580c',marker='o',zorder=5,
                        label='Original entry' if i==0 else None)
             ax.annotate(f"#{p['n']}",(at,p['entry']),xytext=(3,13+12*(i%2)),textcoords='offset points',fontsize=8,color='#9a3412')
-        fills=[f for e in trial['episodes'] for f in e['fills'] if start<=datetime.fromisoformat(f['time'])<=end]
+        fills=[f for e in trial['episodes'] if e.get('symbol',symbol)==symbol
+               for f in e['fills'] if start<=datetime.fromisoformat(f['time'])<=end]
         for side,marker,color,label in [('B','^','#2563eb','Candidate buy'),('S','x','#dc2626','Candidate sell')]:
             matching=[f for f in fills if f['side']==side]
             ax.scatter([md.date2num(datetime.fromisoformat(f['time'])) for f in matching],
@@ -64,7 +67,7 @@ def plot(root,variant):
                       f'![{symbol} before and after]({path.as_posix()})',''])
         completed+=1
         print(f'Charts {completed}/{len(ledger)} windows: {symbol}',flush=True)
-    (root/f'price-action-{variant}.md').write_text('\n'.join(index)+'\n',encoding='utf-8')
+    (root/f'price-action-{label}.md').write_text('\n'.join(index)+'\n',encoding='utf-8')
     print(f'Completed {completed} comparable windows; {len(ledger)-completed} await replay coverage',flush=True)
 
 
@@ -72,4 +75,5 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--runtime',type=Path,default=Path('D:/TradingML/runtimes/analysis/strategy-222-refinement'))
     parser.add_argument('--variant',default='full-v6')
-    args=parser.parse_args();plot(args.runtime,args.variant)
+    parser.add_argument('--portfolio',action='store_true',help='Use shared-capital portfolio replays only')
+    args=parser.parse_args();plot(args.runtime,args.variant,args.portfolio)
