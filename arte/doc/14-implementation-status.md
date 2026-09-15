@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 86 in-process Rust tests passed (79 core and 7 adapter tests).
+- 91 in-process Rust tests passed (84 core and 7 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -200,6 +200,17 @@ Reclaim confirmation consumes one opening opportunity within a half-open one-sec
 window. Failed-resistance confirmation separately requires adjacent red candles
 and cancels on band reclaim. These components are not yet wired to the main
 evaluator or broker fill stream; tests cover local state transitions only.
+
+The setup/recovery entry evaluator composes causal range/zone checks, early-base
+assessment, prior acquisition-level selection, support and target selection,
+recovery permission, and real-quote clearance into a typed proposal. It leaves
+initial fill price and risk unset until execution reconciliation. Regular-session
+targets require an explicit supplied value; no historical LULD estimate is created.
+Admission, activity and official-band producers are not wired yet. This evaluator
+does not authorize an order. Five offline tests cover the composed entry path,
+quote feasibility, missing regular targets, early-base behavior and causal guards.
+Whole-source strategy parity, additions, dispatcher integration and effective
+configuration binding remain incomplete.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.
