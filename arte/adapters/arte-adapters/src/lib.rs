@@ -2,5 +2,6 @@
 #![forbid(unsafe_code)]
 pub mod clickhouse;
 pub mod ibkr;
+pub mod live_decode;
 pub mod massive;
 pub mod massive_stream;

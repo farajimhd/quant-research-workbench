@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 119 in-process Rust tests passed (108 core and 11 adapter tests).
+- 123 in-process Rust tests passed (108 core and 15 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -301,6 +301,17 @@ subscription completeness, latency integration, normalization fan-out and repair
 handoff remain untested or unwired. No WebSocket connection was opened.
 The protocol was checked against the official
 [Massive WebSocket quickstart](https://massive.com/docs/websocket/quickstart).
+
+The live decoder now connects received frames to the compact event normalizer.
+It assigns distinct application sequences while preserving each frame's receive
+UTC and monotonic stamp. Identity resolution receives source and knowledge times.
+Per-instrument/channel monitors assess SIP age, optional participant age and local
+queue delay. Required missing participant timestamps block exposure without
+fabrication. A failed frame publishes no partial events and latches decoder failure;
+the caller must retain the raw frame and establish a validated recovery run.
+Four offline tests cover sequencing, missing clocks, queue latency and unresolved
+identity. Alert delivery, persistence fan-out, duplicate-aware recovery sampling,
+provider-overlap identity acceptance and runtime exposure-gate wiring remain open.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.
