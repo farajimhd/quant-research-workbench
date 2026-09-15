@@ -790,3 +790,16 @@ One new offline test confirms a pre-cancelled worker returns before lease or
 external I/O. All 204 Rust tests, formatting, static checks and source hashes pass.
 The production binding was compiled but not executed. CLI/service startup wiring,
 initial coverage discovery, derived materialization and warming remain incomplete.
+
+Coverage now has a thin interval discovery index in schema 008. Publication writes
+the verified certificate first, then the index, and checks the index readback.
+Discovery filters by authority hash, overlapping interval and publication clock.
+It rejects result overflow instead of truncating, reloads each certificate, checks
+the full authority and interval, and verifies its event batches before returning
+a catalog. The index is not coverage authority and stores no event payloads.
+All 205 Rust tests, formatting, static checks and source hashes pass. The new decoder
+test covers malformed identities, duplicate rows and capacity overflow. SQL and
+database behavior remain untested; schema 008 was not applied. Existing unindexed
+certificates need explicit index reconstruction before discovery can find them.
+Multi-instrument startup discovery wiring, derived warming and service entry points
+remain incomplete. No services were started.

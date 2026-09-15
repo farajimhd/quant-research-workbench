@@ -294,6 +294,7 @@ impl ClickHouse {
             &BTreeMap::from([(id.clone(), json)]),
         )
         .await?;
+        self.publish_coverage_index(verified.certificate()).await?;
         Ok(id)
     }
     pub async fn load_acquisition(

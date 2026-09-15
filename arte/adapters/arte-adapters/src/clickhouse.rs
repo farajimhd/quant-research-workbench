@@ -5,6 +5,7 @@ use arte_core::{Error, Result};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::time::Duration;
+mod coverage_index;
 mod event_batches;
 mod fills;
 pub use fills::FillPublisher;
