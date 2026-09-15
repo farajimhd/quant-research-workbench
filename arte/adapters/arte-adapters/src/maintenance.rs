@@ -24,6 +24,9 @@ pub struct Job {
     pub recovery_bytes: usize,
 }
 impl Job {
+    pub fn ownership_key(&self) -> Result<String> {
+        crate::ownership::job_hash(&self.name, &self.acquisition()?.plan_hash()?)
+    }
     fn acquisition(&self) -> Result<Acquisition> {
         if self.name.is_empty()
             || self.name.len() > 128
@@ -64,16 +67,70 @@ pub trait Backend: Publisher {
     ) -> impl Future<Output = Result<String>> + Send;
 }
 pub struct DatabaseBackend<'a> {
-    pub database: &'a ClickHouse,
-    pub passed: &'a BTreeSet<Acceptance>,
+    database: &'a ClickHouse,
+    passed: &'a BTreeSet<Acceptance>,
+    lease: &'a mut crate::ownership::Lease,
+    scope: String,
+    authority: Authority,
+    interval: Interval,
+}
+impl<'a> DatabaseBackend<'a> {
+    pub fn new(
+        database: &'a ClickHouse,
+        passed: &'a BTreeSet<Acceptance>,
+        lease: &'a mut crate::ownership::Lease,
+        job: &Job,
+    ) -> Result<Self> {
+        let scope = job.ownership_key()?;
+        lease.require(&scope)?;
+        Ok(Self {
+            database,
+            passed,
+            lease,
+            scope,
+            authority: job.authority.clone(),
+            interval: job.interval,
+        })
+    }
+    fn require_job(&self, job: &Job) -> Result<()> {
+        if job.ownership_key()? != self.scope {
+            return Err(Error::Conflict(
+                "maintenance backend belongs to another job".into(),
+            ));
+        }
+        self.lease.require(&self.scope)
+    }
+    fn require_acquisition(&self, job: &Job, acquisition: &Acquisition) -> Result<()> {
+        self.require_job(job)?;
+        if acquisition.plan_hash()? != job.acquisition()?.plan_hash()? {
+            return Err(Error::Conflict(
+                "acquisition differs from owned maintenance plan".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 impl Publisher for DatabaseBackend<'_> {
     async fn publish(&mut self, batch: &Batch) -> Result<String> {
+        self.lease.require(&self.scope)?;
+        if batch.observations().iter().any(|o| {
+            o.key.provider != self.authority.provider
+                || o.key.instrument != self.authority.instrument
+                || o.key.kind != self.authority.kind
+                || o.sip.ns < self.interval.start
+                || o.sip.ns >= self.interval.end
+                || o.receipt.is_some()
+        }) {
+            return Err(Error::Conflict(
+                "maintenance batch outside owned job".into(),
+            ));
+        }
         self.database.publish_event_batch(batch, self.passed).await
     }
 }
 impl Backend for DatabaseBackend<'_> {
     async fn recover(&mut self, job: &Job, acquisition: Acquisition) -> Result<Acquisition> {
+        self.require_acquisition(job, &acquisition)?;
         self.database
             .recover_acquisition_job(
                 acquisition,
@@ -84,11 +141,18 @@ impl Backend for DatabaseBackend<'_> {
             .await
     }
     async fn checkpoint(&mut self, job: &Job, acquisition: &mut Acquisition) -> Result<String> {
+        self.require_acquisition(job, acquisition)?;
         self.database
             .checkpoint_acquisition(acquisition, &job.name, self.passed)
             .await
     }
     async fn coverage(&mut self, certificate: Certificate, now_ns: u64) -> Result<String> {
+        self.lease.require(&self.scope)?;
+        if certificate.authority != self.authority || certificate.interval != self.interval {
+            return Err(Error::Conflict(
+                "coverage outside owned maintenance job".into(),
+            ));
+        }
         self.database
             .publish_acquisition(certificate, self.passed, now_ns)
             .await

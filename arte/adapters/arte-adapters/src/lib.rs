@@ -8,4 +8,5 @@ pub mod live_pipeline;
 pub mod maintenance;
 pub mod massive;
 pub mod massive_stream;
+pub mod ownership;
 pub mod rest_acquisition;

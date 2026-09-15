@@ -1,5 +1,6 @@
 //! Immutable event staging publication. Not the final range-query event codec.
 use super::*;
+use crate::ownership::job_hash as job_key;
 use arte_core::config::Acceptance;
 use arte_core::event_storage::{Batch, Manifest, PayloadObject, MAX_OBSERVATIONS};
 use arte_core::events::ObservationRef;
@@ -12,18 +13,6 @@ const PAGE: usize = 256;
 struct JobHead {
     revision: u64,
     head_hash: String,
-}
-fn job_key(name: &str, plan: &str) -> Result<String> {
-    if name.is_empty()
-        || name.len() > 128
-        || !name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
-        || !valid_hash(plan)
-    {
-        return Err(Error::Invalid("invalid acquisition job identity".into()));
-    }
-    arte_core::content_hash(&("rest-acquisition-job-v1", name, plan))
 }
 fn decode_head(body: &str) -> Result<Option<JobHead>> {
     let mut latest: Option<JobHead> = None;

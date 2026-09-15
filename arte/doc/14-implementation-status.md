@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 155 in-process Rust tests passed (120 core and 35 adapter tests).
+- 157 in-process Rust tests passed (120 core and 37 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -469,6 +469,20 @@ failures, retries and completion. The real database adapter binding only compile
 Multi-job scheduling, ownership fencing, retry policy and executable service routing
 remain incomplete. Publication-clock semantics and storage durability still need
 real integration acceptance. No service or network/database call ran.
+
+Maintenance's database backend now requires a matching, exclusively borrowed local
+ownership lease. The backend checks job/plan identity, batch scope and certificate
+scope before database work. Job hashes share one implementation with durable heads.
+The lease uses Rust's nonblocking file lock on a stable file in a caller-approved
+external runtime directory. It never truncates or deletes the lock file. Two offline
+tests verify second-handle exclusion, release on drop and invalid-input rejection.
+Empty test lock files remain under the external Cargo output directory.
+
+This is cooperative single-host ownership, not cross-host fencing. All cooperating
+copies must use the same approved lock directory. Host pinning, failover fencing,
+filesystem/ACL acceptance and executable lifecycle integration remain open. The
+implementation follows the [Rust file-lock contract](https://doc.rust-lang.org/std/fs/struct.File.html#method.try_lock).
+No service or database/network operation ran.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.
