@@ -3,6 +3,28 @@ from copy import deepcopy
 from math import isfinite
 
 
+def fresh_support_momentum(assessment, facts, *, now, maximum_age, minimum_acceleration):
+    """Alternative entry evidence; never manufactures a MACD episode."""
+    checks = assessment.get('checks') or {}
+    swing = assessment.get('swing') or {}
+    stamp = assessment.get('observed_at')
+    confirmed = swing.get('confirmed_at')
+    pivot = swing.get('pivot_at')
+    fast, slow = facts.get('trade_rate_10s'), facts.get('trade_rate_60s')
+    values = (now, stamp, confirmed, pivot, fast, slow)
+    valid = all(type(v) in (int, float) and isfinite(v) for v in values)
+    required = {'prior_range', 'fresh_support', 'rising_close', 'green_candle',
+        'risk_limit', 'range_limit', 'extension_limit'}
+    passed = bool(valid and required <= checks.keys() and all(v is True for v in checks.values())
+        and pivot <= confirmed <= stamp <= now
+        and 0 <= now-confirmed <= maximum_age and slow > 0
+        and fast/slow >= minimum_acceleration)
+    return dict(passed=passed, observed_at=stamp, support_confirmed_at=confirmed,
+        support_age_s=now-confirmed if valid else None,
+        trade_rate_acceleration=fast/slow if valid and slow > 0 else None,
+        maximum_support_age_s=maximum_age, minimum_trade_rate_acceleration=minimum_acceleration)
+
+
 def observe(state, market, settings, fresh):
     if state.get('session') != market.get('session'):
         state.clear()
