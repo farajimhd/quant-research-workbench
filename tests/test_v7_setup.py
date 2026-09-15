@@ -91,6 +91,37 @@ def test_ineligible_closer_swing_does_not_hide_a_fresh_base_support():
     assert 'fresh_support' in rejected.evaluation.signals[0].metadata['early_base_assessment']['failed']
 
 
+def test_configurable_base_extension_preserves_other_entry_checks():
+    import pytest
+    from src.trading_runtime.historical_hod import configure
+    host,a,obs=prepared()
+    a.parameters['historical_hod']['setup_early_base_enabled']=1
+    o=obs(2,10.15);now=o.observed_at.timestamp()
+    market=deepcopy(o.structural_detector_state)
+    market['row']['local_swings']=[dict(side='support',state='active',lower=9.99,
+        price=9.995,upper=10.,pivot_at=now-3,confirmed_at=now-1)]
+    o=replace(o,structural_detector_state=market)
+    result=host.evaluate(a,o)
+    assert 'extension_limit' in result.evaluation.signals[0].metadata['early_base_assessment']['failed']
+    a.parameters['historical_hod']['setup_base_maximum_extension_fraction']=1.5
+    result=host.evaluate(a,o)
+    evidence=result.evaluation.signals[0].metadata['early_base_assessment']
+    assert evidence['maximum_extension_fraction']==1.5
+    assert evidence['extension_limit']==pytest.approx(10.265)
+    assert evidence['failed']==[]
+    assert any(i.action=='enter_long' for i in result.evaluation.intents)
+    for modified in (replace(o,bar_open=10.16),replace(o,execution_vwap=10.16)):
+        assert not host.evaluate(a,modified).evaluation.intents
+    a.parameters['historical_hod']['setup_base_maximum_risk_pct']=.1
+    failed=host.evaluate(a,o).evaluation.signals[0].metadata['early_base_assessment']['failed']
+    assert 'risk_limit' in failed
+    for value in (-1,True,float('nan'),float('inf')):
+        a.parameters['historical_hod']['setup_base_maximum_extension_fraction']=value
+        with pytest.raises(ValueError):configure(a.parameters)
+    a.parameters['historical_hod']['setup_base_maximum_extension_fraction']=0
+    configure(a.parameters)
+
+
 def test_early_entry_before_resistance_and_hold_rejection_then_stop():
     host,a,obs=prepared()
     # Price above previous close but below next resistance 10.16 and range 10.1.
