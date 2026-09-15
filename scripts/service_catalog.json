@@ -37,10 +37,11 @@
       "environment": {
         "QMD_HISTORY_BIND": "127.0.0.1:8801",
         "QMD_HISTORY_ARCHIVE_CLOCK_POLICY": "canonical_sip",
+        "QMD_HISTORY_PRODUCT_TIMEFRAMES": "100ms,1s,2s,5s,10s,30s,1m,5m,1h",
         "QMD_HISTORY_STRUCTURE_CHECKPOINT_MAX_CONCURRENT_ADVANCEMENTS": "32"
       },
       "start_priority": 10,
-      "fingerprint_env": ["QMD_LEVEL_BOOK_V7_ROOT", "QMD_LEVEL_BOOK_V7_PYTHON", "QMD_LEVEL_BOOK_V7_CODE_ROOT", "QMD_STRUCTURE_CHECKPOINT_SET_ID", "QMD_HISTORY_BIND", "QMD_HISTORY_CARGO_TARGET_DIR", "QMD_HISTORY_STRUCTURE_CHECKPOINT_MAX_CONCURRENT_ADVANCEMENTS"],
+      "fingerprint_env": ["QMD_LEVEL_BOOK_V7_ROOT", "QMD_LEVEL_BOOK_V7_PYTHON", "QMD_LEVEL_BOOK_V7_CODE_ROOT", "QMD_STRUCTURE_CHECKPOINT_SET_ID", "QMD_HISTORY_BIND", "QMD_HISTORY_CARGO_TARGET_DIR", "QMD_HISTORY_STRUCTURE_CHECKPOINT_MAX_CONCURRENT_ADVANCEMENTS", "QMD_HISTORY_PRODUCT_TIMEFRAMES"],
       "dependencies": [],
       "graceful_timeout_seconds": 20,
       "watch": ["scripts/qmd_level_book_v7_worker.py", "src/market_engine/**", "src/backend/qmd_gateway_client.py", "src/backend/swing_book_source.py", "research/level_book/v7/**", "research/mlops/**", "services/qmd_history_gateway/**", "services/qmd-gateway/**", "scripts/run_qmd_history_gateway.ps1"]
