@@ -136,6 +136,7 @@ impl State {
             || input.feature_hash.is_empty()
             || evidence_hash.is_empty()
             || input.available_at_ns > input.evaluated_at_ns
+            || input.event_time_ns > input.evaluated_at_ns
             || input.evaluated_at_ns < self.last_evaluated_at_ns
         {
             return Err(Error::Invalid("invalid decision input boundary".into()));
@@ -368,5 +369,15 @@ mod tests {
             })
             .unwrap();
         assert!(matches!(d.actions[0], Action::Hold { .. }));
+    }
+    #[test]
+    fn future_event_time_cannot_be_evaluated() {
+        let mut input = input();
+        input.event_time_ns = input.evaluated_at_ns + 1;
+        assert!(state(Mode::Live)
+            .evaluate(input, &safety(), "proof".into(), || panic!(
+                "future input must not calculate"
+            ))
+            .is_err());
     }
 }

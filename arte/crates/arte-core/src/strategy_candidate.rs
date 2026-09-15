@@ -57,6 +57,7 @@ pub struct AcquisitionEvaluation {
 }
 #[derive(Serialize)]
 pub struct Policy<'a> {
+    pub maximum_completed_bar_age_ns: u64,
     pub entry: &'a entry::Policy,
     pub adds: &'a adds::Policy,
     pub protection: &'a protection::Policy,
@@ -534,6 +535,7 @@ mod tests {
                 levels: ep.targets.clone(),
             };
             let policy = Policy {
+                maximum_completed_bar_age_ns: 100_000_000,
                 entry: ep,
                 adds: &ap,
                 protection: &pp,
@@ -624,6 +626,40 @@ mod tests {
                 )
                 .unwrap();
             assert!(matches!(decision.actions[0], Action::Enter(_)));
+            for pending_entry in [false, true] {
+                let mut stale_runtime = crate::candidate_runtime::Runtime::new(
+                    decision.scope.clone(),
+                    State::default(),
+                    1024 * 1024,
+                )
+                .unwrap();
+                let mut stale_input = input.clone();
+                stale_input.evaluated_at_ns += policy.maximum_completed_bar_age_ns;
+                let mut stale_safety = safety.clone();
+                stale_safety.pending_entry = pending_entry;
+                let mut stale_broker = flat.clone();
+                stale_broker.pending_entry = pending_entry;
+                let rejected = stale_runtime
+                    .completed(
+                        stale_input,
+                        &stale_safety,
+                        f,
+                        &stale_broker,
+                        &gates,
+                        &policy,
+                        &intrabar_policy,
+                    )
+                    .unwrap();
+                assert!(match &rejected.actions[0] {
+                    Action::CancelEntry { reason } if pending_entry =>
+                        reason == "completed_bar_stale_at_evaluation",
+                    Action::Wait { reason } if !pending_entry =>
+                        reason == "completed_bar_stale_at_evaluation",
+                    _ => false,
+                });
+                assert!(stale_runtime.state().active.is_none());
+                assert!(stale_runtime.pending_batch().is_some());
+            }
             assert!(runtime.state().active.is_none());
             let retried = runtime
                 .completed(

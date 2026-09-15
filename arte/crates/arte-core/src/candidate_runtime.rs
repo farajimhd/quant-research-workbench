@@ -96,11 +96,16 @@ impl Runtime {
             intrabar,
             frame.recovery_policy,
         )?;
-        if frame.bar.end_ns > input.evaluated_at_ns || broker.at_ns > frame.bar.end_ns {
+        if frame.bar.end_ns > input.evaluated_at_ns
+            || broker.at_ns > frame.bar.end_ns
+            || input.event_time_ns != frame.bar.end_ns
+            || policy.maximum_completed_bar_age_ns == 0
+        {
             return Err(Error::Invalid(
                 "candidate completed frame contains future evidence".into(),
             ));
         }
+        let stale = input.evaluated_at_ns - frame.bar.end_ns >= policy.maximum_completed_bar_age_ns;
         input.feature_hash = content_hash(&("candidate-completed-v1", frame, broker, gates))?;
         let evidence = input.feature_hash.clone();
         self.transaction.prepare_observed(
@@ -116,7 +121,12 @@ impl Runtime {
                     policy.stop_gain_guard,
                 )
             },
-            |state| Ok(state.completed(frame, broker, gates, policy)?.actions),
+            |state| {
+                if stale {
+                    return Ok(stale_bar_actions(safety.pending_entry));
+                }
+                Ok(state.completed(frame, broker, gates, policy)?.actions)
+            },
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -162,5 +172,16 @@ impl Runtime {
                 }
             },
         )
+    }
+}
+fn stale_bar_actions(pending_entry: bool) -> Vec<dispatch::Action> {
+    if pending_entry {
+        vec![dispatch::Action::CancelEntry {
+            reason: "completed_bar_stale_at_evaluation".into(),
+        }]
+    } else {
+        vec![dispatch::Action::Wait {
+            reason: "completed_bar_stale_at_evaluation".into(),
+        }]
     }
 }

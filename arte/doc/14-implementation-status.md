@@ -880,6 +880,16 @@ not yet restore its pending queue or establish live watermarks. Condition-policy
 production, latency-gated actor wiring and full strategy execution remain incomplete.
 No service ran.
 
+Completed-candidate policy now pins a maximum completed-bar age at actual evaluation
+time. At or beyond the limit, the journal receives a stale-bar wait or pending-entry
+cancellation instead of calling the strategy calculation. Exit-priority arbitration
+remains ahead of that callback. The completed input's event clock must match the bar
+boundary, and dispatch rejects future event times. The composed candidate test now
+covers both stale-bar outcomes; another test rejects future input before calculation.
+All 217 Rust tests, formatting, static checks and source hashes pass. Full per-operand
+freshness and handling fresh account updates after a bar close remain incomplete.
+No service or broker integration test ran.
+
 Ordered-market recovery now includes the pending event queue, eligibility records,
 release watermark and newest input receipt alongside the market/V7 snapshot. Restore
 requires the expected content, seed, configuration and queue capacity. It rejects
