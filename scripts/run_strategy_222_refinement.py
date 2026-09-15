@@ -46,7 +46,7 @@ def prepare(name, overrides=None):
         raise ValueError('Baseline identity changed')
     if name == 'corrected-baseline':
         return baseline
-    recipe_name='failure-memory-v16' if name in ('progress-v17','add-wick-v18','burst-rate-v19','range-v20') else name
+    recipe_name='failure-memory-v16' if name in ('progress-v17','add-wick-v18','burst-rate-v19','range-v20','unprotected-v21') else name
     base_name='full-v6' if overrides is not None else ('recovery-v10' if recipe_name in ('support-v11','support-body-v12','trail-v13','trail-no-failure-v14','strict-recovery-v15','failure-memory-v16') else recipe_name)
     payload = deepcopy(baseline['payload'])
     original = next(p for p in payload['strategy']['profiles'] if p['profile_id'] == PROFILE)
@@ -94,10 +94,12 @@ def prepare(name, overrides=None):
             setup_failure_seconds=3,setup_failure_exit_enabled=0)
     if name=='progress-v17':
         profile['parameters']['historical_hod']['setup_minimum_60s_progress_pct']=1.
-    if name in ('add-wick-v18','burst-rate-v19','range-v20'):
+    if name in ('add-wick-v18','burst-rate-v19','range-v20','unprotected-v21'):
         profile['parameters']['historical_hod']['setup_add_maximum_upper_wick_fraction']=.25
-    if name=='range-v20':
+    if name in ('range-v20','unprotected-v21'):
         profile['parameters']['historical_hod']['setup_minimum_300s_range_pct']=5.
+    if name=='unprotected-v21':
+        profile['parameters']['historical_hod']['setup_recovery_unprotected_reentry']=1
     if name=='burst-rate-v19':
         # Isolate sustained-rate admission during an accelerating tape. Keep
         # the existing 10-second rate, spread, freshness and setup checks.
@@ -245,7 +247,7 @@ def main():
     parser.add_argument('--restart-at', help='Optional New York checkpoint time for a real stop/resume parity trial')
     parser.add_argument('--recipe-file',type=Path,help='Supervised research parameter recipe; mutually exclusive with --variants')
     parser.add_argument('--stop-request-file',type=Path,help='Gracefully stop if this supervisor-owned file appears')
-    parser.add_argument('--variants', nargs='+', choices=['corrected-baseline','early-v1','liquidity-v2','guarded-v3','phase-v4','burst-v5','full-v6','base-v7','trend-v8','body-v9','recovery-v10','support-v11','support-body-v12','trail-v13','trail-no-failure-v14','strict-recovery-v15','failure-memory-v16','progress-v17','add-wick-v18','burst-rate-v19','range-v20'],
+    parser.add_argument('--variants', nargs='+', choices=['corrected-baseline','early-v1','liquidity-v2','guarded-v3','phase-v4','burst-v5','full-v6','base-v7','trend-v8','body-v9','recovery-v10','support-v11','support-body-v12','trail-v13','trail-no-failure-v14','strict-recovery-v15','failure-memory-v16','progress-v17','add-wick-v18','burst-rate-v19','range-v20','unprotected-v21'],
                         default=None)
     args=parser.parse_args()
     args.recipe_parameters=None

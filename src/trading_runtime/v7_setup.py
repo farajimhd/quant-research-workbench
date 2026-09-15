@@ -111,6 +111,7 @@ def recovery_observe(state, entry, market, observation, stop, row, fresh, *, pre
             stop=stop, body_high=body_high)
         if stop_gain_guard:
             initial=float(entry.get('initial_fill_price') or 0.)
+            state['held']['initial_fill_price']=initial
             remembered=held.get('entry_at')==entry['confirmed_at'] and held.get('stop_above_initial_fill',False)
             state['held']['stop_above_initial_fill']=bool(remembered or initial>0 and stop>initial+1e-9)
     elif state.get('held'):
@@ -127,7 +128,7 @@ def recovery_observe(state, entry, market, observation, stop, row, fresh, *, pre
         for field in ('local_swings', 'confirmed_swings')}}
 
 
-def recovery_permission(state, swing, market, *, stop_gain_guard=False, tight_base=False):
+def recovery_permission(state, swing, market, *, stop_gain_guard=False, tight_base=False, unprotected_reentry=False):
     previous = state.get('last_exit')
     if not previous:
         return '', 'building'
@@ -138,6 +139,13 @@ def recovery_permission(state, swing, market, *, stop_gain_guard=False, tight_ba
     failed_entry = previous['setup'].get('entry_failure_recovery')
     if failed_entry and market['bar']['close'] <= failed_entry:
         return 'waiting_for_failed_setup_reclaim', ''
+    # A preliminary attempt can cross its range without ever protecting a
+    # profit. Require observed fill evidence; older checkpoints with unknown
+    # protection history retain the stricter recovery rule.
+    if (unprotected_reentry and stop_gain_guard
+            and previous.get('initial_fill_price',0)>0
+            and previous.get('stop_above_initial_fill') is False):
+        return '', 'building'
     if (previous['setup'].get('phase') != 'post_breakout'
             and not (stop_gain_guard and previous.get('stop_above_initial_fill'))):
         return '', 'building'

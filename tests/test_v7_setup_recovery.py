@@ -66,6 +66,67 @@ def test_stop_gain_guard_never_infers_an_unobserved_initial_fill():
     assert not state['held']['stop_above_initial_fill']
 
 
+def test_unprotected_reentry_preserves_fresh_support_and_failure_reclaim():
+    import json
+    state={};entry=dict(confirmed_at=1,initial_fill_price=10.2,
+        setup=dict(phase='post_breakout',breakout_threshold=10.3))
+    market=dict(body_high=10.5,bar=dict(end=5,low=10.,close=10.1))
+    o=SimpleNamespace(position_quantity=100,observed_at=datetime.fromtimestamp(5,timezone.utc))
+    V.recovery_observe(state,entry,market,o,10.,{},False,stop_gain_guard=True)
+    o.position_quantity=0
+    V.recovery_observe(state,{},market,o,10.,{},False,stop_gain_guard=True)
+    state=json.loads(json.dumps(state))
+    new=swing(6,9.9)
+    strict='waiting_for_post_move_recovery_or_higher_base'
+    assert V.recovery_permission(state,new,market,stop_gain_guard=True)[0]==strict
+    options=dict(stop_gain_guard=True,unprotected_reentry=True)
+    assert V.recovery_permission(state,new,market,**options)==('', 'building')
+    assert V.recovery_permission(state,swing(4,9.9),market,**options)[0]=='waiting_for_new_support_after_exit'
+    state['retired_swings'][V.swing_key(new)]=7
+    assert V.recovery_permission(state,new,market,**options)[0]=='breached_setup_swing'
+    state['retired_swings'].clear()
+    state['last_exit']['setup']['entry_failure_recovery']=10.15
+    assert V.recovery_permission(state,new,market,**options)[0]=='waiting_for_failed_setup_reclaim'
+    market['bar']['close']=10.16
+    assert V.recovery_permission(state,new,market,**options)==('', 'building')
+    state['last_exit']['stop_above_initial_fill']=True
+    assert V.recovery_permission(state,new,market,**options)[0]==strict
+    state['last_exit']['stop_above_initial_fill']=False
+    del state['last_exit']['initial_fill_price']
+    assert V.recovery_permission(state,new,market,**options)[0]==strict
+
+
+def test_unprotected_reentry_configuration_and_runtime_dispatch():
+    import pytest
+    from src.trading_runtime.historical_hod import configure
+    host,a,obs=prepared()
+    settings=a.parameters['historical_hod']
+    settings.update(setup_recovery_enabled=1,setup_recovery_stop_gain_guard=1,
+        setup_early_base_enabled=1,setup_base_recovery_maximum_range_pct=0,
+        setup_recovery_unprotected_reentry=1)
+    configure(a.parameters)
+    settings=a.parameters['historical_hod']
+    for invalid in (-1,2,True,float('nan'),float('inf')):
+        settings['setup_recovery_unprotected_reentry']=invalid
+        with pytest.raises(ValueError):configure(a.parameters)
+    settings['setup_recovery_unprotected_reentry']=1
+    settings['setup_recovery_stop_gain_guard']=0
+    with pytest.raises(ValueError):configure(a.parameters)
+    settings['setup_recovery_stop_gain_guard']=1
+    o=obs(2,10.11);now=o.observed_at.timestamp()
+    market=deepcopy(o.structural_detector_state)
+    market['row']['local_swings']=[swing(now-3,9.99)]
+    o=replace(o,structural_detector_state=market)
+    a.state['v7_setup']['last_exit']=dict(at=now-10,entry_at=now-20,
+        initial_fill_price=10.05,stop_above_initial_fill=False,
+        stop=10.03,body_high=10.3,setup=dict(phase='post_breakout',breakout_threshold=10.2))
+    assert any(i.action=='enter_long' for i in host.evaluate(a,o).evaluation.intents)
+    a.parameters['historical_hod']['setup_recovery_unprotected_reentry']=0
+    blocked=host.evaluate(a,o)
+    assert not blocked.evaluation.intents
+    assert blocked.evaluation.signals[0].reason=='waiting_for_post_move_recovery_or_higher_base'
+
+
 def test_disabling_compact_base_exception_keeps_fresh_reclaim_available():
     host,a,obs=prepared()
     a.parameters['historical_hod'].update(setup_recovery_enabled=1,
