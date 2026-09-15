@@ -27,7 +27,10 @@ pub struct ClickHouse {
 impl ClickHouse {
     /// Caller must hold exclusive journal scope ownership. This acknowledges
     /// synchronous insert plus readback, NOT verified power-loss durability.
-    pub async fn append_decisions(&self, batch: &arte_core::journal::Batch) -> Result<()> {
+    pub async fn append_decisions(
+        &self,
+        batch: &arte_core::journal::Batch,
+    ) -> Result<Vec<arte_core::journal::Record>> {
         let records = batch.records();
         let first = &records[0];
         let last = records.last().unwrap().sequence;
@@ -67,11 +70,22 @@ impl ClickHouse {
             .map(|r| serde_json::to_value(r).map_err(|e| Error::Serialization(e.to_string())))
             .collect::<Result<_>>()?;
         self.insert("decision_journal_v1", &rows).await?;
-        batch.verify_readback(
-            &self
-                .read_decisions(&first.scope_hash, first.sequence, last)
-                .await?,
-        )
+        let readback = self
+            .read_decisions(&first.scope_hash, first.sequence, last)
+            .await?;
+        batch.verify_readback(&readback)?;
+        Ok(readback)
+    }
+    /// Leave a failed or ambiguous append prepared for an exact retry.
+    pub async fn commit_strategy<S: Clone + serde::Serialize>(
+        &self,
+        runtime: &mut arte_core::strategy_transaction::Runtime<S>,
+    ) -> Result<arte_core::strategy_transaction::Committed> {
+        let batch = runtime
+            .pending_batch()
+            .ok_or_else(|| Error::Unready("no prepared strategy journal batch".into()))?;
+        let readback = self.append_decisions(batch).await?;
+        runtime.acknowledge(&readback)
     }
     pub async fn read_decisions(
         &self,

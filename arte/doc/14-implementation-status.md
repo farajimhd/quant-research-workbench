@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 106 in-process Rust tests passed (99 core and 7 adapter tests).
+- 109 in-process Rust tests passed (102 core and 7 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -250,6 +250,17 @@ sequence gaps. The migration has not been applied; adapter methods have not run.
 Exclusive writer ownership, durable order-submission gating and power-loss
 durability acceptance remain required. Insert/readback acknowledgment alone does
 not prove power-loss durability.
+
+The transaction runner now prepares bounded account-owned strategy state on a copy,
+uses exit-first dispatch and commits only after matching journal readback. Ambiguous
+writes retain one immutable pending decision. Exact retries do not rerun strategy
+calculation; later inputs cannot overtake the pending acknowledgment. Calculation
+errors and incomplete readbacks leave committed state unchanged. The ClickHouse
+adapter connects append/readback to this commit boundary. Three offline tests cover
+write failure, calculation failure and retries after commit. This runner is generic;
+the complete selected-strategy state and live/backtest event loops are not yet wired.
+Prepared state is memory-only; crash recovery and durable OMS submission gating
+remain incomplete. Market arrays must not be placed in the cloned strategy state.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.

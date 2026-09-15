@@ -1,0 +1,219 @@
+//! Prepare/journal/commit boundary for bounded account-owned strategy state.
+//! Market arrays stay outside this object and are borrowed by the calculation.
+use crate::journal::{Batch, Record};
+use crate::strategy_dispatch::{Action, Decision, InputBoundary, Safety, Scope, State as Dispatch};
+use crate::{content_hash, Error, Result};
+use serde::Serialize;
+
+struct Pending<S> {
+    request_hash: String,
+    next_state: S,
+    next_dispatch: Dispatch,
+    decision: Decision,
+    batch: Batch,
+}
+pub struct Runtime<S> {
+    state: S,
+    dispatch: Dispatch,
+    pending: Option<Pending<S>>,
+    maximum_state_bytes: usize,
+}
+/// Journal readback acknowledgment, not a broker authorization or fsync proof.
+#[derive(Debug, Clone)]
+pub struct Committed {
+    decision: Decision,
+}
+impl Committed {
+    pub fn decision(&self) -> &Decision {
+        &self.decision
+    }
+}
+fn check_state<S: Serialize>(state: &S, maximum: usize) -> Result<()> {
+    let bytes = serde_json::to_vec(state).map_err(|e| Error::Serialization(e.to_string()))?;
+    if bytes.len() > maximum {
+        return Err(Error::Capacity(
+            "position strategy state exceeds configured budget".into(),
+        ));
+    }
+    Ok(())
+}
+impl<S: Clone + Serialize> Runtime<S> {
+    pub fn new(scope: Scope, state: S, maximum_state_bytes: usize) -> Result<Self> {
+        if maximum_state_bytes == 0 {
+            return Err(Error::Invalid(
+                "strategy state budget must be positive".into(),
+            ));
+        }
+        check_state(&state, maximum_state_bytes)?;
+        Ok(Self {
+            state,
+            dispatch: Dispatch::new(scope)?,
+            pending: None,
+            maximum_state_bytes,
+        })
+    }
+    pub fn committed_state(&self) -> &S {
+        &self.state
+    }
+    pub fn pending_batch(&self) -> Option<&Batch> {
+        self.pending.as_ref().map(|p| &p.batch)
+    }
+    pub fn pending_decision(&self) -> Option<&Decision> {
+        self.pending.as_ref().map(|p| &p.decision)
+    }
+    /// Retry the exact pending input after any ambiguous journal transport result.
+    /// Different inputs cannot overtake the unacknowledged record in this scope.
+    pub fn prepare(
+        &mut self,
+        input: InputBoundary,
+        safety: &Safety,
+        evidence_hash: String,
+        calculate: impl FnOnce(&mut S) -> Result<Vec<Action>>,
+    ) -> Result<Decision> {
+        let request_hash = content_hash(&(&input, safety, &evidence_hash))?;
+        if let Some(pending) = &self.pending {
+            if pending.request_hash != request_hash {
+                return Err(Error::Unready("strategy journal acknowledgment pending; retain input in bounded upstream queue".into()));
+            }
+            return Ok(pending.decision.clone());
+        }
+        let mut next_state = self.state.clone();
+        let mut next_dispatch = self.dispatch.clone();
+        let decision =
+            next_dispatch.evaluate(input, safety, evidence_hash, || calculate(&mut next_state))?;
+        check_state(&next_state, self.maximum_state_bytes)?;
+        let batch = Batch::new(std::slice::from_ref(&decision))?;
+        self.pending = Some(Pending {
+            request_hash,
+            next_state,
+            next_dispatch,
+            decision,
+            batch,
+        });
+        Ok(self.pending.as_ref().unwrap().decision.clone())
+    }
+    /// Invoke only with rows read back by the journal adapter. Bad/incomplete rows
+    /// preserve pending state so the same immutable write can be retried.
+    pub fn acknowledge(&mut self, readback: &[Record]) -> Result<Committed> {
+        let pending = self
+            .pending
+            .as_ref()
+            .ok_or_else(|| Error::Unready("no prepared strategy decision".into()))?;
+        pending.batch.verify_readback(readback)?;
+        let pending = self.pending.take().unwrap();
+        self.state = pending.next_state;
+        self.dispatch = pending.next_dispatch;
+        Ok(Committed {
+            decision: pending.decision,
+        })
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::strategy_dispatch::Mode;
+    use crate::strategy_lifecycle::Phase;
+    fn runtime() -> Runtime<u64> {
+        Runtime::new(
+            Scope {
+                run_id: "run".into(),
+                mode: Mode::Backtest,
+                account: "a".into(),
+                strategy_instance: "s".into(),
+                instrument: 1,
+                code_hash: "code".into(),
+                config_hash: "config".into(),
+            },
+            0,
+            1024,
+        )
+        .unwrap()
+    }
+    fn input(i: u64) -> InputBoundary {
+        InputBoundary {
+            event_id: format!("e{i}"),
+            event_time_ns: i,
+            available_at_ns: i,
+            evaluated_at_ns: i,
+            source_sequence: i,
+            feature_hash: "features".into(),
+        }
+    }
+    fn safety() -> Safety {
+        Safety {
+            position_quantity: 0,
+            pending_exit_quantity: 0,
+            exit_pending: false,
+            pending_entry: false,
+            last_exit_reason: None,
+            flatten: false,
+            protective_stop_crossed: false,
+            manual_exit: false,
+            completed_macd_reversal: false,
+            setup_phase: Phase::Building,
+            luld_buffer_reached: false,
+            encounter_exit: false,
+            early_setup_failed: false,
+            structural_exit: false,
+        }
+    }
+    fn compute(s: &mut u64) -> Result<Vec<Action>> {
+        *s += 1;
+        Ok(vec![Action::Wait {
+            reason: "gate".into(),
+        }])
+    }
+    #[test]
+    fn journal_failure_preserves_state_and_pending_identity() {
+        let mut r = runtime();
+        let id = r
+            .prepare(input(1), &safety(), "proof".into(), compute)
+            .unwrap()
+            .decision_id
+            .clone();
+        assert_eq!(*r.committed_state(), 0);
+        assert!(r.acknowledge(&[]).is_err());
+        assert_eq!(
+            r.prepare(input(1), &safety(), "proof".into(), |_| panic!(
+                "retry cannot calculate"
+            ))
+            .unwrap()
+            .decision_id,
+            id
+        );
+        assert!(r
+            .prepare(input(2), &safety(), "proof".into(), compute)
+            .is_err());
+        let rows = r.pending_batch().unwrap().records().to_vec();
+        let committed = r.acknowledge(&rows).unwrap();
+        assert_eq!(committed.decision().decision_id, id);
+        assert_eq!(*r.committed_state(), 1);
+        assert!(r.acknowledge(&rows).is_err());
+    }
+    #[test]
+    fn failed_calculation_never_advances_committed_state() {
+        let mut r = runtime();
+        assert!(r
+            .prepare(input(1), &safety(), "proof".into(), |s| {
+                *s = 999;
+                Err(Error::Unready("missing feature".into()))
+            })
+            .is_err());
+        assert_eq!(*r.committed_state(), 0);
+        assert!(r.pending_batch().is_none());
+        r.prepare(input(1), &safety(), "proof".into(), compute)
+            .unwrap();
+    }
+    #[test]
+    fn committed_retry_does_not_run_strategy_twice() {
+        let mut r = runtime();
+        r.prepare(input(1), &safety(), "proof".into(), compute)
+            .unwrap();
+        let rows = r.pending_batch().unwrap().records().to_vec();
+        r.acknowledge(&rows).unwrap();
+        r.prepare(input(1), &safety(), "proof".into(), |_| panic!())
+            .unwrap();
+        r.acknowledge(&rows).unwrap();
+        assert_eq!(*r.committed_state(), 1);
+    }
+}
