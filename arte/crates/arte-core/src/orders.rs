@@ -75,6 +75,13 @@ impl TradingSession {
         };
         order.validate(now_ns, regular, bands, policy)
     }
+    fn authorization_context(&self, policy: &RiskPolicy) -> Result<AuthorizationContext> {
+        Ok(AuthorizationContext {
+            session_hash: self.hash.clone(),
+            allow_extended: self.allow_extended,
+            risk_policy_hash: content_hash(policy)?,
+        })
+    }
 }
 impl Bracket {
     /// Structural check only; never sufficient to authorize an order.
@@ -168,9 +175,18 @@ pub enum OrderState {
     Rejected,
     Cancelled,
 }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthorizationContext {
+    pub session_hash: String,
+    pub allow_extended: bool,
+    pub risk_policy_hash: String,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OrderRecord {
     pub bracket: Bracket,
+    pub authorization: AuthorizationContext,
     pub state: OrderState,
     pub filled: u64,
     pub broker_id: Option<String>,
@@ -178,7 +194,7 @@ pub struct OrderRecord {
 }
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct OrderLedger {
-    pub records: BTreeMap<String, OrderRecord>,
+    records: BTreeMap<String, OrderRecord>,
 }
 impl OrderLedger {
     pub fn authorize(
@@ -192,16 +208,18 @@ impl OrderLedger {
     ) -> Result<&OrderRecord> {
         market.require(bracket.instrument)?;
         session.validate(&bracket, now_ns, bands, policy)?;
+        let authorization = session.authorization_context(policy)?;
         let id = bracket.command_id.clone();
         if let Some(old) = self.records.get(&id) {
-            if old.bracket != bracket {
+            if old.bracket != bracket || old.authorization != authorization {
                 return Err(Error::Conflict(
-                    "command ID reused for another bracket".into(),
+                    "command ID reused for another bracket or authorization context".into(),
                 ));
             }
         }
         self.records.entry(id.clone()).or_insert(OrderRecord {
             bracket,
+            authorization,
             state: OrderState::Authorized,
             filled: 0,
             broker_id: None,
@@ -210,9 +228,14 @@ impl OrderLedger {
         Ok(&self.records[&id])
     }
     pub fn envelope_hash(&self, id: &str) -> Result<String> {
-        content_hash(&self.record(id)?.bracket)
+        let record = self.record(id)?;
+        content_hash(&(
+            "arte.order-authorization.v2",
+            &record.bracket,
+            &record.authorization,
+        ))
     }
-    fn record(&self, id: &str) -> Result<&OrderRecord> {
+    pub fn record(&self, id: &str) -> Result<&OrderRecord> {
         self.records
             .get(id)
             .ok_or_else(|| Error::Invalid("unknown command".into()))
@@ -244,7 +267,17 @@ impl OrderLedger {
         market: crate::exposure::Check<'_>,
     ) -> Result<()> {
         market.require(self.record(id)?.bracket.instrument)?;
+        if self.record(id)?.authorization != session.authorization_context(policy)? {
+            return Err(Error::Conflict(
+                "submission authorization context changed".into(),
+            ));
+        }
         session.validate(&self.record(id)?.bracket, now_ns, bands, policy)?;
+        if self.record(id)?.durable_receipt.as_deref() != Some(self.envelope_hash(id)?.as_str()) {
+            return Err(Error::Conflict(
+                "submission durable envelope mismatch".into(),
+            ));
+        }
         let r = self.record_mut(id)?;
         if r.state != OrderState::Durable {
             return Err(Error::Unready(
@@ -499,6 +532,106 @@ mod tests {
         assert!(l
             .begin_submit("c", 1000, &session(false), None, &policy, gate.at(10))
             .is_err());
+    }
+    #[test]
+    fn durable_identity_pins_session_permissions_and_risk_configuration() {
+        let gate = ready_gate();
+        let calendar = session(false);
+        let policy = RiskPolicy {
+            band_provider: 1,
+            band_session: 20260915,
+            band_buffer_ticks: 3,
+            max_band_age_ns: 100,
+        };
+        let mut ledger = OrderLedger::default();
+        ledger
+            .authorize(b(), 10, &calendar, None, &policy, gate.at(10))
+            .unwrap();
+        let hash = ledger.envelope_hash("c").unwrap();
+        assert_ne!(hash, content_hash(&b()).unwrap());
+        ledger.mark_durable("c", &hash).unwrap();
+        // Retry is identity-preserving; observation time does not change the pin.
+        ledger
+            .authorize(b(), 11, &calendar, None, &policy, gate.at(11))
+            .unwrap();
+        assert_eq!(hash, ledger.envelope_hash("c").unwrap());
+        for case in 0..3 {
+            let mut changed_calendar = session(false);
+            let mut changed_policy = policy.clone();
+            match case {
+                0 => {
+                    changed_calendar.session.regular.start = 600;
+                    changed_calendar.hash = content_hash(&changed_calendar.session).unwrap();
+                }
+                1 => changed_calendar.allow_extended = false,
+                _ => changed_policy.max_band_age_ns = 200,
+            }
+            assert!(ledger
+                .authorize(
+                    b(),
+                    10,
+                    &changed_calendar,
+                    None,
+                    &changed_policy,
+                    gate.at(10)
+                )
+                .is_err());
+            assert!(ledger
+                .begin_submit(
+                    "c",
+                    10,
+                    &changed_calendar,
+                    None,
+                    &changed_policy,
+                    gate.at(10)
+                )
+                .is_err());
+            assert_eq!(ledger.record("c").unwrap().state, OrderState::Durable);
+            assert_eq!(hash, ledger.envelope_hash("c").unwrap());
+        }
+        let bytes = serde_json::to_vec(&ledger).unwrap();
+        let mut restored: OrderLedger = serde_json::from_slice(&bytes).unwrap();
+        restored
+            .begin_submit("c", 10, &calendar, None, &policy, gate.at(10))
+            .unwrap();
+        assert_eq!(restored.record("c").unwrap().state, OrderState::Submitting);
+        let mut legacy = serde_json::to_value(&ledger).unwrap();
+        legacy["records"]["c"]
+            .as_object_mut()
+            .unwrap()
+            .remove("authorization");
+        assert!(serde_json::from_value::<OrderLedger>(legacy).is_err());
+    }
+    #[test]
+    fn restored_bracket_or_receipt_corruption_cannot_submit() {
+        let gate = ready_gate();
+        let calendar = session(false);
+        let policy = RiskPolicy {
+            band_provider: 1,
+            band_session: 20260915,
+            band_buffer_ticks: 3,
+            max_band_age_ns: 100,
+        };
+        let mut ledger = OrderLedger::default();
+        ledger
+            .authorize(b(), 10, &calendar, None, &policy, gate.at(10))
+            .unwrap();
+        ledger
+            .mark_durable("c", &ledger.envelope_hash("c").unwrap())
+            .unwrap();
+        for case in 0..3 {
+            let mut data = serde_json::to_value(&ledger).unwrap();
+            match case {
+                0 => data["records"]["c"]["bracket"]["quantity"] = 6.into(),
+                1 => data["records"]["c"]["durable_receipt"] = serde_json::Value::Null,
+                _ => data["records"]["c"]["durable_receipt"] = "b".repeat(64).into(),
+            }
+            let mut restored: OrderLedger = serde_json::from_value(data).unwrap();
+            assert!(restored
+                .begin_submit("c", 10, &calendar, None, &policy, gate.at(10))
+                .is_err());
+            assert_eq!(restored.record("c").unwrap().state, OrderState::Durable);
+        }
     }
     #[test]
     fn phase_is_rechecked_after_durability_without_changing_order_state() {

@@ -6,6 +6,28 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Durable order identity includes authorization context
+
+Each order record now stores the pinned calendar hash, extended-hours permission
+and risk-policy hash. The versioned `arte.order-authorization.v2` envelope hash
+covers the bracket and this context. It no longer hashes only the bracket.
+The runtime must retain the referenced calendar and configuration records.
+
+Authorization retries preserve the existing context. Reusing the command ID with
+a different bracket, calendar, permission or risk policy fails. Submission checks
+the supplied context and durable receipt before changing state. Ledger records
+are private; consumers receive read-only record access. Legacy serialized records
+without the required authorization context fail deserialization.
+
+All 259 offline Rust tests, formatting, Clippy and frozen-source hashes pass.
+New tests cover context changes, identity-preserving retries, serialized recovery,
+missing legacy context, modified bracket quantity, missing receipts and incorrect
+receipts. Failed submission leaves the durable order state unchanged.
+
+This is an in-process identity and serialization contract. A hash is not proof
+of a database commit. Durable publication/readback, crash-state reconciliation and
+broker submission integration remain required. No services or database calls ran.
+
 ## Mandatory session policy in the order ledger
 
 Order authorization and submission now require a pinned `TradingSession`.
