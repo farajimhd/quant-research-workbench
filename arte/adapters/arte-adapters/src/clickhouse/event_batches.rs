@@ -61,6 +61,59 @@ fn decode_rows(body: &str, requested: &[String]) -> Result<BTreeMap<String, Stri
     Ok(values)
 }
 impl ClickHouse {
+    /// Revalidates one batch at a time; does not retain the session in memory.
+    pub async fn verify_acquisition(
+        &self,
+        certificate: arte_core::acquisition::Certificate,
+    ) -> Result<arte_core::acquisition::VerifiedCertificate> {
+        let mut verifier = arte_core::acquisition::Verifier::new(certificate)?;
+        while let Some(id) = verifier.next_batch() {
+            let batch = self.load_event_batch(id).await?;
+            verifier.observe(&batch)?;
+        }
+        verifier.finish()
+    }
+    pub async fn publish_acquisition(
+        &self,
+        certificate: arte_core::acquisition::Certificate,
+        passed: &BTreeSet<Acceptance>,
+        now_ns: u64,
+    ) -> Result<String> {
+        writer_gate(passed)?;
+        if certificate.published_at_ns > now_ns {
+            return Err(Error::Invalid(
+                "coverage publication is in the future".into(),
+            ));
+        }
+        let verified = self.verify_acquisition(certificate).await?;
+        let id = verified.certificate().id()?;
+        self.verify_storage("event_coverage_staging_v1").await?;
+        let json = serde_json::to_string(verified.certificate())
+            .map_err(|e| Error::Serialization(e.to_string()))?;
+        self.stage_event_values(
+            "event_coverage_staging_v1",
+            &BTreeMap::from([(id.clone(), json)]),
+        )
+        .await?;
+        Ok(id)
+    }
+    pub async fn load_acquisition(
+        &self,
+        id: &str,
+    ) -> Result<arte_core::acquisition::VerifiedCertificate> {
+        let values = self
+            .event_values("event_coverage_staging_v1", &[id.to_owned()])
+            .await?;
+        let json = values
+            .get(id)
+            .ok_or_else(|| Error::Unready("coverage certificate not published".into()))?;
+        let certificate: arte_core::acquisition::Certificate =
+            serde_json::from_str(json).map_err(|e| Error::Serialization(e.to_string()))?;
+        if certificate.id()? != id {
+            return Err(Error::Conflict("coverage certificate hash mismatch".into()));
+        }
+        self.verify_acquisition(certificate).await
+    }
     async fn event_values(&self, table: &str, ids: &[String]) -> Result<BTreeMap<String, String>> {
         if ids.is_empty() || ids.len() > MAX_OBSERVATIONS || ids.iter().any(|id| !valid_hash(id)) {
             return Err(Error::Invalid("invalid bounded event object query".into()));

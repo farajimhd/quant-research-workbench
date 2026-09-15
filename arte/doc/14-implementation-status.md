@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 146 in-process Rust tests passed (118 core and 28 adapter tests).
+- 148 in-process Rust tests passed (120 core and 28 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -400,6 +400,22 @@ empty coverage and revision/channel/knowledge-time isolation. The acquisition ow
 must supply real evidence behind page flags and batch acknowledgments. These
 metadata checks do not prove provider completeness or replace response validation.
 Persistent catalog storage, REST orchestration and derived coverage remain unwired.
+
+Coverage catalog publication now requires a VerifiedCertificate from a streaming
+batch verifier. Every referenced batch must match its hash, provider, instrument,
+channel, half-open SIP interval and REST acquisition clock. Live receipts are
+rejected from REST coverage. Persisted row counts must reconcile with explicitly
+recorded deduplication. Failure latches and incomplete verification cannot publish.
+Two new offline tests cover actual batch scope and count failures. Raw response
+counts, deduplication reasons and ordering evidence still require the acquisition
+owner; metadata flags are not independent proof of those facts.
+
+ClickHouse coverage publication and loading now invoke that verifier against actual
+batch readback, one batch at a time. Publication writes the immutable certificate
+last and rejects future publication times. Candidate migration 004 provides hash-keyed
+coverage staging, not range discovery. These methods compiled but were not called.
+REST orchestration, persisted interval discovery, derived certification and runtime
+handover remain incomplete. No migration or network call ran.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.
