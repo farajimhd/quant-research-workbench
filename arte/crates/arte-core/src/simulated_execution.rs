@@ -264,6 +264,9 @@ impl Simulator {
     pub fn positions(&self) -> &[Position] {
         &self.orders
     }
+    pub fn run_id(&self) -> &str {
+        &self.run_id
+    }
     pub fn maximum_quote_fills(&self) -> usize {
         self.capacity * 2
     }

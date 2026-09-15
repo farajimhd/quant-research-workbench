@@ -39,9 +39,23 @@ fn exact_price(price: f64, scale: u8) -> Result<i64> {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Plan {
+    pub scope: crate::strategy_dispatch::Scope,
     pub decision_id: String,
     pub action_index: usize,
     pub bracket: Bracket,
+}
+impl Plan {
+    pub fn validate_scope(&self) -> Result<()> {
+        crate::strategy_dispatch::State::new(self.scope.clone())?;
+        if self.scope.account != self.bracket.account
+            || self.scope.instrument != self.bracket.instrument
+        {
+            return Err(Error::Conflict(
+                "bracket escaped originating strategy scope".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 /// The selected candidate is long-only. Do not infer a short/reversal from quantity.
 /// Entry and add plans still require cash reservation, market readiness, durable
@@ -104,6 +118,7 @@ pub fn bracket(
     };
     bracket.validate(now_ns, regular, bands, policy)?;
     Ok(Plan {
+        scope: decision.scope.clone(),
         decision_id: decision.decision_id.clone(),
         action_index,
         bracket,

@@ -728,3 +728,12 @@ One offline test covers missing/released reservations, changed funding, stale
 balances and exact submission retry. All 196 tests pass. This adds no broker or
 network capability. Durable account recovery, run/mandate provenance, fill-driven
 cash updates and full strategy-to-execution scheduling remain incomplete.
+
+Bracket plans now carry the originating decision scope: run, mode, account,
+instrument, strategy instance and code/configuration identities. Funding verifies
+that account and instrument agree with the bracket. The historical execution lane
+accepts only Backtest plans whose run matches its simulator. Existing funding hashes
+therefore bind this scope too. The reserved-submission test now rejects another run,
+Live/Paper modes and account mismatch. All 196 offline tests pass. This contract
+change has not been deployed or migrated. Full release provenance validation and
+the shared strategy scheduling loop remain incomplete; no service ran.

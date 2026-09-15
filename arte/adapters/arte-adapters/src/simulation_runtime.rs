@@ -94,6 +94,7 @@ impl Runtime {
     }
     pub fn submit_reserved(&mut self, request: Submission<'_>) -> Result<()> {
         self.ready()?;
+        validate_run(request.plan, self.simulator.run_id())?;
         let expected = arte_core::order_funding::requirements(
             request.plan,
             request.cash_policy,
@@ -190,6 +191,17 @@ impl Runtime {
         Ok(true)
     }
 }
+fn validate_run(plan: &arte_core::decision_orders::Plan, run_id: &str) -> Result<()> {
+    plan.validate_scope()?;
+    if plan.scope.mode != arte_core::strategy_dispatch::Mode::Backtest
+        || plan.scope.run_id != run_id
+    {
+        return Err(Error::Conflict(
+            "historical execution requires its own backtest plan scope".into(),
+        ));
+    }
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,10 +215,32 @@ mod tests {
         )
         .unwrap();
         let plan = arte_core::decision_orders::Plan {
+            scope: arte_core::strategy_dispatch::Scope {
+                run_id: "r".into(),
+                mode: arte_core::strategy_dispatch::Mode::Backtest,
+                account: "a".into(),
+                instrument: 1,
+                strategy_instance: "s".into(),
+                code_hash: "code".into(),
+                config_hash: "config".into(),
+            },
             decision_id: "d".into(),
             action_index: 0,
             bracket: bracket("a"),
         };
+        validate_run(&plan, "r").unwrap();
+        assert!(validate_run(&plan, "another-run").is_err());
+        for mode in [
+            arte_core::strategy_dispatch::Mode::Live,
+            arte_core::strategy_dispatch::Mode::Paper,
+        ] {
+            let mut foreign = plan.clone();
+            foreign.scope.mode = mode;
+            assert!(validate_run(&foreign, "r").is_err());
+        }
+        let mut foreign = plan.clone();
+        foreign.scope.account = "b".into();
+        assert!(validate_run(&foreign, "r").is_err());
         let portfolio = arte_core::portfolio::Portfolio::new(BTreeMap::from([(
             "a".into(),
             arte_core::portfolio::Account {

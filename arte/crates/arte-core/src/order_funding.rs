@@ -143,6 +143,7 @@ pub fn requirements(
     bands: Option<&Bands>,
     risk: &RiskPolicy,
 ) -> Result<Funding> {
+    plan.validate_scope()?;
     let bracket = &plan.bracket;
     bracket.validate(now_ns, regular, bands, risk)?;
     if bracket.side != Side::Long
@@ -234,6 +235,15 @@ mod tests {
     }
     fn plan(id: &str) -> Plan {
         Plan {
+            scope: crate::strategy_dispatch::Scope {
+                run_id: "r".into(),
+                mode: crate::strategy_dispatch::Mode::Backtest,
+                account: "a".into(),
+                instrument: 1,
+                strategy_instance: "s".into(),
+                code_hash: "code".into(),
+                config_hash: "config".into(),
+            },
             decision_id: "decision".into(),
             action_index: 0,
             bracket: crate::orders::Bracket {
