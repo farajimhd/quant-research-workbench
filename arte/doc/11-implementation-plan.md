@@ -1,5 +1,7 @@
 # Implementation plan and unresolved gates
 
+Project: ARTE (Automated Real-Time Trading Engine). Repository name: `arte`.
+
 ## Delivery sequence
 
 | Phase | Deliverable | Exit condition |

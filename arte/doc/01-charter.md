@@ -1,4 +1,14 @@
-# Project charter
+# ARTE project charter
+
+## Naming
+
+- Product: ARTE.
+- Full name: Automated Real-Time Trading Engine.
+- Repository and project root: `arte`.
+- Market-data component: Market Data Engine (MDE).
+
+ARTE includes live execution, historical preparation, backtesting, and operator views.
+MDE names one component, not the complete project.
 
 ## Objective
 

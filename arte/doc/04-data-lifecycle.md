@@ -2,7 +2,8 @@
 
 ## Authority
 
-Use a new configured ClickHouse database. Proposed name: `mde_runtime`.
+Use a new configured ClickHouse database. Proposed name: `arte`.
+This is a design name. No database is created or renamed by the documentation change.
 Production components do not query the old app's event tables, checkpoints, or caches.
 They do not call `download_update_events` or read flatfiles.
 Historical data comes from REST into the new authority.

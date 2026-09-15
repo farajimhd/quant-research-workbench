@@ -1,4 +1,7 @@
-# Project instructions
+# ARTE project instructions
+
+ARTE means Automated Real-Time Trading Engine. The project root is `arte`.
+Keep Market Data Engine (MDE) as the market-data component name.
 
 ## Boundary
 

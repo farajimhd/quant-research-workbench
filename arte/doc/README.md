@@ -1,8 +1,9 @@
-# Design index
+# ARTE design index
 
 Design baseline: 2026-09-15.
 
-These documents specify the standalone project. They do not describe a deployed
+ARTE means Automated Real-Time Trading Engine. Its repository name is `arte`.
+These documents specify ARTE. They do not describe a deployed
 implementation. `Must` states a requirement. `Proposed` identifies a design choice
 that still needs validation. A release gate must pass before the relevant feature
 can be enabled.

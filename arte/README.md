@@ -1,10 +1,12 @@
-# Standalone Trading
+# ARTE
+
+Automated Real-Time Trading Engine.
 
 Status: design and folder scaffold. No runtime is implemented here yet.
 
-This project runs live strategies on a workstation. It also supports isolated
+ARTE runs live strategies on a workstation. It also supports isolated
 historical backtests and an optional browser interface. Its market-data component
-is named Market Data Engine (MDE).
+is named Market Data Engine (MDE). The repository and project folder are named `arte`.
 
 Start with the [design index](doc/README.md). Read the
 [project charter](doc/01-charter.md) before implementation.

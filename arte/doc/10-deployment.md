@@ -1,5 +1,13 @@
 # Distribution, deployment, and repository extraction
 
+## Project identity
+
+The product is ARTE (Automated Real-Time Trading Engine).
+The project folder and future repository are named `arte`.
+Use the `arte-` prefix for future project-owned packages and executables.
+Keep MDE as the market-data component name within ARTE.
+These names do not introduce a parent-repository dependency.
+
 ## Portable root
 
 All source, tests, configuration schemas, migration definitions, and documentation
