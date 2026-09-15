@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 137 in-process Rust tests passed (115 core and 22 adapter tests).
+- 139 in-process Rust tests passed (115 core and 24 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -362,6 +362,22 @@ rules; cross-batch deduplication and receipt-slot enforcement remain writer duti
 This is a staging contract, not the final compact ClickHouse layout. No event DDL
 or writer is enabled. Provider identity overlap, physical codec/storage acceptance,
 batch publication and the persistence worker remain incomplete.
+
+The ClickHouse adapter now stages event payloads and observation references with
+bounded bulk lookups, inserts only missing content objects, verifies readback and
+publishes the manifest last. Loading verifies the pinned manifest and restores the
+batch in application order. Identical retry rows are tolerated before merges;
+conflicting or unrequested values fail. Publication requires explicit repository
+extraction, source-identity, event-storage and durability acceptance. The supervisor
+must validate the evidence behind those flags; flags alone are not certificates.
+Event-storage acceptance is also required by the Live arming checklist.
+
+Candidate migration 003 defines staging tables only, using live_market_ssd.
+No migration, database read or write ran. Two offline tests cover the acceptance
+gate and bulk readback conflict handling. Network methods only compiled. The final
+compact event codec, range-query index, coverage catalog, cross-batch receipt-slot
+validation, writer ownership and ingestion persistence worker remain incomplete.
+Staging storage must not be presented as the complete canonical event authority.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.

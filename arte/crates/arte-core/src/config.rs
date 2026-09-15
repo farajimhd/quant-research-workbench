@@ -64,6 +64,7 @@ impl HardwareProfile {
 pub enum Acceptance {
     RepositoryExtracted,
     SourceIdentity,
+    EventStorage,
     V7Parity,
     StrategyParity,
     BrokerProtection,
@@ -75,6 +76,7 @@ pub fn live_blockers(profile: &HardwareProfile, passed: &BTreeSet<Acceptance>) -
     let mut blockers: Vec<_> = [
         Acceptance::RepositoryExtracted,
         Acceptance::SourceIdentity,
+        Acceptance::EventStorage,
         Acceptance::V7Parity,
         Acceptance::StrategyParity,
         Acceptance::BrokerProtection,

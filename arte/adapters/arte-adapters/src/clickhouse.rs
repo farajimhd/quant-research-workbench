@@ -5,6 +5,7 @@ use arte_core::{Error, Result};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::time::Duration;
+mod event_batches;
 
 pub fn identifier(value: &str) -> Result<&str> {
     if value.is_empty()
