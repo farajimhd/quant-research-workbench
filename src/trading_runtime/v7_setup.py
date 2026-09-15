@@ -11,6 +11,11 @@ def observe(state, market, settings, fresh):
     bar = market['bar']
     if bar['end'] <= state.get('at', 0):
         return
+    if settings.get('setup_minimum_60s_progress_pct',0):
+        # Separate from the short consolidation range: sparse observed bars
+        # remain usable as as-of references, but are never manufactured.
+        history=[b for b in state.get('progress_bars',[]) if bar['end']-65<=b['end']<bar['end']]
+        state['progress_bars']=[*history,dict(end=bar['end'],close=bar['close'])]
     bars = state['bars']
     if bars:
         gap=bar['time']-bars[-1]['end']
@@ -28,6 +33,27 @@ def observe(state, market, settings, fresh):
         state['episode_high'] = max(state.get('episode_high') or bar['high'], bar['high'])
         state['episode_low'] = min(state.get('episode_low') or bar['low'], bar['low'])
         state['body_high'] = max(state.get('body_high') or 0, bar['open'], bar['close'])
+
+
+def entry_progress(state,market,minimum):
+    bar=market['bar'];at=bar['end'];history=state.get('progress_bars',[])
+    evidence=dict(observed_at=at,minimum_pct=minimum,lookback_seconds=60,maximum_reference_staleness_seconds=5)
+    if not history or history[-1]['end']!=at:
+        return dict(**evidence,passed=False,reason='current_completed_bar_missing')
+    prior=next((b for b in reversed(history) if b['end']<=at-60),None)
+    if not prior or at-prior['end']>65:
+        return dict(**evidence,passed=False,reason='historical_reference_missing_or_stale')
+    progress=(bar['close']/prior['close']-1)*100
+    return dict(**evidence,passed=progress+1e-9>=minimum,
+        reason='' if progress+1e-9>=minimum else 'progress_below_minimum',
+        reference_at=prior['end'],reference_close=prior['close'],close=bar['close'],progress_pct=progress)
+
+
+def add_candle_quality(bar,maximum):
+    span=bar['high']-bar['low']
+    fraction=(bar['high']-max(bar['open'],bar['close']))/span if span>0 else 0.
+    return dict(observed_at=bar['end'],upper_wick_fraction=fraction,maximum=maximum,
+        passed=fraction<=maximum+1e-12)
 
 
 def phase(entry, market, fresh):

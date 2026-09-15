@@ -64,6 +64,7 @@ def audit(root,variant,portfolio=False):
                     liquidity_facts=liquidity.get('facts'),range=setup.get('range'),
                     reference=metadata.get('historical_hod_reference'),macd=metadata.get('macd'),
                     body=metadata.get('entry_body'),quote_clearance=metadata.get('entry_quote_clearance'),
+                    progress=metadata.get('entry_progress'),
                     early_base=metadata.get('early_base_assessment'),
                     recovery=metadata.get('setup_recovery')))
         finally:

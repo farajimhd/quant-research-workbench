@@ -9,6 +9,74 @@ from src.trading_runtime import v7_setup as V, strategy_engine as S
 from tests.test_v7_setup import prepared
 
 
+@pytest.mark.parametrize('reference,enters',[(9.8,True),(10.1,False),(None,False)])
+def test_initial_entry_progress_requires_a_fresh_asof_reference(reference,enters):
+    host,a,obs=prepared()
+    a.parameters['historical_hod']['setup_minimum_60s_progress_pct']=1.
+    o=obs(2,10.02);at=o.observed_at.timestamp()
+    if reference is not None:
+        a.state['v7_setup']['progress_bars']=[dict(end=at-60,close=reference)]
+    result=host.evaluate(a,o)
+    assert any(i.action=='enter_long' for i in result.evaluation.intents)==enters
+    evidence=result.evaluation.signals[0].metadata['entry_progress']
+    assert evidence['passed']==enters
+    if not enters:assert result.evaluation.signals[0].reason.startswith('setup_progress_')
+    if reference is not None:assert evidence['reference_at']==at-60
+
+
+def test_progress_history_is_bounded_checkpoint_safe_and_separate_from_range_gaps():
+    state={};settings=dict(setup_range_seconds=30,setup_minimum_bars=5,setup_minimum_60s_progress_pct=1)
+    def market(end,session='day'):
+        return dict(session=session,episode=1,bar=dict(time=end-1,end=end,open=10,close=10.2,high=10.2,low=10))
+    V.observe(state,market(35),settings,True)
+    state=json.loads(json.dumps(state))
+    V.observe(state,market(41),settings,True)
+    V.observe(state,market(100),settings,True)
+    assert V.entry_progress(state,market(100),1)['reference_at']==35
+    assert state['range'] is None
+    unchanged=deepcopy(state)
+    V.observe(state,market(101),settings,False)
+    V.observe(state,market(99),settings,True)
+    assert state==unchanged
+    V.observe(state,market(107),settings,True)
+    assert V.entry_progress(state,market(107),1)['reason']=='historical_reference_missing_or_stale'
+    for end in range(108,300):V.observe(state,market(end),settings,True)
+    assert len(state['progress_bars'])==66
+    V.observe(state,market(300,'next'),settings,True)
+    assert len(state['progress_bars'])==1
+    assert not V.entry_progress(state,market(300,'next'),1)['passed']
+
+
+@pytest.mark.parametrize('maximum,allowed',[(1.,True),(.25,False)])
+def test_add_wick_gate_consumes_rejected_confirmation_without_late_replay(maximum,allowed):
+    host,a,obs=prepared()
+    a.parameters['historical_hod']['setup_add_maximum_upper_wick_fraction']=maximum
+    entered=host.evaluate(a,obs(2,10.02))
+    a=replace(a,state=entered.state,status=S.AssignmentStatus.MANAGING)
+    o=replace(obs(3,10.19),position_quantity=100,average_price=10.02,
+        bar_open=10.02,bar_high=10.29,bar_low=10.)
+    result=host.evaluate(a,o)
+    assert any(i.action=='add_long' for i in result.evaluation.intents)==allowed
+    if not allowed:
+        assert not result.evaluation.signals[0].metadata['add_candle_quality']['passed']
+        assert not result.state['historical_hod_entry'].get('add_breaks')
+        a=replace(a,state=result.state)
+        later=host.evaluate(a,replace(obs(4,10.20),position_quantity=100,average_price=10.02))
+        assert not any(i.action=='add_long' for i in later.evaluation.intents)
+
+
+@pytest.mark.parametrize('key,value',[
+    ('setup_minimum_60s_progress_pct',-1),('setup_minimum_60s_progress_pct',True),
+    ('setup_minimum_60s_progress_pct',float('inf')),('setup_minimum_60s_progress_pct',float('nan')),
+    ('setup_add_maximum_upper_wick_fraction',-1),('setup_add_maximum_upper_wick_fraction',1.01),
+    ('setup_add_maximum_upper_wick_fraction',True),('setup_add_maximum_upper_wick_fraction',float('nan')),
+])
+def test_setup_noise_filters_reject_invalid_parameters(key,value):
+    from src.trading_runtime.historical_hod import configure
+    _,a,_=prepared();a.parameters['historical_hod'][key]=value
+    with pytest.raises(ValueError):configure(a.parameters)
+
+
 @pytest.mark.parametrize('enabled,bid,ask,enters', [
     (0,9.99,10.03,True),  # Retain the selected baseline's trade-price policy.
     (1,9.99,10.03,False), # Only one cent remains before the 9.98 stop.
