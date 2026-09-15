@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 143 in-process Rust tests passed (115 core and 28 adapter tests).
+- 146 in-process Rust tests passed (118 core and 28 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -389,6 +389,17 @@ fake-publisher tests cover retry order, incorrect acknowledgments, cancellation 
 in-flight progress. No database function ran. This is not process-crash durability
 or certified source coverage. Durable acquisition catalog, ingestion fan-out,
 supervisor recovery and real storage acceptance remain incomplete.
+
+Acquisition coverage now has a versioned certificate and bounded in-memory catalog.
+Certificates require a complete non-cyclic pagination chain, checked page identity,
+ordering and interval membership, zero rejected rows, consistent counts and
+acknowledged batch references. Empty coverage still requires a verified successful
+page. Gap queries match provider, instrument, channel, source revision, contract,
+capabilities and publication cutoff. Three offline tests cover unfinished pagination,
+empty coverage and revision/channel/knowledge-time isolation. The acquisition owner
+must supply real evidence behind page flags and batch acknowledgments. These
+metadata checks do not prove provider completeness or replace response validation.
+Persistent catalog storage, REST orchestration and derived coverage remain unwired.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.
