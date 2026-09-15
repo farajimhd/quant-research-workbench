@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 188 in-process Rust tests passed (134 core and 54 adapter tests).
+- 190 in-process Rust tests passed (136 core and 54 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -676,3 +676,17 @@ origin separation and duplicate/conflicting execution reports. All 188 tests pas
 Broker report normalization, correction/reversal handling, commission events, durable
 fill publication and position/account projection remain incomplete. Shared schema
 does not yet establish end-to-end live/backtest execution parity.
+
+A shared fill-derived FIFO position projection now calculates open quantity, exact
+cost numerator, gross realized P&L and signed trade cash in integer price atoms.
+Origin/run or broker-session identity, account and instrument isolate each projection.
+The price scale cannot change mid-projection. Exact fill retries do not count twice.
+Conflicting reports, excess exits, opposing entries, clock rewinds, overflow and
+capacity failures leave state unchanged. Position, fill-identity and per-position
+lot budgets are explicit. Adjacent entry lots at the same price are coalesced.
+Two offline tests cover FIFO partial exits, short accounting, duplicate identity,
+scope/capacity limits and rejection atomicity. All 190 tests pass. This is a derived
+projection, not broker balance or portfolio reservation authority. It excludes fees,
+FX, settlement, margin, initial-position seeding, corporate actions and corrections.
+Durable fill acknowledgment and reconciliation must precede live use. Bounded lots
+are cloned for transactional validation; performance and durable recovery remain open.
