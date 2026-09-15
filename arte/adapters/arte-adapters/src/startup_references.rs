@@ -10,6 +10,7 @@ use std::{
     future::Future,
 };
 use tokio::sync::watch;
+pub mod plan;
 
 #[derive(Clone)]
 pub struct Request {
@@ -81,6 +82,25 @@ impl Report {
         }
         Ok(Cache { records })
     }
+}
+/// Planning failure occurs before the loader is called. This resolves only the
+/// previous-close branch; other dependency readiness remains independently required.
+pub async fn load_planned(
+    loader: &impl Loader,
+    dependencies: &arte_core::dependency_plan::Plan,
+    bindings: Vec<plan::Binding>,
+    as_of_ns: u64,
+    concurrency: usize,
+    stop: watch::Receiver<bool>,
+) -> Result<Report> {
+    load(
+        loader,
+        plan::requests(dependencies, bindings)?,
+        as_of_ns,
+        concurrency,
+        stop,
+    )
+    .await
 }
 pub async fn load(
     loader: &impl Loader,

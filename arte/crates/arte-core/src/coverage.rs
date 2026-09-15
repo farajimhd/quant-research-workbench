@@ -57,6 +57,7 @@ pub enum Dependency {
     HistoricalSeed(String),
     StreamingStructure,
     Reference,
+    PreviousClose,
     OfficialLuld,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]

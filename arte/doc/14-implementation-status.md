@@ -6,6 +6,30 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Explicit previous-close dependency planning
+
+The shared dependency contract now has a distinct `PreviousClose` variant. Generic
+`Reference` dependencies are not implicitly interpreted as previous close.
+The reference planner resolves declared previous-close nodes into pinned load
+requests. It checks the implementation hash, instrument, source-record requirement,
+and coverage of the declared use intervals by the calendar-supplied target interval.
+Missing, duplicate, unused and conflicting bindings fail before loading.
+
+`load_planned` composes this planner with bounded reference loading. Only requested
+previous-close records are loaded. Other reference and derived requirements remain
+unresolved by this branch. Each plan covers one target session per instrument;
+multi-session backtests must resolve separate per-session reference plans rather
+than reuse one close across sessions.
+
+All 249 offline Rust tests, formatting, Clippy and frozen-source hashes pass.
+Two new planner tests cover exact bindings, missing/conflicting inputs, interval
+overflow and separation from generic references. No services ran. The composed
+loader compiles but has not been exercised against ClickHouse.
+
+Calendar/reference source certification, automatic binding production and the full
+startup readiness coordinator remain incomplete. Reference plan success does not
+certify upstream inputs or event/derived readiness.
+
 ## Bounded startup reference loading and cache
 
 Startup reference loading now supports up to 4096 pinned requests with at most 32
