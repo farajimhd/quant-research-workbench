@@ -115,6 +115,123 @@ pub fn upper_wick_fraction(bar: &Bar) -> Result<f64> {
         0.
     })
 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActivityEvidence {
+    pub observed_at_ns: u64,
+    pub reference_at_ns: Option<u64>,
+    pub value_pct: Option<f64>,
+    pub minimum_pct: f64,
+    pub passed: bool,
+    pub reason: String,
+}
+/// Independent observed-bar history for the source's 300-second range and
+/// 60-second progress gates. Short consolidation gaps do not clear this history.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ActivityState {
+    session: u32,
+    bars: VecDeque<Bar>,
+}
+impl ActivityState {
+    pub fn observe(&mut self, session: u32, bar: &Bar, fresh: bool) -> Result<bool> {
+        if bar.start_ns >= bar.end_ns
+            || [bar.open, bar.high, bar.low, bar.close]
+                .iter()
+                .any(|p| !p.is_finite() || *p <= 0.)
+            || bar.high < bar.open.max(bar.close)
+            || bar.low > bar.open.min(bar.close)
+        {
+            return Err(Error::Invalid("invalid activity candle".into()));
+        }
+        if session != self.session {
+            self.bars.clear();
+            self.session = session;
+        }
+        if !fresh || self.bars.back().is_some_and(|b| b.end_ns >= bar.end_ns) {
+            return Ok(false);
+        }
+        let cutoff = bar.end_ns.saturating_sub(300_000_000_000);
+        while self.bars.front().is_some_and(|b| b.end_ns <= cutoff) {
+            self.bars.pop_front();
+        }
+        if self.bars.len() >= 4096 {
+            return Err(Error::Capacity(
+                "activity history capacity reached; no truncation".into(),
+            ));
+        }
+        self.bars.push_back(bar.clone());
+        Ok(true)
+    }
+    pub fn range(&self, at_ns: u64, minimum_pct: f64) -> Result<ActivityEvidence> {
+        let mut result = self.evidence(at_ns, minimum_pct)?;
+        if !result.reason.is_empty() {
+            return Ok(result);
+        }
+        let low = self
+            .bars
+            .iter()
+            .map(|b| b.low)
+            .fold(f64::INFINITY, f64::min);
+        let high = self
+            .bars
+            .iter()
+            .map(|b| b.high)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let value = (high / low - 1.) * 100.;
+        if !value.is_finite() {
+            return Err(Error::Invalid("activity range overflow".into()));
+        }
+        result.value_pct = Some(value);
+        result.reference_at_ns = self.bars.front().map(|b| b.end_ns);
+        result.passed = value + 1e-9 >= minimum_pct;
+        if !result.passed {
+            result.reason = "range_below_minimum".into();
+        }
+        Ok(result)
+    }
+    pub fn progress(&self, at_ns: u64, minimum_pct: f64) -> Result<ActivityEvidence> {
+        let mut result = self.evidence(at_ns, minimum_pct)?;
+        if !result.reason.is_empty() {
+            return Ok(result);
+        }
+        let prior = self
+            .bars
+            .iter()
+            .rev()
+            .find(|b| b.end_ns <= at_ns.saturating_sub(60_000_000_000));
+        let Some(prior) = prior.filter(|b| at_ns - b.end_ns <= 65_000_000_000) else {
+            result.reason = "historical_reference_missing_or_stale".into();
+            return Ok(result);
+        };
+        let value = (self.bars.back().unwrap().close / prior.close - 1.) * 100.;
+        if !value.is_finite() {
+            return Err(Error::Invalid("activity progress overflow".into()));
+        }
+        result.value_pct = Some(value);
+        result.reference_at_ns = Some(prior.end_ns);
+        result.passed = value + 1e-9 >= minimum_pct;
+        if !result.passed {
+            result.reason = "progress_below_minimum".into();
+        }
+        Ok(result)
+    }
+    fn evidence(&self, at_ns: u64, minimum_pct: f64) -> Result<ActivityEvidence> {
+        if !minimum_pct.is_finite() || minimum_pct < 0. {
+            return Err(Error::Invalid("invalid activity minimum".into()));
+        }
+        Ok(ActivityEvidence {
+            observed_at_ns: at_ns,
+            reference_at_ns: None,
+            value_pct: None,
+            minimum_pct,
+            passed: false,
+            reason: if self.bars.back().is_none_or(|b| b.end_ns != at_ns) {
+                "current_completed_bar_missing".into()
+            } else {
+                String::new()
+            },
+        })
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +271,41 @@ mod tests {
         };
         assert!(!s.observe(1, &bar(1, 11.), &settings, false).unwrap());
         assert!(s.bars.is_empty());
+    }
+    #[test]
+    fn activity_history_is_sparse_and_progress_reference_is_bounded() {
+        let mut state = ActivityState::default();
+        let mut old = bar(0, 11.);
+        old.end_ns = 1_000_000_000;
+        let mut current = old.clone();
+        current.start_ns = 60_000_000_000;
+        current.end_ns = 61_000_000_000;
+        current.close = 10.5;
+        state.observe(1, &old, true).unwrap();
+        state.observe(1, &current, true).unwrap();
+        assert_eq!(state.bars.len(), 2);
+        assert!(state.progress(current.end_ns, 4.).unwrap().passed);
+        assert!(state.range(current.end_ns, 1.).unwrap().passed);
+        let mut late = current.clone();
+        late.start_ns = 67_000_000_000;
+        late.end_ns = 68_000_000_000;
+        state.observe(1, &late, true).unwrap();
+        assert!(!state.progress(late.end_ns, 0.).unwrap().passed);
+        assert_eq!(
+            state.progress(late.end_ns, 0.).unwrap().reason,
+            "historical_reference_missing_or_stale"
+        );
+    }
+    #[test]
+    fn activity_cutoff_is_half_open_and_requires_current_bar() {
+        let mut state = ActivityState::default();
+        let mut first = bar(0, 99.);
+        first.end_ns = 1_000_000_000;
+        state.observe(1, &first, true).unwrap();
+        let mut next = bar(300_000_000_000, 11.);
+        next.end_ns = 301_000_000_000;
+        state.observe(1, &next, true).unwrap();
+        assert_eq!(state.bars.len(), 1);
+        assert!(!state.range(next.end_ns + 1, 0.).unwrap().passed);
     }
 }

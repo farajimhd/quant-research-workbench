@@ -11,6 +11,7 @@ pub mod portfolio;
 pub mod publication;
 pub mod replay;
 pub mod seed_storage;
+pub mod strategy_encounters;
 pub mod strategy_setup;
 pub mod v7_band;
 pub mod v7_encounters;

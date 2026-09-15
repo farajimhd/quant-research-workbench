@@ -29,6 +29,7 @@ was started during this implementation. Existing application files remain unchan
 | Order state | Durable-envelope identity, unknown submission handling and cumulative fills |
 | Historical seed contract | Historical-only publication, object references and availability gates |
 | Strategy primitives | Causal preceding range and candle quality |
+| Strategy evidence | Overhead encounters, trade-only next-opening rejection, grouped recovery and sparse range/progress gates |
 | V7 primitives | Student-t analytic objective/gradient and array-based level association |
 | V7 historical evidence | Fixed-band encounters, role timelines, reaction annotation and split-adjusted nonoverlapping observations |
 | V7 historical extraction | Gap-separated extrema, profile peaks, bounded-span candidate clustering and auditable role-based selection |
@@ -73,7 +74,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 62 in-process Rust tests passed (55 core and 7 adapter tests).
+- 67 in-process Rust tests passed (60 core and 7 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -167,7 +168,14 @@ invalid-input rejection, gap outcomes, capacity failure and recovery integrity.
 These are not complete frozen-source streaming parity or representative latency
 benchmarks. The actual WebSocket/market/strategy process is not integrated yet.
 
-Next: full streaming and partition source parity, batched seed persistence, and
-shared strategy
-execution on these authorities. Do not substitute the current fixed-noise
+The strategy encounter port separates completed-bar updates from quote/trade
+updates. Quotes cannot consume the next-opening warning. Level confirmation must
+precede the current candle. Blocked overhead levels recover together. Activity
+checks retain sparse observed candles independently of the short consolidation
+window; the 60-second price reference must be no more than five seconds stale.
+These paths have focused unit tests, not full source-decision parity.
+
+Next: full strategy entry/position/exit lifecycle and its effective configuration,
+alongside streaming/partition source parity and batched seed persistence.
+Do not substitute the current fixed-noise
 extractor for the full historical MLE seed pipeline.
