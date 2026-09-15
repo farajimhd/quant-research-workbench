@@ -3,7 +3,7 @@ import json
 import numpy as np
 import pytest
 from scripts.strategy_222_supervised_research import (
-    FEATURES,causal_features,hindsight_label,label_opportunities,metrics,flat_entry_state,diagnostic_screens,
+    FEATURES,causal_features,hindsight_label,label_opportunities,metrics,flat_entry_state,diagnostic_screens,diagnose_episode_exit,
 )
 from scripts.run_strategy_222_refinement import load_recipe
 
@@ -49,6 +49,29 @@ def test_hindsight_labels_respect_barrier_order_costs_depth_and_censoring():
     assert hindsight_label(shallow,10,9.5)['reason']=='exit_quote_or_depth'
     shallow[1,3]=float('nan')
     assert hindsight_label(shallow,10,9.5)['reason']=='exit_quote_or_depth'
+
+
+def test_exit_diagnosis_separates_actual_loss_from_fixed_stop_label():
+    episode=dict(opened_at='1970-01-01T00:00:10+00:00',net=-25.,
+        fills=[dict(side='B',stop=9.5),dict(side='S',reason='early_setup_failed')])
+    q=quotes([(10.1,9.99,10),(15,11.2,11.21),(310,12,12.01)])
+    result=diagnose_episode_exit(episode,q)
+    assert result['management_or_sizing_review'] and result['actual_net']==-25
+    assert result['net']>0 and result['actual_exit_reasons']==['early_setup_failed']
+    # Later upside cannot reverse an initial-stop hit.
+    stopped=quotes([(10.1,9.99,10),(12,9.4,9.41),(15,11.2,11.21),(310,12,12.01)])
+    assert not diagnose_episode_exit(episode,stopped)['management_or_sizing_review']
+    episode.pop('net')
+    assert not diagnose_episode_exit(episode,q)['management_or_sizing_review']
+    assert diagnose_episode_exit(episode,q[:1])['reason']=='right_censored'
+
+
+def test_exit_diagnosis_requires_actual_initial_stop_metadata():
+    episode=dict(opened_at='1970-01-01T00:00:10+00:00',net=-25.,fills=[dict(side='B')])
+    q=quotes([(10.1,9.99,10),(15,11.2,11.21),(310,12,12.01)])
+    for invalid in (None,True,-1,float('nan')):
+        episode['fills'][0]['stop']=invalid
+        assert diagnose_episode_exit(episode,q)['reason']=='initial_stop_metadata_unavailable'
 
 
 def test_future_episode_labels_do_not_mutate_features_or_count_duplicate_entries():

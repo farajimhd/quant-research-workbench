@@ -377,18 +377,103 @@ def diagnose(root):
     print(f'Diagnostics completed: {len(results)} screens, {len(rows)} frozen decision rows; no strategy changes',flush=True)
 
 
+def diagnose_episode_exit(episode,quotes):
+    """Compare an actual episode with an explicitly separate fixed-size label."""
+    first=episode['fills'][0]
+    if first['side']!='B':raise ValueError('Episode must start with an actual buy')
+    stop=first.get('stop')
+    if type(stop) not in (int,float) or not np.isfinite(stop) or stop<=0:
+        return dict(valid=False,reason='initial_stop_metadata_unavailable')
+    at=datetime.fromisoformat(episode['opened_at']).timestamp()
+    label=hindsight_label(quotes,at,float(stop))
+    actual_net=episode.get('net')
+    return dict(**label,initial_stop=stop,actual_net=actual_net,
+        actual_exit_reasons=sorted({f['reason'] for f in episode['fills']
+            if f['side']=='S' and f.get('reason')}),
+        management_or_sizing_review=bool(label.get('valid') and label.get('profitable')
+            and actual_net is not None and actual_net<=0))
+
+
+def diagnose_exits(root,variant):
+    """Audit all covered actual entries; retain missing-quote and open cases."""
+    from scripts.summarize_strategy_222_refinement import episodes
+    comparison=REPLAYS/'comparison.json'
+    trials=json.loads(comparison.read_text());chosen={}
+    for trial in trials:
+        if trial['name']!=variant or trial['symbol']=='PORTFOLIO':continue
+        prior=chosen.get(trial['symbol'])
+        if prior is None or (trial['end'],trial['run_id'])>(prior['end'],prior['run_id']):
+            chosen[trial['symbol']]=trial
+    if not chosen:raise ValueError('No completed isolated replay for this variant; refresh comparison first')
+    ledger=json.loads((STUDY/'quote-ledger.json').read_text())
+    quote_cache={};quote_hashes={};journal_hashes={};rows=[]
+    for index,(symbol,trial) in enumerate(sorted(chosen.items()),1):
+        journal=RUNTIME/'trading'/'backtest'/trial['run_id']/'journal.sqlite3'
+        actual=episodes(journal)['episodes']  # Rejects journals with a live WAL.
+        journal_hashes[trial['run_id']]=digest(journal)
+        for number,episode in enumerate(actual,1):
+            at=datetime.fromisoformat(episode['opened_at'])
+            windows=[(key,value) for key,value in ledger.items()
+                if value['status']=='completed' and value['window']['symbol']==symbol
+                and datetime.fromisoformat(value['window']['start'])<=at<=datetime.fromisoformat(value['window']['end'])]
+            row=dict(symbol=symbol,run_id=trial['run_id'],episode=number,
+                opened_at=episode['opened_at'],entry_price=episode['entry_price'],actual_net=episode.get('net'))
+            if not windows:
+                row.update(valid=False,reason='outside_frozen_quote_windows')
+            else:
+                key,_=max(windows,key=lambda item:(item[1]['window']['end'],item[0]))
+                if key not in quote_cache:
+                    path=STUDY/f'quotes-{key}.npz'
+                    actual_hash=digest(path)
+                    if actual_hash!=ledger[key]['sha256']:
+                        raise ValueError(f'Canonical quote provenance mismatch: {key}')
+                    with np.load(path) as archive:quote_cache[key]=archive['data']
+                    if len(quote_cache[key])==0 or np.any(np.diff(quote_cache[key][:,0])<0):
+                        raise ValueError(f'Unordered or empty quotes: {key}')
+                    quote_hashes[key]=actual_hash
+                row.update(quote_window=key,**diagnose_episode_exit(episode,quote_cache[key]))
+            rows.append(row)
+        print(f'Exit diagnosis {index}/{len(chosen)} tickers completed; {len(rows)} episodes accounted for',flush=True)
+    exclusions=Counter(r['reason'] for r in rows if not r['valid'])
+    flagged=[r for r in rows if r.get('management_or_sizing_review')]
+    reasons=Counter(reason for r in flagged for reason in r['actual_exit_reasons'])
+    method=('Completed isolated replay episodes, longest horizon per ticker. Initial stop comes from '
+        'the first actual buy metadata. The comparison uses a separate 100-share entry at the next '
+        'quote after fill time plus100ms, 5bps per side, fees/depth checks and a fixed initial-stop/2R '
+        'barrier within300seconds. Actual sizing, adds and management differ. A flagged loss requires '
+        'management/sizing review; it does not prove an exit defect or predict counterfactual profit. '
+        'Open episodes and missing/censored quote coverage are retained. No strategy changes are made.')
+    save(root/'exit-diagnostics.json',dict(variant=variant,method=method,
+        comparison_sha256=digest(comparison),source_sha256=digest(Path(__file__)),
+        journal_sha256=journal_hashes,quote_sha256=quote_hashes,tickers=len(chosen),
+        episodes=len(rows),open_episodes=sum(r['actual_net'] is None for r in rows),
+        valid_labels=sum(r['valid'] for r in rows),exclusions=dict(exclusions),
+        management_or_sizing_reviews=len(flagged),review_exit_reasons=dict(reasons),rows=rows))
+    lines=[f'# {variant}: actual entry and exit diagnosis','',method,'',
+        f'{len(rows)} episodes; {sum(r["valid"] for r in rows)} valid fixed-stop labels; {len(flagged)} management/sizing reviews.','',
+        '| Ticker | Actual entry | Actual net | Fixed-size label net | Exit reasons |',
+        '|---|---|---:|---:|---|']
+    for row in flagged:
+        lines.append(f"| {row['symbol']} | {row['opened_at']} | {row['actual_net']:.2f} | {row['net']:.2f} | {', '.join(row['actual_exit_reasons'])} |")
+    lines.extend(['','## Explicit exclusions','',*[f'- {reason}: {count}' for reason,count in sorted(exclusions.items())]])
+    (root/'exit-diagnostics.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=('build','screen','replay','assess','diagnose'))
+    parser.add_argument('action',choices=('build','screen','replay','assess','diagnose','diagnose-exits'))
     parser.add_argument('--runtime',type=Path,default=REPLAYS/'supervised-v1')
     parser.add_argument('--top-k',type=int,default=2)
+    parser.add_argument('--variant',help='Completed isolated replay variant for diagnose-exits')
     args=parser.parse_args();root=args.runtime.resolve();root.relative_to(RUNTIME.resolve())
     if not 1<=args.top_k<=5:parser.error('--top-k must be between 1 and 5')
+    if args.action=='diagnose-exits' and not args.variant:parser.error('diagnose-exits requires --variant')
     root.mkdir(parents=True,exist_ok=True)
     if args.action=='build':build(root)
     elif args.action=='screen':screen(root,args.top_k)
     elif args.action=='replay':replay(root)
     elif args.action=='diagnose':diagnose(root)
+    elif args.action=='diagnose-exits':diagnose_exits(root,args.variant)
     else:assess_replays()
 
 
