@@ -901,3 +901,14 @@ monotonicity. All 215 Rust tests, formatting, static checks and source hashes pa
 The real live lane was compiled but not exercised against a feed. Representative
 latency tuning, full actor dispatch, quote state and strategy scheduling remain
 incomplete. No services or network integration tests ran.
+
+The shared quote book now retains the latest source quote and compares decimal
+prices without floating-point conversion. Executable access rejects stale/future
+source or availability clocks, zero prices/sizes, locked quotes and crossed quotes.
+Duplicate deliveries do not refresh age. Older updates cannot replace newer quotes;
+conflicting latest identities block the book. The live lane retains quote state and
+requires the current feed gate when exposing an executable quote. An offline test
+covers mixed decimal scales, retransmission age, crossed updates and old/conflicting
+input. All 216 Rust tests, formatting, static checks and source hashes pass. Raw
+quote persistence, quote recovery, strategy frame wiring and account execution remain
+incomplete. No service ran.

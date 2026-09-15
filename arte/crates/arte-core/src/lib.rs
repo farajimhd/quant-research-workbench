@@ -21,6 +21,7 @@ pub mod order_funding;
 pub mod orders;
 pub mod portfolio;
 pub mod publication;
+pub mod quote_state;
 pub mod replay;
 pub mod seed_storage;
 pub mod simulated_execution;

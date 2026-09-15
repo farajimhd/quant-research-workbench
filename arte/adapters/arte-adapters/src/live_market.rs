@@ -12,15 +12,26 @@ pub struct Lane {
     high: BTreeMap<EventKind, u64>,
     allowed_lateness_ns: u64,
     failed: bool,
+    quotes: arte_core::quote_state::Book,
+    maximum_quote_age_ns: u64,
 }
 impl Lane {
-    pub fn new(market: Ordered, allowed_lateness_ns: u64) -> Result<Self> {
-        if allowed_lateness_ns == 0 || allowed_lateness_ns > 1_000_000_000 {
+    pub fn new(
+        market: Ordered,
+        allowed_lateness_ns: u64,
+        maximum_quote_age_ns: u64,
+    ) -> Result<Self> {
+        if allowed_lateness_ns == 0
+            || allowed_lateness_ns > 1_000_000_000
+            || maximum_quote_age_ns == 0
+        {
             return Err(Error::Invalid(
                 "live ordering allowance must be in (0, 1 second]".into(),
             ));
         }
         Ok(Self {
+            quotes: arte_core::quote_state::Book::new(market.scope())?,
+            maximum_quote_age_ns,
             market,
             high: BTreeMap::new(),
             allowed_lateness_ns,
@@ -52,6 +63,8 @@ impl Lane {
             }
             if observation.key.kind == EventKind::Trade {
                 self.market.enqueue(observation, eligible)?;
+            } else {
+                self.quotes.observe(observation)?;
             }
             if event.exposure_permitted {
                 self.high
@@ -92,6 +105,16 @@ impl Lane {
     pub fn levels(&self) -> Result<impl Iterator<Item = &Level>> {
         self.available()?;
         self.market.levels()
+    }
+    pub fn executable_quote(
+        &self,
+        check: Check<'_>,
+        now_ns: u64,
+    ) -> Result<&arte_core::events::Observation> {
+        self.available()?;
+        check.require(self.market.scope().instrument)?;
+        self.quotes
+            .require_executable(now_ns, self.maximum_quote_age_ns)
     }
 }
 fn frontier(high: &BTreeMap<EventKind, u64>, allowance: u64, previous: u64) -> Result<u64> {
