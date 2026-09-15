@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 162 in-process Rust tests passed (120 core and 42 adapter tests).
+- 164 in-process Rust tests passed (120 core and 44 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -495,6 +495,19 @@ The scheduler's worker factory still needs the real lease/runner binding, measur
 resource profiles, rate-limit coordination and executable service wiring. Callers
 must signal shutdown and await draining; dropping the whole scheduling future
 requires recovery from durable heads.
+
+The maintenance pool now has a real worker binding. Each admitted worker acquires
+its local job lease, constructs REST/database adapters and drives the resumable
+runner through coverage publication. A stop request finishes a pending page progress
+checkpoint before releasing ownership. Per-job watch channels retain only the latest
+phase and terminal state; slow observers do not create an unbounded queue. Interrupted
+workers mark their observer state on drop. Credentials are neither serialized nor
+Debug-formatted. Extraction, identity, event-storage, durability and resource-budget
+acceptance are mandatory before constructing the runtime context.
+Two offline tests cover acceptance gating and interrupted-observer state. The real
+campaign compiled but did not run. Host assignment/failover fencing, coordinated
+provider rate limits, measured memory/CPU isolation and executable service wiring
+remain incomplete. No network or database operation ran.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.
