@@ -6,6 +6,30 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Concurrent account journal commit
+
+The journal adapter now commits independent prepared account decisions with bounded
+async concurrency. It validates all supplied scopes and market boundaries before
+the first write. Duplicate slots and foreign decisions fail before I/O. Limits are
+explicit: at most 4096 supplied slots and 64 concurrent writes.
+
+Each slot retains its verified receipt. Cancellation preserves completed slots and
+leaves unfinished account transactions pending. Retrying the same slots skips their
+successful writes. An ambiguous failed write retries its original transaction.
+Results report each supplied account separately. One failure does not cancel other
+accounts or undo their committed decisions. Missing consumers keep the barrier shut.
+
+Offline tests cover bounded overlap, partial failure, exact retry counts,
+cancellation after one account completes, and preflight rejection before any write.
+All 235 Rust tests, formatting, Clippy and frozen-source hashes pass. No service or
+network test ran. Source-oracle comparisons were not rerun.
+
+This completes a journal coordination component, not the full account actor. The
+runner must retain slots across cancellation and route verified decisions onward.
+Crash recovery, concurrent strategy calculation, broker command submission and
+continuous live/backtest orchestration remain incomplete. No broker protection or
+trading readiness is inferred from a successful journal commit.
+
 ## Multi-account market acknowledgment
 
 The shared core now has a bounded account journal barrier. It freezes the consumer

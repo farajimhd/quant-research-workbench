@@ -73,6 +73,20 @@ impl Barrier {
     /// identical receipts are idempotent; changed decisions cannot replace them.
     pub fn record(&mut self, committed: &Committed) -> Result<bool> {
         let decision = committed.decision();
+        self.validate_decision(decision)?;
+        let slot = self
+            .accounts
+            .get_mut(&content_hash(&decision.scope)?)
+            .unwrap();
+        let hash = content_hash(decision)?;
+        if slot.is_some() {
+            return Ok(false);
+        }
+        *slot = Some(hash);
+        Ok(true)
+    }
+    /// Preflight only. A prepared decision is never a journal receipt.
+    pub fn validate_decision(&self, decision: &crate::strategy_dispatch::Decision) -> Result<()> {
         if self.finished
             || !self.same_market_input(&decision.input)
             || decision.input.evaluated_at_ns < self.input.evaluated_at_ns
@@ -83,18 +97,15 @@ impl Barrier {
         }
         let slot = self
             .accounts
-            .get_mut(&content_hash(&decision.scope)?)
+            .get(&content_hash(&decision.scope)?)
             .ok_or_else(|| Error::Conflict("receipt consumer scope mismatch".into()))?;
         let hash = content_hash(decision)?;
         match slot {
-            Some(previous) if previous == &hash => Ok(false),
+            Some(previous) if previous == &hash => Ok(()),
             Some(_) => Err(Error::Conflict(
                 "consumer decision changed after commit".into(),
             )),
-            None => {
-                *slot = Some(hash);
-                Ok(true)
-            }
+            None => Ok(()),
         }
     }
     /// Failed market acknowledgment retains every receipt. This is an in-process
