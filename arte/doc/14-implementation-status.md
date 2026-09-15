@@ -31,6 +31,7 @@ was started during this implementation. Existing application files remain unchan
 | Strategy primitives | Causal preceding range and candle quality |
 | V7 primitives | Student-t analytic objective/gradient and array-based level association |
 | V7 historical evidence | Fixed-band encounters, role timelines, reaction annotation and split-adjusted nonoverlapping observations |
+| V7 historical extraction | Gap-separated extrema, profile peaks, bounded-span candidate clustering and auditable role-based selection |
 | Provider adapter | REST/WS field normalization and bounded REST pagination implementation |
 | Persistence adapter | ClickHouse identifier checks, policy/part checks and synchronous inserts |
 | Broker adapter | IBKR bracket request construction and confirmation classification |
@@ -42,7 +43,7 @@ not prove provider, broker, or ClickHouse compatibility.
 
 ## Incomplete implementation
 
-- Full historical V7 extractor, fit/partition solver, and streaming state machine.
+- Historical V7 source-parity fixtures, fit/partition solver, consolidation and streaming state machine.
 - Complete selected strategy lifecycle, admission, position management and exits.
 - Effective configuration export from the selected current candidate.
 - WebSocket receiver and integration of the complete in-process live path.
@@ -68,7 +69,8 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 37 in-process Rust tests passed (31 core and 6 adapter tests).
+- 43 in-process Rust tests passed (37 core and 6 adapter tests).
+- Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Cargo format checks passed.
 - Clippy passed with warnings denied.
 - All 11 frozen source hashes matched the origin manifest.
@@ -97,6 +99,17 @@ Callers must convert those units explicitly. The historical evaluator reuses
 session arrays and prefix volume sums across candidate bands. Floating-point
 sum differences still require tolerance-based comparison against the source.
 
-Next: complete candidate extraction and numerical fitting, then integrate daily
-consolidation and the streaming state machine. Build shared strategy execution
-on these authorities. Do not substitute the current primitives for full V7.
+Candidate extraction is now implemented. It preserves the frozen source's noise
+geometry; this is not a fallback for a failed Student-t fit. Its typed ARTE input
+hash has a separate contract version and is not the legacy Python JSON digest.
+Its generated level identity retains the source version and formatted geometry.
+
+Peak detection uses strict-higher monotone boundaries and a range-minimum tree.
+This avoids quadratic rescans on periodic inputs without limiting prominence
+to a local window. Semantic references: SciPy
+[find_peaks](https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.find_peaks.html)
+and [peak_prominences](https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.peak_prominences.html).
+
+Next: source-parity fixtures and numerical fitting, then daily consolidation and
+the streaming state machine. Build shared strategy execution on these authorities.
+Do not substitute the current extractor for the full historical seed pipeline.

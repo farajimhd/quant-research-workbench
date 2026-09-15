@@ -13,7 +13,9 @@ pub mod replay;
 pub mod strategy_setup;
 pub mod v7_encounters;
 pub mod v7_evidence;
+pub mod v7_extraction;
 pub mod v7_math;
+pub mod v7_peaks;
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
