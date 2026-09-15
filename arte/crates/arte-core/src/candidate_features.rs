@@ -11,7 +11,7 @@ use crate::{
 };
 use serde::Serialize;
 const SECOND: u64 = 1_000_000_000;
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct Config {
     pub setup: SetupSettings,
     pub forming_macd: bool,
@@ -64,6 +64,7 @@ pub struct State {
     config: Config,
     config_hash: String,
     market_hash: String,
+    scope: crate::event_order::Scope,
     macd: Macd,
     setup: SetupState,
     activity: ActivityState,
@@ -100,6 +101,7 @@ impl State {
                 &config,
             ))?,
             market_hash: market.configuration_hash().into(),
+            scope: market.source_scope(),
             macd: Macd::new(config.forming_macd),
             config,
             setup: SetupState::new(),
@@ -110,6 +112,12 @@ impl State {
     }
     pub fn configuration_hash(&self) -> &str {
         &self.config_hash
+    }
+    pub fn maximum_completed_bar_age_ns(&self) -> u64 {
+        self.config.maximum_completed_bar_age_ns
+    }
+    pub fn source_scope(&self) -> crate::event_order::Scope {
+        self.scope
     }
     pub fn snapshot(&self) -> Result<Option<&Snapshot>> {
         if self.failed {
@@ -123,6 +131,7 @@ impl State {
     pub fn entry_frame<'a>(
         &'a self,
         boundary: &Boundary<'_>,
+        evaluated_at_ns: u64,
         market: &'a Runtime,
         quotes: &crate::quote_state::Book,
         context: EntryContext<'a>,
@@ -136,6 +145,7 @@ impl State {
         if snapshot.boundary_id != boundary.id
             || snapshot.sequence != boundary.sequence
             || snapshot.evaluated_at_ns != boundary.evaluated_at_ns
+            || evaluated_at_ns < snapshot.evaluated_at_ns
             || market.configuration_hash() != self.market_hash
         {
             return Err(Error::Conflict(
@@ -187,8 +197,7 @@ impl State {
                 ));
             }
         }
-        let quote = quotes
-            .require_executable(boundary.evaluated_at_ns, self.config.maximum_quote_age_ns)?;
+        let quote = quotes.require_executable(evaluated_at_ns, self.config.maximum_quote_age_ns)?;
         let scope = market.source_scope();
         if quote.key.provider != scope.provider
             || quote.key.instrument != scope.instrument
@@ -220,8 +229,7 @@ impl State {
                 .filter(|previous| Some(previous.end_ns) == one.previous_bar_end_ns),
             bid: bid.to_f64(),
             ask: ask.to_f64(),
-            fresh: boundary
-                .evaluated_at_ns
+            fresh: evaluated_at_ns
                 .checked_sub(bar.end_ns)
                 .is_some_and(|age| age < self.config.maximum_completed_bar_age_ns),
             hod: Some(one.high),

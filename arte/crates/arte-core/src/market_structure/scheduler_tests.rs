@@ -408,7 +408,7 @@ fn check_entry_frame(
     };
     let mut quotes = crate::quote_state::Book::new(market.source_scope()).unwrap();
     assert!(features
-        .entry_frame(boundary, market, &quotes, context)
+        .entry_frame(boundary, boundary.evaluated_at_ns, market, &quotes, context)
         .is_err());
     let quote = Observation {
         key: EventKey {
@@ -450,7 +450,7 @@ fn check_entry_frame(
     };
     quotes.observe(&quote).unwrap();
     let frame = features
-        .entry_frame(boundary, market, &quotes, context)
+        .entry_frame(boundary, boundary.evaluated_at_ns, market, &quotes, context)
         .unwrap();
     assert_eq!(frame.bar.end_ns, one.at_ns);
     assert_eq!(frame.vwap, Some(15.));
@@ -466,6 +466,7 @@ fn check_entry_frame(
     assert!(features
         .entry_frame(
             boundary,
+            boundary.evaluated_at_ns,
             market,
             &quotes,
             EntryContext {
@@ -479,6 +480,7 @@ fn check_entry_frame(
     assert!(features
         .entry_frame(
             boundary,
+            boundary.evaluated_at_ns,
             market,
             &quotes,
             EntryContext {
@@ -488,13 +490,49 @@ fn check_entry_frame(
         )
         .is_err());
     let mut other_scope = market.source_scope();
+    let before_delayed_frame = crate::content_hash(snapshot).unwrap();
+    let later_at = boundary.evaluated_at_ns + SECOND;
+    assert!(features
+        .entry_frame(boundary, later_at, market, &quotes, context)
+        .is_err());
+    assert!(features
+        .entry_frame(
+            boundary,
+            boundary.evaluated_at_ns - 1,
+            market,
+            &quotes,
+            context
+        )
+        .is_err());
+    let mut later_quote = quote.clone();
+    later_quote.key.sequence = 2;
+    later_quote.sip.ns = later_at - 1;
+    later_quote.available_at_ns = later_at;
+    let mut later_quotes = crate::quote_state::Book::new(market.source_scope()).unwrap();
+    later_quotes.observe(&later_quote).unwrap();
+    assert!(
+        !features
+            .entry_frame(boundary, later_at, market, &later_quotes, context)
+            .unwrap()
+            .fresh
+    );
+    assert_eq!(
+        crate::content_hash(features.snapshot().unwrap().unwrap()).unwrap(),
+        before_delayed_frame
+    );
     other_scope.instrument = 2;
     let mut other_quote = quote.clone();
     other_quote.key.instrument = 2;
     let mut other_quotes = crate::quote_state::Book::new(other_scope).unwrap();
     other_quotes.observe(&other_quote).unwrap();
     assert!(features
-        .entry_frame(boundary, market, &other_quotes, context)
+        .entry_frame(
+            boundary,
+            boundary.evaluated_at_ns,
+            market,
+            &other_quotes,
+            context
+        )
         .is_err());
     let mut stale = quote;
     stale.sip.ns -= SECOND;
@@ -502,7 +540,13 @@ fn check_entry_frame(
     let mut stale_quotes = crate::quote_state::Book::new(market.source_scope()).unwrap();
     stale_quotes.observe(&stale).unwrap();
     assert!(features
-        .entry_frame(boundary, market, &stale_quotes, context)
+        .entry_frame(
+            boundary,
+            boundary.evaluated_at_ns,
+            market,
+            &stale_quotes,
+            context
+        )
         .is_err());
     let swings = [crate::strategy_targets::Swing {
         id: "future".into(),
@@ -517,6 +561,7 @@ fn check_entry_frame(
     assert!(features
         .entry_frame(
             boundary,
+            boundary.evaluated_at_ns,
             market,
             &quotes,
             EntryContext {

@@ -8,14 +8,29 @@ use crate::{
 pub struct Runtime {
     transaction: transaction::Runtime<candidate::State>,
     config_hash: String,
+    instrument: u64,
 }
-/// Both policies form one pinned effective configuration, regardless of mode.
+/// Strategy, recovery and shared market features form one run-specific effective
+/// configuration, regardless of mode. Duplicate freshness limits must agree.
 pub fn configuration_hash(
     completed: &candidate::Policy<'_>,
     intrabar: &candidate::AcquisitionPolicy,
+    features: &crate::candidate_features::State,
     recovery: &crate::strategy_lifecycle::RecoveryPolicy,
 ) -> Result<String> {
-    content_hash(&("candidate-configuration-v1", completed, intrabar, recovery))
+    features.snapshot()?;
+    if completed.maximum_completed_bar_age_ns != features.maximum_completed_bar_age_ns() {
+        return Err(Error::Conflict(
+            "candidate and feature completed-bar age limits differ".into(),
+        ));
+    }
+    content_hash(&(
+        "candidate-configuration-v2",
+        completed,
+        intrabar,
+        recovery,
+        features.configuration_hash(),
+    ))
 }
 impl Runtime {
     pub fn new(
@@ -34,6 +49,7 @@ impl Runtime {
             ));
         }
         Ok(Self {
+            instrument: scope.instrument,
             transaction: transaction::Runtime::new(scope, state, maximum_state_bytes)?,
             config_hash,
         })
@@ -58,9 +74,12 @@ impl Runtime {
         safety: &dispatch::Safety,
         completed: &candidate::Policy<'_>,
         intrabar: &candidate::AcquisitionPolicy,
+        features: &crate::candidate_features::State,
         recovery: &crate::strategy_lifecycle::RecoveryPolicy,
     ) -> Result<()> {
-        if configuration_hash(completed, intrabar, recovery)? != self.config_hash {
+        if self.instrument != features.source_scope().instrument
+            || configuration_hash(completed, intrabar, features, recovery)? != self.config_hash
+        {
             return Err(Error::Conflict(
                 "candidate configuration differs from pinned scope".into(),
             ));
@@ -87,6 +106,7 @@ impl Runtime {
         gates: &adds::Gates,
         policy: &candidate::Policy<'_>,
         intrabar: &candidate::AcquisitionPolicy,
+        features: &crate::candidate_features::State,
     ) -> Result<dispatch::Decision> {
         self.validate(
             &input,
@@ -94,6 +114,7 @@ impl Runtime {
             safety,
             policy,
             intrabar,
+            features,
             frame.recovery_policy,
         )?;
         if frame.bar.end_ns > input.evaluated_at_ns
@@ -141,9 +162,10 @@ impl Runtime {
         body_high: f64,
         policy: &candidate::Policy<'_>,
         intrabar: &candidate::AcquisitionPolicy,
+        features: &crate::candidate_features::State,
         recovery: &crate::strategy_lifecycle::RecoveryPolicy,
     ) -> Result<dispatch::Decision> {
-        self.validate(&input, broker, safety, policy, intrabar, recovery)?;
+        self.validate(&input, broker, safety, policy, intrabar, features, recovery)?;
         if observation.at_ns != input.evaluated_at_ns || !body_high.is_finite() || body_high <= 0. {
             return Err(Error::Invalid("invalid candidate intrabar boundary".into()));
         }

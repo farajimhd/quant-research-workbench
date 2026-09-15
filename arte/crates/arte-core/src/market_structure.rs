@@ -779,13 +779,13 @@ impl Ordered {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::v7_seed::{build, input_hash, SeedPolicy, SourceCertificate};
     pub(super) fn runtime(maximum_bars: usize) -> Runtime {
         runtime_with_timeframes(maximum_bars, vec![])
     }
-    pub(super) fn runtime_with_timeframes(
+    pub(crate) fn runtime_with_timeframes(
         maximum_bars: usize,
         additional_timeframes: Vec<Timeframe>,
     ) -> Runtime {

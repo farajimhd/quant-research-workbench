@@ -588,6 +588,29 @@ mod tests {
                 maximum_macd_age_ns: S,
                 confirmation_lifetime_ns: 10 * S,
             };
+            let market = crate::market_structure::tests::runtime_with_timeframes(
+                100,
+                vec![crate::market_structure::Timeframe {
+                    interval_ns: 5 * S,
+                    macd_periods: (12, 26, 9),
+                    maximum_bars: 20,
+                }],
+            );
+            let feature_config = crate::candidate_features::Config {
+                setup: crate::strategy_setup::SetupSettings {
+                    range_ns: 30 * S,
+                    minimum_bars: 5,
+                    maximum_gap_ns: 0,
+                },
+                forming_macd: true,
+                minimum_range_pct: 0.,
+                minimum_progress_pct: 0.,
+                maximum_quote_age_ns: S,
+                maximum_completed_bar_age_ns: policy.maximum_completed_bar_age_ns,
+                maximum_levels: 100,
+            };
+            let features =
+                crate::candidate_features::State::new(&market, feature_config.clone()).unwrap();
             let mut runtime = crate::candidate_runtime::Runtime::new(
                 crate::strategy_dispatch::Scope {
                     run_id: "r".into(),
@@ -599,6 +622,7 @@ mod tests {
                     config_hash: crate::candidate_runtime::configuration_hash(
                         &policy,
                         &intrabar_policy,
+                        &features,
                         f.recovery_policy,
                     )
                     .unwrap(),
@@ -631,6 +655,38 @@ mod tests {
                 source_sequence: 1,
                 feature_hash: "f".into(),
             };
+            let mut changed_feature_config = feature_config.clone();
+            changed_feature_config.setup.range_ns += S;
+            let changed_features =
+                crate::candidate_features::State::new(&market, changed_feature_config).unwrap();
+            assert_ne!(
+                features.configuration_hash(),
+                changed_features.configuration_hash()
+            );
+            assert!(runtime
+                .completed(
+                    input.clone(),
+                    &safety,
+                    f,
+                    &flat,
+                    &gates,
+                    &policy,
+                    &intrabar_policy,
+                    &changed_features
+                )
+                .is_err());
+            assert!(runtime.pending_batch().is_none());
+            let mut conflicting_age_config = feature_config.clone();
+            conflicting_age_config.maximum_completed_bar_age_ns += 1;
+            let conflicting_age =
+                crate::candidate_features::State::new(&market, conflicting_age_config).unwrap();
+            assert!(crate::candidate_runtime::configuration_hash(
+                &policy,
+                &intrabar_policy,
+                &conflicting_age,
+                f.recovery_policy
+            )
+            .is_err());
             let decision = runtime
                 .completed(
                     input.clone(),
@@ -640,9 +696,28 @@ mod tests {
                     &gates,
                     &policy,
                     &intrabar_policy,
+                    &features,
                 )
                 .unwrap();
             assert!(matches!(decision.actions[0], Action::Enter(_)));
+            let mut other_scope = decision.scope.clone();
+            other_scope.instrument = 2;
+            let mut other_instrument =
+                crate::candidate_runtime::Runtime::new(other_scope, State::default(), 1024 * 1024)
+                    .unwrap();
+            assert!(other_instrument
+                .completed(
+                    input.clone(),
+                    &safety,
+                    f,
+                    &flat,
+                    &gates,
+                    &policy,
+                    &intrabar_policy,
+                    &features
+                )
+                .is_err());
+            assert!(other_instrument.pending_batch().is_none());
             for future_account in [false, true] {
                 let mut delayed = crate::candidate_runtime::Runtime::new(
                     decision.scope.clone(),
@@ -662,6 +737,7 @@ mod tests {
                     &gates,
                     &policy,
                     &intrabar_policy,
+                    &features,
                 );
                 if future_account {
                     assert!(evaluated.is_err());
@@ -695,6 +771,7 @@ mod tests {
                         &gates,
                         &policy,
                         &intrabar_policy,
+                        &features,
                     )
                     .unwrap();
                 assert!(match &rejected.actions[0] {
@@ -717,13 +794,23 @@ mod tests {
                     &gates,
                     &policy,
                     &intrabar_policy,
+                    &features,
                 )
                 .unwrap();
             assert_eq!(retried.decision_id, decision.decision_id);
             let mut changed = intrabar_policy.clone();
             changed.confirmation_lifetime_ns += 1;
             assert!(runtime
-                .completed(input.clone(), &safety, f, &flat, &gates, &policy, &changed)
+                .completed(
+                    input.clone(),
+                    &safety,
+                    f,
+                    &flat,
+                    &gates,
+                    &policy,
+                    &changed,
+                    &features
+                )
                 .is_err());
             let mut conflicting_safety = safety.clone();
             conflicting_safety.pending_entry = true;
@@ -735,7 +822,8 @@ mod tests {
                     &flat,
                     &gates,
                     &policy,
-                    &intrabar_policy
+                    &intrabar_policy,
+                    &features,
                 )
                 .is_err());
             let records = runtime.pending_batch().unwrap().records().to_vec();
@@ -802,6 +890,22 @@ mod tests {
             pending_safety.pending_entry = true;
             let mut observation = acquisition(live_input.evaluated_at_ns);
             observation.encounter_blocked = true;
+            let before_mismatch = content_hash(runtime.state()).unwrap();
+            assert!(runtime
+                .intrabar(
+                    live_input.clone(),
+                    &pending_safety,
+                    &observation,
+                    &pending_broker,
+                    f.bar.open.max(f.bar.close),
+                    &policy,
+                    &intrabar_policy,
+                    &changed_features,
+                    f.recovery_policy
+                )
+                .is_err());
+            assert!(runtime.pending_batch().is_none());
+            assert_eq!(content_hash(runtime.state()).unwrap(), before_mismatch);
             let cancellation = runtime
                 .intrabar(
                     live_input.clone(),
@@ -811,6 +915,7 @@ mod tests {
                     f.bar.open.max(f.bar.close),
                     &policy,
                     &intrabar_policy,
+                    &features,
                     f.recovery_policy,
                 )
                 .unwrap();
@@ -831,6 +936,7 @@ mod tests {
                     f.bar.open.max(f.bar.close),
                     &policy,
                     &intrabar_policy,
+                    &features,
                     f.recovery_policy,
                 )
                 .unwrap();

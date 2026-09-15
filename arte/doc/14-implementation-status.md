@@ -6,6 +6,35 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Effective candidate configuration and evaluation clock
+
+Effective candidate configuration version 2 includes the shared feature configuration
+hash. Completed-bar and intrabar evaluation both check it before preparing a decision.
+Candidate and feature completed-bar age limits must agree. The candidate instrument
+must match the feature owner's instrument. Changed calculation windows, conflicting
+age limits and wrong-instrument owners cannot produce a pending journal batch.
+
+The live lane can calculate the combined configuration identity and pass its feature
+owner, built frame and current feed check into candidate preparation. The result is
+an intent with a pending journal batch, not an order or a market acknowledgment.
+The caller still owns durable commit and account coordination.
+
+Entry-frame construction now accepts the actual account evaluation time separately
+from feature preparation time. Quote and bar age use that later clock. Newer quotes
+may be used without restamping the prepared market snapshot. Evaluation cannot
+precede preparation. The candidate decision records the actual evaluation time.
+
+All 229 offline Rust tests, formatting, Clippy and copied-source hashes pass. Expanded
+tests reject configuration/instrument mismatches before journal preparation and
+check delayed evaluations against expired and newly received quotes. The live-lane
+preparation wrapper compiles but has not been exercised end-to-end. Source-oracle
+comparisons were not rerun. No service or network test ran.
+
+Still incomplete: admission and swing producers, journal/account coordination,
+broker execution, full orchestration and whole-engine recovery. These checks bind
+configuration; they do not prove arbitrary caller-supplied frame provenance or
+authorize trading.
+
 ## Candidate entry-frame construction
 
 The shared feature owner now constructs the existing candidate entry-frame contract.

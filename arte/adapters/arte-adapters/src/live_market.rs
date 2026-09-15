@@ -130,14 +130,65 @@ impl Lane {
     pub fn entry_frame<'a>(
         &'a self,
         context: candidate_features::EntryContext<'a>,
+        evaluated_at_ns: u64,
     ) -> Result<arte_core::strategy_entry::Frame<'a>> {
         self.available()?;
         let boundary = self
             .market
             .pending()?
             .ok_or_else(|| Error::Unready("live entry boundary missing".into()))?;
-        self.features
-            .entry_frame(&boundary, self.market.state()?, &self.quotes, context)
+        self.features.entry_frame(
+            &boundary,
+            evaluated_at_ns,
+            self.market.state()?,
+            &self.quotes,
+            context,
+        )
+    }
+    pub fn candidate_configuration_hash(
+        &self,
+        policy: &arte_core::strategy_candidate::Policy<'_>,
+        intrabar: &arte_core::strategy_candidate::AcquisitionPolicy,
+        recovery: &arte_core::strategy_lifecycle::RecoveryPolicy,
+    ) -> Result<String> {
+        self.available()?;
+        arte_core::candidate_runtime::configuration_hash(policy, intrabar, &self.features, recovery)
+    }
+    /// Prepare an intent/journal batch, not an order. The caller must commit that
+    /// batch before advancing account state or acknowledging the market boundary.
+    /// Emergency exits must remain available outside entry-frame readiness.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_completed_candidate(
+        &self,
+        check: Check<'_>,
+        evaluated_at_ns: u64,
+        candidate: &mut arte_core::candidate_runtime::Runtime,
+        context: candidate_features::EntryContext<'_>,
+        safety: &arte_core::strategy_dispatch::Safety,
+        broker: &arte_core::strategy_candidate::PositionObservation,
+        gates: &arte_core::strategy_adds::Gates,
+        policy: &arte_core::strategy_candidate::Policy<'_>,
+        intrabar: &arte_core::strategy_candidate::AcquisitionPolicy,
+    ) -> Result<arte_core::strategy_dispatch::Decision> {
+        self.available()?;
+        check.require(self.market.scope().instrument)?;
+        let boundary = self
+            .market
+            .pending()?
+            .ok_or_else(|| Error::Unready("live candidate boundary missing".into()))?;
+        let frame = self.entry_frame(context, evaluated_at_ns)?;
+        let mut input = boundary.input(String::new());
+        input.evaluated_at_ns = evaluated_at_ns;
+        candidate.completed(
+            input,
+            safety,
+            &frame,
+            broker,
+            gates,
+            policy,
+            intrabar,
+            &self.features,
+        )
     }
     pub fn acknowledge_boundary(&mut self, id: &str) -> Result<()> {
         self.available()?;
