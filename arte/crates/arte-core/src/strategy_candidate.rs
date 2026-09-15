@@ -27,6 +27,31 @@ pub struct State {
     pub recovery: RecoveryState,
     broker: Option<PositionObservation>,
     last_bar_ns: u64,
+    last_intrabar_ns: u64,
+    encounter_cancel_notified: bool,
+}
+pub struct AcquisitionPolicy {
+    pub maximum_macd_age_ns: u64,
+    pub confirmation_lifetime_ns: u64,
+}
+pub struct AcquisitionObservation {
+    pub at_ns: u64,
+    pub price: f64,
+    pub ask: f64,
+    pub vwap: Option<f64>,
+    pub macd_at_ns: Option<u64>,
+    pub macd_positive: bool,
+    pub macd_episode_present: bool,
+    pub tradable: bool,
+    pub regular_block: bool,
+    pub encounter_blocked: bool,
+    pub pending_capital: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AcquisitionEvaluation {
+    pub actions: Vec<Action>,
+    pub continue_position_management: bool,
+    pub reasons: Vec<String>,
 }
 pub struct Policy<'a> {
     pub entry: &'a entry::Policy,
@@ -46,6 +71,98 @@ pub struct Evaluation {
     pub phase_transitioned: bool,
 }
 impl State {
+    /// Evaluate on each causal update after reconciled-position observation.
+    /// This does not replace OMS deadline checks for already submitted orders.
+    pub fn acquisition_update(
+        &mut self,
+        o: &AcquisitionObservation,
+        p: &AcquisitionPolicy,
+    ) -> Result<AcquisitionEvaluation> {
+        if o.at_ns < self.last_intrabar_ns
+            || o.at_ns < self.last_bar_ns
+            || p.confirmation_lifetime_ns == 0
+            || [o.price, o.ask]
+                .into_iter()
+                .any(|v| !v.is_finite() || v <= 0.)
+            || o.macd_at_ns.is_some_and(|v| v > o.at_ns)
+        {
+            return Err(Error::Invalid(
+                "invalid intrabar acquisition observation".into(),
+            ));
+        }
+        let broker = self.broker.as_ref().ok_or_else(|| {
+            Error::Unready("acquisition has no reconciled account snapshot".into())
+        })?;
+        if broker.at_ns > o.at_ns {
+            return Err(Error::Invalid("future account snapshot".into()));
+        }
+        let acquired = broker.quantity > 0;
+        let pending = broker.pending_entry || o.pending_capital;
+        let macd = o.macd_positive
+            && o.macd_episode_present
+            && o.macd_at_ns
+                .is_some_and(|v| o.at_ns - v <= p.maximum_macd_age_ns);
+        let mut reasons = Vec::new();
+        if o.regular_block {
+            reasons.push("regular_session_block".into());
+        }
+        if self.active.is_none() {
+            reasons.push("entry_context_missing".into());
+        }
+        if !o.tradable {
+            reasons.push("tradability_incomplete".into());
+        }
+        if !macd {
+            reasons.push("bullish_macd_unavailable".into());
+        }
+        if !o
+            .vwap
+            .is_some_and(|v| v.is_finite() && v > 0. && o.price > v)
+        {
+            reasons.push("vwap_gate".into());
+        }
+        if let Some(active) = &self.active {
+            if o.at_ns < active.entry.setup.confirmed_at_ns {
+                return Err(Error::Invalid("future entry confirmation".into()));
+            }
+            if o.at_ns - active.entry.setup.confirmed_at_ns >= p.confirmation_lifetime_ns {
+                reasons.push("confirmation_expired".into());
+            }
+            if o.ask > active.entry.maximum_buy_price {
+                reasons.push("maximum_buy_price_exceeded".into());
+            }
+        }
+        let encounter =
+            o.encounter_blocked && (pending || acquired) && !self.encounter_cancel_notified;
+        let invalid = pending && (o.pending_capital || o.regular_block) && !reasons.is_empty();
+        let cancel = encounter || invalid;
+        if o.encounter_blocked {
+            if encounter {
+                self.encounter_cancel_notified = true;
+            }
+        } else {
+            self.encounter_cancel_notified = false;
+        }
+        if encounter {
+            reasons.insert(0, "unresolved_level_rejection".into());
+        }
+        self.last_intrabar_ns = o.at_ns;
+        Ok(AcquisitionEvaluation {
+            actions: if cancel {
+                vec![Action::CancelEntry {
+                    reason: if acquired && encounter {
+                        "unresolved_level_rejection".into()
+                    } else {
+                        "entry_acquisition_invalidated".into()
+                    },
+                }]
+            } else {
+                vec![]
+            },
+            continue_position_management: !cancel || (acquired && encounter),
+            reasons,
+        })
+    }
     /// Apply a reconciled account snapshot before global exit arbitration. Retain
     /// body-high evidence supplied by the causal market authority, not a future bar.
     pub fn observe_reconciled(
@@ -288,6 +405,107 @@ mod tests {
     use super::*;
     use crate::strategy_dispatch::Mode;
     const S: u64 = 1_000_000_000;
+    fn pending_state() -> State {
+        let entry = entry::tests::scenario(|_, _| {}).unwrap().proposal.unwrap();
+        let at = entry.setup.confirmed_at_ns;
+        let adds =
+            adds::State::new(entry.boundary.clone(), entry.setup.entry_bar.close, at).unwrap();
+        State {
+            active: Some(Active {
+                entry,
+                adds,
+                protection: protection::State::default(),
+            }),
+            broker: Some(PositionObservation {
+                revision: 1,
+                at_ns: at,
+                quantity: 0,
+                average_price: None,
+                stop: None,
+                target: None,
+                pending_entry: true,
+            }),
+            ..State::default()
+        }
+    }
+    fn acquisition(at: u64) -> AcquisitionObservation {
+        AcquisitionObservation {
+            at_ns: at,
+            price: 10.4,
+            ask: 10.41,
+            vwap: Some(10.),
+            macd_at_ns: Some(at),
+            macd_positive: true,
+            macd_episode_present: true,
+            tradable: true,
+            regular_block: false,
+            encounter_blocked: false,
+            pending_capital: true,
+        }
+    }
+    #[test]
+    fn acquisition_expiration_is_exact_and_rejections_do_not_change_fill_state() {
+        let mut state = pending_state();
+        let at = state.active.as_ref().unwrap().entry.setup.confirmed_at_ns;
+        let p = AcquisitionPolicy {
+            maximum_macd_age_ns: S,
+            confirmation_lifetime_ns: S,
+        };
+        assert!(state
+            .acquisition_update(&acquisition(at + S - 1), &p)
+            .unwrap()
+            .actions
+            .is_empty());
+        let result = state.acquisition_update(&acquisition(at + S), &p).unwrap();
+        assert!(matches!(result.actions[0], Action::CancelEntry { .. }));
+        assert!(result.reasons.iter().any(|r| r == "confirmation_expired"));
+        assert!(state
+            .active
+            .as_ref()
+            .unwrap()
+            .entry
+            .setup
+            .initial_fill_price
+            .is_none());
+        assert!(state.broker.as_ref().unwrap().pending_entry);
+    }
+    #[test]
+    fn encounter_cancellation_is_latched_without_suppressing_protection() {
+        let mut state = pending_state();
+        state.broker.as_mut().unwrap().quantity = 10;
+        let at = state.active.as_ref().unwrap().entry.setup.confirmed_at_ns;
+        let p = AcquisitionPolicy {
+            maximum_macd_age_ns: S,
+            confirmation_lifetime_ns: 10 * S,
+        };
+        let mut o = acquisition(at);
+        o.encounter_blocked = true;
+        o.pending_capital = false;
+        let result = state.acquisition_update(&o, &p).unwrap();
+        assert_eq!(result.actions.len(), 1);
+        assert!(result.continue_position_management);
+        assert!(state.acquisition_update(&o, &p).unwrap().actions.is_empty());
+        o.encounter_blocked = false;
+        state.acquisition_update(&o, &p).unwrap();
+        o.encounter_blocked = true;
+        assert_eq!(state.acquisition_update(&o, &p).unwrap().actions.len(), 1);
+    }
+    #[test]
+    fn stale_macd_cancels_capital_wait_and_future_clock_does_not_mutate() {
+        let mut state = pending_state();
+        let at = state.active.as_ref().unwrap().entry.setup.confirmed_at_ns;
+        let p = AcquisitionPolicy {
+            maximum_macd_age_ns: S,
+            confirmation_lifetime_ns: 10 * S,
+        };
+        let mut o = acquisition(at + 2 * S);
+        o.macd_at_ns = Some(at);
+        assert_eq!(state.acquisition_update(&o, &p).unwrap().actions.len(), 1);
+        let before = content_hash(&state).unwrap();
+        o.macd_at_ns = Some(o.at_ns + 1);
+        assert!(state.acquisition_update(&o, &p).is_err());
+        assert_eq!(content_hash(&state).unwrap(), before);
+    }
     #[test]
     fn composed_entry_fill_and_transaction_use_one_candidate_state() {
         entry::tests::scenario(|f, ep| {

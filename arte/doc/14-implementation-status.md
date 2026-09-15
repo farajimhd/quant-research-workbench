@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 112 in-process Rust tests passed (105 core and 7 adapter tests).
+- 115 in-process Rust tests passed (108 core and 7 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -280,6 +280,15 @@ an atomic reconciled-position observer for this path. Two offline tests cover
 fill-plus-immediate-exit ordering and rollback on observation failure. Provider and
 broker event routing must bind complete observation hashes and use this API;
 the live event loop has not yet been connected.
+
+Intrabar acquisition checks now cover confirmation expiration, MACD age/episode,
+VWAP, real ask ceiling, tradability and encounter cancellation. Encounter notices
+are latched until the encounter clears. Cancelling acquisition on a held position
+does not suppress protection management. Three offline tests cover exact expiry,
+stale MACD, encounter latching and future-clock rejection. The frozen source's
+capital-wait versus submitted-entry distinction remains explicit. These checks do
+not replace OMS deadlines for submitted orders and are not yet called by live
+WebSocket routing. Cancellation intents do not change broker fill/order state.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.
