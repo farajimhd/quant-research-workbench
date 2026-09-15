@@ -1,0 +1,13 @@
+[package]
+name = "arte-cli"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "arte"
+path = "src/main.rs"
+
+[dependencies]
+arte-core = { path = "../../crates/arte-core" }
+serde_json.workspace = true

@@ -26,6 +26,10 @@ Keep Market Data Engine (MDE) as the market-data component name.
 
 ## Delivery
 
+- Do not start any service for testing until the user has copied ARTE to its new repository.
+- Until that transition, allow builds, static checks, and in-process unit tests only.
+- Do not launch HTTP servers, databases, broker gateways, containers, or network integration tests.
+
 - Keep generated output and secrets outside the source root.
 - Require an explicit external runtime root. Do not invent a fallback directory.
 - Set `PYTHONDONTWRITEBYTECODE=1` for any Python invocation.

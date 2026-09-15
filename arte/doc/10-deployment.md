@@ -18,8 +18,9 @@ Do not use parent Cargo workspaces, Python modules, node_modules, environment fi
 launchers, service registries, ports, databases, caches, or frontend proxies.
 No symlink or junction may point back to the parent tree.
 
-The project currently contains documentation only. The entry points below describe
-future interfaces, not commands that can be run yet.
+The full deployment contracts below remain the target. Offline validation and CLI
+packaging entry points exist. Full service deployment is not yet implemented.
+See [implementation status](14-implementation-status.md).
 
 ## Release contents
 
@@ -88,5 +89,7 @@ Build, test, install, run maintenance, replay a fixture, and serve the UI there.
 The parent tree must be absent or inaccessible. No parent processes may be running.
 Provision only declared external integrations and the new ClickHouse database.
 
-Only after this gate passes should the user create the standalone repository and
-continue development there. Creating that repository is a separate requested action.
+The latest user restriction changes the order: the user copies ARTE into its new
+repository before any service-backed testing. Builds and in-process tests may run
+before that move. Run the connected extraction gate only afterward. Repository
+creation and service activation remain separate user-controlled actions.

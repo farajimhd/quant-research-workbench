@@ -1,0 +1,3 @@
+* text=auto eol=lf
+# Preserve exact source bytes so origin SHA-256 remains valid after repository extraction.
+tests/reference/src/** -text -diff

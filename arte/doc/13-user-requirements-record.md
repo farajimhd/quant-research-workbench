@@ -351,6 +351,20 @@ messages. Related comments in the same turn are grouped under one source label.
 
 ## Maintenance rule
 
+### Implementation follow-up
+
+**Confirmed. Sources: U22, U23.**
+
+- Implement ARTE primarily in Rust, using the existing code as a copy source where useful.
+- Use concurrent and vectorized approaches consistent with the design.
+- Do not run any service for testing until the user copies the new code to a new repository.
+- Use the latest strategy version as a starting point, even though it is still changing.
+
+| Label | User message anchor | Main contribution |
+|---|---|---|
+| U22 | "do not run any service for test until I copy the new code to a new repo" | Implementation authorization with a service-testing restriction |
+| U23 | "take the latest version, but it is being updated" | Latest strategy as a pinned starting point, not an automatically changing dependency |
+
 Preserve superseded decisions as history, not active requirements. Add later user
 corrections with new source labels. Update the owning design document when a change
 is accepted. Never fabricate a user approval from an assistant recommendation.

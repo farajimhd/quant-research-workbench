@@ -1,0 +1,119 @@
+use arte_core::orders::{Bracket, Side};
+use arte_core::{Error, Result};
+use serde_json::{json, Value};
+use std::collections::BTreeSet;
+
+/// Transport-independent request graph; constructing it never submits an order.
+pub fn bracket_payload(order: &Bracket, conid: u64, price_scale: u32) -> Result<Value> {
+    if conid == 0
+        || price_scale > 9
+        || order.quantity == 0
+        || order.account.is_empty()
+        || order.command_id.is_empty()
+    {
+        return Err(Error::Invalid("invalid broker mapping".into()));
+    }
+    let (stop, target) = order
+        .stop
+        .zip(order.target)
+        .ok_or_else(|| Error::Invalid("broker bracket incomplete".into()))?;
+    if order.tick <= 0
+        || [stop, target, order.entry]
+            .iter()
+            .any(|p| *p <= 0 || p % order.tick != 0)
+    {
+        return Err(Error::Invalid("invalid bracket prices".into()));
+    }
+    if !match order.side {
+        Side::Long => stop < order.entry && order.entry < target,
+        Side::Short => target < order.entry && order.entry < stop,
+    } {
+        return Err(Error::Invalid("invalid bracket direction".into()));
+    }
+    let scale = 10_f64.powi(price_scale as i32);
+    let (entry_side, exit_side) = match order.side {
+        Side::Long => ("BUY", "SELL"),
+        Side::Short => ("SELL", "BUY"),
+    };
+    Ok(json!({"orders":[
+        {"acctId":order.account,"conid":conid,"cOID":order.command_id,"orderType":"LMT","side":entry_side,"quantity":order.quantity,"price":order.entry as f64/scale,"tif":"DAY"},
+        {"acctId":order.account,"conid":conid,"parentId":order.command_id,"cOID":format!("{}-stop",order.command_id),"orderType":"STP","side":exit_side,"quantity":order.quantity,"price":stop as f64/scale,"tif":"GTC"},
+        {"acctId":order.account,"conid":conid,"parentId":order.command_id,"cOID":format!("{}-target",order.command_id),"orderType":"LMT","side":exit_side,"quantity":order.quantity,"price":target as f64/scale,"tif":"GTC"}
+    ]}))
+}
+#[derive(Debug, PartialEq, Eq)]
+pub enum Reply {
+    Acknowledged(Vec<String>),
+    Confirm { id: String, categories: Vec<String> },
+    Blocked,
+}
+pub fn interpret_reply(value: &Value, allowlist: &BTreeSet<String>) -> Result<Reply> {
+    let rows = value
+        .as_array()
+        .ok_or_else(|| Error::Invalid("IBKR reply is not an array".into()))?;
+    if rows.is_empty() {
+        return Err(Error::Unready("empty IBKR acknowledgment".into()));
+    }
+    let mut acknowledgments = vec![];
+    for row in rows {
+        if row.get("error").is_some() {
+            return Ok(Reply::Blocked);
+        }
+        if let Some(id) = row.get("id").and_then(Value::as_str) {
+            if rows.len() != 1 {
+                return Err(Error::Unready(
+                    "ambiguous mixed confirmation response".into(),
+                ));
+            }
+            let categories = row
+                .get("messageIds")
+                .and_then(Value::as_array)
+                .ok_or_else(|| Error::Unready("uncategorized broker warning".into()))?;
+            let categories: Vec<String> = categories
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .map(str::to_owned)
+                        .ok_or_else(|| Error::Invalid("invalid message category".into()))
+                })
+                .collect::<Result<_>>()?;
+            if categories.is_empty() || categories.iter().any(|c| !allowlist.contains(c)) {
+                return Ok(Reply::Blocked);
+            }
+            return Ok(Reply::Confirm {
+                id: id.into(),
+                categories,
+            });
+        }
+        let id = row
+            .get("order_id")
+            .and_then(|v| {
+                v.as_str()
+                    .map(str::to_owned)
+                    .or_else(|| v.as_u64().map(|n| n.to_string()))
+            })
+            .ok_or_else(|| Error::Unready("broker order ID missing".into()))?;
+        acknowledgments.push(id);
+    }
+    Ok(Reply::Acknowledged(acknowledgments))
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn unknown_warning_is_not_acknowledgment() {
+        let reply = json!([{"id":"x","messageIds":["unknown"]}]);
+        assert_eq!(
+            interpret_reply(&reply, &BTreeSet::new()).unwrap(),
+            Reply::Blocked
+        );
+    }
+    #[test]
+    fn approved_prompt_still_requires_confirmation() {
+        let reply = json!([{"id":"x","messageIds":["o163"]}]);
+        assert!(matches!(
+            interpret_reply(&reply, &BTreeSet::from(["o163".into()])).unwrap(),
+            Reply::Confirm { .. }
+        ));
+    }
+}

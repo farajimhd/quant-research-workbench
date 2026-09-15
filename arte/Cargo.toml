@@ -1,0 +1,23 @@
+[workspace]
+members = ["crates/arte-core", "adapters/arte-adapters", "apps/arte-cli"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.150", features = ["arbitrary_precision"] }
+sha2 = "0.10.9"
+thiserror = "2.0.18"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+overflow-checks = true

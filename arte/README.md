@@ -2,7 +2,8 @@
 
 Automated Real-Time Trading Engine.
 
-Status: design and folder scaffold. No runtime is implemented here yet.
+Status: partial Rust implementation. Service startup is not implemented or enabled.
+See the [implementation status](doc/14-implementation-status.md).
 
 ARTE runs live strategies on a workstation. It also supports isolated
 historical backtests and an optional browser interface. Its market-data component
@@ -37,13 +38,20 @@ included or provisioned by this project's own distribution.
 | `scripts/` | Project-owned build, deploy, run, and validation tools |
 | `tests/` | Contract, parity, recovery, load, and isolation tests |
 
-These folders contain responsibility descriptions, not placeholder services.
-There are no runnable deployment commands or executable configuration examples
-until the implementation gates are satisfied.
+The Rust workspace contains shared domain code, adapter code, and an offline CLI.
+Validation and offline packaging scripts are present. No approved production
+hardware defaults or live-trading service are provided yet.
 
 ## Current delivery
 
 - Agreed design recorded on 2026-09-15.
-- No application source copied yet.
+- Eleven reference-only source snapshots are pinned for the V7/strategy port.
 - No database, service, account, or workstation changed.
 - No strategy performance or live-trading approval implied.
+
+## Validation restriction
+
+Do not run any service for testing until the user copies ARTE to its new repository.
+Builds, static checks and in-process tests are permitted. Connected, broker, database,
+and browser validation remain deferred. The status document separates missing code
+from deferred tests.

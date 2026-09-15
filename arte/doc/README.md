@@ -23,6 +23,7 @@ can be enabled.
 | 11 | [Implementation plan](11-implementation-plan.md) | Milestones, release gates, open decisions |
 | 12 | [References](12-references.md) | External specifications and source-copy policy |
 | 13 | [User requirements record](13-user-requirements-record.md) | Organized user intent, approvals, corrections, and source map |
+| 14 | [Implementation status](14-implementation-status.md) | Implemented code, incomplete features and deferred service validation |
 
 The user requirements record separates explicit user decisions from engineering
 proposals. Consult it when resolving why a requirement exists or which earlier

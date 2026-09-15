@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "source_repository": "quant-research-workbench",
+  "source_commit": "4fcc094e3668db068ac84199581092821c707eb3",
+  "purpose": "Reference-only frozen source snapshots for semantic porting. Not executable, not packaged, no runtime imports.",
+  "license": "User-owned source; redistribution/license review remains required before external publication.",
+  "files": [
+    {
+      "source": "src/market_engine/reaction_center.py",
+      "sha256": "bf3964b1f70a78b1f4c577a0cdd827899aa6f53ec1fc46041115ce885da25b5d",
+      "destination": "tests/reference/src/market_engine/reaction_center.py.txt"
+    },
+    {
+      "source": "src/market_engine/reaction_band.py",
+      "sha256": "b2c1930a6cc530908a12baacb9146e7b967c90ec2d546830c56483436c35a5f4",
+      "destination": "tests/reference/src/market_engine/reaction_band.py.txt"
+    },
+    {
+      "source": "src/market_engine/historical_session_levels.py",
+      "sha256": "2c04899bf734da2e1086eba9667781aa411299c368afe01a8e3a8e7ed36a259f",
+      "destination": "tests/reference/src/market_engine/historical_session_levels.py.txt"
+    },
+    {
+      "source": "src/market_engine/historical_level_checkpoint.py",
+      "sha256": "4a108c6eb1d52e6cfb998dd25ace7c2b25c9be02f966a2cf617d0d008dfa953f",
+      "destination": "tests/reference/src/market_engine/historical_level_checkpoint.py.txt"
+    },
+    {
+      "source": "src/market_engine/streaming_level_book.py",
+      "sha256": "6e6c72462ff9dc1ebf9e164042e38c3f12c514d988812041b7ef9b54403b1c51",
+      "destination": "tests/reference/src/market_engine/streaming_level_book.py.txt"
+    },
+    {
+      "source": "src/trading_runtime/v7_setup.py",
+      "sha256": "04c4b18dee07ec4f0b2745d8cf2233fd7d3ec7bed4793cdfc81867b1d47b2d96",
+      "destination": "tests/reference/src/trading_runtime/v7_setup.py.txt"
+    },
+    {
+      "source": "src/trading_runtime/v7_encounters.py",
+      "sha256": "b4cacfe888f07e2808cd755e3ecf35a756844a4a42abf9e29366650a5d6f296b",
+      "destination": "tests/reference/src/trading_runtime/v7_encounters.py.txt"
+    },
+    {
+      "source": "src/trading_runtime/structural_recovery.py",
+      "sha256": "4ca8c769bbf6c8a4c9176a3a8e2d59ff3e5431d94dabebf511ba63101f467cc2",
+      "destination": "tests/reference/src/trading_runtime/structural_recovery.py.txt"
+    },
+    {
+      "source": "src/trading_runtime/historical_hod.py",
+      "sha256": "482bc458c9eb71f7a4ba271ff851311c90a13bac63512d9950489a79e51d81d8",
+      "destination": "tests/reference/src/trading_runtime/historical_hod.py.txt"
+    },
+    {
+      "source": "src/backend/v7_zone_candidate.py",
+      "sha256": "e4be15c7232d6cffd0e347126355967e3d7bfa7c5600f1351d8b854b6254a9d3",
+      "destination": "tests/reference/src/backend/v7_zone_candidate.py.txt"
+    },
+    {
+      "source": "src/backend/historical_hod_candidate.py",
+      "sha256": "b24148726909b8e7f6967e4fc88400953acf853ad52bca76667145d0187580c8",
+      "destination": "tests/reference/src/backend/historical_hod_candidate.py.txt"
+    }
+  ]
+}

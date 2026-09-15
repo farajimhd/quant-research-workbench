@@ -23,7 +23,9 @@ implementation release. Account entitlements and live payloads still require tes
 
 ## Source-copy inventory policy
 
-No application source has been copied in phase 0. No origin manifest is fabricated.
+Phase 0 copied no application source. The initial Rust implementation now includes
+eleven frozen reference-only text snapshots under `tests/reference/`. Their origin
+manifest records source hashes. They are not executable packages or runtime imports.
 The implementation must inventory only the components actually selected for copying.
 Required categories are market normalization, bars, indicators, historical/streaming
 V7, detectors, selected strategy, portfolio, OMS, broker support, reference support,
