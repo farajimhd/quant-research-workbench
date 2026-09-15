@@ -1,6 +1,229 @@
 use super::*;
 use crate::events::{Decimal, EventKind, Payload, SourceTime};
 const SECOND: u64 = 1_000_000_000;
+fn prepared_playback() -> playback::Prepared {
+    use playback::{Frame, Input, Limits, Prepared};
+    Prepared::new(
+        scheduler(10).scope(),
+        "historical-explicit-clock-v1",
+        vec![
+            Frame {
+                watermark_ns: 201 * SECOND,
+                evaluated_at_ns: 201 * SECOND,
+                inputs: vec![Input {
+                    observation: event(1, 200, 10),
+                    eligible: true,
+                }],
+            },
+            Frame {
+                watermark_ns: 204 * SECOND,
+                evaluated_at_ns: 204 * SECOND,
+                inputs: vec![Input {
+                    observation: event(2, 203, 20),
+                    eligible: true,
+                }],
+            },
+        ],
+        Limits {
+            maximum_frames: 10,
+            maximum_events: 10,
+            maximum_serialized_bytes: 10000,
+        },
+    )
+    .unwrap()
+}
+#[test]
+fn playback_reports_coalescing_without_replaying_duplicate_trade() {
+    use playback::{Frame, Input, Limits, Playback, Poll, Prepared};
+    let e = Input {
+        observation: event(1, 200, 10),
+        eligible: true,
+    };
+    let source = Prepared::new(
+        scheduler(10).scope(),
+        "explicit",
+        vec![Frame {
+            watermark_ns: 201 * SECOND,
+            evaluated_at_ns: 201 * SECOND,
+            inputs: vec![e.clone(), e],
+        }],
+        Limits {
+            maximum_frames: 1,
+            maximum_events: 2,
+            maximum_serialized_bytes: 10000,
+        },
+    )
+    .unwrap();
+    let mut run = Playback::new(scheduler(10), source, 1).unwrap();
+    run.resume().unwrap();
+    assert_eq!(run.poll().unwrap(), Poll::Boundary);
+    assert_eq!(run.status().admitted_events, 1);
+    assert_eq!(run.status().coalesced_events, 1);
+    assert_eq!(run.status().queued_events, 1);
+    let id = run.pending().unwrap().unwrap().id.to_owned();
+    run.acknowledge(&id).unwrap();
+    assert_eq!(run.status().queued_events, 0);
+    assert_eq!(run.poll().unwrap(), Poll::Boundary);
+    assert!(matches!(
+        run.pending().unwrap().unwrap().kind,
+        Kind::Completed { .. }
+    ));
+}
+#[test]
+fn playback_step_pause_and_resume_preserve_identical_causal_results() {
+    use playback::{Mode, Playback, Poll};
+    let prepared = prepared_playback();
+    let mut normal = Playback::new(scheduler(10), prepared.clone(), 1).unwrap();
+    let mut stepped = Playback::new(scheduler(10), prepared, 1).unwrap();
+    assert_eq!(stepped.poll().unwrap(), Poll::Paused);
+    normal.resume().unwrap();
+    let mut expected = vec![];
+    loop {
+        match normal.poll().unwrap() {
+            Poll::Boundary => {
+                let boundary = normal.pending().unwrap().unwrap();
+                if let Kind::Trade { observation, .. } = boundary.kind {
+                    assert!(observation.receipt.is_none());
+                    assert!(observation.participant.is_none());
+                }
+                let id = boundary.id.to_owned();
+                expected.push(id.clone());
+                normal.acknowledge(&id).unwrap();
+            }
+            Poll::Yield => {}
+            Poll::Complete => break,
+            Poll::Paused => panic!("unexpected pause"),
+        }
+    }
+    let mut actual = vec![];
+    loop {
+        stepped.step().unwrap();
+        loop {
+            match stepped.poll().unwrap() {
+                Poll::Yield => continue,
+                Poll::Boundary => {
+                    let id = stepped.pending().unwrap().unwrap().id.to_owned();
+                    let hash = stepped.market().unwrap().checkpoint().unwrap().hash;
+                    assert_eq!(stepped.status().mode, Mode::Paused);
+                    assert!(stepped.step().is_err());
+                    assert!(stepped.acknowledge("wrong").is_err());
+                    stepped.resume().unwrap();
+                    stepped.pause().unwrap();
+                    assert_eq!(stepped.poll().unwrap(), Poll::Boundary);
+                    assert_eq!(stepped.market().unwrap().checkpoint().unwrap().hash, hash);
+                    actual.push(id.clone());
+                    stepped.acknowledge(&id).unwrap();
+                    assert_eq!(stepped.poll().unwrap(), Poll::Paused);
+                    break;
+                }
+                Poll::Complete => break,
+                Poll::Paused => panic!("step did not advance"),
+            }
+        }
+        if stepped.status().mode == Mode::Complete {
+            break;
+        }
+    }
+    assert_eq!(expected, actual);
+    assert_eq!(actual.len(), 4);
+    assert_eq!(
+        normal.market().unwrap().checkpoint().unwrap().hash,
+        stepped.market().unwrap().checkpoint().unwrap().hash
+    );
+    assert_eq!(stepped.status().acknowledged_boundaries, 4);
+    assert_eq!(stepped.status().completed_frames, 2);
+    assert!(stepped.resume().is_err());
+}
+#[test]
+fn playback_validates_prepared_scope_clocks_and_capacity() {
+    use playback::{Frame, Input, Limits, Prepared};
+    let scope = scheduler(10).scope();
+    let valid = Frame {
+        watermark_ns: 201 * SECOND,
+        evaluated_at_ns: 201 * SECOND,
+        inputs: vec![Input {
+            observation: event(1, 200, 10),
+            eligible: true,
+        }],
+    };
+    let prepare = |frames, bytes| {
+        Prepared::new(
+            scope,
+            "explicit",
+            frames,
+            Limits {
+                maximum_frames: 3,
+                maximum_events: 3,
+                maximum_serialized_bytes: bytes,
+            },
+        )
+    };
+    assert!(prepare(vec![valid.clone()], 1).is_err());
+    let mut future = valid.clone();
+    future.inputs[0].observation.available_at_ns = 202 * SECOND;
+    assert!(prepare(vec![future], 10000).is_err());
+    let mut foreign = valid.clone();
+    foreign.inputs[0].observation.key.instrument = 2;
+    assert!(prepare(vec![foreign], 10000).is_err());
+    assert!(prepare(vec![valid.clone(), valid.clone()], 10000).is_err());
+    let mut rewound = valid.clone();
+    rewound.watermark_ns -= 1;
+    rewound.inputs.clear();
+    assert!(prepare(vec![valid.clone(), rewound], 10000).is_err());
+    let original = prepare(vec![valid.clone()], 10000).unwrap();
+    let mut changed = valid;
+    changed.inputs[0].eligible = false;
+    assert_ne!(
+        original.hash(),
+        prepare(vec![changed], 10000).unwrap().hash()
+    );
+}
+#[test]
+fn playback_work_budget_yields_and_incomplete_watermark_fails_without_discarding() {
+    use playback::{Frame, Input, Limits, Mode, Playback, Poll, Prepared};
+    let scope = scheduler(10).scope();
+    let pending = event(1, 201, 10);
+    let prepared = Prepared::new(
+        scope,
+        "explicit",
+        vec![
+            Frame {
+                watermark_ns: 200 * SECOND,
+                evaluated_at_ns: 200 * SECOND,
+                inputs: vec![],
+            },
+            Frame {
+                watermark_ns: 201 * SECOND,
+                evaluated_at_ns: 202 * SECOND,
+                inputs: vec![Input {
+                    observation: pending,
+                    eligible: true,
+                }],
+            },
+        ],
+        Limits {
+            maximum_frames: 2,
+            maximum_events: 1,
+            maximum_serialized_bytes: 10000,
+        },
+    )
+    .unwrap();
+    let mut runtime = Playback::new(scheduler(10), prepared, 1).unwrap();
+    runtime.resume().unwrap();
+    assert_eq!(runtime.poll().unwrap(), Poll::Yield);
+    assert_eq!(runtime.status().admitted_events, 0);
+    assert_eq!(runtime.poll().unwrap(), Poll::Yield);
+    assert_eq!(runtime.status().admitted_events, 1);
+    assert!(runtime.poll().is_err());
+    assert_eq!(runtime.status().mode, Mode::Failed);
+    assert!(runtime
+        .status()
+        .failure
+        .unwrap()
+        .contains("final watermark"));
+    assert!(runtime.resume().is_err());
+    assert_eq!(runtime.status().acknowledged_boundaries, 0);
+}
 fn event(sequence: u64, second: u64, price: i64) -> Observation {
     Observation {
         key: EventKey {

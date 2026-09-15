@@ -7,6 +7,7 @@ use crate::{
     market::Completed,
     Error, Result,
 };
+pub mod playback;
 
 pub struct Scheduler {
     market: Ordered,

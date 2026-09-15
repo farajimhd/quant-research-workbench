@@ -6,6 +6,32 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Offline playback and debug controls
+
+The shared market scheduler now has an in-process playback controller. It supports
+pause, resume and one-boundary stepping. Pending boundaries remain visible and
+unchanged until the caller acknowledges them. The caller must first complete its
+required account journals and execution work; cursor acknowledgment is not a
+durability receipt.
+
+Prepared trade frames are immutable and shared between runs through Arc. Preparation
+validates scope, availability, monotonic explicit clocks and resource limits. The
+input hash binds frame contents, eligibility and the declared clock model. Playback
+does not create receive timestamps, participant timestamps or final watermarks.
+Each poll has a frame-work budget. Status reports admitted, coalesced and queued
+events, acknowledged boundaries, completed frames and terminal failures.
+
+Tests show identical boundary IDs and market/V7 checkpoints for stepped and
+uninterrupted playback. They cover pending-consumer retention, malformed input,
+duplicate accounting, bounded yielding and failure when the final watermark leaves
+events queued. All 296 offline Rust tests, formatting, Clippy and source hashes pass.
+No services or network tests ran. Source-oracle parity was not rerun.
+
+This controller currently drives the trade/bar/V7 lane. Quote scheduling, source
+loading, candidate/account consumers, full-run manifests, durable restart and the
+CLI/UI control interfaces remain to be connected. Prepared frames are not a source
+coverage certificate. This is not yet an end-to-end strategy backtest.
+
 ## Historical submission uses the shared session authority
 
 Historical reserved submission no longer accepts a caller-supplied regular-session
