@@ -42,6 +42,95 @@ pub struct FailureEvidence {
     pub threshold: f64,
     pub broken: bool,
 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingFailure {
+    pub evidence: FailureEvidence,
+    pub trigger_at_ns: u64,
+    pub trigger_close: f64,
+    pub red_closes: usize,
+    last_bar_ns: u64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CandleConfirmation {
+    pub trigger_at_ns: u64,
+    pub trigger_close: f64,
+    pub confirmed_at_ns: u64,
+    pub consecutive_red_closes: usize,
+    pub bar: Bar,
+}
+#[derive(Debug, Clone)]
+pub enum FailureConfirmation {
+    Pending,
+    Cancelled,
+    Confirmed(CandleConfirmation),
+}
+impl PendingFailure {
+    pub fn new(evidence: FailureEvidence, red_closes: usize) -> Result<Self> {
+        valid_level(&evidence.level)?;
+        if !valid_bar(&evidence.exit_bar)
+            || !evidence.threshold.is_finite()
+            || evidence.threshold <= 0.
+        {
+            return Err(Error::Invalid("invalid pending resistance failure".into()));
+        }
+        Ok(Self {
+            trigger_at_ns: evidence.exit_bar.end_ns,
+            trigger_close: evidence.exit_bar.close,
+            last_bar_ns: evidence.exit_bar.end_ns,
+            red_closes,
+            evidence,
+        })
+    }
+    /// Caller removes this object on Cancelled or Confirmed. No broker action is issued here.
+    pub fn observe(
+        &mut self,
+        bar: &Bar,
+        previous: Option<&Bar>,
+        policy: &LevelPolicy,
+    ) -> Result<FailureConfirmation> {
+        if !valid_bar(bar)
+            || bar.end_ns.checked_sub(bar.start_ns) != Some(1_000_000_000)
+            || previous.is_some_and(|p| !valid_bar(p) || p.end_ns > bar.start_ns)
+            || bar.end_ns < self.last_bar_ns
+        {
+            return Err(Error::Invalid("invalid pending failure observation".into()));
+        }
+        if !eligible(&self.evidence.level, policy) {
+            return Ok(FailureConfirmation::Cancelled);
+        }
+        if bar.end_ns == self.last_bar_ns {
+            return Ok(FailureConfirmation::Pending);
+        }
+        if bar.close >= self.evidence.level.geometry.lower {
+            return Ok(FailureConfirmation::Cancelled);
+        }
+        let count = if bar.start_ns == self.last_bar_ns {
+            self.red_closes
+        } else {
+            0
+        };
+        self.red_closes = if bar.close < bar.open {
+            count.saturating_add(1)
+        } else {
+            0
+        };
+        self.last_bar_ns = bar.end_ns;
+        if self.red_closes < 2
+            || bar.close >= self.evidence.threshold
+            || !previous
+                .is_some_and(|p| p.end_ns == bar.start_ns && bar.low < p.low && bar.close < p.open)
+        {
+            return Ok(FailureConfirmation::Pending);
+        }
+        Ok(FailureConfirmation::Confirmed(CandleConfirmation {
+            trigger_at_ns: self.trigger_at_ns,
+            trigger_close: self.trigger_close,
+            confirmed_at_ns: bar.end_ns,
+            consecutive_red_closes: 2,
+            bar: bar.clone(),
+        }))
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExitReason {
@@ -501,5 +590,44 @@ mod tests {
             Some(ExitReason::ProtectiveSwingFailed)
         );
         assert_eq!(state.base_lower, 9.9);
+    }
+    #[test]
+    fn pending_failure_requires_adjacent_red_and_cancels_on_reclaim() {
+        let scaled = |t, o, c| {
+            let mut b = bar(t, o, c);
+            b.start_ns *= 1_000_000_000;
+            b.end_ns *= 1_000_000_000;
+            b
+        };
+        let first = scaled(2, 10., 9.7);
+        let evidence = FailureEvidence {
+            level: level(),
+            previous_bar: scaled(1, 10., 10.05),
+            exit_bar: first.clone(),
+            threshold: 9.9,
+            broken: false,
+        };
+        let pending = PendingFailure::new(evidence, 1).unwrap();
+        let mut adjacent = pending.clone();
+        assert!(matches!(
+            adjacent
+                .observe(&scaled(3, 9.7, 9.6), Some(&first), &levels_policy())
+                .unwrap(),
+            FailureConfirmation::Confirmed(_)
+        ));
+        let mut gap = pending.clone();
+        assert!(matches!(
+            gap.observe(&scaled(4, 9.7, 9.6), Some(&first), &levels_policy())
+                .unwrap(),
+            FailureConfirmation::Pending
+        ));
+        assert_eq!(gap.red_closes, 1);
+        let mut reclaim = pending;
+        assert!(matches!(
+            reclaim
+                .observe(&scaled(3, 9.7, 9.9), Some(&first), &levels_policy())
+                .unwrap(),
+            FailureConfirmation::Cancelled
+        ));
     }
 }

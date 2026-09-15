@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 81 in-process Rust tests passed (74 core and 7 adapter tests).
+- 86 in-process Rust tests passed (79 core and 7 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -191,6 +191,15 @@ frozen level and both candles. Departed attempts cannot turn unrelated later red
 candles into an exit. Duplicate completed bars do not advance failure counters.
 Future event rejection and capacity errors leave the previous management state
 unchanged. Main evaluator wiring and end-to-end strategy parity are still missing.
+
+Early-stop components track three rising green candles across position boundaries,
+arm the second candle's close, and activate on the first completed red candle.
+Gaps disarm pending patterns. Re-entry permission requires a reconciled fill of
+the still-active matching stop. Graduation does not erase that stop identity.
+Reclaim confirmation consumes one opening opportunity within a half-open one-second
+window. Failed-resistance confirmation separately requires adjacent red candles
+and cancels on band reclaim. These components are not yet wired to the main
+evaluator or broker fill stream; tests cover local state transitions only.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.
