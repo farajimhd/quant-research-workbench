@@ -834,3 +834,15 @@ market and level projections. One offline test covers completed-bar advancement
 and projection blocking after capacity failure. All 210 Rust tests, formatting,
 static checks and source hashes pass. Full historical/live clock parity, certified
 handover, coherent restart and strategy scheduling remain incomplete. No service ran.
+
+Combined market/V7 recovery now captures bars, indicators, developing state,
+watermark, V7 state and observation clock under one content hash. It binds the
+seed and configuration, including split factor and evidence. Restore checks the
+trusted expected hash before decoding and verifies component clocks and bar counts.
+Failed runtime state cannot issue a checkpoint. An offline continuation test matches
+subsequent hashes after restore and rejects wrong content, seed or configuration.
+All 211 Rust tests, formatting, static checks and source hashes pass after correcting
+the split-configuration serialization. Snapshots have a 64 MiB serialized limit;
+temporary allocation accounting and durable publication remain incomplete. These
+are streaming recovery snapshots, not historical seeds. Full-engine recovery must
+also bind event cursors, strategy/portfolio state and pending execution. No service ran.

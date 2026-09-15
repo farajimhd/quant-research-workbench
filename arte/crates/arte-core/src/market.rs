@@ -169,6 +169,7 @@ pub struct Completed {
 }
 /// One instrument/timeframe's retained session series. The same update path serves
 /// historical warming and live events; it has no strategy or broker capability.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Series {
     builder: BarBuilder,
     macd: Macd,
