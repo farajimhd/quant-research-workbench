@@ -6,6 +6,34 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Candidate entry-frame construction
+
+The shared feature owner now constructs the existing candidate entry-frame contract.
+It borrows market bars, cached current levels, prior levels, setup range and external
+account/swing evidence. Current level projection runs once per completed one-second
+feature snapshot, not separately for each account. The live lane exposes this builder.
+
+Admission remains explicit. Its MACD and activity fields must agree with calculated
+features. Missing quote data, stale quotes, other-instrument quotes, future swings,
+invalid geometry, future admission evidence and mismatched boundaries are rejected.
+An old completed bar produces `fresh = false`; processing time never refreshes it.
+Permission and tradability flags are preserved, including denied values.
+
+Feature configuration version 2 pins quote/bar age limits and evidence budgets.
+Current/prior levels and swing arrays are bounded. The entry-frame builder is not
+an emergency-exit path or order authorization. Emergency exits must not depend on
+entry-frame readiness.
+
+All 229 offline Rust tests, formatting, Clippy and copied-source hashes pass. Existing
+scheduler tests now construct a real entry frame and exercise missing/stale/wrong-scope
+quotes, contradictory admission fields, future swings and delayed-bar freshness.
+Source-oracle comparisons were not rerun. No service or network test ran.
+
+Still incomplete: authoritative admission and local-swing producers, effective
+candidate/feature configuration binding, journal-bound account evaluation, broker
+execution and full live/backtest orchestration. Frame construction alone does not
+establish strategy acceptance or end-to-end parity.
+
 ## Shared candidate market features
 
 One feature owner now consumes every scheduler boundary. It combines candidate

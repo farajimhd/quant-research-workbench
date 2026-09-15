@@ -17,6 +17,9 @@ pub struct Config {
     pub forming_macd: bool,
     pub minimum_range_pct: f64,
     pub minimum_progress_pct: f64,
+    pub maximum_quote_age_ns: u64,
+    pub maximum_completed_bar_age_ns: u64,
+    pub maximum_levels: usize,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct OneSecond {
@@ -28,6 +31,25 @@ pub struct OneSecond {
     pub vwap: f64,
     pub high: f64,
     pub prior_high: Option<f64>,
+    pub levels: Vec<crate::strategy_targets::TargetLevel>,
+}
+impl OneSecond {
+    pub fn activity_block(&self) -> Option<&str> {
+        [&self.range_activity, &self.progress_activity]
+            .into_iter()
+            .find(|evidence| evidence.minimum_pct > 0. && !evidence.passed)
+            .map(|evidence| evidence.reason.as_str())
+    }
+}
+/// Explicit non-market authorities. They are not inferred from feature readiness.
+#[derive(Clone, Copy)]
+pub struct EntryContext<'a> {
+    pub admission: &'a crate::strategy_entry::Admission,
+    pub swings: &'a [crate::strategy_targets::Swing],
+    pub regular: bool,
+    pub regular_target: Option<f64>,
+    pub recovery: &'a crate::strategy_lifecycle::RecoveryState,
+    pub recovery_policy: &'a crate::strategy_lifecycle::RecoveryPolicy,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct Snapshot {
@@ -57,6 +79,12 @@ impl State {
             || config.setup.minimum_bars == 0
             || config.setup.minimum_bars > 3600
             || config.setup.maximum_gap_ns > config.setup.range_ns
+            || config.maximum_quote_age_ns == 0
+            || config.maximum_quote_age_ns > 60 * SECOND
+            || config.maximum_completed_bar_age_ns == 0
+            || config.maximum_completed_bar_age_ns > 60 * SECOND
+            || config.maximum_levels == 0
+            || config.maximum_levels > 100_000
             || [config.minimum_range_pct, config.minimum_progress_pct]
                 .iter()
                 .any(|value| !value.is_finite() || *value < 0.)
@@ -67,7 +95,7 @@ impl State {
         }
         Ok(Self {
             config_hash: content_hash(&(
-                "candidate-market-features-v1",
+                "candidate-market-features-v2",
                 market.configuration_hash(),
                 &config,
             ))?,
@@ -88,6 +116,131 @@ impl State {
             return Err(Error::Unready("candidate features require recovery".into()));
         }
         Ok(self.snapshot.as_ref())
+    }
+    /// Borrow shared arrays once for each account's candidate evaluation. This
+    /// only constructs an entry frame; it neither grants admission nor processes
+    /// emergency exits, which must remain independent of entry-data readiness.
+    pub fn entry_frame<'a>(
+        &'a self,
+        boundary: &Boundary<'_>,
+        market: &'a Runtime,
+        quotes: &crate::quote_state::Book,
+        context: EntryContext<'a>,
+    ) -> Result<crate::strategy_entry::Frame<'a>> {
+        let snapshot = self
+            .snapshot()?
+            .ok_or_else(|| Error::Unready("candidate features missing".into()))?;
+        let one = snapshot.one_second.as_ref().ok_or_else(|| {
+            Error::Unready("entry requires a completed one-second boundary".into())
+        })?;
+        if snapshot.boundary_id != boundary.id
+            || snapshot.sequence != boundary.sequence
+            || snapshot.evaluated_at_ns != boundary.evaluated_at_ns
+            || market.configuration_hash() != self.market_hash
+        {
+            return Err(Error::Conflict(
+                "entry frame boundary or market differs".into(),
+            ));
+        }
+        let bars = market.market()?.completed();
+        let bar = &bars
+            .last()
+            .ok_or_else(|| Error::Unready("entry bar missing".into()))?
+            .bar;
+        if bar.end_ns != one.at_ns
+            || context.admission.at_ns > bar.end_ns
+            || context
+                .admission
+                .detector_at_ns
+                .is_some_and(|at| at > bar.end_ns)
+            || context.admission.macd_at_ns != snapshot.macd.as_ref().map(|reading| reading.at_ns)
+            || context.admission.macd_positive
+                != snapshot
+                    .macd
+                    .as_ref()
+                    .is_some_and(|reading| reading.positive())
+            || context.admission.activity_block.as_deref() != one.activity_block()
+            || context
+                .regular_target
+                .is_some_and(|price| !price.is_finite() || price <= 0.)
+        {
+            return Err(Error::Conflict(
+                "entry admission differs from causal feature evidence".into(),
+            ));
+        }
+        if context.swings.len() > self.config.maximum_levels {
+            return Err(Error::Capacity("entry swing evidence budget".into()));
+        }
+        for swing in context.swings {
+            if swing.id.is_empty()
+                || swing.pivot_at_ns == 0
+                || swing.pivot_at_ns > swing.confirmed_at_ns
+                || swing.confirmed_at_ns > bar.end_ns
+                || [swing.lower, swing.price, swing.upper]
+                    .iter()
+                    .any(|price| !price.is_finite() || *price <= 0.)
+                || swing.lower > swing.price
+                || swing.price > swing.upper
+            {
+                return Err(Error::Invalid(
+                    "entry swing geometry or causal clock".into(),
+                ));
+            }
+        }
+        let quote = quotes
+            .require_executable(boundary.evaluated_at_ns, self.config.maximum_quote_age_ns)?;
+        let scope = market.source_scope();
+        if quote.key.provider != scope.provider
+            || quote.key.instrument != scope.instrument
+            || quote.key.session != scope.session
+        {
+            return Err(Error::Conflict("entry quote scope differs".into()));
+        }
+        let crate::events::Payload::Quote { bid, ask, .. } = &quote.payload else {
+            unreachable!()
+        };
+        if bid.atoms > (1_i64 << 53) || ask.atoms > (1_i64 << 53) {
+            return Err(Error::Invalid(
+                "entry quote exceeds exact integer conversion range".into(),
+            ));
+        }
+        let (prior_at, prior_levels) = market.prior_strategy_levels()?;
+        if prior_levels.len() > self.config.maximum_levels {
+            return Err(Error::Capacity("prior entry level evidence budget".into()));
+        }
+        if prior_at > bar.start_ns {
+            return Err(Error::Conflict("future prior entry levels".into()));
+        }
+        Ok(crate::strategy_entry::Frame {
+            bar,
+            previous: bars
+                .len()
+                .checked_sub(2)
+                .map(|index| &bars[index].bar)
+                .filter(|previous| Some(previous.end_ns) == one.previous_bar_end_ns),
+            bid: bid.to_f64(),
+            ask: ask.to_f64(),
+            fresh: boundary
+                .evaluated_at_ns
+                .checked_sub(bar.end_ns)
+                .is_some_and(|age| age < self.config.maximum_completed_bar_age_ns),
+            hod: Some(one.high),
+            prior_hod: one.prior_high,
+            vwap: Some(one.vwap),
+            range: one.range.as_ref(),
+            prior_episode_high: snapshot
+                .macd
+                .as_ref()
+                .and_then(|reading| reading.prior_episode_high),
+            prior_levels,
+            levels: &one.levels,
+            swings: context.swings,
+            regular_target: context.regular_target,
+            regular: context.regular,
+            admission: context.admission,
+            recovery: context.recovery,
+            recovery_policy: context.recovery_policy,
+        })
     }
     /// Consume every scheduler boundary in sequence, before acknowledging it.
     /// Repeating the same pending boundary does not update rolling calculations.
@@ -180,6 +333,7 @@ impl State {
                     vwap: bar.session_vwap,
                     high: bar.session_high,
                     prior_high: bar.prior_session_high,
+                    levels: market.strategy_levels(bar.bar.end_ns, self.config.maximum_levels)?,
                 })
             } else {
                 None

@@ -127,6 +127,18 @@ impl Lane {
         self.available()?;
         self.features.snapshot()
     }
+    pub fn entry_frame<'a>(
+        &'a self,
+        context: candidate_features::EntryContext<'a>,
+    ) -> Result<arte_core::strategy_entry::Frame<'a>> {
+        self.available()?;
+        let boundary = self
+            .market
+            .pending()?
+            .ok_or_else(|| Error::Unready("live entry boundary missing".into()))?;
+        self.features
+            .entry_frame(&boundary, self.market.state()?, &self.quotes, context)
+    }
     pub fn acknowledge_boundary(&mut self, id: &str) -> Result<()> {
         self.available()?;
         self.market.acknowledge(id)
@@ -281,6 +293,9 @@ mod tests {
                 forming_macd: true,
                 minimum_range_pct: 1.,
                 minimum_progress_pct: 1.,
+                maximum_quote_age_ns: SECOND,
+                maximum_completed_bar_age_ns: SECOND,
+                maximum_levels: 100,
             },
         )
         .unwrap();

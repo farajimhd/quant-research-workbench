@@ -194,6 +194,9 @@ fn timeframes_close_in_order_without_leaking_later_macd_or_filling_empty_interva
             forming_macd: true,
             minimum_range_pct: 1.,
             minimum_progress_pct: 1.,
+            maximum_quote_age_ns: SECOND,
+            maximum_completed_bar_age_ns: SECOND,
+            maximum_levels: 100,
         },
     )
     .unwrap();
@@ -271,6 +274,7 @@ fn timeframes_close_in_order_without_leaking_later_macd_or_filling_empty_interva
                         one.progress_activity.reason,
                         "historical_reference_missing_or_stale"
                     );
+                    check_entry_frame(&features, &boundary, scheduler.state().unwrap());
                     assert_eq!(
                         macd_reading.as_ref().unwrap().kind,
                         crate::strategy_macd::Kind::Completed
@@ -317,6 +321,9 @@ fn feature_owner_rejects_missing_dependencies_and_skipped_or_invalid_boundaries(
         forming_macd: true,
         minimum_range_pct: 0.,
         minimum_progress_pct: 0.,
+        maximum_quote_age_ns: SECOND,
+        maximum_completed_bar_age_ns: SECOND,
+        maximum_levels: 100,
     };
     assert!(State::new(&super::super::tests::runtime(10), config()).is_err());
     let runtime = super::super::tests::runtime_with_timeframes(
@@ -364,5 +371,158 @@ fn feature_owner_rejects_missing_dependencies_and_skipped_or_invalid_boundaries(
     assert!(features.snapshot().is_err());
     assert!(features
         .observe(&boundary, scheduler.state().unwrap())
+        .is_err());
+}
+
+fn check_entry_frame(
+    features: &crate::candidate_features::State,
+    boundary: &Boundary<'_>,
+    market: &Runtime,
+) {
+    use crate::candidate_features::EntryContext;
+    let snapshot = features.snapshot().unwrap().unwrap();
+    let one = snapshot.one_second.as_ref().unwrap();
+    let reading = snapshot.macd.as_ref().unwrap();
+    let admission = crate::strategy_entry::Admission {
+        at_ns: one.at_ns,
+        permissions: false,
+        session_open: true,
+        tradable: false,
+        encounter_blocked: false,
+        regular_block: None,
+        macd_at_ns: Some(reading.at_ns),
+        macd_positive: reading.positive(),
+        detector_at_ns: None,
+        detector_fingerprint: String::new(),
+        activity_block: one.activity_block().map(str::to_owned),
+    };
+    let recovery = crate::strategy_lifecycle::RecoveryState::default();
+    let recovery_policy = crate::strategy_lifecycle::RecoveryPolicy::default();
+    let context = EntryContext {
+        admission: &admission,
+        swings: &[],
+        regular: false,
+        regular_target: None,
+        recovery: &recovery,
+        recovery_policy: &recovery_policy,
+    };
+    let mut quotes = crate::quote_state::Book::new(market.source_scope()).unwrap();
+    assert!(features
+        .entry_frame(boundary, market, &quotes, context)
+        .is_err());
+    let quote = Observation {
+        key: EventKey {
+            provider: 1,
+            instrument: 1,
+            session: 20260915,
+            kind: EventKind::Quote,
+            sequence: 1,
+        },
+        payload: Payload::Quote {
+            bid: Decimal {
+                atoms: 1999,
+                scale: 2,
+            },
+            ask: Decimal {
+                atoms: 2001,
+                scale: 2,
+            },
+            bid_size: Decimal {
+                atoms: 100,
+                scale: 0,
+            },
+            ask_size: Decimal {
+                atoms: 100,
+                scale: 0,
+            },
+            bid_exchange: 1,
+            ask_exchange: 1,
+            conditions: vec![],
+            indicators: vec![],
+        },
+        sip: SourceTime {
+            ns: boundary.evaluated_at_ns - 1,
+            precision_ns: 1,
+        },
+        participant: None,
+        available_at_ns: boundary.evaluated_at_ns,
+        receipt: None,
+    };
+    quotes.observe(&quote).unwrap();
+    let frame = features
+        .entry_frame(boundary, market, &quotes, context)
+        .unwrap();
+    assert_eq!(frame.bar.end_ns, one.at_ns);
+    assert_eq!(frame.vwap, Some(15.));
+    assert_eq!(frame.bid, 19.99);
+    assert_eq!(frame.ask, 20.01);
+    assert!(!frame.fresh);
+    assert!(!frame.admission.permissions);
+    assert!(!frame.admission.tradable);
+    assert!(frame.previous.is_none());
+    assert_eq!(frame.range.unwrap().high, 10.);
+    let mut contradictory = admission.clone();
+    contradictory.macd_positive = !contradictory.macd_positive;
+    assert!(features
+        .entry_frame(
+            boundary,
+            market,
+            &quotes,
+            EntryContext {
+                admission: &contradictory,
+                ..context
+            }
+        )
+        .is_err());
+    contradictory = admission.clone();
+    contradictory.activity_block = None;
+    assert!(features
+        .entry_frame(
+            boundary,
+            market,
+            &quotes,
+            EntryContext {
+                admission: &contradictory,
+                ..context
+            }
+        )
+        .is_err());
+    let mut other_scope = market.source_scope();
+    other_scope.instrument = 2;
+    let mut other_quote = quote.clone();
+    other_quote.key.instrument = 2;
+    let mut other_quotes = crate::quote_state::Book::new(other_scope).unwrap();
+    other_quotes.observe(&other_quote).unwrap();
+    assert!(features
+        .entry_frame(boundary, market, &other_quotes, context)
+        .is_err());
+    let mut stale = quote;
+    stale.sip.ns -= SECOND;
+    stale.available_at_ns -= SECOND;
+    let mut stale_quotes = crate::quote_state::Book::new(market.source_scope()).unwrap();
+    stale_quotes.observe(&stale).unwrap();
+    assert!(features
+        .entry_frame(boundary, market, &stale_quotes, context)
+        .is_err());
+    let swings = [crate::strategy_targets::Swing {
+        id: "future".into(),
+        lower: 9.,
+        price: 10.,
+        upper: 11.,
+        pivot_at_ns: one.at_ns,
+        confirmed_at_ns: one.at_ns + SECOND,
+        support: true,
+        active: true,
+    }];
+    assert!(features
+        .entry_frame(
+            boundary,
+            market,
+            &quotes,
+            EntryContext {
+                swings: &swings,
+                ..context
+            }
+        )
         .is_err());
 }
