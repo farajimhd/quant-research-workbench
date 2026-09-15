@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
-from strategy_222_feature_combinations import families, population, grouped_predictions, measures
+from strategy_222_feature_combinations import families, population, grouped_predictions, measures, temporal_population
 
 
 def row(group,symbol,label,value=1.):
@@ -54,3 +54,38 @@ def test_missing_training_feature_is_not_filled_using_test_population():
     _,scores,_,_=grouped_predictions(rows,['x'])
     # The held-out values cannot create a coefficient learned from all-missing training data.
     assert np.allclose(scores[:2],.5)
+
+
+def test_temporal_changes_ignore_future_samples_labels_and_preserve_inputs():
+    from copy import deepcopy
+    key='candle_1s.body_fraction'
+    current=dict(row('a','X','winner'),features={key:.8})
+    prior=dict(current,offset_s=-5,decision_at=5.,decision_sequence=3,features={key:.3})
+    future=dict(current,offset_s=5,decision_at=15.,decision_sequence=8,features={key:999.})
+    source=[current,prior,future];frozen=deepcopy(source)
+    rows,_,names=temporal_population(source)
+    assert source==frozen
+    assert rows[0]['features']['change_5s.'+key]==pytest.approx(.5)
+    assert 'change_10s.'+key not in rows[0]['features']
+    future['features'][key]=-999.;prior['label']='nonwinner'
+    changed,_,_=temporal_population(source)
+    assert changed[0]['features']==rows[0]['features']
+    assert all('label' not in n and 'symbol' not in n for ns in names.values() for n in ns)
+
+
+@pytest.mark.parametrize('change',[{'decision_at':6.},{'decision_sequence':5},{'symbol':'Y'},{'at':11.}])
+def test_temporal_changes_reject_wrong_clock_sequence_or_identity(change):
+    current=row('a','X','winner')
+    prior=dict(current,offset_s=-5,decision_at=5.,decision_sequence=3)
+    prior.update(change)
+    with pytest.raises(ValueError,match='causal clock/sequence'):
+        temporal_population([current,prior])
+
+
+def test_temporal_missing_and_duplicate_history_are_explicit():
+    current=row('a','X','winner')
+    prior=dict(current,offset_s=-5,status='missing_fresh_completed_decision')
+    result,_,_=temporal_population([current,prior])
+    assert result[0]['temporal_evidence']['-5']['status']=='missing'
+    with pytest.raises(ValueError,match='Duplicate historical'):
+        temporal_population([current,prior,prior])

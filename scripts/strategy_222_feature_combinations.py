@@ -60,6 +60,44 @@ def population(rows):
     return selected,dict(excluded)
 
 
+def temporal_population(samples):
+    """Attach only pre-entry changes; positive-offset samples are never inputs."""
+    from copy import deepcopy
+    rows,excluded=population(samples)
+    allowed=families()['combined']
+    indexed={}
+    for sample in samples:
+        if sample['kind']!='actual_entry' or sample['offset_s'] not in (-10,-5):
+            continue
+        key=(sample['group'],sample['offset_s'])
+        if key in indexed:raise ValueError('Duplicate historical entry sample')
+        indexed[key]=sample
+    output=[]
+    for current in rows:
+        row=deepcopy(current);row['temporal_evidence']={}
+        for offset in (-10,-5):
+            prior=indexed.get((current['group'],offset))
+            if prior is None or prior['status']!='sampled':
+                row['temporal_evidence'][str(offset)]={'status':'missing'}
+                continue
+            if (prior['symbol']!=current['symbol'] or prior['at']!=current['at']
+                    or prior['decision_at']>current['at']+offset
+                    or prior['decision_at']>=current['decision_at']
+                    or prior['decision_sequence']>=current['decision_sequence']):
+                raise ValueError('Historical entry sample violates causal clock/sequence')
+            elapsed=current['decision_at']-prior['decision_at']
+            row['temporal_evidence'][str(offset)]={'status':'measured','elapsed_s':elapsed,
+                'decision_at':prior['decision_at'],'decision_sequence':prior['decision_sequence']}
+            for name in allowed:
+                a=current['features'].get(name);b=prior['features'].get(name)
+                if a is not None and b is not None:
+                    if not np.isfinite([a,b]).all():raise ValueError('Nonfinite temporal feature')
+                    row['features'][f'change_{-offset}s.{name}']=a-b
+        output.append(row)
+    changes=[f'change_{seconds}s.{name}' for seconds in (10,5) for name in allowed]
+    return output,excluded,dict(snapshot=allowed,changes=changes,snapshot_and_changes=allowed+changes)
+
+
 def grouped_predictions(rows,names):
     # Identity, outcome, absolute timestamp and hindsight labels never enter X.
     x=np.array([[r['features'].get(k,np.nan) for k in names] for r in rows],dtype=float)
@@ -94,7 +132,7 @@ def measures(y,scores):
         kept_nonwinners=int(sum(passed & (y==0))),rejected_nonwinners=int(sum(~passed & (y==0))))
 
 
-def run(source,output):
+def run(source,output,temporal=False):
     output=output.resolve();output.relative_to(Path('D:/TradingML/runtimes').resolve())
     manifest=json.loads((source/'manifest.json').read_text())
     if manifest['status']!='completed':raise ValueError('Incomplete feature study')
@@ -106,7 +144,7 @@ def run(source,output):
     actual={f"{trial['run_id']}:{i}":episode for trial in json.loads(parents[0].read_text())
             for i,episode in enumerate(trial['episodes'])}
     inputs={str(p.resolve()):digest(p) for p in (source/'samples.json',source/'manifest.json',Path(__file__),Path(__file__).with_name('strategy_222_supervised_research.py'))}
-    identity=dict(inputs=inputs,sklearn_version=sklearn.__version__,numpy_version=np.__version__)
+    identity=dict(inputs=inputs,sklearn_version=sklearn.__version__,numpy_version=np.__version__,temporal=temporal)
     output.mkdir(parents=True,exist_ok=True)
     destination=output/'comparison.json'
     if destination.exists():
@@ -114,10 +152,17 @@ def run(source,output):
         if old['identity']!=identity:raise ValueError('Inputs changed; use a successor directory')
         if digest(output/'report.md')!=old['report_sha256']:raise ValueError('Completed report changed')
         print('Existing completed comparison retained.',flush=True);return
-    rows,excluded=population(json.loads((source/'samples.json').read_text()))
+    samples=json.loads((source/'samples.json').read_text())
+    if temporal:rows,excluded,feature_families=temporal_population(samples)
+    else:rows,excluded=population(samples);feature_families=families()
     report=dict(identity=identity,method='Fixed regularized logistic models (C=0.1, threshold=0.5), with training-only median imputation, missingness flags and standardization. Every ticker is held out in turn; training tickers receive equal total weight. Four predeclared feature families, no threshold search. All observations are existing selected entries from one development session. Ticker holdout is a sensitivity check, not unseen/time-forward validation. Rejected-trade counts do not estimate counterfactual portfolio results. No model artifact or strategy update is produced.',
         population=len(rows),excluded=excluded,models=[])
-    for name,names in families().items():
+    if temporal:
+        report['method']=report['method'].replace('Four predeclared feature families',
+            'Three predeclared families: snapshot, five/ten-second backward changes, and their combination')
+        report['temporal_evidence']={r['group']:r['temporal_evidence'] for r in rows}
+        report['method']+=' Changes use only prior recorded decisions, never positive offsets. Missing history remains missing; actual elapsed time is retained as evidence. Episode changes can span a reset and are not a claim of within-episode acceleration.'
+    for name,names in feature_families.items():
         y,scores,baseline,folds=grouped_predictions(rows,names)
         result=dict(family=name,features=names,metrics=measures(y,scores),
                     training_prevalence_baseline=measures(y,baseline),folds=folds,
@@ -127,7 +172,7 @@ def run(source,output):
             entry=actual[p['group']]['opened_at'],recorded_net=actual[p['group']]['net'],score=p['score'])
             for p in result['predictions'] if not p['keep'] and actual[p['group']].get('net',0)>=200]
         report['models'].append(result)
-        print(f"Completed={len(report['models'])}/4 active=0 queued={4-len(report['models'])} failed=0: {name} AUC={result['metrics']['rank_auc']:.3f}, rejected winners={result['metrics']['rejected_winners']}",flush=True)
+        print(f"Completed={len(report['models'])}/{len(feature_families)} active=0 queued={len(feature_families)-len(report['models'])} failed=0: {name} AUC={result['metrics']['rank_auc']:.3f}, rejected winners={result['metrics']['rejected_winners']}",flush=True)
     lines=['# Strategy 222 feature combinations','',report['method'],'',
         f"Closed entries: {len(rows)}. Exclusions: {excluded}.",'',
         '| Feature family | Grouped AUC | Balanced accuracy | Winners kept / rejected | Nonwinners kept / rejected |',
@@ -150,4 +195,5 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
-    args=parser.parse_args();run(args.source,args.output)
+    parser.add_argument('--temporal',action='store_true',help='Compare snapshots with causal five/ten-second backward changes')
+    args=parser.parse_args();run(args.source,args.output,args.temporal)
