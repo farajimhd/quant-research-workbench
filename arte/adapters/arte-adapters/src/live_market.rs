@@ -1,6 +1,7 @@
 //! In-process audited feed to ordered market/V7 calculations. No service startup.
 use crate::live_decode::AuditedEvent;
 use arte_core::{
+    candidate_features,
     events::EventKind,
     exposure::Check,
     market::Series,
@@ -18,12 +19,14 @@ pub struct Lane {
     failed: bool,
     quotes: arte_core::quote_state::Book,
     maximum_quote_age_ns: u64,
+    features: candidate_features::State,
 }
 impl Lane {
     pub fn new(
         market: Scheduler,
         allowed_lateness_ns: u64,
         maximum_quote_age_ns: u64,
+        feature_config: candidate_features::Config,
     ) -> Result<Self> {
         if allowed_lateness_ns == 0
             || allowed_lateness_ns > 1_000_000_000
@@ -34,6 +37,7 @@ impl Lane {
             ));
         }
         Ok(Self {
+            features: candidate_features::State::new(market.state()?, feature_config)?,
             quotes: arte_core::quote_state::Book::new(market.scope())?,
             maximum_quote_age_ns,
             market,
@@ -97,7 +101,17 @@ impl Lane {
             self.allowed_lateness_ns,
             self.market.watermark_ns(),
         )?;
-        let result = self.market.prepare_next(next, processed_at_ns);
+        let result = (|| {
+            let prepared = self.market.prepare_next(next, processed_at_ns)?;
+            if prepared {
+                let boundary = self
+                    .market
+                    .pending()?
+                    .ok_or_else(|| Error::Conflict("prepared live boundary missing".into()))?;
+                self.features.observe(&boundary, self.market.state()?)?;
+            }
+            Ok(prepared)
+        })();
         if result.is_err() {
             self.failed = true;
         }
@@ -108,6 +122,10 @@ impl Lane {
     pub fn pending_boundary(&self) -> Result<Option<Boundary<'_>>> {
         self.available()?;
         self.market.pending()
+    }
+    pub fn candidate_features(&self) -> Result<Option<&candidate_features::Snapshot>> {
+        self.available()?;
+        self.features.snapshot()
     }
     pub fn acknowledge_boundary(&mut self, id: &str) -> Result<()> {
         self.available()?;
@@ -232,7 +250,11 @@ mod tests {
                 macd_periods: (2, 3, 2),
                 maximum_bars: 100,
                 maximum_market_events: 100,
-                additional_timeframes: vec![],
+                additional_timeframes: vec![arte_core::market_structure::Timeframe {
+                    interval_ns: 5 * SECOND,
+                    macd_periods: (12, 26, 9),
+                    maximum_bars: 20,
+                }],
                 structure: StreamPolicy {
                     input_generation: "offline-live-lane".into(),
                     ..StreamPolicy::default()
@@ -246,7 +268,22 @@ mod tests {
             "offline-live-lane".into(),
         )
         .unwrap();
-        let mut lane = Lane::new(scheduler, SECOND / 10, SECOND).unwrap();
+        let mut lane = Lane::new(
+            scheduler,
+            SECOND / 10,
+            SECOND,
+            candidate_features::Config {
+                setup: arte_core::strategy_setup::SetupSettings {
+                    range_ns: 30 * SECOND,
+                    minimum_bars: 1,
+                    maximum_gap_ns: 0,
+                },
+                forming_macd: true,
+                minimum_range_pct: 1.,
+                minimum_progress_pct: 1.,
+            },
+        )
+        .unwrap();
         // This fixture exercises release and current-gate binding, not decoding or
         // ingestion. No real live receipt or provider health evidence is claimed.
         lane.market
@@ -306,6 +343,13 @@ mod tests {
             arte_core::market_structure::scheduler::Kind::Completed { .. }
         ));
         let bar_id = boundary.id.to_owned();
+        let features = lane.candidate_features().unwrap().unwrap();
+        assert_eq!(features.boundary_id, bar_id);
+        assert_eq!(features.one_second.as_ref().unwrap().vwap, 10.);
+        assert_eq!(
+            features.macd.as_ref().unwrap().kind,
+            arte_core::strategy_macd::Kind::Unavailable
+        );
         lane.acknowledge_boundary(&bar_id).unwrap();
         assert!(!lane.prepare_next(gate.at(101), 202 * SECOND).unwrap());
     }

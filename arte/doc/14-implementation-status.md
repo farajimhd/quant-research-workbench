@@ -6,6 +6,35 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Shared candidate market features
+
+One feature owner now consumes every scheduler boundary. It combines candidate
+MACD/episode state, preceding setup range, 300-second range evidence, 60-second
+progress evidence, session VWAP and high-of-day facts. Completed one-second snapshots
+do not include the current candle in the preceding setup range. Sparse gaps do not
+invent a contiguous previous candle. Missing progress history remains a failed
+evidence record, not an assumed pass.
+
+The owner pins its configuration and market configuration. It requires the declared
+five-second 12/26/9 series, rejects skipped boundaries and handles exact retries
+without recalculation. Calculation failures hide the state until recovery. Rolling
+histories are not cloned for each event. Setup history is bounded by a maximum
+one-hour window; activity history uses its existing bounded retention.
+
+The live lane now runs this shared feature owner before exposing a pending boundary.
+Processing a new source candle does not assert feed freshness or grant account
+admission. One-second feature snapshots are absent on trade and five-second events.
+MACD transition flags are not reissued merely because a later trade reads the state.
+
+All 229 offline Rust tests, formatting, Clippy and copied-source hashes pass. Tests
+cover feature alignment, preceding-range exclusion, VWAP/highs, missing progress
+history, duplicate handling, dependency rejection, skipped input and failure latching.
+Source-oracle comparisons were not rerun for this increment. No services ran.
+
+Still incomplete: local swing/admission authorities, complete entry-frame construction,
+effective strategy configuration binding to the feature hash, account journal
+coordination, full runtime orchestration and coherent feature/scheduler recovery.
+
 ## Candidate forming MACD and episodes
 
 The shared candidate MACD state now consumes completed five-second samples and

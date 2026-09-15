@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod acquisition;
+pub mod candidate_features;
 pub mod candidate_runtime;
 pub mod config;
 pub mod coverage;

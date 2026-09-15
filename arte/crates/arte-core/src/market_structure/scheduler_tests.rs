@@ -183,12 +183,37 @@ fn timeframes_close_in_order_without_leaking_later_macd_or_filling_empty_interva
     }
     let mut closes = vec![];
     let mut macd = crate::strategy_macd::State::new(true);
+    let mut features = crate::candidate_features::State::new(
+        scheduler.state().unwrap(),
+        crate::candidate_features::Config {
+            setup: crate::strategy_setup::SetupSettings {
+                range_ns: 30 * SECOND,
+                minimum_bars: 1,
+                maximum_gap_ns: 10 * SECOND,
+            },
+            forming_macd: true,
+            minimum_range_pct: 1.,
+            minimum_progress_pct: 1.,
+        },
+    )
+    .unwrap();
     let mut evaluated_at_ns = 220 * SECOND;
     while scheduler
         .prepare_next(220 * SECOND, evaluated_at_ns)
         .unwrap()
     {
         let boundary = scheduler.pending().unwrap().unwrap();
+        assert!(features
+            .observe(&boundary, scheduler.state().unwrap())
+            .unwrap());
+        let snapshot_hash = crate::content_hash(features.snapshot().unwrap().unwrap()).unwrap();
+        assert!(!features
+            .observe(&boundary, scheduler.state().unwrap())
+            .unwrap());
+        assert_eq!(
+            crate::content_hash(features.snapshot().unwrap().unwrap()).unwrap(),
+            snapshot_hash
+        );
         let macd_reading = macd
             .observe_boundary(&boundary, scheduler.state().unwrap())
             .unwrap();
@@ -204,6 +229,16 @@ fn timeframes_close_in_order_without_leaking_later_macd_or_filling_empty_interva
         {
             closes.push((*interval_ns / SECOND, bar.bar.end_ns / SECOND));
             if bar.bar.end_ns == 201 * SECOND {
+                let one = features
+                    .snapshot()
+                    .unwrap()
+                    .unwrap()
+                    .one_second
+                    .as_ref()
+                    .unwrap();
+                assert!(one.range.is_none());
+                assert!(one.previous_bar_end_ns.is_none());
+                assert_eq!(one.vwap, 10.);
                 assert_eq!(
                     macd_reading.as_ref().unwrap().kind,
                     crate::strategy_macd::Kind::Unavailable
@@ -219,6 +254,23 @@ fn timeframes_close_in_order_without_leaking_later_macd_or_filling_empty_interva
                 assert!(five.developing().is_none());
                 assert_eq!(*available_at_ns, 220 * SECOND);
                 if *interval_ns == SECOND {
+                    let one = features
+                        .snapshot()
+                        .unwrap()
+                        .unwrap()
+                        .one_second
+                        .as_ref()
+                        .unwrap();
+                    assert_eq!(one.range.as_ref().unwrap().high, 10.);
+                    assert_eq!(one.prior_high, Some(10.));
+                    assert_eq!(one.high, 20.);
+                    assert_eq!(one.vwap, 15.);
+                    assert!(one.previous_bar_end_ns.is_none());
+                    assert!(!one.progress_activity.passed);
+                    assert_eq!(
+                        one.progress_activity.reason,
+                        "historical_reference_missing_or_stale"
+                    );
                     assert_eq!(
                         macd_reading.as_ref().unwrap().kind,
                         crate::strategy_macd::Kind::Completed
@@ -234,6 +286,7 @@ fn timeframes_close_in_order_without_leaking_later_macd_or_filling_empty_interva
                         220 * SECOND
                     );
                 } else {
+                    assert!(features.snapshot().unwrap().unwrap().one_second.is_none());
                     evaluated_at_ns += SECOND;
                 }
             }
@@ -250,4 +303,66 @@ fn timeframes_close_in_order_without_leaking_later_macd_or_filling_empty_interva
     assert_eq!(five.completed()[0].bar.volume, 2.);
     assert_eq!(five.completed()[1].bar.volume, 1.);
     assert!(five.completed()[1].macd.0 > five.completed()[1].macd.1);
+}
+
+#[test]
+fn feature_owner_rejects_missing_dependencies_and_skipped_or_invalid_boundaries() {
+    use crate::candidate_features::{Config, State};
+    let config = || Config {
+        setup: crate::strategy_setup::SetupSettings {
+            range_ns: 30 * SECOND,
+            minimum_bars: 1,
+            maximum_gap_ns: 0,
+        },
+        forming_macd: true,
+        minimum_range_pct: 0.,
+        minimum_progress_pct: 0.,
+    };
+    assert!(State::new(&super::super::tests::runtime(10), config()).is_err());
+    let runtime = super::super::tests::runtime_with_timeframes(
+        100,
+        vec![super::super::Timeframe {
+            interval_ns: 5 * SECOND,
+            macd_periods: (12, 26, 9),
+            maximum_bars: 20,
+        }],
+    );
+    let mut invalid = config();
+    invalid.setup.range_ns = 3601 * SECOND;
+    assert!(State::new(&runtime, invalid).is_err());
+    let mut scheduler =
+        Scheduler::new(Ordered::new(runtime, 10).unwrap(), "feature-failure".into()).unwrap();
+    let mut features = State::new(scheduler.state().unwrap(), config()).unwrap();
+    scheduler.enqueue(&event(1, 200, 10), true).unwrap();
+    scheduler.prepare_next(202 * SECOND, 202 * SECOND).unwrap();
+    let boundary = scheduler.pending().unwrap().unwrap();
+    let Kind::Trade {
+        observation,
+        eligible,
+    } = boundary.kind
+    else {
+        unreachable!()
+    };
+    let mut supplied = Boundary {
+        id: boundary.id,
+        sequence: boundary.sequence + 1,
+        evaluated_at_ns: boundary.evaluated_at_ns,
+        kind: Kind::Trade {
+            observation,
+            eligible,
+        },
+    };
+    assert!(features
+        .observe(&supplied, scheduler.state().unwrap())
+        .is_err());
+    assert!(features.snapshot().unwrap().is_none());
+    supplied.sequence = boundary.sequence;
+    supplied.evaluated_at_ns = 1;
+    assert!(features
+        .observe(&supplied, scheduler.state().unwrap())
+        .is_err());
+    assert!(features.snapshot().is_err());
+    assert!(features
+        .observe(&boundary, scheduler.state().unwrap())
+        .is_err());
 }

@@ -78,6 +78,13 @@ struct Recovery {
     maximum_levels: usize,
 }
 impl Runtime {
+    pub fn source_scope(&self) -> crate::event_order::Scope {
+        crate::event_order::Scope {
+            provider: self.provider,
+            instrument: self.structure.instrument,
+            session: self.structure.session,
+        }
+    }
     pub fn new(seed: &HistoricalSeed, config: Config, split: &SplitAdjustment) -> Result<Self> {
         if config.provider == 0
             || config.maximum_market_events == 0
@@ -538,11 +545,7 @@ struct OrderedRecovery {
 }
 impl Ordered {
     pub fn scope(&self) -> crate::event_order::Scope {
-        crate::event_order::Scope {
-            provider: self.runtime.provider,
-            instrument: self.runtime.structure.instrument,
-            session: self.runtime.structure.session,
-        }
+        self.runtime.source_scope()
     }
     pub fn watermark_ns(&self) -> u64 {
         self.buffer.watermark_ns()
