@@ -160,11 +160,12 @@ def historical_source_native_signal_occurrences(
     }
 
 
-def _certified_occurrence_artifact(stream: dict[str, Any], *, start: datetime, end: datetime) -> dict[str, Any]:
-    """Read a pinned complete canonical replay; never fall back to partial live history."""
+def certified_signal_manifest(stream: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
+    """Validate the immutable manifest before using either its data or build recipe."""
     spec = dict(stream["historical_occurrence_artifact"])
     manifest_path = Path(str(spec.get("manifest_path") or "")).resolve()
-    runtime = Path(os.environ.get("TRADINGML_RUNTIME_ROOT", "D:/TradingML/runtimes")).resolve()
+    from src.runtime_paths import runtime_root
+    runtime = Path(os.environ.get("TRADINGML_RUNTIME_ROOT") or runtime_root()).resolve()
     if not manifest_path.is_relative_to(runtime):
         raise ValueError("Historical signal artifact must be inside the operational runtime")
     manifest_bytes = manifest_path.read_bytes()
@@ -177,12 +178,22 @@ def _certified_occurrence_artifact(stream: dict[str, Any], *, start: datetime, e
     revision = dict(manifest.get("source_revision") or {})
     if not revision.get("complete_for_history") or not revision.get("request_complete"):
         raise RuntimeError("Historical signal canonical coverage is incomplete")
-    if (_clock(manifest.get("available_start"), "available_start") > start
-            or _clock(manifest.get("available_end"), "available_end") < end):
-        raise RuntimeError("Historical signal artifact does not cover the requested session")
     definition = {key: value for key, value in stream.items() if key != "historical_occurrence_artifact"}
     if definition not in manifest.get("stream_definitions", []):
         raise RuntimeError("Historical signal definition differs from the certified detector")
+    return manifest_path, manifest
+
+
+def _certified_occurrence_artifact(stream: dict[str, Any], *, start: datetime, end: datetime) -> dict[str, Any]:
+    """Read a pinned complete canonical replay; never fall back to partial live history."""
+    manifest_path, manifest = certified_signal_manifest(stream)
+    spec = stream["historical_occurrence_artifact"]
+    if (_clock(manifest.get("available_start"), "available_start") > start
+            or _clock(manifest.get("available_end"), "available_end") < end):
+        raise RuntimeError(
+            f"Historical signal artifact does not cover the requested session {start.isoformat()} to {end.isoformat()}; "
+            f"certified coverage is {manifest['available_start']} to {manifest['available_end']}"
+        )
     path = manifest_path.parent / "occurrences.jsonl"
     if path.stat().st_size > 256 * 1024 * 1024:
         raise RuntimeError("Historical signal artifact exceeds bounded loader size")

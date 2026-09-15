@@ -1623,6 +1623,7 @@ class ReplayRunController:
             "preparation_progress": {
                 "completed": self._preparation_completed_units,
                 "total": self._preparation_total_units,
+                "signals": getattr(self, "_signal_preparation", None),
             },
             "preparation_cache": {
                 "strategy_frames": self._strategy_frame_cache_status,
@@ -6394,15 +6395,37 @@ class ReplayRunController:
 
         async def load_stream(stream: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
             async with permits:
-                loaded = await asyncio.to_thread(
-                    historical_source_native_signal_occurrences,
-                    stream,
-                    start=self.definition.requested_start,
-                    end=self.definition.session_end,
-                )
+                if stream.get("historical_occurrence_artifact"):
+                    from src.backend.historical_signal_preparation import prepared_signal_occurrences
+
+                    def progress(status):
+                        self._signal_preparation = status
+                        self._preparation_stage = status["stage"]
+                        self._preparation_completed_units = int(status.get("completed") or 0)
+                        self._preparation_total_units = int(status.get("total") or 0)
+                        self.updated_at = datetime.now(UTC)
+
+                    loaded = await prepared_signal_occurrences(
+                        stream, start=self.definition.requested_start, end=self.definition.session_end,
+                        progress=progress, stopped=lambda: self._stop_requested,
+                    )
+                else:
+                    loaded = await asyncio.to_thread(
+                        historical_source_native_signal_occurrences,
+                        stream,
+                        start=self.definition.requested_start,
+                        end=self.definition.session_end,
+                    )
             return stream, loaded
 
-        loaded_streams = await asyncio.gather(*(load_stream(stream) for stream in streams))
+        loads = [asyncio.create_task(load_stream(stream)) for stream in streams]
+        try:
+            loaded_streams = await asyncio.gather(*loads)
+        except BaseException:
+            for task in loads:
+                task.cancel()
+            await asyncio.gather(*loads, return_exceptions=True)
+            raise
         loaded_streams = _filter_loaded_source_native_occurrences(
             loaded_streams,
             self.definition.tickers,
@@ -8793,6 +8816,14 @@ def backtest_preflight(
         except Exception as exc:
             watchlist_error = str(exc)
     checks = list(base["checks"])
+    from src.backend.historical_signal_preparation import signal_coverage_check
+    signal_check = signal_coverage_check(
+        activated_signal_streams,
+        start=datetime.combine(sessions[0], start_time, tzinfo=NEW_YORK),
+        end=datetime.combine(sessions[-1], end_time, tzinfo=NEW_YORK),
+    ) if sessions else {"id": "historical_signal_coverage", "label": "Historical signal coverage",
+                        "status": "blocked", "required": True, "summary": "No sessions selected"}
+    checks.append(signal_check)
     try:
         version_check = runtime_version_check(
             configuration, dict(qmd_history_get_json("/health", timeout=5)),
@@ -8880,6 +8911,7 @@ def backtest_preflight(
     )
     ready = bool(
         base["strategy_run_ready"]
+        and signal_check["status"] == "ready"
         and version_check["status"] == "ready"
         and bindings
         and work_ready

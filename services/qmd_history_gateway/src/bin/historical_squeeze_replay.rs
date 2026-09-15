@@ -30,6 +30,11 @@ async fn main() {
 
 async fn run() -> Result<(), String> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args == ["--version"] {
+        println!("{}", json!({"producer":"historical_squeeze_replay", "schema_version":1,
+            "source_sha256":env!("QMD_HISTORY_SOURCE_SHA256")}));
+        return Ok(());
+    }
     if args.len() != 2 { return Err("Usage: historical_squeeze_replay REQUEST.json OUTPUT_DIRECTORY".into()); }
     let root = PathBuf::from(std::env::var("TRADINGML_RUNTIME_ROOT").unwrap_or("D:/TradingML/runtimes".into()))
         .canonicalize().map_err(|e| e.to_string())?;

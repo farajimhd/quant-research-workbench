@@ -5499,7 +5499,10 @@ async def trading_backtest_run_create(payload: BacktestRunCreateRequest) -> dict
             tickers=tuple(payload.tickers),
         )
         if not preflight["strategy_run_ready"]:
-            raise ValueError("Backtest dependencies changed after preflight; check them again")
+            blockers = [str(check.get("summary") or check.get("label"))
+                        for check in preflight.get("checks", [])
+                        if check.get("required", True) and check.get("status") == "blocked"]
+            raise ValueError("Backtest cannot start: " + ("; ".join(blockers) or "check dependencies again"))
         sessions = tuple(date.fromisoformat(value) for value in preflight["window"]["sessions"])
         definition = ReplayRunDefinition(
             session_date=sessions[0],
