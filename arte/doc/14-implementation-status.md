@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 193 in-process Rust tests passed (136 core and 57 adapter tests).
+- 195 in-process Rust tests passed (136 core and 59 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -705,3 +705,16 @@ Three offline tests cover publication failure, retry, partial projection failure
 mixed scope and incomplete readback. All 193 tests pass. The storage currently supports
 identity lookup, not a complete ordered run catalog. Cross-host fencing, correction
 events, crash recovery and engine-loop integration remain open. No database call ran.
+
+The historical execution lane now owns the simulator, pending fills and shared
+position projection. A quote generates fills once. Contiguous account-scope batches
+then pass through verified journal publication before projection. Pending publication
+blocks later quotes, submissions and amendments; an exact quote retry reuses pending
+work. The caller selects a scope-owned publisher through the exposed next-scope hash.
+Status reports retained fills and the applied prefix. Constructor limits must cover
+the simulator's maximum possible fill count per quote.
+Two offline tests cover the real simulator-to-journal-to-projection flow for two
+accounts, ambiguous-write retry, blocked overtaking, strategy exit and capacity.
+All 195 tests pass. Tests use an in-memory publisher, not ClickHouse. Market/V7 and
+candidate scheduling, portfolio cash updates, coherent restart, byte-level memory
+budgets and the executable backtest driver remain incomplete. No service ran.

@@ -264,6 +264,9 @@ impl Simulator {
     pub fn positions(&self) -> &[Position] {
         &self.orders
     }
+    pub fn maximum_quote_fills(&self) -> usize {
+        self.capacity * 2
+    }
     pub fn checkpoint(&self, maximum_bytes: usize) -> Result<(String, Vec<u8>)> {
         let snapshot = Checkpoint {
             run_id: self.run_id.clone(),
