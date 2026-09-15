@@ -6,6 +6,28 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Validated ledger recovery and interrupted submissions
+
+Ledger deserialization now validates records before exposing execution methods.
+It rejects duplicate keys, command/key disagreement, invalid bracket geometry,
+malformed context hashes, mismatched receipts and inconsistent fill/broker states.
+Live insertion and recovery share a 100,000-record safety ceiling. Capacity failure
+does not evict orders. Runtime ownership must bound each ledger's lifetime.
+
+A recovered `Submitting` order becomes `Unknown`. It cannot be submitted again
+through the ledger. Broker reconciliation is required. Consumers can enumerate
+records through a read-only iterator for recovery work.
+
+All 264 offline Rust tests, formatting, Clippy and frozen-source hashes pass.
+Tests cover interrupted submission, blocked resend, partial-fill reconciliation,
+duplicate JSON keys, inconsistent states and corrupted stored authorization data.
+No services or database calls ran.
+
+This validates supplied snapshots, not their freshness or external durability.
+Persisting submission state before a broker request, discovering the authoritative
+restart head and reconciling against the broker remain unfinished. Loading an old
+authorization-only snapshot is not sufficient evidence that no request was sent.
+
 ## Authorization publication and verified readback
 
 The order journal now publishes a complete immutable authorization before marking

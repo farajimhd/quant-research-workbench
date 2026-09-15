@@ -1,6 +1,7 @@
 use crate::{content_hash, Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+mod recovery;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Side {
@@ -212,10 +213,16 @@ pub struct OrderRecord {
     pub durable_receipt: Option<String>,
 }
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(try_from = "recovery::StoredLedger")]
 pub struct OrderLedger {
     records: BTreeMap<String, OrderRecord>,
 }
 impl OrderLedger {
+    pub fn records(&self) -> impl Iterator<Item = (&str, &OrderRecord)> {
+        self.records
+            .iter()
+            .map(|(id, record)| (id.as_str(), record))
+    }
     pub fn authorize(
         &mut self,
         bracket: Bracket,
@@ -229,6 +236,9 @@ impl OrderLedger {
         session.validate(&bracket, now_ns, bands, policy)?;
         let authorization = session.authorization_context(policy)?;
         let id = bracket.command_id.clone();
+        if !self.records.contains_key(&id) && self.records.len() >= recovery::MAX_RECORDS {
+            return Err(Error::Capacity("order ledger record limit".into()));
+        }
         if let Some(old) = self.records.get(&id) {
             if old.bracket != bracket || old.authorization != authorization {
                 return Err(Error::Conflict(
@@ -657,11 +667,71 @@ mod tests {
                 1 => data["records"]["c"]["durable_receipt"] = serde_json::Value::Null,
                 _ => data["records"]["c"]["durable_receipt"] = "b".repeat(64).into(),
             }
-            let mut restored: OrderLedger = serde_json::from_value(data).unwrap();
-            assert!(restored
-                .begin_submit("c", 10, &calendar, None, &policy, gate.at(10))
-                .is_err());
-            assert_eq!(restored.record("c").unwrap().state, OrderState::Durable);
+            assert!(serde_json::from_value::<OrderLedger>(data).is_err());
+        }
+    }
+    #[test]
+    fn recovery_requires_reconciliation_for_interrupted_submission() {
+        let gate = ready_gate();
+        let calendar = session(false);
+        let policy = RiskPolicy {
+            band_provider: 1,
+            band_session: 20260915,
+            band_buffer_ticks: 3,
+            max_band_age_ns: 100,
+        };
+        let mut ledger = OrderLedger::default();
+        ledger
+            .authorize(b(), 10, &calendar, None, &policy, gate.at(10))
+            .unwrap();
+        ledger
+            .mark_durable("c", &ledger.envelope_hash("c").unwrap())
+            .unwrap();
+        ledger
+            .begin_submit("c", 10, &calendar, None, &policy, gate.at(10))
+            .unwrap();
+        let mut restored: OrderLedger =
+            serde_json::from_slice(&serde_json::to_vec(&ledger).unwrap()).unwrap();
+        assert_eq!(restored.record("c").unwrap().state, OrderState::Unknown);
+        assert!(restored
+            .begin_submit("c", 10, &calendar, None, &policy, gate.at(10))
+            .is_err());
+        restored.reconcile("c", "broker-1".into(), 2).unwrap();
+        let restored: OrderLedger =
+            serde_json::from_slice(&serde_json::to_vec(&restored).unwrap()).unwrap();
+        assert_eq!(
+            restored.record("c").unwrap().state,
+            OrderState::PartiallyFilled
+        );
+        assert_eq!(restored.records().count(), 1);
+    }
+    #[test]
+    fn recovery_rejects_duplicate_keys_and_inconsistent_state() {
+        let gate = ready_gate();
+        let calendar = session(false);
+        let policy = RiskPolicy {
+            band_provider: 1,
+            band_session: 20260915,
+            band_buffer_ticks: 3,
+            max_band_age_ns: 100,
+        };
+        let mut ledger = OrderLedger::default();
+        ledger
+            .authorize(b(), 10, &calendar, None, &policy, gate.at(10))
+            .unwrap();
+        let record = serde_json::to_string(ledger.record("c").unwrap()).unwrap();
+        let duplicate = format!("{{\"records\":{{\"c\":{record},\"c\":{record}}}}}");
+        assert!(serde_json::from_str::<OrderLedger>(&duplicate).is_err());
+        for case in 0..5 {
+            let mut data = serde_json::to_value(&ledger).unwrap();
+            match case {
+                0 => data["records"]["c"]["filled"] = 1.into(),
+                1 => data["records"]["c"]["bracket"]["command_id"] = "other".into(),
+                2 => data["records"]["c"]["authorization"]["session_hash"] = "bad".into(),
+                3 => data["records"]["c"]["broker_id"] = "".into(),
+                _ => data["records"]["c"]["state"] = "Filled".into(),
+            }
+            assert!(serde_json::from_value::<OrderLedger>(data).is_err());
         }
     }
     #[test]
