@@ -162,7 +162,7 @@ try {
     if (-not $NoBuild) {
         Write-Host "Building qmd-history-gateway from shared qmd_core..."
         Write-Host "Cargo target: $resolvedCargoTargetDir"
-        cargo build --offline --locked --release --bin qmd-history-gateway --manifest-path $manifest --target-dir $resolvedCargoTargetDir
+        cargo build --offline --locked --release --bin qmd-history-gateway --bin historical_squeeze_replay --manifest-path $manifest --target-dir $resolvedCargoTargetDir
         if ($LASTEXITCODE -ne 0) {
             throw "qmd-history-gateway build failed with exit code $LASTEXITCODE"
         }
