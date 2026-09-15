@@ -168,7 +168,13 @@ impl Lane {
         recovery: &arte_core::strategy_lifecycle::RecoveryPolicy,
     ) -> Result<String> {
         self.available()?;
-        arte_core::candidate_runtime::configuration_hash(policy, intrabar, &self.features, recovery)
+        arte_core::candidate_runtime::configuration_hash(
+            policy,
+            intrabar,
+            &self.features,
+            recovery,
+            self.quotes.policy_hash()?,
+        )
     }
     /// Prepare an intent/journal batch, not an order. The caller must commit that
     /// batch before advancing account state or acknowledging the market boundary.

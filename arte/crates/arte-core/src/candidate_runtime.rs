@@ -17,7 +17,9 @@ pub fn configuration_hash(
     intrabar: &candidate::AcquisitionPolicy,
     features: &crate::candidate_features::State,
     recovery: &crate::strategy_lifecycle::RecoveryPolicy,
+    quote_policy_hash: &str,
 ) -> Result<String> {
+    require_quote_policy_hash(quote_policy_hash)?;
     features.snapshot()?;
     if completed.maximum_completed_bar_age_ns != features.maximum_completed_bar_age_ns() {
         return Err(Error::Conflict(
@@ -25,11 +27,12 @@ pub fn configuration_hash(
         ));
     }
     content_hash(&(
-        "candidate-configuration-v2",
+        "candidate-configuration-v3",
         completed,
         intrabar,
         recovery,
         features.configuration_hash(),
+        quote_policy_hash,
     ))
 }
 impl Runtime {
@@ -76,9 +79,11 @@ impl Runtime {
         intrabar: &candidate::AcquisitionPolicy,
         features: &crate::candidate_features::State,
         recovery: &crate::strategy_lifecycle::RecoveryPolicy,
+        quote_policy_hash: &str,
     ) -> Result<()> {
         if self.instrument != features.source_scope().instrument
-            || configuration_hash(completed, intrabar, features, recovery)? != self.config_hash
+            || configuration_hash(completed, intrabar, features, recovery, quote_policy_hash)?
+                != self.config_hash
         {
             return Err(Error::Conflict(
                 "candidate configuration differs from pinned scope".into(),
@@ -116,6 +121,7 @@ impl Runtime {
             intrabar,
             features,
             frame.recovery_policy,
+            frame.quote_policy_hash,
         )?;
         if frame.bar.end_ns > input.evaluated_at_ns
             || input.event_time_ns != frame.bar.end_ns
@@ -166,7 +172,16 @@ impl Runtime {
         features: &crate::candidate_features::State,
         recovery: &crate::strategy_lifecycle::RecoveryPolicy,
     ) -> Result<dispatch::Decision> {
-        self.validate(&input, broker, safety, policy, intrabar, features, recovery)?;
+        self.validate(
+            &input,
+            broker,
+            safety,
+            policy,
+            intrabar,
+            features,
+            recovery,
+            &observation.quote_policy_hash,
+        )?;
         if observation.at_ns != input.evaluated_at_ns || !body_high.is_finite() || body_high <= 0. {
             return Err(Error::Invalid("invalid candidate intrabar boundary".into()));
         }

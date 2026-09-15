@@ -6,6 +6,23 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Run-level quote-policy pinning
+
+The candidate's effective configuration now includes the quote eligibility policy
+hash under candidate-configuration-v3. Both completed-candle and intrabar paths
+recompute that configuration against the run's pinned scope before journal work.
+A different valid policy hash is rejected, not merely logged as changed evidence.
+The live market lane derives its configuration hash from its bound quote book.
+
+Existing integration tests verify that policy changes alter configuration identity
+and are rejected by both evaluation paths without preparing a journal batch.
+All 310 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+No services or database calls ran. Source-oracle parity was not rerun.
+
+This is a configuration-contract version change; older configuration hashes must
+not be silently reused. Complete persisted run manifests, migration/restart handling
+and the full runtime coordinator remain unfinished.
+
 ## Intrabar quote-policy evidence
 
 Intrabar acquisition observations now carry the quote policy hash. A shared binding

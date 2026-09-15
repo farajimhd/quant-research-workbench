@@ -742,6 +742,7 @@ mod tests {
                         &intrabar_policy,
                         &features,
                         f.recovery_policy,
+                        f.quote_policy_hash,
                     )
                     .unwrap(),
                 },
@@ -802,7 +803,8 @@ mod tests {
                 &policy,
                 &intrabar_policy,
                 &conflicting_age,
-                f.recovery_policy
+                f.recovery_policy,
+                f.quote_policy_hash,
             )
             .is_err());
             let unpinned_frame = entry::Frame {
@@ -814,6 +816,42 @@ mod tests {
                     input.clone(),
                     &safety,
                     &unpinned_frame,
+                    &flat,
+                    &gates,
+                    &policy,
+                    &intrabar_policy,
+                    &features
+                )
+                .is_err());
+            assert!(runtime.pending_batch().is_none());
+            let changed_policy_frame = entry::Frame {
+                quote_policy_hash:
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                ..*f
+            };
+            assert_ne!(
+                crate::candidate_runtime::configuration_hash(
+                    &policy,
+                    &intrabar_policy,
+                    &features,
+                    f.recovery_policy,
+                    f.quote_policy_hash
+                )
+                .unwrap(),
+                crate::candidate_runtime::configuration_hash(
+                    &policy,
+                    &intrabar_policy,
+                    &features,
+                    f.recovery_policy,
+                    changed_policy_frame.quote_policy_hash
+                )
+                .unwrap()
+            );
+            assert!(runtime
+                .completed(
+                    input.clone(),
+                    &safety,
+                    &changed_policy_frame,
                     &flat,
                     &gates,
                     &policy,
@@ -1074,6 +1112,22 @@ mod tests {
                     live_input.clone(),
                     &pending_safety,
                     &missing_pin,
+                    &pending_broker,
+                    f.bar.open.max(f.bar.close),
+                    &policy,
+                    &intrabar_policy,
+                    &features,
+                    f.recovery_policy
+                )
+                .is_err());
+            assert!(runtime.pending_batch().is_none());
+            let mut changed_policy = observation.clone();
+            changed_policy.quote_policy_hash = "b".repeat(64);
+            assert!(runtime
+                .intrabar(
+                    live_input.clone(),
+                    &pending_safety,
+                    &changed_policy,
                     &pending_broker,
                     f.bar.open.max(f.bar.close),
                     &policy,
