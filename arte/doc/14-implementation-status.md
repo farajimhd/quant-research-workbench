@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 171 in-process Rust tests passed (120 core and 51 adapter tests).
+- 173 in-process Rust tests passed (120 core and 53 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -553,3 +553,16 @@ admission, global safety producers, complete effective configuration export, eve
 routing, crash recovery and OMS consumption remain open. Full borrowed feature arrays
 are currently serialized for hashing; measured incremental fingerprinting is still
 needed for the low-latency path. No network or service test ran.
+
+The asynchronous strategy journal adapter now accepts both the generic transaction
+runtime and the typed candidate runtime. It appends the pending batch, verifies
+readback and only then acknowledges state. Errors or cancelled futures leave the
+pending transaction available for an exact retry. Its database publisher requires
+extraction and durability acceptance plus an exclusively borrowed local scope lease.
+Every record must match that scope. Existing ClickHouse append logic validates the
+table policy, actual part placement, predecessor and immutable retry slots.
+Two offline tests cover ambiguous writes, incomplete readback, cancellation and
+retry without recalculation. The real database path compiled but did not run.
+This scope lock is cooperative and host-local; it is not account-level ownership
+across different runs or cross-host fencing. Crash recovery, durable OMS handoff
+and executable live/backtest consumers remain incomplete.

@@ -14,3 +14,4 @@ pub mod ownership;
 pub mod request_governor;
 pub mod rest_acquisition;
 pub mod stoppable_fetcher;
+pub mod strategy_journal;
