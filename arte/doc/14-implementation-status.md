@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 91 in-process Rust tests passed (84 core and 7 adapter tests).
+- 95 in-process Rust tests passed (88 core and 7 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -209,8 +209,17 @@ targets require an explicit supplied value; no historical LULD estimate is creat
 Admission, activity and official-band producers are not wired yet. This evaluator
 does not authorize an order. Five offline tests cover the composed entry path,
 quote feasibility, missing regular targets, early-base behavior and causal guards.
-Whole-source strategy parity, additions, dispatcher integration and effective
+Whole-source strategy parity, dispatcher integration and effective
 configuration binding remain incomplete.
+
+Resistance-add progression now uses position-owned frozen pending levels and a
+frontier reset to the entry close. It selects one nearest crossed resistance or
+transition per completed candle. Red breaks can wait for a non-red confirmation.
+Gaps clear pending breaks. A non-red opportunity is consumed even when admission
+or execution geometry rejects it. Tranche counts track proposals, not fills.
+Capacity errors preserve the prior state. Four offline tests cover selection,
+one-shot consumption, red/gap behavior and capacity rollback. Admission producers,
+portfolio allocation and bracket authorization still need dispatcher integration.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.
