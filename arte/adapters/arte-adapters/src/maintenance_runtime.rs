@@ -41,6 +41,11 @@ pub struct Context {
     lock_directory: PathBuf,
     governor: Arc<Governor>,
 }
+pub struct PreparedSources {
+    pub catalog: arte_core::acquisition::Catalog,
+    pub repair: crate::startup_repair::Report,
+    pub observers: Observers,
+}
 impl Context {
     pub fn new(
         database: Arc<ClickHouse>,
@@ -65,6 +70,64 @@ impl Context {
     }
     pub async fn rate_status(&self) -> crate::request_governor::Status {
         self.governor.status().await
+    }
+    /// Read-only startup discovery. Every interval is revalidated against stored
+    /// acquisition batches before any maintenance job is dispatched.
+    pub async fn prepare_startup_sources(
+        &self,
+        dependencies: &arte_core::dependency_plan::Plan,
+        bindings: Vec<crate::startup_repair::Binding>,
+        checked_at_ns: u64,
+        maximum_certificates: usize,
+        limits: &crate::startup_repair::Limits,
+        mut stop: watch::Receiver<bool>,
+    ) -> Result<PreparedSources> {
+        gate(&self.passed)?;
+        if maximum_certificates == 0 || maximum_certificates > 4096 {
+            return Err(Error::Capacity("startup coverage catalog budget".into()));
+        }
+        let mut catalog = arte_core::acquisition::Catalog::new(maximum_certificates)?;
+        let required = crate::startup_repair::plan(
+            dependencies,
+            bindings.clone(),
+            &catalog,
+            checked_at_ns,
+            limits,
+        )?;
+        for job in required.jobs {
+            if *stop.borrow() || stop.has_changed().is_err() {
+                return Err(Error::Unready("startup coverage discovery stopped".into()));
+            }
+            let discovery = self.database.discover_acquisitions(
+                &job.authority,
+                job.interval,
+                checked_at_ns,
+                maximum_certificates,
+            );
+            tokio::pin!(discovery);
+            let found = loop {
+                tokio::select! {
+                    result = &mut discovery => break result?,
+                    changed = stop.changed() => {
+                        if changed.is_err() || *stop.borrow() {
+                            return Err(Error::Unready("startup coverage discovery stopped".into()));
+                        }
+                    }
+                }
+            };
+            catalog.merge(found)?;
+        }
+        if *stop.borrow() || stop.has_changed().is_err() {
+            return Err(Error::Unready("startup coverage discovery stopped".into()));
+        }
+        let repair =
+            crate::startup_repair::plan(dependencies, bindings, &catalog, checked_at_ns, limits)?;
+        let observers = Observers::new(&repair.jobs)?;
+        Ok(PreparedSources {
+            catalog,
+            repair,
+            observers,
+        })
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -803,3 +803,13 @@ database behavior remain untested; schema 008 was not applied. Existing unindexe
 certificates need explicit index reconstruction before discovery can find them.
 Multi-instrument startup discovery wiring, derived warming and service entry points
 remain incomplete. No services were started.
+
+Startup preparation now discovers coverage for every declared source interval and
+instrument, merges verified catalogs under one certificate-count limit, replans
+remaining repairs and creates their observers. Discovery supports cancellation
+without dispatching writers. Catalog merge coalesces identical certificates and
+rejects capacity overflow before changing the destination. One offline test covers
+duplicate merge and unchanged state after overflow. All 206 Rust tests, formatting,
+static checks and source hashes pass. Discovery queries remain unexecuted. Catalog
+byte accounting, efficient range indexing at scale, derived materialization/warming,
+CLI startup and full live/backtest execution remain incomplete. No service ran.

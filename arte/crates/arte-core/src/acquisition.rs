@@ -283,6 +283,20 @@ impl Catalog {
         self.entries.push(certificate);
         Ok(id)
     }
+    /// Merge only another verified catalog. Capacity failure leaves self unchanged.
+    pub fn merge(&mut self, other: Catalog) -> Result<()> {
+        let added = other.ids.difference(&self.ids).count();
+        if added > self.maximum - self.entries.len() {
+            return Err(Error::Capacity("merged coverage catalog full".into()));
+        }
+        for certificate in other.entries {
+            let id = certificate.id()?;
+            if self.ids.insert(id) {
+                self.entries.push(certificate);
+            }
+        }
+        Ok(())
+    }
     pub fn missing(
         &self,
         authority: &Authority,
@@ -341,6 +355,37 @@ mod tests {
         c.pages[0].next_request_hash = None;
         c.pages[0].rejected_rows = 1;
         assert!(c.validate(&ack).is_err());
+    }
+    #[test]
+    fn catalog_merge_is_deduplicated_and_capacity_failure_is_atomic() {
+        let mut c = certificate();
+        c.pages[0].source_rows = 0;
+        c.pages[0].accepted_rows = 0;
+        c.pages[0].batches.clear();
+        let mut target = Catalog::new(1).unwrap();
+        target
+            .publish(Verifier::new(c.clone()).unwrap().finish().unwrap())
+            .unwrap();
+        let mut duplicate = Catalog::new(1).unwrap();
+        duplicate
+            .publish(Verifier::new(c.clone()).unwrap().finish().unwrap())
+            .unwrap();
+        target.merge(duplicate).unwrap();
+        assert_eq!(target.entries.len(), 1);
+        c.authority.instrument = 2;
+        let other_authority = c.authority.clone();
+        let mut additional = Catalog::new(1).unwrap();
+        additional
+            .publish(Verifier::new(c).unwrap().finish().unwrap())
+            .unwrap();
+        assert!(matches!(target.merge(additional), Err(Error::Capacity(_))));
+        assert_eq!(target.entries.len(), 1);
+        assert_eq!(
+            target
+                .missing(&other_authority, Interval { start: 10, end: 20 }, 50)
+                .unwrap(),
+            vec![Interval { start: 10, end: 20 }]
+        );
     }
     #[test]
     fn empty_coverage_requires_a_successful_checked_page() {
