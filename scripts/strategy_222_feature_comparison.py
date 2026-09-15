@@ -168,7 +168,7 @@ def anchors(cases, trial):
     return result
 
 
-def sample(anchor, offset, decisions, maximum_age=2., market_states=None):
+def sample(anchor, offset, decisions, maximum_age=2., market_states=None, sequence_states=None):
     target = anchor['at'] + offset
     # For execution anchors at offset zero, reject decisions after the fill,
     # even when their event timestamps are identical.
@@ -186,6 +186,10 @@ def sample(anchor, offset, decisions, maximum_age=2., market_states=None):
         extra, evidence = market_states.at(anchor['symbol'],decision,at)
         result['features'].update(extra)
         result['market_state_authority'] = evidence
+    if sequence_states is not None:
+        extra, evidence = sequence_states.at(anchor['symbol'], at)
+        result['features'].update(extra)
+        result['sequence_authority'] = evidence
     return result
 
 
@@ -231,7 +235,7 @@ def contrasts(rows):
     return output
 
 
-def run(source, output, variant, cache=None):
+def run(source, output, variant, cache=None, sequence_manifest=None):
     output = output.resolve(); output.relative_to(Path('D:/TradingML/runtimes').resolve())
     output.mkdir(parents=True, exist_ok=True)
     inputs = [source/'comparison.json', source/'position-comparison.json', Path(__file__),
@@ -244,6 +248,12 @@ def run(source, output, variant, cache=None):
     trial = trials[0]
     if trial['status'] != 'completed':
         raise ValueError('Incomplete trial')
+    sequence_source = None
+    if sequence_manifest is not None:
+        from strategy_222_recorded_sequences import recording
+        sequence_source = recording(sequence_manifest, trial['run_id'])
+        for path in (sequence_manifest, sequence_source[0], Path(__file__).with_name('strategy_222_recorded_sequences.py')):
+            identity[str(path.resolve())] = digest(path)
     journal = Path('D:/TradingML/runtimes/trading/backtest')/trial['run_id']/'journal.sqlite3'
     wal = Path(str(journal)+'-wal')
     if wal.exists() and wal.stat().st_size:
@@ -280,6 +290,11 @@ def run(source, output, variant, cache=None):
         bounds = defaultdict(list)
         for point in points:
             bounds[point['symbol']].append((point['at']+min(OFFSETS)-2, point['at']+max(OFFSETS)))
+        sequence_states = None
+        if sequence_source is not None:
+            from strategy_222_recorded_sequences import RecordedSequences
+            sequence_states = RecordedSequences(*sequence_source, trial['run_id'],
+                {symbol:[(start-2,end) for start,end in windows] for symbol,windows in bounds.items()})
         decisions = defaultdict(list)
         print(f"Active=1 queued=0 completed=0 skipped=0 failed=0; extracting {len(points)} anchors from one completed journal.", flush=True)
         connection = sqlite3.connect(journal.as_uri()+'?mode=ro&immutable=1', uri=True)
@@ -298,13 +313,23 @@ def run(source, output, variant, cache=None):
         rows = []
         for point in points:
             for offset in OFFSETS:
-                rows.append(dict(point, offset_s=offset, **sample(point, offset, decisions[point['symbol']],market_states=market_states)))
+                rows.append(dict(point, offset_s=offset, **sample(point, offset, decisions[point['symbol']],market_states=market_states,sequence_states=sequence_states)))
+        if sequence_source is not None:
+            from strategy_222_recorded_sequences import complete_sparse_labels
+            complete_sparse_labels(rows)
         save(output/'samples.json', rows)
         summary = dict(method='Descriptive, outcome-selected development samples. One value per anchor group and offset. AUC is a rank association, not classifier accuracy. Leave-one-ticker-out values measure sensitivity only; this is not held-out prediction. Repeated moves within a ticker/session remain dependent; many features were screened without multiple-testing correction. Missing branch-dependent features are not imputed. Positive offsets are after the anchor and cannot justify decisions before it. Hindsight peak bids are labels, not executable exits. Price gain measured near actual exit is mechanically related to realized profit and is not evidence of an early-exit predictor. Quote/trade pressure and native 2s MACD were not delivered to this strategy and are not silently joined as available features.',
             anchors=len(points), samples=len(rows), coverage=dict(Counter(r['status'] for r in rows)),
             contrasts=contrasts(rows))
         summary['feature_count'] = len({name for row in rows for name in row.get('features',{})})
         summary['market_state_scope'] = ('Completed 1s/5s candle patterns, ATR, execution VWAP and MACD episode state are derived from certified frames using recorded delivery watermarks. Episode ages and peaks are observed-to-date only. Level encounter summaries expose warning/failed encounters, not the complete level book; their distances must not be interpreted as nearest support/resistance overall. Additional candlestick pattern definitions are descriptive geometry, not reversal predictions.' if cache is not None else 'Journal-only features; canonical market-state extension not requested.')
+        if sequence_source is not None:
+            summary['method'] += ' Native sequence label absence is encoded as zero only for a complete recorded window; missing or interrupted windows remain unavailable.'
+            summary['sequence_coverage'] = dict(Counter(
+                (r.get('sequence_authority') or {}).get('status', 'no_sample') for r in rows))
+            summary['sequence_complete_windows'] = {str(n):sum(
+                n in (r.get('sequence_authority') or {}).get('complete_windows', []) for r in rows)
+                for n in (3,5,10)}
         save(output/'comparison.json', summary)
         lines = ['# Strategy 222 feature comparison', '', summary['method'], '', summary['market_state_scope'], '',
                  f"Features: {summary['feature_count']}.", '',
@@ -346,5 +371,6 @@ if __name__ == '__main__':
     parser.add_argument('--output', type=Path, default=ROOT/'v31-market-state-comparison-v3')
     parser.add_argument('--cache',type=Path,required=True,help='Certified canonical prepared-frame SQLite cache matching the replay authority')
     parser.add_argument('--variant', default='regular-origin-v31')
+    parser.add_argument('--sequence-manifest',type=Path,help='Optional completed native sequence recording from this same replay')
     args = parser.parse_args()
-    run(args.source, args.output, args.variant,args.cache)
+    run(args.source, args.output, args.variant,args.cache,args.sequence_manifest)
