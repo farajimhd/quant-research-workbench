@@ -52,6 +52,21 @@ def test_research_geometry_requires_measured_causal_evidence_and_preserves_exist
     assert m.features({'early_base_assessment':existing,'research_base_assessment':research},10.)['base_risk_pct']==1.
 
 
+def test_recovery_geometry_uses_only_recorded_prior_position_and_base():
+    metadata = {'reference_price':10., 'setup_recovery':{'last_exit':{
+        'at':5., 'initial_fill_price':12., 'stop':11., 'body_high':13.,
+        'setup':{'breakout_threshold':12.5}}}, 'research_base_assessment':{
+        'status':'measured','observed_at':10.,'range':{'start':6.,'end':9.},
+        'swing':{'confirmed_at':9.,'lower':9.5}}}
+    result=m.features(metadata,10.)
+    assert result['price_to_previous_initial_fill_pct']==pytest.approx((10/12-1)*100)
+    assert result['price_to_previous_reclaim_pct']==pytest.approx((10/13-1)*100)
+    assert result['support_to_previous_stop_pct']==pytest.approx((9.5/11-1)*100)
+    assert result['base_entirely_after_previous_exit']==1.
+    metadata['setup_recovery']['last_exit']['at']=11.
+    with pytest.raises(ValueError,match='Future'):m.features(metadata,10.)
+
+
 def test_ties_have_half_auc():
     assert m.auc([2, 2], [2, 2]) == .5
     assert m.auc([3], [1, 2]) == 1

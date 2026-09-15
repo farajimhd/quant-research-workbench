@@ -13,6 +13,7 @@ import sqlite3
 from zoneinfo import ZoneInfo
 from src.trading_runtime import historical_hod as H, v7_setup as V
 from strategy_222_supervised_research import digest,save
+from strategy_222_feature_comparison import features
 
 
 def decision_rows(connection, cutoff):
@@ -120,13 +121,15 @@ def run(manifest_path,output,cutoff=None,quote_ledger=None):
             if result['status']=='base_failed':failed_checks.update(result['failed'])
             if result['status']=='base_passed':
                 first[d['reason']]+=1;combinations[(d['reason'],result['recovery_reason'] or 'recovery_passed')]+=1
-                rows.append(dict(sequence=sequence,time=stamp,symbol=d['ticker'],first_blocker=d['reason'],**result))
+                rows.append(dict(sequence=sequence,time=stamp,symbol=d['ticker'],first_blocker=d['reason'],
+                    features=features(m,datetime.fromisoformat(stamp).timestamp()),**result))
     finally:c.close()
     report=dict(status='prefix' if cutoff else 'completed',run_id=trial['run_id'],cutoff=cutoff or last,
         transaction_max_sequence=maximum_sequence,counts=dict(counts),unavailable_reasons=dict(unavailable),
         base_failed_checks=dict(failed_checks),first_blockers_with_passing_base=dict(first),
         gate_combinations=[dict(first_blocker=a,recovery_reason=b,count=n) for (a,b),n in sorted(combinations.items())],
-        rows=rows,inputs={str(p):digest(p) for p in (manifest_path,config_path,Path(__file__),root/'src/trading_runtime/v7_setup.py')},
+        rows=rows,inputs={str(p):digest(p) for p in (manifest_path,config_path,Path(__file__),
+            Path(__file__).with_name('strategy_222_feature_comparison.py'),root/'src/trading_runtime/v7_setup.py')},
         method='Flat-state 1s decisions only. Evaluate recorded measured base geometry, then the shared recovery function with recorded last exit and configured switches. Selected support already passed retired-support filtering in recovery_observe. No outcome labels, future price, ticker-specific rules, or gate overrides. Other entry and execution gates are not certified by a passing base/recovery assessment. Counts are dependent decisions, not opportunities or trades.')
     if not cutoff:report['journal_sha256']=digest(journal)
     if quote_ledger:

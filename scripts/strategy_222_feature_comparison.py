@@ -109,6 +109,18 @@ def features(metadata, at):
         put('previous_stop_protected', previous.get('stop_above_initial_fill'))
         relative('price_to_previous_stop_pct', price, previous.get('stop'))
         relative('price_to_previous_body_high_pct', price, previous.get('body_high'))
+        relative('price_to_previous_initial_fill_pct', price, previous.get('initial_fill_price'))
+        prior_setup = previous.get('setup') or {}
+        reclaim_values = [previous.get('body_high'), prior_setup.get('breakout_threshold')]
+        if all(isinstance(v, (int, float)) and math.isfinite(v) for v in reclaim_values):
+            relative('price_to_previous_reclaim_pct', price, max(reclaim_values))
+        if timed(base):
+            base_range = base.get('range') or {}
+            if timed(base_range, 'end') and isinstance(base_range.get('start'), (int, float)):
+                put('base_entirely_after_previous_exit', base_range['start'] > previous['at'])
+            support = base.get('swing') or {}
+            if timed(support, 'confirmed_at'):
+                relative('support_to_previous_stop_pct', support.get('lower'), previous.get('stop'))
     setup = metadata.get('setup_management') or {}
     if setup.get('phase'):
         put('phase_post_breakout', setup['phase'] == 'post_breakout')
