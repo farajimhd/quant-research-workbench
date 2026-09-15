@@ -830,6 +830,48 @@ mod tests {
         }
     }
     #[test]
+    fn published_marker_overrides_missing_snapshot_and_recovery_never_overwrites() {
+        let authorization = Authorization {
+            bracket: b(),
+            context: AuthorizationContext {
+                session_hash: "a".repeat(64),
+                allow_extended: true,
+                risk_policy_hash: "b".repeat(64),
+            },
+        };
+        let marker = submission::Marker {
+            order_key: authorization.key().unwrap(),
+            authorization_hash: authorization.hash().unwrap(),
+            request_hash: "c".repeat(64),
+            prepared_at_ns: 10,
+        };
+        let mut ledger = OrderLedger::default();
+        ledger
+            .recover_published_order(authorization.clone(), Some(marker.clone()))
+            .unwrap();
+        assert_eq!(ledger.record("c").unwrap().state, OrderState::Unknown);
+        assert!(ledger
+            .prepare_submission_marker("c", &marker.request_hash, 11)
+            .is_err());
+        assert!(ledger.acknowledge_submission("c", &marker).is_err());
+        assert!(ledger
+            .recover_published_order(authorization.clone(), None)
+            .is_err());
+        assert_eq!(ledger.record("c").unwrap().state, OrderState::Unknown);
+        let mut no_marker = OrderLedger::default();
+        no_marker
+            .recover_published_order(authorization.clone(), None)
+            .unwrap();
+        assert_eq!(no_marker.record("c").unwrap().state, OrderState::Durable);
+        let mut wrong = marker;
+        wrong.authorization_hash = "d".repeat(64);
+        let mut failed = OrderLedger::default();
+        assert!(failed
+            .recover_published_order(authorization, Some(wrong))
+            .is_err());
+        assert_eq!(failed.records().count(), 0);
+    }
+    #[test]
     fn phase_is_rechecked_after_durability_without_changing_order_state() {
         let gate = ready_gate();
         let calendar = session(false);

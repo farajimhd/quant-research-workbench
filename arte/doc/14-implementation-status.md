@@ -6,6 +6,32 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Known-order restart discovery
+
+The account-owned ClickHouse publisher can now recover a known command. It requires
+the exact authorization from the pinned decision path, verifies its stored row,
+then discovers the submission marker by the stable order slot. Missing authorization,
+query failure, malformed data or conflicting marker versions fail recovery.
+
+A found marker restores the order as `Unknown`, without send permission. Confirmed
+marker absence restores `Durable`, subject to all current submission checks. This
+absence interpretation requires the approved durable-storage and exclusive-owner
+protocol. It is not valid against a stale replica or a legacy writer that bypassed
+submission markers.
+
+Recovery validates the complete candidate record before insertion. It refuses to
+overwrite an existing order, so a later marker-absent result cannot downgrade an
+unknown order to durable. Invalid recovery leaves the destination ledger unchanged.
+
+All 269 offline Rust tests, formatting, Clippy and frozen-source hashes pass.
+Tests cover marker discovery, foreign authorizations, duplicate versions, invalid
+data, unknown-state restoration, denied permission and overwrite prevention.
+The database query path has compile coverage only; no database calls ran.
+
+This handles known commands, not complete account restart discovery. Enumeration
+of authoritative pending commands, fill replay, broker protection reconciliation,
+and startup integration remain required before live execution is ready.
+
 ## Persisted submission markers and single-use send permission
 
 The submission preparation path now creates an immutable marker containing the

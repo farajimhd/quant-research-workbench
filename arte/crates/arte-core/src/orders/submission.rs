@@ -12,7 +12,7 @@ impl Marker {
     pub fn hash(&self) -> Result<String> {
         content_hash(&("arte.order-submission.v1", self))
     }
-    pub(super) fn require(&self, authorization: &Authorization) -> Result<()> {
+    pub fn require(&self, authorization: &Authorization) -> Result<()> {
         if self.order_key != authorization.key()?
             || self.authorization_hash != authorization.hash()?
             || !recovery::hash_valid(&self.request_hash)

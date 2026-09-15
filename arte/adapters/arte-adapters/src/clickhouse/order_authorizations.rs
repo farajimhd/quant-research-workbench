@@ -176,6 +176,66 @@ impl ClickHouse {
         let query = format!("SELECT DISTINCT order_key,envelope_hash,payload_json FROM {}.{SUBMISSION_TABLE} WHERE order_key='{}' LIMIT 2 FORMAT JSONEachRow", self.database, expected.order_key);
         decode_submission(&self.request(&query, String::new()).await?, expected)
     }
+    async fn discover_submission(
+        &self,
+        authorization: &Authorization,
+    ) -> Result<Option<arte_core::orders::submission::Marker>> {
+        self.verify_storage(SUBMISSION_TABLE).await?;
+        let query = format!("SELECT DISTINCT order_key,envelope_hash,payload_json FROM {}.{SUBMISSION_TABLE} WHERE order_key='{}' LIMIT 2 FORMAT JSONEachRow", self.database, authorization.key()?);
+        discover_marker(&self.request(&query, String::new()).await?, authorization)
+    }
+}
+fn discover_marker(
+    body: &str,
+    authorization: &Authorization,
+) -> Result<Option<arte_core::orders::submission::Marker>> {
+    if body.len() > 4 * MAX_PAYLOAD {
+        return Err(Error::Capacity("submission discovery byte limit".into()));
+    }
+    let mut result = None;
+    for line in body.lines().filter(|line| !line.trim().is_empty()) {
+        if result.is_some() {
+            return Err(Error::Conflict(
+                "multiple discovered submission versions".into(),
+            ));
+        }
+        let row: Row =
+            serde_json::from_str(line).map_err(|e| Error::Serialization(e.to_string()))?;
+        if row.payload_json.len() > MAX_PAYLOAD {
+            return Err(Error::Capacity("discovered marker byte limit".into()));
+        }
+        let marker: arte_core::orders::submission::Marker = serde_json::from_str(&row.payload_json)
+            .map_err(|e| Error::Serialization(e.to_string()))?;
+        marker.require(authorization)?;
+        if decode_submission(line, &marker)?.is_none() {
+            return Err(Error::Unready("discovered marker missing".into()));
+        }
+        result = Some(marker);
+    }
+    Ok(result)
+}
+impl OrderPublisher<'_> {
+    /// Recover a command whose complete authorization is already known from the
+    /// pinned decision path. No HTTP request is an order request. A database error
+    /// or conflicting marker cannot be treated as absence.
+    pub async fn recover_known_order(
+        &mut self,
+        ledger: &mut arte_core::orders::OrderLedger,
+        expected: &Authorization,
+    ) -> Result<()> {
+        self.lease.require(&self.ownership_hash)?;
+        if expected.bracket.account != self.account {
+            return Err(Error::Conflict("recovery account mismatch".into()));
+        }
+        let authorization = self
+            .database
+            .find_order_authorization(expected)
+            .await?
+            .ok_or_else(|| Error::Unready("recovery authorization missing".into()))?;
+        let marker = self.database.discover_submission(&authorization).await?;
+        self.lease.require(&self.ownership_hash)?;
+        ledger.recover_published_order(authorization, marker)
+    }
 }
 impl crate::order_journal::SubmissionPublisher for OrderPublisher<'_> {
     async fn append_submission(
@@ -287,6 +347,28 @@ mod tests {
         };
         let body = serde_json::to_string(&row).unwrap();
         assert!(decode("", &authorization).unwrap().is_none());
+        let marker = submission::Marker {
+            order_key: authorization.key().unwrap(),
+            authorization_hash: authorization.hash().unwrap(),
+            request_hash: "c".repeat(64),
+            prepared_at_ns: 10,
+        };
+        let marker_row = Row {
+            order_key: marker.order_key.clone(),
+            envelope_hash: marker.hash().unwrap(),
+            payload_json: serde_json::to_string(&marker).unwrap(),
+        };
+        let marker_body = serde_json::to_string(&marker_row).unwrap();
+        assert!(discover_marker("", &authorization).unwrap().is_none());
+        assert_eq!(
+            discover_marker(&marker_body, &authorization).unwrap(),
+            Some(marker)
+        );
+        assert!(discover_marker(&format!("{marker_body}\n{marker_body}"), &authorization).is_err());
+        let mut foreign = authorization.clone();
+        foreign.bracket.account = "other".into();
+        assert!(discover_marker(&marker_body, &foreign).is_err());
+        assert!(discover_marker("{}", &authorization).is_err());
         assert_eq!(
             decode(&body, &authorization).unwrap(),
             Some(authorization.clone())

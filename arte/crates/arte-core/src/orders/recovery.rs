@@ -44,6 +44,53 @@ pub(super) fn hash_valid(value: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
+impl OrderLedger {
+    /// Bootstrap a known command from verified publication readback. The caller
+    /// must hold account ownership and query both authorization and submission
+    /// storage. This does not reconstruct fills or broker-protection state.
+    pub fn recover_published_order(
+        &mut self,
+        authorization: Authorization,
+        submission: Option<submission::Marker>,
+    ) -> Result<()> {
+        let id = authorization.bracket.command_id.clone();
+        if self.records.contains_key(&id) {
+            return Err(Error::Conflict(
+                "recovery cannot overwrite an existing order".into(),
+            ));
+        }
+        if self.records.len() >= MAX_RECORDS {
+            return Err(Error::Capacity("order ledger record limit".into()));
+        }
+        let durable_receipt = Some(authorization.hash()?);
+        let submission_receipt = submission
+            .as_ref()
+            .map(submission::Marker::hash)
+            .transpose()?;
+        let state = if submission.is_some() {
+            OrderState::Unknown
+        } else {
+            OrderState::Durable
+        };
+        let record = OrderRecord {
+            bracket: authorization.bracket,
+            authorization: authorization.context,
+            state,
+            filled: 0,
+            broker_id: None,
+            durable_receipt,
+            submission,
+            submission_receipt,
+        };
+        // Reuse the snapshot invariant validator before changing the destination.
+        let mut checked = Self::try_from(StoredLedger {
+            records: BTreeMap::from([(id.clone(), record)]),
+        })?;
+        self.records
+            .insert(id.clone(), checked.records.remove(&id).unwrap());
+        Ok(())
+    }
+}
 impl TryFrom<StoredLedger> for OrderLedger {
     type Error = Error;
     fn try_from(mut stored: StoredLedger) -> Result<Self> {
