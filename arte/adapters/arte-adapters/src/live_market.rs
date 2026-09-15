@@ -332,10 +332,17 @@ impl Lane {
         &self,
         check: Check<'_>,
         now_ns: u64,
+        session: &crate::calendar::PinnedSession,
         references: &crate::startup_references::Cache,
         policy: &arte_core::luld::Policy,
     ) -> Result<arte_core::luld::Admission> {
+        session.require_regular(self.market.scope(), now_ns)?;
         let (record, requirement) = references.get(self.market.scope(), now_ns)?;
+        if requirement.session != session.record().previous_trading_session {
+            return Err(Error::Conflict(
+                "cached previous close differs from active calendar".into(),
+            ));
+        }
         self.regular_admission(check, now_ns, Some(record), requirement, policy)
     }
 }

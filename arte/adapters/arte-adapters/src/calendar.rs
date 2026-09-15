@@ -3,6 +3,71 @@ use arte_core::{coverage::Interval, session::Session, Error, Result};
 use chrono::{Datelike, NaiveDate, NaiveTime, TimeZone, Utc};
 use chrono_tz::America::New_York;
 use serde::{Deserialize, Serialize};
+/// Immutable runtime handle. Construction validates identity and timezone mapping,
+/// not the external source's exchange calendar certification.
+pub struct PinnedSession {
+    session: Session,
+    hash: String,
+}
+impl PinnedSession {
+    pub fn new(session: Session, exchange: &str, hash: &str, as_of_ns: u64) -> Result<Self> {
+        session.require(hash, as_of_ns)?;
+        validate_new_york(&session)?;
+        if session.exchange != exchange {
+            return Err(Error::Conflict(
+                "session exchange differs from instrument reference".into(),
+            ));
+        }
+        Ok(Self {
+            session,
+            hash: hash.into(),
+        })
+    }
+    pub fn record(&self) -> &Session {
+        &self.session
+    }
+    pub fn hash(&self) -> &str {
+        &self.hash
+    }
+    /// Price/session safety only. Funding, feed health, durable authorization and
+    /// broker protection acceptance remain separate required checks.
+    pub fn validate_bracket(
+        &self,
+        order: &arte_core::orders::Bracket,
+        now_ns: u64,
+        allow_extended: bool,
+        bands: Option<&arte_core::orders::Bands>,
+        policy: &arte_core::orders::RiskPolicy,
+    ) -> Result<()> {
+        use arte_core::session::Phase;
+        if policy.band_session != self.session.session || policy.band_provider == 0 {
+            return Err(Error::Conflict(
+                "order risk scope differs from pinned session".into(),
+            ));
+        }
+        let regular = match self.session.phase(&self.hash, now_ns)? {
+            Phase::Regular => true,
+            Phase::Premarket | Phase::Postmarket if allow_extended => false,
+            _ => {
+                return Err(Error::Unready(
+                    "order outside permitted trading hours".into(),
+                ))
+            }
+        };
+        order.validate(now_ns, regular, bands, policy)
+    }
+    pub fn require_regular(&self, scope: arte_core::event_order::Scope, now_ns: u64) -> Result<()> {
+        if scope.session != self.session.session || scope.instrument == 0 || scope.provider == 0 {
+            return Err(Error::Conflict("runtime session scope mismatch".into()));
+        }
+        if self.session.phase(&self.hash, now_ns)? != arte_core::session::Phase::Regular {
+            return Err(Error::Unready(
+                "regular-session admission outside regular hours".into(),
+            ));
+        }
+        Ok(())
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LocalSession {
@@ -117,6 +182,39 @@ mod tests {
         assert!(validate_new_york(&wrong).is_err());
     }
     #[test]
+    fn pinned_handle_rechecks_phase_exchange_and_session() {
+        let mut local = local(20261127, 20261125);
+        local.regular_close = "13:00:00".into();
+        let session = local.to_utc().unwrap();
+        let hash = arte_core::content_hash(&session).unwrap();
+        assert!(PinnedSession::new(session.clone(), "XNAS", &hash, 1).is_err());
+        assert!(PinnedSession::new(session.clone(), "XNYS", &hash, 0).is_err());
+        let pinned = PinnedSession::new(session.clone(), "XNYS", &hash, 1).unwrap();
+        let scope = arte_core::event_order::Scope {
+            provider: 1,
+            instrument: 1,
+            session: session.session,
+        };
+        assert!(pinned.require_regular(scope, session.regular.start).is_ok());
+        assert!(pinned
+            .require_regular(scope, session.regular.end - 1)
+            .is_ok());
+        assert!(pinned
+            .require_regular(scope, session.regular.start - 1)
+            .is_err());
+        assert!(pinned.require_regular(scope, session.regular.end).is_err());
+        assert!(pinned
+            .require_regular(
+                arte_core::event_order::Scope {
+                    session: 20261130,
+                    ..scope
+                },
+                session.regular.start
+            )
+            .is_err());
+        assert_eq!(pinned.hash(), hash);
+    }
+    #[test]
     fn dst_ambiguity_gap_and_invalid_dates_fail() {
         for (date, previous, clock) in [
             (20260308, 20260306, "02:30:00"),
@@ -127,5 +225,57 @@ mod tests {
             assert!(s.to_utc().is_err());
         }
         assert!(local(20260230, 20260227).to_utc().is_err());
+    }
+    #[test]
+    fn bracket_phase_cannot_bypass_regular_bands_or_closed_session() {
+        use arte_core::orders::{Bracket, RiskPolicy, Side};
+        let session = local(20261127, 20261125).to_utc().unwrap();
+        let hash = arte_core::content_hash(&session).unwrap();
+        let pinned = PinnedSession::new(session.clone(), "XNYS", &hash, 1).unwrap();
+        let mut order = Bracket {
+            command_id: "entry".into(),
+            account: "paper".into(),
+            instrument: 1,
+            side: Side::Long,
+            quantity: 1,
+            entry: 1000,
+            price_scale: 2,
+            stop: Some(950),
+            target: Some(1050),
+            tick: 1,
+            deadline_ns: session.extended.end + 1,
+        };
+        let mut policy = RiskPolicy {
+            band_provider: 1,
+            band_session: session.session,
+            band_buffer_ticks: 3,
+            max_band_age_ns: 1_000_000_000,
+        };
+        let bands = arte_core::orders::Bands {
+            provider: 1,
+            instrument: 1,
+            session: session.session,
+            lower: 900,
+            upper: 1100,
+            scale: 2,
+            effective_at_ns: session.regular.start,
+            available_at_ns: session.regular.start,
+            official: true,
+        };
+        let check = |order: &Bracket, at, extended, bands, policy: &RiskPolicy| {
+            pinned.validate_bracket(order, at, extended, bands, policy)
+        };
+        assert!(check(&order, session.regular.start, true, None, &policy).is_err());
+        assert!(check(&order, session.regular.start, false, Some(&bands), &policy).is_ok());
+        assert!(check(&order, session.extended.start, false, None, &policy).is_err());
+        assert!(check(&order, session.extended.start, true, None, &policy).is_ok());
+        assert!(check(&order, session.regular.end, false, None, &policy).is_err());
+        assert!(check(&order, session.regular.end, true, None, &policy).is_ok());
+        assert!(check(&order, session.extended.end, true, None, &policy).is_err());
+        order.stop = None;
+        assert!(check(&order, session.extended.start, true, None, &policy).is_err());
+        order.stop = Some(950);
+        policy.band_session = 20261130;
+        assert!(check(&order, session.extended.start, true, None, &policy).is_err());
     }
 }

@@ -6,6 +6,29 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Pinned runtime session and bracket phase checks
+
+The adapter now provides an immutable pinned session handle. Construction checks
+the full record hash, availability, exchange identity and New York date mapping.
+Cached regular-session admission requires this handle. It checks the actual phase
+and previous-close session before using the cached reference.
+
+The handle also validates bracket prices against the actual session phase.
+Regular hours always require official buffered LULD evidence. Extended-hours
+permission cannot bypass that check. Premarket and postmarket require explicit
+permission. Closed sessions reject exposure increases. Complete bracket geometry
+is required in every permitted phase.
+
+All 256 offline Rust tests, formatting, Clippy and frozen-source hashes pass.
+Tests cover exchange/session mismatch, future availability, half-open regular
+boundaries, missing regular bands, extended-hours permission, closed-session
+rejection and incomplete brackets. No service or network tests ran.
+
+These checks do not certify the external calendar source or authorize broker
+submission. The full OMS driver still needs to require them immediately before
+submission, alongside funding, feed health and protection checks. The cached
+admission wrapper has compile coverage but no full runtime integration test.
+
 ## New York calendar conversion and UTC-date validation
 
 The calendar adapter converts explicit local session hours into UTC using the
