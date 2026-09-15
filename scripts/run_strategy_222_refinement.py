@@ -38,7 +38,13 @@ def source_identity():
     return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
 
 
-def prepare(name, overrides=None):
+def prepare(name, overrides=None, recipe_base=None):
+    if recipe_base not in (None, 'full-v6', 'regular-origin-v31'):
+        raise ValueError('Unsupported research recipe base')
+    if recipe_base is not None and overrides is None:
+        raise ValueError('A recipe base requires parameter overrides')
+    label_name = name
+    name = recipe_base or name
     from src.backend.trading_configuration_service import (
         configuration_candidate, configuration_base, create_test_candidate)
     baseline = configuration_candidate(BASELINE, required=True)
@@ -47,11 +53,11 @@ def prepare(name, overrides=None):
     if name == 'corrected-baseline':
         return baseline
     recipe_name='failure-memory-v16' if name in ('progress-v17','add-wick-v18','burst-rate-v19','range-v20','unprotected-v21','reclaim-attempt-v22','surge-base-v23','surge-range-v24','regular-base-v25','current-gain-v26','phase-progress-v27','phase-add-v28','price-trail-v29','price-trail-only-v30','regular-origin-v31') else name
-    base_name='full-v6' if overrides is not None else ('recovery-v10' if recipe_name in ('support-v11','support-body-v12','trail-v13','trail-no-failure-v14','strict-recovery-v15','failure-memory-v16') else recipe_name)
+    base_name='full-v6' if overrides is not None and recipe_base is None else ('recovery-v10' if recipe_name in ('support-v11','support-body-v12','trail-v13','trail-no-failure-v14','strict-recovery-v15','failure-memory-v16') else recipe_name)
     payload = deepcopy(baseline['payload'])
     original = next(p for p in payload['strategy']['profiles'] if p['profile_id'] == PROFILE)
     profile = deepcopy(original)
-    profile.update(profile_id='v7-222-'+name, name='Strategy 222 research / '+name,
+    profile.update(profile_id='v7-222-'+label_name, name='Strategy 222 research / '+label_name,
                    publication_status='draft', editable=True, derived_from_profile_id=PROFILE)
     published = {p['profile_id']: p for p in configuration_base()['strategy']['profiles']
                  if p.get('publication_status') == 'published'}
@@ -128,7 +134,7 @@ def prepare(name, overrides=None):
         profile['parameters']['liquidity_admission']['minimum_current_trade_rate_60s']=2.
     for section,values in (overrides or {}).items():
         profile['parameters'][section].update(values)
-    return create_test_candidate(label='Strategy 222 refinement / '+name,
+    return create_test_candidate(label='Strategy 222 refinement / '+label_name,
         canvas_revision=payload['canvas']['revision'], canvas_profile=payload['canvas']['profile'],
         configuration=payload, run_plan_id=PLAN, strategy_profile_id=profile['profile_id'])
 
@@ -169,6 +175,7 @@ async def run_locked(args):
                     variants=args.variants, baseline=BASELINE, book_hash=BOOK_HASH)
     if args.portfolio_symbols:identity['tickers']=args.portfolio_symbols
     if args.recipe_parameters is not None:identity['recipe_parameters']=args.recipe_parameters
+    if getattr(args, 'recipe_base', None) is not None:identity['recipe_base']=args.recipe_base
     if args.restart_at:identity['restart_at']=args.restart_at
     blobs=Path('D:/TradingML/runtimes/analysis/strategy-222-refinement/_source')
     blobs.mkdir(parents=True,exist_ok=True)
@@ -187,7 +194,7 @@ async def run_locked(args):
             if prior['status'] == 'completed':
                 continue
             raise ValueError(f"Recorded {prior['status']} run {prior['run_id']}; preserve and investigate before a new trial")
-        candidate = prepare(name,args.recipe_parameters)
+        candidate = prepare(name,args.recipe_parameters,getattr(args,'recipe_base',None))
         revision = candidate_runtime_configuration_snapshot('backtest', candidate_id=candidate['candidate_id'], run_plan_id=PLAN)
         definition = ReplayRunDefinition(session_date=date(2026,8,21), start_time=time(4),
             end_time=time.fromisoformat(args.end), initial_cash=10000,
@@ -268,16 +275,23 @@ def main():
     parser.add_argument('--portfolio-symbols', nargs='+', help='Replay these symbols together with shared $10,000 capital; requires --end')
     parser.add_argument('--restart-at', help='Optional New York checkpoint time for a real stop/resume parity trial')
     parser.add_argument('--recipe-file',type=Path,help='Supervised research parameter recipe; mutually exclusive with --variants')
+    parser.add_argument('--recipe-base',choices=['full-v6','regular-origin-v31'],
+                        help='Version to preserve beneath recipe overrides; requires --recipe-file (legacy default: full-v6)')
     parser.add_argument('--stop-request-file',type=Path,help='Gracefully stop if this supervisor-owned file appears')
     parser.add_argument('--variants', nargs='+', choices=['corrected-baseline','early-v1','liquidity-v2','guarded-v3','phase-v4','burst-v5','full-v6','base-v7','trend-v8','body-v9','recovery-v10','support-v11','support-body-v12','trail-v13','trail-no-failure-v14','strict-recovery-v15','failure-memory-v16','progress-v17','add-wick-v18','burst-rate-v19','range-v20','unprotected-v21','reclaim-attempt-v22','surge-base-v23','surge-range-v24','regular-base-v25','current-gain-v26','phase-progress-v27','phase-add-v28','price-trail-v29','price-trail-only-v30','regular-origin-v31'],
                         default=None)
     args=parser.parse_args()
     args.recipe_parameters=None
+    if args.recipe_base is not None and not args.recipe_file:
+        parser.error('--recipe-base requires --recipe-file')
     if args.recipe_file:
         if args.variants is not None:parser.error('--recipe-file and --variants are mutually exclusive')
         args.recipe_parameters=load_recipe(args.recipe_file)
-        key=hashlib.sha256(json.dumps(args.recipe_parameters,sort_keys=True).encode()).hexdigest()[:10]
+        recipe_identity=(dict(base=args.recipe_base,parameters=args.recipe_parameters)
+                         if args.recipe_base is not None else args.recipe_parameters)
+        key=hashlib.sha256(json.dumps(recipe_identity,sort_keys=True).encode()).hexdigest()[:10]
         args.variants=['supervised-'+key]
+        print(f'Research recipe base={args.recipe_base or "full-v6"}; variant={args.variants[0]}',flush=True)
     elif args.variants is None:args.variants=['corrected-baseline','early-v1']
     if args.portfolio_symbols:
         if args.position_symbols or args.symbol or not args.end:
@@ -314,7 +328,7 @@ def load_recipe(path):
     from math import isfinite
     allowed={'liquidity_admission':{'minimum_session_dollar_volume','minimum_session_share_volume',
         'maximum_admission_spread_bps','maximum_current_spread_bps','maximum_spread_bps',
-        'minimum_current_trade_rate_60s'},'historical_hod':{'setup_minimum_body_bps'}}
+        'minimum_current_trade_rate_60s'},'historical_hod':{'setup_minimum_body_bps','setup_minimum_300s_range_pct'}}
     parameters=json.loads(path.read_text())['parameters']
     if not isinstance(parameters,dict) or not parameters:raise ValueError('Empty research recipe')
     for section,values in parameters.items():

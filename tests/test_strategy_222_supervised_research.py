@@ -5,7 +5,7 @@ import pytest
 from scripts.strategy_222_supervised_research import (
     FEATURES,causal_features,hindsight_label,label_opportunities,metrics,flat_entry_state,diagnostic_screens,diagnose_episode_exit,completed_close_progress,
 )
-from scripts.run_strategy_222_refinement import load_recipe
+from scripts.run_strategy_222_refinement import load_recipe, prepare, PROFILE, PLAN
 
 
 def test_features_reject_future_bars_and_macd_and_have_no_label_fields():
@@ -115,8 +115,45 @@ def test_recipe_accepts_only_bounded_parameter_paths(tmp_path):
     path=tmp_path/'recipe.json'
     path.write_text(json.dumps(dict(parameters=dict(historical_hod=dict(setup_minimum_body_bps=30)))))
     assert load_recipe(path)['historical_hod']['setup_minimum_body_bps']==30
+    path.write_text(json.dumps(dict(parameters=dict(historical_hod=dict(setup_minimum_300s_range_pct=4.5)))))
+    assert load_recipe(path)['historical_hod']['setup_minimum_300s_range_pct']==4.5
     path.write_text(json.dumps(dict(parameters=dict(command=dict(shell='anything')))))
     with pytest.raises(ValueError,match='unapproved parameter'):load_recipe(path)
+
+
+def test_recipe_preserves_selected_version_and_changes_only_requested_parameter(monkeypatch):
+    from src.backend import trading_configuration_service as service
+    original=dict(profile_id=PROFILE,parameters=dict(
+        historical_hod=dict(unrelated_setting=123),liquidity_admission={},execution=dict(tick_size=.01)))
+    payload=dict(strategy=dict(profiles=[original]),run_plans=dict(plans=[dict(run_plan_id=PLAN)]),
+                 canvas=dict(revision=1,profile='fixture'))
+    frozen=deepcopy(payload)
+    monkeypatch.setattr(service,'configuration_candidate',lambda *a,**kw:dict(payload=payload,
+        content_hash='d52acbd89292aa01d0dad9f760632006a0ee9c35bdccc7d81e70e6e941e994e3'))
+    monkeypatch.setattr(service,'configuration_base',lambda:dict(strategy=dict(profiles=[])))
+    monkeypatch.setattr(service,'create_test_candidate',lambda **kw:kw)
+
+    baseline=prepare('regular-origin-v31')
+    trial=prepare('range-experiment',{'historical_hod':{'setup_minimum_300s_range_pct':4.5}},'regular-origin-v31')
+    expected=deepcopy(baseline['configuration']['strategy']['profiles'][-1]['parameters'])
+    expected['historical_hod']['setup_minimum_300s_range_pct']=4.5
+    actual=trial['configuration']['strategy']['profiles'][-1]
+    assert actual['parameters']==expected
+    assert actual['parameters']['historical_hod']['setup_recovery_regular_full_range']==1
+    assert actual['parameters']['historical_hod']['setup_trail_current_gain_requires_bid']==0
+    assert actual['parameters']['liquidity_admission']['minimum_current_trade_rate_60s']==2
+    assert trial['strategy_profile_id']==actual['profile_id']=='v7-222-range-experiment'
+    assert trial['configuration']['run_plans']['plans'][0]['profile_id']==actual['profile_id']
+    assert payload==frozen
+
+    legacy=prepare('legacy-experiment',{'historical_hod':{'setup_minimum_body_bps':30}})
+    explicit=prepare('legacy-experiment',{'historical_hod':{'setup_minimum_body_bps':30}},'full-v6')
+    assert legacy==explicit
+    assert legacy['configuration']['strategy']['profiles'][-1]['parameters']['liquidity_admission']['minimum_current_trade_rate_60s']==3
+    with pytest.raises(ValueError,match='requires parameter overrides'):
+        prepare('invalid',recipe_base='regular-origin-v31')
+    with pytest.raises(ValueError,match='Unsupported'):
+        prepare('invalid',{},'unknown')
 
 
 def test_diagnostics_expose_lost_and_delayed_opportunities_without_mutating_labels():
