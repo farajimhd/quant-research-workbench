@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 174 in-process Rust tests passed (121 core and 53 adapter tests).
+- 176 in-process Rust tests passed (123 core and 53 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -583,3 +583,16 @@ plan, not broker authorization: cash sizing/reservation, reference-certified pri
 rules, latency revalidation, durable OMS persistence and submission remain required.
 The selected candidate is long-only; this translator does not invent short strategies
 or reinterpret exits/replacements as exposure increases. No service or broker ran.
+
+Long bracket plans now connect to the shared portfolio cash-reservation authority.
+Checked integer arithmetic converts total entry notional and nominal entry-to-stop
+risk into currency minor units, rounding required amounts upward. Configured fee
+reserves count against both order limits. Bracket validation runs before reservation.
+The account mutex protects aggregate cash across ticker requests. Identical reservation
+retries do not consume cash twice; rejected order limits do not mutate reservations.
+The returned funding evidence includes the plan hash. It is not broker permission.
+Two offline tests cover conversion, overflow, cash competition, exact retry and risk
+limits; all 176 tests pass. Same settlement currency must be certified by the caller.
+This does not implement FX, margin, automatic quantity sizing, durable reservations,
+fill-to-balance reconciliation or OMS submission. Nominal stop risk is not a maximum
+realized-loss guarantee. No service, database operation or broker request ran.
