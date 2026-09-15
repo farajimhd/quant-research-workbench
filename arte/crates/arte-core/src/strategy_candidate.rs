@@ -37,6 +37,7 @@ pub struct AcquisitionPolicy {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcquisitionObservation {
+    pub quote_policy_hash: String,
     pub at_ns: u64,
     pub price: f64,
     pub ask: f64,
@@ -48,6 +49,35 @@ pub struct AcquisitionObservation {
     pub regular_block: bool,
     pub encounter_blocked: bool,
     pub pending_capital: bool,
+}
+impl AcquisitionObservation {
+    /// Bind the actual executable ask and policy together. Other admission fields
+    /// still come from their respective causal authorities.
+    pub fn bind_quote(
+        mut self,
+        book: &crate::quote_state::Book,
+        scope: crate::event_order::Scope,
+        maximum_age_ns: u64,
+    ) -> Result<Self> {
+        let quote = book.require_executable(self.at_ns, maximum_age_ns)?;
+        if quote.key.provider != scope.provider
+            || quote.key.instrument != scope.instrument
+            || quote.key.session != scope.session
+        {
+            return Err(Error::Conflict("intrabar quote source differs".into()));
+        }
+        let crate::events::Payload::Quote { ask, .. } = quote.payload else {
+            return Err(Error::Invalid("intrabar quote payload differs".into()));
+        };
+        if ask.atoms > (1_i64 << 53) {
+            return Err(Error::Invalid(
+                "intrabar ask exceeds exact integer conversion range".into(),
+            ));
+        }
+        self.ask = ask.to_f64();
+        self.quote_policy_hash = book.policy_hash()?.into();
+        Ok(self)
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcquisitionEvaluation {
@@ -451,6 +481,7 @@ mod tests {
     }
     fn acquisition(at: u64) -> AcquisitionObservation {
         AcquisitionObservation {
+            quote_policy_hash: "a".repeat(64),
             at_ns: at,
             price: 10.4,
             ask: 10.41,
@@ -463,6 +494,93 @@ mod tests {
             encounter_blocked: false,
             pending_capital: true,
         }
+    }
+    #[test]
+    fn intrabar_ask_and_policy_are_bound_from_one_executable_quote() {
+        use crate::{
+            event_order::Scope,
+            events::*,
+            quote_state::{
+                eligibility::{Pinned, Policy},
+                Book,
+            },
+        };
+        let scope = Scope {
+            provider: 1,
+            instrument: 1,
+            session: 20260915,
+        };
+        let mut book = Book::new(scope).unwrap();
+        let policy = Policy {
+            provider: 1,
+            valid_from_ns: 0,
+            valid_to_ns: 1000,
+            available_at_ns: 0,
+            source_manifest_hash: "a".repeat(64),
+            allowed_conditions: Default::default(),
+            allowed_indicators: Default::default(),
+            allow_empty_conditions: true,
+            allow_empty_indicators: true,
+        };
+        let hash = content_hash(&policy).unwrap();
+        book.bind_policy(Pinned::new(policy, &hash).unwrap())
+            .unwrap();
+        book.observe(&Observation {
+            key: EventKey {
+                provider: 1,
+                instrument: 1,
+                session: 20260915,
+                kind: EventKind::Quote,
+                sequence: 1,
+            },
+            sip: SourceTime {
+                ns: 100,
+                precision_ns: 1,
+            },
+            available_at_ns: 101,
+            participant: None,
+            receipt: None,
+            payload: Payload::Quote {
+                bid: Decimal {
+                    atoms: 1040,
+                    scale: 2,
+                },
+                ask: Decimal {
+                    atoms: 1042,
+                    scale: 2,
+                },
+                bid_size: Decimal { atoms: 1, scale: 0 },
+                ask_size: Decimal { atoms: 1, scale: 0 },
+                bid_exchange: 1,
+                ask_exchange: 1,
+                conditions: vec![],
+                indicators: vec![],
+            },
+        })
+        .unwrap();
+        let mut input = acquisition(101);
+        input.quote_policy_hash.clear();
+        let bound = input.bind_quote(&book, scope, 10).unwrap();
+        assert_eq!(bound.ask, 10.42);
+        assert_eq!(bound.quote_policy_hash, hash);
+        let mut changed = bound.clone();
+        changed.quote_policy_hash = "b".repeat(64);
+        assert_ne!(
+            content_hash(&bound).unwrap(),
+            content_hash(&changed).unwrap()
+        );
+        assert!(acquisition(100).bind_quote(&book, scope, 10).is_err());
+        assert!(acquisition(110).bind_quote(&book, scope, 10).is_err());
+        assert!(acquisition(101)
+            .bind_quote(
+                &book,
+                Scope {
+                    instrument: 2,
+                    ..scope
+                },
+                10
+            )
+            .is_err());
     }
     #[test]
     fn acquisition_expiration_is_exact_and_rejections_do_not_change_fill_state() {
@@ -949,6 +1067,22 @@ mod tests {
             let mut observation = acquisition(live_input.evaluated_at_ns);
             observation.encounter_blocked = true;
             let before_mismatch = content_hash(runtime.state()).unwrap();
+            let mut missing_pin = observation.clone();
+            missing_pin.quote_policy_hash.clear();
+            assert!(runtime
+                .intrabar(
+                    live_input.clone(),
+                    &pending_safety,
+                    &missing_pin,
+                    &pending_broker,
+                    f.bar.open.max(f.bar.close),
+                    &policy,
+                    &intrabar_policy,
+                    &features,
+                    f.recovery_policy
+                )
+                .is_err());
+            assert!(runtime.pending_batch().is_none());
             assert!(runtime
                 .intrabar(
                     live_input.clone(),

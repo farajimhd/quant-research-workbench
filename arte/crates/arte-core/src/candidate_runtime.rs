@@ -125,16 +125,7 @@ impl Runtime {
                 "candidate completed frame contains future evidence".into(),
             ));
         }
-        if frame.quote_policy_hash.len() != 64
-            || !frame
-                .quote_policy_hash
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        {
-            return Err(Error::Invalid(
-                "candidate quote eligibility policy is not pinned".into(),
-            ));
-        }
+        require_quote_policy_hash(frame.quote_policy_hash)?;
         let stale = input.evaluated_at_ns - frame.bar.end_ns >= policy.maximum_completed_bar_age_ns;
         let evaluated_at_ns = input.evaluated_at_ns;
         input.feature_hash = content_hash(&("candidate-completed-v2", frame, broker, gates))?;
@@ -179,8 +170,9 @@ impl Runtime {
         if observation.at_ns != input.evaluated_at_ns || !body_high.is_finite() || body_high <= 0. {
             return Err(Error::Invalid("invalid candidate intrabar boundary".into()));
         }
+        require_quote_policy_hash(&observation.quote_policy_hash)?;
         input.feature_hash =
-            content_hash(&("candidate-intrabar-v1", observation, broker, body_high))?;
+            content_hash(&("candidate-intrabar-v2", observation, broker, body_high))?;
         let evidence = input.feature_hash.clone();
         self.transaction.prepare_observed(
             input,
@@ -218,4 +210,16 @@ fn stale_bar_actions(pending_entry: bool) -> Vec<dispatch::Action> {
             reason: "completed_bar_stale_at_evaluation".into(),
         }]
     }
+}
+fn require_quote_policy_hash(hash: &str) -> Result<()> {
+    if hash.len() != 64
+        || !hash
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(Error::Invalid(
+            "candidate quote eligibility policy is not pinned".into(),
+        ));
+    }
+    Ok(())
 }

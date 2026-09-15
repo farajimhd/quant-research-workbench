@@ -6,6 +6,23 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Intrabar quote-policy evidence
+
+Intrabar acquisition observations now carry the quote policy hash. A shared binding
+method derives the ask and policy identity from one executable quote-book view.
+It checks provider, instrument, session, freshness and the integer-to-float range.
+Other admission fields still belong to their respective upstream authorities.
+
+The candidate runtime rejects missing or malformed policy hashes before intrabar
+journal preparation. The policy identity enters candidate-intrabar-v2 evidence.
+Completed-candle and intrabar paths use the same hash-format check.
+
+All 310 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Tests cover binding, scope/freshness rejection, policy-sensitive evidence hashes and
+missing-pin rejection before preparation. No services or database calls ran.
+Source-oracle parity was not rerun. Full run-configuration pinning, evidence-block
+persistence and complete source-to-strategy orchestration remain unfinished.
+
 ## Completed-candle quote-policy evidence
 
 Entry frames built from shared market features now borrow the exact policy hash
