@@ -6,6 +6,30 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Pinned trading-session geometry
+
+The shared core now represents a session with an exchange identity, valid calendar
+dates, previous trading session, explicit UTC extended/regular intervals, original
+availability and a source-manifest hash. Consumers require the pinned full-record
+hash. Phase calculation uses half-open boundaries and the supplied regular close,
+including an early close. It does not assume every session ends at 16:00.
+
+Reference requests can be constructed from this session contract. The target
+session and previous-close source session must agree with the calendar record.
+The request inherits the extended-session use interval. Changed calendar geometry
+cannot pass an unchanged pin.
+
+All 252 offline Rust tests, formatting, Clippy and frozen-source hashes pass.
+Tests cover phase boundaries, early-close geometry, future availability, invalid
+dates, leap years, invalid containment and calendar/reference pin disagreement.
+An initial Clippy diagnostic was corrected and the complete validation rerun.
+No services or calendar API calls ran.
+
+The calendar producer must still verify exchange holidays, previous-session links
+and timezone-to-UTC conversion, then persist its certified records. The contract
+does not prove that UTC intervals correspond to the supplied dates. Session-driven
+startup/shutdown, risk-policy selection and maintenance scheduling remain unfinished.
+
 ## Reference-use interval retained through cache loading
 
 The calendar-supplied use interval now travels with each reference request into

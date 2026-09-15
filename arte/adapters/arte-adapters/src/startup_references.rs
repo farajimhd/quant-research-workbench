@@ -20,6 +20,31 @@ pub struct Request {
     /// Half-open target session window supplied by the calendar authority.
     pub use_interval: Interval,
 }
+impl Request {
+    /// Calendar and record pins must agree on the actual previous trading session.
+    pub fn from_session(
+        scope: Scope,
+        requirement: PreviousCloseRequirement,
+        session: &arte_core::session::Session,
+        session_hash: &str,
+        as_of_ns: u64,
+    ) -> Result<Self> {
+        session.require(session_hash, as_of_ns)?;
+        requirement.validate(scope)?;
+        if scope.session != session.session
+            || requirement.session != session.previous_trading_session
+        {
+            return Err(Error::Conflict(
+                "reference requirement differs from pinned trading calendar".into(),
+            ));
+        }
+        Ok(Self {
+            scope,
+            requirement,
+            use_interval: session.extended,
+        })
+    }
+}
 pub trait Loader {
     fn load(
         &self,
@@ -236,6 +261,37 @@ mod tests {
         assert!(cache.get(request(2).scope, 100).is_err());
         assert!(cache.get(request(4).scope, 10).is_err());
         assert_eq!(source.calls.load(Ordering::SeqCst), 3);
+    }
+    #[test]
+    fn calendar_pin_drives_reference_session_and_use_window() {
+        let session = arte_core::session::Session {
+            exchange: "XNYS".into(),
+            session: 20260915,
+            previous_trading_session: 20260914,
+            extended: Interval { start: 10, end: 20 },
+            regular: Interval { start: 12, end: 18 },
+            available_at_ns: 1,
+            source_manifest_hash: "a".repeat(64),
+        };
+        let hash = arte_core::content_hash(&session).unwrap();
+        let request = request(1);
+        let planned = Request::from_session(
+            request.scope,
+            request.requirement.clone(),
+            &session,
+            &hash,
+            2,
+        )
+        .unwrap();
+        assert_eq!(planned.use_interval, session.extended);
+        let mut wrong = request.requirement;
+        wrong.session = 20260911;
+        assert!(Request::from_session(request.scope, wrong, &session, &hash, 2).is_err());
+        let mut changed = session.clone();
+        changed.extended.end += 1;
+        assert!(
+            Request::from_session(planned.scope, planned.requirement, &changed, &hash, 2).is_err()
+        );
     }
     #[tokio::test(start_paused = true)]
     async fn failed_and_stopped_loads_cannot_publish_ready_cache() {

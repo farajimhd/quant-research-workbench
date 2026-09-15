@@ -28,6 +28,7 @@ pub mod quote_state;
 pub mod reference_data;
 pub mod replay;
 pub mod seed_storage;
+pub mod session;
 pub mod simulated_execution;
 pub mod strategy_adds;
 pub mod strategy_candidate;
