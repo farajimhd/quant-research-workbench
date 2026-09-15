@@ -121,3 +121,20 @@ before returning it. Table merges must not conceal conflicting payloads.
 `schemas/001-seed-storage.sql` defines the initial tables with `live_market_ssd`.
 It is not applied by build or validation commands. Existing tables require schema
 review; `IF NOT EXISTS` is not proof that a deployed schema matches the contract.
+
+## Causal stream implementation boundary
+
+`arte-causal-v7-1` consumes completed epoch-second bars. Its policy identifies the
+input generation separately from its historical seed hash. Each update checks
+observed time, ordering, session bounds and bar geometry before mutation.
+The state owns rolling noise, pending encounters, proposals, observations and fits.
+
+Gaps and reaction timeouts resolve encounters as unresolved. A crossing needs two
+adjacent completed seconds before acceptance. A rejection requires its turning
+extreme to lie inside the contacted fitted band. Candidate association radii never
+serve as actionable fit geometry. Only fitted levels appear in the strategy projection.
+
+A failure after mutation marks the state failed. It cannot continue, supply an
+actionable projection or emit a recovery checkpoint. Restore a prior verified
+checkpoint or replay from the historical seed. Recovery uses a separate versioned
+contract and cannot be submitted to historical seed publication.

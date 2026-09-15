@@ -35,6 +35,7 @@ was started during this implementation. Existing application files remain unchan
 | V7 numerical fit | Versioned projected-BFGS Student-t fit, fitted band geometry and two-component BIC partition |
 | Historical MLE seeds | Completed-session builder, predecessor continuity, retained evidence, split audit and availability checks |
 | Seed persistence | Immutable object graph, manifest-last publication, reconstruction checks and ClickHouse adapter methods |
+| Causal streaming V7 | Prior-seed initialization, rolling noise, contact outcomes, directional proposals, refits and recovery |
 | Provider adapter | REST/WS field normalization and bounded REST pagination implementation |
 | Persistence adapter | ClickHouse identifier checks, policy/part checks and synchronous inserts |
 | Broker adapter | IBKR bracket request construction and confirmation classification |
@@ -46,7 +47,7 @@ not prove provider, broker, or ClickHouse compatibility.
 
 ## Incomplete implementation
 
-- Representative historical-seed validation, broader fit/partition parity and streaming state machine.
+- Representative historical-seed validation and full streaming/fit/partition source-decision parity.
 - Complete selected strategy lifecycle, admission, position management and exits.
 - Effective configuration export from the selected current candidate.
 - WebSocket receiver and integration of the complete in-process live path.
@@ -72,7 +73,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 58 in-process Rust tests passed (51 core and 7 adapter tests).
+- 62 in-process Rust tests passed (55 core and 7 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -154,7 +155,19 @@ Enabling exact `float_roundtrip` parsing restored the original seed hash.
 Offline tests now cover interrupted object staging, retries and corruption.
 They do not prove ClickHouse power-loss durability or connected recovery.
 
-Next: partition source parity, batched seed persistence and the streaming
-state machine. Build shared strategy
+Streaming `arte-causal-v7-1` now initializes from ARTE historical seeds and advances
+on ordered completed seconds. It tracks gap/timeout outcomes, role changes,
+directional reversals, association and MLE refits. Noise uses balanced heaps.
+Recovery is hash-bound to the exact historical seed. Processing failures block
+further updates, actionable projections and recovery publication. No method exports
+a daily historical seed from streaming state.
+
+Four focused tests cover checkpoint continuation, predecessor immutability,
+invalid-input rejection, gap outcomes, capacity failure and recovery integrity.
+These are not complete frozen-source streaming parity or representative latency
+benchmarks. The actual WebSocket/market/strategy process is not integrated yet.
+
+Next: full streaming and partition source parity, batched seed persistence, and
+shared strategy
 execution on these authorities. Do not substitute the current fixed-noise
 extractor for the full historical MLE seed pipeline.

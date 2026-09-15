@@ -20,6 +20,7 @@ pub mod v7_fit;
 pub mod v7_math;
 pub mod v7_peaks;
 pub mod v7_seed;
+pub mod v7_stream;
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
