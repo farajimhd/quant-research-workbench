@@ -81,6 +81,41 @@ impl TradingSession {
             )),
         }
     }
+    /// Protection replacements are not new entries: a trailing stop may exceed
+    /// the original entry, and the original entry deadline may have expired.
+    pub fn validate_protection(
+        &self,
+        order: &Bracket,
+        prices: (i64, i64),
+        now_ns: u64,
+        bands: Option<&Bands>,
+        policy: &RiskPolicy,
+    ) -> Result<()> {
+        order.validate_geometry(0)?;
+        if policy.band_session != self.session.session || policy.band_provider == 0 {
+            return Err(Error::Conflict(
+                "protection risk scope differs from pinned session".into(),
+            ));
+        }
+        let (stop, target) = prices;
+        if stop <= 0
+            || target <= 0
+            || stop % order.tick != 0
+            || target % order.tick != 0
+            || match order.side {
+                Side::Long => stop >= target,
+                Side::Short => target >= stop,
+            }
+        {
+            return Err(Error::Invalid(
+                "invalid replacement protection geometry".into(),
+            ));
+        }
+        if self.require_phase(now_ns)? {
+            order.validate_band_prices(prices, now_ns, bands, policy)?;
+        }
+        Ok(())
+    }
     fn authorization_context(&self, policy: &RiskPolicy) -> Result<AuthorizationContext> {
         Ok(AuthorizationContext {
             session_hash: self.hash.clone(),
@@ -133,37 +168,48 @@ impl Bracket {
         self.validate_geometry(now_ns)?;
         let (stop, target) = self.stop.zip(self.target).unwrap();
         if regular {
-            if policy.band_buffer_ticks < 3 || policy.max_band_age_ns == 0 {
-                return Err(Error::Invalid(
-                    "at least three buffer ticks and a band-age policy required".into(),
-                ));
-            }
-            let bands = bands.ok_or_else(|| Error::Unready("official LULD missing".into()))?;
-            bands.require(
-                crate::event_order::Scope {
-                    provider: policy.band_provider,
-                    instrument: self.instrument,
-                    session: policy.band_session,
-                },
-                self.price_scale,
-                now_ns,
-                policy.max_band_age_ns,
-            )?;
-            let buffer = self
-                .tick
-                .checked_mul(policy.band_buffer_ticks as i64)
-                .ok_or_else(|| Error::Invalid("buffer overflow".into()))?;
-            let lower = bands
-                .lower
-                .checked_add(buffer)
-                .ok_or_else(|| Error::Invalid("band overflow".into()))?;
-            let upper = bands
-                .upper
-                .checked_sub(buffer)
-                .ok_or_else(|| Error::Invalid("band overflow".into()))?;
-            if [stop, target].iter().any(|p| *p < lower || *p > upper) {
-                return Err(Error::Invalid("bracket outside buffered LULD".into()));
-            }
+            self.validate_band_prices((stop, target), now_ns, bands, policy)?;
+        }
+        Ok(())
+    }
+    fn validate_band_prices(
+        &self,
+        prices: (i64, i64),
+        now_ns: u64,
+        bands: Option<&Bands>,
+        policy: &RiskPolicy,
+    ) -> Result<()> {
+        let (stop, target) = prices;
+        if policy.band_buffer_ticks < 3 || policy.max_band_age_ns == 0 {
+            return Err(Error::Invalid(
+                "at least three buffer ticks and a band-age policy required".into(),
+            ));
+        }
+        let bands = bands.ok_or_else(|| Error::Unready("official LULD missing".into()))?;
+        bands.require(
+            crate::event_order::Scope {
+                provider: policy.band_provider,
+                instrument: self.instrument,
+                session: policy.band_session,
+            },
+            self.price_scale,
+            now_ns,
+            policy.max_band_age_ns,
+        )?;
+        let buffer = self
+            .tick
+            .checked_mul(policy.band_buffer_ticks as i64)
+            .ok_or_else(|| Error::Invalid("buffer overflow".into()))?;
+        let lower = bands
+            .lower
+            .checked_add(buffer)
+            .ok_or_else(|| Error::Invalid("band overflow".into()))?;
+        let upper = bands
+            .upper
+            .checked_sub(buffer)
+            .ok_or_else(|| Error::Invalid("band overflow".into()))?;
+        if [stop, target].iter().any(|p| *p < lower || *p > upper) {
+            return Err(Error::Invalid("bracket outside buffered LULD".into()));
         }
         Ok(())
     }

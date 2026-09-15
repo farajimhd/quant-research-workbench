@@ -6,6 +6,27 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Protection amendment validation
+
+The shared session authority now validates replacement stop/target pairs. It checks
+direction, tick alignment, permitted session phase and scoped official buffered LULD
+bands during regular hours. Entries and replacements share the same band-price
+validator. A trailing stop may pass the original entry price, and an expired entry
+deadline does not prevent protection updates on an acquired position.
+
+The historical execution adapter requires this evidence before changing protection.
+Missing or invalid evidence leaves the previous protection and amendment revision
+unchanged. Cancellation and exposure-reducing exit requests do not require the
+replacement-specific LULD evidence. Existing pending-fill journal barriers remain.
+
+All 309 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Tests exercise missing/stale bands, buffered limits, long/short geometry, closed
+sessions, expired entry deadlines and a subsequent fill under the new stop.
+An initial test used the inclusive freshness boundary; it was corrected to exceed
+that existing bound. No services or broker calls ran. Source-oracle parity was not
+rerun. Durable amendment intents, live broker replacement and reconciliation remain
+unfinished; these tests do not establish broker-side protection behavior.
+
 ## Dependency-planned quote-policy startup
 
 Quote policy startup now resolves the Quotes nodes in the shared dependency plan.

@@ -38,6 +38,11 @@ pub struct Submission<'a> {
     pub now_ns: u64,
     pub latency_ns: u64,
 }
+pub struct AmendmentSafety<'a> {
+    pub session: &'a arte_core::orders::TradingSession,
+    pub risk_policy: &'a arte_core::orders::RiskPolicy,
+    pub bands: Option<&'a arte_core::orders::Bands>,
+}
 impl Runtime {
     pub fn new(
         simulator: Simulator,
@@ -194,8 +199,27 @@ impl Runtime {
         revision: u64,
         at_ns: u64,
         amendment: &Amendment,
+        safety: Option<AmendmentSafety<'_>>,
     ) -> Result<()> {
         self.ready()?;
+        if let Amendment::ReplaceProtection { stop, target } = amendment {
+            let safety = safety.ok_or_else(|| {
+                Error::Unready("protection replacement requires session and risk evidence".into())
+            })?;
+            let order = self
+                .simulator
+                .positions()
+                .iter()
+                .find(|p| p.bracket.command_id == command)
+                .ok_or_else(|| Error::Invalid("unknown simulation command".into()))?;
+            safety.session.validate_protection(
+                &order.bracket,
+                (*stop, *target),
+                at_ns,
+                safety.bands,
+                safety.risk_policy,
+            )?;
+        }
         self.simulator
             .acknowledge_amendment(command, revision, at_ns, amendment)
     }
@@ -402,6 +426,172 @@ mod tests {
             instrument: 1,
             session: 20260915,
         }
+    }
+    #[tokio::test]
+    async fn replacement_requires_current_bands_and_preserves_previous_protection_on_failure() {
+        let mut runtime = Runtime::new(
+            Simulator::new_scoped("r", 1, 2, 2, 10000).unwrap(),
+            Projection::new(2, 10, 4).unwrap(),
+            4,
+        )
+        .unwrap();
+        let mut order = bracket("a");
+        order.deadline_ns = 10;
+        runtime.submit(order, 0, 0).unwrap();
+        runtime
+            .quote(&Quote {
+                sequence: 1,
+                at_ns: 2,
+                bid: 99,
+                ask: 100,
+                bid_size: 10,
+                ask_size: 10,
+            })
+            .unwrap();
+        let mut store = Store {
+            fail: false,
+            calls: 0,
+            rows: BTreeMap::new(),
+        };
+        runtime.commit_next(&mut store).await.unwrap();
+        runtime
+            .quote(&Quote {
+                sequence: 2,
+                at_ns: 20,
+                bid: 107,
+                ask: 108,
+                bid_size: 10,
+                ask_size: 10,
+            })
+            .unwrap();
+        let session = session(true);
+        let policy = arte_core::orders::RiskPolicy {
+            band_provider: 1,
+            band_session: 20260915,
+            band_buffer_ticks: 3,
+            max_band_age_ns: 10,
+        };
+        let bands = arte_core::orders::Bands {
+            provider: 1,
+            instrument: 1,
+            session: 20260915,
+            lower: 80,
+            upper: 120,
+            scale: 2,
+            effective_at_ns: 20,
+            available_at_ns: 20,
+            official: true,
+        };
+        let replace = Amendment::ReplaceProtection {
+            stop: 105,
+            target: 110,
+        };
+        let before = runtime.simulator.checkpoint(10000).unwrap();
+        assert!(runtime.amend("a", 1, 20, &replace, None).is_err());
+        assert!(runtime
+            .amend(
+                "a",
+                1,
+                20,
+                &replace,
+                Some(AmendmentSafety {
+                    session: &session,
+                    risk_policy: &policy,
+                    bands: None
+                })
+            )
+            .is_err());
+        let mut stale = bands.clone();
+        stale.effective_at_ns = 9;
+        stale.available_at_ns = 9;
+        assert!(runtime
+            .amend(
+                "a",
+                1,
+                20,
+                &replace,
+                Some(AmendmentSafety {
+                    session: &session,
+                    risk_policy: &policy,
+                    bands: Some(&stale)
+                })
+            )
+            .is_err());
+        let outside = Amendment::ReplaceProtection {
+            stop: 105,
+            target: 118,
+        };
+        assert!(runtime
+            .amend(
+                "a",
+                1,
+                20,
+                &outside,
+                Some(AmendmentSafety {
+                    session: &session,
+                    risk_policy: &policy,
+                    bands: Some(&bands)
+                })
+            )
+            .is_err());
+        assert_eq!(runtime.simulator.checkpoint(10000).unwrap(), before);
+        runtime
+            .amend(
+                "a",
+                1,
+                20,
+                &replace,
+                Some(AmendmentSafety {
+                    session: &session,
+                    risk_policy: &policy,
+                    bands: Some(&bands),
+                }),
+            )
+            .unwrap();
+        assert_eq!(runtime.simulator.positions()[0].active_stop, 105);
+        runtime
+            .quote(&Quote {
+                sequence: 3,
+                at_ns: 21,
+                bid: 104,
+                ask: 105,
+                bid_size: 10,
+                ask_size: 10,
+            })
+            .unwrap();
+        assert_eq!(runtime.status().pending_fills, 1);
+        runtime.commit_next(&mut store).await.unwrap();
+        assert_eq!(runtime.simulator.positions()[0].exit_filled, 1);
+    }
+    #[test]
+    fn replacement_session_and_direction_are_checked_without_entry_deadline_reuse() {
+        let session = session(true);
+        let mut order = bracket("a");
+        order.deadline_ns = 2;
+        let risk = arte_core::orders::RiskPolicy {
+            band_provider: 1,
+            band_session: 20260915,
+            band_buffer_ticks: 3,
+            max_band_age_ns: 10,
+        };
+        assert!(session
+            .validate_protection(&order, (105, 110), 3, None, &risk)
+            .is_ok());
+        assert!(session
+            .validate_protection(&order, (110, 105), 3, None, &risk)
+            .is_err());
+        assert!(session
+            .validate_protection(&order, (105, 110), 50, None, &risk)
+            .is_err());
+        order.side = arte_core::orders::Side::Short;
+        order.stop = Some(110);
+        order.target = Some(90);
+        assert!(session
+            .validate_protection(&order, (95, 85), 3, None, &risk)
+            .is_ok());
+        assert!(session
+            .validate_protection(&order, (85, 95), 3, None, &risk)
+            .is_err());
     }
     #[tokio::test]
     async fn normalized_quote_uses_exact_prices_and_replay_clock_with_retry_safe_fills() {
@@ -677,7 +867,9 @@ mod tests {
         next.sequence += 1;
         next.at_ns += 1;
         assert!(runtime.quote(&next).is_err());
-        assert!(runtime.amend("a", 1, 1, &Amendment::ExitPosition).is_err());
+        assert!(runtime
+            .amend("a", 1, 1, &Amendment::ExitPosition, None)
+            .is_err());
         runtime.commit_next(&mut store).await.unwrap();
         assert_eq!(runtime.position(&key).unwrap().quantity, 1);
         assert_eq!(runtime.status().pending_fills, 1);
@@ -686,7 +878,9 @@ mod tests {
         assert!(!runtime.commit_next(&mut store).await.unwrap());
         assert_eq!(runtime.status().pending_fills, 0);
         assert_eq!(store.calls, 3);
-        runtime.amend("a", 1, 1, &Amendment::ExitPosition).unwrap();
+        runtime
+            .amend("a", 1, 1, &Amendment::ExitPosition, None)
+            .unwrap();
         runtime.quote(&next).unwrap();
         runtime.commit_next(&mut store).await.unwrap();
         assert_eq!(runtime.position(&key).unwrap().quantity, 0);
