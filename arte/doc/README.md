@@ -22,6 +22,11 @@ can be enabled.
 | 10 | [Deployment](10-deployment.md) | Packaging, profiles, selective restart, extraction |
 | 11 | [Implementation plan](11-implementation-plan.md) | Milestones, release gates, open decisions |
 | 12 | [References](12-references.md) | External specifications and source-copy policy |
+| 13 | [User requirements record](13-user-requirements-record.md) | Organized user intent, approvals, corrections, and source map |
+
+The user requirements record separates explicit user decisions from engineering
+proposals. Consult it when resolving why a requirement exists or which earlier
+direction a later message replaced.
 
 ## Superseded proposals
 
