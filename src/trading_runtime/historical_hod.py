@@ -28,6 +28,7 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     v7_center_swing_enabled=0,v7_transition_entries_enabled=0,v7_price_only_enabled=0,rejection_break_offset_bps=0.,
     v7_setup_enabled=0,setup_failure_seconds=0,setup_failure_buffer_ticks=1.,setup_minimum_body_bps=0.,setup_trail_requires_breakout=0,setup_trail_activation_r=0.,setup_recovery_preserve_peak=0,setup_recovery_enabled=0,setup_add_requires_range_breakout=1,setup_range_seconds=30,setup_minimum_bars=5,
     setup_minimum_quote_clearance_spreads=0.,
+    setup_failure_exit_enabled=1,
     setup_acquisition_quality_enabled=0,setup_initial_tranche_fraction=1.,
     setup_early_base_enabled=0,setup_base_maximum_swing_age_s=15.,
     setup_base_maximum_risk_pct=5.,setup_base_maximum_range_pct=10.,
@@ -55,6 +56,10 @@ def configure(p):
         raise ValueError('Early base entry requires the V7 setup policy')
     if s['setup_recovery_stop_gain_guard'] not in (0,1) or s['setup_recovery_stop_gain_guard'] and not s['setup_recovery_enabled']:
         raise ValueError('Stop-gain recovery requires persistent setup recovery')
+    if type(s['setup_failure_exit_enabled']) not in (int,float) or s['setup_failure_exit_enabled'] not in (0,1):
+        raise ValueError('Setup failure exit must be a numeric boolean switch')
+    if not s['setup_failure_exit_enabled'] and not (s['v7_setup_enabled'] and s['setup_recovery_enabled']):
+        raise ValueError('Observation-only setup failure requires persistent setup recovery')
     if not 0<=s['setup_maximum_bar_gap_s']<=5 or int(s['setup_maximum_bar_gap_s'])!=s['setup_maximum_bar_gap_s']:
         raise ValueError('Setup gaps must be zero to five whole seconds')
     if s['setup_maximum_bar_gap_s'] and not s['v7_setup_enabled']:
@@ -63,7 +68,7 @@ def configure(p):
         raise ValueError('Minimum trail progress requires V7 setup swing protection')
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_base_recovery_maximum_range_pct','setup_minimum_trail_progress_r','setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_failure_exit_enabled','setup_base_recovery_maximum_range_pct','setup_minimum_trail_progress_r','setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
         raise ValueError('Historical HOD settings must be finite and positive')
     if not 0 <= s['setup_failure_seconds'] <= 5 or int(s['setup_failure_seconds']) != s['setup_failure_seconds']:
         raise ValueError('Initial setup failure window must be zero to five completed seconds')
@@ -883,10 +888,13 @@ def evaluate(host, a, o, p, state):
             reason = 'luld_buffer_reached'
         if not reason and s['v7_encounters_enabled'] and encounter_reason:
             reason = encounter_reason
-        if not reason and acquired and setup_enabled:
+        if acquired and setup_enabled and (not reason or not s['setup_failure_exit_enabled']):
             failure = v7_setup.entry_failure(active,d,s,tick,fresh)
             if failure:
-                reason = 'early_setup_failed'
+                # Observing a failed setup and forcing an immediate exit are
+                # separate policies. Retain reclaim memory in either mode.
+                if not reason and s['setup_failure_exit_enabled']:
+                    reason = 'early_setup_failed'
                 evidence['setup_failure'] = failure
                 active['setup']['entry_failure_recovery'] = failure['reclaim_threshold']
                 # Persist the decision before a fill can make the next observation flat.

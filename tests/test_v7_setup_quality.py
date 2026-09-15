@@ -1,3 +1,4 @@
+import json
 from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -175,6 +176,48 @@ def test_risk_trailing_requires_frozen_fill_risk_and_favorable_completed_close()
     assert not V.risk_trail_ready(entry,dict(setup_trail_activation_r=0))
     assert not V.risk_trail_ready(dict(entry,initial_fill_price=0),settings)
     assert not V.risk_trail_ready(dict(entry,initial_risk=-.1),settings)
+
+
+@pytest.mark.parametrize('stop_hit',[False,True])
+def test_failure_observation_preserves_reclaim_without_forcing_exit(stop_hit):
+    host,a,obs=prepared()
+    a.parameters['historical_hod'].update(setup_failure_seconds=3,
+        setup_recovery_enabled=1,setup_failure_exit_enabled=0)
+    entered=host.evaluate(a,replace(obs(2,10.02),bar_low=10.01))
+    assert any(i.action=='enter_long' for i in entered.evaluation.intents)
+    a=replace(a,state=entered.state,status=S.AssignmentStatus.MANAGING)
+    if stop_hit:a.state['active_stop']=10.005
+    o=replace(obs(3,10.),bar_open=10.02,position_quantity=100,average_price=10.02)
+    result=host.evaluate(a,o)
+    exits=[i for i in result.evaluation.intents if i.action=='exit']
+    assert [i.reason for i in exits]==(['protective_stop'] if stop_hit else [])
+    state=json.loads(json.dumps(result.state['v7_setup']))
+    assert state['held']['setup']['entry_failure_recovery']==pytest.approx(10.03)
+    # A later flat observation and checkpoint round trip retain the failed
+    # entry context, even though this policy did not force the early exit.
+    V.recovery_observe(state,{},result.state['historical_hod_state'],
+        replace(o,position_quantity=0),result.state['active_stop'],{},False)
+    now=o.observed_at.timestamp()
+    fresh=dict(scale='local',pivot_at=now+1,confirmed_at=now+2,lower=9.99)
+    assert V.recovery_permission(state,fresh,dict(bar=dict(close=10.02)))[0]=='waiting_for_failed_setup_reclaim'
+    assert V.recovery_permission(state,fresh,dict(bar=dict(close=10.04)))==('', 'building')
+
+
+@pytest.mark.parametrize('value',[-1,2,.5,float('nan'),float('inf'),True])
+def test_failure_exit_switch_rejects_invalid_values(value):
+    from src.trading_runtime.historical_hod import configure
+    _,a,_=prepared()
+    a.parameters['historical_hod']['setup_failure_exit_enabled']=value
+    with pytest.raises(ValueError,match='numeric boolean switch'):
+        configure(a.parameters)
+
+
+def test_observation_only_failure_requires_recovery():
+    from src.trading_runtime.historical_hod import configure
+    _,a,_=prepared()
+    a.parameters['historical_hod'].update(setup_failure_exit_enabled=0,setup_recovery_enabled=0)
+    with pytest.raises(ValueError,match='persistent setup recovery'):
+        configure(a.parameters)
 
 
 def test_half_r_can_activate_swing_trailing_before_full_range_breakout():
