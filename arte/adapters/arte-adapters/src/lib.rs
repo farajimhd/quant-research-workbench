@@ -3,5 +3,6 @@
 pub mod clickhouse;
 pub mod ibkr;
 pub mod live_decode;
+pub mod live_pipeline;
 pub mod massive;
 pub mod massive_stream;

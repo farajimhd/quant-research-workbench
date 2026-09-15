@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 129 in-process Rust tests passed (111 core and 18 adapter tests).
+- 133 in-process Rust tests passed (111 core and 22 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -331,6 +331,24 @@ disconnect invalidation, submission rechecks and decoder-to-gate behavior.
 The live loop must still bind transport health, schedule audits and use the current
 monotonic clock for each ledger check. This gate does not replace coverage, seed,
 broker reconciliation, strategy approval or bracket validation.
+
+The ingestion actor now consumes the receiver's bounded frame queue, normalizes
+events, updates market readiness and schedules silence audits. It emits bounded
+domain batches without waiting for a consumer. Overflow returns the undelivered
+batch and original frame. Decode errors retain the frame. Input remains borrowed,
+so queued frames remain available to the supervisor after failure or shutdown.
+Transport failure, actor cancellation and shutdown disarm the shared readiness
+handle. Restart requires a new actor and an explicitly certified recovery boundary.
+Four offline tests cover overflow, failed transport, cancellation and periodic
+silence blocking with repeated alerts. No connection was opened.
+
+Readiness checks borrow the gate under a short shared lock. They must not perform
+I/O or wait. Lock contention fails closed; representative concurrency and throughput
+acceptance remain open. Clock-quality freshness is supplied by the supervisor and
+must fail if evidence is missing. Receiver supervision, clock synchronization,
+certified handover, ticker fan-out, persistence and observer delivery remain unwired.
+The actor is not yet an executable Live service. It does not make queued strategy
+operands fresh or replace revalidation at actual broker submission.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.
