@@ -8,6 +8,7 @@ use std::time::Duration;
 mod coverage_index;
 mod event_batches;
 mod fills;
+mod references;
 pub use fills::FillPublisher;
 
 pub fn identifier(value: &str) -> Result<&str> {

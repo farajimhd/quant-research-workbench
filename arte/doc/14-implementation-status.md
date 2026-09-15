@@ -6,6 +6,29 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Previous-close ClickHouse storage adapter
+
+Schema 009 adds `previous_close_records_v1` on `live_market_ssd`. It stores only a
+record hash and canonical payload. There is no mutable latest pointer and no
+duplicated price/session projection. Readers request the exact startup-pinned hash.
+
+The adapter validates identity, scope, source session and as-of availability after
+loading. Readback is bounded and rejects multiple distinct rows, wrong hashes,
+noncanonical payloads and corruption. Publication requires extraction/durability
+acceptances and a matching ownership lease. Existing identical content is reused;
+new inserts use synchronous insertion and verified readback. This does not claim
+power-loss durability or distributed writer fencing.
+
+All 244 offline Rust tests, formatting, Clippy and frozen-source hashes pass.
+The new decoder test covers missing rows, correct records, future availability,
+conflicting responses, altered keys, noncanonical JSON and byte limits. Database
+methods compile but have not been exercised against ClickHouse. Schema 009 has not
+been applied. No service, database connection or migration ran.
+
+Source acquisition/certification, reference manifest publication, startup planner
+integration and automatic session selection remain unfinished. Persisting a record
+does not certify its source manifest or make the full runtime ready.
+
 ## Pinned previous-close evidence
 
 Live-lane regular admission no longer accepts an unqualified previous-close decimal.
