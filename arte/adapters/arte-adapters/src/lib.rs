@@ -5,6 +5,7 @@ pub mod event_writer;
 pub mod fill_journal;
 pub mod ibkr;
 pub mod live_decode;
+pub mod live_market;
 pub mod live_pipeline;
 pub mod maintenance;
 pub mod maintenance_pool;

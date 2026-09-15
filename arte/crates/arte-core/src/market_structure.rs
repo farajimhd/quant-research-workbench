@@ -382,6 +382,16 @@ struct OrderedRecovery {
     newest_receipt_ns: u64,
 }
 impl Ordered {
+    pub fn scope(&self) -> crate::event_order::Scope {
+        crate::event_order::Scope {
+            provider: self.runtime.provider,
+            instrument: self.runtime.structure.instrument,
+            session: self.runtime.structure.session,
+        }
+    }
+    pub fn watermark_ns(&self) -> u64 {
+        self.buffer.watermark_ns()
+    }
     pub fn new(runtime: Runtime, maximum_pending: usize) -> Result<Self> {
         runtime.available()?;
         if !runtime.applied.is_empty()

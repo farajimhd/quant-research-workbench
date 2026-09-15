@@ -889,3 +889,15 @@ post-release hashes after restore. All 214 Rust tests, formatting, static checks
 source hashes pass. Feed freshness and trading permission are never restored by
 this snapshot. Durable publication, memory-allocation budgets and full-engine
 recovery remain incomplete. No service or network test ran.
+
+The audited live-market lane now connects decoder output to ordered market/V7
+calculations. It requires matching live receipts and source scope, separates trade
+eligibility from feed health, and rechecks the current shared exposure gate before
+release. The watermark uses the lesser trade/quote source frontier minus a configured
+lateness allowance; silence cannot advance it. Disconnect latches recovery. This is
+a conservative operating assumption, not proof of provider completeness, and may
+delay quiet instruments. One offline test covers both-channel progression and
+monotonicity. All 215 Rust tests, formatting, static checks and source hashes pass.
+The real live lane was compiled but not exercised against a feed. Representative
+latency tuning, full actor dispatch, quote state and strategy scheduling remain
+incomplete. No services or network integration tests ran.
