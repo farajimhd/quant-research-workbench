@@ -140,6 +140,8 @@ def prepare(name, overrides=None, recipe_base=None):
 
 
 async def run(args):
+    if getattr(args, 'record_sequences', False) and args.restart_at:
+        raise ValueError('Sequence recording does not yet support checkpoint restart; use separate runs')
     # QMD's prepared-book authority admits one stream per manager. Serialize
     # study processes without altering the service limit; SQLite releases the
     # lease automatically if a worker dies.
@@ -177,9 +179,19 @@ async def run_locked(args):
     if args.recipe_parameters is not None:identity['recipe_parameters']=args.recipe_parameters
     if getattr(args, 'recipe_base', None) is not None:identity['recipe_base']=args.recipe_base
     if args.restart_at:identity['restart_at']=args.restart_at
+    if getattr(args, 'record_sequences', False):
+        identity['record_sequences'] = True
+        repository = Path(__file__).resolve().parents[1]
+        recorder_paths = [Path(__file__).with_name(name) for name in
+            ('run_strategy_222_refinement.py', 'strategy_222_sequence_recorder.py', 'strategy_222_candle_sequences.py')]
+        recorder_paths += list((repository/'src/market_engine').glob('structural*.py'))
+        recorder_paths += [repository/'src/market_engine'/name for name in ('swing_structure.py', 'immutable_evidence.py')]
+        identity['sequence_recorder_sources'] = {
+            str(path.relative_to(repository)): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in recorder_paths}
     blobs=Path('D:/TradingML/runtimes/analysis/strategy-222-refinement/_source')
     blobs.mkdir(parents=True,exist_ok=True)
-    for relative,digest in identity['source'].items():
+    for relative,digest in dict(identity['source'], **identity.get('sequence_recorder_sources', {})).items():
         target=blobs/(digest+'.py')
         data=(Path(__file__).resolve().parents[1]/relative).read_bytes()
         if hashlib.sha256(data).hexdigest()!=digest:raise ValueError('Source changed while pinning the trial')
@@ -202,6 +214,10 @@ async def run_locked(args):
             configuration_revision=revision, mode=RunMode.BACKTEST,
             experimental_structure_book='level-book-v7', experimental_structure_fingerprint=BOOK_HASH)
         controller = ReplayRunController(definition, runtime_root=Path('D:/TradingML/runtimes/trading/backtest'))
+        recorder = None
+        if getattr(args, 'record_sequences', False):
+            from strategy_222_sequence_recorder import SequenceRecorder
+            recorder = SequenceRecorder(controller, root)
         if args.restart_at:
             from datetime import datetime
             restart_time=datetime.combine(definition.session_date,time.fromisoformat(args.restart_at),
@@ -217,14 +233,16 @@ async def run_locked(args):
                      run_id=controller.run_id, status='launching')
         state['trials'].append(trial); save(manifest,state)
         print(f"Started {name} {args.symbol} run={controller.run_id}", flush=True)
-        await controller.start()
         try:
+            await controller.start()
             while True:
                 await asyncio.wait({controller._task}, timeout=15)
                 if args.stop_request_file and args.stop_request_file.exists() and not controller._task.done():
                     await controller.command('stop')
                 trial.update(status=controller.status, current_time=str(controller.current_time),
                              events=controller.processed_events, error=controller.error)
+                if recorder is not None:
+                    trial['sequence_rows'] = dict(recorder.counts)
                 save(manifest,state)
                 completed = sum(t['status']=='completed' for t in state['trials'])
                 failed = sum(t['status']=='failed' for t in state['trials'])
@@ -249,10 +267,12 @@ async def run_locked(args):
                     else:
                         break
         finally:
-            if not controller._task.done():
+            if controller._task is not None and not controller._task.done():
                 await controller.command('stop')
                 await asyncio.shield(controller._task)
             trial.update(status=controller.status, error=controller.error)
+            if recorder is not None:
+                trial['candle_sequences'] = recorder.close()
             # Unlike an interactive review service, this one-shot worker has no
             # reason to retain terminal journal connections between trials.
             if controller._monitoring is not None:
@@ -274,6 +294,7 @@ def main():
     parser.add_argument('--position-symbols', nargs='+', help='Replay the frozen audited windows for these symbols')
     parser.add_argument('--portfolio-symbols', nargs='+', help='Replay these symbols together with shared $10,000 capital; requires --end')
     parser.add_argument('--restart-at', help='Optional New York checkpoint time for a real stop/resume parity trial')
+    parser.add_argument('--record-sequences', action='store_true', help='Save native completed 1s detector labels and causal sequence features as research output')
     parser.add_argument('--recipe-file',type=Path,help='Supervised research parameter recipe; mutually exclusive with --variants')
     parser.add_argument('--recipe-base',choices=['full-v6','regular-origin-v31'],
                         help='Version to preserve beneath recipe overrides; requires --recipe-file (legacy default: full-v6)')
