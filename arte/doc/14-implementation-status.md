@@ -846,3 +846,14 @@ the split-configuration serialization. Snapshots have a 64 MiB serialized limit;
 temporary allocation accounting and durable publication remain incomplete. These
 are streaming recovery snapshots, not historical seeds. Full-engine recovery must
 also bind event cursors, strategy/portfolio state and pending execution. No service ran.
+
+Normalized trade observations now feed the market/V7 bridge through a provider,
+instrument and session boundary. A bounded identity map prevents retransmissions
+from advancing calculations. Changed payload, SIP clock or eligibility for the same
+key blocks the runtime. Duplicate receipts retain their separate ingestion/audit
+path and do not rewrite calculation state. Recovery v2 includes the identity map.
+One new test verifies deduplication after restore and failure on changed eligibility.
+All 212 Rust tests, formatting, static checks and source hashes pass. Upstream
+ordering, condition qualification, latency gates, quote processing and live actor
+wiring remain separate integration requirements. Full strategy execution is not
+complete. No service or network test ran.

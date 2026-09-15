@@ -7,21 +7,31 @@ use crate::{
     Error, Result,
 };
 const SECOND: u64 = 1_000_000_000;
-const RECOVERY_VERSION: &str = "market-structure-recovery-v1";
+const RECOVERY_VERSION: &str = "market-structure-recovery-v2";
 const MAX_RECOVERY_BYTES: usize = 64 * 1024 * 1024;
+use crate::events::{EventKey, Observation, Payload};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+#[derive(Debug, PartialEq)]
+pub enum ObservationUpdate {
+    Duplicate,
+    Applied(Update),
+}
 #[derive(Serialize)]
 pub struct Config {
+    pub provider: u16,
     pub instrument: u64,
     pub session: u32,
     pub start_second: u64,
     pub end_second: u64,
     pub macd_periods: (u32, u32, u32),
     pub maximum_bars: usize,
+    pub maximum_market_events: usize,
     pub structure: StreamPolicy,
 }
 pub struct Runtime {
+    provider: u16,
     market: Series,
     structure: Stream,
     start_ns: u64,
@@ -29,6 +39,8 @@ pub struct Runtime {
     observed_at_ns: u64,
     failed: Option<String>,
     configuration_hash: String,
+    applied: BTreeMap<EventKey, String>,
+    maximum_market_events: usize,
 }
 /// Bytes must be persisted with their hash in an independently verified manifest.
 /// This snapshot is streaming recovery, never a historical next-session seed.
@@ -38,6 +50,7 @@ pub struct Checkpoint {
 }
 #[derive(Serialize, Deserialize)]
 struct Recovery {
+    provider: u16,
     version: String,
     configuration_hash: String,
     market: Series,
@@ -45,9 +58,17 @@ struct Recovery {
     start_ns: u64,
     end_ns: u64,
     observed_at_ns: u64,
+    applied: Vec<(EventKey, String)>,
+    maximum_market_events: usize,
 }
 impl Runtime {
     pub fn new(seed: &HistoricalSeed, config: Config, split: &SplitAdjustment) -> Result<Self> {
+        if config.provider == 0
+            || config.maximum_market_events == 0
+            || config.maximum_market_events > 10_000_000
+        {
+            return Err(Error::Capacity("market event identity budget".into()));
+        }
         let configuration_hash =
             crate::content_hash(&(RECOVERY_VERSION, &config, split.factor, &split.evidence))?;
         let start_ns = config
@@ -69,6 +90,7 @@ impl Runtime {
         )?;
         let (fast, slow, signal) = config.macd_periods;
         Ok(Self {
+            provider: config.provider,
             market: Series::new(SECOND, fast, slow, signal, config.maximum_bars)?,
             structure,
             start_ns,
@@ -76,6 +98,8 @@ impl Runtime {
             observed_at_ns: start_ns,
             failed: None,
             configuration_hash,
+            applied: BTreeMap::new(),
+            maximum_market_events: config.maximum_market_events,
         })
     }
     fn available(&self) -> Result<()> {
@@ -117,7 +141,7 @@ impl Runtime {
         self.observed_at_ns = observed_at_ns;
         Ok(())
     }
-    pub fn trade(
+    pub(crate) fn trade(
         &mut self,
         sip_ns: u64,
         observed_at_ns: u64,
@@ -142,6 +166,57 @@ impl Runtime {
             self.failed = Some(error.to_string());
         }
         result
+    }
+    /// Input must already be ordered and condition-qualified. Feed freshness remains
+    /// a separate exposure gate. Receipts are not overwritten or synthesized here.
+    pub fn observe_trade(
+        &mut self,
+        event: &Observation,
+        eligible: bool,
+    ) -> Result<ObservationUpdate> {
+        self.available()?;
+        event.validate()?;
+        if event.key.provider != self.provider
+            || event.key.instrument != self.structure.instrument
+            || event.key.session != self.structure.session
+        {
+            return Err(Error::Conflict("market observation scope differs".into()));
+        }
+        let Payload::Trade { price, size, .. } = &event.payload else {
+            return Err(Error::Invalid(
+                "quote supplied to trade computation path".into(),
+            ));
+        };
+        // Receipt/availability may differ on retransmission. Source economics and
+        // calculation eligibility may not silently change under the same key.
+        let hash = crate::content_hash(&(&event.key, &event.payload, event.sip, eligible))?;
+        if let Some(previous) = self.applied.get(&event.key) {
+            if previous == &hash {
+                return Ok(ObservationUpdate::Duplicate);
+            }
+            self.failed = Some("conflicting source event requires repair".into());
+            return Err(Error::Conflict("market event identity changed".into()));
+        }
+        if self.applied.len() == self.maximum_market_events {
+            self.failed = Some("market event identity budget exhausted".into());
+            return Err(Error::Capacity(
+                "market event identities full; no eviction".into(),
+            ));
+        }
+        if price.atoms > (1_i64 << 53) || size.atoms > (1_i64 << 53) {
+            return Err(Error::Invalid(
+                "market decimal exceeds exact integer conversion range".into(),
+            ));
+        }
+        let update = self.trade(
+            event.sip.ns,
+            event.available_at_ns,
+            price.atoms as f64 / 10_f64.powi(price.scale.into()),
+            size.atoms as f64 / 10_f64.powi(size.scale.into()),
+            eligible,
+        )?;
+        self.applied.insert(event.key.clone(), hash);
+        Ok(ObservationUpdate::Applied(update))
     }
     /// Watermark must already be established by the ordering/coverage authority.
     pub fn advance(&mut self, watermark_ns: u64, observed_at_ns: u64) -> Result<()> {
@@ -173,6 +248,7 @@ impl Runtime {
     pub fn checkpoint(&self) -> Result<Checkpoint> {
         self.available()?;
         let recovery = Recovery {
+            provider: self.provider,
             version: RECOVERY_VERSION.into(),
             configuration_hash: self.configuration_hash.clone(),
             market: self.market.clone(),
@@ -180,6 +256,12 @@ impl Runtime {
             start_ns: self.start_ns,
             end_ns: self.end_ns,
             observed_at_ns: self.observed_at_ns,
+            applied: self
+                .applied
+                .iter()
+                .map(|(key, hash)| (key.clone(), hash.clone()))
+                .collect(),
+            maximum_market_events: self.maximum_market_events,
         };
         let bytes =
             serde_json::to_vec(&recovery).map_err(|e| Error::Serialization(e.to_string()))?;
@@ -215,6 +297,26 @@ impl Runtime {
             ));
         }
         let structure = Stream::restore(recovery.structure, seed_hash)?;
+        let applied_count = recovery.applied.len();
+        let applied: BTreeMap<_, _> = recovery.applied.into_iter().collect();
+        if recovery.provider == 0
+            || applied.len() != applied_count
+            || applied.keys().any(|key| {
+                key.provider != recovery.provider
+                    || key.instrument != structure.instrument
+                    || key.session != structure.session
+            })
+        {
+            return Err(Error::Conflict(
+                "restored market identity scope differs".into(),
+            ));
+        }
+        if recovery.maximum_market_events == 0
+            || recovery.maximum_market_events > 10_000_000
+            || applied.len() > recovery.maximum_market_events
+        {
+            return Err(Error::Capacity("restored market identity budget".into()));
+        }
         if structure.start.checked_mul(SECOND) != Some(recovery.start_ns)
             || structure.end.checked_mul(SECOND) != Some(recovery.end_ns)
             || recovery.observed_at_ns < recovery.start_ns
@@ -231,6 +333,7 @@ impl Runtime {
             ));
         }
         Ok(Self {
+            provider: recovery.provider,
             market: recovery.market,
             structure,
             start_ns: recovery.start_ns,
@@ -238,6 +341,8 @@ impl Runtime {
             observed_at_ns: recovery.observed_at_ns,
             failed: None,
             configuration_hash: recovery.configuration_hash,
+            applied,
+            maximum_market_events: recovery.maximum_market_events,
         })
     }
 }
@@ -280,12 +385,14 @@ mod tests {
         Runtime::new(
             &seed,
             Config {
+                provider: 1,
                 instrument: 1,
                 session: 20260915,
                 start_second: 200,
                 end_second: 300,
                 macd_periods: (2, 3, 2),
                 maximum_bars,
+                maximum_market_events: 100,
                 structure: StreamPolicy {
                     input_generation: "live".into(),
                     ..StreamPolicy::default()
@@ -349,5 +456,58 @@ mod tests {
                 restored.checkpoint().unwrap().hash
             );
         }
+    }
+    #[test]
+    fn canonical_trade_retry_is_deduplicated_across_recovery_and_conflicts_block() {
+        use crate::events::{Decimal, EventKind, SourceTime};
+        let mut runtime = runtime(10);
+        let mut event = Observation {
+            key: EventKey {
+                provider: 1,
+                instrument: 1,
+                session: 20260915,
+                kind: EventKind::Trade,
+                sequence: 1,
+            },
+            payload: Payload::Trade {
+                price: Decimal {
+                    atoms: 1001,
+                    scale: 2,
+                },
+                size: Decimal { atoms: 2, scale: 0 },
+                exchange: 1,
+                trade_id: "trade-1".into(),
+                trf: None,
+                conditions: vec![],
+                correction: None,
+            },
+            sip: SourceTime {
+                ns: 200 * SECOND + 1,
+                precision_ns: 1,
+            },
+            participant: None,
+            available_at_ns: 200 * SECOND + 2,
+            receipt: None,
+        };
+        assert!(matches!(
+            runtime.observe_trade(&event, true).unwrap(),
+            ObservationUpdate::Applied(_)
+        ));
+        let checkpoint = runtime.checkpoint().unwrap();
+        let mut restored = Runtime::restore(
+            &checkpoint.bytes,
+            &checkpoint.hash,
+            &runtime.structure.seed_hash,
+            runtime.configuration_hash(),
+        )
+        .unwrap();
+        event.available_at_ns += 100;
+        assert_eq!(
+            restored.observe_trade(&event, true).unwrap(),
+            ObservationUpdate::Duplicate
+        );
+        assert_eq!(restored.market().unwrap().developing().unwrap().trades, 1);
+        assert!(restored.observe_trade(&event, false).is_err());
+        assert!(restored.market().is_err());
     }
 }
