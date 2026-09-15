@@ -329,7 +329,8 @@ def load_recipe(path):
     allowed={'liquidity_admission':{'minimum_session_dollar_volume','minimum_session_share_volume',
         'maximum_admission_spread_bps','maximum_current_spread_bps','maximum_spread_bps',
         'minimum_current_trade_rate_60s'},'historical_hod':{'setup_minimum_body_bps','setup_minimum_300s_range_pct',
-        'setup_phase_minimum_progress_r','setup_range_seconds','setup_base_recovery_maximum_range_pct'}}
+        'setup_phase_minimum_progress_r','setup_range_seconds','setup_base_recovery_maximum_range_pct',
+        'setup_support_quote_clearance_selection'}}
     parameters=json.loads(path.read_text())['parameters']
     if not isinstance(parameters,dict) or not parameters:raise ValueError('Empty research recipe')
     for section,values in parameters.items():

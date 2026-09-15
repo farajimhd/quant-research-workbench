@@ -123,6 +123,8 @@ def test_recipe_accepts_only_bounded_parameter_paths(tmp_path):
     assert load_recipe(path)['historical_hod']['setup_range_seconds']==15
     path.write_text(json.dumps(dict(parameters=dict(historical_hod=dict(setup_base_recovery_maximum_range_pct=3.)))))
     assert load_recipe(path)['historical_hod']['setup_base_recovery_maximum_range_pct']==3.
+    path.write_text(json.dumps(dict(parameters=dict(historical_hod=dict(setup_support_quote_clearance_selection=1)))))
+    assert load_recipe(path)['historical_hod']['setup_support_quote_clearance_selection']==1
     for invalid in (-1, float('nan'), float('inf'), True, '1'):
         path.write_text(json.dumps(dict(parameters=dict(historical_hod=dict(setup_phase_minimum_progress_r=invalid)))))
         with pytest.raises(ValueError,match='Invalid research parameter'):load_recipe(path)
@@ -167,6 +169,11 @@ def test_recipe_preserves_selected_version_and_changes_only_requested_parameter(
         'setup_range_seconds':15,'setup_base_recovery_maximum_range_pct':3.}},'regular-origin-v31')
     expected_range['historical_hod']['setup_base_recovery_maximum_range_pct']=3.
     assert recovery_trial['configuration']['strategy']['profiles'][-1]['parameters']==expected_range
+    support_trial=prepare('quote-support-experiment',{'historical_hod':{
+        'setup_support_quote_clearance_selection':1}},'regular-origin-v31')
+    expected_support=deepcopy(baseline['configuration']['strategy']['profiles'][-1]['parameters'])
+    expected_support['historical_hod']['setup_support_quote_clearance_selection']=1
+    assert support_trial['configuration']['strategy']['profiles'][-1]['parameters']==expected_support
     assert payload==frozen
 
     legacy=prepare('legacy-experiment',{'historical_hod':{'setup_minimum_body_bps':30}})

@@ -91,6 +91,32 @@ def test_ineligible_closer_swing_does_not_hide_a_fresh_base_support():
     assert 'fresh_support' in rejected.evaluation.signals[0].metadata['early_base_assessment']['failed']
 
 
+def test_quote_clearance_selects_an_existing_eligible_support_without_moving_it():
+    host,a,obs=prepared()
+    a.parameters['historical_hod'].update(setup_early_base_enabled=1,
+        setup_minimum_quote_clearance_spreads=1)
+    o=replace(obs(2,10.11),bid=10.07,ask=10.11);now=o.observed_at.timestamp()
+    market=deepcopy(o.structural_detector_state)
+    viable=dict(side='support',state='active',lower=9.99,price=9.995,upper=10.,
+        pivot_at=now-3,confirmed_at=now-1)
+    tight=dict(viable,lower=10.06,price=10.065,upper=10.07)
+    market['row']['local_swings']=[viable,tight]
+    o=replace(o,structural_detector_state=market)
+    assert host.evaluate(a,o).evaluation.signals[0].reason=='setup_stop_inside_quote_noise'
+    a.parameters['historical_hod']['setup_support_quote_clearance_selection']=1
+    result=host.evaluate(a,o)
+    signal=result.evaluation.signals[0]
+    assert signal.reason=='v7_fresh_base_entry'
+    assert signal.metadata['early_base_entry']['swing']==viable
+    assert signal.metadata['entry_quote_clearance']['stop']==9.98
+    assert signal.metadata['entry_quote_clearance']['minimum_spreads']==1
+    assert any(i.action=='enter_long' for i in result.evaluation.intents)
+    # Eligibility is still causal; a stale or future wider support cannot help.
+    for confirmed in (now+1,now-20):
+        market['row']['local_swings']=[tight,dict(viable,pivot_at=confirmed-1,confirmed_at=confirmed)]
+        assert not host.evaluate(a,replace(o,structural_detector_state=market)).evaluation.intents
+
+
 def test_configurable_base_extension_preserves_other_entry_checks():
     import pytest
     from src.trading_runtime.historical_hod import configure

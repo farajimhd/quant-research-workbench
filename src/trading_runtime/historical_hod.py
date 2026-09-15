@@ -27,7 +27,7 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     luld_buffer_bps=25.,luld_buffer_ticks=2,luld_maximum_age_ms=60000.,v7_zone_enabled=0,entry_zone_fraction=.30,
     v7_center_swing_enabled=0,v7_transition_entries_enabled=0,v7_price_only_enabled=0,rejection_break_offset_bps=0.,
     v7_setup_enabled=0,setup_failure_seconds=0,setup_failure_buffer_ticks=1.,setup_minimum_body_bps=0.,setup_trail_requires_breakout=0,setup_trail_activation_r=0.,setup_recovery_preserve_peak=0,setup_recovery_enabled=0,setup_add_requires_range_breakout=1,setup_range_seconds=30,setup_minimum_bars=5,
-    setup_minimum_quote_clearance_spreads=0.,setup_trail_requires_current_gain=0,setup_trail_current_gain_requires_bid=1,setup_phase_minimum_progress_r=0.,
+    setup_minimum_quote_clearance_spreads=0.,setup_support_quote_clearance_selection=0,setup_trail_requires_current_gain=0,setup_trail_current_gain_requires_bid=1,setup_phase_minimum_progress_r=0.,
     setup_failure_exit_enabled=1,setup_recovery_unprotected_reentry=0,setup_recovery_entry_reclaim=0,setup_recovery_regular_base=0,setup_recovery_regular_full_range=0,
     setup_minimum_60s_progress_pct=0.,setup_minimum_300s_range_pct=0.,setup_add_maximum_upper_wick_fraction=1.,
     setup_acquisition_quality_enabled=0,setup_initial_tranche_fraction=1.,
@@ -90,7 +90,7 @@ def configure(p):
         raise ValueError('Phase progress requires V7 setup')
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_recovery_regular_full_range','setup_trail_current_gain_requires_bid','setup_phase_minimum_progress_r','setup_trail_requires_current_gain','setup_recovery_regular_base','setup_base_maximum_extension_fraction','setup_recovery_entry_reclaim','setup_recovery_unprotected_reentry','setup_minimum_300s_range_pct','setup_minimum_60s_progress_pct','setup_add_maximum_upper_wick_fraction','setup_failure_exit_enabled','setup_base_recovery_maximum_range_pct','setup_minimum_trail_progress_r','setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_support_quote_clearance_selection','setup_recovery_regular_full_range','setup_trail_current_gain_requires_bid','setup_phase_minimum_progress_r','setup_trail_requires_current_gain','setup_recovery_regular_base','setup_base_maximum_extension_fraction','setup_recovery_entry_reclaim','setup_recovery_unprotected_reentry','setup_minimum_300s_range_pct','setup_minimum_60s_progress_pct','setup_add_maximum_upper_wick_fraction','setup_failure_exit_enabled','setup_base_recovery_maximum_range_pct','setup_minimum_trail_progress_r','setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
         raise ValueError('Historical HOD settings must be finite and positive')
     if not 0 <= s['setup_failure_seconds'] <= 5 or int(s['setup_failure_seconds']) != s['setup_failure_seconds']:
         raise ValueError('Initial setup failure window must be zero to five completed seconds')
@@ -295,7 +295,7 @@ def stop_below(value, s, tick):
 
 
 def initial_swing_low(row, boundary, now, *, closest=False, confirmed_after=0, price_only=False,
-                      pivot_not_before=0, maximum_age_s=None):
+                      pivot_not_before=0, maximum_age_s=None, eligible=None):
     candidates = []
     for level in row.get('local_swings',[]) + row.get('confirmed_swings',[]):
         if (level.get('side') not in (1,'support') or level.get('state','active') != 'active'
@@ -306,10 +306,15 @@ def initial_swing_low(row, boundary, now, *, closest=False, confirmed_after=0, p
                 and (level['price'] if price_only else level['upper']) < boundary['lower']
                 and 0 < level['pivot_at'] <= level['confirmed_at'] <= now and level['confirmed_at'] > confirmed_after
                 and level['pivot_at'] >= pivot_not_before
-                and (maximum_age_s is None or now-level['confirmed_at'] <= maximum_age_s)):
+                and (maximum_age_s is None or now-level['confirmed_at'] <= maximum_age_s)
+                and (eligible is None or eligible(level))):
             candidates.append(level)
     key=(lambda l:(l['lower'],l['pivot_at'],l['confirmed_at'])) if closest else (lambda l:(l['pivot_at'],l['confirmed_at'],l['price']))
     return deepcopy(max(candidates,key=key)) if candidates else None
+
+
+def stop_clears_quote(stop, bid, ask, minimum_spreads):
+    return bid-stop > 0 and bid-stop+1e-9 >= minimum_spreads*(ask-bid)
 
 
 def next_historical_resistance(rows, price, session):
@@ -1205,7 +1210,10 @@ def evaluate(host, a, o, p, state):
         consolidation = setup_state.get('range')
         candidate = initial_swing_low(row,dict(lower=min(o.price,decision_bid)),now,
             closest=True,price_only=price_only,pivot_not_before=consolidation['start'],
-            maximum_age_s=s['setup_base_maximum_swing_age_s']) if consolidation else None
+            maximum_age_s=s['setup_base_maximum_swing_age_s'],
+            eligible=(lambda level:stop_clears_quote(stop_below(level['lower'],s,tick),o.bid,o.ask,
+                s['setup_minimum_quote_clearance_spreads'])) if s['setup_support_quote_clearance_selection']
+                and s['setup_minimum_quote_clearance_spreads'] else None) if consolidation else None
         risk_pct=(decision_ask-stop_below(candidate['lower'],s,tick))/decision_ask*100 if candidate else None
         range_pct=(consolidation['high']/consolidation['low']-1)*100 if consolidation else None
         extension_limit=(consolidation['high']+s['setup_base_maximum_extension_fraction']*(consolidation['high']-consolidation['low'])) if consolidation else None
@@ -1218,6 +1226,10 @@ def evaluate(host, a, o, p, state):
             failed=[k for k,v in checks.items() if not v],swing=deepcopy(candidate),
             range=deepcopy(consolidation),risk_pct=risk_pct,range_pct=range_pct,
             maximum_extension_fraction=s['setup_base_maximum_extension_fraction'],extension_limit=extension_limit)
+        if s['setup_support_quote_clearance_selection']:
+            evidence['early_base_assessment']['support_quote_selection']=dict(
+                bid=o.bid,ask=o.ask,minimum_spreads=s['setup_minimum_quote_clearance_spreads'],
+                policy='closest_fresh_support_with_existing_stop_clearance')
         if all(checks.values()):
             early_base = candidate
             evidence['early_base_entry'] = dict(swing=deepcopy(candidate),range=deepcopy(consolidation),
@@ -1312,7 +1324,7 @@ def evaluate(host, a, o, p, state):
         evidence['entry_quote_clearance'] = dict(bid=o.bid,ask=o.ask,stop=stop,
             spread=spread,clearance=clearance,minimum=minimum,
             minimum_spreads=s['setup_minimum_quote_clearance_spreads'],observed_at=now)
-        if clearance <= 0 or clearance+1e-9 < minimum:
+        if not stop_clears_quote(stop,o.bid,o.ask,s['setup_minimum_quote_clearance_spreads']):
             return result('wait','setup_stop_inside_quote_noise')
     initial_green = green_stop_candidate(d,tick) if s['early_green_stop_enabled'] else None
     if reclaim:
