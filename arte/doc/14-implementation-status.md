@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 100 in-process Rust tests passed (93 core and 7 adapter tests).
+- 104 in-process Rust tests passed (97 core and 7 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -230,6 +230,15 @@ protection on each evaluation. Missing official targets are never synthesized in
 regular hours. Five offline tests cover proposals, quote guards, detector freshness,
 session target policy and red-to-green target confirmation. Broker modification
 safety and dispatcher wiring remain unimplemented.
+
+The shared dispatch contract now wraps entry, add, protection and exit intents in
+one versioned Live/Paper/Backtest envelope. Identity binds run, account, instrument,
+code/config, input boundary, safety state, actions and evidence. Exit-first arbitration
+skips the lazy downstream evaluator when an exit is required. Pending-only entries
+are cancelled without a zero-quantity exit. Same-sequence retries require identical
+causal and safety evidence. Four offline tests cover priority, phase handling,
+pending-entry cancellation and cross-mode schema/retry behavior. This is an
+arbitration layer, not the full runtime loop or durable journal writer.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.
