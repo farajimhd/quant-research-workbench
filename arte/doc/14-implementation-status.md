@@ -890,6 +890,16 @@ All 217 Rust tests, formatting, static checks and source hashes pass. Full per-o
 freshness and handling fresh account updates after a bar close remain incomplete.
 No service or broker integration test ran.
 
+Candidate reconciliation now uses actual evaluation time while completed market
+geometry retains bar-close coordinates. A broker snapshot known after bar close
+but before evaluation is accepted; a snapshot from after evaluation is rejected.
+Recovery observation clocks no longer rewind to the bar boundary. Duplicate-bar
+handling retains valid account reconciliation. Existing candidate tests now verify
+the delayed-account case and both recorded clocks. All 217 Rust tests, formatting,
+static checks and source hashes pass. This does not certify all fill-timing scenarios,
+full source parity or per-operand freshness. Full strategy integration remains
+incomplete. No service ran.
+
 Ordered-market recovery now includes the pending event queue, eligibility records,
 release watermark and newest input receipt alongside the market/V7 snapshot. Restore
 requires the expected content, seed, configuration and queue capacity. It rejects

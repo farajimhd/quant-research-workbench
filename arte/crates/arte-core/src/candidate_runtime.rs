@@ -97,7 +97,6 @@ impl Runtime {
             frame.recovery_policy,
         )?;
         if frame.bar.end_ns > input.evaluated_at_ns
-            || broker.at_ns > frame.bar.end_ns
             || input.event_time_ns != frame.bar.end_ns
             || policy.maximum_completed_bar_age_ns == 0
         {
@@ -106,6 +105,7 @@ impl Runtime {
             ));
         }
         let stale = input.evaluated_at_ns - frame.bar.end_ns >= policy.maximum_completed_bar_age_ns;
+        let evaluated_at_ns = input.evaluated_at_ns;
         input.feature_hash = content_hash(&("candidate-completed-v1", frame, broker, gates))?;
         let evidence = input.feature_hash.clone();
         self.transaction.prepare_observed(
@@ -115,7 +115,7 @@ impl Runtime {
             |state| {
                 state.observe_reconciled(
                     broker,
-                    frame.bar.end_ns,
+                    evaluated_at_ns,
                     frame.bar.open.max(frame.bar.close),
                     policy.preserve_peak,
                     policy.stop_gain_guard,
@@ -125,7 +125,9 @@ impl Runtime {
                 if stale {
                     return Ok(stale_bar_actions(safety.pending_entry));
                 }
-                Ok(state.completed(frame, broker, gates, policy)?.actions)
+                Ok(state
+                    .completed_at(frame, broker, gates, policy, evaluated_at_ns)?
+                    .actions)
             },
         )
     }

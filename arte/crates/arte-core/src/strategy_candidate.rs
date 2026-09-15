@@ -246,7 +246,23 @@ impl State {
         gates: &adds::Gates,
         p: &Policy<'_>,
     ) -> Result<Evaluation> {
-        if !f.fresh || f.bar.end_ns < self.last_bar_ns {
+        self.completed_at(f, broker, gates, p, f.bar.end_ns)
+    }
+    /// Market geometry retains bar-close coordinates. Account/recovery observations
+    /// use the actual evaluation clock and may arrive after that close.
+    pub fn completed_at(
+        &mut self,
+        f: &entry::Frame<'_>,
+        broker: &PositionObservation,
+        gates: &adds::Gates,
+        p: &Policy<'_>,
+        evaluated_at_ns: u64,
+    ) -> Result<Evaluation> {
+        if !f.fresh
+            || f.bar.end_ns < self.last_bar_ns
+            || evaluated_at_ns < f.bar.end_ns
+            || evaluated_at_ns < self.last_intrabar_ns
+        {
             return Err(Error::Invalid("candidate completed clock rewind".into()));
         }
         // Distinct policies must not silently disagree on common geometry.
@@ -263,8 +279,9 @@ impl State {
             ));
         }
         let mut next = self.clone();
-        next.reconcile(broker, f.bar.end_ns)?;
+        next.reconcile(broker, evaluated_at_ns)?;
         if f.bar.end_ns == next.last_bar_ns {
+            *self = next;
             return Ok(Evaluation {
                 actions: vec![Action::Hold {
                     reason: "duplicate_completed_bar".into(),
@@ -325,7 +342,7 @@ impl State {
                 active.entry.setup.entry_failure_recovery = Some(failure.reclaim_threshold);
             }
             next.recovery.observe_position(
-                f.bar.end_ns,
+                evaluated_at_ns,
                 Some((
                     &active.entry.setup,
                     broker.stop.unwrap(),
@@ -626,6 +643,36 @@ mod tests {
                 )
                 .unwrap();
             assert!(matches!(decision.actions[0], Action::Enter(_)));
+            for future_account in [false, true] {
+                let mut delayed = crate::candidate_runtime::Runtime::new(
+                    decision.scope.clone(),
+                    State::default(),
+                    1024 * 1024,
+                )
+                .unwrap();
+                let mut delayed_input = input.clone();
+                delayed_input.evaluated_at_ns += 2;
+                let mut current_account = flat.clone();
+                current_account.at_ns += if future_account { 3 } else { 1 };
+                let evaluated = delayed.completed(
+                    delayed_input,
+                    &safety,
+                    f,
+                    &current_account,
+                    &gates,
+                    &policy,
+                    &intrabar_policy,
+                );
+                if future_account {
+                    assert!(evaluated.is_err());
+                    assert!(delayed.pending_batch().is_none());
+                } else {
+                    let evaluated = evaluated.unwrap();
+                    assert!(matches!(evaluated.actions[0], Action::Enter(_)));
+                    assert_eq!(evaluated.input.event_time_ns, f.bar.end_ns);
+                    assert_eq!(evaluated.input.evaluated_at_ns, f.bar.end_ns + 2);
+                }
+            }
             for pending_entry in [false, true] {
                 let mut stale_runtime = crate::candidate_runtime::Runtime::new(
                     decision.scope.clone(),
