@@ -313,7 +313,11 @@ impl ClickHouse {
         }
         self.verify_acquisition(certificate).await
     }
-    async fn event_values(&self, table: &str, ids: &[String]) -> Result<BTreeMap<String, String>> {
+    pub(super) async fn event_values(
+        &self,
+        table: &str,
+        ids: &[String],
+    ) -> Result<BTreeMap<String, String>> {
         if ids.is_empty() || ids.len() > MAX_OBSERVATIONS || ids.iter().any(|id| !valid_hash(id)) {
             return Err(Error::Invalid("invalid bounded event object query".into()));
         }
@@ -338,7 +342,7 @@ impl ClickHouse {
         }
         Ok(values)
     }
-    async fn stage_event_values(
+    pub(super) async fn stage_event_values(
         &self,
         table: &str,
         values: &BTreeMap<String, String>,

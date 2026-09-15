@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 pub mod clickhouse;
 pub mod event_writer;
+pub mod fill_journal;
 pub mod ibkr;
 pub mod live_decode;
 pub mod live_pipeline;

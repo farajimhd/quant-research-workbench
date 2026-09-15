@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 190 in-process Rust tests passed (136 core and 54 adapter tests).
+- 193 in-process Rust tests passed (136 core and 57 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -690,3 +690,18 @@ projection, not broker balance or portfolio reservation authority. It excludes f
 FX, settlement, margin, initial-position seeding, corporate actions and corrections.
 Durable fill acknowledgment and reconciliation must precede live use. Bounded lots
 are cloned for transactional validation; performance and durable recovery remain open.
+
+Fill publication now has a bounded batch/commit path. Batches contain at most 256
+reports and 4 MiB, share one position scope and preserve causal report order. The
+ClickHouse publisher requires extraction/durability acceptance and an exclusively
+borrowed local scope lease. It validates storage policy and part placement, inserts
+missing immutable execution identities and verifies exact readback before projection.
+Schema 007 defines the new execution-fill table; it has not been executed.
+
+The committer retains its batch across ambiguous writes. Projection starts only after
+verified readback. If a fill cannot be projected, the completed prefix count remains
+visible and the remaining reports are retained; later batches must not overtake it.
+Three offline tests cover publication failure, retry, partial projection failure,
+mixed scope and incomplete readback. All 193 tests pass. The storage currently supports
+identity lookup, not a complete ordered run catalog. Cross-host fencing, correction
+events, crash recovery and engine-loop integration remain open. No database call ran.

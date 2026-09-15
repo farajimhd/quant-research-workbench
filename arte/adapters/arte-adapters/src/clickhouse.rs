@@ -6,6 +6,8 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::time::Duration;
 mod event_batches;
+mod fills;
+pub use fills::FillPublisher;
 
 pub fn identifier(value: &str) -> Result<&str> {
     if value.is_empty()
