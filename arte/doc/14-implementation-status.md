@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 115 in-process Rust tests passed (108 core and 7 adapter tests).
+- 119 in-process Rust tests passed (108 core and 11 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -289,6 +289,18 @@ stale MACD, encounter latching and future-clock rejection. The frozen source's
 capital-wait versus submitted-entry distinction remains explicit. These checks do
 not replace OMS deadlines for submitted orders and are not yet called by live
 WebSocket routing. Cancellation intents do not change broker fill/order state.
+
+The Massive WebSocket receiver now implements one explicit real-time stocks
+connection, authentication, trade/quote subscription, bounded frames, timeouts,
+ping handling and cancellation health. Receive UTC and run-relative monotonic
+time are captured before JSON classification. Overflow returns the undelivered
+frame and fails feed health. It never reconnects without the caller's repair gate.
+Four offline tests cover subscription validation, protocol status, cancellation
+and queue overflow. Transport health is not trading readiness. Provider connection,
+subscription completeness, latency integration, normalization fan-out and repair
+handoff remain untested or unwired. No WebSocket connection was opened.
+The protocol was checked against the official
+[Massive WebSocket quickstart](https://massive.com/docs/websocket/quickstart).
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.

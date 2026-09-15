@@ -3,3 +3,4 @@
 pub mod clickhouse;
 pub mod ibkr;
 pub mod massive;
+pub mod massive_stream;
