@@ -128,7 +128,7 @@ def recovery_observe(state, entry, market, observation, stop, row, fresh, *, pre
         for field in ('local_swings', 'confirmed_swings')}}
 
 
-def recovery_permission(state, swing, market, *, stop_gain_guard=False, tight_base=False, unprotected_reentry=False):
+def recovery_permission(state, swing, market, *, stop_gain_guard=False, tight_base=False, unprotected_reentry=False, entry_reclaim=False):
     previous = state.get('last_exit')
     if not previous:
         return '', 'building'
@@ -144,7 +144,8 @@ def recovery_permission(state, swing, market, *, stop_gain_guard=False, tight_ba
     # protection history retain the stricter recovery rule.
     if (unprotected_reentry and stop_gain_guard
             and previous.get('initial_fill_price',0)>0
-            and previous.get('stop_above_initial_fill') is False):
+            and previous.get('stop_above_initial_fill') is False
+            and (not entry_reclaim or market['bar']['close']>previous['initial_fill_price'])):
         return '', 'building'
     if (previous['setup'].get('phase') != 'post_breakout'
             and not (stop_gain_guard and previous.get('stop_above_initial_fill'))):
