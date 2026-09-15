@@ -63,7 +63,7 @@ def configure(p):
         raise ValueError('Minimum trail progress requires V7 setup swing protection')
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_minimum_trail_progress_r','setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_base_recovery_maximum_range_pct','setup_minimum_trail_progress_r','setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
         raise ValueError('Historical HOD settings must be finite and positive')
     if not 0 <= s['setup_failure_seconds'] <= 5 or int(s['setup_failure_seconds']) != s['setup_failure_seconds']:
         raise ValueError('Initial setup failure window must be zero to five completed seconds')
@@ -1229,7 +1229,10 @@ def evaluate(host, a, o, p, state):
         return result('wait','confirmed_local_swing_low_unavailable')
     entry_phase = 'building'
     if s.get('setup_recovery_enabled'):
-        tight_base=bool(early_base and (consolidation['high']/consolidation['low']-1)*100<=s['setup_base_recovery_maximum_range_pct'])
+        # Zero disables the compact-base exception; fresh support must then
+        # satisfy the existing higher-base or post-move reclaim requirement.
+        tight_base=bool(s['setup_base_recovery_maximum_range_pct'] and early_base
+            and (consolidation['high']/consolidation['low']-1)*100<=s['setup_base_recovery_maximum_range_pct'])
         blocked_reason,entry_phase=v7_setup.recovery_permission(setup_state,swing,d,
             stop_gain_guard=bool(s['setup_recovery_stop_gain_guard']),tight_base=tight_base)
         if blocked_reason:return result('wait',blocked_reason)

@@ -66,6 +66,39 @@ def test_stop_gain_guard_never_infers_an_unobserved_initial_fill():
     assert not state['held']['stop_above_initial_fill']
 
 
+def test_disabling_compact_base_exception_keeps_fresh_reclaim_available():
+    host,a,obs=prepared()
+    a.parameters['historical_hod'].update(setup_recovery_enabled=1,
+        setup_recovery_stop_gain_guard=1,setup_early_base_enabled=1)
+    o=obs(2,10.11);now=o.observed_at.timestamp()
+    market=deepcopy(o.structural_detector_state)
+    market['row']['local_swings']=[swing(now-3,9.99)]
+    o=replace(o,structural_detector_state=market)
+    a.state['v7_setup']['last_exit']=dict(at=now-10,entry_at=now-20,
+        stop=10.03,body_high=10.3,setup=dict(phase='post_breakout',breakout_threshold=10.2))
+    assert any(i.action=='enter_long' for i in host.evaluate(a,o).evaluation.intents)
+    a.parameters['historical_hod']['setup_base_recovery_maximum_range_pct']=0
+    blocked=host.evaluate(a,o)
+    assert not blocked.evaluation.intents
+    assert blocked.evaluation.signals[0].reason=='waiting_for_post_move_recovery_or_higher_base'
+    # An actual reclaim still permits this same fresh support.
+    a.state['v7_setup']['last_exit'].update(body_high=10.09)
+    a.state['v7_setup']['last_exit']['setup']['breakout_threshold']=10.08
+    assert any(i.action=='enter_long' for i in host.evaluate(a,o).evaluation.intents)
+
+
+def test_compact_base_limit_zero_is_valid_but_invalid_numbers_are_rejected():
+    import pytest
+    from src.trading_runtime.historical_hod import configure
+    _,a,_=prepared()
+    a.parameters['historical_hod']['setup_base_recovery_maximum_range_pct']=0
+    configure(a.parameters)
+    assert a.parameters['historical_hod']['setup_base_recovery_maximum_range_pct']==0
+    for invalid in (-1,True,float('nan'),float('inf')):
+        a.parameters['historical_hod']['setup_base_recovery_maximum_range_pct']=invalid
+        with pytest.raises(ValueError):configure(a.parameters)
+
+
 def test_setup_add_waits_for_range_breakout():
     host,a,obs=prepared()
     p=deepcopy(a.parameters);p['historical_hod']['setup_recovery_enabled']=1
