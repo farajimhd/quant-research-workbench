@@ -111,7 +111,7 @@ pub fn size_and_reserve(
     plan.bracket.quantity = quantity(
         plan.bracket.entry as u64,
         plan.bracket.stop.unwrap() as u64,
-        plan.price_scale,
+        plan.bracket.price_scale,
         policy,
         available,
         plan.bracket.quantity,
@@ -162,7 +162,7 @@ pub fn reserve(
     let cash = money(
         bracket.entry as u64,
         bracket.quantity,
-        plan.price_scale,
+        plan.bracket.price_scale,
         policy.currency_scale,
     )?
     .checked_add(policy.fee_reserve_minor)
@@ -170,7 +170,7 @@ pub fn reserve(
     let stop_risk = money(
         stop_distance,
         bracket.quantity,
-        plan.price_scale,
+        plan.bracket.price_scale,
         policy.currency_scale,
     )?
     .checked_add(policy.fee_reserve_minor)
@@ -224,8 +224,8 @@ mod tests {
         Plan {
             decision_id: "decision".into(),
             action_index: 0,
-            price_scale: 2,
             bracket: crate::orders::Bracket {
+                price_scale: 2,
                 command_id: id.into(),
                 account: "a".into(),
                 instrument: 1,

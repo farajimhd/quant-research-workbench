@@ -23,6 +23,7 @@ pub struct Bracket {
     pub side: Side,
     pub quantity: u64,
     pub entry: i64,
+    pub price_scale: u8,
     pub stop: Option<i64>,
     pub target: Option<i64>,
     pub tick: i64,
@@ -46,6 +47,7 @@ impl Bracket {
             || self.instrument == 0
             || self.quantity == 0
             || self.tick <= 0
+            || self.price_scale > 9
             || now_ns >= self.deadline_ns
         {
             return Err(Error::Invalid(
@@ -248,6 +250,7 @@ mod tests {
     use super::*;
     fn b() -> Bracket {
         Bracket {
+            price_scale: 2,
             command_id: "c".into(),
             account: "paper".into(),
             instrument: 1,
@@ -275,6 +278,19 @@ mod tests {
                 }
             )
             .is_err());
+    }
+    #[test]
+    fn durable_bracket_identity_includes_price_scale() {
+        let original = b();
+        let mut changed = original.clone();
+        changed.price_scale = 3;
+        assert_ne!(
+            content_hash(&original).unwrap(),
+            content_hash(&changed).unwrap()
+        );
+        let mut value = serde_json::to_value(original).unwrap();
+        value.as_object_mut().unwrap().remove("price_scale");
+        assert!(serde_json::from_value::<Bracket>(value).is_err());
     }
     #[test]
     fn bands_direction_and_freshness() {

@@ -3,10 +3,28 @@ use arte_core::{Error, Result};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
+fn price(atoms: i64, scale: u8) -> Result<Value> {
+    if atoms <= 0 || scale > 9 {
+        return Err(Error::Invalid("invalid broker price".into()));
+    }
+    let divisor = 10_i64.pow(u32::from(scale));
+    let text = if scale == 0 {
+        atoms.to_string()
+    } else {
+        format!(
+            "{}.{:0width$}",
+            atoms / divisor,
+            atoms % divisor,
+            width = usize::from(scale)
+        )
+    };
+    serde_json::from_str(&text).map_err(|_| Error::Invalid("broker decimal serialization".into()))
+}
+
 /// Transport-independent request graph; constructing it never submits an order.
-pub fn bracket_payload(order: &Bracket, conid: u64, price_scale: u32) -> Result<Value> {
+pub fn bracket_payload(order: &Bracket, conid: u64) -> Result<Value> {
     if conid == 0
-        || price_scale > 9
+        || order.price_scale > 9
         || order.quantity == 0
         || order.account.is_empty()
         || order.command_id.is_empty()
@@ -30,15 +48,17 @@ pub fn bracket_payload(order: &Bracket, conid: u64, price_scale: u32) -> Result<
     } {
         return Err(Error::Invalid("invalid bracket direction".into()));
     }
-    let scale = 10_f64.powi(price_scale as i32);
+    let entry_price = price(order.entry, order.price_scale)?;
+    let stop_price = price(stop, order.price_scale)?;
+    let target_price = price(target, order.price_scale)?;
     let (entry_side, exit_side) = match order.side {
         Side::Long => ("BUY", "SELL"),
         Side::Short => ("SELL", "BUY"),
     };
     Ok(json!({"orders":[
-        {"acctId":order.account,"conid":conid,"cOID":order.command_id,"orderType":"LMT","side":entry_side,"quantity":order.quantity,"price":order.entry as f64/scale,"tif":"DAY"},
-        {"acctId":order.account,"conid":conid,"parentId":order.command_id,"cOID":format!("{}-stop",order.command_id),"orderType":"STP","side":exit_side,"quantity":order.quantity,"price":stop as f64/scale,"tif":"GTC"},
-        {"acctId":order.account,"conid":conid,"parentId":order.command_id,"cOID":format!("{}-target",order.command_id),"orderType":"LMT","side":exit_side,"quantity":order.quantity,"price":target as f64/scale,"tif":"GTC"}
+        {"acctId":order.account,"conid":conid,"cOID":order.command_id,"orderType":"LMT","side":entry_side,"quantity":order.quantity,"price":entry_price,"tif":"DAY"},
+        {"acctId":order.account,"conid":conid,"parentId":order.command_id,"cOID":format!("{}-stop",order.command_id),"orderType":"STP","side":exit_side,"quantity":order.quantity,"price":stop_price,"tif":"GTC"},
+        {"acctId":order.account,"conid":conid,"parentId":order.command_id,"cOID":format!("{}-target",order.command_id),"orderType":"LMT","side":exit_side,"quantity":order.quantity,"price":target_price,"tif":"GTC"}
     ]}))
 }
 #[derive(Debug, PartialEq, Eq)]
@@ -100,6 +120,15 @@ pub fn interpret_reply(value: &Value, allowlist: &BTreeSet<String>) -> Result<Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn broker_prices_preserve_decimal_atoms_without_float_rounding() {
+        assert_eq!(
+            price(9007199254740993, 2).unwrap().to_string(),
+            "90071992547409.93"
+        );
+        assert_eq!(price(10001, 4).unwrap().to_string(), "1.0001");
+        assert!(price(1, 10).is_err());
+    }
     #[test]
     fn unknown_warning_is_not_acknowledgment() {
         let reply = json!([{"id":"x","messageIds":["unknown"]}]);

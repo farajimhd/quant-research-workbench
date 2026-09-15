@@ -41,7 +41,6 @@ fn exact_price(price: f64, scale: u8) -> Result<i64> {
 pub struct Plan {
     pub decision_id: String,
     pub action_index: usize,
-    pub price_scale: u8,
     pub bracket: Bracket,
 }
 /// The selected candidate is long-only. Do not infer a short/reversal from quantity.
@@ -97,6 +96,7 @@ pub fn bracket(
         side: Side::Long,
         quantity: allocation.quantity,
         entry: allocation.entry_limit,
+        price_scale: allocation.price_scale,
         stop: Some(exact_price(stop, allocation.price_scale)?),
         target: Some(exact_price(target, allocation.price_scale)?),
         tick: allocation.tick,
@@ -106,7 +106,6 @@ pub fn bracket(
     Ok(Plan {
         decision_id: decision.decision_id.clone(),
         action_index,
-        price_scale: allocation.price_scale,
         bracket,
     })
 }

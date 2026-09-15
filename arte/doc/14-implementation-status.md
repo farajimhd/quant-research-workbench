@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 177 in-process Rust tests passed (124 core and 53 adapter tests).
+- 179 in-process Rust tests passed (125 core and 54 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -607,3 +607,15 @@ Already reserved commands cannot be silently resized. One new test checks cash/r
 and lot limits over a range of budgets; the reservation test now covers actual sizing
 and retained-plan retry. All 177 offline tests pass. Account mandate provenance,
 currency certification, durable reservations and execution integration remain open.
+
+The bracket now owns its required price scale. Its durable hash therefore binds
+the interpretation of integer entry, stop, target and tick values. The duplicate
+plan-level scale and the separate broker-adapter scale argument were removed.
+Funding and broker serialization read the bracket's scale. Old bracket JSON without
+that field is rejected; there is no inferred-scale migration. No operational data
+exists from this implementation and no database migration ran. Broker prices now
+serialize directly as exact decimal JSON numbers without a floating-point round trip.
+Two offline tests verify scale-sensitive identity, rejection of missing scale and
+decimal serialization beyond binary floating-point integer precision. All 179 tests
+and static checks passed. Instrument tick/scale certification and actual broker
+compatibility still require the outstanding integration acceptance.
