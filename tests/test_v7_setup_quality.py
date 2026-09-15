@@ -458,3 +458,49 @@ def test_current_gain_switch_validation(value):
     _,a,_=prepared()
     a.parameters['historical_hod']['setup_trail_requires_current_gain']=value
     with pytest.raises(ValueError):configure(a.parameters)
+
+
+def test_phase_progress_requires_actual_fill_completed_green_close_and_survives_restart():
+    entry=dict(confirmed_at=1,initial_fill_price=6.78,initial_risk=.42,
+        setup=dict(phase='building',breakout_threshold=6.72))
+    market=dict(bar=dict(end=2,open=6.75,close=6.88))
+    assert not V.phase(entry,market,True,.5)
+    assert entry['setup']['phase']=='building'
+    assert entry['setup']['phase_progress']['threshold']==pytest.approx(6.99)
+    entry=json.loads(json.dumps(entry))
+    market['bar']=dict(end=3,open=7.1,close=7.)
+    assert not V.phase(entry,market,True,.5)  # Red close cannot activate.
+    market['bar']=dict(end=4,open=6.95,close=6.99)
+    before=deepcopy(entry)
+    assert not V.phase(entry,market,False,.5)
+    assert entry==before
+    assert V.phase(entry,market,True,.5)
+    assert entry['setup']['breakout_at']==4
+    assert not V.phase(entry,dict(bar=dict(end=5,open=6.9,close=6.8)),True,.5)
+    assert entry['setup']['phase']=='post_breakout'
+    unknown=dict(confirmed_at=1,setup=dict(phase='building',breakout_threshold=6.72))
+    assert not V.phase(unknown,market,True,.5)
+
+
+def test_phase_progress_defers_management_but_not_initial_stop():
+    host,a,obs=prepared()
+    a.parameters['historical_hod']['setup_phase_minimum_progress_r']=1.
+    for bar in a.state['v7_setup']['bars']:bar['high']=10.025
+    entered=host.evaluate(a,obs(2,10.02))
+    a=replace(a,state=entered.state,status=S.AssignmentStatus.MANAGING)
+    first=host.evaluate(a,replace(obs(3,10.04),position_quantity=100,average_price=10.02))
+    assert first.state['historical_hod_entry']['setup']['phase']=='building'
+    stopped=host.evaluate(replace(a,state=first.state),
+        replace(obs(4,9.97),position_quantity=100,average_price=10.02))
+    assert any(i.action=='exit' and i.reason=='protective_stop' for i in stopped.evaluation.intents)
+    activated=host.evaluate(replace(a,state=first.state),
+        replace(obs(4,10.07),position_quantity=100,average_price=10.02))
+    assert activated.state['historical_hod_entry']['setup']['phase']=='post_breakout'
+
+
+@pytest.mark.parametrize('value',[-1,float('nan'),float('inf'),True])
+def test_phase_progress_validation(value):
+    from src.trading_runtime.historical_hod import configure
+    _,a,_=prepared()
+    a.parameters['historical_hod']['setup_phase_minimum_progress_r']=value
+    with pytest.raises(ValueError):configure(a.parameters)

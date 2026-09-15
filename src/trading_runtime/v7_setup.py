@@ -78,11 +78,21 @@ def add_candle_quality(bar,maximum):
         passed=fraction<=maximum+1e-12)
 
 
-def phase(entry, market, fresh):
+def phase(entry, market, fresh, minimum_progress_r=0.):
     setup = entry.get('setup')
     if not setup or not fresh or setup['phase'] == 'post_breakout':
         return False
     bar = market['bar']
+    if minimum_progress_r:
+        fill=entry.get('initial_fill_price',0)
+        risk=entry.get('initial_risk',0)
+        threshold=fill+minimum_progress_r*risk if fill>0 and risk>0 else None
+        ready=threshold is not None and bar['close']>=threshold-1e-9
+        setup['phase_progress']=dict(initial_fill=fill,initial_risk=risk,
+            required_r=minimum_progress_r,threshold=threshold,close=bar['close'],
+            observed_at=bar['end'],ready=ready)
+        if not ready:
+            return False
     if (bar['end'] > entry['confirmed_at'] and bar['close'] >= bar['open']
             and bar['close'] > setup['breakout_threshold']):
         setup.update(phase='post_breakout', breakout_at=bar['end'])
