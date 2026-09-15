@@ -34,6 +34,11 @@ if ($PythonExecutable) {
     $fitName = if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) { 'fit_parity.exe' } else { 'fit_parity' }
     & $PythonExecutable -I -B (Join-Path $projectRoot 'tests/reference/check_fit_parity.py') --rust-executable (Join-Path $env:CARGO_TARGET_DIR "debug/examples/$fitName")
     if ($LASTEXITCODE -ne 0) { throw 'Frozen-source fit comparison failed.' }
+    & cargo build --manifest-path (Join-Path $projectRoot 'Cargo.toml') --locked --offline -p arte-core --example macd_parity
+    if ($LASTEXITCODE -ne 0) { throw 'Offline MACD bridge build failed.' }
+    $macdName = if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) { 'macd_parity.exe' } else { 'macd_parity' }
+    & $PythonExecutable -I -B (Join-Path $projectRoot 'tests/reference/check_macd_parity.py') --rust-executable (Join-Path $env:CARGO_TARGET_DIR "debug/examples/$macdName")
+    if ($LASTEXITCODE -ne 0) { throw 'Frozen-source MACD comparison failed.' }
 } else {
     Write-Host 'Source parity not run: supply -PythonExecutable with the offline test dependencies installed.'
 }

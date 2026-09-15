@@ -183,6 +183,13 @@ pub struct Series {
     session_high: Option<f64>,
 }
 impl Series {
+    /// Exact configuration check; do not feed a different timeframe's indicator
+    /// or silently changed EMA periods into a pinned strategy algorithm.
+    pub fn macd_periods_match(&self, fast: u32, slow: u32, signal: u32) -> bool {
+        self.macd.fast.alpha == 2. / (f64::from(fast) + 1.)
+            && self.macd.slow.alpha == 2. / (f64::from(slow) + 1.)
+            && self.macd.signal.alpha == 2. / (f64::from(signal) + 1.)
+    }
     pub fn interval_ns(&self) -> u64 {
         self.builder.interval_ns
     }

@@ -27,3 +27,12 @@ streaming source. Passing its tests does not establish compatible daily seeds.
 The MLE seed builder, fitter and streaming engine have partial Rust implementations.
 The separate fit comparison covers 87 deterministic cases. These checks do not
 establish all-session convergence, streaming parity or complete strategy parity.
+
+`check_macd_parity.py` verifies the frozen strategy hash and compiles only the exact
+`forming_macd` function AST. It executes no source imports or parent-app helpers.
+The standard-library-only comparison covers 32 histories and 4,042 observations,
+including shared closes, missing samples, gaps and repeated forming previews.
+The Rust bridge matched numeric values exactly on these fixtures. Availability,
+base timestamps and bullish classification must also match. This does not establish
+episode-state parity, historical warmup sufficiency or complete strategy parity.
+The optional Python validation path runs this comparison after extraction and fit.

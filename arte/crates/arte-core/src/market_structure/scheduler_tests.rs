@@ -182,12 +182,20 @@ fn timeframes_close_in_order_without_leaking_later_macd_or_filling_empty_interva
         scheduler.enqueue(&e, true).unwrap();
     }
     let mut closes = vec![];
+    let mut macd = crate::strategy_macd::State::new(true);
     let mut evaluated_at_ns = 220 * SECOND;
     while scheduler
         .prepare_next(220 * SECOND, evaluated_at_ns)
         .unwrap()
     {
         let boundary = scheduler.pending().unwrap().unwrap();
+        let macd_reading = macd
+            .observe_boundary(&boundary, scheduler.state().unwrap())
+            .unwrap();
+        assert!(macd
+            .observe_boundary(&boundary, scheduler.state().unwrap())
+            .unwrap()
+            .is_none());
         if let Kind::Completed {
             interval_ns,
             bar,
@@ -196,6 +204,10 @@ fn timeframes_close_in_order_without_leaking_later_macd_or_filling_empty_interva
         {
             closes.push((*interval_ns / SECOND, bar.bar.end_ns / SECOND));
             if bar.bar.end_ns == 201 * SECOND {
+                assert_eq!(
+                    macd_reading.as_ref().unwrap().kind,
+                    crate::strategy_macd::Kind::Unavailable
+                );
                 let five = scheduler.state().unwrap().timeframe(5 * SECOND).unwrap();
                 assert!(five.completed().is_empty());
                 assert_eq!(five.developing().unwrap().close, 10.);
@@ -207,6 +219,15 @@ fn timeframes_close_in_order_without_leaking_later_macd_or_filling_empty_interva
                 assert!(five.developing().is_none());
                 assert_eq!(*available_at_ns, 220 * SECOND);
                 if *interval_ns == SECOND {
+                    assert_eq!(
+                        macd_reading.as_ref().unwrap().kind,
+                        crate::strategy_macd::Kind::Completed
+                    );
+                    let mut skipped = crate::strategy_macd::State::new(true);
+                    assert!(skipped
+                        .observe_boundary(&boundary, scheduler.state().unwrap())
+                        .is_err());
+                    assert!(skipped.reading().is_none());
                     assert_eq!(boundary.evaluated_at_ns, 221 * SECOND);
                     assert_eq!(
                         boundary.input("features".into()).available_at_ns,

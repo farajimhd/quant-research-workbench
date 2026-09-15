@@ -6,6 +6,35 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Candidate forming MACD and episodes
+
+The shared candidate MACD state now consumes completed five-second samples and
+one-second preview boundaries. Two contiguous completed samples recover the source's
+hidden slow EMA. Forming previews do not compound that base. Missing or old base
+evidence stays unavailable. Disabling previews retains the completed sample's age.
+
+A bullish sample can start an episode. A forming reversal blocks bullish readiness
+but does not end the episode or signal a completed reversal. A valid non-bullish
+five-second completion ends the episode. Episode body highs and prior highs are
+retained. Duplicate samples are idempotent; changed identities and invalid clocks
+are rejected before state changes.
+
+The scheduler binding requires the declared five-second 12/26/9 series and pins the
+market configuration. It rejects skipped five-second boundaries and foreign current
+bar views. Unit tests cover this binding, EMA previews, episode transitions, gaps,
+unknown samples, disabled previews, duplicate handling and state round trips.
+
+All 228 Rust tests, formatting, Clippy and copied-source hashes pass. A separate
+offline comparison compiled the exact hash-verified frozen `forming_macd` function.
+It matched 4,042 observations across 32 histories with zero numerical difference;
+availability, base clocks and bullish classifications also matched. The comparison
+does not cover the full Python episode observer or full strategy decisions.
+The full offline validator also reran the existing 70 extraction cases and 87 fit
+cases successfully, with their previously declared numerical tolerances unchanged.
+
+Historical warmup certification, admission/detector production, account journaling
+and full strategy orchestration remain incomplete. No service or network test ran.
+
 ## Declared timeframes and close ordering
 
 The frozen candidate requires one-second bars and a forming five-second MACD.

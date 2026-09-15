@@ -32,6 +32,7 @@ pub mod strategy_early_stop;
 pub mod strategy_encounters;
 pub mod strategy_entry;
 pub mod strategy_lifecycle;
+pub mod strategy_macd;
 pub mod strategy_management;
 pub mod strategy_protection;
 pub mod strategy_setup;
