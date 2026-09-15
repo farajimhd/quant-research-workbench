@@ -6,6 +6,33 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## One-send execution and retryable publication workflow
+
+An execution attempt now owns the prepared request, single-use send permit,
+authorization and submission marker. Its phases are Ready, Sending, Observed,
+Publishing and Complete. It moves to Sending before awaiting transport. No phase
+can return to Ready. Database retries therefore cannot resend the broker request.
+
+The response clock is sampled once. Raw outcome evidence remains in the attempt
+until it becomes a validated pending publication. Invalid clock or outcome data
+does not discard the response or replace its timestamp. Publication failure and
+cancellation preserve the exact pending record for retry.
+
+Cancelling a send leaves the attempt in Sending. After the borrowing future has
+ended, the owner can record an explicit interruption observation. This becomes an
+Unknown outcome for reconciliation, not permission to send again. A successful
+publication returns the existing committed-outcome token and closes the attempt.
+
+All 284 offline Rust tests, formatting, Clippy and frozen-source hashes pass.
+Mocked integration tests cover one send across failed publication, cancelled
+publication, cancelled send, explicit unknown recovery and invalid-clock evidence
+retention. They perform no network or database calls.
+
+This connects send and outcome publication in process. The service runner must
+still own attempts, persist/discover restart state, classify committed responses,
+resolve broker replies and reconcile protection before releasing the session gate.
+No services were started.
+
 ## Durable initial broker outcomes
 
 The shared order contract now records one immutable initial outcome per submission

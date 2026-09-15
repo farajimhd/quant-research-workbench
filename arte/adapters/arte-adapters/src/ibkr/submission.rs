@@ -4,6 +4,7 @@ use arte_core::{
     Error, Result,
 };
 use std::future::Future;
+pub mod workflow;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Scope {
@@ -273,6 +274,230 @@ mod tests {
         fail: bool,
         oversized: bool,
         sent: Option<(String, String)>,
+    }
+    struct Writer {
+        saved: Option<arte_core::orders::outcome::Record>,
+        fail: bool,
+        pause: bool,
+    }
+    impl crate::order_journal::OutcomePublisher for Writer {
+        async fn append_outcome(
+            &mut self,
+            _: &Authorization,
+            _: &arte_core::orders::submission::Marker,
+            record: &arte_core::orders::outcome::Record,
+        ) -> Result<arte_core::orders::outcome::Record> {
+            if let Some(saved) = &self.saved {
+                assert_eq!(saved, record);
+            }
+            self.saved = Some(record.clone());
+            if self.pause {
+                std::future::pending::<()>().await;
+            }
+            if self.fail {
+                self.fail = false;
+                return Err(Error::Unready("ambiguous outcome write".into()));
+            }
+            Ok(record.clone())
+        }
+    }
+    fn mock(scope: Scope) -> Mock {
+        Mock {
+            scope,
+            ready: true,
+            calls: 0,
+            fail: false,
+            oversized: false,
+            sent: None,
+        }
+    }
+    #[tokio::test]
+    async fn workflow_publication_retry_never_resends_and_preserves_observation() {
+        let f = fixture();
+        let mut transport = mock(f.request.scope.clone());
+        let mut attempt =
+            workflow::Attempt::new(f.ledger.authorization("c").unwrap(), f.request, f.permit)
+                .unwrap();
+        attempt
+            .send(
+                &mut transport,
+                || {
+                    Ok(Safety {
+                        now_utc_ns: 12,
+                        now_monotonic_ns: 12,
+                        session: &f.session,
+                        bands: None,
+                        policy: &f.policy,
+                        market: f.gate.at(12),
+                    })
+                },
+                || 13,
+            )
+            .await
+            .unwrap();
+        let original = attempt.observed_record().unwrap().clone();
+        let mut writer = Writer {
+            saved: None,
+            fail: true,
+            pause: false,
+        };
+        assert!(attempt.publish(&mut writer).await.is_err());
+        assert_eq!(attempt.phase(), workflow::Phase::Publishing);
+        assert!(attempt
+            .send(
+                &mut transport,
+                || panic!("must not check a second send"),
+                || 99
+            )
+            .await
+            .is_err());
+        let committed = attempt.publish(&mut writer).await.unwrap();
+        assert_eq!(committed.record(), &original);
+        assert_eq!(attempt.phase(), workflow::Phase::Complete);
+        assert!(attempt.publish(&mut writer).await.is_err());
+        assert_eq!(transport.calls, 1);
+    }
+    #[tokio::test]
+    async fn workflow_cancelled_publication_retries_the_same_record() {
+        let f = fixture();
+        let mut transport = mock(f.request.scope.clone());
+        let mut attempt =
+            workflow::Attempt::new(f.ledger.authorization("c").unwrap(), f.request, f.permit)
+                .unwrap();
+        attempt
+            .send(
+                &mut transport,
+                || {
+                    Ok(Safety {
+                        now_utc_ns: 12,
+                        now_monotonic_ns: 12,
+                        session: &f.session,
+                        bands: None,
+                        policy: &f.policy,
+                        market: f.gate.at(12),
+                    })
+                },
+                || 13,
+            )
+            .await
+            .unwrap();
+        let original = attempt.observed_record().unwrap().clone();
+        let mut writer = Writer {
+            saved: None,
+            fail: false,
+            pause: true,
+        };
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(2),
+            attempt.publish(&mut writer)
+        )
+        .await
+        .is_err());
+        assert_eq!(attempt.observed_record(), Some(&original));
+        writer.pause = false;
+        assert_eq!(
+            attempt.publish(&mut writer).await.unwrap().record(),
+            &original
+        );
+        assert_eq!(transport.calls, 1);
+    }
+    struct Hanging {
+        scope: Scope,
+        calls: usize,
+    }
+    impl Transport for Hanging {
+        fn scope(&self) -> &Scope {
+            &self.scope
+        }
+        fn require_ready(&self, _: u64) -> Result<()> {
+            Ok(())
+        }
+        async fn send(&mut self, _: AuthorizedRequest) -> Result<Response> {
+            self.calls += 1;
+            std::future::pending().await
+        }
+    }
+    #[tokio::test]
+    async fn workflow_cancelled_send_requires_explicit_unknown_observation() {
+        let f = fixture();
+        let mut transport = Hanging {
+            scope: f.request.scope.clone(),
+            calls: 0,
+        };
+        let mut attempt =
+            workflow::Attempt::new(f.ledger.authorization("c").unwrap(), f.request, f.permit)
+                .unwrap();
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(2),
+            attempt.send(
+                &mut transport,
+                || Ok(Safety {
+                    now_utc_ns: 12,
+                    now_monotonic_ns: 12,
+                    session: &f.session,
+                    bands: None,
+                    policy: &f.policy,
+                    market: f.gate.at(12)
+                }),
+                || panic!("response not received")
+            )
+        )
+        .await
+        .is_err());
+        assert_eq!(attempt.phase(), workflow::Phase::Sending);
+        assert!(attempt
+            .send(&mut transport, || panic!("no resend"), || 99)
+            .await
+            .is_err());
+        attempt.record_interruption(14).unwrap();
+        assert!(attempt.record_interruption(15).is_err());
+        let mut writer = Writer {
+            saved: None,
+            fail: false,
+            pause: false,
+        };
+        let committed = attempt.publish(&mut writer).await.unwrap();
+        assert!(matches!(
+            committed.record().observation,
+            arte_core::orders::outcome::Observation::Unknown { .. }
+        ));
+        assert_eq!(committed.record().observed_at_ns, 14);
+        assert_eq!(transport.calls, 1);
+    }
+    #[tokio::test]
+    async fn workflow_invalid_observation_clock_keeps_raw_evidence() {
+        let f = fixture();
+        let mut transport = mock(f.request.scope.clone());
+        let mut attempt =
+            workflow::Attempt::new(f.ledger.authorization("c").unwrap(), f.request, f.permit)
+                .unwrap();
+        attempt
+            .send(
+                &mut transport,
+                || {
+                    Ok(Safety {
+                        now_utc_ns: 12,
+                        now_monotonic_ns: 12,
+                        session: &f.session,
+                        bands: None,
+                        policy: &f.policy,
+                        market: f.gate.at(12),
+                    })
+                },
+                || 9,
+            )
+            .await
+            .unwrap();
+        let original = attempt.observed_record().unwrap().clone();
+        let mut writer = Writer {
+            saved: None,
+            fail: false,
+            pause: false,
+        };
+        assert!(attempt.publish(&mut writer).await.is_err());
+        assert_eq!(attempt.phase(), workflow::Phase::Observed);
+        assert_eq!(attempt.observed_record(), Some(&original));
+        assert!(writer.saved.is_none());
     }
     impl Transport for Mock {
         fn scope(&self) -> &Scope {
