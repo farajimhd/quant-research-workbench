@@ -17,6 +17,7 @@ pub struct Runtime<S> {
     dispatch: Dispatch,
     pending: Option<Pending<S>>,
     maximum_state_bytes: usize,
+    last_committed: Option<(String, Decision)>,
 }
 /// Journal readback acknowledgment, not a broker authorization or fsync proof.
 #[derive(Debug, Clone)]
@@ -50,6 +51,7 @@ impl<S: Clone + Serialize> Runtime<S> {
             dispatch: Dispatch::new(scope)?,
             pending: None,
             maximum_state_bytes,
+            last_committed: None,
         })
     }
     pub fn committed_state(&self) -> &S {
@@ -70,6 +72,19 @@ impl<S: Clone + Serialize> Runtime<S> {
         evidence_hash: String,
         calculate: impl FnOnce(&mut S) -> Result<Vec<Action>>,
     ) -> Result<Decision> {
+        self.prepare_observed(input, safety, evidence_hash, |_| Ok(()), calculate)
+    }
+    /// Apply authoritative observation state before exit arbitration. The input
+    /// feature/evidence hashes must bind the complete observation (including fills).
+    /// Both callbacks are pure state transformations; neither may perform I/O.
+    pub fn prepare_observed(
+        &mut self,
+        input: InputBoundary,
+        safety: &Safety,
+        evidence_hash: String,
+        observe: impl FnOnce(&mut S) -> Result<()>,
+        calculate: impl FnOnce(&mut S) -> Result<Vec<Action>>,
+    ) -> Result<Decision> {
         let request_hash = content_hash(&(&input, safety, &evidence_hash))?;
         if let Some(pending) = &self.pending {
             if pending.request_hash != request_hash {
@@ -79,6 +94,13 @@ impl<S: Clone + Serialize> Runtime<S> {
         }
         let mut next_state = self.state.clone();
         let mut next_dispatch = self.dispatch.clone();
+        let replay = self
+            .last_committed
+            .as_ref()
+            .is_some_and(|(hash, _)| hash == &request_hash);
+        if !replay {
+            observe(&mut next_state)?;
+        }
         let decision =
             next_dispatch.evaluate(input, safety, evidence_hash, || calculate(&mut next_state))?;
         check_state(&next_state, self.maximum_state_bytes)?;
@@ -101,6 +123,7 @@ impl<S: Clone + Serialize> Runtime<S> {
             .ok_or_else(|| Error::Unready("no prepared strategy decision".into()))?;
         pending.batch.verify_readback(readback)?;
         let pending = self.pending.take().unwrap();
+        self.last_committed = Some((pending.request_hash, pending.decision.clone()));
         self.state = pending.next_state;
         self.dispatch = pending.next_dispatch;
         Ok(Committed {
@@ -215,5 +238,60 @@ mod tests {
             .unwrap();
         r.acknowledge(&rows).unwrap();
         assert_eq!(*r.committed_state(), 1);
+    }
+    #[test]
+    fn fill_observation_commits_even_when_exit_preempts_calculation() {
+        let mut r = runtime();
+        let mut safe = safety();
+        safe.position_quantity = 10;
+        safe.manual_exit = true;
+        let decision = r
+            .prepare_observed(
+                input(1),
+                &safe,
+                "fill-evidence".into(),
+                |s| {
+                    *s = 10;
+                    Ok(())
+                },
+                |_| panic!("exit must preempt"),
+            )
+            .unwrap();
+        assert!(matches!(
+            decision.actions.last().unwrap(),
+            Action::Exit { quantity: 10, .. }
+        ));
+        assert_eq!(*r.committed_state(), 0);
+        let rows = r.pending_batch().unwrap().records().to_vec();
+        r.acknowledge(&rows).unwrap();
+        assert_eq!(*r.committed_state(), 10);
+        r.prepare_observed(
+            input(1),
+            &safe,
+            "fill-evidence".into(),
+            |_| panic!("observation cannot repeat"),
+            |_| panic!(),
+        )
+        .unwrap();
+        r.acknowledge(&rows).unwrap();
+        assert_eq!(*r.committed_state(), 10);
+    }
+    #[test]
+    fn observation_failure_has_no_partial_commit() {
+        let mut r = runtime();
+        assert!(r
+            .prepare_observed(
+                input(1),
+                &safety(),
+                "proof".into(),
+                |s| {
+                    *s = 10;
+                    Err(Error::Conflict("bad revision".into()))
+                },
+                compute
+            )
+            .is_err());
+        assert_eq!(*r.committed_state(), 0);
+        assert!(r.pending_batch().is_none());
     }
 }

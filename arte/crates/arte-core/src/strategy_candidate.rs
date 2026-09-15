@@ -46,6 +46,30 @@ pub struct Evaluation {
     pub phase_transitioned: bool,
 }
 impl State {
+    /// Apply a reconciled account snapshot before global exit arbitration. Retain
+    /// body-high evidence supplied by the causal market authority, not a future bar.
+    pub fn observe_reconciled(
+        &mut self,
+        broker: &PositionObservation,
+        observed_at_ns: u64,
+        body_high: f64,
+        preserve_peak: bool,
+        stop_gain_guard: bool,
+    ) -> Result<()> {
+        let mut next = self.clone();
+        next.reconcile(broker, observed_at_ns)?;
+        if broker.quantity > 0 {
+            let active = next.active.as_ref().unwrap();
+            next.recovery.observe_position(
+                observed_at_ns,
+                Some((&active.entry.setup, broker.stop.unwrap(), body_high)),
+                preserve_peak,
+                stop_gain_guard,
+            )?;
+        }
+        *self = next;
+        Ok(())
+    }
     /// Complete snapshot from the account's reconciliation authority, not order intent state.
     fn reconcile(&mut self, b: &PositionObservation, now: u64) -> Result<()> {
         if b.at_ns > now
