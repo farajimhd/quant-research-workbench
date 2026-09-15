@@ -6,7 +6,38 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
-## Latest causal scheduler increment
+## Declared timeframes and close ordering
+
+The frozen candidate requires one-second bars and a forming five-second MACD.
+One-second MACD values cannot substitute for that dependency.
+
+The market owner now accepts up to 16 additional timeframes at construction. Each
+declares its interval, MACD periods and retained-bar budget. Intervals must be whole
+seconds, longer than one second, no longer than a day, unique and aligned with both
+session boundaries. The combined declared budget cannot exceed one million bars.
+Undeclared timeframe access fails. All series consume the same qualified events.
+
+The scheduler exposes closes chronologically. Larger timeframes precede smaller
+ones at a shared close. It stops at the earliest developing-bar end before applying
+a later trade. A five-second close cannot appear in an earlier one-second view.
+The live lane exposes the same borrowed timeframe state. No HTTP boundary exists.
+
+Simultaneously completed bars retain their original computation-availability time
+even if the consumer delays a later acknowledgment. The later evaluation clock is
+recorded separately. An offline assertion covers this delay without restamping data.
+
+Market recovery is version 5 and includes the additional series. Scheduler boundary
+identity is version 2 and includes the timeframe. Tests cover simultaneous closes,
+large sparse gaps, configuration rejection, and identical recovery continuation.
+All 224 Rust tests, formatting, Clippy and copied-source hashes pass. Source-oracle
+parity was not rerun. No service or network integration test ran.
+
+The series currently initialize their indicators from admitted input. They do not
+certify historical indicator warmup. Candidate MACD episode handling, warmup
+readiness, complete admission evidence and full strategy-frame wiring remain
+unfinished. This increment is not evidence of full candidate parity or readiness.
+
+## Causal scheduler increment
 
 The shared market scheduler prepares one boundary at a time. It exposes a completed
 bar before applying the next trade. It then exposes each trade, including its

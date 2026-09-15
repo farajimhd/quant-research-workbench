@@ -8,7 +8,7 @@ use crate::{
     Error, Result,
 };
 const SECOND: u64 = 1_000_000_000;
-const RECOVERY_VERSION: &str = "market-structure-recovery-v4";
+const RECOVERY_VERSION: &str = "market-structure-recovery-v5";
 const MAX_RECOVERY_BYTES: usize = 64 * 1024 * 1024;
 use crate::events::{EventKey, Observation, Payload};
 use serde::{Deserialize, Serialize};
@@ -20,6 +20,12 @@ pub enum ObservationUpdate {
     Applied(Update),
 }
 #[derive(Serialize)]
+pub struct Timeframe {
+    pub interval_ns: u64,
+    pub macd_periods: (u32, u32, u32),
+    pub maximum_bars: usize,
+}
+#[derive(Serialize)]
 pub struct Config {
     pub provider: u16,
     pub instrument: u64,
@@ -29,11 +35,13 @@ pub struct Config {
     pub macd_periods: (u32, u32, u32),
     pub maximum_bars: usize,
     pub maximum_market_events: usize,
+    pub additional_timeframes: Vec<Timeframe>,
     pub structure: StreamPolicy,
 }
 pub struct Runtime {
     provider: u16,
     market: Series,
+    additional: BTreeMap<u64, Series>,
     structure: Stream,
     start_ns: u64,
     end_ns: u64,
@@ -58,6 +66,7 @@ struct Recovery {
     version: String,
     configuration_hash: String,
     market: Series,
+    additional: BTreeMap<u64, Series>,
     structure: crate::v7_stream::Recovery,
     start_ns: u64,
     end_ns: u64,
@@ -87,6 +96,36 @@ impl Runtime {
             .checked_mul(SECOND)
             .ok_or_else(|| Error::Invalid("session clock overflow".into()))?;
         let maximum_levels = config.structure.maximum_levels;
+        if config.additional_timeframes.len() > 16 {
+            return Err(Error::Capacity("additional timeframe budget".into()));
+        }
+        let mut additional = BTreeMap::new();
+        let mut total_bars = config.maximum_bars;
+        for timeframe in &config.additional_timeframes {
+            let interval = timeframe.interval_ns;
+            if interval <= SECOND
+                || interval > 86_400 * SECOND
+                || !interval.is_multiple_of(SECOND)
+                || !start_ns.is_multiple_of(interval)
+                || !end_ns.is_multiple_of(interval)
+                || additional.contains_key(&interval)
+            {
+                return Err(Error::Invalid(
+                    "duplicate or unaligned additional timeframe".into(),
+                ));
+            }
+            total_bars = total_bars
+                .checked_add(timeframe.maximum_bars)
+                .ok_or_else(|| Error::Capacity("combined timeframe bar budget".into()))?;
+            if total_bars > 1_000_000 {
+                return Err(Error::Capacity("combined timeframe bar budget".into()));
+            }
+            let (fast, slow, signal) = timeframe.macd_periods;
+            additional.insert(
+                interval,
+                Series::new(interval, fast, slow, signal, timeframe.maximum_bars)?,
+            );
+        }
         let structure = Stream::new(
             seed,
             config.instrument,
@@ -102,6 +141,7 @@ impl Runtime {
         Ok(Self {
             provider: config.provider,
             market: Series::new(SECOND, fast, slow, signal, config.maximum_bars)?,
+            additional,
             structure,
             start_ns,
             end_ns,
@@ -184,6 +224,11 @@ impl Runtime {
             if matches!(update, Update::Late) {
                 return Err(Error::Unready("late event requires ordered repair".into()));
             }
+            for series in self.additional.values_mut() {
+                if matches!(series.trade(sip_ns, price, size, eligible)?, Update::Late) {
+                    return Err(Error::Unready("late additional timeframe event".into()));
+                }
+            }
             self.update_structure(previous, observed_at_ns)?;
             Ok(update)
         })();
@@ -262,10 +307,13 @@ impl Runtime {
     pub fn advance(&mut self, watermark_ns: u64, observed_at_ns: u64) -> Result<()> {
         self.clock(watermark_ns, observed_at_ns)?;
         let previous = self.market.completed().len();
-        let result = self
-            .market
-            .advance(watermark_ns)
-            .and_then(|()| self.update_structure(previous, observed_at_ns));
+        let result = (|| {
+            self.market.advance(watermark_ns)?;
+            for series in self.additional.values_mut() {
+                series.advance(watermark_ns)?;
+            }
+            self.update_structure(previous, observed_at_ns)
+        })();
         if let Err(error) = &result {
             self.failed = Some(error.to_string());
         }
@@ -291,6 +339,27 @@ impl Runtime {
         self.available()?;
         Ok(&self.market)
     }
+    pub fn timeframe(&self, interval_ns: u64) -> Result<&Series> {
+        self.available()?;
+        if interval_ns == SECOND {
+            return Ok(&self.market);
+        }
+        self.additional
+            .get(&interval_ns)
+            .ok_or_else(|| Error::Unready("timeframe was not declared at startup".into()))
+    }
+    fn series(&self) -> impl Iterator<Item = (u64, &Series)> {
+        std::iter::once((SECOND, &self.market)).chain(
+            self.additional
+                .iter()
+                .map(|(interval, series)| (*interval, series)),
+        )
+    }
+    fn next_completion_ns(&self) -> Option<u64> {
+        self.series()
+            .filter_map(|(_, series)| series.developing().map(|bar| bar.end_ns))
+            .min()
+    }
     pub fn failure(&self) -> Option<&str> {
         self.failed.as_deref()
     }
@@ -304,6 +373,7 @@ impl Runtime {
             version: RECOVERY_VERSION.into(),
             configuration_hash: self.configuration_hash.clone(),
             market: self.market.clone(),
+            additional: self.additional.clone(),
             structure: self.structure.checkpoint()?,
             start_ns: self.start_ns,
             end_ns: self.end_ns,
@@ -352,6 +422,24 @@ impl Runtime {
             ));
         }
         let structure = Stream::restore(recovery.structure, seed_hash)?;
+        if recovery.additional.len() > 16
+            || recovery.additional.iter().any(|(interval, series)| {
+                *interval <= SECOND
+                    || *interval > 86_400 * SECOND
+                    || !interval.is_multiple_of(SECOND)
+                    || !recovery.start_ns.is_multiple_of(*interval)
+                    || !recovery.end_ns.is_multiple_of(*interval)
+                    || series.interval_ns() != *interval
+                    || series
+                        .completed()
+                        .iter()
+                        .any(|bar| bar.bar.end_ns > recovery.observed_at_ns)
+            })
+        {
+            return Err(Error::Conflict(
+                "additional timeframe recovery scope or clock".into(),
+            ));
+        }
         let structure_at_ns = structure
             .as_of
             .checked_mul(SECOND)
@@ -413,6 +501,7 @@ impl Runtime {
         Ok(Self {
             provider: recovery.provider,
             market: recovery.market,
+            additional: recovery.additional,
             structure,
             start_ns: recovery.start_ns,
             end_ns: recovery.end_ns,
@@ -691,6 +780,15 @@ mod tests {
     use super::*;
     use crate::v7_seed::{build, input_hash, SeedPolicy, SourceCertificate};
     pub(super) fn runtime(maximum_bars: usize) -> Runtime {
+        runtime_with_timeframes(maximum_bars, vec![])
+    }
+    pub(super) fn runtime_with_timeframes(
+        maximum_bars: usize,
+        additional_timeframes: Vec<Timeframe>,
+    ) -> Runtime {
+        try_runtime(maximum_bars, additional_timeframes).unwrap()
+    }
+    fn try_runtime(maximum_bars: usize, additional_timeframes: Vec<Timeframe>) -> Result<Runtime> {
         let bars: Vec<_> = (100..118)
             .map(|t| Candle {
                 t,
@@ -732,6 +830,7 @@ mod tests {
                 macd_periods: (2, 3, 2),
                 maximum_bars,
                 maximum_market_events: 100,
+                additional_timeframes,
                 structure: StreamPolicy {
                     input_generation: "live".into(),
                     ..StreamPolicy::default()
@@ -739,7 +838,25 @@ mod tests {
             },
             &SplitAdjustment::default(),
         )
-        .unwrap()
+    }
+    #[test]
+    fn additional_timeframe_declarations_reject_duplicates_alignment_and_capacity() {
+        let timeframe = |interval_ns, maximum_bars| Timeframe {
+            interval_ns,
+            maximum_bars,
+            macd_periods: (12, 26, 9),
+        };
+        for interval in [SECOND, 5 * SECOND + 1, 7 * SECOND, 86_401 * SECOND] {
+            assert!(try_runtime(10, vec![timeframe(interval, 10)]).is_err());
+        }
+        assert!(try_runtime(10, vec![timeframe(5 * SECOND, 0)]).is_err());
+        assert!(try_runtime(10, vec![timeframe(5 * SECOND, 1_000_000)]).is_err());
+        assert!(try_runtime(
+            10,
+            vec![timeframe(5 * SECOND, 10), timeframe(5 * SECOND, 10)]
+        )
+        .is_err());
+        assert!(try_runtime(10, (0..17).map(|_| timeframe(5 * SECOND, 10)).collect()).is_err());
     }
     #[test]
     fn completed_seconds_advance_v7_and_failure_hides_all_projections() {
@@ -762,7 +879,14 @@ mod tests {
     }
     #[test]
     fn combined_recovery_continues_exactly_and_binds_seed_and_configuration() {
-        let mut original = runtime(10);
+        let mut original = runtime_with_timeframes(
+            10,
+            vec![Timeframe {
+                interval_ns: 5 * SECOND,
+                macd_periods: (12, 26, 9),
+                maximum_bars: 10,
+            }],
+        );
         original
             .trade(200 * SECOND + 1, 200 * SECOND + 1, 10., 1., true)
             .unwrap();
@@ -776,6 +900,16 @@ mod tests {
         let config = original.configuration_hash().to_owned();
         let mut restored =
             Runtime::restore(&checkpoint.bytes, &checkpoint.hash, &seed, &config).unwrap();
+        assert_eq!(
+            restored
+                .timeframe(5 * SECOND)
+                .unwrap()
+                .developing()
+                .unwrap()
+                .trades,
+            2
+        );
+        assert!(restored.timeframe(10 * SECOND).is_err());
         assert_eq!(restored.prior_strategy_levels().unwrap().0, 200 * SECOND);
         assert!(Runtime::restore(&checkpoint.bytes, "wrong", &seed, &config).is_err());
         assert!(Runtime::restore(&checkpoint.bytes, &checkpoint.hash, "wrong", &config).is_err());
@@ -801,6 +935,7 @@ mod tests {
                 restored.checkpoint().unwrap().hash
             );
         }
+        assert_eq!(restored.timeframe(5 * SECOND).unwrap().completed().len(), 1);
     }
     #[test]
     fn canonical_trade_retry_is_deduplicated_across_recovery_and_conflicts_block() {

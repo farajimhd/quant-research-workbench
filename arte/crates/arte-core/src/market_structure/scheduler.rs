@@ -13,6 +13,7 @@ pub struct Scheduler {
     run_id: String,
     sequence: u64,
     pending: Option<Pending>,
+    completed: std::collections::VecDeque<(u64, usize, u64)>,
 }
 
 struct Pending {
@@ -21,8 +22,15 @@ struct Pending {
     kind: PendingKind,
 }
 enum PendingKind {
-    Completed(usize),
-    Trade { key: EventKey, eligible: bool },
+    Completed {
+        interval_ns: u64,
+        index: usize,
+        available_at_ns: u64,
+    },
+    Trade {
+        key: EventKey,
+        eligible: bool,
+    },
 }
 /// Borrowed views cannot outlive the scheduler's next mutable operation. The
 /// original trade receipt and source clocks remain in the observation unchanged.
@@ -34,18 +42,26 @@ pub struct Boundary<'a> {
     pub kind: Kind<'a>,
 }
 pub enum Kind<'a> {
-    Completed(&'a Completed),
+    Completed {
+        interval_ns: u64,
+        bar: &'a Completed,
+        available_at_ns: u64,
+    },
     Trade {
         observation: &'a Observation,
         eligible: bool,
     },
 }
 impl Boundary<'_> {
-    /// The completed-bar computation becomes available at evaluation. This does
+    /// The completed-bar computation retains its first availability. This does
     /// not fabricate a historical market receipt. Trade availability stays raw.
     pub fn input(&self, feature_hash: String) -> crate::strategy_dispatch::InputBoundary {
         let (event_time_ns, available_at_ns) = match &self.kind {
-            Kind::Completed(bar) => (bar.bar.end_ns, self.evaluated_at_ns),
+            Kind::Completed {
+                bar,
+                available_at_ns,
+                ..
+            } => (bar.bar.end_ns, *available_at_ns),
             Kind::Trade { observation, .. } => (observation.sip.ns, observation.available_at_ns),
         };
         crate::strategy_dispatch::InputBoundary {
@@ -69,6 +85,7 @@ impl Scheduler {
             run_id,
             sequence: 0,
             pending: None,
+            completed: std::collections::VecDeque::new(),
         })
     }
     pub fn enqueue(&mut self, event: &Observation, eligible: bool) -> Result<bool> {
@@ -96,14 +113,21 @@ impl Scheduler {
             return Ok(None);
         };
         let kind = match &pending.kind {
-            PendingKind::Completed(index) => Kind::Completed(
-                self.market
-                    .runtime
+            PendingKind::Completed {
+                interval_ns,
+                index,
+                available_at_ns,
+            } => Kind::Completed {
+                interval_ns: *interval_ns,
+                available_at_ns: *available_at_ns,
+                bar: self
                     .market
+                    .runtime
+                    .timeframe(*interval_ns)?
                     .completed()
                     .get(*index)
                     .ok_or_else(|| Error::Conflict("pending completed bar missing".into()))?,
-            ),
+            },
             PendingKind::Trade { key, eligible } => {
                 let observation = self
                     .market
@@ -147,17 +171,47 @@ impl Scheduler {
             .ok_or_else(|| Error::Capacity("causal boundary sequence exhausted".into()))?;
         let result = (|| {
             self.market.buffer.begin_release(watermark_ns)?;
-            let before = self.market.runtime.market.completed().len();
-            let kind = if let Some(event) = self.market.buffer.first_releasable() {
-                let eligible = *self
+            let cutoff = self
+                .market
+                .buffer
+                .first_releasable()
+                .map_or(watermark_ns, |event| event.sip.ns);
+            if self.completed.is_empty() {
+                if let Some(close_ns) = self
                     .market
-                    .eligibility
-                    .get(&event.key)
-                    .ok_or_else(|| Error::Unready("causal trade eligibility missing".into()))?;
-                self.market.runtime.advance(event.sip.ns, evaluated_at_ns)?;
-                if self.market.runtime.market.completed().len() > before {
-                    PendingKind::Completed(before)
-                } else {
+                    .runtime
+                    .next_completion_ns()
+                    .filter(|at| *at <= cutoff)
+                {
+                    let before: Vec<_> = self
+                        .market
+                        .runtime
+                        .series()
+                        .map(|(interval, series)| (interval, series.completed().len()))
+                        .collect();
+                    self.market.runtime.advance(close_ns, evaluated_at_ns)?;
+                    // Larger timeframe first at a shared close. The candidate's
+                    // completed 5s MACD must precede its 1s preview/evaluation.
+                    for (interval, index) in before.into_iter().rev() {
+                        if self.market.runtime.timeframe(interval)?.completed().len() > index {
+                            self.completed.push_back((interval, index, evaluated_at_ns));
+                        }
+                    }
+                }
+            }
+            let kind =
+                if let Some((interval_ns, index, available_at_ns)) = self.completed.pop_front() {
+                    PendingKind::Completed {
+                        interval_ns,
+                        index,
+                        available_at_ns,
+                    }
+                } else if let Some(event) = self.market.buffer.first_releasable() {
+                    let eligible =
+                        *self.market.eligibility.get(&event.key).ok_or_else(|| {
+                            Error::Unready("causal trade eligibility missing".into())
+                        })?;
+                    self.market.runtime.advance(event.sip.ns, evaluated_at_ns)?;
                     match self.market.runtime.observe_ordered_trade(
                         event,
                         eligible,
@@ -173,26 +227,28 @@ impl Scheduler {
                             ))
                         }
                     }
-                }
-            } else {
-                self.market.runtime.advance(watermark_ns, evaluated_at_ns)?;
-                if self.market.runtime.market.completed().len() == before {
+                } else {
+                    self.market.runtime.advance(watermark_ns, evaluated_at_ns)?;
                     return Ok(false);
-                }
-                PendingKind::Completed(before)
-            };
+                };
             let scope = self.market.scope();
             let id = crate::content_hash(&(
-                "causal-market-boundary-v1",
+                "causal-market-boundary-v2",
                 &self.run_id,
                 (scope.provider, scope.instrument, scope.session),
                 self.market.runtime.configuration_hash(),
                 next_sequence,
                 evaluated_at_ns,
                 match &kind {
-                    PendingKind::Completed(index) => {
-                        crate::content_hash(&self.market.runtime.market.completed()[*index])?
-                    }
+                    PendingKind::Completed {
+                        interval_ns,
+                        index,
+                        available_at_ns,
+                    } => crate::content_hash(&(
+                        interval_ns,
+                        available_at_ns,
+                        &self.market.runtime.timeframe(*interval_ns)?.completed()[*index],
+                    ))?,
                     PendingKind::Trade { key, eligible } => crate::content_hash(&(key, eligible))?,
                 },
             ))?;

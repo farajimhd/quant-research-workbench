@@ -183,6 +183,9 @@ pub struct Series {
     session_high: Option<f64>,
 }
 impl Series {
+    pub fn interval_ns(&self) -> u64 {
+        self.builder.interval_ns
+    }
     pub fn new(
         interval_ns: u64,
         fast: u32,

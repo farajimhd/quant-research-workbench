@@ -55,7 +55,10 @@ fn every_boundary_is_seen_without_next_trade_or_empty_bar_leakage() {
         assert_eq!(input.evaluated_at_ns, 205 * SECOND);
         assert!(ids.insert(boundary.id.to_owned()));
         match boundary.kind {
-            Kind::Completed(bar) => {
+            Kind::Completed {
+                interval_ns, bar, ..
+            } => {
+                assert_eq!(interval_ns, SECOND);
                 assert_eq!(input.event_time_ns, bar.bar.end_ns);
                 assert_eq!(input.available_at_ns, input.evaluated_at_ns);
                 assert!(scheduler
@@ -143,7 +146,7 @@ fn awaiting_consumer_does_not_dequeue_or_recalculate_the_pending_boundary() {
     scheduler.prepare_next(203 * SECOND, 203 * SECOND).unwrap();
     assert!(matches!(
         scheduler.pending().unwrap().unwrap().kind,
-        Kind::Completed(_)
+        Kind::Completed { .. }
     ));
 }
 #[test]
@@ -161,4 +164,69 @@ fn calculation_failure_retains_unapplied_input_and_blocks_views() {
     assert_eq!(scheduler.pending_events(), 1);
     assert!(scheduler.state().is_err());
     assert!(scheduler.pending().is_err());
+}
+
+#[test]
+fn timeframes_close_in_order_without_leaking_later_macd_or_filling_empty_intervals() {
+    let runtime = super::super::tests::runtime_with_timeframes(
+        100,
+        vec![super::super::Timeframe {
+            interval_ns: 5 * SECOND,
+            macd_periods: (12, 26, 9),
+            maximum_bars: 20,
+        }],
+    );
+    let mut scheduler =
+        Scheduler::new(Ordered::new(runtime, 10).unwrap(), "multi-timeframe".into()).unwrap();
+    for e in [event(1, 200, 10), event(2, 204, 20), event(3, 211, 30)] {
+        scheduler.enqueue(&e, true).unwrap();
+    }
+    let mut closes = vec![];
+    let mut evaluated_at_ns = 220 * SECOND;
+    while scheduler
+        .prepare_next(220 * SECOND, evaluated_at_ns)
+        .unwrap()
+    {
+        let boundary = scheduler.pending().unwrap().unwrap();
+        if let Kind::Completed {
+            interval_ns,
+            bar,
+            available_at_ns,
+        } = &boundary.kind
+        {
+            closes.push((*interval_ns / SECOND, bar.bar.end_ns / SECOND));
+            if bar.bar.end_ns == 201 * SECOND {
+                let five = scheduler.state().unwrap().timeframe(5 * SECOND).unwrap();
+                assert!(five.completed().is_empty());
+                assert_eq!(five.developing().unwrap().close, 10.);
+            }
+            if bar.bar.end_ns == 205 * SECOND {
+                assert_eq!(bar.bar.close, 20.);
+                let five = scheduler.state().unwrap().timeframe(5 * SECOND).unwrap();
+                assert_eq!(five.completed().len(), 1);
+                assert!(five.developing().is_none());
+                assert_eq!(*available_at_ns, 220 * SECOND);
+                if *interval_ns == SECOND {
+                    assert_eq!(boundary.evaluated_at_ns, 221 * SECOND);
+                    assert_eq!(
+                        boundary.input("features".into()).available_at_ns,
+                        220 * SECOND
+                    );
+                } else {
+                    evaluated_at_ns += SECOND;
+                }
+            }
+        }
+        let id = boundary.id.to_owned();
+        scheduler.acknowledge(&id).unwrap();
+    }
+    assert_eq!(
+        closes,
+        vec![(1, 201), (5, 205), (1, 205), (1, 212), (5, 215)]
+    );
+    let five = scheduler.state().unwrap().timeframe(5 * SECOND).unwrap();
+    assert_eq!(five.completed().len(), 2);
+    assert_eq!(five.completed()[0].bar.volume, 2.);
+    assert_eq!(five.completed()[1].bar.volume, 1.);
+    assert!(five.completed()[1].macd.0 > five.completed()[1].macd.1);
 }

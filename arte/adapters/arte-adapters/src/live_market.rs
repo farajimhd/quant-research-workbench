@@ -121,6 +121,10 @@ impl Lane {
         self.available()?;
         self.market.state()?.market()
     }
+    pub fn timeframe(&self, interval_ns: u64) -> Result<&Series> {
+        self.available()?;
+        self.market.state()?.timeframe(interval_ns)
+    }
     pub fn levels(&self) -> Result<impl Iterator<Item = &Level>> {
         self.available()?;
         self.market.state()?.levels()
@@ -228,6 +232,7 @@ mod tests {
                 macd_periods: (2, 3, 2),
                 maximum_bars: 100,
                 maximum_market_events: 100,
+                additional_timeframes: vec![],
                 structure: StreamPolicy {
                     input_generation: "offline-live-lane".into(),
                     ..StreamPolicy::default()
@@ -298,7 +303,7 @@ mod tests {
         let boundary = lane.pending_boundary().unwrap().unwrap();
         assert!(matches!(
             boundary.kind,
-            arte_core::market_structure::scheduler::Kind::Completed(_)
+            arte_core::market_structure::scheduler::Kind::Completed { .. }
         ));
         let bar_id = boundary.id.to_owned();
         lane.acknowledge_boundary(&bar_id).unwrap();
