@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 173 in-process Rust tests passed (120 core and 53 adapter tests).
+- 174 in-process Rust tests passed (121 core and 53 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -566,3 +566,20 @@ retry without recalculation. The real database path compiled but did not run.
 This scope lock is cooperative and host-local; it is not account-level ownership
 across different runs or cross-host fencing. Crash recovery, durable OMS handoff
 and executable live/backtest consumers remain incomplete.
+
+Committed entry/add decisions now translate into complete long bracket plans.
+The translator binds account and instrument to the committed scope and derives a
+stable command ID from decision ID plus action index. Stop and target come only
+from the selected strategy action. Portfolio supplies quantity; the execution
+quote authority must supply the limit price, scale and tick. Price conversion
+rejects precision loss and overflow. Maximum-buy bounds are compared at a common
+decimal scale without rounding them into an order price. Standard bracket checks
+enforce direction, expiry, tick alignment and required buffered official LULD bands.
+
+The composed candidate test now reaches this translator after journal acknowledgment
+and checks account mismatch and missing regular-session LULD rejection. A separate
+test covers exact price conversion failures. All 174 offline tests pass. This is a
+plan, not broker authorization: cash sizing/reservation, reference-certified price
+rules, latency revalidation, durable OMS persistence and submission remain required.
+The selected candidate is long-only; this translator does not invent short strategies
+or reinterpret exits/replacements as exposure increases. No service or broker ran.

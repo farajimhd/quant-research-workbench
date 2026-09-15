@@ -5,6 +5,7 @@ pub mod acquisition;
 pub mod candidate_runtime;
 pub mod config;
 pub mod coverage;
+pub mod decision_orders;
 pub mod event_storage;
 pub mod events;
 pub mod exposure;

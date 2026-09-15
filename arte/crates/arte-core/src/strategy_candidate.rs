@@ -656,7 +656,54 @@ mod tests {
                 )
                 .is_err());
             let records = runtime.pending_batch().unwrap().records().to_vec();
-            runtime.acknowledge(&records).unwrap();
+            let committed = runtime.acknowledge(&records).unwrap();
+            let allocation = crate::decision_orders::Allocation {
+                account: "a".into(),
+                instrument: 1,
+                quantity: 100,
+                price_scale: 4,
+                tick: 100,
+                entry_limit: 104000,
+                deadline_ns: f.bar.end_ns + S,
+            };
+            let risk = crate::orders::RiskPolicy {
+                band_buffer_ticks: 3,
+                max_band_age_ns: S,
+            };
+            let plan = crate::decision_orders::bracket(
+                &committed,
+                0,
+                &allocation,
+                f.bar.end_ns,
+                false,
+                None,
+                &risk,
+            )
+            .unwrap();
+            assert_eq!(plan.bracket.quantity, 100);
+            assert!(plan.bracket.stop.is_some() && plan.bracket.target.is_some());
+            let mut wrong = allocation.clone();
+            wrong.account = "other".into();
+            assert!(crate::decision_orders::bracket(
+                &committed,
+                0,
+                &wrong,
+                f.bar.end_ns,
+                false,
+                None,
+                &risk
+            )
+            .is_err());
+            assert!(crate::decision_orders::bracket(
+                &committed,
+                0,
+                &allocation,
+                f.bar.end_ns,
+                true,
+                None,
+                &risk
+            )
+            .is_err());
             let mut state = runtime.state().clone();
             let mut live_input = input.clone();
             live_input.event_id = "intrabar".into();
