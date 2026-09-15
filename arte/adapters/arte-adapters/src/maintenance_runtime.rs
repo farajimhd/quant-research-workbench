@@ -133,6 +133,66 @@ fn now() -> Result<u64> {
     )
     .map_err(|_| Error::Invalid("maintenance clock overflow".into()))
 }
+async fn run_job(
+    context: Arc<Context>,
+    job: Job,
+    stopping: watch::Receiver<bool>,
+    senders: Arc<BTreeMap<String, watch::Sender<JobView>>>,
+) -> Result<Status> {
+    let key = job.ownership_key()?;
+    let sender = senders
+        .get(&key)
+        .ok_or_else(|| Error::Invalid("maintenance observer missing".into()))?
+        .clone();
+    let mut view = ActiveView {
+        sender: sender.clone(),
+        finished: false,
+    };
+    let result: Result<Status> = async {
+        let mut runner = Runner::new(job.clone())?;
+        sender.send_modify(|view| view.status = Some(runner.status().clone()));
+        if *stopping.borrow() {
+            return Ok(runner.status().clone());
+        }
+        let mut lease = Lease::acquire(&context.lock_directory, &key)?;
+        let client = RestClient::new(
+            context.provider_key.clone(),
+            job.maximum_pages,
+            context.governor.clone(),
+        )?;
+        let mut fetcher = StoppableFetcher::new(client, stopping.clone());
+        let mut backend =
+            DatabaseBackend::new(&context.database, &context.passed, &mut lease, &job)?;
+        loop {
+            // Finish a completed page's progress checkpoint before stopping.
+            if *stopping.borrow() && runner.status().phase != Phase::Checkpointing {
+                return Ok(runner.status().clone());
+            }
+            let advanced = runner
+                .advance(&mut fetcher, &mut backend, now, |status| {
+                    sender.send_modify(|view| view.status = Some(status.clone()))
+                })
+                .await;
+            if fetcher.cancelled() {
+                return Ok(runner.status().clone());
+            }
+            if !advanced? {
+                return Ok(runner.status().clone());
+            }
+        }
+    }
+    .await;
+    sender.send_modify(|view| {
+        view.terminal = Some(match &result {
+            Ok(status) if status.phase == Phase::Complete => Terminal::Complete,
+            Ok(_) => Terminal::Stopped,
+            Err(error) => Terminal::Failed(error.to_string()),
+        })
+    });
+    view.finished = true;
+    result
+}
+
 /// Must run only on the designated maintenance owner host. Local locks do not
 /// replace cross-host fencing. Observer channels coalesce; they never authorize work.
 pub async fn execute(
@@ -164,60 +224,7 @@ pub async fn execute(
         move |job, stopping| {
             let context = context.clone();
             let senders = senders.clone();
-            async move {
-                let key = job.ownership_key()?;
-                let sender = senders
-                    .get(&key)
-                    .ok_or_else(|| Error::Invalid("maintenance observer missing".into()))?
-                    .clone();
-                let mut view = ActiveView {
-                    sender: sender.clone(),
-                    finished: false,
-                };
-                let result: Result<Status> = async {
-                    let mut runner = Runner::new(job.clone())?;
-                    sender.send_modify(|view| view.status = Some(runner.status().clone()));
-                    if *stopping.borrow() {
-                        return Ok(runner.status().clone());
-                    }
-                    let mut lease = Lease::acquire(&context.lock_directory, &key)?;
-                    let client = RestClient::new(
-                        context.provider_key.clone(),
-                        job.maximum_pages,
-                        context.governor.clone(),
-                    )?;
-                    let mut fetcher = StoppableFetcher::new(client, stopping.clone());
-                    let mut backend =
-                        DatabaseBackend::new(&context.database, &context.passed, &mut lease, &job)?;
-                    loop {
-                        // Finish a completed page's progress checkpoint before stopping.
-                        if *stopping.borrow() && runner.status().phase != Phase::Checkpointing {
-                            return Ok(runner.status().clone());
-                        }
-                        let advanced = runner
-                            .advance(&mut fetcher, &mut backend, now, |status| {
-                                sender.send_modify(|view| view.status = Some(status.clone()))
-                            })
-                            .await;
-                        if fetcher.cancelled() {
-                            return Ok(runner.status().clone());
-                        }
-                        if !advanced? {
-                            return Ok(runner.status().clone());
-                        }
-                    }
-                }
-                .await;
-                sender.send_modify(|view| {
-                    view.terminal = Some(match &result {
-                        Ok(status) if status.phase == Phase::Complete => Terminal::Complete,
-                        Ok(_) => Terminal::Stopped,
-                        Err(error) => Terminal::Failed(error.to_string()),
-                    })
-                });
-                view.finished = true;
-                result
-            }
+            run_job(context, job, stopping, senders)
         },
     )
     .await?;
@@ -235,6 +242,70 @@ pub async fn execute(
     }
     Ok(report)
 }
+/// Production source-startup binding. Requires extraction acceptance before any I/O.
+/// Observers must be prepared from the current startup_repair plan's jobs.
+pub async fn execute_startup_sources(
+    context: Arc<Context>,
+    request: crate::startup_sources::Request<'_>,
+    stop: watch::Receiver<bool>,
+    observers: &Observers,
+) -> Result<crate::startup_sources::Report> {
+    gate(&context.passed)?;
+    let initial = crate::startup_repair::plan(
+        request.dependencies,
+        request.bindings.clone(),
+        request.catalog,
+        request.checked_at_ns,
+        &request.repair_limits,
+    )?;
+    let expected: BTreeSet<_> = initial
+        .jobs
+        .iter()
+        .map(Job::ownership_key)
+        .collect::<Result<_>>()?;
+    if expected != observers.job_senders.keys().cloned().collect() {
+        return Err(Error::Invalid(
+            "startup maintenance observer plan differs".into(),
+        ));
+    }
+    if initial
+        .jobs
+        .iter()
+        .any(|j| j.recovery_bytes as u64 > request.worker_limits.estimated_worker_bytes)
+    {
+        return Err(Error::Capacity(
+            "startup recovery exceeds worker memory budget".into(),
+        ));
+    }
+    let senders = observers.job_senders.clone();
+    let database = context.database.clone();
+    let report = crate::startup_sources::execute(
+        request,
+        stop,
+        observers.pool_sender.clone(),
+        move |job, stopping| run_job(context.clone(), job, stopping, senders.clone()),
+        move |id| {
+            let database = database.clone();
+            async move { database.load_acquisition(&id).await }
+        },
+        now,
+    )
+    .await?;
+    for row in &report.workers.jobs {
+        if let Some(sender) = observers.job_senders.get(&row.job_key) {
+            sender.send_modify(|view| {
+                view.terminal = Some(match &row.outcome {
+                    Outcome::Complete(_) => Terminal::Complete,
+                    Outcome::Stopped(_) => Terminal::Stopped,
+                    Outcome::Failed(error) => Terminal::Failed(error.to_string()),
+                    Outcome::NotStarted => Terminal::NotStarted,
+                })
+            });
+        }
+    }
+    Ok(report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,6 +323,59 @@ mod tests {
             passed.insert(required);
         }
         gate(&passed).unwrap();
+    }
+    #[tokio::test]
+    async fn shared_worker_stops_before_lease_or_external_io() {
+        let context = Arc::new(Context {
+            database: Arc::new(
+                ClickHouse::new(
+                    "http://127.0.0.1:1",
+                    "arte_test",
+                    String::new(),
+                    String::new(),
+                )
+                .unwrap(),
+            ),
+            passed: BTreeSet::new(),
+            provider_key: String::new(),
+            lock_directory: PathBuf::new(),
+            governor: Arc::new(
+                Governor::new(Policy {
+                    maximum_inflight: 1,
+                    minimum_interval_ms: 1,
+                    default_cooldown_ms: 1000,
+                    maximum_cooldown_ms: 1000,
+                })
+                .unwrap(),
+            ),
+        });
+        let job = Job {
+            name: "stopped".into(),
+            symbol: "TEST".into(),
+            authority: arte_core::acquisition::Authority {
+                provider: 1,
+                instrument: 1,
+                kind: arte_core::events::EventKind::Trade,
+                source_revision: "v1".into(),
+                contract_hash: "a".repeat(64),
+                capabilities_hash: "b".repeat(64),
+            },
+            interval: arte_core::coverage::Interval { start: 10, end: 20 },
+            maximum_pages: 10,
+            recovery_bytes: 1024,
+        };
+        let key = job.ownership_key().unwrap();
+        let observers = Observers::new(std::slice::from_ref(&job)).unwrap();
+        let (_stop, stopping) = watch::channel(true);
+        let status = run_job(context, job, stopping, observers.job_senders.clone())
+            .await
+            .unwrap();
+        assert_eq!(status.phase, Phase::Recovering);
+        assert!(status.coverage_id.is_none());
+        assert!(matches!(
+            observers.jobs[&key].borrow().terminal,
+            Some(Terminal::Stopped)
+        ));
     }
     #[test]
     fn interrupted_worker_marks_latest_observer_without_waiting_for_consumer() {

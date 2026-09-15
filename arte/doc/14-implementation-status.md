@@ -780,3 +780,13 @@ All 203 Rust tests, formatting, static checks and copied-source hashes pass.
 Production worker/loader wiring, persisted startup recovery, derived materialization
 and warming remain incomplete. Source completion is not trading readiness. No
 service or network test ran.
+
+The production source-startup binding now supplies the existing maintenance worker
+and ClickHouse acquisition loader to the coordinator. Ordinary maintenance and
+startup share one worker implementation, including lease acquisition, REST governor,
+restart checkpoints, cancellation and status reporting. Startup checks extraction
+acceptance, observer identities and per-worker recovery memory before dispatch.
+One new offline test confirms a pre-cancelled worker returns before lease or
+external I/O. All 204 Rust tests, formatting, static checks and source hashes pass.
+The production binding was compiled but not executed. CLI/service startup wiring,
+initial coverage discovery, derived materialization and warming remain incomplete.
