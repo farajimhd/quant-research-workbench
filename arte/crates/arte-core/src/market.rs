@@ -53,6 +53,16 @@ impl BarBuilder {
         let end = start
             .checked_add(self.interval_ns)
             .ok_or_else(|| Error::Invalid("bar time overflow".into()))?;
+        let prior = self.current.as_ref().filter(|bar| bar.start_ns == start);
+        let volume = prior.map_or(0., |bar| bar.volume) + size;
+        let notional = prior.map_or(0., |bar| bar.notional) + price * size;
+        let trades = prior
+            .map_or(0, |bar| bar.trades)
+            .checked_add(1)
+            .ok_or_else(|| Error::Capacity("bar trade count overflow".into()))?;
+        if !volume.is_finite() || !notional.is_finite() {
+            return Err(Error::Capacity("bar aggregate overflow".into()));
+        }
         let complete = if self.current.as_ref().is_some_and(|b| b.start_ns != start) {
             let old = self.current.take();
             self.closed_through = old.as_ref().unwrap().end_ns;
@@ -74,22 +84,23 @@ impl BarBuilder {
         bar.high = bar.high.max(price);
         bar.low = bar.low.min(price);
         bar.close = price;
-        bar.volume += size;
-        bar.notional += price * size;
-        bar.trades += 1;
+        bar.volume = volume;
+        bar.notional = notional;
+        bar.trades = trades;
         self.last_event_ns = Some(sip_ns);
         Ok(Update::Applied(complete))
     }
     /// Caller supplies a causal watermark, not an arbitrary wall-clock completion.
     pub fn advance(&mut self, watermark_ns: u64) -> Option<Bar> {
+        // A watermark closes event-time input even during an empty interval or
+        // inside a developing bar. It never moves backward.
+        self.closed_through = self.closed_through.max(watermark_ns);
         if self
             .current
             .as_ref()
             .is_some_and(|b| b.end_ns <= watermark_ns)
         {
-            let b = self.current.take();
-            self.closed_through = b.as_ref().unwrap().end_ns;
-            b
+            self.current.take()
         } else {
             None
         }
@@ -151,6 +162,83 @@ impl Macd {
         self.clone().update(close)
     }
 }
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Completed {
+    pub bar: Bar,
+    pub macd: (f64, f64, f64),
+}
+/// One instrument/timeframe's retained session series. The same update path serves
+/// historical warming and live events; it has no strategy or broker capability.
+pub struct Series {
+    builder: BarBuilder,
+    macd: Macd,
+    completed: Vec<Completed>,
+    maximum_bars: usize,
+}
+impl Series {
+    pub fn new(
+        interval_ns: u64,
+        fast: u32,
+        slow: u32,
+        signal: u32,
+        maximum_bars: usize,
+    ) -> Result<Self> {
+        if maximum_bars == 0 || maximum_bars > 1_000_000 {
+            return Err(Error::Capacity("series bar budget".into()));
+        }
+        Ok(Self {
+            builder: BarBuilder::new(interval_ns)?,
+            macd: Macd::new(fast, slow, signal)?,
+            completed: vec![],
+            maximum_bars,
+        })
+    }
+    fn commit(&mut self, builder: BarBuilder, complete: Option<Bar>) -> Result<()> {
+        if let Some(bar) = complete {
+            if self.completed.len() == self.maximum_bars {
+                return Err(Error::Capacity(
+                    "session series full; no bars were discarded".into(),
+                ));
+            }
+            let mut macd = self.macd.clone();
+            let values = macd.update(bar.close)?;
+            if !values.0.is_finite() || !values.1.is_finite() || !values.2.is_finite() {
+                return Err(Error::Invalid("nonfinite series indicator".into()));
+            }
+            self.completed.push(Completed { bar, macd: values });
+            self.macd = macd;
+        }
+        self.builder = builder;
+        Ok(())
+    }
+    pub fn trade(&mut self, sip_ns: u64, price: f64, size: f64, eligible: bool) -> Result<Update> {
+        let mut builder = self.builder.clone();
+        let update = builder.trade(sip_ns, price, size, eligible)?;
+        let complete = match &update {
+            Update::Applied(bar) => bar.clone(),
+            _ => None,
+        };
+        self.commit(builder, complete)?;
+        Ok(update)
+    }
+    pub fn advance(&mut self, watermark_ns: u64) -> Result<()> {
+        let mut builder = self.builder.clone();
+        let complete = builder.advance(watermark_ns);
+        self.commit(builder, complete)
+    }
+    pub fn completed(&self) -> &[Completed] {
+        &self.completed
+    }
+    pub fn developing(&self) -> Option<&Bar> {
+        self.builder.developing()
+    }
+    pub fn preview(&self) -> Result<Option<(f64, f64, f64)>> {
+        self.developing()
+            .map(|bar| self.macd.preview(bar.close))
+            .transpose()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,5 +270,59 @@ mod tests {
         let before = serde_json::to_string(&m).unwrap();
         m.preview(11.).unwrap();
         assert_eq!(before, serde_json::to_string(&m).unwrap());
+    }
+    #[test]
+    fn watermark_closes_empty_and_developing_intervals_monotonically() {
+        let mut builder = BarBuilder::new(10).unwrap();
+        assert!(builder.advance(25).is_none());
+        assert_eq!(builder.trade(24, 10., 1., true).unwrap(), Update::Late);
+        assert_eq!(
+            builder.trade(25, 10., 1., true).unwrap(),
+            Update::Applied(None)
+        );
+        assert!(builder.advance(28).is_none());
+        assert!(builder.advance(20).is_none());
+        assert_eq!(builder.trade(27, 20., 1., true).unwrap(), Update::Late);
+        assert_eq!(builder.advance(40).unwrap().close, 10.);
+        assert_eq!(builder.trade(39, 20., 1., true).unwrap(), Update::Late);
+        assert_eq!(
+            builder.trade(40, 20., 1., true).unwrap(),
+            Update::Applied(None)
+        );
+    }
+    #[test]
+    fn aggregate_overflow_leaves_current_bar_unchanged() {
+        let mut builder = BarBuilder::new(10).unwrap();
+        builder.trade(1, 10., 1., true).unwrap();
+        let before = serde_json::to_string(&builder).unwrap();
+        for at in [2, 11] {
+            assert!(matches!(
+                builder.trade(at, f64::MAX, 2., true),
+                Err(Error::Capacity(_))
+            ));
+            assert_eq!(serde_json::to_string(&builder).unwrap(), before);
+        }
+    }
+    #[test]
+    fn retained_series_matches_shared_algorithms_and_rejects_overflow_atomically() {
+        let mut series = Series::new(10, 2, 3, 2, 2).unwrap();
+        let mut expected = Macd::new(2, 3, 2).unwrap();
+        series.trade(1, 10., 1., true).unwrap();
+        series.trade(11, 11., 1., true).unwrap();
+        assert_eq!(series.completed()[0].macd, expected.update(10.).unwrap());
+        series.advance(20).unwrap();
+        assert_eq!(series.completed()[1].macd, expected.update(11.).unwrap());
+        series.trade(21, 12., 1., true).unwrap();
+        let before = series.completed().to_vec();
+        let developing = series.developing().cloned();
+        assert!(series.advance(30).is_err());
+        assert_eq!(series.completed(), before);
+        assert_eq!(series.developing(), developing.as_ref());
+        assert!(series.trade(31, 13., 1., true).is_err());
+        assert_eq!(series.developing(), developing.as_ref());
+        assert_eq!(
+            series.preview().unwrap(),
+            Some(expected.preview(12.).unwrap())
+        );
     }
 }

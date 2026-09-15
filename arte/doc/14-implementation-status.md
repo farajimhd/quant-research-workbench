@@ -813,3 +813,15 @@ duplicate merge and unchanged state after overflow. All 206 Rust tests, formatti
 static checks and source hashes pass. Discovery queries remain unexecuted. Catalog
 byte accounting, efficient range indexing at scale, derived materialization/warming,
 CLI startup and full live/backtest execution remain incomplete. No service ran.
+
+Shared bar construction now records causal watermarks even when no bar closes.
+Previously an empty-interval watermark could admit an older event later. The
+watermark is now monotonic, and bar volume/notional/count overflow fails before
+state changes. A retained in-memory Series combines the same bar builder and MACD
+for historical and live use. Completed bars advance indicators; developing previews
+do not. Capacity exhaustion preserves prior state and never discards session bars.
+Three new tests cover watermark boundaries, aggregate overflow and series parity
+with the shared indicator implementation. All 209 Rust tests, formatting, static
+checks and source hashes pass. The first static-check run found an unnecessary
+binding; it was removed and full validation passed. V7 warming, certified handover,
+series persistence and strategy scheduling remain incomplete. No service ran.
