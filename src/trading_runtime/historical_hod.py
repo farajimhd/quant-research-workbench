@@ -973,8 +973,8 @@ def evaluate(host, a, o, p, state):
             active['fill_risk_frozen'] = True
         initial_fill = active.get('initial_fill_price',0)
         trail_current_ready = (not s['setup_trail_requires_current_gain'] or
-            initial_fill > 0 and o.price >= initial_fill and
-            (not s['setup_trail_current_gain_requires_bid'] or o.bid >= initial_fill))
+            initial_fill > 0 and o.price >= initial_fill - 1e-9 and
+            (not s['setup_trail_current_gain_requires_bid'] or o.bid >= initial_fill - 1e-9))
         if s['setup_trail_requires_current_gain']:
             evidence['setup_trail_current_gain']=dict(initial_fill=initial_fill,
                 current_price=o.price,bid=o.bid,requires_bid=bool(s['setup_trail_current_gain_requires_bid']),

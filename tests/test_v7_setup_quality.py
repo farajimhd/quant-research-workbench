@@ -423,13 +423,14 @@ def test_minimum_trail_progress_requires_actual_fill_and_positive_initial_risk()
     assert V.risk_progress_ready(dict(initial_fill_price=6,initial_risk=.25,best_close=6.125),.5)
 
 
+@pytest.mark.parametrize('fill_drift',[0.,1e-12])
 @pytest.mark.parametrize('pending',[False,True])
 @pytest.mark.parametrize('enabled,requires_bid,price,bid,allowed',[
     (0,1,10.04,10.03,True),(1,1,10.04,10.03,False),
     (1,1,10.06,10.04,False),(1,1,10.06,10.05,True),
     (1,0,10.06,10.04,True),(1,0,10.04,10.03,False),
     (1,0,10.05,10.04,True)])
-def test_current_gain_guards_new_and_pending_swing_stops(pending,enabled,requires_bid,price,bid,allowed):
+def test_current_gain_guards_new_and_pending_swing_stops(fill_drift,pending,enabled,requires_bid,price,bid,allowed):
     host,a,obs=prepared()
     a.parameters['historical_hod'].update(setup_trail_requires_current_gain=enabled,
         setup_trail_current_gain_requires_bid=requires_bid,setup_minimum_trail_progress_r=.5)
@@ -437,7 +438,7 @@ def test_current_gain_guards_new_and_pending_swing_stops(pending,enabled,require
     entered=host.evaluate(a,obs(2,10.02))
     state=deepcopy(entered.state)
     state['historical_hod_entry']['best_close']=10.2
-    o=replace(obs(3,price),position_quantity=100,average_price=10.05,bid=bid)
+    o=replace(obs(3,price),position_quantity=100,average_price=10.05+fill_drift,bid=bid)
     market=deepcopy(o.structural_detector_state);now=o.observed_at.timestamp()
     swing=dict(side='support',lower=10.01,price=10.012,upper=10.015,
         pivot_at=now-1,confirmed_at=now)
