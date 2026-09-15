@@ -31,7 +31,7 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     setup_failure_exit_enabled=1,setup_recovery_unprotected_reentry=0,setup_recovery_entry_reclaim=0,setup_recovery_regular_base=0,setup_recovery_regular_full_range=0,
     setup_minimum_60s_progress_pct=0.,setup_minimum_300s_range_pct=0.,setup_add_maximum_upper_wick_fraction=1.,
     setup_acquisition_quality_enabled=0,setup_initial_tranche_fraction=1.,
-    setup_early_base_enabled=0,setup_base_maximum_swing_age_s=15.,
+    setup_base_diagnostics_enabled=0,setup_early_base_enabled=0,setup_base_maximum_swing_age_s=15.,
     setup_base_maximum_risk_pct=5.,setup_base_maximum_range_pct=10.,setup_base_maximum_extension_fraction=.25,
     setup_maximum_bar_gap_s=0,setup_recovery_stop_gain_guard=0,setup_base_recovery_maximum_range_pct=3.,setup_minimum_trail_progress_r=0.,
     setup_episode_high_entry=0,v7_encounters_enabled=0,breakout_buffer_bps=10.,breakout_buffer_ticks=1.,topping_tail_fraction=.5)
@@ -55,6 +55,9 @@ def configure(p):
         raise ValueError('Invalid setup acquisition quality or initial tranche fraction')
     if s['setup_early_base_enabled'] not in (0,1) or s['setup_early_base_enabled'] and not s['v7_setup_enabled']:
         raise ValueError('Early base entry requires the V7 setup policy')
+    if (type(s['setup_base_diagnostics_enabled']) not in (int,float) or s['setup_base_diagnostics_enabled'] not in (0,1)
+            or s['setup_base_diagnostics_enabled'] and not (s['v7_setup_enabled'] and s['setup_early_base_enabled'])):
+        raise ValueError('Base diagnostics require early V7 setup and a numeric boolean switch')
     if s['setup_recovery_stop_gain_guard'] not in (0,1) or s['setup_recovery_stop_gain_guard'] and not s['setup_recovery_enabled']:
         raise ValueError('Stop-gain recovery requires persistent setup recovery')
     if s['setup_recovery_unprotected_reentry'] not in (0,1) or s['setup_recovery_unprotected_reentry'] and not (s['v7_setup_enabled'] and s['setup_recovery_stop_gain_guard']):
@@ -90,7 +93,7 @@ def configure(p):
         raise ValueError('Phase progress requires V7 setup')
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_support_quote_clearance_selection','setup_recovery_regular_full_range','setup_trail_current_gain_requires_bid','setup_phase_minimum_progress_r','setup_trail_requires_current_gain','setup_recovery_regular_base','setup_base_maximum_extension_fraction','setup_recovery_entry_reclaim','setup_recovery_unprotected_reentry','setup_minimum_300s_range_pct','setup_minimum_60s_progress_pct','setup_add_maximum_upper_wick_fraction','setup_failure_exit_enabled','setup_base_recovery_maximum_range_pct','setup_minimum_trail_progress_r','setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_base_diagnostics_enabled','setup_support_quote_clearance_selection','setup_recovery_regular_full_range','setup_trail_current_gain_requires_bid','setup_phase_minimum_progress_r','setup_trail_requires_current_gain','setup_recovery_regular_base','setup_base_maximum_extension_fraction','setup_recovery_entry_reclaim','setup_recovery_unprotected_reentry','setup_minimum_300s_range_pct','setup_minimum_60s_progress_pct','setup_add_maximum_upper_wick_fraction','setup_failure_exit_enabled','setup_base_recovery_maximum_range_pct','setup_minimum_trail_progress_r','setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
         raise ValueError('Historical HOD settings must be finite and positive')
     if not 0 <= s['setup_failure_seconds'] <= 5 or int(s['setup_failure_seconds']) != s['setup_failure_seconds']:
         raise ValueError('Initial setup failure window must be zero to five completed seconds')
@@ -315,6 +318,38 @@ def initial_swing_low(row, boundary, now, *, closest=False, confirmed_after=0, p
 
 def stop_clears_quote(stop, bid, ask, minimum_spreads):
     return bid-stop > 0 and bid-stop+1e-9 >= minimum_spreads*(ask-bid)
+
+
+def assess_early_base(o,row,setup_state,d,s,tick,price_only):
+    """Shared causal geometry; callers validate frame/quote availability."""
+    now=o.observed_at.timestamp()
+    decision_bid=o.price if price_only else o.bid
+    decision_ask=o.price if price_only else o.ask
+    previous=d['prior_close']
+    consolidation = setup_state.get('range')
+    candidate = initial_swing_low(row,dict(lower=min(o.price,decision_bid)),now,
+        closest=True,price_only=price_only,pivot_not_before=consolidation['start'],
+        maximum_age_s=s['setup_base_maximum_swing_age_s'],
+        eligible=(lambda level:stop_clears_quote(stop_below(level['lower'],s,tick),o.bid,o.ask,
+            s['setup_minimum_quote_clearance_spreads'])) if s['setup_support_quote_clearance_selection']
+            and s['setup_minimum_quote_clearance_spreads'] else None) if consolidation else None
+    risk_pct=(decision_ask-stop_below(candidate['lower'],s,tick))/decision_ask*100 if candidate else None
+    range_pct=(consolidation['high']/consolidation['low']-1)*100 if consolidation else None
+    extension_limit=(consolidation['high']+s['setup_base_maximum_extension_fraction']*(consolidation['high']-consolidation['low'])) if consolidation else None
+    checks=dict(prior_range=bool(consolidation),fresh_support=bool(candidate),
+        rising_close=o.price>previous,green_candle=o.price>=o.bar_open,
+        risk_limit=risk_pct is not None and risk_pct<=s['setup_base_maximum_risk_pct'],
+        range_limit=range_pct is not None and range_pct<=s['setup_base_maximum_range_pct'],
+        extension_limit=extension_limit is not None and o.price<=extension_limit)
+    assessment=dict(observed_at=now,checks=checks,
+        failed=[k for k,v in checks.items() if not v],swing=deepcopy(candidate),
+        range=deepcopy(consolidation),risk_pct=risk_pct,range_pct=range_pct,
+        maximum_extension_fraction=s['setup_base_maximum_extension_fraction'],extension_limit=extension_limit)
+    if s['setup_support_quote_clearance_selection']:
+        assessment['support_quote_selection']=dict(
+            bid=o.bid,ask=o.ask,minimum_spreads=s['setup_minimum_quote_clearance_spreads'],
+            policy='closest_fresh_support_with_existing_stop_clearance')
+    return assessment
 
 
 def next_historical_resistance(rows, price, session):
@@ -862,6 +897,20 @@ def evaluate(host, a, o, p, state):
         evidence['historical_hod_reference'] = dict(chart_reference,at=now,changed=chart_reference!=prior_reference)
     if regular:
         evidence['regular_session_policy'] = dict(previous_close=prior_close,block_reason=regular_block,luld=luld)
+    if s['setup_base_diagnostics_enabled'] and not acquired and not pending:
+        market=o.structural_detector_state or {}
+        diagnostic_row=recovery_row if s['setup_recovery_enabled'] else market.get('row',{})
+        detector_current=(fresh and market.get('book',{}).get('version') in
+            (('causal-level-book-v7-mle-1',) if s.get('v7_zone_enabled') else (BOOK_VERSION,))
+            and bool(market.get('book',{}).get('fingerprint')) and diagnostic_row.get('effective_at')==now)
+        valid_prices=all(type(v) in (int,float) and isfinite(v) and v>0
+            for v in (o.price,o.bid,o.ask,o.bar_open,d.get('prior_close'))) and o.bid<=o.ask
+        reason=('saved_reentry_requires_separate_context' if saved_reentry else
+            'detector_not_fresh' if not detector_current else
+            'noncontiguous_candles' if not d.get('contiguous') else
+            'invalid_current_prices' if not valid_prices else '')
+        evidence['research_base_assessment']=(dict(status='unavailable',reason=reason,observed_at=now) if reason else
+            dict(status='measured',**assess_early_base(o,diagnostic_row,setup_state,d,s,tick,price_only)))
     cancel_acquisition = False
     def result(action, reason, status=None, **kw):
         nonlocal cancel_acquisition
@@ -1207,29 +1256,9 @@ def evaluate(host, a, o, p, state):
         return result('wait','hod_history_or_vwap_gate')
     early_base = None
     if setup_enabled and s['setup_early_base_enabled'] and fresh and detector_fresh and d['contiguous']:
-        consolidation = setup_state.get('range')
-        candidate = initial_swing_low(row,dict(lower=min(o.price,decision_bid)),now,
-            closest=True,price_only=price_only,pivot_not_before=consolidation['start'],
-            maximum_age_s=s['setup_base_maximum_swing_age_s'],
-            eligible=(lambda level:stop_clears_quote(stop_below(level['lower'],s,tick),o.bid,o.ask,
-                s['setup_minimum_quote_clearance_spreads'])) if s['setup_support_quote_clearance_selection']
-                and s['setup_minimum_quote_clearance_spreads'] else None) if consolidation else None
-        risk_pct=(decision_ask-stop_below(candidate['lower'],s,tick))/decision_ask*100 if candidate else None
-        range_pct=(consolidation['high']/consolidation['low']-1)*100 if consolidation else None
-        extension_limit=(consolidation['high']+s['setup_base_maximum_extension_fraction']*(consolidation['high']-consolidation['low'])) if consolidation else None
-        checks=dict(prior_range=bool(consolidation),fresh_support=bool(candidate),
-            rising_close=o.price>previous,green_candle=o.price>=o.bar_open,
-            risk_limit=risk_pct is not None and risk_pct<=s['setup_base_maximum_risk_pct'],
-            range_limit=range_pct is not None and range_pct<=s['setup_base_maximum_range_pct'],
-            extension_limit=extension_limit is not None and o.price<=extension_limit)
-        evidence['early_base_assessment']=dict(observed_at=now,checks=checks,
-            failed=[k for k,v in checks.items() if not v],swing=deepcopy(candidate),
-            range=deepcopy(consolidation),risk_pct=risk_pct,range_pct=range_pct,
-            maximum_extension_fraction=s['setup_base_maximum_extension_fraction'],extension_limit=extension_limit)
-        if s['setup_support_quote_clearance_selection']:
-            evidence['early_base_assessment']['support_quote_selection']=dict(
-                bid=o.bid,ask=o.ask,minimum_spreads=s['setup_minimum_quote_clearance_spreads'],
-                policy='closest_fresh_support_with_existing_stop_clearance')
+        assessment=assess_early_base(o,row,setup_state,d,s,tick,price_only)
+        evidence['early_base_assessment']=assessment
+        checks=assessment['checks'];candidate=assessment['swing'];consolidation=assessment['range']
         if all(checks.values()):
             early_base = candidate
             evidence['early_base_entry'] = dict(swing=deepcopy(candidate),range=deepcopy(consolidation),

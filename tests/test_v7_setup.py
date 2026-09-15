@@ -66,6 +66,44 @@ def test_fresh_base_can_enter_at_range_break_without_future_swing():
         assert not host.evaluate(a,replace(o,structural_detector_state=market)).evaluation.intents
 
 
+def test_research_base_geometry_is_available_before_vwap_gate_without_state_change():
+    host,a,obs=prepared();a.parameters['historical_hod']['setup_early_base_enabled']=1
+    o=replace(obs(2,10.11),execution_vwap=10.12);now=o.observed_at.timestamp()
+    market=deepcopy(o.structural_detector_state)
+    market['row']['local_swings']=[dict(side='support',state='active',lower=9.99,price=9.995,upper=10.,
+        pivot_at=now-3,confirmed_at=now-1)]
+    o=replace(o,structural_detector_state=market)
+    baseline=host.evaluate(deepcopy(a),o)
+    a.parameters['historical_hod']['setup_base_diagnostics_enabled']=1
+    observed=host.evaluate(deepcopy(a),o)
+    assert baseline.evaluation.signals[0].reason==observed.evaluation.signals[0].reason=='hod_history_or_vwap_gate'
+    assert baseline.state==observed.state and baseline.evaluation.intents==observed.evaluation.intents
+    assert 'early_base_assessment' not in observed.evaluation.signals[0].metadata
+    diagnostic=observed.evaluation.signals[0].metadata['research_base_assessment']
+    assert diagnostic['status']=='measured' and diagnostic['checks']['fresh_support']
+    entered=host.evaluate(deepcopy(a),replace(o,execution_vwap=9.))
+    metadata=entered.evaluation.signals[0].metadata
+    assert {k:v for k,v in metadata['research_base_assessment'].items() if k!='status'}==metadata['early_base_assessment']
+    future=deepcopy(market);future['row']['local_swings'][0]['confirmed_at']=now+1
+    rejected=host.evaluate(deepcopy(a),replace(o,structural_detector_state=future))
+    assert not rejected.evaluation.signals[0].metadata['research_base_assessment']['checks']['fresh_support']
+    invalid=host.evaluate(deepcopy(a),replace(o,bid=0.))
+    assert invalid.evaluation.signals[0].metadata['research_base_assessment']['reason']=='invalid_current_prices'
+
+
+def test_research_base_switch_validates_type_and_required_strategy():
+    import pytest
+    from src.trading_runtime import historical_hod as H
+    _,a,_=prepared();a.parameters['historical_hod']['setup_early_base_enabled']=1
+    H.configure(a.parameters)
+    assert H.DEFAULTS['setup_base_diagnostics_enabled']==0
+    for value in (-1,2,True,float('nan')):
+        p=deepcopy(a.parameters);p['historical_hod']['setup_base_diagnostics_enabled']=value
+        with pytest.raises(ValueError,match='Base diagnostics'):H.configure(p)
+    p=deepcopy(a.parameters);p['historical_hod'].update(setup_base_diagnostics_enabled=1,setup_early_base_enabled=0)
+    with pytest.raises(ValueError,match='Base diagnostics'):H.configure(p)
+
+
 def test_ineligible_closer_swing_does_not_hide_a_fresh_base_support():
     host,a,obs=prepared()
     a.parameters['historical_hod']['setup_early_base_enabled']=1

@@ -42,6 +42,16 @@ def test_allowlist_excludes_identity_outcome_and_absolute_clock():
     assert result['macd_episode_age_s'] == 2
 
 
+def test_research_geometry_requires_measured_causal_evidence_and_preserves_existing_base():
+    research=dict(status='measured',observed_at=9.,risk_pct=2.,range_pct=3.)
+    assert m.features({'research_base_assessment':research},10.)['base_risk_pct']==2.
+    assert m.features({'research_base_assessment':dict(research,status='unavailable')},10.)=={}
+    with pytest.raises(ValueError,match='Future'):
+        m.features({'research_base_assessment':dict(research,observed_at=11.)},10.)
+    existing=dict(observed_at=9.,risk_pct=1.)
+    assert m.features({'early_base_assessment':existing,'research_base_assessment':research},10.)['base_risk_pct']==1.
+
+
 def test_ties_have_half_auc():
     assert m.auc([2, 2], [2, 2]) == .5
     assert m.auc([3], [1, 2]) == 1

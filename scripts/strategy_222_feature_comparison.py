@@ -73,6 +73,9 @@ def features(metadata, at):
     if timed(body):
         relative('body_pct', body.get('close'), body.get('open'))
     base = metadata.get('early_base_assessment') or {}
+    if not base:
+        research=metadata.get('research_base_assessment') or {}
+        if research.get('status')=='measured':base=research
     if timed(base):
         for key in ('range_pct', 'risk_pct'):
             put('base_' + key, base.get(key))
