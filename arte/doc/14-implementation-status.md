@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 157 in-process Rust tests passed (120 core and 37 adapter tests).
+- 162 in-process Rust tests passed (120 core and 42 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -483,6 +483,18 @@ copies must use the same approved lock directory. Host pinning, failover fencing
 filesystem/ACL acceptance and executable lifecycle integration remain open. The
 implementation follows the [Rust file-lock contract](https://doc.rust-lang.org/std/fs/struct.File.html#method.try_lock).
 No service or database/network operation ran.
+
+The maintenance scheduler now bounds admitted jobs and concurrent Tokio workers.
+It validates duplicate job identities and the configured estimated-memory plan
+before dispatch. Results distinguish complete, stopped, failed and not-started jobs.
+Fail-fast stops new admission, signals existing workers and joins them. Worker
+panics are accounted for without hiding other job results. Five offline tests cover
+concurrency, duplicate rejection, fail-fast, panic accounting and pre-start shutdown.
+No network worker ran. Memory admission uses estimates, not an enforced OS RSS cap.
+The scheduler's worker factory still needs the real lease/runner binding, measured
+resource profiles, rate-limit coordination and executable service wiring. Callers
+must signal shutdown and await draining; dropping the whole scheduling future
+requires recovery from durable heads.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.

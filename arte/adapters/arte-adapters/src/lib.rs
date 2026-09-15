@@ -6,6 +6,7 @@ pub mod ibkr;
 pub mod live_decode;
 pub mod live_pipeline;
 pub mod maintenance;
+pub mod maintenance_pool;
 pub mod massive;
 pub mod massive_stream;
 pub mod ownership;
