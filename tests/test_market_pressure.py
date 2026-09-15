@@ -1,6 +1,7 @@
 from dataclasses import replace
 from datetime import timedelta
 import json
+import pytest
 
 from src.market_engine.events import QuoteEvent, TradeEvent
 from src.trading_runtime.market_pressure import CONTRACT, DEFAULT_POLICY, PressureTracker, evaluate
@@ -54,6 +55,47 @@ def test_checkpoint_equivalence_bounded_storage_and_noncausal_rejection():
     tracker.observe(trade(1))
     assert tracker.rejected==1
     assert not tracker.snapshot(NOW)['ready']
+
+
+def test_extended_windows_accumulate_volume_without_guessing_unknown_trades():
+    tracker = PressureTracker(extra_windows={'window_2s': 2, 'window_5s': 5})
+    for event in (quote(), trade(50, 100.1, 100), quote(1000), trade(1050, 100., 40),
+                  quote(3000), trade(3050, 100.05, 20), quote(4000), trade(4050, 100.1, 50), quote(5000)):
+        tracker.observe(event)
+    snap = tracker.snapshot(NOW+timedelta(seconds=5), include_totals=True)
+    assert snap['fast']['total_volume'] == 50
+    assert snap['window_2s']['total_volume'] == 70
+    assert snap['window_2s']['unknown_volume'] == 20
+    wide = snap['window_5s']
+    assert (wide['buy_volume'], wide['sell_volume'], wide['unknown_volume'], wide['signed_volume']) == (150, 40, 20, 110)
+    assert wide['total_volume'] == wide['buy_volume'] + wide['sell_volume'] + wide['unknown_volume']
+    assert wide['body_to_range'] == 0 and wide['close_location'] == 1
+    assert wide['classified_fraction'] == 190/210
+
+
+def test_extended_checkpoint_restores_window_identity_and_bounded_history():
+    tracker = PressureTracker(extra_windows={'window_5s': 5})
+    for i in range(100):
+        tracker.observe(quote(i*100))
+        tracker.observe(trade(i*100+1))
+    restored = PressureTracker(json.loads(json.dumps(tracker.checkpoint())))
+    for event in (quote(10000), trade(10001, 100.1)):
+        tracker.observe(event)
+        restored.observe(event)
+    at = NOW+timedelta(milliseconds=10100)
+    assert restored.snapshot(at, include_totals=True) == tracker.snapshot(at, include_totals=True)
+    assert len(restored.buckets) <= 51
+    with pytest.raises(ValueError, match='restoring'):
+        PressureTracker(tracker.checkpoint(), extra_windows={'window_5s': 6})
+    legacy = PressureTracker().checkpoint()
+    assert 'extra_windows' not in legacy
+    assert PressureTracker(legacy).checkpoint() == legacy
+
+
+@pytest.mark.parametrize('windows', [{'fast': 2}, {'window_x': 0}, {'window_x': 61}, {'window_x': True}, {'window_x': 2.5}])
+def test_invalid_research_windows_fail_closed(windows):
+    with pytest.raises(ValueError, match='window'):
+        PressureTracker(extra_windows=windows)
 
 
 def test_pressure_requires_agreement_confirmation_and_freshness():

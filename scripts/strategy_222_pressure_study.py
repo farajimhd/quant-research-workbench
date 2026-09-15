@@ -1,6 +1,6 @@
 """Collect causal pressure trajectories from canonical events around research entries.
 
-Uses the existing 1s/3s pressure contract unchanged. Timestamp-tied events are
+Uses the shared pressure calculation over 1s/2s/3s/5s. Timestamp-tied events are
 excluded from each sample, conservatively. This is research, not an order replay.
 """
 import os
@@ -31,7 +31,7 @@ class PressureTimeline:
         self.next_us = round(start.timestamp() * 1e6)
         self.end_us = round(end.timestamp() * 1e6)
         self.step_us = step_ms * 1000
-        self.tracker = PressureTracker()
+        self.tracker = PressureTracker(extra_windows={'window_2s': 2, 'window_5s': 5})
         self.state = {}
         self.rows = []
         self.previous = None
@@ -39,7 +39,7 @@ class PressureTimeline:
     def emit_until(self, boundary_us):
         while self.next_us <= min(boundary_us, self.end_us):
             at = datetime.fromtimestamp(self.next_us / 1e6, timezone.utc)
-            snapshot = self.tracker.snapshot(at)
+            snapshot = self.tracker.snapshot(at, include_totals=True)
             value = evaluate(DEFAULT_POLICY, self.state,
                              SimpleNamespace(observed_at=at, market_pressure=snapshot))
             self.rows.append(value)
@@ -71,6 +71,7 @@ async def collect(inputs, output, before_seconds=15, after_seconds=30):
     output.mkdir(parents=True, exist_ok=True)
     identity = dict(inputs={str(p.resolve()): hashlib.sha256(p.read_bytes()).hexdigest() for p in inputs},
                     before_seconds=before_seconds, after_seconds=after_seconds, step_ms=200,
+                    windows_seconds=[1, 2, 3, 5],
                     source_script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                     pressure_contract_sha256=hashlib.sha256(Path('src/trading_runtime/market_pressure.py').read_bytes()).hexdigest())
     path = output / 'manifest.json'
@@ -98,7 +99,7 @@ async def collect(inputs, output, before_seconds=15, after_seconds=30):
         at = datetime.fromtimestamp(row['decision_at'], timezone.utc)
         start, end = at - timedelta(seconds=before_seconds), at + timedelta(seconds=after_seconds)
         timeline = PressureTimeline(start, end)
-        source = QmdHistoricalEventSource(qmd_history_base_url(), start=start-timedelta(seconds=4),
+        source = QmdHistoricalEventSource(qmd_history_base_url(), start=start-timedelta(seconds=6),
                                          end=end, tickers=[row['symbol']], batch_size=10000)
         event_hash, count = hashlib.sha256(), 0
         try:
@@ -112,7 +113,8 @@ async def collect(inputs, output, before_seconds=15, after_seconds=30):
             artifact = dict(request=row, start=start.isoformat(), end=end.isoformat(),
                             events=count, source_revision=source.source_revision,
                             event_payload_sha256=event_hash.hexdigest(), samples=samples,
-                            method='Strictly before each sample timestamp; existing 1s/3s tracker and policy. '
+                            method='Strictly before each sample timestamp; shared tracker with 1s/2s/3s/5s windows. '
+                            'Original 1s/3s policy flags retained; additional windows and totals are research features. '
                             '200ms grid. Future outcomes remain labels, not pressure inputs. '
                             'Post-entry horizon is explicit and may precede the actual exit.')
             atomic_json(destination, artifact)

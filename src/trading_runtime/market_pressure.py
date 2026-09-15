@@ -12,15 +12,26 @@ DEFAULT_POLICY = {"enabled": True, "minimum_trades": 3, "minimum_classified_frac
 
 
 class PressureTracker:
-    def __init__(self, saved=None):
+    def __init__(self, saved=None, *, extra_windows=None):
         saved = saved or {}
-        self.buckets = deque(saved.get("buckets", []), maxlen=31)
+        stored_windows = saved.get("extra_windows", {})
+        if extra_windows is not None and saved and extra_windows != stored_windows:
+            raise ValueError("Cannot change pressure windows when restoring a checkpoint")
+        self.extra_windows = dict(stored_windows if extra_windows is None else extra_windows)
+        for name, seconds in self.extra_windows.items():
+            if not isinstance(name, str) or not name.startswith("window_") or type(seconds) is not int or not 1 <= seconds <= 60:
+                raise ValueError("Pressure window names must start with window_ and durations must be 1-60 integer seconds")
+        self.retention_buckets = max(3, *self.extra_windows.values()) * 10 if self.extra_windows else 30
+        self.buckets = deque(saved.get("buckets", []), maxlen=self.retention_buckets + 1)
         self.quote = saved.get("quote")
         self.last_time = saved.get("last_time", -1.)
         self.rejected = saved.get("rejected", 0)
 
     def checkpoint(self):
-        return dict(buckets=list(self.buckets), quote=self.quote, last_time=self.last_time, rejected=self.rejected)
+        saved = dict(buckets=list(self.buckets), quote=self.quote, last_time=self.last_time, rejected=self.rejected)
+        if self.extra_windows:
+            saved["extra_windows"] = dict(self.extra_windows)
+        return saved
 
     def observe(self, event):
         now = event.ts.timestamp()
@@ -29,7 +40,7 @@ class PressureTracker:
             return
         self.last_time = now
         index = int(now * 10)
-        while self.buckets and self.buckets[0]["index"] < index - 30:
+        while self.buckets and self.buckets[0]["index"] < index - self.retention_buckets:
             self.buckets.popleft()
         if not self.buckets or self.buckets[-1]["index"] != index:
             self.buckets.append(dict(index=index, first=None, last=None, high=0., low=None, count=0,
@@ -65,7 +76,7 @@ class PressureTracker:
                     b["sell"] += event.size
                 # Inside-spread trades remain unknown, not guessed using future ticks.
 
-    def snapshot(self, at: datetime):
+    def snapshot(self, at: datetime, *, include_totals=False):
         now = at.timestamp()
         q = self.quote
         result = dict(contract=CONTRACT, observed_at=at.isoformat(), ready=False, rejected_out_of_order=self.rejected)
@@ -77,7 +88,7 @@ class PressureTracker:
                 trades=sum(b["count"] for b in prior), span_ms=(prior[-1]["index"]-prior[0]["index"])*100)
         spread = q["ask"] - q["bid"]
         result.update(quote_age_ms=(now-q["time"])*1000, spread=spread)
-        for name, seconds in (("fast", 1), ("slow", 3)):
+        for name, seconds in (("fast", 1), ("slow", 3), *self.extra_windows.items()):
             # Drop the partial left-edge bucket: never include events older than the window.
             rows = [b for b in self.buckets if now-seconds <= b["index"]/10 <= now]
             trades = [b for b in rows if b["count"]]
@@ -91,6 +102,17 @@ class PressureTracker:
                 quote_ready=depth > 0,
                 progress_spreads=(trades[-1]["last"]-trades[0]["first"])/spread if trades else 0.,
                 retreat_spreads=(max(b["high"] for b in trades)-trades[-1]["last"])/spread if trades else 0.)
+            if include_totals:
+                high = max((b["high"] for b in trades), default=None)
+                low = min((b.get("low") or b["first"] for b in trades), default=None)
+                first, last = (trades[0]["first"], trades[-1]["last"]) if trades else (None, None)
+                span = high - low if trades else 0.
+                result[name].update(window_seconds=seconds, total_volume=total, buy_volume=buy,
+                    sell_volume=sell, unknown_volume=total-buy-sell, signed_volume=buy-sell,
+                    order_flow_imbalance=sum(b["ofi"] for b in rows), quote_depth_sum=depth,
+                    first=first, last=last, high=high, low=low,
+                    body_to_range=(last-first)/span if span else None,
+                    close_location=(last-low)/span if span else None)
         result["ready"] = True
         return result
 
