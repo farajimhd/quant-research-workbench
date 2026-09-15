@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 187 in-process Rust tests passed (133 core and 54 adapter tests).
+- 188 in-process Rust tests passed (134 core and 54 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -662,3 +662,17 @@ Two offline tests prove partial-exit continuation matches checkpoint/restore for
 fixture, and reject hash/model/quantity corruption. All 187 tests pass. This is not
 whole-engine recovery: market, strategy, portfolio, journal and simulator checkpoints
 still need a single coherent run frontier, durable publication and replay integration.
+
+Execution fills now have one versioned shared schema for broker-reported and
+simulated origins. It carries account, command, instrument, exact scaled price,
+quantity, buy/sell direction, leg, report availability and optional execution time.
+Missing execution time is not fabricated. Broker identity uses session, account,
+paper/live marker and execution ID; simulation identity uses explicit run/model,
+command, account, sequence and leg. A bounded fill book accepts exact retries once
+and rejects conflicting contents without overwriting prior evidence.
+The simulator now emits this schema directly and requires an explicit production
+run ID. Its model version is 3; checkpoints bind the run ID. One offline test covers
+origin separation and duplicate/conflicting execution reports. All 188 tests pass.
+Broker report normalization, correction/reversal handling, commission events, durable
+fill publication and position/account projection remain incomplete. Shared schema
+does not yet establish end-to-end live/backtest execution parity.

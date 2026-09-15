@@ -1,5 +1,7 @@
 //! Deterministic quote-touch model. No broker credentials, network or clock access.
 //! Displayed size is a modeled budget, not evidence of real queue priority.
+use crate::execution_events::{Direction, Origin};
+pub use crate::execution_events::{Fill, Leg};
 use crate::{
     content_hash,
     orders::{Bracket, Side},
@@ -7,7 +9,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
-pub const MODEL: &str = "quote-touch-shared-size-v2";
+pub const MODEL: &str = "quote-touch-shared-size-v3";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Quote {
     pub sequence: u64,
@@ -185,26 +187,6 @@ mod tests {
         assert!(sim.positions()[0].entry_cancelled);
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Leg {
-    Entry,
-    Stop,
-    Target,
-    Exit,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Fill {
-    pub model: String,
-    pub command_id: String,
-    pub account: String,
-    pub instrument: u64,
-    pub price_scale: u8,
-    pub sequence: u64,
-    pub at_ns: u64,
-    pub leg: Leg,
-    pub quantity: u64,
-    pub price: i64,
-}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Position {
     pub bracket: Bracket,
@@ -226,6 +208,7 @@ pub enum Amendment {
     ReplaceProtection { stop: i64, target: i64 },
 }
 pub struct Simulator {
+    run_id: String,
     instrument: u64,
     scale: u8,
     capacity: usize,
@@ -236,6 +219,7 @@ pub struct Simulator {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Checkpoint {
+    run_id: String,
     model: String,
     instrument: u64,
     scale: u8,
@@ -245,13 +229,20 @@ struct Checkpoint {
     last: Option<(u64, u64, String)>,
 }
 impl Simulator {
-    pub fn new(
+    #[cfg(test)]
+    fn new(instrument: u64, scale: u8, capacity: usize, participation_bps: u32) -> Result<Self> {
+        Self::new_scoped("test-run", instrument, scale, capacity, participation_bps)
+    }
+    pub fn new_scoped(
+        run_id: &str,
         instrument: u64,
         scale: u8,
         capacity: usize,
         participation_bps: u32,
     ) -> Result<Self> {
-        if instrument == 0
+        if run_id.is_empty()
+            || run_id.len() > 256
+            || instrument == 0
             || scale > 9
             || capacity == 0
             || capacity > 100000
@@ -261,6 +252,7 @@ impl Simulator {
             return Err(Error::Invalid("invalid simulation bounds".into()));
         }
         Ok(Self {
+            run_id: run_id.into(),
             instrument,
             scale,
             capacity,
@@ -274,6 +266,7 @@ impl Simulator {
     }
     pub fn checkpoint(&self, maximum_bytes: usize) -> Result<(String, Vec<u8>)> {
         let snapshot = Checkpoint {
+            run_id: self.run_id.clone(),
             model: MODEL.into(),
             instrument: self.instrument,
             scale: self.scale,
@@ -300,7 +293,8 @@ impl Simulator {
                 "simulation checkpoint model or hash mismatch".into(),
             ));
         }
-        let mut sim = Self::new(
+        let mut sim = Self::new_scoped(
+            &snapshot.run_id,
             snapshot.instrument,
             snapshot.scale,
             snapshot.capacity,
@@ -545,13 +539,23 @@ impl Simulator {
                         *remaining -= quantity;
                         order.exit_filled += quantity;
                         fills.push(Fill {
-                            model: MODEL.into(),
+                            schema_version: 1,
+                            origin: Origin::Simulated {
+                                run_id: self.run_id.clone(),
+                                model: MODEL.into(),
+                            },
+                            direction: if long {
+                                Direction::Sell
+                            } else {
+                                Direction::Buy
+                            },
                             command_id: b.command_id.clone(),
                             account: b.account.clone(),
                             instrument: b.instrument,
                             price_scale: b.price_scale,
                             sequence: quote.sequence,
                             at_ns: quote.at_ns,
+                            executed_at_ns: Some(quote.at_ns),
                             leg: if order.stop_triggered {
                                 Leg::Stop
                             } else if order.exit_requested {
@@ -581,13 +585,23 @@ impl Simulator {
                     *remaining -= quantity;
                     order.entry_filled += quantity;
                     fills.push(Fill {
-                        model: MODEL.into(),
+                        schema_version: 1,
+                        origin: Origin::Simulated {
+                            run_id: self.run_id.clone(),
+                            model: MODEL.into(),
+                        },
+                        direction: if long {
+                            Direction::Buy
+                        } else {
+                            Direction::Sell
+                        },
                         command_id: b.command_id.clone(),
                         account: b.account.clone(),
                         instrument: b.instrument,
                         price_scale: b.price_scale,
                         sequence: quote.sequence,
                         at_ns: quote.at_ns,
+                        executed_at_ns: Some(quote.at_ns),
                         leg: Leg::Entry,
                         quantity,
                         price: entry_price,

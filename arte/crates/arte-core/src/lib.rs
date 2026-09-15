@@ -8,6 +8,7 @@ pub mod coverage;
 pub mod decision_orders;
 pub mod event_storage;
 pub mod events;
+pub mod execution_events;
 pub mod exposure;
 pub mod journal;
 pub mod latency;
