@@ -6,6 +6,24 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Reference-use interval retained through cache loading
+
+The calendar-supplied use interval now travels with each reference request into
+the immutable startup cache. It is no longer discarded after planning. Cached
+lookups require `start <= evaluation_time < end` as well as the original record's
+availability check. A valid record cannot be reused after its declared session
+window. Loading before a window opens is allowed; use before it opens is rejected.
+
+The interval has one owner in the request contract, not duplicate fields in the
+binding and cache request. Invalid intervals are rejected before loader I/O.
+All 249 offline Rust tests, formatting, Clippy and frozen-source hashes pass.
+Expanded cache tests exercise the final permitted instant, exact end boundary and
+later times. No services ran.
+
+Calendar certification and full-session runtime orchestration remain incomplete.
+This check enforces the supplied interval; it does not establish that the calendar
+authority supplied the correct interval.
+
 ## Explicit previous-close dependency planning
 
 The shared dependency contract now has a distinct `PreviousClose` variant. Generic

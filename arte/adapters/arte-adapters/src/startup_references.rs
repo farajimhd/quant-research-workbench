@@ -1,5 +1,6 @@
 //! Bounded startup-only reference loading. No database access on cached reads.
 use arte_core::{
+    coverage::Interval,
     event_order::Scope,
     reference_data::{PreviousClose, PreviousCloseRequirement},
     Error, Result,
@@ -16,6 +17,8 @@ pub mod plan;
 pub struct Request {
     pub scope: Scope,
     pub requirement: PreviousCloseRequirement,
+    /// Half-open target session window supplied by the calendar authority.
+    pub use_interval: Interval,
 }
 pub trait Loader {
     fn load(
@@ -43,7 +46,12 @@ fn key(scope: Scope) -> Key {
     (scope.provider, scope.instrument, scope.session)
 }
 pub struct Cache {
-    records: BTreeMap<Key, (PreviousClose, PreviousCloseRequirement)>,
+    records: BTreeMap<Key, Cached>,
+}
+struct Cached {
+    record: PreviousClose,
+    requirement: PreviousCloseRequirement,
+    use_interval: Interval,
 }
 impl Cache {
     /// Lookup remains scoped to the startup target session; no latest fallback.
@@ -52,12 +60,19 @@ impl Cache {
         scope: Scope,
         as_of_ns: u64,
     ) -> Result<(&PreviousClose, &PreviousCloseRequirement)> {
-        let (record, requirement) = self
+        let cached = self
             .records
             .get(&key(scope))
             .ok_or_else(|| Error::Unready("previous-close cache scope missing".into()))?;
-        record.require(scope, requirement, as_of_ns)?;
-        Ok((record, requirement))
+        if as_of_ns < cached.use_interval.start || as_of_ns >= cached.use_interval.end {
+            return Err(Error::Unready(
+                "reference cache outside declared use interval".into(),
+            ));
+        }
+        cached
+            .record
+            .require(scope, &cached.requirement, as_of_ns)?;
+        Ok((&cached.record, &cached.requirement))
     }
 }
 impl Report {
@@ -72,9 +87,17 @@ impl Report {
         let mut records = BTreeMap::new();
         for row in self.outcomes {
             let record = row.result?;
+            row.request.use_interval.validate()?;
             record.require(row.request.scope, &row.request.requirement, self.as_of_ns)?;
             if records
-                .insert(key(row.request.scope), (record, row.request.requirement))
+                .insert(
+                    key(row.request.scope),
+                    Cached {
+                        record,
+                        requirement: row.request.requirement,
+                        use_interval: row.request.use_interval,
+                    },
+                )
                 .is_some()
             {
                 return Err(Error::Conflict("duplicate reference cache scope".into()));
@@ -114,6 +137,7 @@ pub async fn load(
     }
     let mut keys = BTreeSet::new();
     for request in &requests {
+        request.use_interval.validate()?;
         request.requirement.validate(request.scope)?;
         if !keys.insert(key(request.scope)) {
             return Err(Error::Conflict("duplicate reference startup scope".into()));
@@ -168,6 +192,7 @@ mod tests {
     }
     fn request(instrument: u64) -> Request {
         Request {
+            use_interval: Interval { start: 10, end: 20 },
             scope: Scope {
                 provider: 1,
                 instrument,
@@ -206,6 +231,9 @@ mod tests {
         let cache = report.into_cache().unwrap();
         assert_eq!(cache.get(request(2).scope, 10).unwrap().0.instrument, 2);
         assert!(cache.get(request(2).scope, 9).is_err());
+        assert!(cache.get(request(2).scope, 19).is_ok());
+        assert!(cache.get(request(2).scope, 20).is_err());
+        assert!(cache.get(request(2).scope, 100).is_err());
         assert!(cache.get(request(4).scope, 10).is_err());
         assert_eq!(source.calls.load(Ordering::SeqCst), 3);
     }

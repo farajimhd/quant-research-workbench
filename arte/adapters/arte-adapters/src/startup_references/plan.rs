@@ -1,19 +1,12 @@
 //! Map explicit previous-close dependencies to pinned startup loads.
 use super::Request;
-use arte_core::{
-    coverage::{Dependency, Interval},
-    dependency_plan::Plan,
-    Error, Result,
-};
+use arte_core::{coverage::Dependency, dependency_plan::Plan, Error, Result};
 use std::collections::BTreeMap;
 
 #[derive(Clone)]
 pub struct Binding {
     pub request: Request,
     pub implementation_hash: String,
-    /// Calendar authority supplies the target session's reference-use interval.
-    /// This is not a claim that the previous session traded continuously.
-    pub use_interval: Interval,
 }
 /// One target session per instrument in a startup plan. Multi-session backtests
 /// must resolve their per-session plans, not extend a reference across sessions.
@@ -23,7 +16,7 @@ pub fn requests(dependencies: &Plan, bindings: Vec<Binding>) -> Result<Vec<Reque
     }
     let mut registry = BTreeMap::new();
     for binding in bindings {
-        binding.use_interval.validate()?;
+        binding.request.use_interval.validate()?;
         binding
             .request
             .requirement
@@ -60,8 +53,8 @@ pub fn requests(dependencies: &Plan, bindings: Vec<Binding>) -> Result<Vec<Reque
         }
         for interval in &node.intervals {
             interval.validate()?;
-            if interval.start < binding.use_interval.start
-                || interval.end > binding.use_interval.end
+            if interval.start < binding.request.use_interval.start
+                || interval.end > binding.request.use_interval.end
             {
                 return Err(Error::Unready(
                     "previous-close binding does not cover requested use interval".into(),
@@ -82,6 +75,7 @@ pub fn requests(dependencies: &Plan, bindings: Vec<Binding>) -> Result<Vec<Reque
 mod tests {
     use super::*;
     use arte_core::{
+        coverage::Interval,
         dependency_plan::{Key, Node},
         event_order::Scope,
         reference_data::PreviousCloseRequirement,
@@ -106,6 +100,10 @@ mod tests {
             },
             Binding {
                 request: Request {
+                    use_interval: Interval {
+                        start: 100,
+                        end: 300,
+                    },
                     scope: Scope {
                         provider: 1,
                         instrument: 1,
@@ -117,10 +115,6 @@ mod tests {
                     },
                 },
                 implementation_hash: "a".repeat(64),
-                use_interval: Interval {
-                    start: 100,
-                    end: 300,
-                },
             },
         )
     }
