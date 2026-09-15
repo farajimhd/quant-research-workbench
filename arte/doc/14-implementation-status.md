@@ -30,6 +30,7 @@ was started during this implementation. Existing application files remain unchan
 | Historical seed contract | Historical-only publication, object references and availability gates |
 | Strategy primitives | Causal preceding range and candle quality |
 | Strategy evidence | Overhead encounters, trade-only next-opening rejection, grouped recovery and sparse range/progress gates |
+| Strategy target/lifecycle components | Causal resistance targets, synthetic ladder, stop/swing selection, position phase and re-entry recovery |
 | V7 primitives | Student-t analytic objective/gradient and array-based level association |
 | V7 historical evidence | Fixed-band encounters, role timelines, reaction annotation and split-adjusted nonoverlapping observations |
 | V7 historical extraction | Gap-separated extrema, profile peaks, bounded-span candidate clustering and auditable role-based selection |
@@ -74,7 +75,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 67 in-process Rust tests passed (60 core and 7 adapter tests).
+- 76 in-process Rust tests passed (69 core and 7 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -174,6 +175,13 @@ precede the current candle. Blocked overhead levels recover together. Activity
 checks retain sparse observed candles independently of the short consolidation
 window; the 60-second price reference must be no more than five seconds stale.
 These paths have focused unit tests, not full source-decision parity.
+
+Target selection now preserves real-resistance priority and the source's synthetic
+ladder behavior. It produces price candidates only; OMS bracket/LULD checks remain
+mandatory. Setup lifecycle code keeps fill evidence, early-failure checks and
+post-exit recovery separate from a new position's breakout phase. Reconciled
+position observations cannot rewind state. Main strategy evaluation, complete
+admission/add/exit management and source-config parity are still missing.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.
