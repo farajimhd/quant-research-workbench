@@ -174,8 +174,23 @@ impl Runtime {
         event: &Observation,
         eligible: bool,
     ) -> Result<ObservationUpdate> {
+        self.observe_ordered_trade(event, eligible, event.available_at_ns)
+    }
+    /// Processing time can advance beyond original receipt during ordering. Never
+    /// rewrite the observation's availability or receipt to make it monotonic.
+    pub fn observe_ordered_trade(
+        &mut self,
+        event: &Observation,
+        eligible: bool,
+        processed_at_ns: u64,
+    ) -> Result<ObservationUpdate> {
         self.available()?;
         event.validate()?;
+        if processed_at_ns < event.available_at_ns {
+            return Err(Error::Invalid(
+                "market processing precedes observation availability".into(),
+            ));
+        }
         if event.key.provider != self.provider
             || event.key.instrument != self.structure.instrument
             || event.key.session != self.structure.session
@@ -210,7 +225,7 @@ impl Runtime {
         }
         let update = self.trade(
             event.sip.ns,
-            event.available_at_ns,
+            processed_at_ns,
             price.atoms as f64 / 10_f64.powi(price.scale.into()),
             size.atoms as f64 / 10_f64.powi(size.scale.into()),
             eligible,

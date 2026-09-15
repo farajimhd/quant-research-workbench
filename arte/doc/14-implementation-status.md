@@ -857,3 +857,14 @@ All 212 Rust tests, formatting, static checks and source hashes pass. Upstream
 ordering, condition qualification, latency gates, quote processing and live actor
 wiring remain separate integration requirements. Full strategy execution is not
 complete. No service or network test ran.
+
+The bounded event-order buffer now releases source-time order strictly before an
+explicit watermark. Equal timestamps use provider sequence then event identity.
+Pending retransmissions coalesce; changed identities, late arrivals and capacity
+exhaustion block release. Rejected input remains owned by the caller. Consumer
+failure retains the unacknowledged prefix for exact retry. Two offline tests cover
+ordering, partial application, half-open boundaries and capacity/late failures.
+The market bridge also accepts a separate processing clock without rewriting source
+availability or receipts. All 214 Rust tests, formatting, static checks and source
+hashes pass. Watermark production, already-released duplicate routing, queue recovery
+and live actor wiring remain incomplete. No service ran.
