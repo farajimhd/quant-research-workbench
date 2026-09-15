@@ -1961,6 +1961,7 @@ class ReplayRunController:
                     else None
                 ),
                 "latest_checkpoint_cursor": self._runtime._latest_checkpoint_cursor,
+                "wait_decisions": self._runtime.checkpoint_wait_decisions(),
             },
             "assignments": self._checkpoint_assignments(),
             "candle_detector_states": self._checkpoint_candle_detectors(),
@@ -3199,6 +3200,8 @@ class ReplayRunController:
         self._runtime._latest_checkpoint_cursor = str(
             runtime.get("latest_checkpoint_cursor") or ""
         )
+        if "wait_decisions" in runtime:
+            self._runtime.restore_wait_decisions(runtime["wait_decisions"])
         self.status = (
             "running"
             if self.definition.mode in {RunMode.BACKTEST, RunMode.BACKTEST_DEBUG}
