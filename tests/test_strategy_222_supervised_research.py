@@ -117,6 +117,11 @@ def test_recipe_accepts_only_bounded_parameter_paths(tmp_path):
     assert load_recipe(path)['historical_hod']['setup_minimum_body_bps']==30
     path.write_text(json.dumps(dict(parameters=dict(historical_hod=dict(setup_minimum_300s_range_pct=4.5)))))
     assert load_recipe(path)['historical_hod']['setup_minimum_300s_range_pct']==4.5
+    path.write_text(json.dumps(dict(parameters=dict(historical_hod=dict(setup_phase_minimum_progress_r=1.)))))
+    assert load_recipe(path)['historical_hod']['setup_phase_minimum_progress_r']==1.
+    for invalid in (-1, float('nan'), float('inf'), True, '1'):
+        path.write_text(json.dumps(dict(parameters=dict(historical_hod=dict(setup_phase_minimum_progress_r=invalid)))))
+        with pytest.raises(ValueError,match='Invalid research parameter'):load_recipe(path)
     path.write_text(json.dumps(dict(parameters=dict(command=dict(shell='anything')))))
     with pytest.raises(ValueError,match='unapproved parameter'):load_recipe(path)
 
@@ -144,6 +149,12 @@ def test_recipe_preserves_selected_version_and_changes_only_requested_parameter(
     assert actual['parameters']['liquidity_admission']['minimum_current_trade_rate_60s']==2
     assert trial['strategy_profile_id']==actual['profile_id']=='v7-222-range-experiment'
     assert trial['configuration']['run_plans']['plans'][0]['profile_id']==actual['profile_id']
+    assert payload==frozen
+
+    phase_trial=prepare('phase-experiment',{'historical_hod':{'setup_phase_minimum_progress_r':1.}},'regular-origin-v31')
+    expected_phase=deepcopy(baseline['configuration']['strategy']['profiles'][-1]['parameters'])
+    expected_phase['historical_hod']['setup_phase_minimum_progress_r']=1.
+    assert phase_trial['configuration']['strategy']['profiles'][-1]['parameters']==expected_phase
     assert payload==frozen
 
     legacy=prepare('legacy-experiment',{'historical_hod':{'setup_minimum_body_bps':30}})
