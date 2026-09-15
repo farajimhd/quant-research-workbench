@@ -16,6 +16,7 @@ import sqlite3
 import time
 import urllib.parse
 from collections import deque
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime, time as clock_time, timedelta
@@ -1852,7 +1853,9 @@ class ReplayRunController:
             raise RuntimeError("Historical broker does not support restart checkpoints")
         return {
             "schema_version": RESTART_CHECKPOINT_SCHEMA_VERSION,
-            "complete": True,
+            "complete": getattr(self, "_incomplete_processing_unit", None) is None,
+            "processing_boundary_version": 1,
+            "incomplete_processing_unit": deepcopy(getattr(self, "_incomplete_processing_unit", None)),
             "identity": {
                 "run_id": self.run_id,
                 "mode": self.definition.mode.value,
@@ -2607,16 +2610,7 @@ class ReplayRunController:
                         if self._stop_requested:
                             await self._finish("stopped")
                             return
-                    await self._process_market_event(
-                        event,
-                        # This strategy evaluates normalized causal observations
-                        # in _process_strategy_frame. Its raw-event callback is a
-                        # deliberate no-op, so invoking it for every quote/trade
-                        # only reduces Replay throughput.
-                        evaluate_strategy=False,
-                    )
-                    if event.ts >= self.definition.requested_start:
-                        await self._process_strategy_market_event(event)
+                    await self._process_replay_market_event(event)
                     if event.ts < self.definition.requested_start:
                         self.warmup_events += 1
                     else:
@@ -3212,6 +3206,22 @@ class ReplayRunController:
         )
         self.updated_at = datetime.now(UTC)
 
+    @contextmanager
+    def _processing_unit(self, kind, ticker, at):
+        if getattr(self, "_incomplete_processing_unit", None) is not None:
+            raise RuntimeError("Replay has an incomplete processing unit")
+        self._incomplete_processing_unit = dict(kind=kind, ticker=ticker, at=at.isoformat())
+        # Deliberately retain the marker on exceptions, including cancellation.
+        # Broker, liquidity, or strategy state may already have been mutated.
+        yield
+        self._incomplete_processing_unit = None
+
+    async def _process_replay_market_event(self, event):
+        with self._processing_unit('market', event.ticker, event.ts):
+            await self._process_market_event(event, evaluate_strategy=False)
+            if event.ts >= self.definition.requested_start:
+                await self._process_strategy_market_event(event)
+
     async def _process_market_event(
         self,
         event: MarketEvent,
@@ -3377,6 +3387,10 @@ class ReplayRunController:
                 reference_price=observation.price, metadata={'continuation_detector':decision}))
 
     async def _process_strategy_frame(self, frame: ReplayDerivedFrame) -> bool:
+        with self._processing_unit('frame', frame.ticker, frame.as_of):
+            return await self._apply_strategy_frame(frame)
+
+    async def _apply_strategy_frame(self, frame: ReplayDerivedFrame) -> bool:
         if self._runtime is None or self._strategy is None:
             return False
         # Passive market classification precedes discovery/assignment gates.
@@ -4722,6 +4736,12 @@ class ReplayRunController:
                 source_cache[f"{field_refs[source_id]}@1s"] = record
 
     async def _process_external_signal_event(self, event: ReplaySignalEvent) -> None:
+        with self._processing_unit('external_signal', event.ticker, event.available_at):
+            is_new_for_run = await self._apply_external_signal_event(event)
+        if is_new_for_run:
+            await self._after_event(event.available_at)
+
+    async def _apply_external_signal_event(self, event: ReplaySignalEvent):
         if event.ticker in self._v7_excluded_tickers:
             return
         configuration = self.definition.configuration_revision["payload"]
@@ -4761,8 +4781,7 @@ class ReplayRunController:
             ):
                 self._signal_activated_tickers.add(event.ticker)
                 self._strategy_engaged_tickers.add(event.ticker)
-        if is_new_for_run:
-            await self._after_event(event.available_at)
+        return is_new_for_run
 
     def _project_signal_data_fields(self, frame: ReplayDerivedFrame) -> dict[str, Any]:
         activation = dict(
@@ -6828,6 +6847,8 @@ class ReplayRunService:
         finally:
             journal.close()
         state = dict((persisted or {}).get("state") or {})
+        if prior_status == "failed" and state.get("processing_boundary_version") != 1:
+            raise ValueError("Failed historical run lacks a certified processing boundary; start a new run")
         if (
             int(state.get("schema_version") or 0) != RESTART_CHECKPOINT_SCHEMA_VERSION
             or not bool(state.get("complete"))
