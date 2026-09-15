@@ -6,6 +6,27 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## New York calendar conversion and UTC-date validation
+
+The calendar adapter converts explicit local session hours into UTC using the
+bundled New York timezone rules. It does not use a fixed UTC offset. Ambiguous or
+nonexistent local times, invalid dates and timestamp overflow are rejected.
+Supplied early closes remain explicit; no holiday or close time is inferred.
+
+UTC session validation checks that the first and final included instants of both
+extended and regular intervals belong to the declared New York date. The policy
+covers same-day US equity sessions, not overnight exchange sessions. Calendar-bound
+reference construction now applies this validation after checking the record pin.
+
+All 254 offline Rust tests, formatting, Clippy and frozen-source hashes pass.
+New tests cover winter/summer UTC offsets, supplied early-close duration, DST gaps
+and ambiguities, invalid dates and wrong declared UTC session dates. The reference
+factory test uses real timezone conversion. No services or calendar APIs ran.
+
+Calendar source acquisition/certification, holiday validation, persistence and
+session-driven lifecycle integration remain incomplete. Timezone conversion alone
+does not establish that a supplied exchange schedule is correct.
+
 ## Pinned trading-session geometry
 
 The shared core now represents a session with an exchange identity, valid calendar

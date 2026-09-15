@@ -1,5 +1,6 @@
 //! External integration implementations. Constructors do not connect or start services.
 #![forbid(unsafe_code)]
+pub mod calendar;
 pub mod clickhouse;
 pub mod event_writer;
 pub mod fill_journal;

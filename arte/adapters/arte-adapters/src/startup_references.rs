@@ -30,6 +30,7 @@ impl Request {
         as_of_ns: u64,
     ) -> Result<Self> {
         session.require(session_hash, as_of_ns)?;
+        crate::calendar::validate_new_york(session)?;
         requirement.validate(scope)?;
         if scope.session != session.session
             || requirement.session != session.previous_trading_session
@@ -264,15 +265,19 @@ mod tests {
     }
     #[test]
     fn calendar_pin_drives_reference_session_and_use_window() {
-        let session = arte_core::session::Session {
+        let session = crate::calendar::LocalSession {
             exchange: "XNYS".into(),
             session: 20260915,
             previous_trading_session: 20260914,
-            extended: Interval { start: 10, end: 20 },
-            regular: Interval { start: 12, end: 18 },
+            extended_open: "04:00:00".into(),
+            regular_open: "09:30:00".into(),
+            regular_close: "16:00:00".into(),
+            extended_close: "20:00:00".into(),
             available_at_ns: 1,
             source_manifest_hash: "a".repeat(64),
-        };
+        }
+        .to_utc()
+        .unwrap();
         let hash = arte_core::content_hash(&session).unwrap();
         let request = request(1);
         let planned = Request::from_session(
