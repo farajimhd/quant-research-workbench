@@ -173,6 +173,59 @@ def test_entry_reclaim_configuration_and_runtime_switch():
     assert any(i.action=='enter_long' for i in host.evaluate(a,o).evaluation.intents)
 
 
+def test_regular_base_exception_keeps_history_and_support_guards():
+    state=dict(last_exit=dict(at=5,stop=10.3,body_high=10.5,
+        stop_above_initial_fill=True,setup=dict(phase='post_breakout',breakout_threshold=10.4)),
+        retired_swings={})
+    original=deepcopy(state);market=dict(bar=dict(end=15,close=10.1));new=swing(12,9.9)
+    options=dict(stop_gain_guard=True,regular_session_start=10)
+    assert V.recovery_permission(state,new,market,**options)==('', 'building')
+    assert state==original
+    assert V.recovery_permission(state,swing(8,9.9),market,**options)[0]=='waiting_for_post_move_recovery_or_higher_base'
+    assert V.recovery_permission(state,swing(15,9.9),market,**options)[0]=='waiting_for_post_move_recovery_or_higher_base'
+    state['retired_swings'][V.swing_key(new)]=14
+    assert V.recovery_permission(state,new,market,**options)[0]=='breached_setup_swing'
+    state['retired_swings'].clear()
+    state['last_exit']['setup']['entry_failure_recovery']=10.2
+    assert V.recovery_permission(state,new,market,**options)[0]=='waiting_for_failed_setup_reclaim'
+    del state['last_exit']['setup']['entry_failure_recovery']
+    state['last_exit']['at']=10
+    assert V.recovery_permission(state,new,market,**options)[0]=='waiting_for_post_move_recovery_or_higher_base'
+
+
+def test_regular_base_runtime_boundary_and_configuration():
+    import pytest
+    from zoneinfo import ZoneInfo
+    from src.trading_runtime.historical_hod import configure
+    host,a,obs=prepared()
+    a.parameters['historical_hod'].update(setup_recovery_enabled=1,
+        setup_recovery_stop_gain_guard=1,setup_early_base_enabled=1,
+        setup_base_recovery_maximum_range_pct=0,setup_recovery_regular_base=1)
+    configure(a.parameters)
+    for value in (-1,2,True,float('nan'),float('inf')):
+        a.parameters['historical_hod']['setup_recovery_regular_base']=value
+        with pytest.raises(ValueError):configure(a.parameters)
+    a.parameters['historical_hod'].update(setup_recovery_regular_base=1,setup_early_base_enabled=0)
+    with pytest.raises(ValueError):configure(a.parameters)
+    a.parameters['historical_hod']['setup_early_base_enabled']=1
+    o=obs(2,10.11);now=o.observed_at.timestamp()
+    boundary=o.observed_at.astimezone(ZoneInfo('America/New_York')).replace(hour=9,minute=30,second=0,microsecond=0).timestamp()
+    market=deepcopy(o.structural_detector_state)
+    market['row']['local_swings']=[swing(now-3,9.99)]
+    o=replace(o,structural_detector_state=market)
+    previous=dict(at=boundary-10,stop=10.03,body_high=10.3,stop_above_initial_fill=True,
+        setup=dict(phase='post_breakout',breakout_threshold=10.2))
+    a.state['v7_setup']['last_exit']=previous
+    result=host.evaluate(a,o)
+    assert any(i.action=='enter_long' for i in result.evaluation.intents)
+    assert result.evaluation.signals[0].metadata['recovery_regular_session_start']==boundary
+    previous['at']=boundary+10
+    assert not host.evaluate(a,o).evaluation.intents
+    previous['at']=boundary-10
+    a.parameters['historical_hod']['setup_recovery_regular_base']=0
+    assert not host.evaluate(a,o).evaluation.intents
+
+
 def test_disabling_compact_base_exception_keeps_fresh_reclaim_available():
     host,a,obs=prepared()
     a.parameters['historical_hod'].update(setup_recovery_enabled=1,

@@ -128,7 +128,7 @@ def recovery_observe(state, entry, market, observation, stop, row, fresh, *, pre
         for field in ('local_swings', 'confirmed_swings')}}
 
 
-def recovery_permission(state, swing, market, *, stop_gain_guard=False, tight_base=False, unprotected_reentry=False, entry_reclaim=False):
+def recovery_permission(state, swing, market, *, stop_gain_guard=False, tight_base=False, unprotected_reentry=False, entry_reclaim=False, regular_session_start=0.):
     previous = state.get('last_exit')
     if not previous:
         return '', 'building'
@@ -139,6 +139,12 @@ def recovery_permission(state, swing, market, *, stop_gain_guard=False, tight_ba
     failed_entry = previous['setup'].get('entry_failure_recovery')
     if failed_entry and market['bar']['close'] <= failed_entry:
         return 'waiting_for_failed_setup_reclaim', ''
+    # The caller supplies a boundary only for a qualified regular-session
+    # early base. Keep prior recovery evidence and require a new post-open
+    # support; a position exited after the open cannot use this exception.
+    if (regular_session_start>0 and previous['at']<regular_session_start
+            <=swing['pivot_at']<=swing['confirmed_at']<=market['bar']['end']):
+        return '', 'building'
     # A preliminary attempt can cross its range without ever protecting a
     # profit. Require observed fill evidence; older checkpoints with unknown
     # protection history retain the stricter recovery rule.
