@@ -15,7 +15,7 @@ pub struct Book {
     scope: Scope,
     latest: Option<Observation>,
     failed: bool,
-    policy: Option<eligibility::Pinned>,
+    policy: Option<std::sync::Arc<eligibility::Pinned>>,
 }
 impl Book {
     pub fn new(scope: Scope) -> Result<Self> {
@@ -34,6 +34,12 @@ impl Book {
     }
     /// Policy identity is immutable for this book. A new version needs a new owner.
     pub fn bind_policy(&mut self, policy: eligibility::Pinned) -> Result<()> {
+        self.bind_shared_policy(std::sync::Arc::new(policy))
+    }
+    pub fn bind_shared_policy(
+        &mut self,
+        policy: std::sync::Arc<eligibility::Pinned>,
+    ) -> Result<()> {
         if policy.provider() != self.scope.provider
             || self
                 .policy

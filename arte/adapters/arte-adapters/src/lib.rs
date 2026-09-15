@@ -18,6 +18,7 @@ pub mod ownership;
 pub mod request_governor;
 pub mod rest_acquisition;
 pub mod simulation_runtime;
+pub mod startup_quote_policies;
 pub mod startup_references;
 pub mod startup_repair;
 pub mod startup_sources;

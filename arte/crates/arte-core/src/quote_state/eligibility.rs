@@ -54,6 +54,22 @@ impl Pinned {
     pub fn provider(&self) -> u16 {
         self.policy.provider
     }
+    pub fn require_interval(
+        &self,
+        interval: crate::coverage::Interval,
+        as_of_ns: u64,
+    ) -> Result<()> {
+        interval.validate()?;
+        if interval.start < self.policy.valid_from_ns
+            || interval.end > self.policy.valid_to_ns
+            || self.policy.available_at_ns > as_of_ns
+        {
+            return Err(Error::Unready(
+                "quote policy does not cover the requested causal interval".into(),
+            ));
+        }
+        Ok(())
+    }
     pub fn require(&self, event: &Observation, now_ns: u64) -> Result<()> {
         let p = &self.policy;
         if event.key.provider != p.provider

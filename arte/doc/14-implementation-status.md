@@ -6,6 +6,26 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Startup quote-policy cache
+
+A bounded startup loader now retrieves one pinned policy per provider through the
+ClickHouse adapter. It rejects duplicate providers before loading, caps the provider
+count at 256 and concurrency at 32, and supports cancellation. Every requested
+provider retains an outcome. Callers cannot remove failed outcomes before promoting
+the report into a ready cache.
+
+Loaded policies must match their expected hashes and cover the full requested
+half-open use interval. Future availability and partial loads cannot become ready.
+Cache reads enforce the declared interval and perform no database requests.
+Ticker books and the live market lane can bind shared Arc policy handles, avoiding
+copies of the condition and indicator sets for every ticker.
+
+All 304 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Tests cover shared identity, scope and interval checks, duplicate plans, cancellation,
+wrong hashes and unavailable policies. No services or database calls ran.
+Source-oracle parity was not rerun. The overall service startup coordinator and
+certified policy production remain unfinished.
+
 ## Persisted quote-policy records
 
 The ClickHouse adapter now publishes immutable quote eligibility policies and loads

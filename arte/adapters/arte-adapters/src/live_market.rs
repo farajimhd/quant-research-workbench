@@ -61,6 +61,13 @@ impl Lane {
         self.available()?;
         self.quotes.bind_policy(policy)
     }
+    pub fn bind_shared_quote_policy(
+        &mut self,
+        policy: std::sync::Arc<arte_core::quote_state::eligibility::Pinned>,
+    ) -> Result<()> {
+        self.available()?;
+        self.quotes.bind_shared_policy(policy)
+    }
     /// Persist/audit every observation independently, including duplicate/rejected
     /// input. Eligibility comes from the pinned trade-condition policy, not health.
     pub fn ingest(&mut self, event: &AuditedEvent, eligible: bool) -> Result<()> {
