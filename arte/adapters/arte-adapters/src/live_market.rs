@@ -296,15 +296,20 @@ impl Lane {
         self.quotes
             .require_executable(now_ns, self.maximum_quote_age_ns)
     }
-    /// Session scheduling and previous-close provenance remain upstream duties.
+    /// Session scheduling and certification of the pinned source remain upstream duties.
     /// Uses the same current quote/band owners as execution. No HTTP or floats.
     pub fn regular_admission(
         &self,
         check: Check<'_>,
         now_ns: u64,
-        previous_close: Option<arte_core::events::Decimal>,
+        previous_close: Option<&arte_core::reference_data::PreviousClose>,
+        previous_close_requirement: &arte_core::reference_data::PreviousCloseRequirement,
         policy: &arte_core::luld::Policy,
     ) -> Result<arte_core::luld::Admission> {
+        previous_close_requirement.validate(self.market.scope())?;
+        let previous_close = previous_close
+            .map(|record| record.require(self.market.scope(), previous_close_requirement, now_ns))
+            .transpose()?;
         let quote = self.executable_quote(check, now_ns)?;
         let arte_core::events::Payload::Quote { bid, ask, .. } = quote.payload else {
             return Err(Error::Conflict("quote owner returned a non-quote".into()));
@@ -593,12 +598,24 @@ mod tests {
             maximum_age_ns: SECOND,
             minimum_previous_close: 500,
         };
-        let prior = Some(Decimal {
-            atoms: 10,
-            scale: 0,
-        });
+        let record = arte_core::reference_data::PreviousClose {
+            provider: 1,
+            instrument: 1,
+            session: 20260914,
+            price: Decimal {
+                atoms: 10,
+                scale: 0,
+            },
+            available_at_ns: 200 * SECOND,
+            source_manifest_hash: "a".repeat(64),
+        };
+        let requirement = arte_core::reference_data::PreviousCloseRequirement {
+            session: record.session,
+            record_hash: arte_core::content_hash(&record).unwrap(),
+        };
+        let prior = Some(&record);
         assert!(lane
-            .regular_admission(gate.at(101), 202 * SECOND, prior, &policy)
+            .regular_admission(gate.at(101), 202 * SECOND, prior, &requirement, &policy)
             .is_err());
         let quote = Observation {
             key: EventKey {
@@ -635,30 +652,46 @@ mod tests {
         // Direct offline fixture; does not claim provider ingestion certification.
         lane.quotes.observe(&quote).unwrap();
         let admitted = lane
-            .regular_admission(gate.at(101), 202 * SECOND, prior, &policy)
+            .regular_admission(gate.at(101), 202 * SECOND, prior, &requirement, &policy)
             .unwrap();
         assert!(admitted.block.is_none());
         assert_eq!(admitted.bands.unwrap().target, 1090);
         assert_eq!(
-            lane.regular_admission(gate.at(101), 202 * SECOND, None, &policy)
+            lane.regular_admission(gate.at(101), 202 * SECOND, None, &requirement, &policy)
                 .unwrap()
                 .block,
             Some(arte_core::luld::Block::RegularPreviousCloseUnavailable)
         );
         assert!(lane
-            .regular_admission(gate.at(201), 202 * SECOND, prior, &policy)
+            .regular_admission(gate.at(201), 202 * SECOND, prior, &requirement, &policy)
             .is_err());
         assert!(lane
-            .regular_admission(gate.at(101), 203 * SECOND, prior, &policy)
+            .regular_admission(gate.at(101), 203 * SECOND, prior, &requirement, &policy)
             .is_err());
+        let mut changed = record.clone();
+        changed.price = Decimal {
+            atoms: 10001,
+            scale: 3,
+        };
         assert!(lane
             .regular_admission(
                 gate.at(101),
                 202 * SECOND,
-                Some(Decimal {
-                    atoms: 10001,
-                    scale: 3
-                }),
+                Some(&changed),
+                &requirement,
+                &policy
+            )
+            .is_err());
+        let exactness_requirement = arte_core::reference_data::PreviousCloseRequirement {
+            session: changed.session,
+            record_hash: arte_core::content_hash(&changed).unwrap(),
+        };
+        assert!(lane
+            .regular_admission(
+                gate.at(101),
+                202 * SECOND,
+                Some(&changed),
+                &exactness_requirement,
                 &policy
             )
             .is_err());

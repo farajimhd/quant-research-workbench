@@ -6,6 +6,28 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Pinned previous-close evidence
+
+Live-lane regular admission no longer accepts an unqualified previous-close decimal.
+It requires a typed record and a pinned requirement. The record contains provider,
+instrument, source session, exact price, original availability and source-manifest
+hash. The requirement pins the full record hash and expected preceding session.
+
+Future availability, changed prices or source hashes, wrong instruments/providers,
+wrong source sessions and missing pins are rejected. The current session cannot be
+used as previous close. The startup/reference authority must choose the actual
+preceding trading session; no calendar-day subtraction is performed. Missing data
+remains explicitly unavailable even when the expected identity is known.
+
+All 243 offline Rust tests, formatting, Clippy and frozen-source hashes pass.
+The new reference test covers a Friday-to-Monday session pin and changes to every
+record field. The live-lane test now verifies that changed records and precision
+loss cannot enter through the regular-admission path. No services ran.
+
+Hash agreement proves identity, not that a source manifest is trustworthy. The
+reference producer, manifest certification, ClickHouse storage/loading, startup
+dependency integration and full runtime configuration binding remain incomplete.
+
 ## Live-lane regular admission integration
 
 The live lane now calculates regular-session admission using its own fresh quote
