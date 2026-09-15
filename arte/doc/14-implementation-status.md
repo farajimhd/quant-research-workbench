@@ -6,6 +6,29 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Bounded startup reference loading and cache
+
+Startup reference loading now supports up to 4096 pinned requests with at most 32
+concurrent reads. Requests are validated before I/O. Duplicate target scopes are
+rejected. Every returned record is revalidated against its original request and
+startup as-of time. The ClickHouse adapter implements the loader interface.
+
+Each request has a reported outcome. Stop requests cancel pending reads and prevent
+new reads from starting. Failed, invalid or stopped requests cannot produce a ready
+reference cache. The report's outcome collection is read-only to callers. A fully
+loaded cache owns the records in memory and serves exact scoped lookups without
+database access. The live lane has a cached regular-admission entry point.
+
+All 247 offline Rust tests, formatting, Clippy and frozen-source hashes pass.
+Three new tests cover bounded concurrency, cache lookup, invalid loaded records,
+pre-stopped requests and duplicate-request rejection before I/O. The live cached
+wrapper compiles; it has not been exercised end-to-end with ClickHouse. No services
+or database connections ran.
+
+The complete startup driver must still derive the request set from enabled strategy
+requirements, certify the reference source, and combine reference readiness with
+event/derived-data readiness. This component alone does not make startup complete.
+
 ## Previous-close ClickHouse storage adapter
 
 Schema 009 adds `previous_close_records_v1` on `live_market_ssd`. It stores only a

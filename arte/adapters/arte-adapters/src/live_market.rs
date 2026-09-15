@@ -327,6 +327,17 @@ impl Lane {
             policy,
         )
     }
+    /// Startup-loaded references only. This path performs no persistence reads.
+    pub fn regular_admission_cached(
+        &self,
+        check: Check<'_>,
+        now_ns: u64,
+        references: &crate::startup_references::Cache,
+        policy: &arte_core::luld::Policy,
+    ) -> Result<arte_core::luld::Admission> {
+        let (record, requirement) = references.get(self.market.scope(), now_ns)?;
+        self.regular_admission(check, now_ns, Some(record), requirement, policy)
+    }
 }
 fn frontier(high: &BTreeMap<EventKind, u64>, allowance: u64, previous: u64) -> Result<u64> {
     let trade = high
