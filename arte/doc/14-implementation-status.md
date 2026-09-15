@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 179 in-process Rust tests passed (125 core and 54 adapter tests).
+- 183 in-process Rust tests passed (129 core and 54 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -619,3 +619,22 @@ Two offline tests verify scale-sensitive identity, rejection of missing scale an
 decimal serialization beyond binary floating-point integer precision. All 179 tests
 and static checks passed. Instrument tick/scale certification and actual broker
 compatibility still require the outstanding integration acceptance.
+
+A deterministic quote-touch execution model now consumes the shared bracket contract.
+It owns a bounded single-instrument order lane, shares modeled displayed liquidity
+across accounts in submission order and applies an explicit participation fraction.
+Submission latency is simulated. Duplicate quote identities cannot create new fills.
+Entries use marketable quote prices within their limit. Partial protective fills
+cannot exceed held quantity. A triggered stop remains triggered after a partial fill
+and cancels the remaining entry. Entry deadlines do not remove existing protection.
+The model supports long and short bracket geometry without broker credentials or I/O.
+
+Four offline tests cover shared liquidity, duplicate/conflicting quotes, partial stop
+fills, price gaps, short targets, participation, latency, expiry and capacity. All 183
+tests pass. These are explicit model assumptions, not broker behavior or realistic
+queue evidence. Protective fills start no earlier than the quote after an entry.
+Each new quote replenishes the modeled size budget; no trade-volume queue model is
+claimed. Commission/slippage models, corporate actions, session/auction/condition
+eligibility, cancel/replace simulation, journaled common execution-event integration,
+checkpoint recovery and the full strategy backtest loop remain incomplete. Shared
+OMS risk authorization must precede submission; this model only checks geometry.

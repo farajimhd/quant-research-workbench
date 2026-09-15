@@ -18,6 +18,7 @@ pub mod portfolio;
 pub mod publication;
 pub mod replay;
 pub mod seed_storage;
+pub mod simulated_execution;
 pub mod strategy_adds;
 pub mod strategy_candidate;
 pub mod strategy_dispatch;
