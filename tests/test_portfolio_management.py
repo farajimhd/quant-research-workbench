@@ -213,6 +213,38 @@ class PortfolioManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum(r.reserved_notional for r in engine.reservations.values() if r.status=='reserved'),0)
         self.assertEqual(next(iter(engine.allocations.values())).quantity,2750)
 
+    async def test_cash_tranche_add_respects_explicit_maximum_quantity_after_restart(self):
+        policy=PortfolioPolicy(maximum_position_fraction=1.,maximum_ticker_fraction=1.,
+            maximum_planned_risk_fraction=.5,maximum_open_risk_fraction=.5,entry_fee_buffer_bps=0.)
+        profile=PortfolioAccountProfile('cash','C1','replay','simulated',policy)
+        engine=self.engine([profile])
+        engine.synchronize_snapshot('C1',summary=summary('C1',equity=10000,available=10000),
+            ledger=ledger('C1',cash=10000),positions=[])
+        base=intent('capped-initial',price=3.,invalidation=2.99)
+        first=replace(base,capital_request=CapitalRequest(mode='mandate_fraction',value=.9),
+            metadata={**base.metadata,'entry_completion_quote':'ask',
+                'cash_tranche':dict(key='capped-position',index=0,count=3)})
+        _,approved=await engine.approve(first,account_id='C1')
+        self.assertEqual(approved.quantity,1000)
+        engine.on_order_group_update(OrderGroupSnapshot(group_id='first',intent_id=first.intent_id,
+            account_id='C1',ticker='AAPL',action='enter_long',state=OrderManagementState.FILLED,
+            client_order_ids=(),broker_order_ids=(),submitted_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),filled_quantity=1000,remaining_quantity=0,
+            warning_message_ids=(),rejection_reason='',decision_to_submit_ms=0,policy_version=1,
+            reentry_after_fill=False,assignment_id='assignment-AAPL'))
+        engine=self.engine([profile])
+        engine.synchronize_snapshot('C1',summary=summary('C1',equity=10000,available=7000),
+            ledger=ledger('C1',cash=7000),positions=[position('C1','AAPL',1000,3.)])
+        add=replace(first,intent_id='capped-add',action='add_long',reference_price=3.3,
+            capital_request=CapitalRequest(mode='fixed_quantity',value=1,maximum_quantity=25),
+            metadata={**first.metadata,'cash_tranche':dict(key='capped-position',index=1,count=3)})
+        decision,approved=await engine.approve(add,account_id='C1')
+        self.assertIsNotNone(approved)
+        self.assertEqual(approved.quantity,25)
+        hold=next(r for r in engine.reservations.values() if r.cash_tranche_key)
+        self.assertAlmostEqual(hold.reserved_notional,6000-25*3.3)
+        self.assertEqual(hold.cash_tranche_next,2)
+
     async def test_small_initial_tranche_preserves_normal_add_budget(self):
         policy=PortfolioPolicy(maximum_position_fraction=1.,maximum_ticker_fraction=1.,
             maximum_planned_risk_fraction=.5,maximum_open_risk_fraction=.5,entry_fee_buffer_bps=0.)

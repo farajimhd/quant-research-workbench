@@ -1112,6 +1112,10 @@ class PortfolioManagementEngine:
         if tranche_hold:
             requested = min(tranche_hold.cash_tranche_size, tranche_hold.reserved_notional /
                 (base_price * self._entry_funding_factor(intent, policy))) if base_price > 0 else 0.
+            # Tranche funding replaces the ordinary sizing calculation, but
+            # cannot replace an explicit strategy quantity ceiling.
+            if intent.capital_request is not None and intent.capital_request.maximum_quantity is not None:
+                requested = min(requested, intent.capital_request.maximum_quantity)
         if (entry and requested <= 0 and price > 0 and intent.metadata.get("wait_for_capital")
                 and intent.capital_request is not None):
             return self._decision(intent, state, PortfolioDecisionStatus.DEFERRED,
