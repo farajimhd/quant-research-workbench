@@ -136,7 +136,9 @@ impl OrderLedger {
         regular: bool,
         bands: Option<&Bands>,
         policy: &RiskPolicy,
+        market: crate::exposure::Check<'_>,
     ) -> Result<&OrderRecord> {
+        market.require(bracket.instrument)?;
         bracket.validate(now_ns, regular, bands, policy)?;
         let id = bracket.command_id.clone();
         if let Some(old) = self.records.get(&id) {
@@ -187,7 +189,9 @@ impl OrderLedger {
         regular: bool,
         bands: Option<&Bands>,
         policy: &RiskPolicy,
+        market: crate::exposure::Check<'_>,
     ) -> Result<()> {
+        market.require(self.record(id)?.bracket.instrument)?;
         self.record(id)?
             .bracket
             .validate(now_ns, regular, bands, policy)?;
@@ -294,31 +298,73 @@ mod tests {
     }
     #[test]
     fn ambiguous_submit_cannot_retry() {
+        let gate = ready_gate();
         let policy = RiskPolicy {
             band_buffer_ticks: 3,
             max_band_age_ns: 100,
         };
         let mut l = OrderLedger::default();
-        l.authorize(b(), 10, false, None, &policy).unwrap();
-        assert!(l.begin_submit("c", 10, false, None, &policy).is_err());
+        l.authorize(b(), 10, false, None, &policy, gate.at(10))
+            .unwrap();
+        assert!(l
+            .begin_submit("c", 10, false, None, &policy, gate.at(10))
+            .is_err());
         let hash = l.envelope_hash("c").unwrap();
         l.mark_durable("c", &hash).unwrap();
-        l.begin_submit("c", 10, false, None, &policy).unwrap();
+        l.begin_submit("c", 10, false, None, &policy, gate.at(10))
+            .unwrap();
         l.submission_unknown("c").unwrap();
-        assert!(l.begin_submit("c", 10, false, None, &policy).is_err());
+        assert!(l
+            .begin_submit("c", 10, false, None, &policy, gate.at(10))
+            .is_err());
         l.reconcile("c", "broker-1".into(), 2).unwrap();
         assert_eq!(l.records["c"].state, OrderState::PartiallyFilled);
     }
     #[test]
     fn expiration_rechecked_after_durability() {
+        let gate = ready_gate();
         let policy = RiskPolicy {
             band_buffer_ticks: 3,
             max_band_age_ns: 100,
         };
         let mut l = OrderLedger::default();
-        l.authorize(b(), 10, false, None, &policy).unwrap();
+        l.authorize(b(), 10, false, None, &policy, gate.at(10))
+            .unwrap();
         let hash = l.envelope_hash("c").unwrap();
         l.mark_durable("c", &hash).unwrap();
-        assert!(l.begin_submit("c", 1000, false, None, &policy).is_err());
+        assert!(l
+            .begin_submit("c", 1000, false, None, &policy, gate.at(10))
+            .is_err());
+    }
+    fn ready_gate() -> crate::exposure::Gate {
+        let mut g = crate::exposure::Gate::new(100, 4).unwrap();
+        g.transport(true);
+        for k in [
+            crate::events::EventKind::Trade,
+            crate::events::EventKind::Quote,
+        ] {
+            g.update(1, k, 1, true).unwrap();
+        }
+        g
+    }
+    #[test]
+    fn market_health_rechecked_between_authorization_and_submission() {
+        let mut gate = ready_gate();
+        let policy = RiskPolicy {
+            band_buffer_ticks: 3,
+            max_band_age_ns: 100,
+        };
+        let mut ledger = OrderLedger::default();
+        ledger
+            .authorize(b(), 10, false, None, &policy, gate.at(10))
+            .unwrap();
+        let hash = ledger.envelope_hash("c").unwrap();
+        ledger.mark_durable("c", &hash).unwrap();
+        gate.update(1, crate::events::EventKind::Quote, 11, false)
+            .unwrap();
+        assert!(ledger
+            .begin_submit("c", 12, false, None, &policy, gate.at(12))
+            .is_err());
+        assert_eq!(ledger.records["c"].state, OrderState::Durable);
     }
 }

@@ -18,12 +18,14 @@ struct Monitors {
     participant: LatencyMonitor,
     source_high_water: Option<(u32, u64)>,
     last_sample: Option<(u64, u64, u64, u32)>,
+    participant_present: bool,
 }
 #[derive(Debug)]
 pub struct SilenceAssessment {
     pub instrument: u64,
     pub kind: EventKind,
     pub sip_latency: Assessment,
+    pub exposure_permitted: bool,
 }
 pub struct Decoder {
     run_id: String,
@@ -69,6 +71,63 @@ impl Decoder {
     pub fn failed(&self) -> bool {
         self.failed
     }
+    pub fn decode_to_gate(
+        &mut self,
+        frame: &ReceivedFrame,
+        now: u64,
+        uncertainty: u64,
+        gate: &mut arte_core::exposure::Gate,
+        resolve: impl FnMut(&str, u64, u64) -> Result<u64>,
+    ) -> Result<Vec<AuditedEvent>> {
+        let result = self.decode(frame, now, uncertainty, resolve);
+        match result {
+            Ok(events) => {
+                for event in &events {
+                    if let Err(error) = gate.update(
+                        event.observation.key.instrument,
+                        event.observation.key.kind,
+                        now,
+                        event.exposure_permitted,
+                    ) {
+                        gate.transport(false);
+                        return Err(error);
+                    }
+                }
+                Ok(events)
+            }
+            Err(error) => {
+                gate.transport(false);
+                Err(error)
+            }
+        }
+    }
+    pub fn audit_to_gate(
+        &mut self,
+        now: u64,
+        uncertainty: u64,
+        gate: &mut arte_core::exposure::Gate,
+    ) -> Result<Vec<SilenceAssessment>> {
+        match self.audit_silence(now, uncertainty) {
+            Ok(assessments) => {
+                for assessment in &assessments {
+                    if let Err(error) = gate.update(
+                        assessment.instrument,
+                        assessment.kind,
+                        now,
+                        assessment.exposure_permitted,
+                    ) {
+                        gate.transport(false);
+                        return Err(error);
+                    }
+                }
+                Ok(assessments)
+            }
+            Err(error) => {
+                gate.transport(false);
+                Err(error)
+            }
+        }
+    }
     /// Periodic caller-driven watchdog. Reuses original receipt and source clocks;
     /// it does not fabricate an event or contribute any recovery samples.
     pub fn audit_silence(
@@ -109,6 +168,12 @@ impl Decoder {
                     instrument,
                     kind,
                     sip_latency: assessment,
+                    exposure_permitted: monitor.sip.permits_exposure()
+                        && if monitor.participant_present {
+                            monitor.participant.permits_exposure()
+                        } else {
+                            !self.require_participant
+                        },
                 });
             }
         }
@@ -213,6 +278,7 @@ impl Decoder {
                         participant: LatencyMonitor::new(self.policy.clone())?,
                         source_high_water: None,
                         last_sample: None,
+                        participant_present: false,
                     }
                 };
                 slot.insert(monitors);
@@ -257,6 +323,7 @@ impl Decoder {
                     .saturating_sub(u64::from(t.precision_ns) - 1);
                 assessment
             });
+            monitors.participant_present = participant_latency.is_some();
             let exposure_permitted = monitors.sip.permits_exposure()
                 && match participant_latency {
                     Some(_) => monitors.participant.permits_exposure(),
@@ -391,5 +458,24 @@ mod tests {
             .unwrap()
             .iter()
             .all(|a| a.sip_latency.notify));
+    }
+    #[test]
+    fn normalized_and_silence_assessments_drive_exposure_gate() {
+        let mut d = decoder(false);
+        let mut gate = arte_core::exposure::Gate::new(20_000_000, 8).unwrap();
+        gate.transport(true);
+        d.decode_to_gate(&frame(), 100, 0, &mut gate, |_, _, _| Ok(1))
+            .unwrap();
+        gate.at(100).require(1).unwrap();
+        d.audit_to_gate(10_000_100, 0, &mut gate).unwrap();
+        assert!(gate.at(10_000_100).require(1).is_err());
+        let mut required = decoder(true);
+        let mut gate = arte_core::exposure::Gate::new(20_000_000, 8).unwrap();
+        gate.transport(true);
+        required
+            .decode_to_gate(&frame(), 100, 0, &mut gate, |_, _, _| Ok(1))
+            .unwrap();
+        required.audit_to_gate(101, 0, &mut gate).unwrap();
+        assert!(gate.at(101).require(1).is_err());
     }
 }

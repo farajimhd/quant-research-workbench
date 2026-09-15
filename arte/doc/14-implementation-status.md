@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 126 in-process Rust tests passed (109 core and 17 adapter tests).
+- 129 in-process Rust tests passed (111 core and 18 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -320,6 +320,17 @@ and repeats unresolved alerts without manufacturing events. Processing clocks ca
 rewind. Three new offline tests cover repeated samples, delayed duplicates and
 silence alert cadence. The periodic caller, observer delivery and trading gate still
 need event-loop integration. Source identity assumptions retain their overlap gate.
+
+The order ledger now requires a borrowed market-readiness check at both bracket
+authorization and submission. Both trade and quote lanes must have fresh, permitted
+evidence. Disconnect clears that evidence. Reconnection alone cannot restore it.
+The decoder feeds normalized-event and silence assessments into the same gate;
+decode or gate-update failures clear readiness. Missing required participant clocks
+remain blocking during silence audits. Three offline tests cover channel readiness,
+disconnect invalidation, submission rechecks and decoder-to-gate behavior.
+The live loop must still bind transport health, schedule audits and use the current
+monotonic clock for each ledger check. This gate does not replace coverage, seed,
+broker reconciliation, strategy approval or bracket validation.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.
