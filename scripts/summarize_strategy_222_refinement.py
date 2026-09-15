@@ -5,6 +5,7 @@ import sys
 sys.dont_write_bytecode=True
 import argparse
 import json
+import math
 from pathlib import Path
 import sqlite3
 from datetime import datetime
@@ -57,6 +58,78 @@ def episodes(path):
         connection.close()
 
 
+def terminal_account(path, actual_episodes, *, not_before=None, initial_cash=10000.):
+    """Reconcile terminal broker marks to all fills, including partial exits."""
+    wal=Path(str(path)+'-wal')
+    if wal.exists() and wal.stat().st_size:
+        raise ValueError(f'Account marks require a closed journal: {path}')
+    connection=sqlite3.connect(path.as_uri()+'?mode=ro&immutable=1',uri=True)
+    try:
+        snapshot=connection.execute("select event_time,payload_json from journal where category='snapshot' and entity_type='portfolio' order by sequence desc limit 1").fetchone()
+        if snapshot is None:
+            return dict(status='unavailable',reason='terminal_portfolio_snapshot_missing')
+        stamp,raw=snapshot
+        at=datetime.fromisoformat(stamp)
+        required=[datetime.fromisoformat(f['time']) for e in actual_episodes for f in e['fills']]
+        if not_before:required.append(datetime.fromisoformat(not_before))
+        if at.tzinfo is None or any(t.tzinfo is None for t in required):
+            raise ValueError('Account reconciliation requires timezone-aware timestamps')
+        if required and at<max(required):
+            return dict(status='unavailable',reason='portfolio_snapshot_precedes_run_or_fills',time=stamp)
+        account=json.loads(raw)
+        positions=[json.loads(row[0]) for row in connection.execute(
+            "select payload_json from journal where category='snapshot' and entity_type='position' and event_time=? order by sequence",(stamp,))]
+    finally:
+        connection.close()
+
+    def number(value):
+        if type(value) not in (int,float) or not math.isfinite(value):
+            raise ValueError('Invalid numeric terminal account evidence')
+        return float(value)
+
+    for key in ('totalcashvalue','netliquidation'):
+        if account[key].get('currency')!='USD':
+            raise ValueError('Strategy 222 account reconciliation requires USD marks')
+    cash=number(account['totalcashvalue']['amount'])
+    equity=number(account['netliquidation']['amount'])
+    market_value=0.;marked_quantities={}
+    for position in positions:
+        if position.get('currency')!='USD':
+            raise ValueError('Strategy 222 position reconciliation requires USD marks')
+        quantity=number(position['position']);value=number(position['mktValue'])
+        price=number(position['mktPrice'])
+        symbol=position['contractDesc']
+        if quantity<0 or value<0 or price<0:
+            raise ValueError('Strategy 222 reconciliation expects long positions')
+        if not math.isclose(value,quantity*price,rel_tol=0,abs_tol=1e-5):
+            raise ValueError('Terminal position value does not match its quantity and mark')
+        market_value+=value
+        if quantity:
+            if symbol in marked_quantities:
+                raise ValueError('Duplicate terminal position mark')
+            marked_quantities[symbol]=quantity
+    open_episodes=[e for e in actual_episodes if 'closed_at' not in e]
+    expected_quantities={e['symbol']:number(e['quantity']) for e in open_episodes}
+    if (set(expected_quantities)!=set(marked_quantities) or any(
+            not math.isclose(q,marked_quantities[s],rel_tol=0,abs_tol=1e-8)
+            for s,q in expected_quantities.items())):
+        raise ValueError('Terminal position quantities do not reconcile to fills')
+    closed_net=sum(e['net'] for e in actual_episodes if 'closed_at' in e)
+    open_cash_flow=sum(e['sell']-e['buy']-e['fees'] for e in open_episodes)
+    expected_cash=initial_cash+closed_net+open_cash_flow
+    expected_equity=expected_cash+market_value
+    if not math.isclose(cash,expected_cash,rel_tol=0,abs_tol=1e-5):
+        raise ValueError('Terminal cash does not reconcile to fills and fees')
+    if not math.isclose(equity,expected_equity,rel_tol=0,abs_tol=1e-5):
+        raise ValueError('Terminal equity does not reconcile to cash and position marks')
+    return dict(status='verified',time=stamp,currency='USD',cash=cash,equity=equity,
+        position_market_value=market_value,closed_net=closed_net,
+        open_episode_marked_net=open_cash_flow+market_value,
+        open_episode_fees=sum(e['fees'] for e in open_episodes),
+        marked_gain=equity-initial_cash,reconciliation_error=equity-expected_equity,
+        positions=positions)
+
+
 def summarize(root):
     root=root.resolve();root.relative_to(Path('D:/TradingML/runtimes').resolve())
     trials=[];pending=[]
@@ -77,19 +150,27 @@ def summarize(root):
                 experiment=str(manifest.parent.relative_to(root)),**data,
                 closed_count=len(closed),open_count=len(data['episodes'])-len(closed),
                 wins=sum(e['net']>0 for e in closed),net_closed=sum(e['net'] for e in closed))
+            row['account_mark']=terminal_account(directory/'journal.sqlite3',data['episodes'],
+                not_before=trial.get('current_time'))
             trials.append(row)
     (root/'comparison.json').write_text(json.dumps(trials,indent=2),encoding='utf-8')
     (root/'comparison-pending.json').write_text(json.dumps(dict(awaiting_journal_close=pending),indent=2),encoding='utf-8')
     lines=['# Strategy 222 replay refinement','',
-        'Same-day development evidence; hindsight selects evaluation windows only. Each run starts at 04:00 with $10,000. Single-symbol rows exclude portfolio competition; PORTFOLIO rows share capital across their listed tickers. Do not sum isolated rows as portfolio profit. Net includes simulated fill commissions; open positions are excluded from closed net.', '',
-        '| Experiment | Symbol | Variant | Entries | Closed wins | Open | Closed net | First entry (ET) |',
-        '|---|---|---|---:|---:|---:|---:|---|']
+        'Same-day development evidence; hindsight selects evaluation windows only. Each run starts at 04:00 with $10,000. Single-symbol rows exclude portfolio competition; PORTFOLIO rows share capital across their listed tickers. Do not sum isolated rows as portfolio profit. Closed net includes simulated commissions and excludes open episodes. Marked gain reconciles all fill cash flows and terminal broker position marks; open positions are not liquidated and future exit costs are excluded.', '',
+        '| Experiment | Symbol | Variant | Entries | Closed wins | Open | Closed net | Marked gain | First entry (ET) |',
+        '|---|---|---|---:|---:|---:|---:|---:|---|']
     if pending:lines.insert(4,f"{len(pending)} terminal runs still have an open journal and are excluded until the writer closes.\n")
+    mark_notices=[]
     for row in trials:
         first=row['episodes'][0] if row['episodes'] else None
         stamp=datetime.fromisoformat(first['opened_at']).astimezone(ZoneInfo('America/New_York')).strftime('%H:%M:%S') if first else 'none'
-        lines.append(f"| {row['experiment']} | {row['symbol']} | {row['name']} | {len(row['episodes'])} | {row['wins']}/{row['closed_count']} | {row['open_count']} | ${row['net_closed']:.2f} | {stamp} |")
-        print(row['symbol'],row['name'],f"entries={len(row['episodes'])} wins={row['wins']}/{row['closed_count']} open={row['open_count']} net=${row['net_closed']:.2f} first={stamp}",flush=True)
+        mark=row['account_mark']
+        marked=f"${mark['marked_gain']:.2f}" if mark['status']=='verified' else 'unavailable'
+        lines.append(f"| {row['experiment']} | {row['symbol']} | {row['name']} | {len(row['episodes'])} | {row['wins']}/{row['closed_count']} | {row['open_count']} | ${row['net_closed']:.2f} | {marked} | {stamp} |")
+        if mark['status']!='verified':
+            mark_notices.append(f"Account marks unavailable for {row['run_id']}: {mark['reason']}.")
+        print(row['symbol'],row['name'],f"entries={len(row['episodes'])} wins={row['wins']}/{row['closed_count']} open={row['open_count']} closed_net=${row['net_closed']:.2f} marked_gain={marked} first={stamp}",flush=True)
+    if mark_notices:lines.extend(['',*mark_notices])
     (root/'comparison.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
     compare_positions(root,trials)
 
