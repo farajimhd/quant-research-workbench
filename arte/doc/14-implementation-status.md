@@ -6,6 +6,23 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Completed-candle quote-policy evidence
+
+Entry frames built from shared market features now borrow the exact policy hash
+from their quote book. The completed-candle candidate runtime rejects missing or
+malformed policy hashes before preparing journal work. The policy identity is part
+of the frame's serialized evidence and the candidate-completed-v2 evidence hash.
+Changing only the policy therefore changes decision input evidence.
+
+Existing offline tests now verify the feature-to-frame policy binding, evidence
+hash sensitivity and rejection before journal preparation. All 309 Rust tests,
+formatting, Clippy and copied-source hash checks pass. No services or database calls
+ran. Source-oracle parity was not rerun.
+
+This binds completed-candle evidence, not the entire run configuration. Intrabar
+evidence, run-manifest policy pins and evidence-block persistence still need their
+corresponding integration. A syntactically valid hash is not source certification.
+
 ## Protection amendment validation
 
 The shared session authority now validates replacement stop/target pairs. It checks

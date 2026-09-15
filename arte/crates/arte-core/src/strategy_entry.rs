@@ -51,6 +51,7 @@ pub struct Admission {
 }
 #[derive(Serialize)]
 pub struct Frame<'a> {
+    pub quote_policy_hash: &'a str,
     pub bar: &'a Bar,
     pub previous: Option<&'a Bar>,
     pub bid: f64,
@@ -491,6 +492,7 @@ pub(crate) mod tests {
         let recovery = RecoveryState::default();
         let rp = RecoveryPolicy::default();
         let mut f = Frame {
+            quote_policy_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             bar: &b,
             previous: Some(&previous),
             bid: 10.39,

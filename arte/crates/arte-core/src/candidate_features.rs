@@ -133,7 +133,7 @@ impl State {
         boundary: &Boundary<'_>,
         evaluated_at_ns: u64,
         market: &'a Runtime,
-        quotes: &crate::quote_state::Book,
+        quotes: &'a crate::quote_state::Book,
         context: EntryContext<'a>,
     ) -> Result<crate::strategy_entry::Frame<'a>> {
         let snapshot = self
@@ -221,6 +221,7 @@ impl State {
             return Err(Error::Conflict("future prior entry levels".into()));
         }
         Ok(crate::strategy_entry::Frame {
+            quote_policy_hash: quotes.policy_hash()?,
             bar,
             previous: bars
                 .len()

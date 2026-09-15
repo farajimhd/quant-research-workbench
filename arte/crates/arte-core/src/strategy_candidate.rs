@@ -687,6 +687,23 @@ mod tests {
                 f.recovery_policy
             )
             .is_err());
+            let unpinned_frame = entry::Frame {
+                quote_policy_hash: "",
+                ..*f
+            };
+            assert!(runtime
+                .completed(
+                    input.clone(),
+                    &safety,
+                    &unpinned_frame,
+                    &flat,
+                    &gates,
+                    &policy,
+                    &intrabar_policy,
+                    &features
+                )
+                .is_err());
+            assert!(runtime.pending_batch().is_none());
             let decision = runtime
                 .completed(
                     input.clone(),

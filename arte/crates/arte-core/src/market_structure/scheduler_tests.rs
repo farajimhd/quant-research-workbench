@@ -698,6 +698,15 @@ fn check_entry_frame(
     assert_eq!(frame.vwap, Some(15.));
     assert_eq!(frame.bid, 19.99);
     assert_eq!(frame.ask, 20.01);
+    assert_eq!(frame.quote_policy_hash, quotes.policy_hash().unwrap());
+    let changed_policy_frame = crate::strategy_entry::Frame {
+        quote_policy_hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        ..frame
+    };
+    assert_ne!(
+        crate::content_hash(&frame).unwrap(),
+        crate::content_hash(&changed_policy_frame).unwrap()
+    );
     assert!(!frame.fresh);
     assert!(!frame.admission.permissions);
     assert!(!frame.admission.tradable);

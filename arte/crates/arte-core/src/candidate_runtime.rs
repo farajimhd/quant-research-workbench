@@ -125,9 +125,19 @@ impl Runtime {
                 "candidate completed frame contains future evidence".into(),
             ));
         }
+        if frame.quote_policy_hash.len() != 64
+            || !frame
+                .quote_policy_hash
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(Error::Invalid(
+                "candidate quote eligibility policy is not pinned".into(),
+            ));
+        }
         let stale = input.evaluated_at_ns - frame.bar.end_ns >= policy.maximum_completed_bar_age_ns;
         let evaluated_at_ns = input.evaluated_at_ns;
-        input.feature_hash = content_hash(&("candidate-completed-v1", frame, broker, gates))?;
+        input.feature_hash = content_hash(&("candidate-completed-v2", frame, broker, gates))?;
         let evidence = input.feature_hash.clone();
         self.transaction.prepare_observed(
             input,

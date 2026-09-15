@@ -18,6 +18,12 @@ pub struct Book {
     policy: Option<std::sync::Arc<eligibility::Pinned>>,
 }
 impl Book {
+    pub fn policy_hash(&self) -> Result<&str> {
+        self.policy
+            .as_ref()
+            .map(|policy| policy.hash())
+            .ok_or_else(|| Error::Unready("quote eligibility policy missing".into()))
+    }
     pub fn new(scope: Scope) -> Result<Self> {
         if scope.provider == 0
             || scope.instrument == 0
