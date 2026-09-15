@@ -534,3 +534,22 @@ Next: full strategy entry/position/exit lifecycle and its effective configuratio
 alongside streaming/partition source parity and batched seed persistence.
 Do not substitute the current fixed-noise
 extractor for the full historical MLE seed pipeline.
+
+The selected candidate now has a typed shared runtime binding for completed bars
+and intrabar acquisition updates. It calls the same exit-first dispatcher and
+prepare/journal/commit transaction in Live, Paper and Backtest. Scope pins a hash
+of entry, add, protection, phase/failure, intrabar and recovery policies. The binding
+hashes supplied causal features and reconciled position evidence itself. It rejects
+configuration drift and disagreement between safety and position quantities or
+pending-entry state. Reconciliation occurs before exit arbitration. No broker
+capability exists in this component; outputs remain intents awaiting journal
+readback and downstream OMS authorization.
+
+The existing composed-candidate test now uses this binding for entry and intrabar
+cancellation. It checks unchanged committed state before acknowledgment, exact retry
+identity, policy drift and conflicting account evidence. All 171 offline tests pass.
+This is not full source parity or complete intrabar position management. Production
+admission, global safety producers, complete effective configuration export, event-loop
+routing, crash recovery and OMS consumption remain open. Full borrowed feature arrays
+are currently serialized for hashing; measured incremental fingerprinting is still
+needed for the low-latency path. No network or service test ran.

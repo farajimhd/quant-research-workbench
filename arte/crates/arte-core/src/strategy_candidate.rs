@@ -30,10 +30,12 @@ pub struct State {
     last_intrabar_ns: u64,
     encounter_cancel_notified: bool,
 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcquisitionPolicy {
     pub maximum_macd_age_ns: u64,
     pub confirmation_lifetime_ns: u64,
 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcquisitionObservation {
     pub at_ns: u64,
     pub price: f64,
@@ -53,6 +55,7 @@ pub struct AcquisitionEvaluation {
     pub continue_position_management: bool,
     pub reasons: Vec<String>,
 }
+#[derive(Serialize)]
 pub struct Policy<'a> {
     pub entry: &'a entry::Policy,
     pub adds: &'a adds::Policy,
@@ -562,7 +565,11 @@ mod tests {
                 target: None,
                 pending_entry: false,
             };
-            let mut runtime = crate::strategy_transaction::Runtime::new(
+            let intrabar_policy = AcquisitionPolicy {
+                maximum_macd_age_ns: S,
+                confirmation_lifetime_ns: 10 * S,
+            };
+            let mut runtime = crate::candidate_runtime::Runtime::new(
                 crate::strategy_dispatch::Scope {
                     run_id: "r".into(),
                     mode: Mode::Backtest,
@@ -570,7 +577,12 @@ mod tests {
                     strategy_instance: "v7".into(),
                     instrument: 1,
                     code_hash: "pinned".into(),
-                    config_hash: "effective".into(),
+                    config_hash: crate::candidate_runtime::configuration_hash(
+                        &policy,
+                        &intrabar_policy,
+                        f.recovery_policy,
+                    )
+                    .unwrap(),
                 },
                 State::default(),
                 1024 * 1024,
@@ -601,15 +613,100 @@ mod tests {
                 feature_hash: "f".into(),
             };
             let decision = runtime
-                .prepare(input, &safety, "proof".into(), |state| {
-                    Ok(state.completed(f, &flat, &gates, &policy)?.actions)
-                })
+                .completed(
+                    input.clone(),
+                    &safety,
+                    f,
+                    &flat,
+                    &gates,
+                    &policy,
+                    &intrabar_policy,
+                )
                 .unwrap();
             assert!(matches!(decision.actions[0], Action::Enter(_)));
-            assert!(runtime.committed_state().active.is_none());
+            assert!(runtime.state().active.is_none());
+            let retried = runtime
+                .completed(
+                    input.clone(),
+                    &safety,
+                    f,
+                    &flat,
+                    &gates,
+                    &policy,
+                    &intrabar_policy,
+                )
+                .unwrap();
+            assert_eq!(retried.decision_id, decision.decision_id);
+            let mut changed = intrabar_policy.clone();
+            changed.confirmation_lifetime_ns += 1;
+            assert!(runtime
+                .completed(input.clone(), &safety, f, &flat, &gates, &policy, &changed)
+                .is_err());
+            let mut conflicting_safety = safety.clone();
+            conflicting_safety.pending_entry = true;
+            assert!(runtime
+                .completed(
+                    input.clone(),
+                    &conflicting_safety,
+                    f,
+                    &flat,
+                    &gates,
+                    &policy,
+                    &intrabar_policy
+                )
+                .is_err());
             let records = runtime.pending_batch().unwrap().records().to_vec();
             runtime.acknowledge(&records).unwrap();
-            let mut state = runtime.committed_state().clone();
+            let mut state = runtime.state().clone();
+            let mut live_input = input.clone();
+            live_input.event_id = "intrabar".into();
+            live_input.source_sequence = 2;
+            live_input.event_time_ns += 1;
+            live_input.available_at_ns += 1;
+            live_input.evaluated_at_ns += 1;
+            let mut pending_broker = flat.clone();
+            pending_broker.revision = 2;
+            pending_broker.at_ns += 1;
+            pending_broker.pending_entry = true;
+            let mut pending_safety = safety.clone();
+            pending_safety.pending_entry = true;
+            let mut observation = acquisition(live_input.evaluated_at_ns);
+            observation.encounter_blocked = true;
+            let cancellation = runtime
+                .intrabar(
+                    live_input.clone(),
+                    &pending_safety,
+                    &observation,
+                    &pending_broker,
+                    f.bar.open.max(f.bar.close),
+                    &policy,
+                    &intrabar_policy,
+                    f.recovery_policy,
+                )
+                .unwrap();
+            assert!(matches!(
+                cancellation.actions[0],
+                Action::CancelEntry { .. }
+            ));
+            assert_eq!(
+                content_hash(runtime.state()).unwrap(),
+                content_hash(&state).unwrap()
+            );
+            let retried = runtime
+                .intrabar(
+                    live_input,
+                    &pending_safety,
+                    &observation,
+                    &pending_broker,
+                    f.bar.open.max(f.bar.close),
+                    &policy,
+                    &intrabar_policy,
+                    f.recovery_policy,
+                )
+                .unwrap();
+            assert_eq!(retried.decision_id, cancellation.decision_id);
+            let rows = runtime.pending_batch().unwrap().records().to_vec();
+            runtime.acknowledge(&rows).unwrap();
             let proposal = state.active.as_ref().unwrap().entry.clone();
             let target = proposal
                 .target_selection

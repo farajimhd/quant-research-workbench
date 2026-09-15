@@ -35,7 +35,7 @@ pub struct Policy {
     pub targets: TargetPolicy,
 }
 /// Produced by admission, not by chart state. Engine must bind this to the event.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Admission {
     pub at_ns: u64,
     pub permissions: bool,
@@ -49,6 +49,7 @@ pub struct Admission {
     pub detector_fingerprint: String,
     pub activity_block: Option<String>,
 }
+#[derive(Serialize)]
 pub struct Frame<'a> {
     pub bar: &'a Bar,
     pub previous: Option<&'a Bar>,

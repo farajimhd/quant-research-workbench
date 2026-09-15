@@ -26,7 +26,7 @@ pub struct State {
     pending: BTreeMap<String, TargetLevel>,
     last_bar_end_ns: u64,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Gates {
     pub at_ns: u64,
     pub detector_fresh: bool,

@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod acquisition;
+pub mod candidate_runtime;
 pub mod config;
 pub mod coverage;
 pub mod event_storage;
