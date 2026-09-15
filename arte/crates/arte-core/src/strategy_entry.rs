@@ -120,10 +120,16 @@ fn wait(reason: &str, evidence: Evidence) -> Result<Evaluation> {
     })
 }
 pub fn evaluate(f: &Frame<'_>, p: &Policy) -> Result<Evaluation> {
+    evaluate_at(f, p, f.bar.end_ns)
+}
+/// Geometry and detector evidence remain at candle close. Expiring admission and
+/// MACD evidence are checked at the actual decision clock, never at a stale close.
+pub fn evaluate_at(f: &Frame<'_>, p: &Policy, evaluated_at_ns: u64) -> Result<Evaluation> {
     let b = f.bar;
     let now = b.end_ns;
     let a = f.admission;
-    if !valid_bar(b)
+    if evaluated_at_ns < now
+        || !valid_bar(b)
         || b.end_ns.checked_sub(b.start_ns) != Some(1_000_000_000)
         || ![f.bid, f.ask, p.tick].into_iter().all(positive)
         || f.bid > f.ask
@@ -187,14 +193,17 @@ pub fn evaluate(f: &Frame<'_>, p: &Policy) -> Result<Evaluation> {
     if !a.session_open {
         return wait("outside_entry_session", e);
     }
-    if !f.fresh || !a.macd_positive || a.macd_at_ns.is_none_or(|v| now - v > p.maximum_macd_age_ns)
+    if !f.fresh
+        || !a.macd_positive
+        || a.macd_at_ns
+            .is_none_or(|v| evaluated_at_ns - v > p.maximum_macd_age_ns)
     {
         return wait("waiting_for_completed_1s_and_bullish_5s_macd", e);
     }
     if let Some(reason) = &a.regular_block {
         return wait(reason, e);
     }
-    if !a.tradable || now - a.at_ns > p.maximum_admission_age_ns {
+    if !a.tradable || evaluated_at_ns - a.at_ns > p.maximum_admission_age_ns {
         return wait("tradability_incomplete", e);
     }
     if a.detector_at_ns != Some(now) || a.detector_fingerprint.is_empty() {
@@ -529,6 +538,30 @@ pub(crate) mod tests {
         };
         edit(&mut f, &mut p);
         evaluate(&f, &p)
+    }
+    #[test]
+    fn delayed_evaluation_expires_admission_and_macd_without_restamping_geometry() {
+        scenario(|f, p| {
+            let at = f.bar.end_ns;
+            assert!(evaluate_at(f, p, at - 1).is_err());
+            let immediate = evaluate_at(f, p, at).unwrap();
+            assert!(immediate.proposal.is_some());
+            let boundary = evaluate_at(f, p, at + S).unwrap();
+            assert!(boundary.proposal.is_some());
+            assert_eq!(boundary.evidence.at_ns, at);
+            let expired = evaluate_at(f, p, at + S + 1).unwrap();
+            assert!(expired.proposal.is_none());
+            assert_eq!(
+                expired.reason,
+                "waiting_for_completed_1s_and_bullish_5s_macd"
+            );
+            p.maximum_macd_age_ns = 2 * S;
+            let admission_expired = evaluate_at(f, p, at + S + 1).unwrap();
+            assert!(admission_expired.proposal.is_none());
+            assert_eq!(admission_expired.reason, "tradability_incomplete");
+            assert_eq!(admission_expired.evidence.at_ns, at);
+        })
+        .unwrap();
     }
     #[test]
     fn actual_entry_composes_range_support_recovery_and_target() {

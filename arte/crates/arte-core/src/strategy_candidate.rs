@@ -305,7 +305,7 @@ impl State {
                     recovery: &next.recovery,
                     ..*f
                 };
-                let evaluated = entry::evaluate(&frame, p.entry)?;
+                let evaluated = entry::evaluate_at(&frame, p.entry, evaluated_at_ns)?;
                 result.entry_evidence = Some(evaluated.evidence);
                 if let Some(proposal) = evaluated.proposal {
                     let adds =
@@ -718,6 +718,45 @@ mod tests {
                 )
                 .is_err());
             assert!(other_instrument.pending_batch().is_none());
+            // The candle itself is still fresh. Its admission operands can expire
+            // independently during the delay before an account evaluates it.
+            for stale_macd in [false, true] {
+                let mut delayed = crate::candidate_runtime::Runtime::new(
+                    decision.scope.clone(),
+                    State::default(),
+                    1024 * 1024,
+                )
+                .unwrap();
+                let mut admission = f.admission.clone();
+                if stale_macd {
+                    admission.macd_at_ns = Some(f.bar.end_ns - policy.entry.maximum_macd_age_ns);
+                } else {
+                    admission.at_ns = f.bar.end_ns - policy.entry.maximum_admission_age_ns;
+                }
+                let frame = entry::Frame {
+                    admission: &admission,
+                    ..*f
+                };
+                let mut delayed_input = input.clone();
+                delayed_input.evaluated_at_ns += 1;
+                let rejected = delayed
+                    .completed(
+                        delayed_input,
+                        &safety,
+                        &frame,
+                        &flat,
+                        &gates,
+                        &policy,
+                        &intrabar_policy,
+                        &features,
+                    )
+                    .unwrap();
+                assert!(matches!(&rejected.actions[0], Action::Wait { reason }
+                    if reason == if stale_macd { "waiting_for_completed_1s_and_bullish_5s_macd" }
+                    else { "tradability_incomplete" }));
+                assert!(delayed.state().active.is_none());
+                assert!(delayed.pending_batch().is_some());
+            }
             for future_account in [false, true] {
                 let mut delayed = crate::candidate_runtime::Runtime::new(
                     decision.scope.clone(),

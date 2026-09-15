@@ -6,6 +6,24 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Entry operand expiry at the actual decision clock
+
+Inspection found that completed-entry admission and MACD age used candle close,
+even when the account evaluated later. The entry evaluator now accepts an explicit
+evaluation timestamp. Candidate evaluation passes its actual account clock.
+Admission and MACD expiry use that clock. Structural geometry, detector identity,
+setup history and evidence coordinates remain tied to the completed candle.
+Evaluation before candle close is rejected. The immediate-close helper remains
+available for deterministic algorithm tests; runtime callers use `evaluate_at`.
+
+All 236 offline Rust tests, formatting, Clippy and frozen-source hashes pass.
+New checks cover expiry at and just after the configured age boundary. The composed
+candidate test also covers an unexpired candle with independently expired admission
+or MACD evidence, producing a journaled wait instead of an entry. No services ran.
+
+This fixes operand age validation. It does not implement admission producers,
+certify external permission evidence, or complete live/backtest orchestration.
+
 ## Concurrent account journal commit
 
 The journal adapter now commits independent prepared account decisions with bounded
