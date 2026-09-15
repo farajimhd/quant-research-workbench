@@ -4,6 +4,7 @@
 pub mod config;
 pub mod coverage;
 pub mod events;
+pub mod journal;
 pub mod latency;
 pub mod market;
 pub mod orders;

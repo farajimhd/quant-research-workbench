@@ -76,7 +76,7 @@ retrieved from a service. Reference snapshots are never loaded by production cod
 
 Checks executed for this slice:
 
-- 104 in-process Rust tests passed (97 core and 7 adapter tests).
+- 106 in-process Rust tests passed (99 core and 7 adapter tests).
 - Peak prominence matched direct scanning over all 2,187 seven-sample ternary sequences.
 - Frozen-source extractor comparison passed 70 cases and 374 selected/rejected levels.
 - Student-t fit comparison passed 87 cases. Maximum observed difference: 0.001406 ticks.
@@ -239,6 +239,17 @@ are cancelled without a zero-quantity exit. Same-sequence retries require identi
 causal and safety evidence. Four offline tests cover priority, phase handling,
 pending-entry cancellation and cross-mode schema/retry behavior. This is an
 arbitration layer, not the full runtime loop or durable journal writer.
+
+Decision journaling now validates canonical envelopes and bounded contiguous
+batches. The ClickHouse adapter checks predecessor availability, rejects conflicting
+scope/sequence slots, inserts missing rows and verifies readback. The source schema
+stores a scope hash, decision sequence and compressed canonical payload. It does
+not create a market-event ordinal. Batches are limited to 256 records and 8 MiB.
+Two offline tests cover identical retries, missing records, altered evidence and
+sequence gaps. The migration has not been applied; adapter methods have not run.
+Exclusive writer ownership, durable order-submission gating and power-loss
+durability acceptance remain required. Insert/readback acknowledgment alone does
+not prove power-loss durability.
 
 Next: full strategy entry/position/exit lifecycle and its effective configuration,
 alongside streaming/partition source parity and batched seed persistence.

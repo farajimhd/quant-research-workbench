@@ -25,6 +25,96 @@ pub struct ClickHouse {
     password: String,
 }
 impl ClickHouse {
+    /// Caller must hold exclusive journal scope ownership. This acknowledges
+    /// synchronous insert plus readback, NOT verified power-loss durability.
+    pub async fn append_decisions(&self, batch: &arte_core::journal::Batch) -> Result<()> {
+        let records = batch.records();
+        let first = &records[0];
+        let last = records.last().unwrap().sequence;
+        self.verify_storage("decision_journal_v1").await?;
+        if first.sequence > 1 {
+            let previous = self
+                .read_decisions(&first.scope_hash, first.sequence - 1, first.sequence - 1)
+                .await?;
+            if previous.is_empty() {
+                return Err(Error::Unready("journal predecessor missing".into()));
+            }
+            for row in &previous {
+                row.decode()?;
+            }
+            if previous
+                .iter()
+                .any(|r| r.payload_json != previous[0].payload_json)
+            {
+                return Err(Error::Conflict("journal predecessor conflict".into()));
+            }
+        }
+        let existing = self
+            .read_decisions(&first.scope_hash, first.sequence, last)
+            .await?;
+        for row in &existing {
+            row.decode()?;
+            let index = (row.sequence - first.sequence) as usize;
+            if records[index].payload_json != row.payload_json {
+                return Err(Error::Conflict(
+                    "journal slot already has a different decision".into(),
+                ));
+            }
+        }
+        let rows: Vec<Value> = records
+            .iter()
+            .filter(|r| !existing.iter().any(|e| e.sequence == r.sequence))
+            .map(|r| serde_json::to_value(r).map_err(|e| Error::Serialization(e.to_string())))
+            .collect::<Result<_>>()?;
+        self.insert("decision_journal_v1", &rows).await?;
+        batch.verify_readback(
+            &self
+                .read_decisions(&first.scope_hash, first.sequence, last)
+                .await?,
+        )
+    }
+    pub async fn read_decisions(
+        &self,
+        scope_hash: &str,
+        first: u64,
+        last: u64,
+    ) -> Result<Vec<arte_core::journal::Record>> {
+        if scope_hash.len() != 64
+            || !scope_hash.bytes().all(|b| b.is_ascii_hexdigit())
+            || first == 0
+            || last < first
+            || last - first >= arte_core::journal::MAX_BATCH as u64
+        {
+            return Err(Error::Invalid("invalid bounded journal cursor".into()));
+        }
+        let query=format!("SELECT DISTINCT scope_hash, sequence, payload_json FROM {}.decision_journal_v1 WHERE scope_hash='{scope_hash}' AND sequence BETWEEN {first} AND {last} ORDER BY sequence LIMIT {} FORMAT JSONEachRow",self.database,2*arte_core::journal::MAX_BATCH+1);
+        let body = self.request(&query, String::new()).await?;
+        let mut records = Vec::new();
+        for line in body.lines().filter(|l| !l.trim().is_empty()) {
+            let mut value: Value =
+                serde_json::from_str(line).map_err(|e| Error::Serialization(e.to_string()))?;
+            if let Some(s) = value.get("sequence").and_then(Value::as_str) {
+                value["sequence"] = Value::from(
+                    s.parse::<u64>()
+                        .map_err(|_| Error::Invalid("invalid journal sequence".into()))?,
+                );
+            }
+            let record: arte_core::journal::Record =
+                serde_json::from_value(value).map_err(|e| Error::Serialization(e.to_string()))?;
+            if record.scope_hash != scope_hash || record.sequence < first || record.sequence > last
+            {
+                return Err(Error::Conflict("journal response escaped cursor".into()));
+            }
+            record.decode()?;
+            records.push(record);
+        }
+        if records.len() > 2 * arte_core::journal::MAX_BATCH {
+            return Err(Error::Capacity(
+                "journal conflicts exceed bounded read".into(),
+            ));
+        }
+        Ok(records)
+    }
     pub fn new(url: &str, database: &str, user: String, password: String) -> Result<Self> {
         identifier(database)?;
         if matches!(database, "default" | "q_live" | "market_sip_compact") {
