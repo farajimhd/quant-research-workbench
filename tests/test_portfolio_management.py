@@ -213,6 +213,23 @@ class PortfolioManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum(r.reserved_notional for r in engine.reservations.values() if r.status=='reserved'),0)
         self.assertEqual(next(iter(engine.allocations.values())).quantity,2750)
 
+    async def test_small_initial_tranche_preserves_normal_add_budget(self):
+        policy=PortfolioPolicy(maximum_position_fraction=1.,maximum_ticker_fraction=1.,
+            maximum_planned_risk_fraction=.5,maximum_open_risk_fraction=.5,entry_fee_buffer_bps=0.)
+        engine=self.engine([PortfolioAccountProfile('cash','C1','replay','simulated',policy)])
+        engine.synchronize_snapshot('C1',summary=summary('C1',equity=10000,available=10000),
+            ledger=ledger('C1',cash=10000),positions=[])
+        base=intent('small-first',price=3.,invalidation=2.99)
+        request=replace(base,capital_request=CapitalRequest(mode='mandate_fraction',value=.9),
+            metadata={**base.metadata,'entry_completion_quote':'ask',
+                'cash_tranche':dict(key='small-position',index=0,count=3,initial_fraction=1/3)})
+        _,approved=await engine.approve(request,account_id='C1')
+        self.assertEqual(approved.quantity,333)
+        hold=next(r for r in engine.reservations.values() if r.cash_tranche_key)
+        self.assertEqual(hold.cash_tranche_size,1000)
+        self.assertAlmostEqual(hold.reserved_notional,6000)
+        self.assertAlmostEqual(sum(r.reserved_notional for r in engine.reservations.values()),6999)
+
     async def test_unfilled_initial_cash_tranche_releases_future_budget(self):
         profile=PortfolioAccountProfile('cash','C1','replay','simulated',PortfolioPolicy())
         engine=self.engine([profile])

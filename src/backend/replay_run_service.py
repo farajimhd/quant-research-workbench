@@ -1814,6 +1814,7 @@ class ReplayRunController:
             and isinstance(state.get("identity"), dict)
             and isinstance(state.get("runtime"), dict)
             and _checkpoint_has_strategy_observations(state)
+            and dict(dict(state.get("controller") or {}).get("historical_liquidity") or {}).get("contract") == "historical-liquidity-1"
         )
         projection = {
             "status": "available",
@@ -1841,6 +1842,7 @@ class ReplayRunController:
         )
 
     def _restart_checkpoint_state(self, *, reference_authority=False) -> dict[str, Any]:
+        from .historical_liquidity_checkpoint import checkpoint as liquidity_checkpoint
         if self._runtime is None:
             raise RuntimeError("Historical runtime is not ready for checkpointing")
         self._flush_passive_market_events()
@@ -1900,6 +1902,7 @@ class ReplayRunController:
                     )
                 ],
                 "strategy_source_values": deepcopy(self._strategy_source_values),
+                "historical_liquidity": liquidity_checkpoint(self._historical_market_quality),
                 "latest_strategy_observations": {ticker: _strategy_observation_checkpoint(observation)
                     for ticker, observation in self._latest_strategy_observations.items()},
                 "pressure_trackers": {ticker: tracker.checkpoint() for ticker, tracker in self._pressure_trackers.items()},
@@ -3065,6 +3068,9 @@ class ReplayRunController:
         runtime = state.get("runtime")
         if not isinstance(controller, dict) or not isinstance(runtime, dict):
             raise ValueError("Historical restart checkpoint omitted runtime state")
+        from .historical_liquidity_checkpoint import restore as restore_liquidity
+        if not review_only or controller.get('historical_liquidity') is not None:
+            self._historical_market_quality = restore_liquidity(controller.get('historical_liquidity'))
         if not review_only and not _checkpoint_has_strategy_observations(state):
             raise ValueError("Restart checkpoint lacks causal strategy observations; start a new run")
         self.level_load_contract = controller.get("level_load_contract", LEVEL_LOAD_CONTRACT)
@@ -7371,7 +7377,7 @@ def _strategy_observation_from_checkpoint(value, *, ticker, current_time):
     value['observed_at'] = _checkpoint_time(value['observed_at'])
     if value.get('ticker') != ticker or current_time is None or value['observed_at'] > current_time:
         raise ValueError('Restart strategy observation has a mismatched ticker or future timestamp')
-    for key in ('structural_support_levels', 'structural_resistance_levels',
+    for key in ('structural_support_levels', 'structural_resistance_levels', 'structural_transition_levels',
                 'evaluation_events', 'changed_source_ids', 'source_signal_ids'):
         if key in value:
             value[key] = tuple(value[key])

@@ -92,7 +92,9 @@ def recovery_permission(state, swing, market):
     # Otherwise require recovery; never relabel a failed mature move as a setup.
     reclaim = max(previous['setup']['breakout_threshold'], previous['body_high'])
     if market['bar']['close'] > reclaim:
-        return '', 'post_breakout'
+        # Recovery permits a new entry; it does not prove a breakout of that
+        # new position's frozen range. Its own phase() must confirm that.
+        return '', 'building'
     return 'waiting_for_post_move_recovery_or_higher_base', ''
 
 

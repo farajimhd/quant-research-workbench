@@ -21,7 +21,12 @@ def test_recovery_persists_failure_and_requires_fresh_support():
     assert V.recovery_permission(state,swing(6,10.5),market)==('', 'building')
     assert V.recovery_permission(state,swing(6,10.1),market)[0]=='waiting_for_post_move_recovery_or_higher_base'
     market['bar']['close']=11.1
-    assert V.recovery_permission(state,swing(6,10.1),market)==('', 'post_breakout')
+    assert V.recovery_permission(state,swing(6,10.1),market)==('', 'building')
+    # Reclaiming a previous trade cannot activate rejection exits below the
+    # new position's own range high.
+    recovered=dict(confirmed_at=6,setup=dict(phase='building',breakout_threshold=11.))
+    assert not V.phase(recovered,dict(bar=dict(end=7,open=10.7,close=10.8)),True)
+    assert V.phase(recovered,dict(bar=dict(end=8,open=10.9,close=11.1)),True)
 
 
 def test_breached_anchor_cannot_be_reused_even_if_detector_still_active():

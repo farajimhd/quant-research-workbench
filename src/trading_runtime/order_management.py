@@ -1163,6 +1163,16 @@ class OrderManagementEngine:
         )
         return group.snapshot(self.policy.version)
 
+    def _acquisition_quality_block(self, intent, quote, quantity, at):
+        policy = intent.metadata.get('entry_quality')
+        if not policy or intent.action not in {'enter_long', 'add_long'}:
+            return ''
+        if quote is None or not 0 <= (at - quote.observed_at).total_seconds() * 1000 <= self.policy.maximum_quote_age_ms:
+            return 'entry_quality_quote_stale_or_missing'
+        from .entry_quality import blocked
+        return blocked(policy, bid=quote.bid, ask=quote.ask, stop=intent.invalidation_price,
+            target=intent.profit_target_price, quantity=quantity)
+
     def _execution_quote(self, intent: StrategyIntent) -> ExecutionQuote | None:
         snapshot = self.execution_market_data.snapshot(intent.ticker)
         if snapshot is None:
@@ -1638,6 +1648,14 @@ class OrderManagementEngine:
 
     async def _submit(self, group: _ManagedOrderGroup) -> None:
         started = perf_counter()
+        if group.intent.action in {'enter_long', 'add_long'} and group.intent.metadata.get('entry_quality'):
+            reason = self._acquisition_quality_block(group.intent, self._execution_quote(group.intent),
+                group.intent.quantity, self._causal_group_time(group.intent, previous=group.updated_at))
+            if reason:
+                self.risk.release(group.account_id, group.orders)
+                group.rejection_reason = reason
+                self._transition(group, OrderManagementState.POLICY_BLOCKED, {'event': reason})
+                return
         self._transition(group, OrderManagementState.SUBMITTING, {"event": "submission_started"})
         for request in group.orders:
             self._record_protection(group, request, phase="requested", event_time=group.intent.event_time)
@@ -2314,6 +2332,11 @@ class OrderManagementEngine:
                 self._causal_group_time(group.intent, previous=group.updated_at),
                 {"reason": "quote_stale", "quote_age_ms": age_ms},
             )
+            return False
+        reason = self._acquisition_quality_block(group.intent, quote,
+            float(group.intent.quantity)-group.filled_quantity, record_time)
+        if reason:
+            await self._cancel_open_entry_roots(group, reason)
             return False
         ceiling = group.intent.metadata.get('gap_entry_ceiling')
         if not self._entry_body_valid(group.intent, record_time):

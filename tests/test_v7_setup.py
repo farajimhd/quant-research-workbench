@@ -31,6 +31,25 @@ def prepared():
     return host,replace(a,parameters=p,state=state),obs
 
 
+def test_fresh_base_can_enter_at_range_break_without_future_swing():
+    host,a,obs=prepared()
+    o=obs(2,10.11)
+    market=deepcopy(o.structural_detector_state);now=o.observed_at.timestamp()
+    swing=dict(side='support',state='active',lower=9.99,price=9.995,upper=10.,
+        pivot_at=now-3,confirmed_at=now-1)
+    market['row']['local_swings']=[swing]
+    o=replace(o,structural_detector_state=market)
+    assert not host.evaluate(a,o).evaluation.intents
+    a.parameters['historical_hod']['setup_early_base_enabled']=1
+    assert host.evaluate(a,o).evaluation.signals[0].reason=='v7_fresh_base_entry'
+    for modified in [replace(o,bar_open=10.12),replace(o,execution_vwap=10.12),
+                     replace(o,evaluation_events=('market_data_update',))]:
+        assert not host.evaluate(a,modified).evaluation.intents
+    for confirmed in (now+1,now-20):
+        market['row']['local_swings']=[dict(swing,pivot_at=confirmed-1,confirmed_at=confirmed)]
+        assert not host.evaluate(a,replace(o,structural_detector_state=market)).evaluation.intents
+
+
 def test_early_entry_before_resistance_and_hold_rejection_then_stop():
     host,a,obs=prepared()
     # Price above previous close but below next resistance 10.16 and range 10.1.

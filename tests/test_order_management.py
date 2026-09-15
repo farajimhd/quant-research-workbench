@@ -527,6 +527,32 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                 await manager.close()
                 journal.close()
 
+    async def test_acquisition_quality_rechecks_submission_and_remainder(self):
+        from tests.test_entry_quality import POLICY
+        for deterioration in ('submission','remainder'):
+            with tempfile.TemporaryDirectory() as directory:
+                broker=SimulatedBrokerAdapter(['DU1'],mode=TradingMode.BACKTEST)
+                manager,journal=await self._manager(directory,broker,policy=BrokerCommunicationPolicy(),causal_execution_clock=True)
+                try:
+                    base=intent()
+                    request=replace(base,profit_target_price=11.,metadata={**base.metadata,'entry_quality':POLICY},
+                        execution_policy=ExecutionPolicy(policy_id='quality-test',name=ExecutionPolicyName.ADAPTIVE_URGENT,
+                            envelope=ExecutionEnvelope(deadline_ms=5000,maximum_reprices=4)))
+                    if deterioration=='submission':
+                        manager.on_market_snapshot(ExecutionMarketSnapshot('TEST',9.81,10.02,.01,NOW,'qmd-history'))
+                    group=await manager.submit_intent(portfolio_approved(journal,request),account_id='DU1',event=None)
+                    if deterioration=='submission':
+                        self.assertEqual(group.rejection_reason,'entry_stop_inside_quote_noise')
+                        self.assertFalse(group.broker_order_ids)
+                    else:
+                        later=NOW+timedelta(milliseconds=100)
+                        manager.on_market_snapshot(ExecutionMarketSnapshot('TEST',9.81,10.02,.01,later,'qmd-history'))
+                        await manager.advance_adaptive_execution(later)
+                        cancels=[r for r in journal.records('run-1') if r.entity_type=='order_cancel_requested']
+                        self.assertTrue(any(r.payload['reason']=='entry_stop_inside_quote_noise' for r in cancels))
+                finally:
+                    await manager.close();journal.close()
+
     async def test_body_trigger_rechecks_trade_and_expires_before_matching(self):
         from src.market_engine.events import TradeEvent
         for expiry in (False, True):

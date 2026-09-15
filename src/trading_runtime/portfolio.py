@@ -966,6 +966,9 @@ class PortfolioManagementEngine:
                     or type(tranche.get('count')) is not int or not 2 <= tranche['count'] <= 20
                     or type(tranche.get('index')) is not int or not 0 <= tranche['index'] < tranche['count']):
                 raise ValueError('Invalid cash tranche request')
+            fraction = tranche.get('initial_fraction', 1.)
+            if type(fraction) not in (int, float) or not math.isfinite(fraction) or not 0 < fraction <= 1:
+                raise ValueError('Invalid initial cash tranche fraction')
             tranche_hold = next((r for r in self.reservations.values()
                 if r.account_id == state.profile.account_id and r.cash_tranche_key == tranche['key']
                 and r.assignment_id == str(intent.metadata.get('assignment_id') or '')
@@ -1206,13 +1209,23 @@ class PortfolioManagementEngine:
             )
             return decision, None
         total_approved = approved
+        subsequent_tranche_size = approved
         if tranche and tranche['index'] == 0:
             reasons.append('cash_budget_split_into_tranches')
-            approved = float(math.floor(approved / tranche['count']))
+            subsequent_tranche_size = float(math.floor(approved / tranche['count']))
+            approved = float(math.floor(subsequent_tranche_size * tranche.get('initial_fraction', 1.)))
             if approved < 1:
                 return self._decision(intent,state,PortfolioDecisionStatus.REJECTED,requested,0.,0.,'',
                     ['cash_budget_below_tranche_count'],metrics_before,metrics_before,now),None
-            total_approved = approved * tranche['count']
+            total_approved = approved + subsequent_tranche_size * (tranche['count'] - 1)
+        if entry and intent.metadata.get('entry_quality'):
+            from .entry_quality import blocked
+            reason = blocked(intent.metadata['entry_quality'], bid=intent.metadata.get('bid'),
+                ask=intent.metadata.get('ask'), stop=intent.invalidation_price,
+                target=intent.profit_target_price, quantity=approved)
+            if reason:
+                return self._decision(intent,state,PortfolioDecisionStatus.REJECTED,requested,0.,0.,'',
+                    [*reasons,reason],metrics_before,metrics_before,now),None
         notional = approved * base_price * self._entry_funding_factor(intent, policy)
         planned_loss = _reserved_entry_loss(intent, approved) * fx_to_base
         decision_id = str(uuid4())
@@ -1265,7 +1278,7 @@ class PortfolioManagementEngine:
                     intent_id=intent.intent_id+':cash-hold',quantity=0.,remaining_quantity=0.,
                     reserved_notional=notional*multiplier,reserved_planned_risk=planned_loss*multiplier,
                     reserved_entry_fees=reservation.reserved_entry_fees*multiplier,
-                    cash_tranche_key=tranche['key'],cash_tranche_size=approved,
+                    cash_tranche_key=tranche['key'],cash_tranche_size=subsequent_tranche_size,
                     cash_tranche_count=tranche['count'],cash_tranche_next=1,
                     cash_tranche_budget=notional*(multiplier+1))
             self.reservations[tranche_hold.reservation_id] = tranche_hold

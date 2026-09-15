@@ -28,6 +28,9 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     v7_center_swing_enabled=0,v7_transition_entries_enabled=0,v7_price_only_enabled=0,rejection_break_offset_bps=0.,
     v7_setup_enabled=0,setup_failure_seconds=0,setup_failure_buffer_ticks=1.,setup_minimum_body_bps=0.,setup_trail_requires_breakout=0,setup_trail_activation_r=0.,setup_recovery_preserve_peak=0,setup_recovery_enabled=0,setup_add_requires_range_breakout=1,setup_range_seconds=30,setup_minimum_bars=5,
     setup_minimum_quote_clearance_spreads=0.,
+    setup_acquisition_quality_enabled=0,setup_initial_tranche_fraction=1.,
+    setup_early_base_enabled=0,setup_base_maximum_swing_age_s=15.,
+    setup_base_maximum_risk_pct=5.,setup_base_maximum_range_pct=10.,
     setup_episode_high_entry=0,v7_encounters_enabled=0,breakout_buffer_bps=10.,breakout_buffer_ticks=1.,topping_tail_fraction=.5)
 
 
@@ -45,9 +48,13 @@ def configure(p):
     s = dict(DEFAULTS, **raw)
     if s['setup_episode_high_entry'] not in (0,1) or s['setup_episode_high_entry'] and not s['v7_setup_enabled']:
         raise ValueError('Episode-high entry requires the V7 setup policy and a boolean switch')
+    if s['setup_acquisition_quality_enabled'] not in (0,1) or not 0 < s['setup_initial_tranche_fraction'] <= 1:
+        raise ValueError('Invalid setup acquisition quality or initial tranche fraction')
+    if s['setup_early_base_enabled'] not in (0,1) or s['setup_early_base_enabled'] and not s['v7_setup_enabled']:
+        raise ValueError('Early base entry requires the V7 setup policy')
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
         raise ValueError('Historical HOD settings must be finite and positive')
     if not 0 <= s['setup_failure_seconds'] <= 5 or int(s['setup_failure_seconds']) != s['setup_failure_seconds']:
         raise ValueError('Initial setup failure window must be zero to five completed seconds')
@@ -814,6 +821,9 @@ def evaluate(host, a, o, p, state):
     def result(action, reason, status=None, **kw):
         nonlocal cancel_acquisition
         metadata = dict(evidence, **kw.pop('metadata', {}))
+        if action in {'enter_long','add_long'} and s['setup_acquisition_quality_enabled']:
+            metadata['entry_quality'] = dict(quote_clearance_spreads=s['setup_minimum_quote_clearance_spreads'],
+                minimum_fee=1.,fee_per_share=.005,slippage_bps=5.,reward_cap_r=2.,minimum_reward_cost_multiple=2.)
         if action == 'exit':
             metadata.update(reentry_after_fill=reason != 'session_flatten' and a.permissions.reenter,
                 cancel_entry_acquisition=True,position_fraction=1.)
@@ -1086,7 +1096,8 @@ def evaluate(host, a, o, p, state):
                 maximum_quantity=s['maximum_quantity'],allow_replacement=False),
             order_intent={'execution_policy':'adaptive_urgent','protection_profile':'structural-single-target'},
             metadata={'initial_stop':entry['stop'],'active_stop':entry['stop'],'profit_targets':[entry['target']['price']],
-                **({'cash_tranche':dict(key=entry['cash_tranche_key'],index=0,count=s['tranche_count'])}
+                **({'cash_tranche':dict(key=entry['cash_tranche_key'],index=0,count=s['tranche_count'],
+                    initial_fraction=s['setup_initial_tranche_fraction'])}
                     if s['sizing_mode']=='cash_tranches' else {}),
                 'profit_target':entry['target']['price'],'mandatory_broker_target':True,'maximum_buy_price':entry['maximum_buy_price'],
                 'initial_stop_selection':entry['initial_stop_selection'],
@@ -1123,9 +1134,23 @@ def evaluate(host, a, o, p, state):
     vwap = d.get('vwap')
     if not hod or previous is None or vwap is None or not isfinite(vwap) or vwap <= 0 or o.price <= vwap:
         return result('wait','hod_history_or_vwap_gate')
+    early_base = None
+    if setup_enabled and s['setup_early_base_enabled'] and fresh and detector_fresh and d['contiguous']:
+        consolidation = setup_state.get('range')
+        candidate = initial_swing_low(row,dict(lower=min(o.price,decision_bid)),now,
+            closest=True,price_only=price_only)
+        if (consolidation and candidate and o.price > previous and o.price >= o.bar_open
+                and candidate['pivot_at'] >= consolidation['start']
+                and now-candidate['confirmed_at'] <= s['setup_base_maximum_swing_age_s']
+                and (decision_ask-stop_below(candidate['lower'],s,tick))/decision_ask*100 <= s['setup_base_maximum_risk_pct']
+                and (consolidation['high']/consolidation['low']-1)*100 <= s['setup_base_maximum_range_pct']
+                and o.price <= consolidation['high']+.25*(consolidation['high']-consolidation['low'])):
+            early_base = candidate
+            evidence['early_base_entry'] = dict(swing=deepcopy(candidate),range=deepcopy(consolidation),
+                observed_at=now,price=o.price)
     if s.get('v7_zone_enabled'):
         zone=zone_bounds(d,s)
-        if not zone or not zone[0]<=min(o.price,decision_bid)<=max(o.price,decision_ask)<=zone[1]:
+        if not early_base and (not zone or not zone[0]<=min(o.price,decision_bid)<=max(o.price,decision_ask)<=zone[1]):
             return result('wait','outside_v7_hod_entry_zone')
         if not reference:return result('wait','no_v7_resistance_in_entry_zone')
     boundary = deepcopy(saved_reentry['level']) if reclaim else reference['level']
@@ -1159,7 +1184,7 @@ def evaluate(host, a, o, p, state):
             evidence['episode_high_entry'] = dict(threshold=episode_high,close=o.price,observed_at=now)
             if not consolidation or not episode_high or o.price <= episode_high:
                 return result('wait','waiting_for_episode_high_break')
-        elif not consolidation or o.price <= previous or o.price >= consolidation['high']:
+        elif not early_base and (not consolidation or o.price <= previous or o.price >= consolidation['high']):
             return result('wait','waiting_for_rising_setup_below_range_high')
     if not setup_enabled and not crossed and not recent_held and not reclaim:
         return result('wait','waiting_for_fresh_body_high_break' if require_body_high else 'waiting_for_fresh_resistance_break')
@@ -1168,7 +1193,7 @@ def evaluate(host, a, o, p, state):
         selected = luld
     if not selected:
         return result('wait','qualified_target_unavailable')
-    swing = initial_swing_low(row,dict(lower=decision_bid) if s.get('v7_zone_enabled') else boundary,now,price_only=price_only)
+    swing = early_base or initial_swing_low(row,dict(lower=decision_bid) if s.get('v7_zone_enabled') else boundary,now,price_only=price_only)
     if s.get('v7_zone_enabled') and not s.get('v7_center_swing_enabled'):
         # Current confirmed supports and confirmed local swings share one stop
         # comparison, independent of the session in which they originated.
@@ -1243,4 +1268,4 @@ def evaluate(host, a, o, p, state):
     state.update(historical_hod_entry=entry,initial_stop=stop,active_stop=stop,structural_profit_targets=[selected['price']],
         entry_reference_price=decision_ask,entry_at=o.observed_at.isoformat(),entries=state.get('entries',0)+1,
         last_exit_reason='',entry_acquisition_exit_latched=False)
-    return enter(entry,'v7_episode_high_entry' if s['setup_episode_high_entry'] else 'v7_early_setup_entry' if setup_enabled else 'stopped_level_reclaim' if reclaim else 'historical_hod_entry')
+    return enter(entry,'v7_fresh_base_entry' if early_base else 'v7_episode_high_entry' if s['setup_episode_high_entry'] else 'v7_early_setup_entry' if setup_enabled else 'stopped_level_reclaim' if reclaim else 'historical_hod_entry')
