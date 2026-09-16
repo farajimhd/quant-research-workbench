@@ -6,6 +6,20 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Pinned trade-policy persistence
+
+Trade policies now have exact-hash startup reads and guarded ClickHouse publication.
+Quote and trade policies use one shared persistence implementation. It preserves
+provider/cutoff checks, bounded canonical payloads, conflict detection, storage
+verification, extraction/durability acceptance and cooperative ownership.
+
+Migration 020 defines the trade-policy table on `live_market_ssd` and remains
+unapplied. Two new readback fixtures cover absent/future/conflicting/malformed
+policies, identity changes and maximum supported policy size. Connected publication
+and durability acceptance remain untested; no service or database was started.
+All 422 offline tests, formatting, Clippy and copied-source checks pass. Source
+parity was not rerun.
+
 ## Shared trade eligibility
 
 Live ingestion and historical projection now share a pinned trade-condition
@@ -20,8 +34,8 @@ Historical preparation requires policy availability at interval start, derives
 all decisions and pins their identity. Known exclusions remain observable input.
 
 This is the current all-or-none calculation contract, not a complete interpreter
-of independent provider OHLC/volume rules. Policy certification, persistence and
-executable startup wiring remain open. All 420 offline tests, formatting, Clippy
+of independent provider OHLC/volume rules. Policy certification and executable
+startup wiring remain open. All 420 offline tests, formatting, Clippy
 and copied-source checks pass. No services started or migrations ran. Source
 parity was not rerun.
 

@@ -1,14 +1,14 @@
-//! Immutable quote policy publication and exact-hash startup reads.
+//! Immutable trade policy publication and exact-hash startup reads.
 use super::eligibility_policies::Contract;
 use super::*;
 use arte_core::{
     config::Acceptance,
-    quote_state::eligibility::{Pinned, Policy},
+    trade_eligibility::{Pinned, Policy},
 };
 use std::collections::BTreeSet;
 impl Contract for Policy {
     type Pinned = Pinned;
-    const TABLE: &'static str = "quote_eligibility_policies_v1";
+    const TABLE: &'static str = "trade_eligibility_policies_v1";
     fn provider(&self) -> u16 {
         self.provider
     }
@@ -21,7 +21,7 @@ impl Contract for Policy {
 }
 impl ClickHouse {
     /// Startup-only read. Never select an implicit latest policy.
-    pub async fn load_quote_policy(
+    pub async fn load_trade_policy(
         &self,
         provider: u16,
         hash: &str,
@@ -31,7 +31,7 @@ impl ClickHouse {
             .await
     }
     /// Source certification remains separate; hashes do not approve condition codes.
-    pub async fn publish_quote_policy(
+    pub async fn publish_trade_policy(
         &self,
         record: &Policy,
         hash: &str,
@@ -54,21 +54,21 @@ mod tests {
     use super::*;
     fn policy() -> Policy {
         Policy {
+            schema_version: 1,
             provider: 1,
             valid_from_ns: 100,
             valid_to_ns: 200,
             available_at_ns: 10,
             source_manifest_hash: "a".repeat(64),
             allowed_conditions: [1, 2].into(),
-            allowed_indicators: [3].into(),
+            excluded_conditions: [3].into(),
             allow_empty_conditions: true,
-            allow_empty_indicators: false,
         }
     }
     #[test]
     fn pinned_readback_rejects_conflicts_future_policies_and_noncanonical_payloads() {
         let policy = policy();
-        let hash = arte_core::content_hash(&policy).unwrap();
+        let hash = policy.hash().unwrap();
         let mut row = Row {
             record_hash: hash.clone(),
             payload_json: serde_json::to_string(&policy).unwrap(),
@@ -85,7 +85,7 @@ mod tests {
         row.payload_json.push(' ');
         assert!(decode(&serde_json::to_string(&row).unwrap(), 1, &hash, 10).is_err());
         let mut changed = policy.clone();
-        changed.allow_empty_indicators = true;
+        changed.allow_empty_conditions = false;
         row.payload_json = serde_json::to_string(&changed).unwrap();
         assert!(decode(&serde_json::to_string(&row).unwrap(), 1, &hash, 10).is_err());
         assert!(decode("bad json", 1, &hash, 10).is_err());
@@ -98,8 +98,8 @@ mod tests {
     fn maximum_supported_policy_fits_bounded_payload() {
         let mut p = policy();
         p.allowed_conditions = (64512..=65535).collect();
-        p.allowed_indicators = p.allowed_conditions.clone();
-        let hash = arte_core::content_hash(&p).unwrap();
+        p.excluded_conditions.clear();
+        let hash = p.hash().unwrap();
         let payload_json = serde_json::to_string(&p).unwrap();
         assert!(payload_json.len() <= MAX_PAYLOAD);
         let body = serde_json::to_string(&Row {

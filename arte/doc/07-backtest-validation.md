@@ -56,8 +56,19 @@ its ingestion API no longer accepts an arbitrary eligibility boolean.
 
 This implements the existing all-or-none calculation eligibility contract. It
 does not implement independent provider-specific OHLC and volume update rules.
-Provider rule certification, policy persistence and executable startup wiring
-remain required. Hash identity alone does not approve the condition mapping.
+Provider rule certification and executable startup wiring remain required.
+Hash identity alone does not approve the condition mapping.
+
+Trade and quote policies share one ClickHouse persistence protocol. Reads require
+provider, exact policy hash and knowledge cutoff. Canonical payload checks reject
+conflicting versions, wrong providers and future policies. There is no implicit
+latest-policy lookup. Publication requires extraction and durability acceptance,
+cooperative ownership and exact readback. Table policy and actual part placement
+are checked through the shared storage verifier. This is not a distributed
+compare-and-swap protocol or proof of power-loss durability.
+
+Migration 020 defines `trade_eligibility_policies_v1` with `live_market_ssd`.
+It remains unapplied. Connected policy publication has not been tested.
 
 Only a simulation copy receives `available_at_ns = sip_ns + delay_ns`. Source
 objects are unchanged. Receive and participant timestamps remain absent when
