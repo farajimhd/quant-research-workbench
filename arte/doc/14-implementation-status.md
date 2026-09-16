@@ -6,6 +6,28 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Offline policy preflight command
+
+The executable now exposes:
+
+```text
+arte check-policies <manifest.json> <expected-manifest-sha256> <policies.json> [--json]
+```
+
+The expected hash is the canonical run-manifest hash, not a hash of JSON file
+formatting. Inputs use explicit paths and bounded reads. The command validates
+manifest identity and policy structure/consumer binding. It does not construct
+market features, verify effective strategy hashes, or authorize trading.
+Human output states those limits. Machine output is selected explicitly with
+`--json`. Failures retain the CLI's nonzero exit behavior.
+
+All 385 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+New in-process tests cover malformed inputs, invalid arguments and report fields.
+Report lines are checked against an 80-column budget with no terminal escapes.
+An actual terminal launch, valid-file command invocation and narrower-terminal
+inspection were not performed. Source-oracle parity was not rerun. No service or
+network test ran. Service startup wiring remains unfinished.
+
 ## Portable policy loading
 
 Candidate policies now have a versioned JSON document. It names the pinned run

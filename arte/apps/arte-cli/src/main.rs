@@ -1,10 +1,12 @@
 #![forbid(unsafe_code)]
+mod policies;
 use arte_core::replay::{replay, ReplayTrade};
 use std::io::{self, Read};
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str){
-        None|Some("help")|Some("--help")=>{println!("ARTE - Automated Real-Time Trading Engine\n\nOffline commands:\n  version\n  replay-market <interval-ns> <workers>   JSON trade array on stdin\n\nService startup is not enabled in this implementation slice.\nMarket replay is not a strategy-performance backtest.");Ok(())},
+        None|Some("help")|Some("--help")=>{println!("ARTE - Automated Real-Time Trading Engine\n\nOffline commands:\n  version\n  replay-market <interval-ns> <workers>   JSON trade array on stdin\n  check-policies <manifest.json> <expected-manifest-sha256> <policies.json> [--json]\n\nService startup is not enabled in this implementation slice.\nMarket replay is not a strategy-performance backtest.\nPolicy preflight does not authorize trading.");Ok(())},
+        Some("check-policies")=>{println!("{}",policies::run(&args)?);Ok(())},
         Some("version")=>{println!("ARTE {}",env!("CARGO_PKG_VERSION"));Ok(())},
         Some("replay-market")=>{
             if args.len()!=3{return Err("usage: arte replay-market <interval-ns> <workers>".into());}
