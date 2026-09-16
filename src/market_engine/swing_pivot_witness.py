@@ -47,6 +47,21 @@ class PivotWitnessStructure(SwingStructure):
         self._capturing_pivot = False
         self._pivot_level_id = None
 
+    def referenced_clocks(self):
+        """Keep event-time mappings alive while their pivot evidence is active."""
+        return {w[key] for w in self.latest_pivots.values()
+                for key in ('pivot_at', 'confirmed_at')}
+
+    def event_evidence(self, level, close_times):
+        """Return a detached witness only for the current anchored level role."""
+        witness = self.latest_pivots.get(level['level_id'])
+        if witness is None:
+            return None
+        if (witness['side'] != level['side'] or witness['scale'] != level['scale']
+                or witness['confirmed_at'] < level['confirmed_at']):
+            return None
+        return event_times(witness, close_times)
+
     def _level_updated(self, level):
         super()._level_updated(level)
         key = level['level_id']
