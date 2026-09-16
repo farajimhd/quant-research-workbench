@@ -69,6 +69,50 @@ def test_observer_keeps_latest_pivot_without_changing_base_engine_outputs():
     assert observer._pivot_level_id is None
 
 
+def test_merged_pivot_clocks_survive_anchor_clock_pruning():
+    observer = PivotWitnessStructure(SwingSettings())
+    observer._found(observer.detectors[0], (10., 1, .1), 'support', 2)
+    observer._found(observer.detectors[0], (10., 3, .1), 'support', 4)
+    anchor = observer.active[1]
+    referenced = {anchor['pivot_at'], anchor['confirmed_at']} | observer.referenced_clocks()
+    close_times = {k:1000.+k for k in range(1, 8) if k in referenced}
+    assert close_times == {1:1001., 2:1002., 3:1003., 4:1004.}
+    evidence = observer.event_evidence(anchor, close_times)
+    assert evidence['pivot_at'] == 1003.
+    assert evidence['confirmed_at'] == 1004.
+    evidence['price'] = 999.
+    assert observer.latest_pivots[1]['price'] == 10.
+    observer._level_removed(1)
+    assert observer.referenced_clocks() == set()
+    assert observer.event_evidence(anchor, close_times) is None
+
+
+@pytest.mark.parametrize('change', [{'side':'resistance'}, {'scale':'major'}, {'confirmed_at':5}])
+def test_event_evidence_cannot_cross_anchor_role_or_newer_confirmation(change):
+    observer = PivotWitnessStructure(SwingSettings())
+    observer._found(observer.detectors[0], (10., 1, .1), 'support', 2)
+    altered = dict(observer.active[1], **change)
+    assert observer.event_evidence(altered, {1:1001., 2:1002.}) is None
+
+
+@pytest.mark.parametrize('compact', [False, True])
+def test_witness_checkpoint_roundtrip_preserves_future_merges(monkeypatch, compact):
+    # The native detector registry is intentionally unchanged until its pinned
+    # replay finishes. Exercise both real codecs with the prospective type entry.
+    import json
+    from src.market_engine import structural_detector_checkpoint as checkpoints
+    monkeypatch.setitem(checkpoints.TYPES, 'PivotWitnessStructure', PivotWitnessStructure)
+    observer = PivotWitnessStructure(SwingSettings())
+    observer._found(observer.detectors[0], (10., 1, .1), 'support', 2)
+    encode = checkpoints.encode_json if compact else checkpoints.encode
+    decode = checkpoints.decode_json if compact else checkpoints.decode
+    restored = decode(json.loads(json.dumps(encode(observer), allow_nan=False)))
+    for engine in (observer, restored):
+        engine._found(engine.detectors[0], (10., 3, .1), 'support', 4)
+    assert restored.__dict__ == observer.__dict__
+    assert restored.event_evidence(restored.active[1], {3:1003., 4:1004.}) == observer.event_evidence(observer.active[1], {3:1003., 4:1004.})
+
+
 @pytest.mark.parametrize('change', ['side', 'confirmation', 'expiry'])
 def test_observer_drops_witness_when_anchor_role_changes_or_expires(change):
     observer = PivotWitnessStructure(SwingSettings())
