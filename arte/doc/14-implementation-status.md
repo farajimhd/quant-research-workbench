@@ -6,6 +6,24 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Causal local-swing component
+
+Implemented the strategy-local directional-change swing projection in Rust.
+Frozen source is recorded at the existing strategy reference commit with SHA-256.
+The component preserves separate pivot/confirmation clocks, prior-only volatility,
+anchored geometry, break/retest role changes, candle-count expiry and gap resets.
+Major visual swings and score/segment presentation are deliberately out of scope
+for this local projection. ARTE assigns separately namespaced local identities.
+
+All 437 offline unit tests, formatting, Clippy and copied-source checks passed.
+The standalone frozen-source comparison passed
+for 3,000 candles in six deterministic paths. It compares geometry, clocks, roles,
+activity and order, not trading decisions or profit. Existing full source-parity
+suites were not rerun. No services or database writers started.
+
+Feature ownership, validated recovery and certified-empty-gap support remain to
+be connected before these swings can replace explicit strategy evidence inputs.
+
 ## Encounter ownership and configuration integration
 
 The shared feature owner now owns encounter state for live and replay. Required

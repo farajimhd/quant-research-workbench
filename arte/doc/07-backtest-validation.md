@@ -70,6 +70,30 @@ orchestration must use boundary-owned wrappers.
 Executable loops and complete live orchestration remain unfinished. Connected
 checkpoint publication and operational recovery have not been run.
 
+## Local swing evidence
+
+Strategy-local swings are not V7 fitted levels. The Rust local directional-change
+component ports the local-scale behavior of the frozen `swing_structure.py` at
+the same commit as the strategy reference. Its pivot and confirmation clocks
+remain distinct and map to completed-candle end times. Lifetime uses candle
+count, matching the source detector's sequence clock, not elapsed wall time.
+
+The component retains anchored geometry, prior-only volatility, frozen reversal
+thresholds, accepted breaks and later retest-based role reversals. Its strategy
+snapshot contains pre-candle active swings plus newly confirmed swings in source
+order. It resets on gaps without inventing a continuity certificate. Errors hide
+partial state; configured capacity is never enforced by truncating levels.
+
+Major-scale visual swings, touch scores and visual segments are not consumed by
+this strategy projection and are omitted. IDs use an ARTE local namespace rather
+than mixed local/major source numbering. This is a separately versioned local
+projection, not a port of the entire structural detector.
+
+The offline comparison checks geometry, clocks, roles, activity and ordering on
+3,000 candles across six deterministic paths, including gaps and sub-dollar data.
+It does not prove trading parity or profitability. Scheduler/feature ownership,
+recovery and certified-empty-gap handling remain required integration work.
+
 ## Replay modes
 
 | Mode | Input | Claim |

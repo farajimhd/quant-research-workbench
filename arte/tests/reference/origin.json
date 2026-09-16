@@ -6,6 +6,11 @@
   "license": "User-owned source; redistribution/license review remains required before external publication.",
   "files": [
     {
+      "source": "src/market_engine/swing_structure.py",
+      "sha256": "5f1283ca772432e42a40a542ab179007175bdf814f593377f27fee1246f582ea",
+      "destination": "tests/reference/src/market_engine/swing_structure.py.txt"
+    },
+    {
       "source": "src/market_engine/reaction_center.py",
       "sha256": "bf3964b1f70a78b1f4c577a0cdd827899aa6f53ec1fc46041115ce885da25b5d",
       "destination": "tests/reference/src/market_engine/reaction_center.py.txt"
