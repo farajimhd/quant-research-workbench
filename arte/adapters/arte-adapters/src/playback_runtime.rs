@@ -11,6 +11,7 @@ use arte_core::{
     Error, Result,
 };
 mod actions;
+pub mod candidates;
 pub mod checkpoint;
 pub use actions::PendingAction;
 

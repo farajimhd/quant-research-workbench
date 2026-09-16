@@ -198,6 +198,19 @@ fn run_recovery_fixture(
     Pinned,
     RecoveryInput,
 ) {
+    run_candidate_fixture(include_quote, lifecycle, target_exit, false)
+}
+fn run_candidate_fixture(
+    include_quote: bool,
+    lifecycle: bool,
+    target_exit: bool,
+    features: bool,
+) -> (
+    Run,
+    arte_core::simulation_costs::Pinned,
+    Pinned,
+    RecoveryInput,
+) {
     const S: u64 = 1_000_000_000;
     let bars: Vec<_> = (100..118)
         .map(|t| Candle {
@@ -239,7 +252,15 @@ fn run_recovery_fixture(
             macd_periods: (2, 3, 2),
             maximum_bars: 100,
             maximum_market_events: 100,
-            additional_timeframes: vec![],
+            additional_timeframes: if features {
+                vec![arte_core::market_structure::Timeframe {
+                    interval_ns: 5 * S,
+                    macd_periods: (12, 26, 9),
+                    maximum_bars: 100,
+                }]
+            } else {
+                vec![]
+            },
             structure: StreamPolicy {
                 input_generation: "offline".into(),
                 ..StreamPolicy::default()
@@ -414,6 +435,72 @@ fn run_recovery_fixture(
             configuration_hash,
         },
     )
+}
+
+#[tokio::test]
+async fn candidate_owner_preflights_consumers_before_journal_io() {
+    use crate::playback_runtime::{candidates::Candidates, Runtime as Controller};
+    use arte_core::{
+        candidate_features::Config as Features, execution_positions::Projection,
+        simulated_execution::Simulator,
+    };
+    let (run, costs, manifest, _) = run_candidate_fixture(true, false, false, true);
+    let mut execution = crate::simulation_runtime::Runtime::new(
+        Simulator::new_scoped("run", 1, 2, 2, 10000).unwrap(),
+        Projection::new(2, 10, 4).unwrap(),
+        4,
+    )
+    .unwrap();
+    execution
+        .bind_source(run.market().unwrap().source_scope())
+        .unwrap();
+    let mut controller = Controller::new(run, execution, crate::test_fill_model(), costs).unwrap();
+    let config = Features {
+        setup: arte_core::strategy_setup::SetupSettings {
+            range_ns: 30_000_000_000,
+            minimum_bars: 1,
+            maximum_gap_ns: 0,
+        },
+        forming_macd: true,
+        minimum_range_pct: 0.,
+        minimum_progress_pct: 0.,
+        maximum_quote_age_ns: 2_000_000_000,
+        maximum_completed_bar_age_ns: 2_000_000_000,
+        maximum_levels: 100,
+    };
+    let mut candidates = Candidates::new(&controller, &manifest, config.clone(), 100_000).unwrap();
+    assert_eq!(candidates.scope_hashes().count(), 2);
+    assert!(candidates.state("unknown").is_err());
+    assert!(candidates.observe(&controller).is_err());
+    controller.resume().unwrap();
+    assert_eq!(controller.poll().unwrap(), Poll::Boundary);
+    assert!(Candidates::new(&controller, &manifest, config, 100_000).is_err());
+    assert!(candidates.observe(&controller).unwrap());
+    assert!(!candidates.observe(&controller).unwrap());
+    struct Never;
+    impl Publisher for Never {
+        async fn append(&mut self, _: &Batch) -> Result<Vec<Record>> {
+            panic!("preflight must prevent I/O")
+        }
+    }
+    let mut publishers: std::collections::BTreeMap<_, _> = candidates
+        .scope_hashes()
+        .map(|id| (id.to_owned(), Never))
+        .collect();
+    assert!(candidates
+        .commit_accounts(&mut controller, &mut publishers, 0)
+        .await
+        .is_err());
+    assert!(candidates
+        .commit_accounts(&mut controller, &mut publishers, 2)
+        .await
+        .is_err());
+    publishers.insert("foreign".into(), Never);
+    assert!(candidates
+        .commit_accounts(&mut controller, &mut publishers, 2)
+        .await
+        .is_err());
+    assert!(controller.acknowledge().is_err());
 }
 
 #[test]

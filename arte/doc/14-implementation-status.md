@@ -6,6 +6,28 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Owned candidate playback coordination
+
+The playback adapter now has an owner for shared features and the manifest's
+account/strategy candidate runtimes. It initializes only against an unused,
+matching controller. Completed-bar and intrabar preparation call the existing
+shared candidate evaluator; no alternate strategy algorithm is introduced.
+Effective-policy validation remains in that evaluator.
+
+Journal publishers must match the complete scope-hash set. Every selected
+decision is preflighted before I/O. Writes use bounded concurrency, up to 64.
+Successful receipts stay in owned consumer slots across cancellation and retry.
+Only receipt registration satisfies the controller's account barrier. Market
+acknowledgment and execution actions remain separate controller responsibilities.
+
+All 382 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+The new test covers consumer ownership, duplicate feature observation, late owner
+initialization, missing prepared decisions, publisher mismatch and invalid
+concurrency without journal I/O. Full candidate-driven entry/exit and cancellation
+acceptance for this owner is still required. Its combined recovery/publication
+and production orchestration are not implemented. Source-oracle parity was not
+rerun. No services or network tests ran.
+
 ## Execution and portfolio consistency
 
 The simulated execution lane now exposes a read-only funding consistency check.
