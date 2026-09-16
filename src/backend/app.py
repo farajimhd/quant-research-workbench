@@ -265,6 +265,7 @@ from src.backend.trading_configuration_service import (
     configuration_candidates,
     configuration_base,
     configuration_revisions,
+    configuration_revision,
     effective_configuration_snapshot,
     market_discovery_materialization_status,
     market_discovery_presentation_configuration,
@@ -5138,9 +5139,17 @@ def trading_configuration_base() -> dict[str, Any]:
 
 
 @app.get("/api/trading/configuration/revisions")
-def trading_configuration_revision_list() -> dict[str, Any]:
-    rows = [public_configuration_revision(row) for row in configuration_revisions()]
-    return {"schema_version": 1, "rows": rows, "row_count": len(rows)}
+async def trading_configuration_revision_list() -> dict[str, Any]:
+    rows = await asyncio.to_thread(configuration_revisions)
+    return {"schema_version": 2, "rows": rows, "row_count": len(rows), "payloads_included": False}
+
+
+@app.get("/api/trading/configuration/revisions/{revision_id}")
+async def trading_configuration_revision_detail(revision_id: str) -> dict[str, Any]:
+    value = await asyncio.to_thread(configuration_revision, revision_id)
+    if value is None:
+        raise HTTPException(status_code=404, detail="Configuration revision not found")
+    return public_configuration_revision(value)
 
 
 @app.get("/api/trading/configuration/candidates")
@@ -5151,7 +5160,16 @@ async def trading_configuration_candidate_list(latest_only: bool = False) -> dic
     else:
         candidates = await asyncio.to_thread(configuration_candidates)
     rows = [public_configuration_revision(row) for row in candidates]
-    return {"schema_version": 1, "rows": rows, "row_count": len(rows)}
+    return {"schema_version": 1 if latest_only else 2, "rows": rows, "row_count": len(rows),
+            "payloads_included": latest_only}
+
+
+@app.get("/api/trading/configuration/candidates/{candidate_id}")
+async def trading_configuration_candidate_detail(candidate_id: str) -> dict[str, Any]:
+    value = await asyncio.to_thread(configuration_candidate, candidate_id)
+    if value is None:
+        raise HTTPException(status_code=404, detail="Test candidate not found")
+    return public_configuration_revision(value)
 
 
 @app.post("/api/trading/configuration/candidates")

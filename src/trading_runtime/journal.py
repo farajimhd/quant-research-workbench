@@ -817,15 +817,14 @@ class TradingJournal:
         }
 
     def trading_configuration_candidates(self) -> list[dict[str, Any]]:
-        rows = self._fetchall(
-            "SELECT * FROM trading_configuration_candidates ORDER BY candidate_revision DESC"
-        )
-        return [_configuration_candidate(row) for row in rows]
+        """List immutable identities; fetch a selected payload by candidate ID."""
+        return self.trading_configuration_candidate_summaries()
 
     def trading_configuration_candidate_summaries(self) -> list[dict[str, Any]]:
         """List setup choices without reading or decoding historical model payloads."""
         rows = self._fetchall(
-            "SELECT candidate_id, candidate_revision, label, content_hash "
+            "SELECT candidate_id, candidate_revision, label, content_hash, created_at, "
+            "'test_candidate' AS release_state "
             "FROM trading_configuration_candidates ORDER BY candidate_revision DESC"
         )
         return [dict(row) for row in rows]
@@ -844,10 +843,18 @@ class TradingJournal:
         return _configuration_candidate(row) if row is not None else None
 
     def trading_configuration_revisions(self) -> list[dict[str, Any]]:
+        """Revision lists must not hydrate the complete configuration history."""
         rows = self._fetchall(
-            "SELECT * FROM trading_configuration_revisions ORDER BY revision DESC"
+            "SELECT revision_id, revision, label, content_hash, approved_at "
+            "FROM trading_configuration_revisions ORDER BY revision DESC"
         )
-        return [_configuration_revision(row) for row in rows]
+        return [dict(row) for row in rows]
+
+    def trading_configuration_revision(self, revision_id: str) -> dict[str, Any] | None:
+        row = self._fetchone(
+            "SELECT * FROM trading_configuration_revisions WHERE revision_id = ?", (revision_id,)
+        )
+        return _configuration_revision(row) if row is not None else None
 
     def approved_trading_configuration(self) -> dict[str, Any] | None:
         row = self._fetchone(
@@ -1468,6 +1475,14 @@ class TradingJournal:
                     payload_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE INDEX IF NOT EXISTS idx_configuration_candidate_summary
+                    ON trading_configuration_candidates(
+                        candidate_revision DESC, candidate_id, label, content_hash, created_at
+                    );
+                CREATE INDEX IF NOT EXISTS idx_configuration_revision_summary
+                    ON trading_configuration_revisions(
+                        revision DESC, revision_id, label, content_hash, approved_at
+                    );
                 """
             )
 

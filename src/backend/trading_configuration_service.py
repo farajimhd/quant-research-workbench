@@ -383,6 +383,10 @@ def configuration_revisions() -> list[dict[str, Any]]:
     return trading_journal().trading_configuration_revisions()
 
 
+def configuration_revision(revision_id: str) -> dict[str, Any] | None:
+    return trading_journal().trading_configuration_revision(revision_id)
+
+
 def configuration_candidates() -> list[dict[str, Any]]:
     return trading_journal().trading_configuration_candidates()
 
@@ -476,7 +480,10 @@ def publish_configuration(
     existing = configuration_revisions()
     if existing and existing[0]["content_hash"] == content_hash:
         materialize_market_discovery(runtime_candidate["market_discovery"])
-        return existing[0]
+        published = configuration_revision(existing[0]["revision_id"])
+        if published is None:
+            raise ValueError("Published configuration disappeared")
+        return published
     revision = int(existing[0]["revision"]) + 1 if existing else 1
     published = trading_journal().publish_trading_configuration(
         revision_id=str(uuid4()),

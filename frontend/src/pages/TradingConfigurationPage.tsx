@@ -187,9 +187,12 @@ import {
   EffectiveConfigurationPreview,
   RevisionBadge,
   RevisionPublisher,
-  type TestCandidate,
+  type TestCandidateSummary,
   releaseReadiness,
   type Revision,
+  type RevisionSummary,
+  candidateSummary,
+  revisionSummary,
 } from "../features/trading-configuration/release";
 import {
   AddStepsEditor,
@@ -283,8 +286,8 @@ const SECTION_META = {
 export function TradingConfigurationPage({ section }: { section: TradingConfigurationSection }) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [approved, setApproved] = useState<Revision | null>(null);
-  const [candidates, setCandidates] = useState<TestCandidate[]>([]);
-  const [revisions, setRevisions] = useState<Revision[]>([]);
+  const [candidates, setCandidates] = useState<TestCandidateSummary[]>([]);
+  const [revisions, setRevisions] = useState<RevisionSummary[]>([]);
   const [registry, setRegistry] = useState<InformationRegistry | null>(null);
   const [label, setLabel] = useState("");
   const [status, setStatus] = useState<"loading" | "ready" | "saving" | "saved" | "error">("loading");
@@ -303,11 +306,11 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
     let cancelled = false;
     setStatus("loading");
     const revisionsRequest = ["strategy", "revisions"].includes(section)
-      ? api<{ rows: Revision[] }>("/api/trading/configuration/revisions")
-      : Promise.resolve({ rows: [] as Revision[] });
+      ? api<{ rows: RevisionSummary[] }>("/api/trading/configuration/revisions")
+      : Promise.resolve({ rows: [] as RevisionSummary[] });
     const candidatesRequest = ["strategy", "revisions"].includes(section)
-      ? api<{ rows: TestCandidate[] }>("/api/trading/configuration/candidates")
-      : Promise.resolve({ rows: [] as TestCandidate[] });
+      ? api<{ rows: TestCandidateSummary[] }>("/api/trading/configuration/candidates")
+      : Promise.resolve({ rows: [] as TestCandidateSummary[] });
     Promise.all([
       apiCached<Draft>("/api/trading/configuration/base", { timeoutMs: 20_000, ttlMs: 300_000 }),
       api<{ approved: Revision | null }>("/api/trading/configuration/approved"),
@@ -319,8 +322,8 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         if (cancelled) return;
         setDraft(readSessionConfiguration(normalizeDraft(nextDraft)));
         setApproved(approvedPayload.approved ? { ...approvedPayload.approved, payload: normalizeDraft(approvedPayload.approved.payload) as Revision["payload"] } : null);
-        setRevisions(revisionPayload.rows.map((row) => ({ ...row, payload: normalizeDraft(row.payload) as Revision["payload"] })));
-        setCandidates(candidatePayload.rows.map((row) => ({ ...row, payload: normalizeDraft(row.payload) as TestCandidate["payload"] })));
+        setRevisions(revisionPayload.rows.map(revisionSummary));
+        setCandidates(candidatePayload.rows.map(candidateSummary));
         setRegistry(registryPayload);
         setStatus("ready");
       })
@@ -453,11 +456,11 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         ?? draft.assignments.deployments[0];
       if (!selectedRunPlan) throw new Error("Configure a Run Plan before creating a Test Candidate.");
       const configuration = serializeDraft(draft);
-      const candidate = await api<TestCandidate>("/api/trading/configuration/candidates", {
+      const candidate = await api<TestCandidateSummary>("/api/trading/configuration/candidates", {
         body: JSON.stringify({ canvas_profile: canvas.profile, canvas_revision: canvas.revision, configuration, label, run_plan_id: selectedRunPlan.run_plan_id }),
         method: "POST",
       });
-      setCandidates((current) => [candidate, ...current.filter((row) => row.candidate_id !== candidate.candidate_id)]);
+      setCandidates((current) => [candidateSummary(candidate), ...current.filter((row) => row.candidate_id !== candidate.candidate_id)]);
       setLabel("");
       setStatus("saved");
       setMessageTone("success");
@@ -715,7 +718,7 @@ function ConfigurationStudioHome({ approved, draft, onApplyRecommended, onCloneA
 
 function GuidedConfiguration({ approved, candidates, draft, label, omsStage, onChange, onContinue, onLabelChange, onOmsStageChange, onPublish, onSwitchToExpert, publishing, revisions, section }: {
   approved: Revision | null;
-  candidates: TestCandidate[];
+  candidates: TestCandidateSummary[];
   draft: Draft;
   label: string;
   omsStage: OmsGuidedStage;
@@ -726,7 +729,7 @@ function GuidedConfiguration({ approved, candidates, draft, label, omsStage, onC
   onPublish: () => void;
   onSwitchToExpert: () => void;
   publishing: boolean;
-  revisions: Revision[];
+  revisions: RevisionSummary[];
   section: TradingConfigurationSection;
 }) {
   const step: GuidedStep = section === "oms" ? omsStage : section;
