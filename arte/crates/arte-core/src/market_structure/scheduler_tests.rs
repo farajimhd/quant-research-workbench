@@ -2,6 +2,104 @@ use super::*;
 use crate::events::{Decimal, EventKind, Payload, SourceTime};
 const SECOND: u64 = 1_000_000_000;
 #[test]
+fn account_playback_recovery_keeps_partial_journal_progress() {
+    use crate::account_boundary::tests::receipt;
+    use playback::{accounts::Run, Poll};
+    let manifest = account_run_manifest();
+    let hash = manifest.hash().unwrap();
+    let pinned = crate::run_manifest::Pinned::new(manifest, &hash).unwrap();
+    let mut scheduler = scheduler(10);
+    let policy = std::sync::Arc::new(empty_quote_policy(1));
+    scheduler.bind_quote_policy(policy.clone()).unwrap();
+    let seed = scheduler.market.runtime.structure.seed_hash.clone();
+    let config = scheduler.market.runtime.configuration_hash().to_owned();
+    let context = "c".repeat(64);
+    let restore = |bundle: &playback::accounts::checkpoint::Bundle,
+                   receipts: &[&crate::strategy_transaction::Committed]| {
+        Run::restore_checkpoint(
+            bundle,
+            &bundle.root.id,
+            &pinned,
+            &playback_catalog(),
+            prepared_playback(),
+            checkpoint::Request {
+                context_hash: &context,
+                run_id: "causal-offline-test",
+                seed_hash: &seed,
+                configuration_hash: &config,
+                quote_policy: policy.clone(),
+                maximum_pending: 10,
+                maximum_bytes: 10_000_000,
+            },
+            1,
+            2,
+            receipts,
+        )
+    };
+    let mut original = Run::new(
+        &pinned,
+        &playback_catalog(),
+        scheduler,
+        prepared_playback(),
+        1,
+        2,
+    )
+    .unwrap();
+    let mut recovered = restore(&original.checkpoint(&context, 10_000_000).unwrap(), &[]).unwrap();
+    original.resume().unwrap();
+    recovered.resume().unwrap();
+    let mut boundaries = 0;
+    loop {
+        let poll = original.poll().unwrap();
+        assert_eq!(recovered.poll().unwrap(), poll);
+        if poll == Poll::Boundary {
+            let input = original
+                .pending()
+                .unwrap()
+                .unwrap()
+                .input("test-features".into());
+            let a = receipt(original.scopes()[0].clone(), input.clone());
+            let b = receipt(original.scopes()[1].clone(), input);
+            original.record(&a).unwrap();
+            recovered.record(&a).unwrap();
+            let image = recovered.checkpoint(&context, 10_000_000).unwrap();
+            assert_eq!(
+                image.root.id,
+                original.checkpoint(&context, 10_000_000).unwrap().root.id
+            );
+            assert!(restore(&image, &[]).is_err());
+            recovered = restore(&image, &[&a]).unwrap();
+            assert_eq!(recovered.status().mode, playback::Mode::Paused);
+            assert_eq!(recovered.remaining(), Some(1));
+            assert!(!recovered.needs_decision(&recovered.scopes()[0]).unwrap());
+            assert!(recovered.needs_decision(&recovered.scopes()[1]).unwrap());
+            assert!(recovered.acknowledge().is_err());
+            original.record(&b).unwrap();
+            recovered.record(&b).unwrap();
+            recovered = restore(
+                &recovered.checkpoint(&context, 10_000_000).unwrap(),
+                &[&b, &a],
+            )
+            .unwrap();
+            original.acknowledge().unwrap();
+            recovered.acknowledge().unwrap();
+            recovered.resume().unwrap();
+            boundaries += 1;
+        } else {
+            recovered = restore(&recovered.checkpoint(&context, 10_000_000).unwrap(), &[]).unwrap();
+            if poll == Poll::Complete {
+                break;
+            }
+            recovered.resume().unwrap();
+        }
+    }
+    assert!(boundaries > 0);
+    assert_eq!(
+        original.checkpoint(&context, 10_000_000).unwrap().root.id,
+        recovered.checkpoint(&context, 10_000_000).unwrap().root.id
+    );
+}
+#[test]
 fn playback_recovery_preserves_cursor_and_pending_boundaries() {
     use playback::{Mode, Playback, Poll};
     let mut scheduler = scheduler(10);

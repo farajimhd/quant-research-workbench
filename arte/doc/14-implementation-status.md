@@ -6,6 +6,30 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Composed account playback recovery
+
+The manifest-bound account playback wrapper now composes scheduler, prepared-input
+cursor and account-barrier recovery. Restore rechecks the run manifest, source
+catalog, declared consumers, capacities and component hashes. Consumer scopes
+come from the same shared constructor used for a new run.
+
+A pending playback boundary must have a matching barrier. An idle cursor cannot
+carry barrier receipts. Independent transaction receipts must reproduce the saved
+barrier exactly. Nonterminal recovery remains paused. Restoring does not commit
+strategy decisions, execute orders or acknowledge the market boundary.
+
+The two-account continuation test restores after the first account commits and
+again after both commit. Missing receipts block recovery. The second consumer
+remains pending after partial recovery. After acknowledgment, the recovered run
+continues to the same final checkpoint hash as uninterrupted playback.
+
+The adapter still needs to compose candidate state, feature state, portfolio,
+execution and these playback components under one durable run boundary. The
+whole-run recovery and production coordinator are not complete.
+
+All 377 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Source-oracle parity was not rerun. No service or network test ran.
+
 ## Account journal barrier recovery
 
 The account barrier now has a bounded recovery image. It pins the parent context,

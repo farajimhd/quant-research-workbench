@@ -8,6 +8,7 @@ use crate::{
     strategy_transaction::Committed,
     Error, Result,
 };
+pub mod checkpoint;
 
 pub struct Run {
     playback: Playback,
@@ -33,10 +34,24 @@ impl Run {
                 "backtest playback run identity or mode".into(),
             ));
         }
+        let scopes =
+            Self::consumer_scopes(manifest, scheduler.scope().instrument, maximum_consumers)?;
+        Ok(Self {
+            playback: Playback::new(scheduler, prepared, frames_per_poll)?,
+            manifest_hash: manifest.hash().into(),
+            scopes,
+            barrier: None,
+            maximum_consumers,
+        })
+    }
+    fn consumer_scopes(
+        manifest: &Pinned,
+        instrument: u64,
+        maximum_consumers: usize,
+    ) -> Result<Vec<Scope>> {
         if maximum_consumers == 0 || maximum_consumers > 4096 {
             return Err(Error::Capacity("backtest consumer budget".into()));
         }
-        let instrument = scheduler.scope().instrument;
         let mut scopes = Vec::new();
         for consumer in &manifest.manifest().consumers {
             if consumer.instrument == instrument {
@@ -57,13 +72,7 @@ impl Run {
                 "instrument has no declared strategy consumers".into(),
             ));
         }
-        Ok(Self {
-            playback: Playback::new(scheduler, prepared, frames_per_poll)?,
-            manifest_hash: manifest.hash().into(),
-            scopes,
-            barrier: None,
-            maximum_consumers,
-        })
+        Ok(scopes)
     }
     pub fn manifest_hash(&self) -> &str {
         &self.manifest_hash
