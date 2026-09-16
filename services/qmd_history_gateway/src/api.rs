@@ -245,7 +245,10 @@ pub fn app(state: AppState) -> Router {
     let watchlist_request_max_bytes = state.config.watchlist_request_max_bytes;
     let structure_checkpoint_request_max_bytes =
         state.config.structure_checkpoint_request_max_bytes;
-    Router::new()
+    let router = Router::new();
+    #[cfg(feature = "allocation-diagnostics")]
+    let router = router.route("/diagnostics/allocations", get(allocation_snapshot));
+    router
         .route("/level-book-v7/catalog", get(qmd_core::level_book_v7::catalog))
         .route("/level-book-v7/coverage", post(qmd_core::level_book_v7::coverage))
         .route("/level-book-v7/chart-checkpoint", post(qmd_core::level_book_v7::history_checkpoint))
@@ -358,6 +361,11 @@ pub fn app(state: AppState) -> Router {
             qmd_core::request_identity::preserve_request_identity,
         ))
         .with_state(Arc::new(state))
+}
+
+#[cfg(feature = "allocation-diagnostics")]
+async fn allocation_snapshot() -> Json<crate::allocation_diagnostics::AllocationSnapshot> {
+    Json(crate::allocation_diagnostics::snapshot())
 }
 
 async fn capability_catalog_snapshot() -> Json<Vec<ComputationCapability<'static>>> {

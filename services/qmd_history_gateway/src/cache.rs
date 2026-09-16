@@ -31,14 +31,14 @@ use qmd_core::structure_certification::checkpoint_sha256;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
-use std::mem::size_of;
+use std::mem::{size_of, size_of_val};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use tokio::sync::{broadcast, mpsc, Mutex, Notify, OnceCell, Semaphore};
+use tokio::sync::{broadcast, mpsc, Mutex, Notify, OnceCell, OwnedSemaphorePermit, Semaphore};
 
 pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v35";
 pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v58";
@@ -474,6 +474,9 @@ struct CacheIndex {
 
 #[derive(Default)]
 struct EntryState {
+    structure_snapshot_ids: HashSet<usize>,
+    structure_snapshot_bytes: usize,
+    structure_projection_bytes: usize,
     bars_ready: bool,
     complete: bool,
     error: Option<String>,
@@ -484,6 +487,11 @@ struct EntryState {
     structure_events: Vec<GenericStructureEvent>,
     frames: Vec<DerivedUpdate>,
     products: Option<MarketProductEngine>,
+}
+
+struct AbortWorkerOnDrop(tokio::task::AbortHandle);
+impl Drop for AbortWorkerOnDrop {
+    fn drop(&mut self) { self.0.abort(); }
 }
 
 struct StructureProjectionBuilder {
@@ -629,6 +637,77 @@ enum IndicatorWork {
     Finalize {
         bars: Vec<(Option<u64>, BarRow)>,
     },
+}
+
+struct QueuedIndicatorWork {
+    work: IndicatorWork,
+    // Held until the entire packet has been consumed, including awaited writes.
+    _permit: OwnedSemaphorePermit,
+}
+
+struct IndicatorQueueBudget {
+    semaphore: Arc<Semaphore>,
+    bytes: usize,
+}
+
+impl IndicatorQueueBudget {
+    fn new(cache_bytes: usize, concurrent_builds: usize) -> Self {
+        let bytes = (cache_bytes / concurrent_builds.max(1))
+            .min(u32::MAX as usize)
+            .min(Semaphore::MAX_PERMITS);
+        Self { semaphore: Arc::new(Semaphore::new(bytes)), bytes }
+    }
+
+    async fn reserve(&self, work: IndicatorWork) -> Result<QueuedIndicatorWork, String> {
+        let bytes = work.retained_bytes();
+        if bytes > self.bytes {
+            return Err(format!("historical indicator packet requires {bytes} bytes, exceeding queue budget {}", self.bytes));
+        }
+        let permit = self.semaphore.clone().acquire_many_owned(bytes as u32).await
+            .map_err(|_| "historical indicator queue budget closed".to_string())?;
+        Ok(QueuedIndicatorWork { work, _permit: permit })
+    }
+}
+
+impl IndicatorWork {
+    fn retained_bytes(&self) -> usize {
+        // Count allocations directly; serializing large structure snapshots here
+        // would itself allocate an unbounded temporary buffer. Shared snapshots
+        // are conservatively charged per bar, including any already in the cache.
+        fn json_bytes(value: &Value) -> usize {
+            match value {
+                Value::String(value) => value.capacity(),
+                Value::Array(values) => values.capacity() * size_of::<Value>()
+                    + values.iter().map(json_bytes).sum::<usize>(),
+                Value::Object(values) => values.iter().map(|(key, value)| {
+                    // Conservative node allowance for either serde map backend.
+                    256 + key.capacity() + size_of::<Value>() + json_bytes(value)
+                }).sum(),
+                _ => 0,
+            }
+        }
+        let (event_bytes, bars) = match self {
+            Self::Event { event, bars } => {
+                let bytes = match event {
+                    MarketEvent::Trade(event) => event.conditions.capacity() * size_of::<u16>()
+                        + event.ticker.capacity() + event.trade_id.capacity() + json_bytes(&event.raw),
+                    MarketEvent::Quote(event) => (event.conditions.capacity() + event.indicators.capacity()) * size_of::<u16>()
+                        + event.ticker.capacity() + json_bytes(&event.raw),
+                };
+                (bytes, bars)
+            }
+            Self::Finalize { bars } => (0, bars),
+        };
+        size_of::<QueuedIndicatorWork>() + event_bytes
+            + bars.capacity() * size_of::<(Option<u64>, BarRow)>()
+            + bars.iter().map(|(_, bar)| {
+                bar.session_date.capacity() + bar.timeframe.capacity() + bar.sym.capacity()
+                    + bar.estimated_luld_state.capacity() + structure_snapshot_bytes(&bar.qmd_structure)
+                    + bar.qmd_structure_events.capacity() * size_of::<GenericStructureEvent>()
+                    + bar.qmd_structure_events.iter().map(|event| event.sym.capacity()
+                        + event.timeframe.capacity() + event.event_kind.capacity() + event.lifecycle.capacity()).sum::<usize>()
+            }).sum::<usize>()
+    }
 }
 
 impl HistoricalDerivedCache {
@@ -2004,8 +2083,8 @@ impl HistoricalDerivedCache {
                 state.complete = true;
             }
             Err(error) => {
-                state.error = Some(error);
-                state.complete = true;
+                // A failed partial cache is never authoritative. Release its books.
+                entry.clear_failed_state(&mut state, error);
             }
         }
         drop(state);
@@ -2067,7 +2146,10 @@ impl HistoricalDerivedCache {
         } else {
             SharedBarStore::new(
                 derived_timeframes,
-                self.config.cache_max_bars_per_entry,
+                // This private builder consumes every emitted row directly.
+                // Only five prior closes are read by BarStore scalar features;
+                // complete requested history remains owned by CacheEntry.
+                if matches!(&profile, CacheProfile::Derived(_)) { 5 } else { self.config.cache_max_bars_per_entry },
                 1,
                 self.source.trade_aggregation_rules(),
             )
@@ -2122,8 +2204,11 @@ impl HistoricalDerivedCache {
         } else {
             MarketStructureReferenceLevels::default()
         };
+        let indicator_queue_budget = matches!(&profile, CacheProfile::Derived(_)).then(|| {
+            IndicatorQueueBudget::new(self.config.cache_max_bytes, self.config.cache_max_concurrent_builds)
+        });
         let mut indicator_worker = if matches!(&profile, CacheProfile::Derived(_)) {
-            let (sender, mut receiver) = mpsc::channel::<IndicatorWork>(
+            let (sender, mut receiver) = mpsc::channel::<QueuedIndicatorWork>(
                 self.config.cache_update_capacity.clamp(16, 100_000),
             );
             let worker_entry = entry.clone();
@@ -2140,6 +2225,7 @@ impl HistoricalDerivedCache {
                 let mut market_signal_engine = MarketSignalEngine::default();
                 let mut last_base_indicator: Option<IndicatorRow> = None;
                 while let Some(work) = receiver.recv().await {
+                    let QueuedIndicatorWork { work, _permit } = work;
                     let bars = match work {
                         IndicatorWork::Event { event, bars } => {
                             microstructure.apply_event(&event);
@@ -2275,6 +2361,8 @@ impl HistoricalDerivedCache {
         } else {
             None
         };
+        // Dropping a JoinHandle detaches its task. Abort queued work on failure.
+        let _indicator_guard = indicator_worker.as_ref().map(|(_, handle)| AbortWorkerOnDrop(handle.abort_handle()));
         let mut indicator_sender = indicator_worker.as_ref().map(|(sender, _)| sender.clone());
         let mut products = builds_products.then(|| {
             MarketProductEngine::new(
@@ -2368,11 +2456,10 @@ impl HistoricalDerivedCache {
                         indicator_bars.push((sequence, bar));
                     }
                     if let Some(sender) = indicator_sender.as_mut() {
+                        let work = indicator_queue_budget.as_ref().expect("derived queue budget")
+                            .reserve(IndicatorWork::Event { event, bars: indicator_bars }).await?;
                         if sender
-                            .send(IndicatorWork::Event {
-                                event,
-                                bars: indicator_bars,
-                            })
+                            .send(work)
                             .await
                             .is_err()
                         {
@@ -2473,10 +2560,10 @@ impl HistoricalDerivedCache {
                 state.events_processed = events_processed;
             }
             entry.notify.notify_waiters();
+            let work = indicator_queue_budget.as_ref().expect("derived queue budget")
+                .reserve(IndicatorWork::Finalize { bars: final_indicator_bars }).await?;
             sender
-                .send(IndicatorWork::Finalize {
-                    bars: final_indicator_bars,
-                })
+                .send(work)
                 .await
                 .map_err(|_| {
                     "historical indicator worker stopped before finalization".to_string()
@@ -2985,18 +3072,28 @@ impl CacheEntry {
         )
     }
 
+    fn clear_failed_state(&self, state: &mut EntryState, error: String) {
+        *state = EntryState { error: Some(error), complete: true, ..EntryState::default() };
+        self.release_accounting();
+    }
+
     async fn push_bar(&self, bar: BarRow) -> Result<u64, String> {
         let mut state = self.state.lock().await;
+        if let Some(error) = &state.error { return Err(error.clone()); }
         ensure_monotonic_bar_start(
             state.bars.last().map(|update| update.bar.bar_start),
             bar.bar_start,
         )?;
         let update_count = state.bars.len().saturating_add(1);
+        let snapshot_id = Arc::as_ptr(&bar.qmd_structure) as usize;
+        let snapshot_bytes = if state.structure_snapshot_ids.contains(&snapshot_id) { 0 }
+            else { structure_snapshot_bytes(&bar.qmd_structure) };
         let frame_bytes = estimated_frame_bytes(
             update_count,
             state.structure_events.len(),
             state.market_signal_events.len(),
-        );
+        ).saturating_add(state.structure_snapshot_bytes)
+            .saturating_add(snapshot_bytes).saturating_add(state.structure_projection_bytes);
         if state.bars.len() >= self.max_updates || frame_bytes > self.max_update_bytes {
             return Err(format!(
                 "historical derived entry exceeded cache limit: updates={} max_updates={} estimated_bytes={} max_update_bytes={}",
@@ -3010,25 +3107,28 @@ impl CacheEntry {
             .await?;
         self.frame_bytes
             .store(frame_bytes as u64, Ordering::Release);
+        state.structure_snapshot_ids.insert(snapshot_id);
+        state.structure_snapshot_bytes = state.structure_snapshot_bytes.saturating_add(snapshot_bytes);
         let sequence = state.bars.len() as u64 + 1;
         let update = BarUpdate { bar, sequence };
         state.bars.push(update.clone());
-        drop(state);
         let _ = self.bar_updates.send(update);
+        drop(state);
         Ok(sequence)
     }
 
     async fn store_structure_projection(&self, projection: Vec<Value>) -> Result<(), String> {
+        let mut state = self.state.lock().await;
+        if let Some(error) = &state.error { return Err(error.clone()); }
         let projection_bytes = serde_json::to_vec(&projection)
             .map_err(|error| format!("failed to size unified structure timeline: {error}"))?
             .len();
-        let mut state = self.state.lock().await;
         let frame_bytes = estimated_frame_bytes(
             state.bars.len(),
             state.structure_events.len(),
             state.market_signal_events.len(),
         )
-        .saturating_add(projection_bytes);
+        .saturating_add(projection_bytes).saturating_add(state.structure_snapshot_bytes);
         if frame_bytes > self.max_update_bytes {
             return Err(format!(
                 "historical unified structure timeline exceeded max_update_bytes={}",
@@ -3039,6 +3139,7 @@ impl CacheEntry {
             .await?;
         self.frame_bytes
             .store(frame_bytes as u64, Ordering::Release);
+        state.structure_projection_bytes = projection_bytes;
         state.structure_projection = projection;
         Ok(())
     }
@@ -3050,11 +3151,24 @@ impl CacheEntry {
         indicator: IndicatorRow,
     ) -> Result<(), String> {
         let mut state = self.state.lock().await;
+        if let Some(error) = &state.error { return Err(error.clone()); }
         let expected = state.frames.len() as u64 + 1;
         if sequence != expected {
             return Err(format!(
                 "historical indicator sequence gap: expected={expected} received={sequence}"
             ));
+        }
+        let snapshot_id = Arc::as_ptr(&bar.qmd_structure) as usize;
+        if !state.structure_snapshot_ids.contains(&snapshot_id) {
+            let bytes = structure_snapshot_bytes(&bar.qmd_structure);
+            let next = self.frame_bytes.load(Ordering::Acquire).saturating_add(bytes as u64);
+            if next > self.max_update_bytes as u64 {
+                return Err("historical indicator structure snapshot exceeded cache byte limit".into());
+            }
+            self.reserve_estimated_bytes(next.saturating_add(self.product_bytes.load(Ordering::Acquire))).await?;
+            self.frame_bytes.store(next, Ordering::Release);
+            state.structure_snapshot_ids.insert(snapshot_id);
+            state.structure_snapshot_bytes = state.structure_snapshot_bytes.saturating_add(bytes);
         }
         let update = DerivedUpdate {
             as_of: bar.bar_end,
@@ -3064,16 +3178,17 @@ impl CacheEntry {
             update_type: "update",
         };
         state.frames.push(update.clone());
-        drop(state);
         let _ = self.updates.send(update);
+        drop(state);
         Ok(())
     }
 
     async fn push_structure_events(&self, events: &[GenericStructureEvent]) -> Result<(), String> {
+        let mut state = self.state.lock().await;
+        if let Some(error) = &state.error { return Err(error.clone()); }
         if events.is_empty() {
             return Ok(());
         }
-        let mut state = self.state.lock().await;
         let original_len = state.structure_events.len();
         for event in events.iter().filter(|event| {
             matches!(
@@ -3115,7 +3230,7 @@ impl CacheEntry {
             state.bars.len(),
             state.structure_events.len(),
             state.market_signal_events.len(),
-        );
+        ).saturating_add(state.structure_snapshot_bytes).saturating_add(state.structure_projection_bytes);
         if frame_bytes > self.max_update_bytes {
             state.structure_events.truncate(original_len);
             return Err(format!(
@@ -3137,6 +3252,7 @@ impl CacheEntry {
 
     async fn push_market_signal_event(&self, event: MarketSignalEvent) -> Result<(), String> {
         let mut state = self.state.lock().await;
+        if let Some(error) = &state.error { return Err(error.clone()); }
         if state
             .market_signal_events
             .last()
@@ -3159,7 +3275,7 @@ impl CacheEntry {
             state.bars.len(),
             state.structure_events.len(),
             state.market_signal_events.len(),
-        );
+        ).saturating_add(state.structure_snapshot_bytes).saturating_add(state.structure_projection_bytes);
         if frame_bytes > self.max_update_bytes {
             state.market_signal_events.pop();
             return Err(format!(
@@ -3311,6 +3427,38 @@ impl CacheEntry {
             notified.await;
         }
     }
+}
+
+// Count retained capacities, not serialized lengths. A bar and its indicator
+// share one immutable Arc, but successive bars may pin distinct complete books.
+// Include conservative Arc/hash-table overhead without allocating a JSON copy.
+fn structure_snapshot_bytes(snapshot: &qmd_core::generic_structure::GenericStructureSnapshot) -> usize {
+    use qmd_core::generic_structure::StructureLevelSnapshot;
+    fn buffer<T>(values: &Vec<T>) -> usize { values.capacity().saturating_mul(size_of::<T>()) }
+    fn level(value: &StructureLevelSnapshot) -> usize {
+        value.lifecycle.capacity() + buffer(&value.promotions) + buffer(&value.footprint)
+            + value.promotions.iter().map(|p| p.timeframe.capacity()).sum::<usize>()
+    }
+    let mut bytes = size_of_val(snapshot) + 64 + level(&snapshot.support) + level(&snapshot.resistance)
+        + snapshot.last_event_kind.capacity() + snapshot.last_event_timeframe.capacity()
+        + buffer(&snapshot.active_levels) + buffer(&snapshot.timeframe_states) + buffer(&snapshot.unified_levels);
+    for value in &snapshot.active_levels {
+        bytes += value.lifecycle.capacity() + value.footprint_session_date.capacity()
+            + buffer(&value.promotions) + buffer(&value.footprint)
+            + value.promotions.iter().map(|p| p.timeframe.capacity()).sum::<usize>();
+    }
+    for value in &snapshot.timeframe_states {
+        bytes += value.timeframe.capacity() + level(&value.support) + level(&value.resistance);
+    }
+    for value in &snapshot.unified_levels {
+        bytes += buffer(&value.timeframes) + value.timeframes.iter().map(String::capacity).sum::<usize>()
+            + value.hold_score_revision.capacity() + value.ticker_relative_quality_status.capacity()
+            + value.ticker_relative_quality_revision.capacity() + value.ticker_relative_quality_distribution_hash.capacity()
+            + value.lifecycle.capacity() + buffer(&value.sources)
+            + value.sources.iter().map(|s| s.timeframe.capacity() + s.source_kind.capacity()).sum::<usize>();
+        // CompactLevelState contains only scalars; its storage is inline.
+    }
+    bytes
 }
 
 fn estimated_frame_bytes(
@@ -4137,6 +4285,65 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::{broadcast, Mutex, Notify};
+
+    #[tokio::test]
+    async fn indicator_queue_preserves_order_and_releases_consumed_bytes() {
+        use super::{IndicatorQueueBudget, IndicatorWork};
+        let budget = IndicatorQueueBudget::new(1_000_000, 2);
+        assert_eq!(budget.bytes, 500_000);
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(16);
+        for index in 0..3 {
+            sender.send(budget.reserve(IndicatorWork::Finalize {
+                bars: Vec::with_capacity(index),
+            }).await.unwrap()).await.unwrap();
+        }
+        drop(sender);
+        for index in 0..3 {
+            let packet = receiver.recv().await.unwrap();
+            let super::QueuedIndicatorWork { work, _permit } = packet;
+            match work {
+                IndicatorWork::Finalize { bars } => assert_eq!(bars.capacity(), index),
+                _ => panic!("wrong work kind"),
+            }
+            assert!(budget.semaphore.available_permits() < budget.bytes);
+        }
+        assert!(receiver.recv().await.is_none());
+        assert_eq!(budget.semaphore.available_permits(), budget.bytes);
+    }
+
+    #[tokio::test]
+    async fn indicator_queue_backpressure_and_abort_release_budget() {
+        use super::{IndicatorQueueBudget, IndicatorWork};
+        let packet = || IndicatorWork::Finalize { bars: Vec::new() };
+        let bytes = packet().retained_bytes();
+        let too_small = IndicatorQueueBudget::new(bytes - 1, 1);
+        assert!(too_small.reserve(packet()).await.is_err());
+        let budget = IndicatorQueueBudget::new(bytes * 2, 1);
+        let first = budget.reserve(packet()).await.unwrap();
+        let second = budget.reserve(packet()).await.unwrap();
+        assert_eq!(budget.semaphore.available_permits(), 0);
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(10),
+            budget.reserve(packet())).await.is_err());
+        drop(first);
+        let replacement = budget.reserve(packet()).await.unwrap();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(16);
+        sender.send(second).await.unwrap();
+        sender.send(replacement).await.unwrap();
+        let started = Arc::new(Notify::new());
+        let worker_started = started.clone();
+        let worker = tokio::spawn(async move {
+            let _consuming_packet = receiver.recv().await.unwrap();
+            worker_started.notify_one();
+            std::future::pending::<()>().await;
+        });
+        started.notified().await;
+        worker.abort();
+        assert!(worker.await.unwrap_err().is_cancelled());
+        assert_eq!(budget.semaphore.available_permits(), budget.bytes);
+        // A failed send must also release its reservation immediately.
+        assert!(sender.send(budget.reserve(packet()).await.unwrap()).await.is_err());
+        assert_eq!(budget.semaphore.available_permits(), budget.bytes);
+    }
 
     #[tokio::test]
     #[ignore = "requires certified Aug 21 canonical ClickHouse fixture"]
@@ -5101,6 +5308,113 @@ mod tests {
         );
         entry.release_accounting();
         assert_eq!(allocated.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test]
+    async fn private_five_bar_history_preserves_every_emitted_derived_bar() {
+        use qmd_core::bars::{SharedBarStore, TradeAggregationRules, TradeUpdateRule};
+        use qmd_core::event::{MarketEvent, TradeEvent};
+        let rules = TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap();
+        let short = SharedBarStore::new(vec!["100ms".into(), "1s".into()], 5, 1, rules.clone());
+        let long = SharedBarStore::new(vec!["100ms".into(), "1s".into()], 1000, 1, rules);
+        let start = Utc.with_ymd_and_hms(2026, 8, 19, 8, 0, 0).unwrap();
+        let mut a = Vec::new(); let mut b = Vec::new();
+        for i in 0..120 {
+            let at = start + Duration::milliseconds(i * 100);
+            let event = MarketEvent::Trade(TradeEvent {
+                conditions: vec![0], exchange: 1, ingest_ts: at, participant_ts: Some(at),
+                price: 10. + i as f64 * 0.01, raw: json!({}), sequence: i as u64,
+                size: (i + 1) as f64 * 100., tape: 1, ticker: "TEST".into(),
+                trade_id: i.to_string(), trf_id: 0, trf_ts: None, ts: at,
+            });
+            a.extend(short.shard(0).apply_event(&event).await);
+            b.extend(long.shard(0).apply_event(&event).await);
+        }
+        a.extend(short.shard(0).finalize_due(start + Duration::seconds(13)).await);
+        b.extend(long.shard(0).finalize_due(start + Duration::seconds(13)).await);
+        assert!(a.len() > 100);
+        a.sort_by_key(|bar| (bar.bar_end, bar.timeframe.clone()));
+        b.sort_by_key(|bar| (bar.bar_end, bar.timeframe.clone()));
+        assert_eq!(a.len(), b.len());
+        for (left, right) in a.iter().zip(&b) {
+            let x = serde_json::to_value(left).unwrap(); let y = serde_json::to_value(right).unwrap();
+            for (key, value) in x.as_object().unwrap() {
+                if key == "qmd_structure" && value != &y[key] {
+                    for (field, nested) in value.as_object().unwrap() {
+                        assert!(nested == &y[key][field], "structure {} differs at {}", left.bar_end, field);
+                    }
+                }
+                assert!(value == &y[key], "bar {} {} differs at {}", left.bar_end, left.timeframe, key);
+            }
+        }
+        let mut ac = qmd_core::indicators::BarIndicatorCalculator::new();
+        let mut bc = qmd_core::indicators::BarIndicatorCalculator::new();
+        for (left, right) in a.iter().zip(&b).filter(|(left, _)| left.timeframe == "1s") {
+            assert_eq!(serde_json::to_value(ac.apply_bar_for_historical_cache(left)).unwrap(),
+                serde_json::to_value(bc.apply_bar_for_historical_cache(right)).unwrap());
+        }
+    }
+
+    #[tokio::test]
+    async fn retained_structure_snapshots_are_shared_budgeted_and_released() {
+        use qmd_core::generic_structure::{GenericStructureSnapshot, StructureFootprintBin};
+        use qmd_core::event::{MarketEvent, QuoteEvent};
+        use qmd_core::bars::{TradeAggregationRules, TradeUpdateRule};
+        let start = Utc.with_ymd_and_hms(2026, 8, 19, 8, 0, 0).unwrap();
+        let store = qmd_core::bars::SharedBarStore::new_without_structure(vec!["1s".into()], 2, 1,
+            TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap());
+        store.apply_event(&MarketEvent::Quote(QuoteEvent {
+            ask_exchange: 1, ask_price: 10.1, ask_size: 100, bid_exchange: 1,
+            bid_price: 10., bid_size: 100, conditions: vec![], indicators: vec![], ingest_ts: start,
+            raw: json!({}), sequence: 1, tape: 1, ticker: "TEST".into(), ts: start,
+        })).await;
+        store.finalize_due(start + Duration::seconds(2)).await;
+        let mut bar = store.snapshot("TEST", "1s", 2).await.history.remove(0);
+        let allocated = Arc::new(AtomicU64::new(0));
+        let make_entry = || {
+            let (updates, _) = broadcast::channel(1);
+            let (bar_updates, _) = broadcast::channel(1);
+            CacheEntry {
+                cache_index: std::sync::Weak::new(), cache_stats: Arc::new(CacheStats::default()),
+                accounted: AtomicBool::new(true), accounting_lock: StdMutex::new(()),
+                allocated_bytes: allocated.clone(), complete: AtomicBool::new(false),
+                frame_bytes: AtomicU64::new(0), global_max_bytes: 200_000,
+                notify: Notify::new(), state: Mutex::new(EntryState::default()), bar_updates, updates,
+                estimated_bytes: AtomicU64::new(0), max_update_bytes: 200_000,
+                max_updates: 100, product_bytes: AtomicU64::new(0), requirement: None,
+            }
+        };
+        let mut book = GenericStructureSnapshot::default();
+        book.support.footprint = Vec::<StructureFootprintBin>::with_capacity(1000);
+        book.last_event_kind = String::with_capacity(10_000);
+        let dynamic = super::structure_snapshot_bytes(&book);
+        assert!(dynamic >= 10_000 + 1000 * std::mem::size_of::<StructureFootprintBin>());
+        bar.qmd_structure = Arc::new(book);
+        let entry = make_entry();
+        entry.push_bar(bar.clone()).await.unwrap();
+        let mut second = bar.clone(); second.bar_start += Duration::seconds(1); second.bar_end += Duration::seconds(1);
+        entry.push_bar(second).await.unwrap();
+        assert_eq!(entry.state.lock().await.structure_snapshot_bytes, dynamic);
+        let before = allocated.load(Ordering::Acquire);
+        entry.push_structure_events(&[]).await.unwrap();
+        assert_eq!(allocated.load(Ordering::Acquire), before);
+        let mut huge = GenericStructureSnapshot::default();
+        huge.last_event_kind = String::with_capacity(300_000);
+        let mut rejected = bar.clone(); rejected.bar_start += Duration::seconds(2); rejected.bar_end += Duration::seconds(2);
+        rejected.qmd_structure = Arc::new(huge);
+        assert!(entry.push_bar(rejected).await.is_err());
+        assert_eq!(entry.state.lock().await.bars.len(), 2);
+        { let mut state = entry.state.lock().await; entry.clear_failed_state(&mut state, "budget rejected".into()); }
+        assert_eq!(allocated.load(Ordering::Acquire), 0);
+        assert!(entry.state.lock().await.bars.is_empty());
+        assert!(entry.push_bar(bar.clone()).await.unwrap_err().contains("budget rejected"));
+        assert_eq!(entry.push_structure_events(&[]).await.unwrap_err(), "budget rejected");
+        assert_eq!(entry.store_structure_projection(vec![json!({"book": [1,2,3]})]).await.unwrap_err(), "budget rejected");
+        assert_eq!(allocated.load(Ordering::Acquire), 0);
+        assert!(entry.state.lock().await.structure_projection.is_empty());
+        let next = make_entry();
+        next.push_bar(bar).await.unwrap();
+        assert!(allocated.load(Ordering::Acquire) > 0);
     }
 
     #[tokio::test]

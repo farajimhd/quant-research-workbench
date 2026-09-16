@@ -7,6 +7,7 @@ edition = "2021"
 default = ["structural-prominence-v18"]
 structural-prominence-v18 = ["qmd_core/structural-prominence-v18"]
 historical-campaign-v16 = ["qmd_core/historical-campaign-v16"]
+allocation-diagnostics = []
 
 [[bin]]
 name = "structure_checkpoint_campaign"

@@ -2053,7 +2053,12 @@ def historical_market_state(ticker: str, *, start: str, end: str) -> dict[str, A
     )
     chart = _historical_gateway_get(
         f"/snapshot/chart-bars/{urllib.parse.quote(resolved_ticker)}",
-        {**common, "timeframe": "1s", "limit": 1},
+        # LULD fields belong to the canonical price bar. The default full
+        # stage also reconstructs historical structural books and indicators,
+        # although none of them is consumed by this market-state projection.
+        {**common, "timeframe": "1s", "limit": 1, "stage": "prices",
+         "allow_persisted_bars": "false", "include_market_signals": "false",
+         "include_structure": "false"},
         timeout=90,
     )
     rows = list(conditions.get("rows") or []) if isinstance(conditions, dict) else []

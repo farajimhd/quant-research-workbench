@@ -283,6 +283,20 @@ class HistoricalTradingServiceTests(unittest.TestCase):
         self.assertTrue(payload["is_tradable"])
         self.assertEqual(payload["luld_state"], "near_upper")
         self.assertEqual(payload["luld_upper_price"], 320.0)
+        self.assertEqual(payload["as_of"], "2026-07-14T13:41:00Z")
+        self.assertEqual(payload["luld_lower_price"], 280.0)
+        self.assertEqual(payload["luld_distance_to_lower_pct"], 9.0)
+        self.assertEqual(payload["luld_distance_to_upper_pct"], 0.8)
+        path, query = gateway_get.call_args_list[1].args
+        self.assertEqual(path, "/snapshot/chart-bars/AAPL")
+        self.assertEqual(query, {
+            "start": "2026-07-14T04:00:00-04:00",
+            "end": "2026-07-14T09:45:00-04:00",
+            "as_of": "2026-07-14T09:45:00-04:00", "limit": 1,
+            "timeframe": "1s", "stage": "prices",
+            "allow_persisted_bars": "false", "include_market_signals": "false",
+            "include_structure": "false",
+        })
 
     def test_market_event_references_expose_displayable_venues_and_conditions(self) -> None:
         market_event_references.cache_clear()
