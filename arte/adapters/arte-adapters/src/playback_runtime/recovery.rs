@@ -24,6 +24,7 @@ use arte_core::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+pub mod storage;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -51,6 +52,52 @@ pub struct Limits {
     pub execution: simulation_runtime::checkpoint::Limits,
     pub portfolio: PortfolioLimits,
     pub maximum_state_bytes: usize,
+}
+/// Independent recovery evidence. None of these pins is inferred from the
+/// checkpoint being loaded. This request is reusable for publication readback.
+pub struct RestoreRequest<'a> {
+    pub expected_root: &'a str,
+    pub manifest: &'a Pinned,
+    pub cut: &'a Cut,
+    pub sources: &'a Catalog,
+    pub prepared: &'a Prepared,
+    pub market: Request<'a>,
+    pub frames_per_poll: usize,
+    pub maximum_consumers: usize,
+    pub receipts: &'a [&'a Committed],
+    pub costs: &'a arte_core::simulation_costs::Model,
+    pub configurations: &'a BTreeMap<String, Config>,
+    pub readbacks: &'a BTreeMap<String, Vec<Record>>,
+    pub currencies: &'a BTreeMap<u64, SettlementCurrency>,
+    pub limits: &'a Limits,
+}
+impl RestoreRequest<'_> {
+    pub fn restore(&self, bundle: &Bundle) -> Result<Recovered> {
+        bundle.restore(
+            self.expected_root,
+            self.manifest,
+            self.cut,
+            self.sources,
+            self.prepared.clone(),
+            Request {
+                context_hash: self.market.context_hash,
+                run_id: self.market.run_id,
+                seed_hash: self.market.seed_hash,
+                configuration_hash: self.market.configuration_hash,
+                quote_policy: self.market.quote_policy.clone(),
+                maximum_pending: self.market.maximum_pending,
+                maximum_bytes: self.market.maximum_bytes,
+            },
+            self.frames_per_poll,
+            self.maximum_consumers,
+            self.receipts,
+            Costs::new(self.costs.clone(), self.manifest)?,
+            self.configurations.clone(),
+            self.readbacks,
+            self.currencies,
+            self.limits,
+        )
+    }
 }
 fn require(manifest: &Pinned, limits: &Limits) -> Result<()> {
     let consumers = &manifest.manifest().consumers;

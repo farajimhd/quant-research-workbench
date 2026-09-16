@@ -637,6 +637,32 @@ async fn candidate_owner_retry(cancel: bool) {
     let context =
         arte_core::content_hash(&("arte.playback-controller-cut.v1", manifest.hash(), &cut))
             .unwrap();
+    let mut stored = crate::playback_runtime::recovery::storage::Stored::from_bundle(
+        &image,
+        limits.maximum_bytes,
+    )
+    .unwrap();
+    let hydrated = stored.hydrate(limits.maximum_bytes).unwrap();
+    assert_eq!(hydrated.root.id, image.root.id);
+    assert_eq!(
+        crate::playback_runtime::recovery::storage::Stored::from_bundle(
+            &hydrated,
+            limits.maximum_bytes
+        )
+        .unwrap()
+        .root
+        .id,
+        stored.root.id
+    );
+    let chunk_id = stored.chunks.keys().next().unwrap().clone();
+    let chunk = stored.chunks.remove(&chunk_id).unwrap();
+    assert!(stored.hydrate(limits.maximum_bytes).is_err());
+    stored.chunks.insert(chunk_id.clone(), chunk);
+    stored.chunks.get_mut(&chunk_id).unwrap().payload[0] ^= 1;
+    assert!(stored.hydrate(limits.maximum_bytes).is_err());
+    stored.chunks.get_mut(&chunk_id).unwrap().payload[0] ^= 1;
+    assert!(stored.hydrate(100).is_err());
+    image = stored.hydrate(limits.maximum_bytes).unwrap();
     let empty_rows = candidates
         .scope_hashes()
         .map(|key| (key.to_owned(), vec![]))
@@ -675,7 +701,32 @@ async fn candidate_owner_retry(cancel: bool) {
     image.candidates.root.id = "f".repeat(64);
     assert!(restore_run(&image, &image.root.id).is_err());
     image.candidates.root.id = original_id;
-    let mut restored_run = restore_run(&image, &image.root.id).unwrap();
+    let configurations = Document::decode(&bytes).unwrap().bind(&manifest).unwrap();
+    let request = crate::playback_runtime::recovery::RestoreRequest {
+        expected_root: &image.root.id,
+        manifest: &manifest,
+        cut: &cut,
+        sources: &recovery.catalog,
+        prepared: &recovery.prepared,
+        market: arte_core::market_structure::scheduler::checkpoint::Request {
+            context_hash: &context,
+            run_id: "run",
+            seed_hash: &recovery.seed_hash,
+            configuration_hash: &recovery.configuration_hash,
+            quote_policy: std::sync::Arc::new(crate::test_quote_policy()),
+            maximum_pending: 10,
+            maximum_bytes: 4_000_000,
+        },
+        frames_per_poll: 1,
+        maximum_consumers: 2,
+        receipts: &[],
+        costs: &cost_model,
+        configurations: &configurations,
+        readbacks: &empty_rows,
+        currencies: &currencies,
+        limits: &limits,
+    };
+    let mut restored_run = crate::clickhouse::checkpoint_roundtrip_test(&image, &request).await;
     assert_eq!(
         RunBundle::capture(
             &mut restored_run.controller,

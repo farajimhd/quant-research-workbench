@@ -6,6 +6,33 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Durable common-cut checkpoint adapter
+
+The single-instrument common-cut bundle now has a binary archive format and a
+ClickHouse publication adapter. Binary framing avoids JSON byte-array expansion.
+The archive bounds object counts and payload bytes. It stores one-MiB chunks and
+a small header that pins their order, archive hash, manifest and boundary cut.
+
+Publication validates the complete recovered graph before writing. It requires
+repository-extraction and durability acceptance plus cooperative lease ownership.
+Every chunk is read back before the root is published. The publication slot binds
+the manifest and boundary sequence. A different checkpoint at that slot is a
+conflict, not a replacement. Loading verifies all hashes and performs the same
+semantic, journal and portfolio checks before returning paused owners.
+
+Schema 017 adds `backtest_checkpoint_chunks_v1` and `backtest_checkpoints_v1` on
+`live_market_ssd`. It is unapplied. This is cooperative publication, not a
+ClickHouse compare-and-swap transaction or proof of deployed database durability.
+
+The existing two-account fixtures now archive, publish to an in-memory store,
+read back, restore and continue. Tests reject missing or corrupt chunks, wrong
+pins, incomplete publication, conflicting roots and lost ownership. Exact retry
+after an ambiguous root write does not duplicate the stored graph. All 390 offline
+Rust tests, formatting, Clippy and copied-source hash checks pass. Source-oracle
+parity was not rerun. No database connection, migration or service test ran.
+
+Multi-instrument recovery, service wiring and deployed acceptance remain open.
+
 ## Common-cut backtest recovery
 
 The playback recovery bundle now pins controller, candidate-owner and portfolio
@@ -20,8 +47,8 @@ unowned reservations and settlement receipts fail closed. Reserved plans not yet
 submitted must be resolved before this checkpoint can be captured.
 
 This API currently supports one instrument across multiple accounts. It rejects
-multi-instrument manifests explicitly. Multi-instrument coordination and durable
-publication of this combined graph remain unfinished.
+multi-instrument manifests explicitly. Multi-instrument coordination remains
+unfinished. The adapter above now provides durable-publication code for this graph.
 
 The two-account retry fixtures now restore all three owners before candidate
 evaluation, compare recaptured root hashes and continue through journal retries
@@ -48,8 +75,8 @@ checkpoint hashes and continue playback using the restored instances. All 388
 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
 Source-oracle parity was not rerun. No service or network test ran.
 
-The common-cut bundle above now coordinates these component roots for one
-instrument. Durable publication and multi-instrument recovery remain open.
+The common-cut bundle and adapter above now coordinate these component roots for
+one instrument. Multi-instrument recovery and deployed acceptance remain open.
 
 ## Recovery with working targets
 
