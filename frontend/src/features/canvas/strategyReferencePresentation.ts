@@ -1,5 +1,9 @@
 type Row = Record<string, unknown>;
-export type StrategyReferenceSegment = { start: number; end: number; hod?: number; resistance?: number; zoneLower?: number };
+export type StrategyReferenceSegment = { start: number; end: number; hod?: number; resistance?: number; zoneLower?: number; resistanceLabel?: "R1" };
+
+export function strategyReferenceLabel(kind: "hod" | "resistance" | "zoneLower", reference: Pick<StrategyReferenceSegment, "resistanceLabel">): string {
+  return kind === "hod" ? "HOD" : kind === "zoneLower" ? "Entry zone floor" : reference.resistanceLabel ?? "Entry R";
+}
 
 /** Recorded strategy selections only; never rebuild the book or HOD in the UI. */
 export function strategyReferencePresentation(rows: Row[], ticker: string, asOf: string): StrategyReferenceSegment[] {
@@ -16,10 +20,13 @@ export function strategyReferencePresentation(rows: Row[], ticker: string, asOf:
     if (!Number.isFinite(time) || !Number.isFinite(published) || !Number.isFinite(cutoff)
         || time > cutoff || published > cutoff || time > published) continue;
     const last = result.at(-1);
-    const hod = positive(reference.hod), resistance = positive(reference.resistance_center ?? reference.resistance_upper), zoneLower=positive(reference.zone_lower);
-    if (last && last.hod === hod && last.resistance === resistance && last.zoneLower===zoneLower) continue;
+    const ladder = reference.contract === "r1-hod-resistance-ladder-v1";
+    const resistanceLabel = ladder ? "R1" as const : undefined;
+    // The ladder's continuation threshold may advance independently of R1.
+    const hod = positive(reference.hod), resistance = positive(ladder ? reference.resistance_upper : reference.resistance_center ?? reference.resistance_upper), zoneLower=positive(reference.zone_lower);
+    if (last && last.hod === hod && last.resistance === resistance && last.zoneLower===zoneLower && last.resistanceLabel===resistanceLabel) continue;
     if (last) last.end = time;
-    result.push({ start: time, end: cutoff, hod, resistance, ...(zoneLower===undefined?{}:{zoneLower}) });
+    result.push({ start: time, end: cutoff, hod, resistance, ...(zoneLower===undefined?{}:{zoneLower}), ...(resistanceLabel ? {resistanceLabel} : {}) });
   }
   return result.filter(row => row.end > row.start);
 }

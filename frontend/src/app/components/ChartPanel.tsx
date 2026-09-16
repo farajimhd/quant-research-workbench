@@ -1,6 +1,7 @@
 import {EMA_ACCELERATION_ID,EMA_ACCELERATION_KEY,emaAcceleration,emaPeriod,accelerationUnit,accelerationUnits,emaStates,type EmaState,type AccelerationUnit} from './emaAcceleration';
 import {ReactionBookPrimitive,useReactionBook} from './ReactionBook';
 import { positionReferenceSegments, tradeGuideSpan } from "./tradeGuideGeometry";
+import { strategyReferenceLabel, type StrategyReferenceSegment } from "../../features/canvas/strategyReferencePresentation";
 import { LevelReactionPrimitive, useLevelReaction } from "./LevelReaction";
 import { macdBpsPoints } from "./macdBps";
 import { HindsightPrimitive, useHindsightPositions } from "./HindsightPositions";
@@ -419,7 +420,7 @@ type PriceZonePrimitiveState = {
 };
 
 type TradeAnnotationPrimitiveState = {
-  references?: Array<{ start: number; end: number; hod?: number; resistance?: number; zoneLower?: number }>;
+  references?: StrategyReferenceSegment[];
   candles: Candle[];
   executions: TradeFillAnnotation[];
   settings: StrategyPresentationSettings;
@@ -7688,7 +7689,7 @@ function drawTradeAnnotationPrimitiveGeometry(
       const line = kind === "hod" ? elements.highOfDayLine : kind === "zoneLower" ? elements.entryZoneLine : elements.entryResistanceLine;
       const label = kind === "hod" ? elements.highOfDayLabel : kind === "zoneLower" ? elements.entryZoneLabel : elements.entryResistanceLabel;
       drawCanvasTradeGuide(context, reference.left, reference.right, y, STRATEGY_ENTRY_REFERENCE_COLOR,
-        `${kind === "hod" ? "HOD" : kind === "zoneLower" ? "Entry zone floor" : "Entry R"} ${formatPrice(price)}`, chartBackground, width, height,
+        `${strategyReferenceLabel(kind, reference)} ${formatPrice(price)}`, chartBackground, width, height,
         line, index === lastReferenceByKind[kind] ? label : { ...label, visible: false }, labelLayout, elements.connector, true);
     }
   });

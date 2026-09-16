@@ -888,6 +888,9 @@ def resolve_long_momentum_parameters(
     if parameters.get('historical_hod_contract'):
         from .historical_hod import configure
         configure(parameters)
+    if parameters.get('r1_ladder_contract'):
+        from .r1_ladder import configure
+        configure(parameters)
     if parameters.get('macd_hod_contract'):
         from .macd_hod import configure
         configure(parameters)
@@ -2775,6 +2778,9 @@ class LongMomentumStrategyEngine:
                 assignment.parameters,
                 revision=self.revision,
             )
+        if parameters.get('r1_ladder_contract'):
+            from .r1_ladder import evaluate
+            return evaluate(self, assignment, observation, parameters, state)
         if parameters.get('historical_hod_contract'):
             from .historical_hod import evaluate
             return evaluate(self, assignment, observation, parameters, state)
@@ -5447,7 +5453,15 @@ class LongMomentumStrategyEngine:
                         deadline_ms=max(1,int(assignment.parameters[policy]['confirmation_lifetime_ms']
                             - (observation.observed_at.timestamp()-entry['confirmed_at'])*1000)))),
                 metadata={**i.metadata, 'mandatory_broker_target': True}) for i in intents)
-        if action in {'enter_long', 'add_long'} and assignment.parameters.get('historical_hod_contract') and intents:
+        if action == 'enter_long' and assignment.parameters.get('r1_ladder_contract') and intents:
+            entry = state['r1_entry']
+            intents = tuple(replace(i, reference_price=observation.ask,
+                execution_policy=replace(i.resolved_execution_policy(), envelope=replace(
+                    i.resolved_execution_policy().envelope,
+                    maximum_buy_price=entry['maximum_buy_price'],
+                    persist_until_cancelled=False, deadline_ms=1000)),
+                metadata={**i.metadata, 'entry_completion_quote': 'ask', 'mandatory_broker_target': True}) for i in intents)
+        elif action in {'enter_long', 'add_long'} and assignment.parameters.get('historical_hod_contract') and intents:
             # Admission remains candle-gated; submitted acquisition follows fresh
             # asks until filled or explicitly cancelled by position management.
             intents = tuple(replace(i, reference_price=observation.ask,
@@ -6390,6 +6404,16 @@ class AssignedLongMomentumStrategy:
                 return
             if action in {"enter_long", "add_long", "enter_short", "add_short"}:
                 if action == 'enter_long' and incremental_fill > 0:
+                    if assignment.parameters.get('r1_ladder_contract'):
+                        state.pop('r1_exit', None)
+                        actual_stop = getattr(snapshot, 'r1_initial_stop', None)
+                        if actual_stop is not None:
+                            state.update(initial_stop=actual_stop, active_stop=actual_stop)
+                        actual_average = getattr(snapshot, 'r1_actual_entry_average', None)
+                        if actual_average is not None:
+                            state['entry_reference_price'] = actual_average
+                        if getattr(snapshot, 'r1_stop_error', ''):
+                            state['r1_stop_error'] = snapshot.r1_stop_error
                     if assignment.parameters.get('historical_hod_contract'):
                         state['historical_hod_state'] = dict(state.get('historical_hod_state') or {}, used_episode=True)
                         state.pop('early_stop_reentry', None)
@@ -6417,6 +6441,9 @@ class AssignedLongMomentumStrategy:
                 status = AssignmentStatus.MANAGING
             elif action in {"exit", "take_profit", "cover"}:
                 fill_role = str(getattr(snapshot, "fill_role", "") or "")
+                if assignment.parameters.get('r1_ladder_contract') and incremental_fill > 0:
+                    from .r1_ladder import record_exit
+                    record_exit(state, snapshot.updated_at, fill_role, aggregate_position_quantity)
                 if assignment.parameters.get('historical_hod_contract') and incremental_fill > 0:
                     from .historical_hod import record_early_stop_fill
                     record_early_stop_fill(state, snapshot.updated_at, fill_role)
