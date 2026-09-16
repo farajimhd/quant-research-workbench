@@ -218,7 +218,7 @@ impl Candidates {
             configurations: BTreeMap::new(),
         })
     }
-    fn require(&self, controller: &Runtime) -> Result<()> {
+    pub(super) fn require(&self, controller: &Runtime) -> Result<()> {
         if controller.run.manifest_hash() != self.manifest_hash
             || controller.run.market()?.source_scope() != self.features.source_scope()
             || controller.run.scopes().len() != self.slots.len()
@@ -240,6 +240,36 @@ impl Candidates {
     }
     pub fn scope_hashes(&self) -> impl Iterator<Item = &str> {
         self.slots.keys().map(String::as_str)
+    }
+    /// Derive missing evaluation work from retained candidate/decision state.
+    /// Prepared or committed-but-unregistered work must be retried, not recalculated.
+    pub fn needed_evaluations(&self, controller: &Runtime) -> Result<Vec<String>> {
+        self.require(controller)?;
+        let view = controller.decision_view()?;
+        let boundary = view
+            .pending()?
+            .ok_or_else(|| Error::Unready("candidate boundary missing".into()))?;
+        let mut needed = Vec::new();
+        for (key, slot) in &self.slots {
+            if !view.needs_decision(slot.runtime.scope())? {
+                continue;
+            }
+            if let Some(receipt) = slot
+                .receipt
+                .as_ref()
+                .filter(|r| r.decision().input.event_id == boundary.id)
+            {
+                Boundary::validate_decision(controller, receipt.decision())?;
+            } else if let Some(batch) = slot.runtime.pending_batch() {
+                if batch.records().len() != 1 {
+                    return Err(Error::Invalid("candidate pending batch count".into()));
+                }
+                Boundary::validate_decision(controller, &batch.records()[0].decode()?)?;
+            } else {
+                needed.push(key.clone());
+            }
+        }
+        Ok(needed)
     }
     pub fn features(&self) -> &features::State {
         &self.features

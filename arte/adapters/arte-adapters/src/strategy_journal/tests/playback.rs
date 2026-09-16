@@ -1,6 +1,7 @@
 use super::*;
 mod lifecycle;
 mod policies;
+mod runner;
 use arte_core::{
     market_structure::scheduler::{
         playback::{
@@ -1080,7 +1081,24 @@ async fn candidate_owner_retry(cancel: bool) {
             Poll::Boundary => {}
             other => panic!("unexpected playback state: {other:?}"),
         }
-        candidates.observe(&controller).unwrap();
+        let pending_evaluations = runner::service(
+            &mut controller,
+            &mut candidates,
+            &portfolio,
+            &mut next_stores,
+        )
+        .await;
+        let crate::playback_runtime::runner::Step::NeedsEvaluation { scope_hashes } =
+            pending_evaluations
+        else {
+            panic!("fresh boundary must request certified evaluation inputs");
+        };
+        assert_eq!(scope_hashes.len(), scopes.len());
+        assert_eq!(
+            candidates.needed_evaluations(&controller).unwrap(),
+            scope_hashes
+        );
+        assert!(!candidates.observe(&controller).unwrap());
         let view = controller.decision_view().unwrap();
         let boundary = view.pending().unwrap().unwrap();
         let now = boundary.evaluated_at_ns;
@@ -1163,11 +1181,35 @@ async fn candidate_owner_retry(cancel: bool) {
             store.stored.clear();
         }
         assert!(candidates
-            .commit_accounts(&mut controller, &mut next_stores, 2)
-            .await
+            .needed_evaluations(&controller)
             .unwrap()
-            .iter()
-            .all(|r| r.result.is_ok()));
+            .is_empty());
+        let before = controller.status().acknowledged_boundaries;
+        let crate::playback_runtime::runner::Step::Decisions(results) = runner::service(
+            &mut controller,
+            &mut candidates,
+            &portfolio,
+            &mut next_stores,
+        )
+        .await
+        else {
+            panic!("prepared decisions must publish before execution");
+        };
+        assert_eq!(results.len(), scopes.len());
+        assert!(results.iter().all(|r| r.result.is_ok()));
+        let crate::playback_runtime::runner::Step::CheckpointRequired(cut) = runner::service(
+            &mut controller,
+            &mut candidates,
+            &portfolio,
+            &mut next_stores,
+        )
+        .await
+        else {
+            panic!("resolved hold boundary must stop before acknowledgment");
+        };
+        assert_eq!(cut.boundary_sequence, before + 1);
+        assert_eq!(cut.at_ns, now);
+        assert_eq!(controller.status().acknowledged_boundaries, before);
         controller.acknowledge().unwrap();
     }
     assert_eq!(completed, 1);

@@ -6,6 +6,33 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Bounded market-boundary coordinator
+
+The playback controller now services one bounded phase of a dispatched boundary
+per call. It validates candidate ownership and decision-publisher scopes before
+publication. It then selects work from existing authoritative component state:
+
+1. Publish one pending fill batch using its execution-position scope.
+2. Reconcile a bounded batch of terminal-order funding before new sizing.
+3. Observe market features and report scopes that need evaluation evidence.
+4. Publish prepared candidate decisions with bounded concurrency.
+5. Resolve a bounded action batch, including journaled sizing rejections.
+6. Return the exact cut that requires checkpoint publication.
+
+The coordinator does not advance market data or claim checkpoint durability.
+The caller still publishes the common-cut graph and acknowledges the boundary.
+It does not fabricate admission, permission, reference or strategy evidence.
+Prepared and committed-but-unregistered decisions are retried without requesting
+a second calculation. Per-account and per-order failures remain visible.
+
+The candidate fixture now uses this coordinator to request evaluation, publish
+Hold/Wait decisions and reach the checkpoint boundary without acknowledgment.
+Coordinator-level fill, entry, rejection and settlement cases still need direct
+coverage; their underlying components have separate offline fixtures. This is not
+the complete CLI loop, live runner or automatic evidence assembly.
+All 396 offline tests, formatting, Clippy and copied-source checks pass. Source
+parity was not rerun. No services started or migrations ran.
+
 ## Journal-aware bounded action dispatch
 
 One asynchronous dispatcher now handles sized entries, retained-allocation retries,
