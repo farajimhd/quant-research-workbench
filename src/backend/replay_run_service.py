@@ -1112,7 +1112,9 @@ class ReplayRunController:
         if self._session_relative_volume_enabled and self.definition.final_session_date not in (None, self.definition.session_date):
             raise ValueError('Session relative volume currently requires a single-session backtest')
         self._session_volume_trackers: dict[str, SessionVolumeTracker] = {}
-        self._session_relative_volume_store = BaselineStore(self.run_dir / 'session-relative-volume', self.definition.session_date)
+        self._session_relative_volume_store = BaselineStore(
+            self.run_dir / 'session-relative-volume', self.definition.session_date,
+            shared_directory=self.runtime_root / '_prepared' / 'session-relative-volume')
         self._historical_prepared_structure: dict[str, dict[str, Any]] = {}
         self._event_structure_sessions: dict[str, tuple[str, datetime, int]] = {}
         self._historical_structure_context: dict[
@@ -2506,6 +2508,7 @@ class ReplayRunController:
                 })
                 await self._finish('stopped')
                 return
+            await self._prepare_session_relative_volume()
             await self._prepare_v7_stream(frame_source)
             if self.definition.mode == RunMode.BACKTEST:
                 self._journal.enable_write_batching()
@@ -3169,7 +3172,8 @@ class ReplayRunController:
             for ticker, saved in controller.get('session_volume_trackers', {}).items()}
         self._session_relative_volume_store.close()
         self._session_relative_volume_store = BaselineStore(self.run_dir / 'session-relative-volume',
-            self.definition.session_date, controller.get('session_relative_volume_artifacts', {}))
+            self.definition.session_date, controller.get('session_relative_volume_artifacts', {}),
+            shared_directory=self.runtime_root / '_prepared' / 'session-relative-volume')
         if self._trade_volume_enabled and "trade_volume_trackers" not in controller:
             raise ValueError("Enabled volume confirmation requires trade volume checkpoint history")
         self._trade_volume_trackers = {ticker: TradeVolumeTracker(saved)
@@ -3294,13 +3298,56 @@ class ReplayRunController:
             if event.ts >= self.definition.requested_start:
                 await self._process_strategy_market_event(event)
 
-    async def _ensure_session_relative_volume(self, ticker):
-        if self._session_relative_volume_enabled and ticker not in self._session_relative_volume_store.cache:
-            baseline = await asyncio.to_thread(self._session_relative_volume_store.get, ticker)
+    async def _prepare_session_relative_volume(self):
+        """Prepare immutable prior-session inputs before advancing the replay clock."""
+        if not self._session_relative_volume_enabled:
+            return
+        tickers = sorted(set(self._resolved_tickers()) | set(self._session_relative_volume_store.identities))
+        self._preparation_stage = 'session_relative_volume'
+        self._preparation_completed_units = 0
+        self._preparation_total_units = len(tickers)
+        await self._publish(force=True)
+        progress = (0, len(tickers))
+        stopping = False
+
+        def report(completed, total):
+            nonlocal progress
+            progress = (completed, total)
+
+        task = asyncio.create_task(joined_thread(
+            self._session_relative_volume_store.prepare_many, tickers,
+            progress=report, stopped=lambda: stopping or self._stop_requested))
+        try:
+            while not task.done():
+                await asyncio.wait({task}, timeout=0.5)
+                self._preparation_completed_units, self._preparation_total_units = progress
+                self.updated_at = datetime.now(UTC)
+                await self._publish()
+            await task
+        except InterruptedError as exc:
+            raise asyncio.CancelledError('RVOL preparation stopped') from exc
+        except asyncio.CancelledError:
+            stopping = True
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, InterruptedError):
+                pass
+            raise
+        for ticker in tickers:
+            baseline = self._session_relative_volume_store.cached(ticker)
             self._record_data_authority(f'session_relative_volume_baseline:{self.definition.session_date}:{ticker}', dict(
                 ticker=ticker, contract=baseline['contract'], content_hash=baseline['content_hash'],
                 artifact_sha256=self._session_relative_volume_store.identities[ticker],
                 sessions=baseline['sessions'], source_revision=baseline['source_revision']))
+        self._preparation_completed_units = len(tickers)
+        await self._publish(force=True)
+
+    async def _ensure_session_relative_volume(self, ticker):
+        if self._session_relative_volume_enabled:
+            # An unexpected miss is an authority/preparation failure, never a
+            # hidden 20-session network request in the event-time hot path.
+            self._session_relative_volume_store.cached(ticker)
 
     def _market_pressure_snapshot(self, ticker, at):
         tracker = self._pressure_trackers.get(ticker)

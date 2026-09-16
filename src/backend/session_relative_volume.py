@@ -13,10 +13,12 @@ import struct
 from threading import RLock
 from uuid import uuid4
 
-from src.backend.qmd_gateway_client import qmd_history_post_json
+from src.backend.qmd_gateway_client import qmd_history_post_json, qmd_historical_source_revision
 from src.trading_runtime.session_relative_volume import BASELINE_CONTRACT
 
 HASH_CONTRACT = 'typed-json-sha256-1'
+PROJECTION_CONTRACT = 'session-relative-volume-batch-projection-1'
+REVISION_FIELDS = ('token', 'source_plan_hash', 'calculation_revision', 'corporate_action_revision')
 
 
 def baseline_content_hash(value):
@@ -61,7 +63,7 @@ def baseline_content_hash(value):
     return 'sha256:' + digest.hexdigest()
 
 
-def validate_baseline(value, ticker, session):
+def _validate_baselines(value, tickers, session):
     if value.get('contract') != BASELINE_CONTRACT or value.get('session_date') != str(session):
         raise ValueError('RVOL baseline contract/session mismatch')
     dates = [date.fromisoformat(s) for s in value.get('sessions', [])]
@@ -89,21 +91,67 @@ def validate_baseline(value, ticker, session):
     if (value.get('content_hash_contract') != HASH_CONTRACT
             or value['content_hash'] != baseline_content_hash(value)):
         raise ValueError('RVOL baseline content hash changed or unsupported')
-    profile = value.get('profiles', {}).get(ticker)
-    if set(value.get('profiles', {})) != {ticker} or not isinstance(profile, list) or len(profile) != 57601:
+    if not 1 <= len(tickers) <= 16 or set(value.get('profiles', {})) != set(tickers):
         raise ValueError('RVOL baseline ticker/profile mismatch')
-    if profile[0] is not None:
-        raise ValueError('RVOL opening boundary must have no denominator')
-    previous = 0.
-    for x in profile:
-        if x is None:
-            if previous > 0:
-                raise ValueError('RVOL cumulative profile regressed')
-        elif type(x) not in (int, float) or not isfinite(x) or x <= 0 or x < previous:
-            raise ValueError('Invalid RVOL cumulative baseline')
-        else:
-            previous = x
+    for ticker in tickers:
+        profile = value['profiles'][ticker]
+        if not isinstance(profile, list) or len(profile) != 57601:
+            raise ValueError('RVOL baseline ticker/profile mismatch')
+        if profile[0] is not None:
+            raise ValueError('RVOL opening boundary must have no denominator')
+        previous = 0.
+        for x in profile:
+            if x is None:
+                if previous > 0:
+                    raise ValueError('RVOL cumulative profile regressed')
+            elif type(x) not in (int, float) or not isfinite(x) or x <= 0 or x < previous:
+                raise ValueError('Invalid RVOL cumulative baseline')
+            else:
+                previous = x
     return value
+
+
+def _source_query(value, tickers):
+    from zoneinfo import ZoneInfo
+    zone = ZoneInfo('America/New_York')
+    return dict(start=datetime.combine(date.fromisoformat(value['sessions'][0]),
+                                      datetime.min.time().replace(hour=4), zone).isoformat(),
+                end=datetime.combine(date.fromisoformat(value['sessions'][-1]),
+                                    datetime.min.time().replace(hour=20), zone).isoformat(),
+                tickers=sorted(tickers))
+
+
+def validate_baseline(value, ticker, session):
+    _validate_baselines(value, [ticker], session)
+    provenance = value.get('batch_provenance')
+    if provenance is not None:
+        tickers = provenance.get('tickers', [])
+        revision = provenance.get('source_revision', {})
+        if (provenance.get('contract') != PROJECTION_CONTRACT
+                or not isinstance(tickers, list) or not 1 <= len(tickers) <= 16
+                or tickers != sorted(set(tickers)) or ticker not in tickers
+                or any(not re.fullmatch(r'[A-Z0-9._-]{1,32}', item) for item in tickers)
+                or not re.fullmatch(r'sha256:[0-9a-f]{64}', provenance.get('content_hash', ''))
+                or provenance.get('source_query') != _source_query(value, tickers)
+                or revision.get('complete_for_history') is not True
+                or revision.get('request_complete') is not True
+                or any(not isinstance(revision.get(k), str) or not revision[k] for k in REVISION_FIELDS)
+                or any(revision[k] != value['source_revision'][k] for k in ('token', 'source_plan_hash'))):
+            raise ValueError('RVOL batch projection provenance mismatch')
+    return value
+
+
+def _write_artifact(path, raw):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name('.'+path.name+'.'+uuid4().hex+'.tmp')
+    try:
+        with temporary.open('wb') as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 class _MappedProfile(Sequence):
@@ -142,10 +190,11 @@ class BaselineStore:
     """Run-owned mappings; prepare asynchronously, read cached views synchronously.
 
     No profile eviction: current acquisition evidence never disappears because
-    another ticker was prepared. Only one JSON profile is hydrated at a time.
+    another ticker was prepared. Fetches hydrate at most 16 JSON profiles;
+    shared/run artifact reads and mmap conversion handle one ticker at a time.
     close() releases every mapping; mappings are never checkpoint authority.
     """
-    def __init__(self, directory, session, expected=None, *, allowed_tickers=None):
+    def __init__(self, directory, session, expected=None, *, allowed_tickers=None, shared_directory=None):
         self.directory = Path(directory)
         self.session = str(session)
         self.identities = dict(expected or {})
@@ -154,6 +203,112 @@ class BaselineStore:
         self._lock = RLock()
         self._closed = False
         self._mapping_id = uuid4().hex
+        self.shared_directory = None if shared_directory is None else Path(shared_directory) / self.session
+        self.status = {}
+
+    def _check_ticker(self, ticker):
+        if not isinstance(ticker, str) or not re.fullmatch(r'[A-Z0-9._-]{1,32}', ticker):
+            raise ValueError('Invalid RVOL ticker')
+        if self.allowed_tickers is not None and ticker not in self.allowed_tickers:
+            raise ValueError('RVOL ticker is outside the prepared population')
+
+    def prepare_many(self, tickers, progress=None, stopped=None):
+        """Synchronous preflight: serial batches <=16, no network during playback.
+
+        progress(completed,total) executes on the calling worker. status exposes
+        restored/shared/fetched counts. A stop raises InterruptedError between
+        bounded units, preserving completed run-owned artifacts for restart.
+        """
+        with self._lock:
+            if self._closed:
+                raise ValueError('RVOL baseline store is closed')
+            tickers = sorted(set(tickers))
+            for ticker in tickers:
+                self._check_ticker(ticker)
+            self.status = dict(total=len(tickers), completed=0, restored=0, shared=0, fetched=0, stage='preparing')
+            def checkpoint():
+                if stopped is not None and stopped():
+                    self.status['stage'] = 'stopped'
+                    raise InterruptedError('RVOL baseline preparation stopped')
+            def completed(kind):
+                self.status[kind] += 1
+                self.status['completed'] += 1
+                if progress is not None:
+                    progress(self.status['completed'], len(tickers))
+            if progress is not None:
+                progress(0, len(tickers))
+            # Revalidate each original shared batch once, at its original scope.
+            revisions = {}
+            missing = []
+            for ticker in tickers:
+                checkpoint()
+                path = self.directory / (ticker+'.json')
+                if ticker in self.cache or path.exists() or ticker in self.identities:
+                    self._prepare(ticker)  # Missing pinned artifacts fail, never refetch.
+                    completed('restored')
+                elif self._restore_shared(ticker, revisions):
+                    self._prepare(ticker)
+                    completed('shared')
+                else:
+                    missing.append(ticker)
+            for offset in range(0, len(missing), 16):
+                checkpoint()
+                batch = missing[offset:offset+16]
+                self.status['stage'] = 'fetching'
+                value = qmd_history_post_json('/features/session-relative-volume-baseline',
+                    {'session_date': self.session, 'tickers': batch}, timeout=900)
+                _validate_baselines(value, batch, self.session)
+                query = _source_query(value, batch)
+                revision = qmd_historical_source_revision(**query)
+                if (revision.get('complete_for_history') is not True or revision.get('request_complete') is not True
+                        or any(not isinstance(revision.get(k), str) or not revision[k] for k in REVISION_FIELDS)
+                        or any(revision[k] != value['source_revision'][k] for k in ('token', 'source_plan_hash'))):
+                    raise ValueError('RVOL batch source revision changed or incomplete')
+                provenance = dict(contract=PROJECTION_CONTRACT, content_hash=value['content_hash'],
+                                  tickers=batch, source_query=query, source_revision=revision)
+                for ticker in batch:
+                    checkpoint()
+                    # Keep original source scope/counts; explicitly identify this
+                    # single-profile projection instead of pretending QMD hashed it.
+                    projected = dict(value, profiles={ticker:value['profiles'][ticker]},
+                                     batch_provenance=provenance, content_hash='')
+                    projected['content_hash'] = baseline_content_hash(projected)
+                    validate_baseline(projected, ticker, self.session)
+                    raw = json.dumps(projected, separators=(',', ':'), sort_keys=True).encode()
+                    _write_artifact(self.directory / (ticker+'.json'), raw)
+                    if self.shared_directory is not None:
+                        _write_artifact(self.shared_directory / (ticker+'.json'), raw)
+                    self._prepare(ticker)
+                    completed('fetched')
+                # Release the batch before issuing the next request.
+                del value, projected, raw
+            self.status['stage'] = 'ready'
+            return dict(self.status)
+
+    def _restore_shared(self, ticker, revisions):
+        if self.shared_directory is None:
+            return False
+        path = self.shared_directory / (ticker+'.json')
+        if not path.exists():
+            return False
+        try:
+            raw = path.read_bytes()
+            value = validate_baseline(json.loads(raw), ticker, self.session)
+            provenance = value.get('batch_provenance')
+            if provenance is None:
+                return False  # Legacy lacks full calculation/corporate authority.
+            key = json.dumps(provenance, sort_keys=True, separators=(',', ':'))
+            if key not in revisions:
+                revision = qmd_historical_source_revision(**provenance['source_query'])
+                revisions[key] = (revision.get('complete_for_history') is True
+                    and revision.get('request_complete') is True
+                    and all(revision.get(k) == provenance['source_revision'][k] for k in REVISION_FIELDS))
+            if not revisions[key]:
+                return False
+        except (ValueError, KeyError, TypeError):
+            return False
+        _write_artifact(self.directory / (ticker+'.json'), raw)
+        return True
 
     def cached(self, ticker):
         """Memory-only lookup; a miss must be prepared off the event loop."""
@@ -171,10 +326,7 @@ class BaselineStore:
             return self._prepare(ticker)
 
     def _prepare(self, ticker):
-        if not re.fullmatch(r'[A-Z0-9._-]{1,32}', ticker):
-            raise ValueError('Invalid RVOL ticker')
-        if self.allowed_tickers is not None and ticker not in self.allowed_tickers:
-            raise ValueError('RVOL ticker is outside the prepared population')
+        self._check_ticker(ticker)
         if ticker in self.cache:
             return self.cache[ticker]
         path = self.directory / (ticker+'.json')
@@ -187,10 +339,7 @@ class BaselineStore:
             value = validate_baseline(qmd_history_post_json('/features/session-relative-volume-baseline',
                 {'session_date': self.session, 'tickers': [ticker]}, timeout=900), ticker, self.session)
             raw = json.dumps(value, separators=(',', ':'), sort_keys=True).encode()
-            self.directory.mkdir(parents=True, exist_ok=True)
-            temporary = path.with_suffix('.tmp')
-            temporary.write_bytes(raw)
-            temporary.replace(path)
+            _write_artifact(path, raw)
         identity = sha256(raw).hexdigest()
         if ticker in self.identities and self.identities[ticker] != identity:
             raise ValueError('Checkpoint RVOL artifact changed')

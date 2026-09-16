@@ -30,6 +30,7 @@ pub struct BaselineResponse {
     pub profiles: BTreeMap<String, Vec<Option<f64>>>,
     pub source_revision: SourceRevision,
     pub event_count: u64,
+    pub event_count_basis: &'static str,
     pub content_hash: String,
     pub content_hash_contract: &'static str,
 }
@@ -128,10 +129,13 @@ pub async fn load(
         .map(|t| (t.clone(), vec![0.; SECONDS + 1]))
         .collect::<BTreeMap<_, _>>();
     let rules = source.trade_aggregation_rules();
-    let mut batches = source.stream_ordered(
+    // Quotes never contribute to volume. Push the existing canonical trade
+    // predicate into the reader instead of transferring/decoding them for 20 days.
+    let mut batches = source.stream_ordered_filtered(
         window.clone(),
         config.batch_size.clamp(1, 100_000),
         revision.live_continuation_sequence,
+        Some(qmd_core::compact_event::TRADE_EVENT_TYPE),
     )?;
     let mut event_count = 0u64;
     let limit = (config.scanner_max_events_per_snapshot as u64).saturating_mul(4);
@@ -187,6 +191,7 @@ pub async fn load(
             .collect(),
         source_revision: revision,
         event_count,
+        event_count_basis: "trade_events",
         content_hash: String::new(),
         content_hash_contract: HASH_CONTRACT,
     };
