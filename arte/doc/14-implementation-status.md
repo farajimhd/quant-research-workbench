@@ -6,6 +6,26 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Candidate-owner checkpoint graph
+
+The candidate owner now captures shared feature state and each declared strategy
+transaction in one bounded object graph. The root pins the manifest and pending
+boundary. Feature recovery also verifies the exact market state. Restore requires
+matching effective policies and independent last-committed journal rows per scope.
+
+Prepared decisions remain uncommitted. Restored pending and committed decisions
+must agree with the controller boundary and receipt barrier. Missing journal rows,
+changed scope/configuration and receipts beyond the recovery boundary fail closed.
+The complete graph has a 64 MiB ceiling and at most 4,096 consumers.
+
+The two-account retry tests now round-trip prepared and committed owners, compare
+checkpoint hashes and continue playback using the restored instances. All 388
+offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Source-oracle parity was not rerun. No service or network test ran.
+
+This is component recovery. A whole-run publication must still bind candidate,
+controller and portfolio roots at one cut and coordinate their restore sequence.
+
 ## Recovery with working targets
 
 The execution lifecycle fixtures now restore the controller at every boundary and

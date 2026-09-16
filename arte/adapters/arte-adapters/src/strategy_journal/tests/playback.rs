@@ -626,6 +626,30 @@ async fn candidate_owner_retry(cancel: bool) {
             assert!(matches!(decision.actions.as_slice(), [Action::Wait { .. }]));
         }
     }
+    let pending_image = candidates.checkpoint(&controller, 1_000_000).unwrap();
+    let empty_rows: std::collections::BTreeMap<_, _> = candidates
+        .scope_hashes()
+        .map(|key| (key.to_owned(), vec![]))
+        .collect();
+    candidates = Candidates::restore_checkpoint(
+        &pending_image,
+        &pending_image.root.id,
+        &controller,
+        Document::decode(&bytes).unwrap().bind(&manifest).unwrap(),
+        &empty_rows,
+        100_000,
+        1_000_000,
+    )
+    .unwrap();
+    assert_eq!(
+        candidates
+            .checkpoint(&controller, 1_000_000)
+            .unwrap()
+            .root
+            .id,
+        pending_image.root.id
+    );
+    assert!(!candidates.observe(&controller).unwrap());
     struct RetryStore {
         calls: usize,
         fail: bool,
@@ -702,6 +726,38 @@ async fn candidate_owner_retry(cancel: bool) {
         .await
         .unwrap()
         .is_empty());
+    let candidate_image = candidates.checkpoint(&controller, 1_000_000).unwrap();
+    let readbacks: std::collections::BTreeMap<_, _> = stores
+        .iter()
+        .map(|(key, store)| (key.clone(), store.stored.clone()))
+        .collect();
+    let restored = Candidates::restore_checkpoint(
+        &candidate_image,
+        &candidate_image.root.id,
+        &controller,
+        Document::decode(&bytes).unwrap().bind(&manifest).unwrap(),
+        &readbacks,
+        100_000,
+        1_000_000,
+    )
+    .unwrap();
+    assert_eq!(
+        restored.checkpoint(&controller, 1_000_000).unwrap().root.id,
+        candidate_image.root.id
+    );
+    let mut wrong = readbacks.clone();
+    wrong.values_mut().next().unwrap().clear();
+    assert!(Candidates::restore_checkpoint(
+        &candidate_image,
+        &candidate_image.root.id,
+        &controller,
+        Document::decode(&bytes).unwrap().bind(&manifest).unwrap(),
+        &wrong,
+        100_000,
+        1_000_000,
+    )
+    .is_err());
+    candidates = restored;
     assert!(controller.acknowledge().is_err());
     let pending = controller.pending_actions();
     assert_eq!(pending.len(), 1);

@@ -8,6 +8,7 @@ use arte_core::{
 };
 use futures_util::{stream, StreamExt};
 use std::collections::{BTreeMap, BTreeSet};
+pub mod checkpoint;
 
 struct Slot {
     runtime: Candidate,
