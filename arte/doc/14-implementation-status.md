@@ -6,6 +6,25 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Coordinator fill and funding-failure coverage
+
+New offline coordinator fixtures exercise two account fill scopes. Missing scope
+publishers, ambiguous journal writes and cancellation preserve pending fills.
+Each scope retries its exact records. Candidate features remain unobserved until
+both scopes commit. Projection quantities and fees are checked, and market
+acknowledgment remains blocked while decisions are missing.
+
+These are explicitly seeded plumbing orders, not strategy-approved entries.
+The tests verify that they cannot claim strategy-owned account state. A second
+fixture expires seeded orders without valid funding ownership. The coordinator
+reports each funding error on retry, keeps balances unchanged and does not move
+on to feature observation or evaluation. Successful funded settlement through
+the coordinator remains a separate coverage gap; production guards were not
+weakened to accommodate these fixtures.
+
+All 398 offline tests, formatting, Clippy and copied-source checks pass. Source
+parity was not rerun. No services started or migrations ran.
+
 ## Bounded market-boundary coordinator
 
 The playback controller now services one bounded phase of a dispatched boundary
@@ -27,8 +46,8 @@ a second calculation. Per-account and per-order failures remain visible.
 
 The candidate fixture now uses this coordinator to request evaluation, publish
 Hold/Wait decisions and reach the checkpoint boundary without acknowledgment.
-Coordinator-level fill, entry, rejection and settlement cases still need direct
-coverage; their underlying components have separate offline fixtures. This is not
+Coordinator-level entry, rejection and successful funded-settlement cases still
+need direct coverage; their underlying components have separate offline fixtures. This is not
 the complete CLI loop, live runner or automatic evidence assembly.
 All 396 offline tests, formatting, Clippy and copied-source checks pass. Source
 parity was not rerun. No services started or migrations ran.
