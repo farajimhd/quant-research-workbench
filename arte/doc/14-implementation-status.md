@@ -6,6 +6,29 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Playback cursor recovery
+
+Playback recovery now combines the scheduler graph with its prepared-input hash,
+frame position, admission and duplicate counts, acknowledgment count and poll
+budget. Prepared event data remains externally pinned and is not copied into the
+checkpoint. The combined image is limited to 64 MiB, including a 4 KiB cursor
+reservation.
+
+Restore validates the source identity, cursor bounds, counters, pending boundary
+clock and final watermark. Nonterminal playback always restores paused. A pending
+boundary stays available for its required journal work; recovery does not
+acknowledge it. Completed playback remains terminal. Failed playback cannot
+produce an operational checkpoint.
+
+The offline continuation test restores after every poll and compares boundary
+identities and checkpoint hashes with uninterrupted playback. It also rejects
+changed source hashes, frame positions and counters. This does not yet restore
+the account fan-out barrier or the adapter's strategy and execution controller.
+Whole-run recovery remains incomplete.
+
+All 374 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Source-oracle parity was not rerun. No services or network tests ran.
+
 ## Scheduler recovery
 
 The scheduler now saves one recovery graph for market calculations, both event

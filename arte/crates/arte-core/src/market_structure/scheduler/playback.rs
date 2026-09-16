@@ -6,6 +6,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 pub mod accounts;
+pub mod checkpoint;
 pub mod sources;
 
 #[derive(Debug, Clone, Serialize)]

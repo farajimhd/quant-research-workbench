@@ -2,6 +2,93 @@ use super::*;
 use crate::events::{Decimal, EventKind, Payload, SourceTime};
 const SECOND: u64 = 1_000_000_000;
 #[test]
+fn playback_recovery_preserves_cursor_and_pending_boundaries() {
+    use playback::{Mode, Playback, Poll};
+    let mut scheduler = scheduler(10);
+    let policy = std::sync::Arc::new(empty_quote_policy(1));
+    scheduler.bind_quote_policy(policy.clone()).unwrap();
+    let seed = scheduler.market.runtime.structure.seed_hash.clone();
+    let config = scheduler.market.runtime.configuration_hash().to_owned();
+    let prepared = prepared_playback();
+    let mut original = Playback::new(scheduler, prepared.clone(), 1).unwrap();
+    let context = "b".repeat(64);
+    let restore = |bundle: &playback::checkpoint::Bundle, source: playback::Prepared| {
+        Playback::restore_checkpoint(
+            bundle,
+            &bundle.root.id,
+            source,
+            checkpoint::Request {
+                context_hash: &context,
+                run_id: "causal-offline-test",
+                seed_hash: &seed,
+                configuration_hash: &config,
+                quote_policy: policy.clone(),
+                maximum_pending: 10,
+                maximum_bytes: 10_000_000,
+            },
+            1,
+        )
+    };
+    let mut recovered = restore(
+        &original.checkpoint(&context, 10_000_000).unwrap(),
+        prepared.clone(),
+    )
+    .unwrap();
+    assert_eq!(recovered.poll().unwrap(), Poll::Paused);
+    original.resume().unwrap();
+    recovered.resume().unwrap();
+    loop {
+        let result = original.poll().unwrap();
+        assert_eq!(recovered.poll().unwrap(), result);
+        let image = recovered.checkpoint(&context, 10_000_000).unwrap();
+        assert_eq!(
+            image.root.id,
+            original.checkpoint(&context, 10_000_000).unwrap().root.id
+        );
+        recovered = restore(&image, prepared.clone()).unwrap();
+        if result == Poll::Complete {
+            assert_eq!(recovered.status().mode, Mode::Complete);
+            assert_eq!(recovered.poll().unwrap(), Poll::Complete);
+            break;
+        }
+        assert_eq!(recovered.status().mode, Mode::Paused);
+        if result == Poll::Boundary {
+            assert_eq!(recovered.poll().unwrap(), Poll::Boundary);
+            let id = original.pending().unwrap().unwrap().id.to_owned();
+            assert_eq!(recovered.pending().unwrap().unwrap().id, id);
+            original.acknowledge(&id).unwrap();
+            recovered.acknowledge(&id).unwrap();
+        }
+        recovered.resume().unwrap();
+    }
+    let status = original.status();
+    for (from, to) in [
+        (
+            format!("\"frame\":{}", status.completed_frames),
+            "\"frame\":999999".into(),
+        ),
+        (
+            format!("\"acknowledged\":{}", status.acknowledged_boundaries),
+            "\"acknowledged\":999999".into(),
+        ),
+        (
+            format!("\"admitted_events\":{}", status.admitted_events),
+            "\"admitted_events\":999999".into(),
+        ),
+        (
+            format!("\"prepared_hash\":\"{}\"", prepared.hash()),
+            format!("\"prepared_hash\":\"{}\"", "0".repeat(64)),
+        ),
+    ] {
+        let mut image = original.checkpoint(&context, 10_000_000).unwrap();
+        let original_text = String::from_utf8(image.root.payload).unwrap();
+        let text = original_text.replace(&from, &to);
+        assert_ne!(original_text, text);
+        image.root = crate::seed_storage::Object::new(text.into_bytes());
+        assert!(restore(&image, prepared.clone()).is_err());
+    }
+}
+#[test]
 fn recovery_at_every_boundary_preserves_mixed_stream_and_unacknowledged_heads() {
     use checkpoint::Request;
     let runtime = super::super::tests::runtime_with_timeframes(
