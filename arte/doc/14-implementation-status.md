@@ -6,6 +6,24 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Controller checkpoint capture
+
+The adapter can now capture playback, execution and action progress at one
+dispatched boundary. Capture requires committed fill journals. It rejects a cut
+whose sequence, identity or clock differs from the pending playback boundary.
+The root binds the run manifest, playback graph, execution graph, quote-age limit,
+committed decision hashes and completed execution-request fingerprints.
+
+The combined payload has a caller-selected limit capped at 64 MiB. Action progress
+is bounded to 4096 consumers with 16 actions each. This path only captures state;
+it does not publish a durable root or provide controller restore yet. Candidate,
+feature and portfolio state still require coordinated capture and recovery.
+
+All 378 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+The new test verifies pending and completed cancellation-action capture, component
+identity binding, invalid cuts and byte limits. Source-oracle parity was not rerun.
+No services or network tests ran.
+
 ## Composed account playback recovery
 
 The manifest-bound account playback wrapper now composes scheduler, prepared-input

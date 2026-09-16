@@ -179,6 +179,14 @@ fn run_with_costs(
     lifecycle: bool,
     target_exit: bool,
 ) -> (Run, arte_core::simulation_costs::Pinned) {
+    let (run, costs, _) = run_recovery_fixture(include_quote, lifecycle, target_exit);
+    (run, costs)
+}
+fn run_recovery_fixture(
+    include_quote: bool,
+    lifecycle: bool,
+    target_exit: bool,
+) -> (Run, arte_core::simulation_costs::Pinned, Pinned) {
     const S: u64 = 1_000_000_000;
     let bars: Vec<_> = (100..118)
         .map(|t| Candle {
@@ -383,7 +391,101 @@ fn run_with_costs(
     let manifest = Pinned::new(m, &hash).unwrap();
     let costs = arte_core::simulation_costs::Pinned::new(cost_model, &manifest).unwrap();
     let run = Run::new(&manifest, &catalog, scheduler, prepared, 1, 2).unwrap();
-    (run, costs)
+    (run, costs, manifest)
+}
+
+#[test]
+fn controller_capture_pins_execution_playback_and_action_progress() {
+    use arte_core::{
+        execution_positions::{checkpoint::Limits as ProjectionLimits, Projection},
+        portfolio::checkpoint::Cut,
+        simulated_execution::Simulator,
+    };
+    let (run, costs, manifest) = run_recovery_fixture(true, false, false);
+    let mut execution = crate::simulation_runtime::Runtime::new(
+        Simulator::new_scoped("run", 1, 2, 2, 10000).unwrap(),
+        Projection::new(2, 10, 4).unwrap(),
+        4,
+    )
+    .unwrap();
+    execution
+        .bind_source(run.market().unwrap().source_scope())
+        .unwrap();
+    let mut controller =
+        crate::playback_runtime::Runtime::new(run, execution, crate::test_fill_model(), costs)
+            .unwrap();
+    let limits = crate::simulation_runtime::checkpoint::Limits {
+        maximum_bytes: 1_000_000,
+        maximum_orders: 2,
+        maximum_pending_fills: 4,
+        projection: ProjectionLimits {
+            positions: 2,
+            fills: 10,
+            lots_per_position: 4,
+            bytes: 100_000,
+        },
+    };
+    let fills = std::collections::BTreeMap::new();
+    let mut cut = Cut {
+        boundary_sequence: 1,
+        boundary_hash: "a".repeat(64),
+        at_ns: 0,
+    };
+    assert!(controller
+        .checkpoint(&manifest, &cut, &fills, limits, 10_000_000)
+        .is_err());
+    controller.resume().unwrap();
+    assert_eq!(controller.poll().unwrap(), Poll::Boundary);
+    let boundary = controller
+        .decision_view()
+        .unwrap()
+        .pending()
+        .unwrap()
+        .unwrap();
+    cut.boundary_hash = boundary.id.into();
+    cut.at_ns = boundary.evaluated_at_ns;
+    let input = boundary.input("features".into());
+    let scope = controller.decision_view().unwrap().scopes()[0].clone();
+    let template = prepared_account(&scope.account);
+    let safety = template.pending_decision().unwrap().safety.clone();
+    let mut transaction =
+        arte_core::strategy_transaction::Runtime::new(scope, 0_u64, 1024).unwrap();
+    transaction
+        .prepare(input, &safety, "evidence".into(), |_| {
+            Ok(vec![Action::CancelEntry {
+                reason: "test".into(),
+            }])
+        })
+        .unwrap();
+    let rows = transaction.pending_batch().unwrap().records().to_vec();
+    let receipt = transaction.acknowledge(&rows).unwrap();
+    crate::strategy_journal::accounts::Boundary::record(&mut controller, &receipt).unwrap();
+    let image = controller
+        .checkpoint(&manifest, &cut, &fills, limits, 10_000_000)
+        .unwrap();
+    image.root.verify().unwrap();
+    let root: serde_json::Value = serde_json::from_slice(&image.root.payload).unwrap();
+    assert_eq!(root["actions"].as_array().unwrap().len(), 1);
+    assert!(root["actions"][0]["completed_request"].is_null());
+    assert_eq!(root["playback"], image.playback.root.id);
+    assert_eq!(root["execution"], image.execution.root.id);
+    assert!(controller.acknowledge().is_err());
+    controller
+        .cancel_entry_action(&receipt.decision().decision_id, 0)
+        .unwrap();
+    let completed = controller
+        .checkpoint(&manifest, &cut, &fills, limits, 10_000_000)
+        .unwrap();
+    let root: serde_json::Value = serde_json::from_slice(&completed.root.payload).unwrap();
+    assert!(root["actions"][0]["completed_request"].is_string());
+    assert_ne!(image.root.id, completed.root.id);
+    assert!(controller
+        .checkpoint(&manifest, &cut, &fills, limits, 100)
+        .is_err());
+    cut.boundary_sequence += 1;
+    assert!(controller
+        .checkpoint(&manifest, &cut, &fills, limits, 10_000_000)
+        .is_err());
 }
 
 #[tokio::test]

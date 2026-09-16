@@ -11,6 +11,7 @@ use arte_core::{
     Error, Result,
 };
 mod actions;
+pub mod checkpoint;
 pub use actions::PendingAction;
 
 pub struct Runtime {

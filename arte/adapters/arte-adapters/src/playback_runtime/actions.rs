@@ -33,6 +33,24 @@ fn kind(action: &Action) -> Option<&'static str> {
     }
 }
 impl Work {
+    pub(super) fn checkpoint(&self) -> Result<Vec<super::checkpoint::ActionProgress>> {
+        if self.items.len() > 4096 * 16 {
+            return Err(Error::Capacity(
+                "playback action recovery population".into(),
+            ));
+        }
+        self.items
+            .iter()
+            .map(|((decision_id, action_index), item)| {
+                Ok(super::checkpoint::ActionProgress {
+                    decision_id: decision_id.clone(),
+                    action_index: *action_index,
+                    decision_hash: content_hash(item.receipt.decision())?,
+                    completed_request: item.completed_request.clone(),
+                })
+            })
+            .collect()
+    }
     pub fn validate(decision: &Decision) -> Result<()> {
         // At most 4096 declared consumers, each with one bounded decision.
         if decision.actions.len() > 16 {
