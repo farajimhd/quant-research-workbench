@@ -2,6 +2,7 @@ use super::*;
 mod lifecycle;
 mod policies;
 mod runner;
+mod session;
 use arte_core::{
     market_structure::scheduler::{
         playback::{

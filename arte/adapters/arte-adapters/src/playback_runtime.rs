@@ -16,6 +16,7 @@ pub mod candidates;
 pub mod checkpoint;
 pub mod recovery;
 pub mod runner;
+pub mod session;
 pub use actions::{
     ActionInputs, ActionOutcome, AllocatedEntry, EntryAssessment, EntryRequest, PendingAction,
     Resolution, ResolvedAction, SizedActionInputs, Sizing, SizingRequest,

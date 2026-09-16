@@ -6,6 +6,28 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Fresh backtest session assembly
+
+A production constructor now assembles a prepared account run, simulator, fill
+projection, configured candidates and portfolio. It returns a paused session.
+It performs no I/O and has no broker capability. Recovery remains a separate
+common-cut operation; an advanced run cannot be passed off as a fresh session.
+
+The constructor requires an exact account set, run-scoped simulation balances,
+empty initial reservations and matching cost currency. Existing authorities
+validate source, effective strategy-policy, quote-policy, fill-model and cost
+bindings. Resource limits remain explicit. Accounts retain separate cash budgets;
+strategies sharing an account use the same portfolio reservation authority.
+
+Three offline fixtures cover successful construction, shared-account funding and
+16 invalid-input cases. All 403 offline tests, formatting, Clippy and copied-source
+checks pass. Source parity was not rerun. No services started or migrations ran.
+
+This currently assembles one instrument with multiple account/strategy consumers.
+Cross-instrument portfolio orchestration, complete startup-input provenance,
+source loading and the executable strategy-backtest command remain unfinished.
+The existing `replay-market` command is not a strategy backtest.
+
 ## Combined checkpoint publication and boundary advancement
 
 The ClickHouse adapter exposes `commit_backtest_boundary`. It holds exclusive
