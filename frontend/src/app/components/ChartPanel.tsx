@@ -1701,6 +1701,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     }
     groups.forEach((group, groupIndex) => {
       let runtime = oscillatorPaneRuntimesRef.current.get(group.key);
+      const created = !runtime;
       if (!runtime) {
         runtime = {
           layerSignature: "",
@@ -1718,6 +1719,11 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       }
       updateOscillatorPaneTimeline(runtime, chartTimelineData(payloadRef.current?.candles ?? [], timeframe, chartSettingsRef.current.hideEmptyIntervals));
       updateOscillatorPaneSeries(runtime, group.series);
+      // New panes inherit chart-wide price-scale options, including a locked
+      // candle range. Initialize their own scale once; preserve later user zoom.
+      if (created) runtime.seriesKeys.forEach((key) => {
+        indicatorSeriesRef.current.get(key)?.priceScale().applyOptions({ autoScale: true });
+      });
       chart.panes()[runtime.paneIndex]?.setStretchFactor(paneStretchFactors[group.key] ?? 1);
     });
     chart.panes()[0]?.setStretchFactor(paneStretchFactors.price ?? 3.25);

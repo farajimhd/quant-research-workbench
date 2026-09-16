@@ -35,15 +35,42 @@ class SessionRvolChartBrowserTests(unittest.TestCase):
                   document.getElementById('root').style.display='none';
                   const node=document.createElement('div'); document.body.appendChild(node);
                   const root=(dom.default??dom).createRoot(node);
-                  window.paintSessionRvol = (unavailable = false) => root.render(React.createElement(ChartPanel, {
+                  window.paintSessionRvol = (unavailable = false, selected = true) => root.render(React.createElement(ChartPanel, {
                     ticker:'BMNR',timeframe:'1s',timeframes:['1s'],baseHeight:600,settingsStorageKey:'session-rvol-test',
                     dataStatus: unavailable ? 'Session RVOL unavailable' : undefined,
-                    visibleColumns:[id],featureOptions:[],indicatorOptions:[],displayItemOptions:CHART_INDICATORS,
-                    payload:{candles:values.map((_,i)=>({time:1787301300+i,open:10,close:10.1,high:10.2,low:9.9})),volume:[],overlay_series:[],oscillator_series: unavailable ? historicalIndicatorSeries(rows.map(row=>({...row,session_relative_volume:null})), 'oscillator', [id]) : series,markers:[],regions:[]}
+                    visibleColumns:selected ? [id] : [],featureOptions:[],indicatorOptions:[],displayItemOptions:CHART_INDICATORS,
+                    payload:{candles:values.map((_,i)=>({time:1787301300+i,open:10,close:10.1,high:10.2,low:9.9})),volume:[],overlay_series:[],oscillator_series: !selected ? [] : unavailable ? historicalIndicatorSeries(rows.map(row=>({...row,session_relative_volume:null})), 'oscillator', [id]) : series,markers:[],regions:[]}
                   }));
+                  window.paintSessionRvol(false, false);
+                }""")
+                page.wait_for_timeout(500)
+                page.evaluate("""() => {
+                  const seen = new Set();
+                  for (const el of document.querySelectorAll('div')) {
+                    let fiber = el[Object.keys(el).find(k => k.startsWith('__reactFiber'))];
+                    while (fiber && !seen.has(fiber)) {
+                      seen.add(fiber);
+                      for (let hook = fiber.memoizedState, n = 0; hook && n++ < 300; hook = hook.next) {
+                        const value = hook.memoizedState?.current;
+                        if (value && typeof value.panes === 'function' && typeof value.timeScale === 'function') window.rvolTestChart = value;
+                      }
+                      fiber = fiber.return;
+                    }
+                  }
+                  if (!window.rvolTestChart) throw Error('Chart runtime not found');
+                  window.rvolTestChart.priceScale('right', 0).setVisibleRange({from:9.8,to:10.4});
                   window.paintSessionRvol();
                 }""")
                 page.wait_for_timeout(500)
+                page.evaluate("""() => {
+                  const pane = window.rvolTestChart.panes()[1];
+                  const series = pane.getSeries().find(s => s.options().title === 'RVOL (x)');
+                  if (!series || !series.priceScale().options().autoScale) throw Error('New oscillator inherited locked candle scale');
+                  for (const value of [0, 0.5, 1, 2.25, 3]) {
+                    const y = series.priceToCoordinate(value);
+                    if (y === null || y < 0 || y > pane.getHeight()) throw Error('RVOL value clipped outside pane');
+                  }
+                }""")
                 self.assertGreater(page.locator("canvas").count(), 1)
                 output = os.environ.get("SESSION_RVOL_REVIEW_OUTPUT")
                 if output:
