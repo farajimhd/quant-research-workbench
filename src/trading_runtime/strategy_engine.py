@@ -6393,6 +6393,10 @@ class AssignedLongMomentumStrategy:
                     if assignment.parameters.get('historical_hod_contract'):
                         state['historical_hod_state'] = dict(state.get('historical_hod_state') or {}, used_episode=True)
                         state.pop('early_stop_reentry', None)
+                        if assignment.parameters.get('historical_hod', {}).get('setup_stalled_seconds'):
+                            active = deepcopy(state.get('historical_hod_entry') or {})
+                            active.setdefault('first_fill_at', snapshot.updated_at.timestamp())
+                            state['historical_hod_entry'] = active
                     if assignment.parameters.get('macd_r3_contract'):
                         state['r3_ever_filled'] = True
                     episode = (state.get('v5_entry_selection') or {}).get('episode_started_at')

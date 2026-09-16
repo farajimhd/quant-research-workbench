@@ -10,7 +10,7 @@ from math import ceil, floor, isfinite
 from zoneinfo import ZoneInfo
 
 from .structural_recovery import DEFAULTS as QUALITY_DEFAULTS, LIQUIDITY_181, tradability
-from . import v7_encounters, v7_setup, support_reversal, quote_geometry, trade_volume
+from . import v7_encounters, v7_setup, support_reversal, quote_geometry, trade_volume, stalled_setup
 
 CONTRACT = 'historical-hod-1s-macd-5s-1'
 BOOK_VERSION = 'causal-swing-closing-book-6'
@@ -21,7 +21,7 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     maximum_macd_age_ms=5000., maximum_source_age_ms=2000., maximum_quote_age_ms=1000.,
     confirmation_lifetime_ms=1000., maximum_chase_bps=15.,
     minimum_candle_volume=1., risk_fraction=.005, maximum_quantity=10000.,
-    sizing_mode='risk_fraction',cash_fraction=.9,tranche_count=3,
+    sizing_mode='risk_fraction',cash_fraction=.9,tranche_count=3,setup_stalled_seconds=0.,
     recent_breakout_seconds=30., forming_macd_entry_enabled=1, early_green_stop_enabled=1,
     regular_luld_enabled=0,backtest_luld_estimation_enabled=0,minimum_regular_previous_close=.75,
     luld_buffer_bps=25.,luld_buffer_ticks=2,luld_maximum_age_ms=60000.,v7_zone_enabled=0,entry_zone_fraction=.30,
@@ -106,6 +106,11 @@ def configure(p):
         raise ValueError('Observation-only setup failure requires persistent setup recovery')
     if not 0<=s['setup_add_maximum_upper_wick_fraction']<=1:
         raise ValueError('Add candle wick fraction must be between zero and one')
+    if (type(s['setup_stalled_seconds']) not in (int,float) or not isfinite(s['setup_stalled_seconds'])
+            or s['setup_stalled_seconds'] < 0):
+        raise ValueError('Stalled setup duration must be finite and nonnegative')
+    if s['setup_stalled_seconds'] and not (s['v7_setup_enabled'] and s['setup_phase_minimum_progress_r'] > 0):
+        raise ValueError('Stalled setup exit requires V7 setup and a positive progress threshold')
     if (s['setup_minimum_60s_progress_pct'] or s['setup_minimum_300s_range_pct'] or s['setup_add_maximum_upper_wick_fraction']<1) and not s['v7_setup_enabled']:
         raise ValueError('Setup progress and add candle quality require V7 setup')
     if not 0<=s['setup_maximum_bar_gap_s']<=5 or int(s['setup_maximum_bar_gap_s'])!=s['setup_maximum_bar_gap_s']:
@@ -124,7 +129,7 @@ def configure(p):
         raise ValueError('Phase progress requires V7 setup')
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_minimum_volume_ratio','setup_quote_confirmation_enabled','setup_reversal_enabled','setup_fresh_pivot_enabled','setup_below_vwap_base_enabled','setup_base_diagnostics_enabled','setup_support_quote_clearance_selection','setup_recovery_regular_full_range','setup_trail_current_gain_requires_bid','setup_phase_minimum_progress_r','setup_trail_requires_current_gain','setup_recovery_regular_base','setup_base_maximum_extension_fraction','setup_recovery_entry_reclaim','setup_recovery_unprotected_reentry','setup_minimum_300s_range_pct','setup_minimum_60s_progress_pct','setup_add_maximum_upper_wick_fraction','setup_failure_exit_enabled','setup_base_recovery_maximum_range_pct','setup_minimum_trail_progress_r','setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k not in ('sizing_mode','setup_below_vwap_maximum_distance_atr')):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_stalled_seconds','setup_minimum_volume_ratio','setup_quote_confirmation_enabled','setup_reversal_enabled','setup_fresh_pivot_enabled','setup_below_vwap_base_enabled','setup_base_diagnostics_enabled','setup_support_quote_clearance_selection','setup_recovery_regular_full_range','setup_trail_current_gain_requires_bid','setup_phase_minimum_progress_r','setup_trail_requires_current_gain','setup_recovery_regular_base','setup_base_maximum_extension_fraction','setup_recovery_entry_reclaim','setup_recovery_unprotected_reentry','setup_minimum_300s_range_pct','setup_minimum_60s_progress_pct','setup_add_maximum_upper_wick_fraction','setup_failure_exit_enabled','setup_base_recovery_maximum_range_pct','setup_minimum_trail_progress_r','setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k not in ('sizing_mode','setup_below_vwap_maximum_distance_atr')):
         raise ValueError('Historical HOD settings must be finite and positive')
     if not 0 <= s['setup_failure_seconds'] <= 5 or int(s['setup_failure_seconds']) != s['setup_failure_seconds']:
         raise ValueError('Initial setup failure window must be zero to five completed seconds')
@@ -182,6 +187,8 @@ def configure(p):
     checked['liquidity_admission'] = dict(LIQUIDITY_181, **p.get('liquidity_admission', {}))
     configure_quality(checked)
     p['historical_hod'] = s
+    if s['setup_stalled_seconds'] and not checked['liquidity_admission']['latched']:
+        raise ValueError('Stalled setup exit requires latched liquidity admission')
     p['liquidity_admission'] = checked['liquidity_admission']
     p['structural_detector_settings'] = checked['structural_detector_settings']
     p['entry_candle_confirmation']['enabled'] = False
@@ -1142,6 +1149,15 @@ def evaluate(host, a, o, p, state):
             active['initial_fill_price'] = o.average_price
             active['fill_risk_frozen'] = True
         initial_fill = active.get('initial_fill_price',0)
+        if s['setup_stalled_seconds']:
+            stalled = stalled_setup.assess(active, quality, now=now,
+                minimum_seconds=s['setup_stalled_seconds'], completed_candle=fresh)
+            evidence['stalled_setup'] = stalled
+            if stalled['passed']:
+                state.update(last_exit_reason='stalled_setup',entry_acquisition_exit_latched=True)
+                state.pop('pending_capital_request',None)
+                return result('exit','stalled_setup',Status.EXIT_PENDING,
+                    quantity=o.position_quantity,invalidation_price=stop)
         trail_current_ready = (not s['setup_trail_requires_current_gain'] or
             initial_fill > 0 and o.price >= initial_fill - 1e-9 and
             (not s['setup_trail_current_gain_requires_bid'] or o.bid >= initial_fill - 1e-9))
