@@ -68,6 +68,8 @@ def test_real_detector_to_protected_entry_without_macd():
     r=host.evaluate(a,o)
     assert r.evaluation.signals[0].reason=='v6_support_recovery_confirmed'
     intent,=r.evaluation.intents
+    assert 'entry_quality' not in intent.metadata
+    assert intent.metadata['structural_entry_quality']['failed'] == []
     assert intent.capital_request.mode=='risk_fraction'
     assert intent.capital_request.value==.005
     assert intent.invalidation_price < 10.24
@@ -161,7 +163,7 @@ def test_recovery_can_enter_on_improved_quote_before_confirmation_expires():
     host,a,o,_=ready()
     chased=replace(o,bid=10.39,ask=10.40)
     rejected=host.evaluate(a,chased)
-    assert rejected.evaluation.signals[0].metadata['entry_quality']['failed']==['chase']
+    assert rejected.evaluation.signals[0].metadata['structural_entry_quality']['failed']==['chase']
     assert 'chase' in rejected.evaluation.signals[0].metadata['reason_detail']
     watching=replace(a,state=rejected.state,status=rejected.status)
     improved=replace(o,observed_at=o.observed_at+timedelta(milliseconds=250),
@@ -187,7 +189,7 @@ def test_activity_and_chart_preserve_structural_rejection_evidence(tmp_path):
                 reason=rejected.reason,metadata=rejected.metadata))
         activity=strategy_activity_payload(journal=journal,run_id='recovery-evidence')
         gate=activity['rows'][0]['gate_snapshot']
-        assert gate['structural_recovery']['entry_quality']['failed']==['chase']
+        assert gate['structural_recovery']['structural_entry_quality']['failed']==['chase']
         assert _compact_strategy_chart_plan(gate)['structural_recovery']==gate['structural_recovery']
     finally:
         journal.close()

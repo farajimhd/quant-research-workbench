@@ -6844,7 +6844,7 @@ def _decision_reason_detail(
             return (f"Wait: structural detector warmup "
                     f"{(metadata.get('detector') or {}).get('sequence', 0)} candles.")
         if reason == 'structural_reward_risk_or_chase_failed':
-            quality = metadata.get('entry_quality') or {}
+            quality = metadata.get('structural_entry_quality') or metadata.get('entry_quality') or {}
             return (f"Wait: structural entry failed: {', '.join(quality.get('failed') or [])}; "
                     f"ask={_display_value(quality.get('ask'))}, "
                     f"reward/risk ceiling={_display_value(quality.get('reward_risk_ceiling'))}, "

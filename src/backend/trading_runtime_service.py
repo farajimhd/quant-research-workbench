@@ -567,7 +567,7 @@ def strategy_activity_payload(
         if metadata.get('contract') == 'v6-structural-recovery-1':
             gate_snapshot['structural_recovery'] = {
                 key: metadata[key] for key in (
-                    'contract', 'book', 'detector', 'tradability', 'setup', 'entry_quality'
+                    'contract', 'book', 'detector', 'tradability', 'setup', 'entry_quality', 'structural_entry_quality'
                 ) if metadata.get(key) is not None
             }
         decision_values = {

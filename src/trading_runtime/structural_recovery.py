@@ -295,7 +295,7 @@ def evaluate(host, assignment, o, p, state):
     ceiling = min(chase_ceiling, risk_ceiling)
     entry_checks = dict(valid_stop=0 < stop < o.bid, uncrossed_quote=o.bid <= o.ask,
         reward_risk=o.ask <= risk_ceiling, chase=o.ask <= chase_ceiling)
-    evidence['entry_quality'] = dict(bid=o.bid, ask=o.ask, stop=stop, target=target,
+    evidence['structural_entry_quality'] = dict(bid=o.bid, ask=o.ask, stop=stop, target=target,
         cost_allowance=cost, reward_risk_ceiling=risk_ceiling, chase_ceiling=chase_ceiling,
         maximum_buy_price=ceiling, checks=entry_checks,
         failed=[key for key,passed in entry_checks.items() if not passed])
