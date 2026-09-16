@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 
 import { Layout } from "./app/components/Layout";
 import { LoadingState } from "./app/components/LoadingState";
@@ -20,6 +20,7 @@ const HistoricalTradingPage = lazy(() => import("./pages/HistoricalTradingPage")
 const RealLiveTradingPage = lazy(() => import("./pages/RealLiveTradingPage").then((module) => ({ default: module.RealLiveTradingPage })));
 const ReplayTradingPage = lazy(() => import("./pages/ReplayTradingPage").then((module) => ({ default: module.ReplayTradingPage })));
 const ResearchWorkspacePage = lazy(() => import("./pages/ResearchWorkspacePage").then((module) => ({ default: module.ResearchWorkspacePage })));
+const LabelerPage = lazy(() => import("./pages/LabelerPage").then((module) => ({ default: module.LabelerPage })));
 const ServicesPage = lazy(() => import("./pages/ServicesPage").then((module) => ({ default: module.ServicesPage })));
 const TradingConfigurationPage = lazy(() => import("./pages/TradingConfigurationPage").then((module) => ({ default: module.TradingConfigurationPage })));
 const TypographyPublicSansPage = lazy(() => import("./pages/TypographySystemPage").then((module) => ({ default: module.TypographyPublicSansPage })));
@@ -28,11 +29,18 @@ export function App() {
   const [page, setPage] = useState<PageKey>(() => pageFromHash(window.location.hash) ?? "real-live-trading");
   const [topbarCenter, setTopbarCenter] = useState<ReactNode>(null);
   const [liveStatus, setLiveStatus] = useState<MarketStatus>(() => liveMarketStatus(null));
+  const currentPage = useRef(page);
+  currentPage.current = page;
+  const navigate = (next: PageKey) => {
+    if (next !== page && !window.dispatchEvent(new Event("workspace-before-navigate", { cancelable: true }))) return;
+    setPage(next);
+  };
 
   useEffect(() => {
     const syncPageFromHash = () => {
       const hashPage = pageFromHash(window.location.hash);
-      if (hashPage) setPage(hashPage);
+      if (hashPage && window.dispatchEvent(new Event("workspace-before-navigate", { cancelable: true }))) setPage(hashPage);
+      else if (hashPage) window.history.replaceState(null, "", `#${currentPage.current}`);
     };
     window.addEventListener("hashchange", syncPageFromHash);
     return () => window.removeEventListener("hashchange", syncPageFromHash);
@@ -44,14 +52,14 @@ export function App() {
   }, [page]);
 
   if (page === "canvas-focus") {
-    return <TickerSecPopoverProvider><Layout chromeless page={page} onPageChange={setPage}><PageSuspense><CanvasFocusPage /></PageSuspense></Layout></TickerSecPopoverProvider>;
+    return <TickerSecPopoverProvider><Layout chromeless page={page} onPageChange={navigate}><PageSuspense><CanvasFocusPage /></PageSuspense></Layout></TickerSecPopoverProvider>;
   }
 
   return (
     <TickerSecPopoverProvider><Layout
       compactContent={isCompactContentPage(page)}
       page={page}
-      onPageChange={setPage}
+      onPageChange={navigate}
       topbarCenter={topbarCenter}
       topbarStatus={page === "real-live-trading" ? <MarketStatusBadge value={liveStatus} /> : null}
     >
@@ -59,7 +67,7 @@ export function App() {
         <RouteContent
           page={page}
           onMarketStatusChange={setLiveStatus}
-          onPageChange={setPage}
+          onPageChange={navigate}
           onTopbarCenterChange={setTopbarCenter}
         />
       </PageSuspense>
@@ -82,6 +90,7 @@ function RouteContent({ onMarketStatusChange, onPageChange, onTopbarCenterChange
   if (page === "backtest-trading") return <ActivePage><HistoricalTradingPage mode="backtest" /></ActivePage>;
   if (page === "backtest-debug") return <ActivePage><BacktestDebugPage /></ActivePage>;
   if (page === "research-workspace") return <ActivePage><ResearchWorkspacePage /></ActivePage>;
+  if (page === "labeler") return <ActivePage><LabelerPage /></ActivePage>;
   if (page === "canvas-configuration") return <ActivePage><CanvasConfigurationPage /></ActivePage>;
 
   const configurationSection = configurationSectionForPage(page);
