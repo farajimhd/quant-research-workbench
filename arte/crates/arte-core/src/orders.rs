@@ -42,6 +42,14 @@ pub struct TradingSession {
     allow_extended: bool,
 }
 impl TradingSession {
+    pub fn evidence_hash(&self) -> Result<String> {
+        content_hash(&(
+            "arte.trading-session.v1",
+            &self.session,
+            &self.hash,
+            self.allow_extended,
+        ))
+    }
     pub fn new(
         session: crate::session::Session,
         hash: String,

@@ -588,6 +588,204 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, scenario: Scenario)
                 );
             }
             assert!(controller.acknowledge().is_err());
+            if matches!(scenario, Scenario::SharedCash) {
+                let id = &pending[0].decision_id;
+                let request = || crate::playback_runtime::SizingRequest {
+                    sizing: &sizing,
+                    portfolio: &portfolio,
+                    cash_policy: &cash,
+                    safety: crate::simulation_runtime::AmendmentSafety {
+                        session: &session,
+                        risk_policy: &risk,
+                        bands: None,
+                    },
+                    latency_ns: 0,
+                };
+                let before = portfolio.snapshot("a").unwrap().reservations;
+                let record = controller
+                    .prepare_entry_rejection(id, 0, request())
+                    .unwrap()
+                    .clone();
+                assert_eq!(
+                    controller
+                        .prepare_entry_rejection(id, 0, request())
+                        .unwrap()
+                        .hash()
+                        .unwrap(),
+                    record.hash().unwrap()
+                );
+                assert!(controller
+                    .allocate_and_enter_action(id, 0, &request())
+                    .is_err());
+                let allocation = arte_core::decision_orders::Allocation {
+                    account: "a".into(),
+                    instrument: 1,
+                    quantity: 1,
+                    price_scale: 2,
+                    tick: 1,
+                    entry_limit: 1001,
+                    deadline_ns: now + 1_000_000_000,
+                };
+                assert!(controller
+                    .enter_action(
+                        id,
+                        0,
+                        crate::playback_runtime::EntryRequest {
+                            allocation: &allocation,
+                            portfolio: &portfolio,
+                            cash_policy: &cash,
+                            safety: crate::simulation_runtime::AmendmentSafety {
+                                session: &session,
+                                risk_policy: &risk,
+                                bands: None
+                            },
+                            latency_ns: 0,
+                        }
+                    )
+                    .is_err());
+                assert_eq!(portfolio.snapshot("a").unwrap().reservations, before);
+                assert!(controller.acknowledge().is_err());
+                struct Journal {
+                    fail: bool,
+                    record: Option<arte_core::action_rejection::Record>,
+                }
+                impl crate::rejection_journal::Publisher for Journal {
+                    async fn append(
+                        &mut self,
+                        _: &arte_core::strategy_transaction::Committed,
+                        record: &arte_core::action_rejection::Record,
+                    ) -> Result<arte_core::action_rejection::Record> {
+                        self.record = Some(record.clone());
+                        if std::mem::take(&mut self.fail) {
+                            return Err(Error::Unready("ambiguous fixture write".into()));
+                        }
+                        Ok(record.clone())
+                    }
+                }
+                let mut journal = Journal {
+                    fail: true,
+                    record: None,
+                };
+                assert!(controller
+                    .commit_entry_rejection(id, 0, &portfolio, &mut journal)
+                    .await
+                    .is_err());
+                assert!(controller.acknowledge().is_err());
+                assert!(controller
+                    .commit_entry_rejection(id, 0, &portfolio, &mut journal)
+                    .await
+                    .unwrap());
+                assert!(!controller
+                    .commit_entry_rejection(id, 0, &portfolio, &mut journal)
+                    .await
+                    .unwrap());
+                assert!(controller.pending_actions().is_empty());
+                let cut = arte_core::portfolio::checkpoint::Cut {
+                    boundary_sequence: input.source_sequence,
+                    boundary_hash: input.event_id.clone(),
+                    at_ns: now,
+                };
+                let limits = crate::simulation_runtime::checkpoint::Limits {
+                    maximum_bytes: 1_000_000,
+                    maximum_orders: 4,
+                    maximum_pending_fills: 8,
+                    projection: arte_core::execution_positions::checkpoint::Limits {
+                        positions: 3,
+                        fills: 100,
+                        lots_per_position: 8,
+                        bytes: 100_000,
+                    },
+                };
+                let image = controller
+                    .checkpoint(&manifest, &cut, &BTreeMap::new(), limits, 2_000_000)
+                    .unwrap();
+                let context =
+                    content_hash(&("arte.playback-controller-cut.v1", manifest.hash(), &cut))
+                        .unwrap();
+                let receipts: Vec<_> = writes
+                    .iter()
+                    .map(|write| write.receipt().unwrap())
+                    .collect();
+                let mut restored = crate::playback_runtime::Runtime::restore_checkpoint(
+                    &image,
+                    &image.root.id,
+                    &manifest,
+                    &cut,
+                    &recovery.catalog,
+                    recovery.prepared.clone(),
+                    arte_core::market_structure::scheduler::checkpoint::Request {
+                        context_hash: &context,
+                        run_id: "run",
+                        seed_hash: &recovery.seed_hash,
+                        configuration_hash: &recovery.configuration_hash,
+                        quote_policy: std::sync::Arc::new(crate::test_quote_policy()),
+                        maximum_pending: 10,
+                        maximum_bytes: 2_000_000,
+                    },
+                    1,
+                    3,
+                    &receipts,
+                    arte_core::simulation_costs::Pinned::new(cost_model.clone(), &manifest)
+                        .unwrap(),
+                    limits,
+                    2_000_000,
+                )
+                .unwrap();
+                assert_eq!(restored.rejection_records().len(), 1);
+                assert_eq!(restored.pending_actions().len(), 1);
+                assert!(restored.acknowledge().is_err());
+                let receipt = receipts
+                    .iter()
+                    .find(|receipt| &receipt.decision().decision_id == id)
+                    .unwrap();
+                let readback = arte_core::action_rejection::Committed::from_readback(
+                    receipt,
+                    &record.hash().unwrap(),
+                    journal.record.unwrap(),
+                )
+                .unwrap();
+                let mut changed = record.clone();
+                changed.evidence_hash = "f".repeat(64);
+                let conflicting = arte_core::action_rejection::Committed::from_readback(
+                    receipt,
+                    &changed.hash().unwrap(),
+                    changed,
+                )
+                .unwrap();
+                assert!(restored
+                    .confirm_entry_rejection(&conflicting, &portfolio)
+                    .is_err());
+                assert!(restored.acknowledge().is_err());
+                restored
+                    .confirm_entry_rejection(&readback, &portfolio)
+                    .unwrap();
+                assert!(restored.pending_actions().is_empty());
+                assert_eq!(
+                    restored
+                        .checkpoint(&manifest, &cut, &BTreeMap::new(), limits, 2_000_000)
+                        .unwrap()
+                        .root
+                        .id,
+                    image.root.id
+                );
+                assert_eq!(portfolio.snapshot("a").unwrap().reservations, before);
+                restored.acknowledge().unwrap();
+            } else {
+                let request = crate::playback_runtime::SizingRequest {
+                    sizing: &sizing,
+                    portfolio: &portfolio,
+                    cash_policy: &cash,
+                    safety: crate::simulation_runtime::AmendmentSafety {
+                        session: &session,
+                        risk_policy: &risk,
+                        bands: None,
+                    },
+                    latency_ns: 0,
+                };
+                assert!(controller
+                    .prepare_entry_rejection(&pending[0].decision_id, 0, request)
+                    .is_err());
+            }
             return;
         }
         if !fail_submission {
@@ -967,7 +1165,7 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, scenario: Scenario)
             .checkpoint(&manifest, &cut, &last_fills, limits, 2_000_000)
             .unwrap();
         let root: serde_json::Value = serde_json::from_slice(&image.root.payload).unwrap();
-        assert_eq!(root["version"], 4);
+        assert_eq!(root["version"], 5);
         assert_eq!(root["targets"].as_object().unwrap().len(), 2);
         let context =
             content_hash(&("arte.playback-controller-cut.v1", manifest.hash(), &cut)).unwrap();

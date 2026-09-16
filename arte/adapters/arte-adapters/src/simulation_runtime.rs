@@ -54,6 +54,24 @@ pub struct AmendmentSafety<'a> {
     pub bands: Option<&'a arte_core::orders::Bands>,
 }
 impl Runtime {
+    pub(crate) fn require_absent_command(&self, command: &str) -> Result<()> {
+        self.ready()?;
+        if self.owners.contains_key(command)
+            || self.reservations.contains_key(command)
+            || self.released.contains(command)
+            || self.cash.contains_key(command)
+            || self
+                .simulator
+                .positions()
+                .iter()
+                .any(|order| order.bracket.command_id == command)
+        {
+            return Err(Error::Conflict(
+                "rejection command already has execution state".into(),
+            ));
+        }
+        Ok(())
+    }
     pub(crate) fn require_recovered_allocation(
         &self,
         command: &str,

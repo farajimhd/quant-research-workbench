@@ -6,6 +6,7 @@ use arte_core::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 mod allocation;
+mod rejections;
 pub use allocation::{AllocatedEntry, EntryAssessment, Sizing, SizingRequest};
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -53,6 +54,16 @@ struct Item {
     completed_request: Option<String>,
     reserved_request: Option<String>,
     allocation: Option<Allocation>,
+    rejection: Option<rejections::State>,
+}
+impl Item {
+    fn complete(&self) -> bool {
+        self.completed_request.is_some()
+            || self
+                .rejection
+                .as_ref()
+                .is_some_and(|r| r.journaled && r.verified)
+    }
 }
 #[derive(Default)]
 pub(super) struct Work {
@@ -139,6 +150,23 @@ impl Work {
                 }
             }
             item.allocation = saved.allocation.clone();
+            if let Some(rejection) = &saved.rejection {
+                rejection.record.require(&item.receipt)?;
+                if rejection.record.action_index != *index
+                    || item.allocation.is_some()
+                    || item.completed_request.is_some()
+                    || item.reserved_request.is_some()
+                {
+                    return Err(Error::Conflict(
+                        "recovered rejection overlaps execution progress".into(),
+                    ));
+                }
+                item.rejection = Some(rejections::State {
+                    record: rejection.record.clone(),
+                    journaled: rejection.journaled,
+                    verified: false,
+                });
+            }
         }
         Ok(work)
     }
@@ -158,6 +186,12 @@ impl Work {
                     completed_request: item.completed_request.clone(),
                     reserved_request: item.reserved_request.clone(),
                     allocation: item.allocation.clone(),
+                    rejection: item.rejection.as_ref().map(|r| {
+                        super::checkpoint::RejectionProgress {
+                            record: r.record.clone(),
+                            journaled: r.journaled,
+                        }
+                    }),
                 })
             })
             .collect()
@@ -182,17 +216,14 @@ impl Work {
                         completed_request: None,
                         reserved_request: None,
                         allocation: None,
+                        rejection: None,
                     },
                 );
             }
         }
     }
     pub fn require_complete(&self) -> Result<()> {
-        if self
-            .items
-            .values()
-            .any(|item| item.completed_request.is_none())
-        {
+        if self.items.values().any(|item| !item.complete()) {
             return Err(Error::Unready(
                 "committed decision has unresolved execution actions".into(),
             ));
@@ -215,6 +246,11 @@ impl Runtime {
     }
     pub(super) fn validate_allocations(&self) -> Result<()> {
         for ((id, index), item) in &self.actions.items {
+            if let Some(rejection) = &item.rejection {
+                rejection.record.require(&item.receipt)?;
+                let command = content_hash(&("decision-bracket-v1", id, index))?;
+                self.execution.require_absent_command(&command)?;
+            }
             if let Some(allocation) = &item.allocation {
                 let command = content_hash(&("decision-bracket-v1", id, index))?;
                 self.execution.require_recovered_allocation(
@@ -407,6 +443,9 @@ impl Runtime {
             .items
             .get(&(decision_id.into(), action_index))
             .ok_or_else(|| Error::Unready("no committed entry action".into()))?;
+        if item.rejection.is_some() {
+            return Err(Error::Conflict("rejected action cannot be funded".into()));
+        }
         let regular = request.safety.session.require_phase(at_ns)?;
         let plan = decision_orders::bracket(
             &item.receipt,
@@ -614,7 +653,7 @@ impl Runtime {
         self.actions
             .items
             .iter()
-            .filter(|(_, item)| item.completed_request.is_none())
+            .filter(|(_, item)| !item.complete())
             .take(maximum)
             .map(|((id, index), item)| PendingAction {
                 decision_id: id.clone(),
@@ -644,6 +683,11 @@ impl Runtime {
             .items
             .get_mut(&key)
             .ok_or_else(|| Error::Unready("submission has no committed action".into()))?;
+        if item.rejection.is_some() {
+            return Err(Error::Conflict(
+                "rejected action cannot be submitted".into(),
+            ));
+        }
         let fingerprint = content_hash(&(
             "playback-submit-v1",
             request.plan,

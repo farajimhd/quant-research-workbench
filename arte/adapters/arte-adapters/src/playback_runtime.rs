@@ -84,7 +84,8 @@ impl Runtime {
             arte_core::simulation_costs::SettlementCurrency,
         >,
     ) -> Result<()> {
-        self.execution.require_portfolio(portfolio, currencies)
+        self.execution.require_portfolio(portfolio, currencies)?;
+        self.require_rejection_funding_absent(portfolio)
     }
     pub fn pause(&mut self) -> Result<()> {
         self.run.pause()

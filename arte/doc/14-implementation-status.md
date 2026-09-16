@@ -6,6 +6,39 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Controller-owned rejection completion and recovery
+
+The playback controller can now capture an unfundable entry's rejection once and
+publish it through the rejection journal. Its evidence hash binds the committed
+decision, owned quote, account snapshot, sizing/cash policies, session, bands,
+latency and quote-age policy. Retries retain this evidence rather than recomputing
+it after cash changes. A prepared rejection blocks sizing, funding and submission
+of that action.
+
+Exact journal readback resolves the action. Preparation and confirmation both
+check that the command has no controller funding or completion, portfolio
+reservation, simulated order, execution ownership, cash state or released funding.
+The simulation run and currency scale must match. No reservation is released.
+An ambiguous submission cannot be converted to a sizing rejection.
+
+Controller checkpoints are version 5. They retain the rejection record and
+journal-publication progress, but do not persist journal verification authority.
+Restored rejection actions remain unresolved until independently read journal
+receipts are confirmed. Conflicting receipts fail. Earlier controller checkpoint
+versions are rejected; no implicit migration is provided.
+
+The shared-cash lifecycle fixture now publishes a rejection, retries an ambiguous
+write, restores the controller, verifies that acknowledgment is blocked, then
+confirms independent readback and advances. It checks unchanged reservations,
+idempotence, conflicting evidence, exact checkpoint recapture and funding guards.
+The simulator-capacity failure remains funded and cannot take this rejection path.
+All 396 offline tests, formatting, Clippy and copied-source checks pass. Source
+parity was not rerun. No services started and no migrations were applied.
+
+The outer runner still needs to select and drive this explicit rejection workflow
+alongside bounded action dispatch. Live execution integration and complete runner
+configuration/reference/evidence assembly remain unfinished.
+
 ## Decision-bound rejection journal
 
 Sizing rejections now have a shared versioned journal contract. Each immutable
@@ -24,10 +57,8 @@ or noncanonical payloads. An ambiguous insert retries the same slot. Migration
 `018-action-rejections.sql` is authored and unapplied. Ownership remains
 cooperative single-host locking, not distributed fencing.
 
-The controller does not yet complete an action from this receipt. It still needs
-owned evidence capture, checks for absent funding/submission, checkpoint storage
-of rejection progress and independent journal readback during recovery. Existing
-actions remain pending; no reserved funds are released by this change.
+The controller integration described above supersedes the initial journal-only
+limitation. Journal receipts alone still cannot release funds or erase orders.
 
 The existing shared-cash lifecycle fixture exercises the contract and an in-memory
 journal: cancellation, ambiguous writes, conflicting readback, exact retry,

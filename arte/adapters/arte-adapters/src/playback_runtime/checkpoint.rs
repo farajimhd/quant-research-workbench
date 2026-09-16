@@ -17,6 +17,13 @@ pub(super) struct ActionProgress {
     pub completed_request: Option<String>,
     pub reserved_request: Option<String>,
     pub allocation: Option<arte_core::decision_orders::Allocation>,
+    pub rejection: Option<RejectionProgress>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RejectionProgress {
+    pub record: arte_core::action_rejection::Record,
+    pub journaled: bool,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -102,7 +109,7 @@ impl Runtime {
         let root: Root = serde_json::from_slice(&bundle.root.payload)
             .map_err(|e| Error::Serialization(e.to_string()))?;
         let context = content_hash(&("arte.playback-controller-cut.v1", manifest.hash(), cut))?;
-        if root.version != 4
+        if root.version != 5
             || root.manifest_hash != manifest.hash()
             || root.cut != *cut
             || root.playback != bundle.playback.root.id
@@ -227,7 +234,7 @@ impl Runtime {
         serde_json::to_writer(
             &mut writer,
             &Root {
-                version: 4,
+                version: 5,
                 manifest_hash: manifest.hash().into(),
                 cut: cut.clone(),
                 playback: playback.root.id.clone(),

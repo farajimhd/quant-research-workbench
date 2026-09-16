@@ -101,6 +101,15 @@ impl Runtime {
         action_index: usize,
         request: SizingRequest<'_>,
     ) -> Result<EntryAssessment> {
+        self.assess_entry_evidence(decision_id, action_index, request)
+            .map(|(assessment, _)| assessment)
+    }
+    pub(super) fn assess_entry_evidence(
+        &self,
+        decision_id: &str,
+        action_index: usize,
+        request: SizingRequest<'_>,
+    ) -> Result<(EntryAssessment, Option<String>)> {
         let run = self.decision_view()?;
         let now = run
             .pending()?
@@ -111,7 +120,10 @@ impl Runtime {
             .items
             .get(&(decision_id.into(), action_index))
             .ok_or_else(|| Error::Unready("allocation committed action missing".into()))?;
-        if item.reserved_request.is_some() || item.completed_request.is_some() {
+        if item.reserved_request.is_some()
+            || item.completed_request.is_some()
+            || item.rejection.is_some()
+        {
             return Err(Error::Conflict(
                 "funded action must retry its retained allocation".into(),
             ));
@@ -159,6 +171,12 @@ impl Runtime {
             request.safety.risk_policy,
         )?;
         let account = request.portfolio.snapshot(&scope.account)?;
+        request.portfolio.require_simulation(
+            &scope.account,
+            &scope.run_id,
+            request.cash_policy.currency_scale,
+            None,
+        )?;
         if account.balance_at_ns > now || now - account.balance_at_ns > account.max_balance_age_ns {
             return Err(Error::Unready(
                 "allocation account balance stale or future".into(),
@@ -192,7 +210,22 @@ impl Runtime {
         allocation.quantity = match calculation.outcome()? {
             order_funding::sizing::Outcome::Sized(quantity) => quantity,
             order_funding::sizing::Outcome::Rejected(_) => {
-                return Ok(EntryAssessment::Rejected(calculation));
+                let evidence = content_hash(&(
+                    "arte.playback-sizing-evidence.v1",
+                    item.receipt.decision(),
+                    action_index,
+                    now,
+                    quote,
+                    &account,
+                    sizing,
+                    request.cash_policy,
+                    request.safety.session.evidence_hash()?,
+                    request.safety.risk_policy,
+                    request.safety.bands,
+                    request.latency_ns,
+                    self.maximum_quote_age_ns,
+                ))?;
+                return Ok((EntryAssessment::Rejected(calculation), Some(evidence)));
             }
         };
         plan.bracket.quantity = allocation.quantity;
@@ -216,9 +249,12 @@ impl Runtime {
                 now_ns: now,
                 latency_ns: request.latency_ns,
             })?;
-        Ok(EntryAssessment::Sized {
-            allocation,
-            calculation,
-        })
+        Ok((
+            EntryAssessment::Sized {
+                allocation,
+                calculation,
+            },
+            None,
+        ))
     }
 }
