@@ -4,7 +4,7 @@ use super::{
     ClickHouse,
 };
 use crate::playback_runtime::recovery::{
-    publication::{Finalized, Published},
+    publication::{Finalized, Owners, Published},
     storage::{Header, Stored, CHUNK_BYTES, MAX_ROOT_BYTES},
     Bundle, Recovered, RestoreRequest,
 };
@@ -104,6 +104,27 @@ async fn publish(
     put(store, true, slot, &graph.root.payload, owned).await
 }
 impl ClickHouse {
+    /// Holds exclusive runtime owners across publication. Cancellation never
+    /// acknowledges the boundary; retain `finalized` and retry it unchanged.
+    pub async fn commit_backtest_boundary(
+        &self,
+        finalized: &Finalized,
+        request: &RestoreRequest<'_>,
+        passed: &BTreeSet<Acceptance>,
+        lease: &mut crate::ownership::Lease,
+        owners: Owners<'_>,
+    ) -> Result<()> {
+        require_acceptance(passed)?;
+        let slot = backtest_checkpoint_scope(request.manifest, request.cut)?;
+        commit_verified(
+            &Storage(self),
+            finalized,
+            request,
+            &|| lease.require(&slot),
+            owners,
+        )
+        .await
+    }
     pub async fn load_backtest_checkpoint(
         &self,
         request: &RestoreRequest<'_>,
@@ -117,17 +138,52 @@ impl ClickHouse {
         passed: &BTreeSet<Acceptance>,
         lease: &mut crate::ownership::Lease,
     ) -> Result<Published> {
-        for required in [Acceptance::RepositoryExtracted, Acceptance::Durability] {
-            if !passed.contains(&required) {
-                return Err(Error::Unready(format!(
-                    "backtest publication acceptance missing: {required:?}"
-                )));
-            }
-        }
+        require_acceptance(passed)?;
         let slot = backtest_checkpoint_scope(request.manifest, request.cut)?;
         lease.require(&slot)?;
         publish_verified(&Storage(self), finalized, request, &|| lease.require(&slot)).await
     }
+}
+fn require_acceptance(passed: &BTreeSet<Acceptance>) -> Result<()> {
+    for required in [Acceptance::RepositoryExtracted, Acceptance::Durability] {
+        if !passed.contains(&required) {
+            return Err(Error::Unready(format!(
+                "backtest publication acceptance missing: {required:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+async fn commit_verified(
+    store: &impl Store,
+    finalized: &Finalized,
+    request: &RestoreRequest<'_>,
+    owned: &impl Fn() -> Result<()>,
+    owners: Owners<'_>,
+) -> Result<()> {
+    owned()?;
+    let current = Finalized::capture(
+        Owners {
+            controller: owners.controller,
+            candidates: owners.candidates,
+            portfolio: owners.portfolio,
+            manifest: owners.manifest,
+            last_fills: owners.last_fills,
+            currencies: owners.currencies,
+            limits: owners.limits,
+        },
+        request.cut,
+    )?;
+    if current.bundle().root.id != finalized.bundle().root.id {
+        return Err(Error::Conflict(
+            "boundary changed before publication".into(),
+        ));
+    }
+    drop(current);
+    let receipt = publish_verified(store, finalized, request, owned).await?;
+    owned()?;
+    // No await after the last ownership check or within acknowledgment.
+    receipt.acknowledge(owners)
 }
 async fn publish_verified(
     store: &impl Store,
@@ -160,6 +216,7 @@ pub(crate) mod tests {
         rows: RefCell<BTreeMap<(bool, String), Vec<u8>>>,
         fail_chunk: Cell<bool>,
         ambiguous_root: Cell<bool>,
+        pause_root: Cell<bool>,
     }
     impl Store for Memory {
         async fn read(&self, root: bool, key: &str) -> Result<Option<Vec<u8>>> {
@@ -172,11 +229,97 @@ pub(crate) mod tests {
             self.rows
                 .borrow_mut()
                 .insert((root, key.into()), bytes.to_vec());
+            if root && self.pause_root.get() {
+                std::future::pending::<()>().await;
+            }
             if root && self.ambiguous_root.get() {
                 return Err(Error::Unready("ambiguous root".into()));
             }
             Ok(())
         }
+    }
+    pub(crate) async fn commit(
+        bundle: &Finalized,
+        request: &RestoreRequest<'_>,
+        mut owners: Owners<'_>,
+    ) {
+        let memory = Memory::default();
+        let before = owners.controller.status().acknowledged_boundaries;
+        let mut accounts: BTreeMap<_, _> = owners
+            .manifest
+            .manifest()
+            .consumers
+            .iter()
+            .map(|scope| {
+                (
+                    scope.account.clone(),
+                    owners.portfolio.snapshot(&scope.account).unwrap(),
+                )
+            })
+            .collect();
+        accounts.values_mut().next().unwrap().budget_minor -= 1;
+        let mut changed = arte_core::portfolio::Portfolio::new(accounts).unwrap();
+        let mut drifted = owners.reborrow();
+        drifted.portfolio = &mut changed;
+        assert!(matches!(
+            commit_verified(&memory, bundle, request, &|| Ok(()), drifted).await,
+            Err(Error::Conflict(reason)) if reason == "boundary changed before publication"
+        ));
+        assert!(memory.rows.borrow().is_empty());
+        memory.fail_chunk.set(true);
+        assert!(
+            commit_verified(&memory, bundle, request, &|| Ok(()), owners.reborrow())
+                .await
+                .is_err()
+        );
+        assert_eq!(owners.controller.status().acknowledged_boundaries, before);
+        memory.fail_chunk.set(false);
+        memory.pause_root.set(true);
+        {
+            use std::{
+                future::Future,
+                task::{Context, Poll, Waker},
+            };
+            let mut attempt = Box::pin(commit_verified(
+                &memory,
+                bundle,
+                request,
+                &|| Ok(()),
+                owners.reborrow(),
+            ));
+            assert!(matches!(
+                attempt
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop())),
+                Poll::Pending
+            ));
+        }
+        assert_eq!(owners.controller.status().acknowledged_boundaries, before);
+        let slot = backtest_checkpoint_scope(request.manifest, request.cut).unwrap();
+        assert!(memory.read(true, &slot).await.unwrap().is_some());
+        memory.pause_root.set(false);
+        let checks = Cell::new(0);
+        assert!(commit_verified(
+            &memory,
+            bundle,
+            request,
+            &|| {
+                checks.set(checks.get() + 1);
+                if checks.get() >= 3 {
+                    Err(Error::Unready("ownership lost during retry".into()))
+                } else {
+                    Ok(())
+                }
+            },
+            owners.reborrow()
+        )
+        .await
+        .is_err());
+        assert!(checks.get() >= 3);
+        assert_eq!(owners.controller.status().acknowledged_boundaries, before);
+        commit_verified(&memory, bundle, request, &|| Ok(()), owners)
+            .await
+            .unwrap();
     }
     pub(crate) async fn publication(bundle: &Finalized, request: &RestoreRequest<'_>) -> Published {
         let memory = Memory::default();

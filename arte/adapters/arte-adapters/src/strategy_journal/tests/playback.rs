@@ -1107,8 +1107,10 @@ async fn candidate_owner_retry(cancel: bool) {
             limits: &limits,
         })
         .is_err());
-    publication
-        .acknowledge(crate::playback_runtime::recovery::publication::Owners {
+    crate::clickhouse::checkpoint_commit_test(
+        &finalized,
+        &publication_request,
+        crate::playback_runtime::recovery::publication::Owners {
             controller: &mut controller,
             candidates: &mut candidates,
             portfolio: &mut portfolio,
@@ -1116,8 +1118,9 @@ async fn candidate_owner_retry(cancel: bool) {
             last_fills: &fills,
             currencies: &currencies,
             limits: &limits,
-        })
-        .unwrap();
+        },
+    )
+    .await;
     assert!(publication
         .acknowledge(crate::playback_runtime::recovery::publication::Owners {
             controller: &mut controller,

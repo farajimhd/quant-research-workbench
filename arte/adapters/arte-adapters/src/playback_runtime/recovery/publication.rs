@@ -17,6 +17,19 @@ pub struct Owners<'a> {
     pub currencies: &'a BTreeMap<u64, SettlementCurrency>,
     pub limits: &'a Limits,
 }
+impl Owners<'_> {
+    pub fn reborrow(&mut self) -> Owners<'_> {
+        Owners {
+            controller: self.controller,
+            candidates: self.candidates,
+            portfolio: self.portfolio,
+            manifest: self.manifest,
+            last_fills: self.last_fills,
+            currencies: self.currencies,
+            limits: self.limits,
+        }
+    }
+}
 /// Immutable graph captured only after every decision and action has completed.
 /// Partial recovery captures must not occupy the immutable boundary slot.
 pub struct Finalized {

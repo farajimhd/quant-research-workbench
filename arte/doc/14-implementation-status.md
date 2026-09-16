@@ -6,6 +6,25 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Combined checkpoint publication and boundary advancement
+
+The ClickHouse adapter exposes `commit_backtest_boundary`. It holds exclusive
+controller, candidate and portfolio references across publication. It recaptures
+the finalized graph before any write and rejects owner drift. After verified
+publication it checks ownership again and acknowledges without another await.
+Callers retain the finalized graph for exact retry after cancellation or failure.
+
+The candidate fixture exercises this same commit path with an in-memory store.
+Failed chunks, cancellation after root insertion and ownership loss during retry
+leave acknowledgment unchanged. An exact retry advances once. A changed account
+budget is rejected before any storage write. Existing publication and duplicate
+acknowledgment checks remain in place.
+
+All 400 offline tests, formatting, Clippy and copied-source checks pass. No
+services started or migrations ran. Source parity was not rerun. The top-level
+runner must still assemble this operation with its recovery evidence and lease;
+the adapter and fixture do not establish complete runnable-service acceptance.
+
 ## Finalized boundary publication and acknowledgment
 
 The common-cut ClickHouse publisher now requires a typed finalized graph.
