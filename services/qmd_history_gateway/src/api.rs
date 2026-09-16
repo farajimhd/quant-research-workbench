@@ -282,6 +282,7 @@ pub fn app(state: AppState) -> Router {
             get(chart_forming_snapshot),
         )
         .route("/snapshot/scanner-market", get(scanner_market_snapshot))
+        .route("/features/session-relative-volume-baseline", post(relative_volume_baseline))
         .route("/snapshot/scanner-derived", get(scanner_derived_snapshot))
         .route(
             "/estimate/generic-structure-event-counts",
@@ -370,6 +371,20 @@ async fn allocation_snapshot() -> Json<crate::allocation_diagnostics::Allocation
 
 async fn capability_catalog_snapshot() -> Json<Vec<ComputationCapability<'static>>> {
     Json(computation_capability_catalog())
+}
+
+async fn relative_volume_baseline(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<crate::relative_volume::BaselineRequest>,
+) -> Result<Json<crate::relative_volume::BaselineResponse>, ApiError> {
+    static PERMITS: Semaphore = Semaphore::const_new(1);
+    crate::relative_volume::validate_request(&request).map_err(bad_request)?;
+    let _permit = PERMITS.try_acquire().map_err(|_| (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(json!({"error":"RVOL baseline capacity busy", "error_code":"relative_volume_capacity_busy", "retryable":true})),
+    ))?;
+    crate::relative_volume::load(&state.config, &state.source, request)
+        .await.map(Json).map_err(service_error)
 }
 
 async fn scanner_derived_snapshot(
