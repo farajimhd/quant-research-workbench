@@ -6,6 +6,23 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Immutable startup-document persistence
+
+The ClickHouse adapter can publish and load the startup document. It uses 1 MiB
+content-addressed chunks, exact chunk verification and root-last publication.
+The root slot is stable per manifest. A different startup document cannot replace
+it. Storage policy checks and cooperative lease checks remain mandatory, along
+with extraction and durability acceptance. Migration 019 is unapplied.
+
+In-memory tests cover failed chunks, an ambiguous root write, exact retry without
+extra writes, conflicting startup inputs, missing/corrupt chunks, wrong expected
+identity, noncanonical roots and lost ownership. A multi-chunk transport fixture
+uses synthetic extra accounts; it is not a valid session or strategy fixture.
+
+All 404 offline tests, formatting, Clippy and copied-source checks pass. No
+services started or migrations ran. Source parity was not rerun. The executable
+runner and recovery roots do not yet require this persisted startup identity.
+
 ## Pinned fresh-session startup inputs
 
 Production session construction now consumes a versioned startup document and
@@ -21,9 +38,9 @@ version, unknown fields, duplicate keys, oversized input and wrong expected hash
 All 404 offline tests, formatting, Clippy and copied-source checks pass. No
 services started or migrations ran. Source parity was not rerun.
 
-The startup document is not yet persisted through ClickHouse or linked from
-recovery roots. Completing those links and source loading remains necessary
-before exposing a reproducible executable strategy-backtest command.
+The startup persistence adapter is now implemented as described above. Recovery
+root linkage and source loading remain necessary before exposing a reproducible
+executable strategy-backtest command.
 
 ## Fresh backtest session assembly
 

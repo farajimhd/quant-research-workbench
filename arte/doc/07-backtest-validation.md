@@ -46,10 +46,16 @@ are rejected. Field ordering and whitespace do not change the semantic hash.
 The session constructor subsequently checks effective market/policy bindings
 and account compatibility. It returns a paused session.
 
-Run metadata must persist this document and its expected identity. Recovery
-metadata must retain that link. These persistence and recovery links are not
-implemented yet; see the implementation status. Do not infer them from the
-existence of an in-memory startup hash.
+The startup adapter persists content-addressed 1 MiB chunks and publishes a
+root only after chunk readback. One immutable slot per manifest prevents changed
+startup inputs from replacing the original. Exact retries are idempotent.
+Publication requires extraction and durability acceptance plus cooperative
+ownership. The adapter is not a distributed compare-and-swap authority.
+
+Migration 019 is unapplied. Run orchestration must publish this document before
+advancing the session and retain its expected identity in recovery metadata.
+Those orchestration and recovery links are not implemented yet. Storage readback
+does not prove strategy acceptance or power-loss durability.
 
 ## Explicit simulated costs
 

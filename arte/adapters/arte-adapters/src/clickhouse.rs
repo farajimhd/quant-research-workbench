@@ -16,6 +16,7 @@ mod references;
 mod rejections;
 mod run_checkpoints;
 mod run_manifests;
+mod startup;
 pub use execution_checkpoints::{execution_checkpoint_scope, ExecutionRecovery};
 pub use fills::FillPublisher;
 pub use order_authorizations::OrderPublisher;
@@ -31,6 +32,9 @@ pub(crate) use run_checkpoints::tests::publication as checkpoint_publication_tes
 #[cfg(test)]
 pub(crate) use run_checkpoints::tests::roundtrip as checkpoint_roundtrip_test;
 pub use run_manifests::run_manifest_scope;
+pub use startup::backtest_startup_scope;
+#[cfg(test)]
+pub(crate) use startup::exercise as startup_roundtrip_test;
 
 pub fn identifier(value: &str) -> Result<&str> {
     if value.is_empty()

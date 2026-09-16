@@ -88,11 +88,24 @@ fn assembled_session_is_paused_and_preserves_separate_account_budgets() {
     );
 }
 
-#[test]
-fn startup_document_pins_balances_limits_models_and_manifest() {
+#[tokio::test]
+async fn startup_document_pins_balances_limits_models_and_manifest() {
     use crate::playback_runtime::session::document::Document;
     let (run, costs, manifest, _) = run_candidate_fixture(true, false, false, true);
     let document = Document::from_request(&request(&run, &manifest, &costs));
+    crate::clickhouse::startup_roundtrip_test(&manifest, &document).await;
+    // Transport stress only: extra accounts intentionally do not match consumers.
+    // Storage identity must not be confused with semantic session acceptance.
+    let mut large = document.clone();
+    let account = large.accounts["a"].clone();
+    for index in 0..4094 {
+        large.accounts.insert(
+            format!("account-{index:04}-{}", "x".repeat(100)),
+            account.clone(),
+        );
+    }
+    assert!(serde_json::to_vec(&large).unwrap().len() > 1024 * 1024);
+    crate::clickhouse::startup_roundtrip_test(&manifest, &large).await;
     let hash = document.hash().unwrap();
     for change in 0..7 {
         let mut changed = document.clone();
