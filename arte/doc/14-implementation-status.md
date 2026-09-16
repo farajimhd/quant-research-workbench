@@ -6,6 +6,23 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Configured boundary routing
+
+The candidate owner now selects its evaluator from the controller's pending
+boundary. Completed one-second bars use completed-bar evaluation. Eligible
+trades use intrabar evaluation. Other boundaries use observation-only handling.
+This entry point requires a bound policy before selecting any path.
+
+The two-account retry tests now continue through completed-bar evaluation and
+reach playback completion. Admission uses the causal feature snapshot's MACD
+and activity evidence. The runtime still rejects contradictory evidence.
+Account journals and action gates remain required before market acknowledgment.
+
+This is a flat-position fixture. It does not prove configured strategy-driven
+entry, fill and exit acceptance. That integration remains required.
+All 383 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Source-oracle parity was not rerun. No service or network test ran.
+
 ## Manifest-bound candidate policies
 
 The playback candidate owner now accepts one owned policy per declared

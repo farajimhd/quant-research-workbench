@@ -29,7 +29,53 @@ pub struct EntryEvidence<'a> {
     pub regular: bool,
     pub regular_target: Option<f64>,
 }
+/// Explicit external evidence for either price evaluator. The pending market
+/// boundary, not the caller, chooses which evaluator may consume it.
+pub struct Evidence<'a> {
+    pub entry: EntryEvidence<'a>,
+    pub acquisition: features::AcquisitionContext,
+    pub adds: &'a arte_core::strategy_adds::Gates,
+}
 impl Candidates {
+    pub fn prepare_configured(
+        &mut self,
+        controller: &Runtime,
+        scope: &str,
+        evidence: Evidence<'_>,
+        safety: &Safety,
+        broker: &candidate::PositionObservation,
+    ) -> Result<Decision> {
+        self.require(controller)?;
+        if !self.configurations.contains_key(scope) {
+            return Err(Error::Unready("candidate policy not bound".into()));
+        }
+        use arte_core::market_structure::scheduler::Kind;
+        let view = controller.decision_view()?;
+        let boundary = view
+            .pending()?
+            .ok_or_else(|| Error::Unready("no playback boundary".into()))?;
+        match boundary.kind {
+            Kind::Completed {
+                interval_ns: 1_000_000_000,
+                ..
+            } => self.prepare_configured_completed(
+                controller,
+                scope,
+                evidence.entry,
+                safety,
+                broker,
+                evidence.adds,
+            ),
+            Kind::Trade { eligible: true, .. } => self.prepare_configured_intrabar(
+                controller,
+                scope,
+                evidence.acquisition,
+                safety,
+                broker,
+            ),
+            _ => self.prepare_observation(controller, scope, safety, broker),
+        }
+    }
     pub fn configured(
         controller: &Runtime,
         manifest: &Pinned,

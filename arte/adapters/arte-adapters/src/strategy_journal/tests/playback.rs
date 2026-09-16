@@ -741,6 +741,115 @@ async fn candidate_owner_retry(cancel: bool) {
     assert_eq!(results.len(), 2);
     assert!(results.iter().all(|r| r.result.is_ok()));
     controller.acknowledge().unwrap();
+    let mut completed = 0;
+    let mut polls = 0;
+    loop {
+        polls += 1;
+        assert!(
+            polls <= 10,
+            "fixture did not complete within its poll budget"
+        );
+        match controller.poll().unwrap() {
+            Poll::Complete => break,
+            Poll::Yield => continue,
+            Poll::Boundary => {}
+            other => panic!("unexpected playback state: {other:?}"),
+        }
+        candidates.observe(&controller).unwrap();
+        let view = controller.decision_view().unwrap();
+        let boundary = view.pending().unwrap().unwrap();
+        let now = boundary.evaluated_at_ns;
+        if matches!(
+            boundary.kind,
+            arte_core::market_structure::scheduler::Kind::Completed {
+                interval_ns: 1_000_000_000,
+                ..
+            }
+        ) {
+            completed += 1;
+        }
+        let snapshot = candidates.features().snapshot().unwrap().unwrap();
+        let admission = arte_core::strategy_entry::Admission {
+            at_ns: now,
+            permissions: true,
+            session_open: true,
+            tradable: true,
+            encounter_blocked: false,
+            regular_block: None,
+            macd_at_ns: snapshot.macd.as_ref().map(|reading| reading.at_ns),
+            macd_positive: snapshot
+                .macd
+                .as_ref()
+                .is_some_and(|reading| reading.positive()),
+            detector_at_ns: None,
+            detector_fingerprint: String::new(),
+            activity_block: snapshot
+                .one_second
+                .as_ref()
+                .and_then(|one| one.activity_block())
+                .map(str::to_owned),
+        };
+        let gates = arte_core::strategy_adds::Gates {
+            at_ns: now,
+            detector_fresh: false,
+            regular_allowed: true,
+            no_pending_acquisition: true,
+            permission: true,
+            tradable: true,
+            macd_ready: false,
+            no_pending_failed_attempt: true,
+            encounter_clear: true,
+            range_breakout_allowed: true,
+        };
+        for scope in &scopes {
+            let mut broker = broker.clone();
+            broker.revision = 3 + completed;
+            broker.at_ns = now;
+            let safety = prepared_account(&scope.account)
+                .pending_decision()
+                .unwrap()
+                .safety
+                .clone();
+            let decision = candidates
+                .prepare_configured(
+                    &controller,
+                    &arte_core::content_hash(scope).unwrap(),
+                    crate::playback_runtime::candidates::Evidence {
+                        entry: crate::playback_runtime::candidates::EntryEvidence {
+                            admission: &admission,
+                            swings: &[],
+                            regular: true,
+                            regular_target: None,
+                        },
+                        acquisition: arte_core::candidate_features::AcquisitionContext {
+                            tradable: true,
+                            regular_block: false,
+                            encounter_blocked: false,
+                            pending_capital: false,
+                        },
+                        adds: &gates,
+                    },
+                    &safety,
+                    &broker,
+                )
+                .unwrap();
+            assert!(matches!(
+                decision.actions.as_slice(),
+                [Action::Hold { .. }] | [Action::Wait { .. }]
+            ));
+        }
+        for store in next_stores.values_mut() {
+            store.stored.clear();
+        }
+        assert!(candidates
+            .commit_accounts(&mut controller, &mut next_stores, 2)
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| r.result.is_ok()));
+        controller.acknowledge().unwrap();
+    }
+    assert_eq!(completed, 1);
 }
 
 #[test]
