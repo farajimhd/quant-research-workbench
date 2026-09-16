@@ -248,6 +248,41 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
                 .safety
                 .clone();
             safety.position_quantity = quantity;
+            let target = ActiveTarget::Official {
+                price: if quotes >= 3 { 11.5 } else { 11. },
+            };
+            let reconciled = controller
+                .candidate_position(runtime.scope(), Some(&target))
+                .unwrap();
+            assert_eq!(reconciled.position.quantity, quantity);
+            assert_eq!(reconciled.position.at_ns, now);
+            if quantity > 0 {
+                assert_eq!(reconciled.position.average_price, Some(10.01));
+                assert_eq!(
+                    reconciled.position.target.as_ref().unwrap().price(),
+                    target.price()
+                );
+                assert!(controller
+                    .candidate_position(runtime.scope(), None)
+                    .is_err());
+                assert!(controller
+                    .candidate_position(
+                        runtime.scope(),
+                        Some(&ActiveTarget::Official { price: 999. })
+                    )
+                    .is_err());
+            } else {
+                assert!(reconciled.position.average_price.is_none());
+                assert!(reconciled.position.stop.is_none());
+                assert!(reconciled.position.target.is_none());
+            }
+            let mut inconsistent = safety.clone();
+            inconsistent.position_quantity = 999;
+            inconsistent.pending_entry = !reconciled.position.pending_entry;
+            let corrected = reconciled.safety(&inconsistent);
+            assert_eq!(corrected.position_quantity, quantity);
+            assert_eq!(corrected.pending_entry, reconciled.position.pending_entry);
+            assert_eq!(corrected.flatten, safety.flatten);
             let action = if quote && quotes == 1 {
                 Action::Enter(Box::new(proposal(now)))
             } else if cancel_unfilled && !quote && quotes == 1 {

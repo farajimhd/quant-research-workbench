@@ -839,16 +839,13 @@ async fn candidate_owner_retry(cancel: bool) {
             range_breakout_allowed: true,
         };
         for scope in &scopes {
-            let mut broker = broker.clone();
-            broker.revision = 3 + completed;
-            broker.at_ns = now;
             let safety = prepared_account(&scope.account)
                 .pending_decision()
                 .unwrap()
                 .safety
                 .clone();
             let decision = candidates
-                .prepare_configured(
+                .prepare_reconciled(
                     &controller,
                     &arte_core::content_hash(scope).unwrap(),
                     crate::playback_runtime::candidates::Evidence {
@@ -867,7 +864,7 @@ async fn candidate_owner_retry(cancel: bool) {
                         adds: &gates,
                     },
                     &safety,
-                    &broker,
+                    None,
                 )
                 .unwrap();
             assert!(matches!(

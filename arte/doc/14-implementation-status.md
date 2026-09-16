@@ -6,6 +6,31 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Candidate reconciliation bridge
+
+The playback controller now builds the long candidate's position observation
+from journaled strategy positions and owned orders. Quantity and remaining FIFO
+cost come from the strategy projection. Pending entries and exits come from
+execution state. Prices outside the supported exact-integer conversion range
+are rejected. Flat state has no invented average, stop or target.
+
+Target metadata remains an explicit strategy input. Its price must exactly match
+the actual working target. Missing or mismatched target evidence blocks evaluation.
+The candidate's scalar contract cannot represent heterogeneous held protection;
+the bridge rejects that state rather than inventing a common stop or target.
+This does not replace the execution controller's independent exit actions.
+
+The candidate owner has a reconciled preparation path. Execution-owned safety
+fields are populated from the bridge; external risk flags are retained. Modeled
+observation revisions use playback boundary sequences, not fabricated broker
+receipts. Use this path before executing the boundary's resulting actions.
+
+Lifecycle fixtures check fill price, target replacement, flat cleanup and safety
+field reconciliation. Configured completed-bar playback uses the bridge. All 388
+offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Source-oracle parity was not rerun. No service or network test ran. Persistent
+target metadata and full candidate-driven entry/fill/exit acceptance remain open.
+
 ## Strategy attribution in execution and recovery
 
 Journal-acknowledged fills now update both account and strategy FIFO projections.
