@@ -57,6 +57,7 @@ pub struct Pinned {
     hash: String,
     run_id: String,
     manifest_hash: String,
+    reference_manifest_hash: String,
     consumers: BTreeSet<(String, u64)>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,6 +66,14 @@ pub struct Charge {
     pub fill_id: String,
     pub cost_model_hash: String,
     pub fee_minor: u64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SettlementCurrency {
+    pub instrument: u64,
+    pub currency: String,
+    pub available_at_ns: u64,
+    pub reference_manifest_hash: String,
 }
 impl Pinned {
     pub fn new(model: Model, run: &Run) -> Result<Self> {
@@ -83,6 +92,7 @@ impl Pinned {
             hash,
             run_id: manifest.run_id.clone(),
             manifest_hash: run.hash().into(),
+            reference_manifest_hash: manifest.reference_manifest_hash.clone(),
             consumers: manifest
                 .consumers
                 .iter()
@@ -101,6 +111,23 @@ impl Pinned {
     }
     pub fn model(&self) -> &Model {
         &self.model
+    }
+    pub fn require_currency(
+        &self,
+        instrument: u64,
+        evidence: &SettlementCurrency,
+        at_ns: u64,
+    ) -> Result<()> {
+        if evidence.instrument != instrument
+            || evidence.currency != self.model.currency
+            || evidence.reference_manifest_hash != self.reference_manifest_hash
+            || evidence.available_at_ns > at_ns
+        {
+            return Err(Error::Conflict(
+                "settlement currency evidence differs or is future".into(),
+            ));
+        }
+        Ok(())
     }
     pub fn charge(&self, fill: &Fill) -> Result<Charge> {
         let fill_id = fill.id()?;

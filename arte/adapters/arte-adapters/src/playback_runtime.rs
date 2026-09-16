@@ -130,6 +130,17 @@ impl Runtime {
         self.execution
             .release_unfilled_reservation(command, portfolio)
     }
+    pub fn settle_closed_order(
+        &mut self,
+        command: &str,
+        portfolio: &arte_core::portfolio::Portfolio,
+        currency: &arte_core::simulation_costs::SettlementCurrency,
+        maximum_receipts: usize,
+    ) -> Result<bool> {
+        self.decision_view()?;
+        self.execution
+            .settle_closed_order(command, portfolio, currency, maximum_receipts)
+    }
     pub fn acknowledge(&mut self) -> Result<()> {
         self.decision_view()?;
         self.actions.require_complete()?;

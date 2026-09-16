@@ -6,6 +6,31 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Atomic simulated portfolio settlement
+
+Accounts now declare currency, currency precision and an optional simulation run.
+Simulated submissions reject broker-owned accounts and mismatched run/currency
+context. Closed-order settlement requires terminal simulator state, matching
+journaled quantities, the pinned cost model and point-in-time currency evidence
+referencing the run's reference manifest.
+
+Under one account lock, settlement applies modeled net cash and removes the exact
+original reservation. Bounded receipt hashes prevent duplicate application and
+reject changed requests. Settled command IDs cannot reserve funds again. Neither
+the capital mandate nor the balance timestamp is changed by settlement. Overflow,
+negative account cash, missing funding and mismatched currency fail before mutation.
+
+All 348 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+The funded two-account playback scenarios now settle losses/profits after fees
+and verify released reservations. Core tests exercise concurrent exact retries,
+changed requests, currency/run mismatch, capacity and rejection of broker balances.
+
+This is in-memory simulated settlement, not exchange settlement. Durable receipt
+publication, restart recovery and reference-producer currency certification remain
+unfinished. Account snapshots alone do not contain settlement receipts and must
+not be used as a complete recovery image. No services ran; source parity was not
+rerun.
+
 ## Journaled per-order cash
 
 The simulated execution lane now tracks trade cash, entry/exit quantities and fees

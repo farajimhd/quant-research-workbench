@@ -273,6 +273,9 @@ mod tests {
         let portfolio = Portfolio::new(BTreeMap::from([(
             "a".into(),
             crate::portfolio::Account {
+                currency: "USD".into(),
+                currency_scale: 2,
+                simulation_run_id: Some("r".into()),
                 budget_minor: 10000,
                 broker_available_minor: 10000,
                 balance_at_ns: 1,

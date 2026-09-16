@@ -16,6 +16,7 @@ pub struct OrderCash {
     trade_cash_atoms: i128,
     fees_minor: u64,
     last_sequence: u64,
+    last_at_ns: u64,
     last_fill_hash: String,
 }
 impl OrderCash {
@@ -38,6 +39,7 @@ impl OrderCash {
             trade_cash_atoms: 0,
             fees_minor: 0,
             last_sequence: 0,
+            last_at_ns: 0,
             last_fill_hash: String::new(),
         };
         state.apply(fill, costs)?;
@@ -67,6 +69,9 @@ impl OrderCash {
             };
         }
         let entry = fill.leg == Leg::Entry;
+        if fill.at_ns < self.last_at_ns {
+            return Err(Error::Conflict("cash fill clock rewound".into()));
+        }
         if (entry && (fill.direction != self.entry_direction || self.exit_quantity > 0))
             || (!entry && fill.direction == self.entry_direction)
         {
@@ -103,12 +108,16 @@ impl OrderCash {
             .checked_add(charge.fee_minor)
             .ok_or_else(|| Error::Capacity("cash fee total overflow".into()))?;
         next.last_sequence = fill.sequence;
+        next.last_at_ns = fill.at_ns;
         next.last_fill_hash = hash;
         *self = next;
         Ok(true)
     }
     pub fn fees_minor(&self) -> u64 {
         self.fees_minor
+    }
+    pub fn last_at_ns(&self) -> u64 {
+        self.last_at_ns
     }
     pub fn trade_cash_atoms(&self) -> i128 {
         self.trade_cash_atoms

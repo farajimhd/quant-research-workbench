@@ -11,6 +11,10 @@ pub struct Reservation {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Account {
+    pub currency: String,
+    pub currency_scale: u8,
+    /// None for broker-owned balances. Simulated settlement requires an exact run.
+    pub simulation_run_id: Option<String>,
     pub budget_minor: u64,
     pub broker_available_minor: u64,
     pub balance_at_ns: u64,
@@ -20,21 +24,64 @@ pub struct Account {
 /// Serializes account reservations across ticker threads; different accounts use different locks.
 #[derive(Debug, Default)]
 pub struct Portfolio {
-    accounts: BTreeMap<String, Mutex<Account>>,
+    accounts: BTreeMap<String, Mutex<AccountState>>,
+}
+#[derive(Debug)]
+struct AccountState {
+    account: Account,
+    settlements: BTreeMap<String, String>,
+}
+impl std::ops::Deref for AccountState {
+    type Target = Account;
+    fn deref(&self) -> &Account {
+        &self.account
+    }
+}
+impl std::ops::DerefMut for AccountState {
+    fn deref_mut(&mut self) -> &mut Account {
+        &mut self.account
+    }
+}
+/// The execution owner must certify terminal order state and journaled cash first.
+#[derive(Debug, Clone, Serialize)]
+pub struct SimulatedSettlement {
+    pub run_id: String,
+    pub reservation: Reservation,
+    pub currency: String,
+    pub currency_scale: u8,
+    pub net_cash_minor: i128,
+    pub at_ns: u64,
+    pub evidence_hash: String,
 }
 impl Portfolio {
     pub fn new(accounts: BTreeMap<String, Account>) -> Result<Self> {
         if accounts.is_empty()
-            || accounts
-                .iter()
-                .any(|(id, a)| id.is_empty() || a.budget_minor == 0 || a.max_balance_age_ns == 0)
+            || accounts.iter().any(|(id, a)| {
+                id.is_empty()
+                    || a.budget_minor == 0
+                    || a.max_balance_age_ns == 0
+                    || a.currency.len() != 3
+                    || !a.currency.bytes().all(|v| v.is_ascii_uppercase())
+                    || a.currency_scale > 9
+                    || a.simulation_run_id
+                        .as_ref()
+                        .is_some_and(|id| id.is_empty() || id.len() > 128)
+            })
         {
             return Err(Error::Invalid("account mandate required".into()));
         }
         Ok(Self {
             accounts: accounts
                 .into_iter()
-                .map(|(id, a)| (id, Mutex::new(a)))
+                .map(|(id, account)| {
+                    (
+                        id,
+                        Mutex::new(AccountState {
+                            account,
+                            settlements: BTreeMap::new(),
+                        }),
+                    )
+                })
                 .collect(),
         })
     }
@@ -50,6 +97,9 @@ impl Portfolio {
             || reservation.cash_minor == 0
         {
             return Err(Error::Invalid("invalid reservation".into()));
+        }
+        if a.settlements.contains_key(&reservation.command_id) {
+            return Err(Error::Conflict("cannot reserve a settled command".into()));
         }
         if let Some(existing) = a.reservations.get(&reservation.command_id) {
             return if existing == &reservation {
@@ -145,12 +195,194 @@ impl Portfolio {
             .ok_or_else(|| Error::Invalid("account not allowed".into()))?
             .lock()
             .map_err(|_| Error::Unready("account lock poisoned".into()))?
+            .account
             .clone())
+    }
+    pub fn require_simulation(
+        &self,
+        account: &str,
+        run_id: &str,
+        currency_scale: u8,
+        currency: Option<&str>,
+    ) -> Result<()> {
+        let state = self
+            .accounts
+            .get(account)
+            .ok_or_else(|| Error::Invalid("account not allowed".into()))?
+            .lock()
+            .map_err(|_| Error::Unready("account lock poisoned".into()))?;
+        if state.simulation_run_id.as_deref() != Some(run_id)
+            || state.currency_scale != currency_scale
+            || currency.is_some_and(|currency| state.currency != currency)
+        {
+            return Err(Error::Conflict(
+                "simulation account currency or run differs".into(),
+            ));
+        }
+        Ok(())
+    }
+    /// In-memory atomic settlement and exact-reservation release. Never use this
+    /// for broker balances. Durable publication/recovery belongs to its caller.
+    pub fn settle_simulated(
+        &self,
+        account: &str,
+        request: &SimulatedSettlement,
+        maximum_receipts: usize,
+    ) -> Result<bool> {
+        if maximum_receipts == 0
+            || request.reservation.command_id.is_empty()
+            || request.reservation.instrument == 0
+            || request.reservation.cash_minor == 0
+            || maximum_receipts > 1_000_000
+            || request.evidence_hash.len() != 64
+            || !request
+                .evidence_hash
+                .bytes()
+                .all(|v| v.is_ascii_digit() || (b'a'..=b'f').contains(&v))
+        {
+            return Err(Error::Invalid(
+                "settlement evidence or capacity invalid".into(),
+            ));
+        }
+        let hash = crate::content_hash(&("arte.simulated-settlement.v1", account, request))?;
+        let mut state = self
+            .accounts
+            .get(account)
+            .ok_or_else(|| Error::Invalid("account not allowed".into()))?
+            .lock()
+            .map_err(|_| Error::Unready("account lock poisoned".into()))?;
+        if state.simulation_run_id.as_deref() != Some(request.run_id.as_str())
+            || state.currency != request.currency
+            || state.currency_scale != request.currency_scale
+        {
+            return Err(Error::Conflict(
+                "settlement run or currency differs from account".into(),
+            ));
+        }
+        if let Some(previous) = state.settlements.get(&request.reservation.command_id) {
+            return if previous == &hash {
+                Ok(false)
+            } else {
+                Err(Error::Conflict("settlement request changed".into()))
+            };
+        }
+        if state.settlements.len() >= maximum_receipts {
+            return Err(Error::Capacity("settlement receipt capacity".into()));
+        }
+        if state.reservations.get(&request.reservation.command_id) != Some(&request.reservation) {
+            return Err(Error::Unready(
+                "settlement reservation missing or changed".into(),
+            ));
+        }
+        if request.at_ns < state.balance_at_ns {
+            return Err(Error::Conflict("settlement predates account cash".into()));
+        }
+        let available = i128::from(state.broker_available_minor)
+            .checked_add(request.net_cash_minor)
+            .and_then(|v| u64::try_from(v).ok())
+            .ok_or_else(|| {
+                Error::Capacity("settlement cash outside unsigned account range".into())
+            })?;
+        // Do not change the capital mandate or fabricate a fresh broker balance.
+        state.account.broker_available_minor = available;
+        state
+            .account
+            .reservations
+            .remove(&request.reservation.command_id);
+        state
+            .settlements
+            .insert(request.reservation.command_id.clone(), hash);
+        Ok(true)
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn settlement_is_atomic_idempotent_and_rejects_broker_balances() {
+        let reservation = Reservation {
+            command_id: "c".into(),
+            instrument: 1,
+            cash_minor: 50,
+        };
+        let account = Account {
+            currency: "USD".into(),
+            currency_scale: 2,
+            simulation_run_id: Some("r".into()),
+            budget_minor: 100,
+            broker_available_minor: 100,
+            balance_at_ns: 1,
+            max_balance_age_ns: 100,
+            reservations: BTreeMap::from([("c".into(), reservation.clone())]),
+        };
+        let p = Portfolio::new(BTreeMap::from([("a".into(), account.clone())])).unwrap();
+        let request = SimulatedSettlement {
+            run_id: "r".into(),
+            reservation,
+            currency: "USD".into(),
+            currency_scale: 2,
+            net_cash_minor: -10,
+            at_ns: 2,
+            evidence_hash: "a".repeat(64),
+        };
+        let mut invalid = request.clone();
+        invalid.net_cash_minor = -101;
+        assert!(p.settle_simulated("a", &invalid, 1).is_err());
+        invalid = request.clone();
+        invalid.currency = "CAD".into();
+        assert!(p.settle_simulated("a", &invalid, 1).is_err());
+        assert_eq!(p.snapshot("a").unwrap().broker_available_minor, 100);
+        assert_eq!(p.snapshot("a").unwrap().reservations.len(), 1);
+        let successes = std::thread::scope(|threads| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| {
+                    let p = &p;
+                    let request = &request;
+                    threads.spawn(move || p.settle_simulated("a", request, 1).unwrap())
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| usize::from(h.join().unwrap()))
+                .sum::<usize>()
+        });
+        assert_eq!(successes, 1);
+        let state = p.snapshot("a").unwrap();
+        assert_eq!(
+            (
+                state.broker_available_minor,
+                state.budget_minor,
+                state.balance_at_ns
+            ),
+            (90, 100, 1)
+        );
+        assert!(state.reservations.is_empty());
+        assert!(p.reserve("a", request.reservation.clone(), 2).is_err());
+        assert!(p
+            .require_simulation("a", "another", 2, Some("USD"))
+            .is_err());
+        assert!(p.require_simulation("a", "r", 2, Some("CAD")).is_err());
+        p.require_simulation("a", "r", 2, Some("USD")).unwrap();
+        let mut changed = request.clone();
+        changed.net_cash_minor += 1;
+        assert!(p.settle_simulated("a", &changed, 1).is_err());
+        let mut broker = account;
+        broker.simulation_run_id = None;
+        let broker = Portfolio::new(BTreeMap::from([("a".into(), broker)])).unwrap();
+        assert!(broker.settle_simulated("a", &request, 1).is_err());
+        let second = Reservation {
+            command_id: "second".into(),
+            instrument: 1,
+            cash_minor: 20,
+        };
+        p.reserve("a", second.clone(), 2).unwrap();
+        let second = SimulatedSettlement {
+            reservation: second,
+            ..request
+        };
+        assert!(p.settle_simulated("a", &second, 1).is_err());
+        assert_eq!(p.snapshot("a").unwrap().reservations.len(), 1);
+    }
     #[test]
     fn matching_release_rejects_changed_cash_and_preserves_other_reservations() {
         let original = Reservation {
@@ -166,6 +398,9 @@ mod tests {
         let p = Portfolio::new(BTreeMap::from([(
             "a".into(),
             Account {
+                currency: "USD".into(),
+                currency_scale: 2,
+                simulation_run_id: Some("r".into()),
                 budget_minor: 100,
                 broker_available_minor: 100,
                 balance_at_ns: 1,
@@ -195,6 +430,9 @@ mod tests {
         let p = Portfolio::new(BTreeMap::from([(
             "a".into(),
             Account {
+                currency: "USD".into(),
+                currency_scale: 2,
+                simulation_run_id: Some("r".into()),
                 budget_minor: 100,
                 broker_available_minor: 100,
                 balance_at_ns: 1,

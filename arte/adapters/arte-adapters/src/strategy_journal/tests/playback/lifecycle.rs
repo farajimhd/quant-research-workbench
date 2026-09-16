@@ -79,6 +79,9 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
                 (
                     id.into(),
                     Account {
+                        currency: "USD".into(),
+                        currency_scale: 2,
+                        simulation_run_id: Some("run".into()),
                         budget_minor: budget,
                         broker_available_minor: budget,
                         balance_at_ns: 200_000_000_000,
@@ -119,6 +122,12 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
         maximum_order_risk_minor: 1000,
         fee_reserve_minor: 1,
     };
+    let currency = arte_core::simulation_costs::SettlementCurrency {
+        instrument: 1,
+        currency: "USD".into(),
+        available_at_ns: 200_000_000_000,
+        reference_manifest_hash: "b".repeat(64),
+    };
     let mut fills = Fills {
         fail: true,
         rows: BTreeMap::new(),
@@ -149,6 +158,9 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
                     .release_unfilled_reservation(command, &portfolio)
                     .is_err());
                 assert!(controller.closed_net_cash_minor(command).is_err());
+                assert!(controller
+                    .settle_closed_order(command, &portfolio, &currency, 10)
+                    .is_err());
             }
             if fills.fail {
                 assert!(controller.commit_fills(&mut fills).await.is_err());
@@ -167,6 +179,21 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
         }
         let input = boundary.input("fixture-features".into());
         let now = input.evaluated_at_ns;
+        if quote && quotes == 4 && !cancel_unfilled {
+            for command in &commands {
+                let mut wrong = currency.clone();
+                wrong.currency = "CAD".into();
+                assert!(controller
+                    .settle_closed_order(command, &portfolio, &wrong, 10)
+                    .is_err());
+                assert!(controller
+                    .settle_closed_order(command, &portfolio, &currency, 10)
+                    .unwrap());
+                assert!(!controller
+                    .settle_closed_order(command, &portfolio, &currency, 10)
+                    .unwrap());
+            }
+        }
         for command in &commands {
             if released {
                 assert!(!controller
@@ -340,6 +367,14 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
         assert_eq!(
             position.realized_gross_pnl_atoms,
             (if target_exit { 149 } else { -2 }) * quantity
+        );
+        let state = portfolio.snapshot(account).unwrap();
+        assert!(state.reservations.is_empty());
+        assert_eq!(
+            i128::from(state.broker_available_minor),
+            (if account == "a" { 2000 } else { 4000 })
+                + (if target_exit { 149 } else { -2 }) * quantity
+                - 4
         );
     }
     assert_eq!(fills.rows.len(), if cancel_unfilled { 0 } else { 4 });

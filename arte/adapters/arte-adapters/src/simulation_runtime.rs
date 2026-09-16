@@ -260,6 +260,23 @@ impl Runtime {
     pub fn submit_reserved(&mut self, request: Submission<'_>) -> Result<()> {
         self.ready()?;
         validate_run(request.plan, self.simulator.run_id())?;
+        if self
+            .costs
+            .as_ref()
+            .is_some_and(|costs| costs.model().currency_scale != request.cash_policy.currency_scale)
+        {
+            return Err(Error::Conflict(
+                "funding and cost currency precision differ".into(),
+            ));
+        }
+        request.portfolio.require_simulation(
+            &request.plan.scope.account,
+            &request.plan.scope.run_id,
+            request.cash_policy.currency_scale,
+            self.costs
+                .as_ref()
+                .map(|costs| costs.model().currency.as_str()),
+        )?;
         let command = &request.plan.bracket.command_id;
         if self.released.contains(command) {
             return Err(Error::Conflict(
@@ -370,6 +387,60 @@ impl Runtime {
         }
         self.released.insert(command.into());
         Ok(true)
+    }
+    pub(crate) fn settle_closed_order(
+        &mut self,
+        command: &str,
+        portfolio: &arte_core::portfolio::Portfolio,
+        currency: &arte_core::simulation_costs::SettlementCurrency,
+        maximum_receipts: usize,
+    ) -> Result<bool> {
+        self.ready()?;
+        let costs = self
+            .costs
+            .as_ref()
+            .ok_or_else(|| Error::Unready("cost model missing".into()))?;
+        let cash = self
+            .cash
+            .get(command)
+            .ok_or_else(|| Error::Unready("order cash missing".into()))?;
+        let owner = self
+            .owners
+            .get(command)
+            .ok_or_else(|| Error::Unready("order owner missing".into()))?;
+        let reservation = self
+            .reservations
+            .get(command)
+            .ok_or_else(|| Error::Unready("original funding missing".into()))?;
+        let order = self
+            .simulator
+            .positions()
+            .iter()
+            .find(|p| p.bracket.command_id == command)
+            .ok_or_else(|| Error::Unready("settlement order missing".into()))?;
+        if order.entry_filled == 0
+            || order.entry_filled != order.exit_filled
+            || (!order.entry_cancelled && order.entry_filled < order.bracket.quantity)
+            || cash.entry_quantity() != order.entry_filled
+            || cash.exit_quantity() != order.exit_filled
+        {
+            return Err(Error::Unready(
+                "settlement order is not terminal and fully journaled".into(),
+            ));
+        }
+        costs.require_currency(owner.instrument, currency, cash.last_at_ns())?;
+        let request = arte_core::portfolio::SimulatedSettlement {
+            run_id: owner.run_id.clone(),
+            reservation: reservation.clone(),
+            currency: costs.model().currency.clone(),
+            currency_scale: costs.model().currency_scale,
+            net_cash_minor: cash.closed_net_cash_minor(costs)?,
+            at_ns: cash.last_at_ns(),
+            evidence_hash: content_hash(&(owner, cash, currency))?,
+        };
+        let changed = portfolio.settle_simulated(&owner.account, &request, maximum_receipts)?;
+        self.released.insert(command.into());
+        Ok(changed)
     }
     pub(crate) fn cancel_entries_for(
         &mut self,
@@ -767,6 +838,9 @@ mod tests {
         let portfolio = arte_core::portfolio::Portfolio::new(BTreeMap::from([(
             "a".into(),
             arte_core::portfolio::Account {
+                currency: "USD".into(),
+                currency_scale: 2,
+                simulation_run_id: Some("r".into()),
                 budget_minor: 1000,
                 broker_available_minor: 1000,
                 balance_at_ns: 0,
@@ -1160,6 +1234,9 @@ mod tests {
         let portfolio = portfolio::Portfolio::new(BTreeMap::from([(
             "a".into(),
             portfolio::Account {
+                currency: "USD".into(),
+                currency_scale: 2,
+                simulation_run_id: Some("r".into()),
                 budget_minor: 1000,
                 broker_available_minor: 1000,
                 balance_at_ns: 0,
