@@ -33,6 +33,7 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     setup_acquisition_quality_enabled=0,setup_initial_tranche_fraction=1.,
     setup_base_diagnostics_enabled=0,setup_early_base_enabled=0,setup_base_maximum_swing_age_s=15.,
     setup_below_vwap_base_enabled=0,setup_below_vwap_support_age_s=5.,setup_below_vwap_trade_acceleration=1.5,
+    setup_below_vwap_maximum_distance_atr=0.,
     setup_base_maximum_risk_pct=5.,setup_base_maximum_range_pct=10.,setup_base_maximum_extension_fraction=.25,
     setup_maximum_bar_gap_s=0,setup_recovery_stop_gain_guard=0,setup_base_recovery_maximum_range_pct=3.,setup_minimum_trail_progress_r=0.,
     setup_episode_high_entry=0,v7_encounters_enabled=0,breakout_buffer_bps=10.,breakout_buffer_ticks=1.,topping_tail_fraction=.5)
@@ -50,6 +51,9 @@ def configure(p):
     if set(raw)-set(DEFAULTS):
         raise ValueError('Unknown historical HOD setting')
     s = dict(DEFAULTS, **raw)
+    distance = s['setup_below_vwap_maximum_distance_atr']
+    if type(distance) not in (int,float) or not isfinite(distance) or distance < 0:
+        raise ValueError('Below-VWAP ATR distance must be finite and nonnegative')
     if (type(s['setup_below_vwap_base_enabled']) not in (int,float)
             or s['setup_below_vwap_base_enabled'] not in (0,1)
             or s['setup_below_vwap_base_enabled'] and not (
@@ -99,7 +103,7 @@ def configure(p):
         raise ValueError('Phase progress requires V7 setup')
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_below_vwap_base_enabled','setup_base_diagnostics_enabled','setup_support_quote_clearance_selection','setup_recovery_regular_full_range','setup_trail_current_gain_requires_bid','setup_phase_minimum_progress_r','setup_trail_requires_current_gain','setup_recovery_regular_base','setup_base_maximum_extension_fraction','setup_recovery_entry_reclaim','setup_recovery_unprotected_reentry','setup_minimum_300s_range_pct','setup_minimum_60s_progress_pct','setup_add_maximum_upper_wick_fraction','setup_failure_exit_enabled','setup_base_recovery_maximum_range_pct','setup_minimum_trail_progress_r','setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k != 'sizing_mode'):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_below_vwap_base_enabled','setup_base_diagnostics_enabled','setup_support_quote_clearance_selection','setup_recovery_regular_full_range','setup_trail_current_gain_requires_bid','setup_phase_minimum_progress_r','setup_trail_requires_current_gain','setup_recovery_regular_base','setup_base_maximum_extension_fraction','setup_recovery_entry_reclaim','setup_recovery_unprotected_reentry','setup_minimum_300s_range_pct','setup_minimum_60s_progress_pct','setup_add_maximum_upper_wick_fraction','setup_failure_exit_enabled','setup_base_recovery_maximum_range_pct','setup_minimum_trail_progress_r','setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k not in ('sizing_mode','setup_below_vwap_maximum_distance_atr')):
         raise ValueError('Historical HOD settings must be finite and positive')
     if not 0 <= s['setup_failure_seconds'] <= 5 or int(s['setup_failure_seconds']) != s['setup_failure_seconds']:
         raise ValueError('Initial setup failure window must be zero to five completed seconds')
@@ -620,7 +624,8 @@ def observe(o, d, s):
     d['hod'] = max(d.get('hod',0.),o.bar_high,o.structural_session_high or 0.)
     d.update(closed_at=now,close=o.price,rows=selected_levels(o,s,now),contiguous=contiguous,
         bar=dict(time=now-1,end=now,open=o.bar_open,high=o.bar_high,low=o.bar_low,
-            close=o.price,volume=o.bar_volume),vwap=o.execution_vwap)
+            close=o.price,volume=o.bar_volume),vwap=o.execution_vwap,
+        closed_atr=getattr(o,'volatility',None))
     return True, macd_closed
 
 
@@ -639,7 +644,7 @@ def observe_frame(frame, saved, parameters, snapshot=None):
         bar_volume=frame.bar.get('volume'),structural_support_levels=(),
         structural_resistance_levels=tuple(snapshot.get('unified_levels', [])),
         structural_session_high=frame.indicator.get('qmd_structure_session_high') or snapshot.get('session_high'),
-        execution_vwap=frame.indicator.get('execution_vwap'))
+        execution_vwap=frame.indicator.get('execution_vwap'),volatility=frame.indicator.get('atr_14'))
     observe(o,d,parameters.get('historical_hod',DEFAULTS))
     d['observed_at'] = frame.as_of.timestamp()
     return d
@@ -1032,10 +1037,13 @@ def evaluate(host, a, o, p, state):
             momentum = v7_setup.fresh_support_momentum(momentum_assessment,quality.get('facts') or {},
                 now=now,maximum_age=s['setup_below_vwap_support_age_s'],
                 minimum_acceleration=s['setup_below_vwap_trade_acceleration'])
-            momentum_ready = bool(momentum['passed'] and d.get('macd_valid')
+            distance = v7_setup.below_vwap_distance(d,o.price,now=now,
+                maximum_atr=s['setup_below_vwap_maximum_distance_atr'],
+                maximum_age=s['maximum_source_age_ms']/1000)
+            momentum_ready = bool(momentum['passed'] and distance['passed'] and d.get('macd_valid')
                 and type(current_vwap) in (int,float) and isfinite(current_vwap) and current_vwap>0
                 and 0 <= (now-d.get('macd_at',0))*1000 <= s['maximum_macd_age_ms'])
-            evidence['below_vwap_base'] = dict(momentum,passed=momentum_ready)
+            evidence['below_vwap_base'] = dict(momentum,passed=momentum_ready,distance=distance)
     acquisition_momentum_ready = macd_ready or momentum_ready
     if ((encounter_blocked and (pending or acquired) and not encounter_state.get('cancel_notified')) or (pending and (state.get('pending_capital_request') or regular_block) and (regular_block or not active or not ready or not acquisition_momentum_ready or (not momentum_ready and o.price <= (d.get('vwap') or float('inf')))
             or now-active.get('confirmed_at',0) >= s['confirmation_lifetime_ms']/1000
