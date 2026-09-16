@@ -6,6 +6,28 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Portfolio recovery image
+
+A versioned portfolio checkpoint now includes balances, mandates, pending
+reservations and settlement receipt hashes. It binds to the exact run manifest
+and an explicit replay boundary. Capture acquires account locks in stable order
+and writes through a byte-limited encoder. Account and row budgets are explicit.
+
+Restore requires the expected content hash, canonical encoding, exact declared
+account population and consistent reservation/settlement identities. It rejects
+broker-owned accounts, undeclared instruments, future balance timestamps and
+reservations whose commands are already settled. An ordinary account snapshot
+remains insufficient for recovery.
+
+All 350 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Restoration tests preserve pending funding and prove that settled cash cannot be
+applied twice. Corrupt bytes, wrong boundaries, noncanonical data, invalid account
+populations and byte-budget overruns are rejected.
+
+This is a portfolio-only codec, not durable or coordinated run recovery.
+ClickHouse publication and matching market, strategy and execution checkpoints
+remain unfinished. No services ran; source parity was not rerun.
+
 ## Atomic simulated portfolio settlement
 
 Accounts now declare currency, currency precision and an optional simulation run.

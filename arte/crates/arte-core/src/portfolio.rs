@@ -2,6 +2,7 @@ use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Mutex;
+pub mod checkpoint;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reservation {
@@ -26,7 +27,8 @@ pub struct Account {
 pub struct Portfolio {
     accounts: BTreeMap<String, Mutex<AccountState>>,
 }
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AccountState {
     account: Account,
     settlements: BTreeMap<String, String>,
