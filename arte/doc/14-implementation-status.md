@@ -6,6 +6,23 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Recovery with working targets
+
+The execution lifecycle fixtures now restore the controller at every boundary and
+continue from the restored instance. They cover pending entries, held positions,
+target replacement, exits and unfilled cancellation. Recaptured checkpoint hashes
+and reconciled candidate-position hashes must match before and after recovery.
+Final cash, quantities and reservation checks still run after continuation.
+
+A targeted corruption test changes a retained target's clock without reordering
+the checkpoint fields. Recovery rejects the future timestamp. The shared portfolio
+is checked against each restored execution lane; it is not recreated in this test.
+
+All 388 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Source-oracle parity was not rerun. No service or network test ran. This validates
+execution recovery, not candidate-generated entries, whole-run candidate/portfolio
+recovery, strategy profitability or live readiness.
+
 ## Owned target metadata
 
 Successful committed entry and target-replacement actions now retain target
@@ -21,8 +38,8 @@ Older controller images are rejected. No persisted database data was migrated.
 Lifecycle fixtures consume owned targets and capture them at each boundary.
 Configured completed-bar playback uses the owned preparation path. All 388 offline
 Rust tests, formatting, Clippy and copied-source hash checks pass. Source-oracle
-parity was not rerun. No service or network test ran. Direct recovery testing with
-nonempty target metadata and full candidate-driven lifecycle acceptance remain open.
+parity was not rerun. No service or network test ran. Recovery testing with nonempty
+target metadata is recorded above. Full candidate-driven lifecycle acceptance remains open.
 
 ## Candidate reconciliation bridge
 

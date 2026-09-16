@@ -53,7 +53,8 @@ async fn cancelled_unfilled_orders_release_exact_funding_without_fabricated_cash
     lifecycle(false, true).await;
 }
 async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
-    let (run, costs, manifest, _) = run_recovery_fixture(true, true, target_exit);
+    let (run, costs, manifest, recovery) = run_recovery_fixture(true, true, target_exit);
+    let cost_model = costs.model().clone();
     let mut runtimes: Vec<_> = run
         .scopes()
         .iter()
@@ -422,32 +423,100 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
                 last_fills.insert(fill.command_id.clone(), fill);
             }
         }
-        let image = controller
-            .checkpoint(
-                &manifest,
-                &arte_core::portfolio::checkpoint::Cut {
-                    boundary_sequence: input.source_sequence,
-                    boundary_hash: input.event_id.clone(),
-                    at_ns: now,
-                },
-                &last_fills,
-                crate::simulation_runtime::checkpoint::Limits {
-                    maximum_bytes: 1_000_000,
-                    maximum_orders: 4,
-                    maximum_pending_fills: 8,
-                    projection: arte_core::execution_positions::checkpoint::Limits {
-                        positions: 2,
-                        fills: 100,
-                        lots_per_position: 8,
-                        bytes: 100_000,
-                    },
-                },
-                2_000_000,
-            )
+        let cut = arte_core::portfolio::checkpoint::Cut {
+            boundary_sequence: input.source_sequence,
+            boundary_hash: input.event_id.clone(),
+            at_ns: now,
+        };
+        let limits = crate::simulation_runtime::checkpoint::Limits {
+            maximum_bytes: 1_000_000,
+            maximum_orders: 4,
+            maximum_pending_fills: 8,
+            projection: arte_core::execution_positions::checkpoint::Limits {
+                positions: 2,
+                fills: 100,
+                lots_per_position: 8,
+                bytes: 100_000,
+            },
+        };
+        let mut image = controller
+            .checkpoint(&manifest, &cut, &last_fills, limits, 2_000_000)
             .unwrap();
         let root: serde_json::Value = serde_json::from_slice(&image.root.payload).unwrap();
         assert_eq!(root["version"], 2);
         assert_eq!(root["targets"].as_object().unwrap().len(), 2);
+        let context =
+            content_hash(&("arte.playback-controller-cut.v1", manifest.hash(), &cut)).unwrap();
+        let receipts: Vec<_> = writes
+            .iter()
+            .map(|write| write.receipt().unwrap())
+            .collect();
+        let restore = |bundle: &crate::playback_runtime::checkpoint::Bundle| {
+            crate::playback_runtime::Runtime::restore_checkpoint(
+                bundle,
+                &bundle.root.id,
+                &manifest,
+                &cut,
+                &recovery.catalog,
+                recovery.prepared.clone(),
+                arte_core::market_structure::scheduler::checkpoint::Request {
+                    context_hash: &context,
+                    run_id: "run",
+                    seed_hash: &recovery.seed_hash,
+                    configuration_hash: &recovery.configuration_hash,
+                    quote_policy: std::sync::Arc::new(crate::test_quote_policy()),
+                    maximum_pending: 10,
+                    maximum_bytes: 2_000_000,
+                },
+                1,
+                2,
+                &receipts,
+                arte_core::simulation_costs::Pinned::new(cost_model.clone(), &manifest).unwrap(),
+                limits,
+                2_000_000,
+            )
+        };
+        let restored = restore(&image).unwrap();
+        assert_eq!(
+            restored
+                .checkpoint(&manifest, &cut, &last_fills, limits, 2_000_000)
+                .unwrap()
+                .root
+                .id,
+            image.root.id
+        );
+        for receipt in &receipts {
+            let scope = &receipt.decision().scope;
+            assert_eq!(
+                content_hash(&restored.owned_candidate_position(scope).unwrap().position).unwrap(),
+                content_hash(&controller.owned_candidate_position(scope).unwrap().position)
+                    .unwrap()
+            );
+        }
+        let original = image.root.clone();
+        let text = String::from_utf8(original.payload.clone()).unwrap();
+        // Preserve canonical field order while changing one target clock.
+        let record = root["targets"]
+            .as_object()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap();
+        let decision_hash = record["decision_hash"].as_str().unwrap();
+        let target_at = record["at_ns"].as_u64().unwrap();
+        let changed = text.replacen(
+            &format!("\"decision_hash\":\"{decision_hash}\",\"at_ns\":{target_at}"),
+            &format!(
+                "\"decision_hash\":\"{decision_hash}\",\"at_ns\":{}",
+                now + 1
+            ),
+            1,
+        );
+        assert_ne!(changed, text);
+        image.root = arte_core::seed_storage::Object::new(changed.into_bytes());
+        assert!(restore(&image).is_err());
+        image.root = original;
+        controller = restored;
         controller
             .require_portfolio(
                 &portfolio,
@@ -455,6 +524,7 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
             )
             .unwrap();
         controller.acknowledge().unwrap();
+        controller.resume().unwrap();
     }
     assert!(completed);
     if !cancel_unfilled {
