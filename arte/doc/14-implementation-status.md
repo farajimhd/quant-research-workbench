@@ -6,6 +6,29 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Manifest-bound simulated fill policy
+
+Playback now requires an explicit fill policy. Its hash binds the algorithm,
+displayed-size participation, fixed submission delay and maximum quote age.
+Startup checks the manifest hash and the simulator's actual participation value.
+Binding must precede any order or consumed quote. Funded submission rejects a
+different delay; quote processing rejects a different age limit.
+
+Combined execution checkpoints now use version 2 and include this policy.
+Restore verifies it against the pinned run before returning the execution lane.
+Version 1 images are rejected, not upgraded with invented settings.
+
+All 364 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Tests cover mismatched policies, changed participation, latency and quote age,
+binding after order creation, mutation-free rejection and checkpoint versioning.
+The existing funded lifecycle and partial-exit recovery fixtures still pass.
+Source-oracle parity was not rerun. No service or network test ran.
+
+The supported policy is a hypothetical quote-touch model with a fixed entry
+submission delay. It does not estimate real broker latency or queue priority.
+Amendments retain the algorithm's immediate boundary-acknowledgment semantics.
+Durable execution publication and whole-run recovery remain unfinished.
+
 ## Combined simulated execution recovery
 
 The historical execution lane now captures one content-addressed graph for:
@@ -33,9 +56,8 @@ portfolio settlement durability. Source-oracle parity was not rerun.
 
 This graph is not yet published to ClickHouse. Whole-run recovery must coordinate
 it with portfolio receipts, strategy state, input cursors and pending actions.
-The full simulated fill-model configuration still needs its own verified binding
-to the manifest's fill-model hash. The simulator checkpoint checks its internal
-model version, but that alone does not establish the manifest binding.
+The fill-policy manifest binding identified during this stage is implemented in
+the version 2 checkpoint described above.
 No service or network test ran.
 
 ## Order cash component recovery

@@ -71,7 +71,8 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
         .bind_source(run.market().unwrap().source_scope())
         .unwrap();
     let mut controller =
-        crate::playback_runtime::Runtime::new(run, execution, 2_000_000_000, costs).unwrap();
+        crate::playback_runtime::Runtime::new(run, execution, crate::test_fill_model(), costs)
+            .unwrap();
     let portfolio = Portfolio::new(
         [("a", 2000), ("b", 4000)]
             .into_iter()

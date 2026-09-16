@@ -42,3 +42,59 @@ fn test_quote_policy() -> arte_core::quote_state::eligibility::Pinned {
     Pinned::new(policy, &hash).unwrap()
 }
 pub mod strategy_journal;
+#[cfg(test)]
+fn test_fill_model() -> arte_core::simulation_model::Model {
+    arte_core::simulation_model::Model {
+        schema_version: 1,
+        algorithm: arte_core::simulated_execution::MODEL.into(),
+        participation_bps: 10000,
+        submission_latency_ns: 0,
+        maximum_quote_age_ns: 2_000_000_000,
+    }
+}
+#[cfg(test)]
+fn test_simulation_costs(run_id: &str) -> arte_core::simulation_costs::Pinned {
+    use arte_core::{
+        run_manifest::{Clock, Consumer, Execution, Manifest, Pinned},
+        simulation_costs,
+        strategy_dispatch::Mode,
+    };
+    let model = simulation_costs::Model {
+        schema_version: 1,
+        currency: "USD".into(),
+        currency_scale: 2,
+        fixed_per_fill_minor: 0,
+        per_share_atoms: 0,
+        per_share_scale: 0,
+        minimum_per_fill_minor: 0,
+    };
+    let hash = "a".repeat(64);
+    let manifest = Manifest {
+        schema_version: 1,
+        run_id: run_id.into(),
+        mode: Mode::Backtest,
+        code_release_hash: hash.clone(),
+        source_manifest_hash: hash.clone(),
+        reference_manifest_hash: hash.clone(),
+        seed_manifest_hash: hash.clone(),
+        algorithm_manifest_hash: hash.clone(),
+        dependency_plan_hash: hash.clone(),
+        hardware_profile_hash: hash.clone(),
+        clock: Clock::Historical,
+        execution: Execution::Simulated {
+            fill_model_hash: test_fill_model().hash().unwrap(),
+            cost_model_hash: model.hash().unwrap(),
+        },
+        consumers: ["a", "b"]
+            .into_iter()
+            .map(|account| Consumer {
+                account: account.into(),
+                instrument: 1,
+                strategy_instance: "s".into(),
+                effective_config_hash: hash.clone(),
+            })
+            .collect(),
+    };
+    let id = manifest.hash().unwrap();
+    simulation_costs::Pinned::new(model, &Pinned::new(manifest, &id).unwrap()).unwrap()
+}

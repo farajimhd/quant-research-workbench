@@ -31,6 +31,7 @@ pub struct Runtime {
     reservations: std::collections::BTreeMap<String, arte_core::portfolio::Reservation>,
     released: std::collections::BTreeSet<String>,
     costs: Option<arte_core::simulation_costs::Pinned>,
+    fill_model: Option<arte_core::simulation_model::Model>,
     cash: std::collections::BTreeMap<String, arte_core::simulation_costs::cash::OrderCash>,
 }
 pub struct Submission<'a> {
@@ -73,6 +74,7 @@ impl Runtime {
             reservations: Default::default(),
             released: Default::default(),
             costs: None,
+            fill_model: None,
             cash: Default::default(),
         })
     }
@@ -84,16 +86,24 @@ impl Runtime {
         }
         Ok(())
     }
-    pub(crate) fn bind_costs(&mut self, costs: arte_core::simulation_costs::Pinned) -> Result<()> {
+    pub(crate) fn bind_costs(
+        &mut self,
+        costs: arte_core::simulation_costs::Pinned,
+        model: arte_core::simulation_model::Model,
+    ) -> Result<()> {
         self.ready()?;
         if self.costs.is_some()
             || self.last_source_quote.is_some()
+            || self.simulator.last_quote_identity().is_some()
+            || !self.simulator.positions().is_empty()
             || costs.run_id() != self.simulator.run_id()
         {
             return Err(Error::Conflict(
                 "cost binding must precede execution and match its run".into(),
             ));
         }
+        model.require(costs.fill_model_hash(), &self.simulator)?;
+        self.fill_model = Some(model);
         self.costs = Some(costs);
         Ok(())
     }
@@ -178,6 +188,15 @@ impl Runtime {
         at_ns: u64,
         maximum_age_ns: u64,
     ) -> Result<()> {
+        if self
+            .fill_model
+            .as_ref()
+            .is_some_and(|model| model.maximum_quote_age_ns != maximum_age_ns)
+        {
+            return Err(Error::Conflict(
+                "quote age differs from pinned fill model".into(),
+            ));
+        }
         let scope = self
             .source
             .ok_or_else(|| Error::Unready("simulation source not bound".into()))?;
@@ -249,7 +268,7 @@ impl Runtime {
         )
     }
     #[cfg(test)]
-    fn submit(
+    pub(crate) fn submit(
         &mut self,
         bracket: arte_core::orders::Bracket,
         now_ns: u64,
@@ -261,6 +280,10 @@ impl Runtime {
     pub fn submit_reserved(&mut self, request: Submission<'_>) -> Result<()> {
         self.ready()?;
         validate_run(request.plan, self.simulator.run_id())?;
+        self.fill_model
+            .as_ref()
+            .ok_or_else(|| Error::Unready("simulated fill model unbound".into()))?
+            .require_latency(request.latency_ns)?;
         if self
             .costs
             .as_ref()
@@ -675,6 +698,57 @@ mod tests {
     use super::*;
     use arte_core::orders::Bracket;
     #[test]
+    fn fill_policy_binding_rejects_mismatch_without_mutation() {
+        let mut runtime = Runtime::new(
+            Simulator::new_scoped("r", 1, 2, 2, 5000).unwrap(),
+            Projection::new(2, 10, 4).unwrap(),
+            4,
+        )
+        .unwrap();
+        assert!(runtime
+            .bind_costs(crate::test_simulation_costs("r"), crate::test_fill_model())
+            .is_err());
+        assert!(runtime.costs.is_none());
+        assert!(runtime.fill_model.is_none());
+        let mut model = crate::test_fill_model();
+        model.participation_bps = 5000;
+        // Matching the engine alone does not match the manifest policy.
+        assert!(runtime
+            .bind_costs(crate::test_simulation_costs("r"), model)
+            .is_err());
+        assert!(runtime.costs.is_none());
+        assert!(runtime.fill_model.is_none());
+    }
+    #[test]
+    fn binding_must_precede_orders_and_pinned_quote_age_cannot_change() {
+        let make = || {
+            Runtime::new(
+                Simulator::new_scoped("r", 1, 2, 2, 10000).unwrap(),
+                Projection::new(2, 10, 4).unwrap(),
+                4,
+            )
+            .unwrap()
+        };
+        let mut preloaded = make();
+        preloaded.submit(bracket("a"), 0, 0).unwrap();
+        assert!(preloaded
+            .bind_costs(crate::test_simulation_costs("r"), crate::test_fill_model())
+            .is_err());
+        let mut runtime = make();
+        runtime.bind_source(source_scope()).unwrap();
+        runtime
+            .bind_costs(crate::test_simulation_costs("r"), crate::test_fill_model())
+            .unwrap();
+        let mut book = arte_core::quote_state::Book::new(source_scope()).unwrap();
+        book.bind_policy(crate::test_quote_policy()).unwrap();
+        book.observe(&source_quote()).unwrap();
+        assert!(runtime.quote_book(&book, 1, 2, 1).is_err());
+        assert!(runtime.simulator.last_quote_identity().is_none());
+        runtime
+            .quote_book(&book, 1, 2, crate::test_fill_model().maximum_quote_age_ns)
+            .unwrap();
+    }
+    #[test]
     fn exits_select_owned_filled_positions_and_unknown_ownership_blocks() {
         use arte_core::strategy_dispatch::{Mode, Scope};
         let scope = Scope {
@@ -809,6 +883,9 @@ mod tests {
             4,
         )
         .unwrap();
+        runtime
+            .bind_costs(crate::test_simulation_costs("r"), crate::test_fill_model())
+            .unwrap();
         let plan = arte_core::decision_orders::Plan {
             scope: arte_core::strategy_dispatch::Scope {
                 run_id: "r".into(),
@@ -881,6 +958,22 @@ mod tests {
             };
         assert!(submit(&mut runtime, &funding, 1).is_err());
         arte_core::order_funding::reserve(&portfolio, &plan, &cash, 1, false, None, &risk).unwrap();
+        let before = runtime.simulator.checkpoint(100_000).unwrap();
+        assert!(runtime
+            .submit_reserved(Submission {
+                plan: &plan,
+                funding: &funding,
+                portfolio: &portfolio,
+                cash_policy: &cash,
+                risk_policy: &risk,
+                bands: None,
+                session: &session,
+                now_ns: 1,
+                latency_ns: 1,
+            })
+            .is_err());
+        assert_eq!(runtime.simulator.checkpoint(100_000).unwrap(), before);
+        assert_eq!(portfolio.snapshot("a").unwrap().reservations.len(), 1);
         let mut wrong = funding.clone();
         wrong.cash_minor -= 1;
         assert!(submit(&mut runtime, &wrong, 1).is_err());
@@ -1290,6 +1383,9 @@ mod tests {
             )
             .unwrap();
             let session = session(extended);
+            runtime
+                .bind_costs(crate::test_simulation_costs("r"), crate::test_fill_model())
+                .unwrap();
             let result = runtime.submit_reserved(Submission {
                 plan: &plan,
                 funding: &funding,

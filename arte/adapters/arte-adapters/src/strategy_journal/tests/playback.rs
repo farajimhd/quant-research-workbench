@@ -30,7 +30,10 @@ fn playback_rejects_cost_binding_from_different_source_manifest() {
     execution
         .bind_source(run.market().unwrap().source_scope())
         .unwrap();
-    assert!(crate::playback_runtime::Runtime::new(run, execution, 2_000_000_000, costs).is_err());
+    assert!(
+        crate::playback_runtime::Runtime::new(run, execution, crate::test_fill_model(), costs)
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -38,27 +41,20 @@ async fn released_playback_quote_drives_one_fill_with_retryable_journal() {
     use arte_core::{execution_positions::Projection, simulated_execution::Simulator};
     let (run, costs) = run_with_costs(true, false, false);
     let source = run.market().unwrap().source_scope();
-    let mut simulator = Simulator::new_scoped("run", 1, 2, 2, 10000).unwrap();
-    // Test-only preloaded order: production submission still uses funding/session gates.
-    simulator
-        .submit(
-            arte_core::orders::Bracket {
-                command_id: "order".into(),
-                account: "a".into(),
-                instrument: 1,
-                side: arte_core::orders::Side::Long,
-                quantity: 1,
-                entry: 1001,
-                price_scale: 2,
-                stop: Some(900),
-                target: Some(1100),
-                tick: 1,
-                deadline_ns: 202_000_000_000,
-            },
-            200_000_000_000,
-            0,
-        )
-        .unwrap();
+    let simulator = Simulator::new_scoped("run", 1, 2, 2, 10000).unwrap();
+    let test_order = arte_core::orders::Bracket {
+        command_id: "order".into(),
+        account: "a".into(),
+        instrument: 1,
+        side: arte_core::orders::Side::Long,
+        quantity: 1,
+        entry: 1001,
+        price_scale: 2,
+        stop: Some(900),
+        target: Some(1100),
+        tick: 1,
+        deadline_ns: 202_000_000_000,
+    };
     let mut execution =
         crate::simulation_runtime::Runtime::new(simulator, Projection::new(2, 10, 4).unwrap(), 4)
             .unwrap();
@@ -74,12 +70,16 @@ async fn released_playback_quote_drives_one_fill_with_retryable_journal() {
     assert!(crate::playback_runtime::Runtime::new(
         run_with_quote(true),
         foreign,
-        2_000_000_000,
+        crate::test_fill_model(),
         run_with_costs(true, false, false).1
     )
     .is_err());
     let mut controller =
-        crate::playback_runtime::Runtime::new(run, execution, 2_000_000_000, costs).unwrap();
+        crate::playback_runtime::Runtime::new(run, execution, crate::test_fill_model(), costs)
+            .unwrap();
+    controller
+        .seed_test_order(test_order, 200_000_000_000)
+        .unwrap();
     controller.resume().unwrap();
     assert_eq!(controller.poll().unwrap(), Poll::Boundary);
     assert_eq!(controller.poll().unwrap(), Poll::Boundary);
@@ -366,7 +366,7 @@ fn run_with_costs(
         hardware_profile_hash: "f".repeat(64),
         clock: Clock::Historical,
         execution: Execution::Simulated {
-            fill_model_hash: "1".repeat(64),
+            fill_model_hash: crate::test_fill_model().hash().unwrap(),
             cost_model_hash: cost_model.hash().unwrap(),
         },
         consumers: ["a", "b"]
@@ -414,7 +414,8 @@ async fn check_action_gate(exit: bool, protection: bool) {
         .bind_source(run.market().unwrap().source_scope())
         .unwrap();
     let mut controller =
-        crate::playback_runtime::Runtime::new(run, execution, 2_000_000_000, costs).unwrap();
+        crate::playback_runtime::Runtime::new(run, execution, crate::test_fill_model(), costs)
+            .unwrap();
     controller.resume().unwrap();
     assert_eq!(controller.poll().unwrap(), Poll::Boundary);
     let view = controller.decision_view().unwrap();

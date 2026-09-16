@@ -55,6 +55,7 @@ impl Model {
 pub struct Pinned {
     model: Model,
     hash: String,
+    fill_model_hash: String,
     run_id: String,
     manifest_hash: String,
     reference_manifest_hash: String,
@@ -90,6 +91,12 @@ impl Pinned {
         Ok(Self {
             model,
             hash,
+            fill_model_hash: match &manifest.execution {
+                Execution::Simulated {
+                    fill_model_hash, ..
+                } => fill_model_hash.clone(),
+                _ => unreachable!("validated simulated execution"),
+            },
             run_id: manifest.run_id.clone(),
             manifest_hash: run.hash().into(),
             reference_manifest_hash: manifest.reference_manifest_hash.clone(),
@@ -105,6 +112,9 @@ impl Pinned {
     }
     pub fn manifest_hash(&self) -> &str {
         &self.manifest_hash
+    }
+    pub fn fill_model_hash(&self) -> &str {
+        &self.fill_model_hash
     }
     pub fn run_id(&self) -> &str {
         &self.run_id

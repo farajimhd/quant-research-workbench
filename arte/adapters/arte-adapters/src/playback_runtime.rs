@@ -21,15 +21,22 @@ pub struct Runtime {
     actions: actions::Work,
 }
 impl Runtime {
+    #[cfg(test)]
+    pub(crate) fn seed_test_order(
+        &mut self,
+        bracket: arte_core::orders::Bracket,
+        at_ns: u64,
+    ) -> Result<()> {
+        // Plumbing fixture only; production has no raw-order submission path.
+        self.execution.submit(bracket, at_ns, 0)
+    }
     pub fn new(
         run: Run,
         mut execution: simulation_runtime::Runtime,
-        maximum_quote_age_ns: u64,
+        fill_model: arte_core::simulation_model::Model,
         costs: arte_core::simulation_costs::Pinned,
     ) -> Result<Self> {
-        if maximum_quote_age_ns == 0 || maximum_quote_age_ns > 60_000_000_000 {
-            return Err(Error::Invalid("playback quote age bound".into()));
-        }
+        let maximum_quote_age_ns = fill_model.maximum_quote_age_ns;
         let status = run.status();
         if status.pending_boundary
             || status.acknowledged_boundaries != 0
@@ -45,7 +52,7 @@ impl Runtime {
                 "playback cost model belongs to another manifest".into(),
             ));
         }
-        execution.bind_costs(costs)?;
+        execution.bind_costs(costs, fill_model)?;
         Ok(Self {
             run,
             execution,

@@ -46,7 +46,7 @@ fn run() -> Run {
         hardware_profile_hash: hash.clone(),
         clock: Clock::Historical,
         execution: Execution::Simulated {
-            fill_model_hash: content_hash(&arte_core::simulated_execution::MODEL).unwrap(),
+            fill_model_hash: crate::test_fill_model().hash().unwrap(),
             cost_model_hash: model().hash().unwrap(),
         },
         consumers: ["a", "b"]
@@ -77,7 +77,7 @@ fn fixture(run: &Run) -> Runtime {
         })
         .unwrap();
     runtime
-        .bind_costs(Costs::new(model(), run).unwrap())
+        .bind_costs(Costs::new(model(), run).unwrap(), crate::test_fill_model())
         .unwrap();
     // Seed owned orders here; production funding/submission is covered by the
     // multi-account playback lifecycle fixture, not authorized by this codec.
@@ -298,6 +298,14 @@ async fn mismatched_components_and_incomplete_graphs_fail_closed() {
         .checkpoint(&run, &cut(1), &journal.last, tiny)
         .is_err());
     let mut root: Root = serde_json::from_slice(&root_bytes).unwrap();
+    root.fill_model.participation_bps -= 1;
+    image.root = encode(&root, limits().maximum_bytes).unwrap();
+    assert!(restore(&image).is_err());
+    root.fill_model.participation_bps += 1;
+    root.version = 1;
+    image.root = encode(&root, limits().maximum_bytes).unwrap();
+    assert!(restore(&image).is_err());
+    root.version = 2;
     root.last_source_quote.as_mut().unwrap().1 += 1;
     image.root = encode(&root, limits().maximum_bytes).unwrap();
     assert!(restore(&image).is_err());

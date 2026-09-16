@@ -575,6 +575,9 @@ impl Simulator {
     pub fn clock_ns(&self) -> u64 {
         self.clock_ns
     }
+    pub fn participation_bps(&self) -> u32 {
+        self.participation_bps
+    }
     pub fn last_quote_identity(&self) -> Option<(u64, u64, &str)> {
         self.last
             .as_ref()

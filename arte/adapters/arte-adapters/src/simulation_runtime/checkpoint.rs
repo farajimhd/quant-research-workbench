@@ -45,6 +45,7 @@ struct Root {
     version: u32,
     manifest_hash: String,
     cost_model_hash: String,
+    fill_model: arte_core::simulation_model::Model,
     cut: Cut,
     source: (u16, u64, u32),
     last_source_quote: Option<(arte_core::events::Observation, u64, u64)>,
@@ -130,9 +131,13 @@ impl Runtime {
         let projection = self.projection.checkpoint(&context, limits.projection)?;
         let mut objects = BTreeMap::new();
         let mut root = Root {
-            version: 1,
+            version: 2,
             manifest_hash: run.hash().into(),
             cost_model_hash: costs.hash().into(),
+            fill_model: self
+                .fill_model
+                .clone()
+                .ok_or_else(|| Error::Unready("checkpoint fill model missing".into()))?,
             cut: cut.clone(),
             source: (source.provider, source.instrument, source.session),
             last_source_quote: self.last_source_quote.clone(),
@@ -192,7 +197,7 @@ impl Runtime {
         bundle.root.verify()?;
         let root: Root = serde_json::from_slice(&bundle.root.payload)
             .map_err(|e| Error::Serialization(e.to_string()))?;
-        if root.version != 1
+        if root.version != 2
             || root.manifest_hash != run.hash()
             || root.cut != *cut
             || root.cost_model_hash != costs.hash()
@@ -226,6 +231,8 @@ impl Runtime {
             &root.simulator_hash,
             limits.maximum_bytes,
         )?;
+        root.fill_model
+            .require(costs.fill_model_hash(), &simulator)?;
         let projection = Projection::restore_checkpoint(
             &bundle.objects[&root.projection],
             &root.projection,
@@ -255,6 +262,7 @@ impl Runtime {
         restored.reservations = root.reservations;
         restored.released = root.released;
         restored.last_source_quote = root.last_source_quote;
+        restored.fill_model = Some(root.fill_model);
         restored.validate_checkpoint(run, cut, &costs, &fills, limits)?;
         restored.costs = Some(costs);
         Ok(restored)
@@ -268,6 +276,10 @@ impl Runtime {
         limits: Limits,
     ) -> Result<()> {
         let orders = self.simulator.positions();
+        self.fill_model
+            .as_ref()
+            .ok_or_else(|| Error::Unready("checkpoint fill model missing".into()))?
+            .require(costs.fill_model_hash(), &self.simulator)?;
         if self.simulator.run_id() != run.manifest().run_id
             || costs.manifest_hash() != run.hash()
             || self.simulator.clock_ns() != cut.at_ns
