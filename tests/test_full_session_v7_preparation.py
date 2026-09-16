@@ -82,15 +82,18 @@ class ArtifactTests(TestCase):
         with self.assertRaisesRegex(ValueError, 'selected ticker'):
             _structural_recovery_projection_tickers(config, ())
 
-    def test_r1_watchlist_population_supports_full_market_and_selected_scope(self):
+    def test_r1_full_market_requires_source_native_session_activation(self):
         from src.trading_runtime.r1_ladder import CONTRACT
         config = dict(strategy=dict(parameters=dict(
             historical_hod_contract=True, r1_ladder_contract=CONTRACT)),
-            run_plan=dict(activation=dict(watchlist_policy='any_selected')))
+            run_plan=dict(activation=dict(
+                watch_duration='session', watchlist_policy='not_required')),
+            signal_activation=dict(signal_streams=[dict(
+                enabled=True, occurrence_source='qmd_squeeze_episode')]))
         self.assertIsNone(_structural_recovery_projection_tickers(config, ()))
         self.assertEqual(_structural_recovery_projection_tickers(
             config, (' bbb ', 'AAA', 'aaa', '')), ['AAA', 'BBB'])
-        config['strategy']['parameters']['r1_ladder_contract'] = 'unsupported'
+        config['run_plan']['activation']['watchlist_policy'] = 'any_selected'
         with self.assertRaisesRegex(ValueError, 'selected ticker'):
             _structural_recovery_projection_tickers(config, ())
 
