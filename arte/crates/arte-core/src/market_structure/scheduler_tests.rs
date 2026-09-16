@@ -1173,23 +1173,24 @@ fn timeframes_close_in_order_without_leaking_later_macd_or_filling_empty_interva
     }
     let mut closes = vec![];
     let mut macd = crate::strategy_macd::State::new(true);
-    let mut features = crate::candidate_features::State::new(
-        scheduler.state().unwrap(),
-        crate::candidate_features::Config {
-            setup: crate::strategy_setup::SetupSettings {
-                range_ns: 30 * SECOND,
-                minimum_bars: 1,
-                maximum_gap_ns: 10 * SECOND,
-            },
-            forming_macd: true,
-            minimum_range_pct: 1.,
-            minimum_progress_pct: 1.,
-            maximum_quote_age_ns: SECOND,
-            maximum_completed_bar_age_ns: SECOND,
-            maximum_levels: 100,
+    let config = crate::candidate_features::Config {
+        setup: crate::strategy_setup::SetupSettings {
+            range_ns: 30 * SECOND,
+            minimum_bars: 1,
+            maximum_gap_ns: 10 * SECOND,
         },
-    )
-    .unwrap();
+        forming_macd: true,
+        minimum_range_pct: 1.,
+        minimum_progress_pct: 1.,
+        maximum_quote_age_ns: SECOND,
+        maximum_completed_bar_age_ns: SECOND,
+        maximum_levels: 100,
+    };
+    let mut features =
+        crate::candidate_features::State::new(scheduler.state().unwrap(), config.clone()).unwrap();
+    let mut recovered =
+        crate::candidate_features::State::new(scheduler.state().unwrap(), config.clone()).unwrap();
+    let context = "f".repeat(64);
     let mut evaluated_at_ns = 220 * SECOND;
     while scheduler
         .prepare_next(220 * SECOND, evaluated_at_ns)
@@ -1199,6 +1200,62 @@ fn timeframes_close_in_order_without_leaking_later_macd_or_filling_empty_interva
         assert!(features
             .observe(&boundary, scheduler.state().unwrap())
             .unwrap());
+        assert!(recovered
+            .observe(&boundary, scheduler.state().unwrap())
+            .unwrap());
+        let image = features
+            .checkpoint(&context, scheduler.state().unwrap(), &boundary, 1_000_000)
+            .unwrap();
+        assert_eq!(
+            image.id,
+            recovered
+                .checkpoint(&context, scheduler.state().unwrap(), &boundary, 1_000_000)
+                .unwrap()
+                .id
+        );
+        recovered = crate::candidate_features::State::restore_checkpoint(
+            &image,
+            &image.id,
+            &context,
+            scheduler.state().unwrap(),
+            config.clone(),
+            &boundary,
+            1_000_000,
+        )
+        .unwrap();
+        assert!(!recovered
+            .observe(&boundary, scheduler.state().unwrap())
+            .unwrap());
+        let mut changed = config.clone();
+        changed.minimum_range_pct += 1.;
+        assert!(crate::candidate_features::State::restore_checkpoint(
+            &image,
+            &image.id,
+            &context,
+            scheduler.state().unwrap(),
+            changed,
+            &boundary,
+            1_000_000
+        )
+        .is_err());
+        assert!(features
+            .checkpoint(&context, scheduler.state().unwrap(), &boundary, 1)
+            .is_err());
+        let market_hash = scheduler.state().unwrap().checkpoint().unwrap().hash;
+        let text = String::from_utf8(image.payload.clone()).unwrap();
+        let changed = text.replace(&market_hash, &"0".repeat(64));
+        assert_ne!(text, changed);
+        let wrong_market = crate::seed_storage::Object::new(changed.into_bytes());
+        assert!(crate::candidate_features::State::restore_checkpoint(
+            &wrong_market,
+            &wrong_market.id,
+            &context,
+            scheduler.state().unwrap(),
+            config.clone(),
+            &boundary,
+            1_000_000
+        )
+        .is_err());
         let snapshot_hash = crate::content_hash(features.snapshot().unwrap().unwrap()).unwrap();
         assert!(!features
             .observe(&boundary, scheduler.state().unwrap())

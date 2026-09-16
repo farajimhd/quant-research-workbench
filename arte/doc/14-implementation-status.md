@@ -6,6 +6,28 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Shared feature recovery
+
+The shared feature authority now captures and restores MACD episode state, setup
+range history, activity history and the published boundary snapshot. The image
+pins the feature configuration, source scope, parent context and exact market
+checkpoint hash. It cannot be paired with a different market calculation state.
+
+Capture requires an observed pending boundary and rejects failed feature state.
+Restore validates configuration through the normal constructor, preserves the
+observed boundary identity and clocks, and checks one-second snapshot alignment.
+It does not replay observations or infer freshness. Genesis remains the normal
+empty constructor. Recovery images are bounded to at most 64 MiB.
+
+The multi-timeframe continuation test now restores after every boundary and
+compares checkpoint hashes against uninterrupted feature processing. It covers
+gaps, completed-bar ordering, duplicate observation, configuration changes,
+changed market hashes and byte limits. This is component recovery, not the
+completed candidate/portfolio/controller run coordinator.
+
+All 380 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Source-oracle parity was not rerun. No service or network test ran.
+
 ## Candidate transaction recovery
 
 Candidate runtime recovery now uses the shared strategy transaction codec. The

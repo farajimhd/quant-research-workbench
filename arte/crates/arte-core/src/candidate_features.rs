@@ -9,7 +9,8 @@ use crate::{
     strategy_setup::{ActivityEvidence, ActivityState, Range, SetupSettings, SetupState},
     Error, Result,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+pub mod checkpoint;
 const SECOND: u64 = 1_000_000_000;
 #[derive(Clone, Serialize)]
 pub struct Config {
@@ -21,7 +22,7 @@ pub struct Config {
     pub maximum_completed_bar_age_ns: u64,
     pub maximum_levels: usize,
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OneSecond {
     pub at_ns: u64,
     pub previous_bar_end_ns: Option<u64>,
@@ -58,7 +59,7 @@ pub struct AcquisitionContext {
     pub encounter_blocked: bool,
     pub pending_capital: bool,
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     pub boundary_id: String,
     pub sequence: u64,
