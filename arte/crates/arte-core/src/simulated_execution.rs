@@ -70,6 +70,35 @@ impl Quote {
 mod tests {
     use super::*;
     #[test]
+    fn protection_batch_is_atomic_and_rejects_exit_in_progress() {
+        let mut sim = Simulator::new(1, 2, 2, 10000).unwrap();
+        sim.submit(bracket("a", Side::Long), 0, 0).unwrap();
+        sim.submit(bracket("b", Side::Long), 0, 0).unwrap();
+        sim.quote(&quote(1, 99, 100, 20)).unwrap();
+        let before = sim.checkpoint(100000).unwrap();
+        assert!(sim
+            .replace_protection_batch(&[("a".into(), 95, 115), ("b".into(), 120, 110)], 1)
+            .is_err());
+        assert_eq!(before, sim.checkpoint(100000).unwrap());
+        assert!(sim
+            .replace_protection_batch(&[("a".into(), 95, 115), ("a".into(), 96, 116)], 1)
+            .is_err());
+        assert_eq!(before, sim.checkpoint(100000).unwrap());
+        assert_eq!(
+            sim.replace_protection_batch(&[("a".into(), 95, 115), ("b".into(), 96, 116)], 1)
+                .unwrap(),
+            2
+        );
+        assert_eq!(sim.positions()[0].active_stop, 95);
+        assert_eq!(sim.positions()[1].active_target, 116);
+        sim.exit_entries(&["a".into()], 5, 1).unwrap();
+        let before = sim.checkpoint(100000).unwrap();
+        assert!(sim
+            .replace_protection_batch(&[("a".into(), 96, 117)], 1)
+            .is_err());
+        assert_eq!(before, sim.checkpoint(100000).unwrap());
+    }
+    #[test]
     fn exit_batch_rejects_mismatch_atomically_and_uses_later_liquidity() {
         let mut sim = Simulator::new(1, 2, 2, 10000).unwrap();
         sim.submit(bracket("a", Side::Long), 0, 0).unwrap();
@@ -342,6 +371,38 @@ pub struct Position {
     ready_ns: u64,
     submitted_sequence: u64,
     amendment: Option<(u64, String)>,
+}
+impl Position {
+    fn validate_replacement(&self, stop: i64, target: i64) -> Result<()> {
+        if self.entry_filled == self.exit_filled || self.stop_triggered || self.exit_requested {
+            return Err(Error::Unready("no replaceable protected position".into()));
+        }
+        if stop <= 0
+            || target <= 0
+            || stop % self.bracket.tick != 0
+            || target % self.bracket.tick != 0
+            || match self.bracket.side {
+                Side::Long => stop >= target,
+                Side::Short => target >= stop,
+            }
+        {
+            return Err(Error::Invalid(
+                "invalid replacement protection geometry".into(),
+            ));
+        }
+        if !self.entry_cancelled
+            && self.entry_filled < self.bracket.quantity
+            && match self.bracket.side {
+                Side::Long => stop >= self.bracket.entry || target <= self.bracket.entry,
+                Side::Short => target >= self.bracket.entry || stop <= self.bracket.entry,
+            }
+        {
+            return Err(Error::Unready(
+                "replacement incompatible with unfilled entry; cancel entry first".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Amendment {
@@ -644,39 +705,64 @@ impl Simulator {
                 order.exit_requested = true;
             }
             Amendment::ReplaceProtection { stop, target } => {
-                if order.entry_filled == order.exit_filled || order.stop_triggered {
-                    return Err(Error::Unready("no replaceable protected position".into()));
-                }
-                if stop <= 0
-                    || target <= 0
-                    || stop % order.bracket.tick != 0
-                    || target % order.bracket.tick != 0
-                    || match order.bracket.side {
-                        Side::Long => stop >= target,
-                        Side::Short => target >= stop,
-                    }
-                {
-                    return Err(Error::Invalid(
-                        "invalid replacement protection geometry".into(),
-                    ));
-                }
-                if !order.entry_cancelled
-                    && order.entry_filled < order.bracket.quantity
-                    && match order.bracket.side {
-                        Side::Long => stop >= order.bracket.entry || target <= order.bracket.entry,
-                        Side::Short => target >= order.bracket.entry || stop <= order.bracket.entry,
-                    }
-                {
-                    return Err(Error::Unready(
-                        "replacement incompatible with unfilled entry; cancel entry first".into(),
-                    ));
-                }
+                order.validate_replacement(stop, target)?;
                 order.active_stop = stop;
                 order.active_target = target;
             }
         }
         order.amendment = Some((revision, hash));
         Ok(())
+    }
+    /// Atomic modeled replacement batch. Caller supplies scope and session authorization.
+    pub fn replace_protection_batch(
+        &mut self,
+        replacements: &[(String, i64, i64)],
+        at_ns: u64,
+    ) -> Result<usize> {
+        if at_ns != self.clock_ns || replacements.is_empty() || replacements.len() > self.capacity {
+            return Err(Error::Invalid("replacement clock or batch size".into()));
+        }
+        let indices: std::collections::BTreeMap<_, _> = self
+            .orders
+            .iter()
+            .enumerate()
+            .map(|(index, order)| (order.bracket.command_id.as_str(), index))
+            .collect();
+        let mut unique = std::collections::BTreeSet::new();
+        let mut changes = Vec::with_capacity(replacements.len());
+        for (command, stop, target) in replacements {
+            if !unique.insert(command) {
+                return Err(Error::Conflict("duplicate replacement command".into()));
+            }
+            let index = *indices
+                .get(command.as_str())
+                .ok_or_else(|| Error::Unready("replacement command missing".into()))?;
+            let order = &self.orders[index];
+            order.validate_replacement(*stop, *target)?;
+            let revision = order
+                .amendment
+                .as_ref()
+                .map_or(Some(1), |(rev, _)| rev.checked_add(1))
+                .ok_or_else(|| Error::Capacity("amendment revision exhausted".into()))?;
+            let hash = content_hash(&(
+                command,
+                revision,
+                at_ns,
+                Amendment::ReplaceProtection {
+                    stop: *stop,
+                    target: *target,
+                },
+            ))?;
+            changes.push((index, *stop, *target, revision, hash));
+        }
+        let count = changes.len();
+        for (index, stop, target, revision, hash) in changes {
+            let order = &mut self.orders[index];
+            order.active_stop = stop;
+            order.active_target = target;
+            order.amendment = Some((revision, hash));
+        }
+        Ok(count)
     }
     /// Upstream uses the shared risk/OMS authorization before modeled submission.
     /// Latency is explicitly simulated, never inferred historical receive latency.

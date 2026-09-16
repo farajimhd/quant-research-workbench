@@ -332,15 +332,20 @@ fn run_with_quote(include_quote: bool) -> Run {
 
 #[tokio::test]
 async fn committed_execution_action_still_blocks_market_acknowledgment() {
-    check_action_gate(false).await;
+    check_action_gate(false, false).await;
 }
 
 #[tokio::test(start_paused = true)]
 async fn exit_without_matching_exposure_retains_action_and_boundary() {
-    check_action_gate(true).await;
+    check_action_gate(true, false).await;
 }
 
-async fn check_action_gate(exit: bool) {
+#[tokio::test(start_paused = true)]
+async fn protection_without_matching_exposure_retains_action_and_boundary() {
+    check_action_gate(false, true).await;
+}
+
+async fn check_action_gate(exit: bool, protection: bool) {
     use arte_core::{execution_positions::Projection, simulated_execution::Simulator};
     let run = run_with_quote(false);
     let mut execution = crate::simulation_runtime::Runtime::new(
@@ -366,7 +371,15 @@ async fn check_action_gate(exit: bool) {
                 arte_core::strategy_transaction::Runtime::new(scope.clone(), 0_u64, 1024).unwrap();
             let template = prepared_account(&scope.account);
             let action = if scope.account == "b" {
-                if exit {
+                if protection {
+                    Action::ReplaceTarget(arte_core::strategy_protection::TargetProposal {
+                        target: arte_core::strategy_protection::ActiveTarget::Official {
+                            price: 11.0,
+                        },
+                        triggering_breakout: None,
+                        at_ns: input.evaluated_at_ns,
+                    })
+                } else if exit {
                     Action::Exit {
                         reason: arte_core::strategy_dispatch::ExitReason::ManualExit,
                         quantity: 1,
@@ -384,7 +397,7 @@ async fn check_action_gate(exit: bool) {
             };
             let mut safety = template.pending_decision().unwrap().safety.clone();
             // Deliberately stale strategy exposure must not authorize a simulated short.
-            if exit && scope.account == "b" {
+            if (exit || protection) && scope.account == "b" {
                 safety.position_quantity = 1;
             }
             runtime
@@ -411,7 +424,13 @@ async fn check_action_gate(exit: bool) {
     assert_eq!(controller.pending_actions()[0].account, "b");
     assert_eq!(
         controller.pending_actions()[0].kind,
-        if exit { "exit" } else { "cancel_entry" }
+        if protection {
+            "replace_target"
+        } else if exit {
+            "exit"
+        } else {
+            "cancel_entry"
+        }
     );
     assert!(controller.acknowledge().is_err());
     assert_eq!(controller.status().acknowledged_boundaries, 0);
@@ -422,6 +441,48 @@ async fn check_action_gate(exit: bool) {
         .all(|o| o.result.is_ok()));
     assert_eq!(controller.pending_actions().len(), 1);
     let action = controller.pending_actions()[0].clone();
+    if protection {
+        let calendar = arte_core::session::Session {
+            exchange: "XNYS".into(),
+            session: 20260915,
+            previous_trading_session: 20260914,
+            extended: arte_core::coverage::Interval {
+                start: 1,
+                end: 300_000_000_000,
+            },
+            regular: arte_core::coverage::Interval {
+                start: 220_000_000_000,
+                end: 250_000_000_000,
+            },
+            available_at_ns: 0,
+            source_manifest_hash: "a".repeat(64),
+        };
+        let hash = arte_core::content_hash(&calendar).unwrap();
+        let session = arte_core::orders::TradingSession::new(calendar, hash, 0, true).unwrap();
+        let risk = arte_core::orders::RiskPolicy {
+            band_provider: 1,
+            band_session: 20260915,
+            band_buffer_ticks: 2,
+            max_band_age_ns: 1_000_000_000,
+        };
+        for _ in 0..2 {
+            assert!(controller
+                .protection_action(
+                    &action.decision_id,
+                    action.action_index,
+                    crate::simulation_runtime::AmendmentSafety {
+                        session: &session,
+                        risk_policy: &risk,
+                        bands: None
+                    }
+                )
+                .is_err());
+            assert_eq!(controller.pending_actions().len(), 1);
+            assert!(controller.acknowledge().is_err());
+            assert_eq!(controller.status().acknowledged_boundaries, 0);
+        }
+        return;
+    }
     if exit {
         for _ in 0..2 {
             assert!(controller

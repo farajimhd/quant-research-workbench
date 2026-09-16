@@ -6,6 +6,29 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Strategy-scoped protection dispatch
+
+Playback now dispatches committed stop and target replacements. The retained
+decision supplies the proposal and expected position quantity. Prices convert to
+integer atoms without rounding. Future proposals and unrepresentable prices fail.
+The selected strategy must own exactly the expected open exposure.
+
+Each replacement preserves the other active protection leg. Shared session and
+LULD checks run before mutation. The simulator preflights the entire batch,
+including revisions and geometry, before changing any order. Triggered stops,
+positions already exiting and incompatible remaining entries block replacement.
+The single-order amendment path uses the same geometry checks.
+
+All 338 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Coverage includes atomic invalid-batch rejection, duplicate commands, strategy
+isolation, price precision, future proposals, missing regular-hours bands and
+the controller's stale-exposure gate. No services ran. Source parity was not rerun.
+
+Successful protection dispatch followed by fill feedback still needs a complete
+controller integration test. Broker acknowledgment, recovery and portfolio
+reservation release remain separate unfinished work. These modeled amendments
+do not prove live broker protection or latency behavior.
+
 ## Strategy-scoped reduce-only exit dispatch
 
 Playback can now dispatch a committed reduce-only exit to its owning strategy's

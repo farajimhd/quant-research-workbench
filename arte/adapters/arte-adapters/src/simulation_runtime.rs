@@ -326,6 +326,62 @@ impl Runtime {
         }
         Ok(commands)
     }
+    pub(crate) fn replace_for(
+        &mut self,
+        scope: &arte_core::strategy_dispatch::Scope,
+        action: &arte_core::strategy_dispatch::Action,
+        quantity: u64,
+        at_ns: u64,
+        safety: AmendmentSafety<'_>,
+    ) -> Result<usize> {
+        use arte_core::strategy_dispatch::Action;
+        let (price, proposed_at, stop) = match action {
+            Action::ReplaceStop(p) => (p.price, p.at_ns, true),
+            Action::ReplaceTarget(p) => (p.target.price(), p.at_ns, false),
+            _ => return Err(Error::Invalid("not a protection action".into())),
+        };
+        if !price.is_finite() || price <= 0. || proposed_at > at_ns || quantity == 0 {
+            return Err(Error::Invalid(
+                "invalid protection proposal price, time or quantity".into(),
+            ));
+        }
+        let price = arte_core::events::Decimal::parse(&price.to_string())?
+            .atoms_at_scale(self.simulator.price_scale())?;
+        let commands: std::collections::BTreeSet<_> =
+            self.owned_commands(scope, true)?.into_iter().collect();
+        let mut replacements = Vec::new();
+        let mut held = 0_u64;
+        for order in self.simulator.positions() {
+            if !commands.contains(&order.bracket.command_id)
+                || order.entry_filled == order.exit_filled
+            {
+                continue;
+            }
+            held = held
+                .checked_add(order.entry_filled - order.exit_filled)
+                .ok_or_else(|| Error::Capacity("protection quantity overflow".into()))?;
+            let prices = if stop {
+                (price, order.active_target)
+            } else {
+                (order.active_stop, price)
+            };
+            safety.session.validate_protection(
+                &order.bracket,
+                prices,
+                at_ns,
+                safety.bands,
+                safety.risk_policy,
+            )?;
+            replacements.push((order.bracket.command_id.clone(), prices.0, prices.1));
+        }
+        if held != quantity {
+            return Err(Error::Conflict(
+                "protection quantity differs from owned exposure".into(),
+            ));
+        }
+        self.simulator
+            .replace_protection_batch(&replacements, at_ns)
+    }
     pub fn amend(
         &mut self,
         command: &str,
@@ -468,7 +524,55 @@ mod tests {
         runtime.owners.insert("two".into(), other);
         assert!(runtime.exit_for(&scope, quantity + 1, 1).is_err());
         assert_eq!(before, runtime.simulator.checkpoint(100000).unwrap());
-        assert_eq!(runtime.exit_for(&scope, quantity, 1).unwrap(), 1);
+        use arte_core::{
+            strategy_dispatch::Action,
+            strategy_protection::{ActiveTarget, TargetProposal},
+        };
+        let session = session(true);
+        let risk = arte_core::orders::RiskPolicy {
+            band_provider: 1,
+            band_session: 20260915,
+            band_buffer_ticks: 2,
+            max_band_age_ns: 10,
+        };
+        let safety = || AmendmentSafety {
+            session: &session,
+            risk_policy: &risk,
+            bands: None,
+        };
+        let target = |price, at_ns| {
+            Action::ReplaceTarget(TargetProposal {
+                target: ActiveTarget::Official { price },
+                triggering_breakout: None,
+                at_ns,
+            })
+        };
+        for (action, qty) in [
+            (target(1.15, 2), quantity),
+            (target(1.151, 1), quantity),
+            (target(1.15, 1), quantity + 1),
+        ] {
+            assert!(runtime
+                .replace_for(&scope, &action, qty, 1, safety())
+                .is_err());
+            assert_eq!(before, runtime.simulator.checkpoint(100000).unwrap());
+        }
+        assert_eq!(
+            runtime
+                .replace_for(&scope, &target(1.15, 1), quantity, 1, safety())
+                .unwrap(),
+            1
+        );
+        assert_eq!(runtime.simulator.positions()[0].active_target, 115);
+        assert_eq!(runtime.simulator.positions()[1].active_target, 110);
+        // Regular-hours replacement cannot proceed without official bands.
+        runtime.simulator.advance_clock(21).unwrap();
+        let before = runtime.simulator.checkpoint(100000).unwrap();
+        assert!(runtime
+            .replace_for(&scope, &target(1.16, 21), quantity, 21, safety())
+            .is_err());
+        assert_eq!(before, runtime.simulator.checkpoint(100000).unwrap());
+        assert_eq!(runtime.exit_for(&scope, quantity, 21).unwrap(), 1);
         assert!(runtime.simulator.positions()[0].exit_requested);
         assert!(!runtime.simulator.positions()[1].exit_requested);
     }

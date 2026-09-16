@@ -70,6 +70,56 @@ impl Work {
     }
 }
 impl Runtime {
+    pub fn protection_action(
+        &mut self,
+        decision_id: &str,
+        action_index: usize,
+        safety: simulation_runtime::AmendmentSafety<'_>,
+    ) -> Result<()> {
+        let at_ns = self
+            .decision_view()?
+            .pending()?
+            .ok_or_else(|| Error::Unready("no protection boundary".into()))?
+            .evaluated_at_ns;
+        let item = self
+            .actions
+            .items
+            .get_mut(&(decision_id.into(), action_index))
+            .ok_or_else(|| Error::Unready("no committed protection action".into()))?;
+        let decision = item.receipt.decision();
+        let action = decision
+            .actions
+            .get(action_index)
+            .ok_or_else(|| Error::Invalid("missing protection action".into()))?;
+        if !matches!(action, Action::ReplaceStop(_) | Action::ReplaceTarget(_)) {
+            return Err(Error::Invalid(
+                "action is not a protection replacement".into(),
+            ));
+        }
+        let fingerprint = content_hash(&(
+            "playback-protection-v1",
+            decision_id,
+            action_index,
+            at_ns,
+            action,
+        ))?;
+        if let Some(previous) = &item.completed_request {
+            return if previous == &fingerprint {
+                Ok(())
+            } else {
+                Err(Error::Conflict("completed protection changed".into()))
+            };
+        }
+        self.execution.replace_for(
+            &decision.scope,
+            action,
+            decision.safety.position_quantity,
+            at_ns,
+            safety,
+        )?;
+        item.completed_request = Some(fingerprint);
+        Ok(())
+    }
     pub fn exit_action(&mut self, decision_id: &str, action_index: usize) -> Result<()> {
         let at_ns = self
             .decision_view()?
