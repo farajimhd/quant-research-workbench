@@ -30,6 +30,13 @@ def save(path, value):
     temporary.replace(path)
 
 
+def replay_tickers(args):
+    """An explicit empty ticker tuple selects the production historical watchlist."""
+    if getattr(args, "historical_watchlist_universe", False):
+        return ()
+    return tuple(args.portfolio_symbols or (args.symbol,))
+
+
 def source_identity():
     root = Path(__file__).resolve().parents[1]
     paths = sorted([*root.joinpath('src/trading_runtime').glob('*.py'),
@@ -177,6 +184,8 @@ async def run_locked(args):
                     session_date=args.session_date.isoformat(),
                     variants=args.variants, baseline=BASELINE, book_hash=BOOK_HASH)
     if args.portfolio_symbols:identity['tickers']=args.portfolio_symbols
+    if getattr(args, 'historical_watchlist_universe', False):
+        identity.update(universe='historical_watchlist', tickers=[])
     if args.recipe_parameters is not None:identity['recipe_parameters']=args.recipe_parameters
     if getattr(args, 'recipe_base', None) is not None:identity['recipe_base']=args.recipe_base
     if args.restart_at:identity['restart_at']=args.restart_at
@@ -211,7 +220,7 @@ async def run_locked(args):
         revision = candidate_runtime_configuration_snapshot('backtest', candidate_id=candidate['candidate_id'], run_plan_id=PLAN)
         definition = ReplayRunDefinition(session_date=args.session_date, start_time=time(4),
             end_time=time.fromisoformat(args.end), initial_cash=10000,
-            tickers=tuple(args.portfolio_symbols or (args.symbol,)),
+            tickers=replay_tickers(args),
             configuration_revision=revision, mode=RunMode.BACKTEST,
             experimental_structure_book='level-book-v7', experimental_structure_fingerprint=BOOK_HASH)
         controller = ReplayRunController(definition, runtime_root=Path('D:/TradingML/runtimes/trading/backtest'))
@@ -292,6 +301,8 @@ def main():
     parser.add_argument('--runtime', type=Path, required=True)
     parser.add_argument('--session-date', type=date.fromisoformat, default=date(2026,8,21),
                         help='Replay session date, YYYY-MM-DD; frozen position windows apply only to 2026-08-21')
+    parser.add_argument('--historical-watchlist-universe', action='store_true',
+                        help='Use the production historical watchlist with shared capital; requires --end and excludes ticker options')
     parser.add_argument('--symbol')
     parser.add_argument('--end', help='New York time, HH:MM:SS')
     parser.add_argument('--position-symbols', nargs='+', help='Replay the frozen audited windows for these symbols')
@@ -307,6 +318,10 @@ def main():
     args=parser.parse_args()
     if args.position_symbols and args.session_date != date(2026,8,21):
         parser.error('--position-symbols uses frozen 2026-08-21 windows; select explicit symbols and --end for another date')
+    if args.historical_watchlist_universe:
+        if args.symbol or args.position_symbols or args.portfolio_symbols or not args.end:
+            parser.error('--historical-watchlist-universe requires --end and excludes all ticker options')
+        args.symbol='WATCHLIST'
     args.recipe_parameters=None
     if args.recipe_base is not None and not args.recipe_file:
         parser.error('--recipe-base requires --recipe-file')
