@@ -6,6 +6,25 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Pinned fresh-session startup inputs
+
+Production session construction now consumes a versioned startup document and
+an independently supplied expected hash. The document includes the manifest
+identity, strategy configurations, initial account balances, price precision,
+execution models and resource limits. The assembled session retains its startup
+hash. The previous unpinned constructor is available only in unit tests.
+
+Parsing bounds input to 16 MiB and maps to 4096 entries. Duplicate account or
+configuration keys cannot silently overwrite earlier values. The roundtrip and
+mutation fixture checks balances, capacities, precision, model settings, manifest,
+version, unknown fields, duplicate keys, oversized input and wrong expected hash.
+All 404 offline tests, formatting, Clippy and copied-source checks pass. No
+services started or migrations ran. Source parity was not rerun.
+
+The startup document is not yet persisted through ClickHouse or linked from
+recovery roots. Completing those links and source loading remains necessary
+before exposing a reproducible executable strategy-backtest command.
+
 ## Fresh backtest session assembly
 
 A production constructor now assembles a prepared account run, simulator, fill

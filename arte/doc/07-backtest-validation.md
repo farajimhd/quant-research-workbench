@@ -33,6 +33,24 @@ account-state schemas. Live and historical use the same schemas. Mode and execut
 origin differ explicitly. Compare semantic hashes without wall-clock log timestamps
 or broker-generated IDs.
 
+## Fresh-session startup document
+
+`arte.backtest-startup.v1` binds the run manifest hash, effective configuration
+map, initial simulated accounts, price precision, fill model, cost model and
+resource limits. Startup requires its independently supplied expected hash.
+An accepted hash proves content identity, not strategy approval or broker cash.
+
+The JSON document is limited to 16 MiB. Account and configuration maps contain
+at most 4096 unique entries each. Duplicate keys and unknown top-level fields
+are rejected. Field ordering and whitespace do not change the semantic hash.
+The session constructor subsequently checks effective market/policy bindings
+and account compatibility. It returns a paused session.
+
+Run metadata must persist this document and its expected identity. Recovery
+metadata must retain that link. These persistence and recovery links are not
+implemented yet; see the implementation status. Do not infer them from the
+existence of an in-memory startup hash.
+
 ## Explicit simulated costs
 
 The initial cost contract is `arte.per-fill-costs.v1`. Its hash must match the

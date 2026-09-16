@@ -57,7 +57,14 @@ fn request<'a>(
 fn assembled_session_is_paused_and_preserves_separate_account_budgets() {
     let (run, costs, manifest, _) = run_candidate_fixture(true, false, false, true);
     let input = request(&run, &manifest, &costs);
-    let mut session = Session::new(run, input).unwrap();
+    let document = crate::playback_runtime::session::document::Document::from_request(&input);
+    let hash = document.hash().unwrap();
+    let bytes = serde_json::to_vec(&document).unwrap();
+    let loaded =
+        crate::playback_runtime::session::document::Document::read(bytes.as_slice(), &hash)
+            .unwrap();
+    let mut session = Session::from_document(run, &manifest, loaded, &hash).unwrap();
+    assert_eq!(session.startup_hash(), hash);
     assert_eq!(
         session.controller.status().mode,
         arte_core::market_structure::scheduler::playback::Mode::Paused
@@ -79,6 +86,51 @@ fn assembled_session_is_paused_and_preserves_separate_account_budgets() {
             .len(),
         2
     );
+}
+
+#[test]
+fn startup_document_pins_balances_limits_models_and_manifest() {
+    use crate::playback_runtime::session::document::Document;
+    let (run, costs, manifest, _) = run_candidate_fixture(true, false, false, true);
+    let document = Document::from_request(&request(&run, &manifest, &costs));
+    let hash = document.hash().unwrap();
+    for change in 0..7 {
+        let mut changed = document.clone();
+        match change {
+            0 => changed.accounts.get_mut("a").unwrap().budget_minor += 1,
+            1 => {
+                changed
+                    .accounts
+                    .get_mut("b")
+                    .unwrap()
+                    .broker_available_minor += 1
+            }
+            2 => changed.limits.maximum_orders += 1,
+            3 => changed.price_scale += 1,
+            4 => changed.fill_model.submission_latency_ns += 1,
+            5 => changed.cost_model.fixed_per_fill_minor += 1,
+            6 => changed.manifest_hash = "f".repeat(64),
+            _ => unreachable!(),
+        }
+        assert_ne!(changed.hash().unwrap(), hash);
+        assert!(Document::decode(&serde_json::to_vec(&changed).unwrap(), &hash).is_err());
+    }
+    let mut unknown = serde_json::to_value(&document).unwrap();
+    unknown["unexpected"] = true.into();
+    assert!(Document::decode(&serde_json::to_vec(&unknown).unwrap(), &hash).is_err());
+    let mut wrong_version = document.clone();
+    wrong_version.schema_version = 2;
+    assert!(wrong_version.hash().is_err());
+    assert!(Document::decode(b"{}", &hash).is_err());
+    let account = serde_json::to_string(&document.accounts["a"]).unwrap();
+    let text = serde_json::to_string(&document).unwrap();
+    let duplicate = text.replace(
+        "\"accounts\":{",
+        &format!("\"accounts\":{{\"a\":{account},"),
+    );
+    assert!(Document::decode(duplicate.as_bytes(), &hash).is_err());
+    assert!(Document::read(std::io::repeat(b' '), &hash).is_err());
+    assert!(Session::from_document(run, &manifest, document, &"0".repeat(64)).is_err());
 }
 
 #[test]

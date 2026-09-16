@@ -11,7 +11,10 @@ use arte_core::{
     simulation_costs, simulation_model, Error, Result,
 };
 use std::collections::{BTreeMap, BTreeSet};
+pub mod document;
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Limits {
     pub maximum_orders: usize,
     pub maximum_positions: usize,
@@ -33,12 +36,34 @@ pub struct Session {
     pub controller: Runtime,
     pub candidates: Candidates,
     pub portfolio: Portfolio,
+    startup_hash: String,
 }
 impl Session {
+    /// Require a separately supplied startup identity before constructing owners.
+    pub fn from_document(
+        run: Run,
+        manifest: &Pinned,
+        document: document::Document,
+        expected_hash: &str,
+    ) -> Result<Self> {
+        let hash = document.hash()?;
+        if hash != expected_hash || document.manifest_hash != manifest.hash() {
+            return Err(Error::Conflict("backtest startup identity differs".into()));
+        }
+        Self::assemble(run, document.into_request(manifest), hash)
+    }
+    pub fn startup_hash(&self) -> &str {
+        &self.startup_hash
+    }
     /// All source, feature, quote, fill and cost pins are checked by their
     /// authorities. Account budgets remain explicit simulation inputs, not
     /// evidence of broker cash or certified settlement currency.
-    pub fn new(run: Run, request: Request<'_>) -> Result<Self> {
+    #[cfg(test)]
+    pub(crate) fn new(run: Run, request: Request<'_>) -> Result<Self> {
+        let startup_hash = document::Document::from_request(&request).hash()?;
+        Self::assemble(run, request, startup_hash)
+    }
+    fn assemble(run: Run, request: Request<'_>, startup_hash: String) -> Result<Self> {
         let manifest = request.manifest;
         if run.manifest_hash() != manifest.hash() || run.status().mode != Mode::Paused {
             return Err(Error::Conflict(
@@ -113,6 +138,7 @@ impl Session {
             controller,
             candidates,
             portfolio,
+            startup_hash,
         })
     }
 }
