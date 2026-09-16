@@ -8,10 +8,11 @@ from .structural_evidence import Interactions
 from .structural_progression import Progression
 from .structural_volume import VolumeLevels
 from .swing_structure import SwingStructure, SwingSettings
+from .swing_pivot_witness import PivotWitnessStructure
 from .immutable_evidence import FrozenDict, FrozenList, freeze
 
 TYPES = {c.__name__: c for c in (StructuralDetector, DetectorSettings, Interactions,
-    Progression, VolumeLevels, SwingStructure, SwingSettings)}
+    Progression, VolumeLevels, SwingStructure, SwingSettings, PivotWitnessStructure)}
 
 
 def encode(value, *, compact=False):

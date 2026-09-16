@@ -228,7 +228,7 @@ def test_replay_passive_stream_populates_independent_detector():
         _experimental_structure_snapshot=AsyncMock(return_value={'unified_levels':[level(1,9.9,10.),level(-1,11.,11.1)]}))
     with patch('src.backend.experimental_structure_book.resolve',return_value=BOOK):
         asyncio.run(ReplayRunController._observe_episode_candle(fake,frame))
-    assert fake._candle_detector_states['TEST']['structural_recovery']['row']['contract']=='structural-candle-detector-10'
+    assert fake._candle_detector_states['TEST']['structural_recovery']['row']['contract']=='structural-candle-detector-11'
 
 
 def test_runtime_portfolio_and_oms_create_full_protected_order(tmp_path):
