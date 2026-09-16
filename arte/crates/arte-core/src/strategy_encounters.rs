@@ -7,6 +7,7 @@ use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 const SECOND: u64 = 1_000_000_000;
+pub mod stream;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     pub breakout_buffer_ticks: f64,

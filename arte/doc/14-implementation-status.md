@@ -6,6 +6,22 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Boundary-owned encounter state
+
+The shared encounter runtime now consumes sequential scheduler boundaries. It
+uses prior structural levels for completed one-second bars. Quotes and excluded
+trades cannot consume next-opening-trade evidence. Exact retries are no-ops;
+changed retries, skipped boundaries and invalid clocks fail closed.
+
+Its restriction adapter adds entry blocking and encounter exits without clearing
+external restrictions. Four new tests cover real scheduler progression, retry
+identity, failure handling and synthetic warning routing. This is a component,
+not completed executable integration. Checkpoint recovery, effective strategy
+configuration binding and candidate/live ownership remain unfinished.
+
+All 432 offline tests, formatting, Clippy and copied-source checks pass. No
+services started or migrations ran. Source parity was not rerun.
+
 ## Causal market admission assembly
 
 Completed-bar admission now derives detector identity, MACD state and activity

@@ -27,6 +27,23 @@ Existing entry-evaluator age limits still apply at decision time.
 Live and replay expose this same assembler. External-authority integration,
 encounter-state orchestration and swing evidence remain required coordinator work.
 
+### Boundary-owned encounters
+
+The shared encounter stream consumes scheduler boundaries in sequence. One-second
+completed bars use the market owner's prior level view and previous completed bar.
+Quotes and excluded trades do not consume next-opening-trade evidence. Exit reasons
+apply to one boundary; warning and failure state survive subsequent boundaries.
+
+An identical retry is a no-op. Changed retries, skipped boundaries, clock rewinds,
+scope mismatches and future prior-level views fail closed. Failed owners expose no
+state. The restriction adapter requires the exact observed boundary and only adds
+entry blocking or encounter exits. It never grants account or session permission.
+
+Offline tests cover real scheduler progression and synthetic encounter warnings.
+They do not prove live readiness or strategy profitability. Persisted recovery,
+effective strategy configuration binding and candidate/live owner integration
+remain required before this component can drive executable runs.
+
 ## Replay modes
 
 | Mode | Input | Claim |
