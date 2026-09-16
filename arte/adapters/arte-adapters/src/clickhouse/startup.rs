@@ -3,7 +3,11 @@ use super::{
     portfolio_checkpoints::{from_hex, put, to_hex, Store},
     ClickHouse,
 };
-use crate::playback_runtime::session::document::{Document, MAXIMUM_BYTES};
+use crate::playback_runtime::session::{
+    document::{Document, MAXIMUM_BYTES},
+    Session,
+};
+use arte_core::market_structure::scheduler::playback::accounts::Run;
 use arte_core::{
     config::Acceptance, content_hash, run_manifest::Pinned, seed_storage::Object, Error, Result,
 };
@@ -143,6 +147,24 @@ async fn publish(
     Ok(verified)
 }
 impl ClickHouse {
+    /// Fresh startup only. A failed/cancelled call returns no usable session.
+    /// Rebuild the unused prepared run and retry the same document identity.
+    pub async fn create_backtest_session(
+        &self,
+        run: Run,
+        manifest: &Pinned,
+        document: &Document,
+        expected: &str,
+        passed: &BTreeSet<Acceptance>,
+        lease: &mut crate::ownership::Lease,
+    ) -> Result<Session> {
+        require_acceptance(passed)?;
+        let slot = backtest_startup_scope(manifest)?;
+        create(&Storage(self), run, manifest, document, expected, &|| {
+            lease.require(&slot)
+        })
+        .await
+    }
     pub async fn load_backtest_startup(
         &self,
         manifest: &Pinned,
@@ -159,19 +181,108 @@ impl ClickHouse {
         passed: &BTreeSet<Acceptance>,
         lease: &mut crate::ownership::Lease,
     ) -> Result<Document> {
-        for gate in [Acceptance::RepositoryExtracted, Acceptance::Durability] {
-            if !passed.contains(&gate) {
-                return Err(Error::Unready(format!(
-                    "startup acceptance missing: {gate:?}"
-                )));
-            }
-        }
+        require_acceptance(passed)?;
         let slot = backtest_startup_scope(manifest)?;
         publish(&Storage(self), manifest, document, expected, &|| {
             lease.require(&slot)
         })
         .await
     }
+}
+fn require_acceptance(passed: &BTreeSet<Acceptance>) -> Result<()> {
+    for gate in [Acceptance::RepositoryExtracted, Acceptance::Durability] {
+        if !passed.contains(&gate) {
+            return Err(Error::Unready(format!(
+                "startup acceptance missing: {gate:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+async fn create(
+    store: &impl Store,
+    run: Run,
+    manifest: &Pinned,
+    document: &Document,
+    expected: &str,
+    owned: &impl Fn() -> Result<()>,
+) -> Result<Session> {
+    owned()?;
+    // Semantic assembly must succeed before the first storage write. The new
+    // session stays local and paused until publication/readback is complete.
+    let session = Session::from_document(run, manifest, document.clone(), expected)?;
+    publish(store, manifest, document, expected, owned).await?;
+    owned()?;
+    Ok(session)
+}
+
+#[cfg(test)]
+pub(crate) async fn create_test(
+    manifest: &Pinned,
+    document: &Document,
+    make_run: impl Fn() -> Run,
+) -> Session {
+    use std::{
+        cell::{Cell, RefCell},
+        collections::BTreeMap,
+    };
+    #[derive(Default)]
+    struct Memory {
+        rows: RefCell<BTreeMap<(bool, String), Vec<u8>>>,
+        ambiguous: Cell<bool>,
+        writes: Cell<usize>,
+    }
+    impl Store for Memory {
+        async fn read(&self, root: bool, key: &str) -> Result<Option<Vec<u8>>> {
+            Ok(self.rows.borrow().get(&(root, key.into())).cloned())
+        }
+        async fn write(&self, root: bool, key: &str, payload: &[u8]) -> Result<()> {
+            self.rows
+                .borrow_mut()
+                .insert((root, key.into()), payload.into());
+            self.writes.set(self.writes.get() + 1);
+            if root && self.ambiguous.replace(false) {
+                return Err(Error::Unready("ambiguous startup".into()));
+            }
+            Ok(())
+        }
+    }
+    let store = Memory::default();
+    let mut invalid = document.clone();
+    invalid.accounts.values_mut().next().unwrap().budget_minor = 0;
+    assert!(create(
+        &store,
+        make_run(),
+        manifest,
+        &invalid,
+        &invalid.hash().unwrap(),
+        &|| Ok(())
+    )
+    .await
+    .is_err());
+    assert_eq!(store.writes.get(), 0);
+    let hash = document.hash().unwrap();
+    assert!(
+        create(&store, make_run(), manifest, document, &hash, &|| Err(
+            Error::Unready("lease lost".into())
+        ))
+        .await
+        .is_err()
+    );
+    assert_eq!(store.writes.get(), 0);
+    store.ambiguous.set(true);
+    assert!(
+        create(&store, make_run(), manifest, document, &hash, &|| Ok(()))
+            .await
+            .is_err()
+    );
+    let writes = store.writes.get();
+    let session = create(&store, make_run(), manifest, document, &hash, &|| Ok(()))
+        .await
+        .unwrap();
+    assert_eq!(store.writes.get(), writes);
+    assert_eq!(session.startup_hash(), hash);
+    session
 }
 
 #[cfg(test)]

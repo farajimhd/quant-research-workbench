@@ -6,6 +6,25 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Persisted fresh-session creation
+
+`create_backtest_session` connects semantic session assembly to startup storage.
+It validates the document, policies, execution models and accounts before any
+write. It then publishes and verifies the startup document under the startup
+lease. Only successful publication returns the still-paused session. The existing
+extraction and durability gates apply before this operation.
+
+The offline session fixture now uses this path. Invalid account budgets and
+missing ownership produce no writes. An ambiguous root write returns no session;
+rebuilding the unused prepared run and retrying the same document succeeds
+without extra writes. The resulting session retains its startup hash and account
+budgets and still requires explicit resume and all boundary decisions.
+
+All 404 offline tests, formatting, Clippy and copied-source checks pass. No
+services started or migrations ran. Source parity was not rerun. This API does
+not replace checkpoint recovery. Source loading, recovery-root linkage and the
+top-level executable backtest loop remain unfinished.
+
 ## Immutable startup-document persistence
 
 The ClickHouse adapter can publish and load the startup document. It uses 1 MiB

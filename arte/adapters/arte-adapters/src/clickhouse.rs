@@ -34,6 +34,8 @@ pub(crate) use run_checkpoints::tests::roundtrip as checkpoint_roundtrip_test;
 pub use run_manifests::run_manifest_scope;
 pub use startup::backtest_startup_scope;
 #[cfg(test)]
+pub(crate) use startup::create_test as startup_session_test;
+#[cfg(test)]
 pub(crate) use startup::exercise as startup_roundtrip_test;
 
 pub fn identifier(value: &str) -> Result<&str> {

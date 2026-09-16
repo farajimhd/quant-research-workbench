@@ -54,8 +54,11 @@ ownership. The adapter is not a distributed compare-and-swap authority.
 
 Migration 019 is unapplied. Run orchestration must publish this document before
 advancing the session and retain its expected identity in recovery metadata.
-Those orchestration and recovery links are not implemented yet. Storage readback
-does not prove strategy acceptance or power-loss durability.
+`create_backtest_session` validates a fresh session before publishing and returns
+it paused after verified startup readback. On failure, rebuild the unused prepared
+run and retry the same document. Do not use fresh creation as checkpoint recovery.
+The executable loop and recovery linkage are not implemented yet. Storage
+readback does not prove strategy acceptance or power-loss durability.
 
 ## Explicit simulated costs
 

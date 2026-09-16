@@ -53,8 +53,8 @@ fn request<'a>(
     }
 }
 
-#[test]
-fn assembled_session_is_paused_and_preserves_separate_account_budgets() {
+#[tokio::test]
+async fn assembled_session_is_paused_and_preserves_separate_account_budgets() {
     let (run, costs, manifest, _) = run_candidate_fixture(true, false, false, true);
     let input = request(&run, &manifest, &costs);
     let document = crate::playback_runtime::session::document::Document::from_request(&input);
@@ -63,7 +63,11 @@ fn assembled_session_is_paused_and_preserves_separate_account_budgets() {
     let loaded =
         crate::playback_runtime::session::document::Document::read(bytes.as_slice(), &hash)
             .unwrap();
-    let mut session = Session::from_document(run, &manifest, loaded, &hash).unwrap();
+    drop(run);
+    let mut session = crate::clickhouse::startup_session_test(&manifest, &loaded, || {
+        run_candidate_fixture(true, false, false, true).0
+    })
+    .await;
     assert_eq!(session.startup_hash(), hash);
     assert_eq!(
         session.controller.status().mode,
