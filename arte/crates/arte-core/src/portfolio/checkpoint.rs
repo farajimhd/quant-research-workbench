@@ -3,6 +3,7 @@
 use super::*;
 use crate::{run_manifest::Pinned, seed_storage::Object, strategy_dispatch::Mode};
 use std::{collections::BTreeSet, io::Write};
+pub mod storage;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -243,7 +244,7 @@ impl Portfolio {
 mod tests {
     use super::*;
     use crate::run_manifest::{Clock, Consumer, Execution, Manifest};
-    fn fixture() -> (Portfolio, Pinned, Cut, Limits, SimulatedSettlement) {
+    pub(super) fn fixture() -> (Portfolio, Pinned, Cut, Limits, SimulatedSettlement) {
         let manifest = Manifest {
             schema_version: 1,
             run_id: "r".into(),

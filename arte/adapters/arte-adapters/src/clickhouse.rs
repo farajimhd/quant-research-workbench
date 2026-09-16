@@ -9,11 +9,13 @@ mod coverage_index;
 mod event_batches;
 mod fills;
 mod order_authorizations;
+mod portfolio_checkpoints;
 mod quote_policies;
 mod references;
 mod run_manifests;
 pub use fills::FillPublisher;
 pub use order_authorizations::OrderPublisher;
+pub use portfolio_checkpoints::portfolio_checkpoint_scope;
 pub use run_manifests::run_manifest_scope;
 
 pub fn identifier(value: &str) -> Result<&str> {

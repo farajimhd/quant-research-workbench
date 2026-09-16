@@ -6,6 +6,30 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## ClickHouse portfolio checkpoint publication
+
+Portfolio checkpoints now have a chunked content-addressed storage format and a
+ClickHouse adapter. Every chunk must pass exact readback before the root is
+published. The publication slot binds the run manifest and boundary sequence;
+changed data for the same slot is rejected. Restore checks the requested cut,
+checkpoint hash, complete chunk set, chunk lengths and content hashes.
+
+Byte chunks use strict hexadecimal encoding in ClickHouse. This preserves Unicode
+even when a chunk boundary splits a UTF-8 character. The chunk size is 1 MiB; the
+checkpoint payload is bounded at 64 MiB and remains subject to smaller caller
+budgets. Cooperative lease ownership, extraction and durability acceptance are
+required. Storage policy and active part placement use the existing verifier.
+
+Schema 015 defines the two tables on `live_market_ssd`. It has not been applied.
+All 354 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Tests cover a multi-chunk Unicode image, missing/corrupt/surplus chunks, root-last
+publication, failed writes, ambiguous root acknowledgments and ownership loss.
+
+No database call or service ran. Database durability and whole-run recovery remain
+unverified. The coordinator must still publish matching market, strategy and
+execution state before accepting this portfolio checkpoint as a recoverable run.
+Source parity was not rerun.
+
 ## Portfolio recovery image
 
 A versioned portfolio checkpoint now includes balances, mandates, pending
