@@ -83,6 +83,24 @@ impl Portfolio {
             .map_err(|_| Error::Unready("account lock poisoned".into()))?;
         Ok(a.reservations.remove(command).is_some())
     }
+    /// Release only the exact reservation authorized by its execution owner.
+    /// A missing reservation is not evidence that a different one may be removed.
+    pub fn release_matching(&self, account: &str, expected: &Reservation) -> Result<bool> {
+        let mut a = self
+            .accounts
+            .get(account)
+            .ok_or_else(|| Error::Invalid("account not allowed".into()))?
+            .lock()
+            .map_err(|_| Error::Unready("account lock poisoned".into()))?;
+        match a.reservations.get(&expected.command_id) {
+            None => Ok(false),
+            Some(actual) if actual == expected => {
+                a.reservations.remove(&expected.command_id);
+                Ok(true)
+            }
+            Some(_) => Err(Error::Conflict("reservation changed before release".into())),
+        }
+    }
     /// Execute a bounded, non-I/O transition while the exact reservation is held.
     /// The callback must not re-enter this account's portfolio methods.
     pub fn with_reservation<T>(
@@ -133,6 +151,45 @@ impl Portfolio {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn matching_release_rejects_changed_cash_and_preserves_other_reservations() {
+        let original = Reservation {
+            command_id: "one".into(),
+            instrument: 1,
+            cash_minor: 40,
+        };
+        let other = Reservation {
+            command_id: "two".into(),
+            instrument: 2,
+            cash_minor: 30,
+        };
+        let p = Portfolio::new(BTreeMap::from([(
+            "a".into(),
+            Account {
+                budget_minor: 100,
+                broker_available_minor: 100,
+                balance_at_ns: 1,
+                max_balance_age_ns: 100,
+                reservations: BTreeMap::from([
+                    ("one".into(), original.clone()),
+                    ("two".into(), other.clone()),
+                ]),
+            },
+        )]))
+        .unwrap();
+        let mut changed = original.clone();
+        changed.cash_minor += 1;
+        assert!(p.release_matching("a", &changed).is_err());
+        assert_eq!(p.snapshot("a").unwrap().reservations.len(), 2);
+        assert!(p.release_matching("a", &original).unwrap());
+        assert!(!p.release_matching("a", &original).unwrap());
+        let account = p.snapshot("a").unwrap();
+        assert_eq!(
+            account.reservations,
+            BTreeMap::from([("two".into(), other)])
+        );
+        assert_eq!(account.broker_available_minor, 100);
+    }
     #[test]
     fn concurrent_tickers_cannot_overspend() {
         let p = Portfolio::new(BTreeMap::from([(

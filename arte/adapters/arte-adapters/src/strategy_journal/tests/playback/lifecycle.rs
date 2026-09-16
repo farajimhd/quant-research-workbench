@@ -42,13 +42,17 @@ impl crate::fill_journal::Publisher for Fills {
 
 #[tokio::test]
 async fn funded_multiaccount_entry_protection_exit_and_journal_feedback() {
-    lifecycle(false).await;
+    lifecycle(false, false).await;
 }
 #[tokio::test]
 async fn replacement_target_controls_later_fills_not_the_original_target() {
-    lifecycle(true).await;
+    lifecycle(true, false).await;
 }
-async fn lifecycle(target_exit: bool) {
+#[tokio::test]
+async fn cancelled_unfilled_orders_release_exact_funding_without_fabricated_cash() {
+    lifecycle(false, true).await;
+}
+async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
     let run = run_data(true, true, target_exit);
     let mut runtimes: Vec<_> = run
         .scopes()
@@ -123,6 +127,8 @@ async fn lifecycle(target_exit: bool) {
     let mut quotes = 0;
     let mut entries = 0;
     let mut exits = 0;
+    let mut commands: Vec<String> = Vec::new();
+    let mut released = false;
     controller.resume().unwrap();
     let mut completed = false;
     for _ in 0..12 {
@@ -138,6 +144,11 @@ async fn lifecycle(target_exit: bool) {
         if controller.execution_status().pending_fills > 0 {
             assert!(controller.decision_view().is_err());
             assert!(controller.acknowledge().is_err());
+            for command in &commands {
+                assert!(controller
+                    .release_unfilled_reservation(command, &portfolio)
+                    .is_err());
+            }
             if fills.fail {
                 assert!(controller.commit_fills(&mut fills).await.is_err());
                 assert!(controller.decision_view().is_err());
@@ -155,6 +166,17 @@ async fn lifecycle(target_exit: bool) {
         }
         let input = boundary.input("fixture-features".into());
         let now = input.evaluated_at_ns;
+        for command in &commands {
+            if released {
+                assert!(!controller
+                    .release_unfilled_reservation(command, &portfolio)
+                    .unwrap());
+            } else {
+                assert!(controller
+                    .release_unfilled_reservation(command, &portfolio)
+                    .is_err());
+            }
+        }
         for runtime in &mut runtimes {
             let account = &runtime.scope().account;
             let key = position_key(account);
@@ -167,14 +189,18 @@ async fn lifecycle(target_exit: bool) {
             safety.position_quantity = quantity;
             let action = if quote && quotes == 1 {
                 Action::Enter(Box::new(proposal(now)))
-            } else if quote && quotes == 2 {
+            } else if cancel_unfilled && !quote && quotes == 1 {
+                Action::CancelEntry {
+                    reason: "cancel-before-fill".into(),
+                }
+            } else if quote && quotes == 2 && !cancel_unfilled {
                 assert_eq!(quantity, if account == "a" { 1 } else { 2 });
                 Action::ReplaceTarget(TargetProposal {
                     target: ActiveTarget::Official { price: 11.5 },
                     triggering_breakout: None,
                     at_ns: now,
                 })
-            } else if quote && quotes == 3 && !target_exit {
+            } else if quote && quotes == 3 && !target_exit && !cancel_unfilled {
                 Action::Exit {
                     reason: ExitReason::ManualExit,
                     quantity,
@@ -247,6 +273,7 @@ async fn lifecycle(target_exit: bool) {
                             .unwrap();
                     }
                     entries += 1;
+                    commands.push(plan.bracket.command_id.clone());
                 }
                 Action::ReplaceTarget(_) => {
                     for _ in 0..2 {
@@ -269,8 +296,24 @@ async fn lifecycle(target_exit: bool) {
                     }
                     exits += 1;
                 }
+                Action::CancelEntry { .. } => {
+                    controller
+                        .cancel_entry_action(&decision.decision_id, 0)
+                        .unwrap();
+                }
                 _ => {}
             }
+        }
+        if cancel_unfilled && !quote && quotes == 1 {
+            for command in &commands {
+                assert!(controller
+                    .release_unfilled_reservation(command, &portfolio)
+                    .unwrap());
+                assert!(!controller
+                    .release_unfilled_reservation(command, &portfolio)
+                    .unwrap());
+            }
+            released = true;
         }
         assert!(controller.pending_actions().is_empty());
         controller.acknowledge().unwrap();
@@ -278,9 +321,19 @@ async fn lifecycle(target_exit: bool) {
     assert!(completed);
     assert_eq!(
         (quotes, entries, exits),
-        (4, 2, if target_exit { 0 } else { 2 })
+        (4, 2, if target_exit || cancel_unfilled { 0 } else { 2 })
     );
     for (account, quantity) in [("a", 1), ("b", 2)] {
+        if cancel_unfilled {
+            assert!(controller.position(&position_key(account)).is_none());
+            let state = portfolio.snapshot(account).unwrap();
+            assert!(state.reservations.is_empty());
+            assert_eq!(
+                state.broker_available_minor,
+                if account == "a" { 2000 } else { 4000 }
+            );
+            continue;
+        }
         let position = controller.position(&position_key(account)).unwrap();
         assert_eq!(position.quantity, 0);
         assert_eq!(
@@ -288,7 +341,7 @@ async fn lifecycle(target_exit: bool) {
             (if target_exit { 149 } else { -2 }) * quantity
         );
     }
-    assert_eq!(fills.rows.len(), 4);
+    assert_eq!(fills.rows.len(), if cancel_unfilled { 0 } else { 4 });
 }
 
 fn position_key(account: &str) -> Key {

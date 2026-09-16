@@ -27,6 +27,8 @@ pub struct Runtime {
     source: Option<arte_core::event_order::Scope>,
     last_source_quote: Option<(arte_core::events::Observation, u64, u64)>,
     owners: std::collections::BTreeMap<String, arte_core::strategy_dispatch::Scope>,
+    reservations: std::collections::BTreeMap<String, arte_core::portfolio::Reservation>,
+    released: std::collections::BTreeSet<String>,
 }
 pub struct Submission<'a> {
     pub plan: &'a arte_core::decision_orders::Plan,
@@ -65,6 +67,8 @@ impl Runtime {
             source: None,
             last_source_quote: None,
             owners: Default::default(),
+            reservations: Default::default(),
+            released: Default::default(),
         })
     }
     fn ready(&self) -> Result<()> {
@@ -223,6 +227,11 @@ impl Runtime {
         self.ready()?;
         validate_run(request.plan, self.simulator.run_id())?;
         let command = &request.plan.bracket.command_id;
+        if self.released.contains(command) {
+            return Err(Error::Conflict(
+                "cannot resubmit released simulation command".into(),
+            ));
+        }
         if self
             .owners
             .get(command)
@@ -257,6 +266,13 @@ impl Runtime {
                 "simulation funding differs from approved plan requirements".into(),
             ));
         }
+        if self.reservations.get(command).is_some_and(|r| {
+            r.cash_minor != expected.cash_minor || r.instrument != request.plan.bracket.instrument
+        }) {
+            return Err(Error::Conflict(
+                "original simulation reservation changed".into(),
+            ));
+        }
         let b = &request.plan.bracket;
         request.portfolio.with_reservation(
             &b.account,
@@ -273,7 +289,53 @@ impl Runtime {
         )?;
         self.owners
             .insert(command.clone(), request.plan.scope.clone());
+        self.reservations.insert(
+            command.clone(),
+            arte_core::portfolio::Reservation {
+                command_id: command.clone(),
+                instrument: b.instrument,
+                cash_minor: expected.cash_minor,
+            },
+        );
         Ok(())
+    }
+    /// No fills means no trade cash or fill costs to settle. Filled orders must
+    /// retain funding until the modeled cash/cost settlement path acknowledges them.
+    pub(crate) fn release_unfilled_reservation(
+        &mut self,
+        command: &str,
+        portfolio: &arte_core::portfolio::Portfolio,
+    ) -> Result<bool> {
+        self.ready()?;
+        let owner = self
+            .owners
+            .get(command)
+            .ok_or_else(|| Error::Unready("reservation owner missing".into()))?;
+        let expected = self
+            .reservations
+            .get(command)
+            .ok_or_else(|| Error::Unready("original reservation missing".into()))?;
+        let order = self
+            .simulator
+            .positions()
+            .iter()
+            .find(|p| p.bracket.command_id == command)
+            .ok_or_else(|| Error::Unready("reservation order missing".into()))?;
+        if !order.entry_cancelled || order.entry_filled != 0 || order.exit_filled != 0 {
+            return Err(Error::Unready(
+                "reservation still protects entry or filled exposure".into(),
+            ));
+        }
+        if self.released.contains(command) {
+            return Ok(false);
+        }
+        if !portfolio.release_matching(&owner.account, expected)? {
+            return Err(Error::Unready(
+                "owned reservation missing before release".into(),
+            ));
+        }
+        self.released.insert(command.into());
+        Ok(true)
     }
     pub(crate) fn cancel_entries_for(
         &mut self,
@@ -694,7 +756,22 @@ mod tests {
         assert!(submit(&mut runtime, &funding, 11).is_err());
         submit(&mut runtime, &funding, 1).unwrap();
         submit(&mut runtime, &funding, 1).unwrap();
-        portfolio.release("a", "a").unwrap();
+        assert!(runtime
+            .release_unfilled_reservation("a", &portfolio)
+            .is_err());
+        assert_eq!(portfolio.snapshot("a").unwrap().reservations.len(), 1);
+        runtime.cancel_entries_for(&plan.scope, 1).unwrap();
+        assert!(runtime
+            .release_unfilled_reservation("a", &portfolio)
+            .unwrap());
+        assert!(!runtime
+            .release_unfilled_reservation("a", &portfolio)
+            .unwrap());
+        assert!(portfolio.snapshot("a").unwrap().reservations.is_empty());
+        assert_eq!(
+            portfolio.snapshot("a").unwrap().broker_available_minor,
+            1000
+        );
         assert!(submit(&mut runtime, &funding, 1).is_err());
     }
     use std::collections::BTreeMap;

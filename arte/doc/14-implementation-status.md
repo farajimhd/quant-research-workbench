@@ -6,6 +6,26 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Unfilled-order reservation cleanup
+
+Simulation retains each accepted order's exact original cash reservation. A
+cancelled or expired entry can release it only when the order has never filled
+and no fill publication is pending. Unknown ownership, missing funding and a
+changed reservation fail closed. Account-locked comparison prevents removing a
+different reservation. Successful release retries are no-ops. Released commands
+cannot be resubmitted to the simulation runtime.
+
+The playback controller exposes this transition at a ready decision boundary.
+An offline two-account scenario submits funded entries, cancels before the first
+fill and releases both reservations. Later quotes create no fills; account cash
+is unchanged. Existing filled lifecycle scenarios verify that this cleanup path
+cannot release their funding, even after positions become flat.
+
+All 342 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Filled-order cash settlement and cost-model accounting remain unfinished; their
+reservations deliberately remain held. Reservation ownership and release markers
+also require durable recovery. No services ran; source parity was not rerun.
+
 ## Funded playback lifecycle integration
 
 Two offline integration scenarios now traverse the public playback controller.

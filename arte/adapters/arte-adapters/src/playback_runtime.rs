@@ -107,6 +107,15 @@ impl Runtime {
     ) -> Option<&arte_core::execution_positions::Position> {
         self.execution.position(key)
     }
+    pub fn release_unfilled_reservation(
+        &mut self,
+        command: &str,
+        portfolio: &arte_core::portfolio::Portfolio,
+    ) -> Result<bool> {
+        self.decision_view()?;
+        self.execution
+            .release_unfilled_reservation(command, portfolio)
+    }
     pub fn acknowledge(&mut self) -> Result<()> {
         self.decision_view()?;
         self.actions.require_complete()?;
