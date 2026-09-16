@@ -18,6 +18,13 @@ DESCRIPTION = (
 
 
 def build(source_configuration, *, published_configuration=None):
+    return build_successor(source_configuration, source_contract=CONTRACT,
+        profile_id=PROFILE_ID, label=LABEL, description=DESCRIPTION,
+        published_configuration=published_configuration)
+
+
+def build_successor(source_configuration, *, source_contract, profile_id, label,
+                    description, published_configuration=None):
     """Copy the exact saved candidate, replacing only its strategy identity/gate.
 
     Rename prefixed rule/watchlist/plan references together so the new candidate
@@ -27,8 +34,8 @@ def build(source_configuration, *, published_configuration=None):
     source_id = source_configuration['strategy']['active_profile_id']
     source = next(p for p in source_configuration['strategy']['profiles']
                   if p['profile_id'] == source_id)
-    if source['parameters'].get('r1_ladder_contract') != CONTRACT or source_id != CONTRACT:
-        raise ValueError('VWAP successor requires a saved R1 v3 source configuration')
+    if source['parameters'].get('r1_ladder_contract') != source_contract or source_id != source_contract:
+        raise ValueError(f'R1 successor requires a saved {source_contract} source configuration')
 
     def clone(value):
         if isinstance(value, dict):
@@ -37,9 +44,9 @@ def build(source_configuration, *, published_configuration=None):
             return [clone(item) for item in value]
         if isinstance(value, str):
             if value == source_id or value.startswith(source_id+'-'):
-                return PROFILE_ID+value[len(source_id):]
+                return profile_id+value[len(source_id):]
             if value == source['name']:
-                return LABEL
+                return label
         return deepcopy(value)
 
     payload = clone(source_configuration)
@@ -50,15 +57,15 @@ def build(source_configuration, *, published_configuration=None):
         published = {p['profile_id']: deepcopy(p)
                      for p in published_configuration['strategy']['profiles']
                      if p.get('publication_status') == 'published'}
-        if PROFILE_ID in published:
+        if profile_id in published:
             raise ValueError('VWAP successor identity is already published')
         profiles = payload['strategy']['profiles']
         profiles = [published.pop(p['profile_id'], p) for p in profiles]
         payload['strategy']['profiles'] = profiles + list(published.values())
-    profile = next(p for p in payload['strategy']['profiles'] if p['profile_id'] == PROFILE_ID)
-    profile.update(name=LABEL, description=DESCRIPTION, publication_status='draft', revision=1)
-    plan = next(p for p in payload['run_plans']['plans'] if p['profile_id'] == PROFILE_ID)
-    plan.update(name=LABEL, description=DESCRIPTION)
+    profile = next(p for p in payload['strategy']['profiles'] if p['profile_id'] == profile_id)
+    profile.update(name=label, description=description, publication_status='draft', revision=1)
+    plan = next(p for p in payload['run_plans']['plans'] if p['profile_id'] == profile_id)
+    plan.update(name=label, description=description)
     return payload, payload['canvas'], plan['run_plan_id']
 
 
