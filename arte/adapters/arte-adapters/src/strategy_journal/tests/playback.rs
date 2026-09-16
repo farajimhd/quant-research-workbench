@@ -464,7 +464,8 @@ async fn candidate_owner_retry(cancel: bool) {
         candidate_features::Config as Features, execution_positions::Projection,
         simulated_execution::Simulator,
     };
-    let (run, costs, manifest, _) = run_candidate_fixture(true, false, false, true);
+    let (run, costs, manifest, recovery) = run_candidate_fixture(true, false, false, true);
+    let cost_model = costs.model().clone();
     let mut execution = crate::simulation_runtime::Runtime::new(
         Simulator::new_scoped("run", 1, 2, 2, 10000).unwrap(),
         Projection::new(2, 10, 4).unwrap(),
@@ -563,6 +564,160 @@ async fn candidate_owner_retry(cancel: bool) {
     assert!(Candidates::new(&controller, &manifest, config, 100_000).is_err());
     assert!(candidates.observe(&controller).unwrap());
     assert!(!candidates.observe(&controller).unwrap());
+    // Restore all owners together before either candidate evaluates this boundary.
+    // Later retries and playback run on these recovered instances.
+    use crate::playback_runtime::recovery::{Bundle as RunBundle, Limits as RunLimits};
+    use arte_core::portfolio::{checkpoint::Cut, Account, Portfolio};
+    let mut portfolio = Portfolio::new(
+        ["a", "b"]
+            .into_iter()
+            .map(|account| {
+                (
+                    account.into(),
+                    Account {
+                        currency: "USD".into(),
+                        currency_scale: 2,
+                        simulation_run_id: Some("run".into()),
+                        budget_minor: 10000,
+                        broker_available_minor: 10000,
+                        balance_at_ns: 200_000_000_000,
+                        max_balance_age_ns: 10_000_000_000,
+                        reservations: Default::default(),
+                    },
+                )
+            })
+            .collect(),
+    )
+    .unwrap();
+    let boundary = controller
+        .decision_view()
+        .unwrap()
+        .pending()
+        .unwrap()
+        .unwrap();
+    let cut = Cut {
+        boundary_sequence: controller.status().acknowledged_boundaries + 1,
+        boundary_hash: boundary.id.to_owned(),
+        at_ns: boundary.evaluated_at_ns,
+    };
+    let limits = RunLimits {
+        maximum_bytes: 4_000_000,
+        maximum_state_bytes: 100_000,
+        execution: crate::simulation_runtime::checkpoint::Limits {
+            maximum_bytes: 1_000_000,
+            maximum_orders: 4,
+            maximum_pending_fills: 8,
+            projection: arte_core::execution_positions::checkpoint::Limits {
+                positions: 2,
+                fills: 100,
+                lots_per_position: 8,
+                bytes: 100_000,
+            },
+        },
+        portfolio: arte_core::portfolio::checkpoint::Limits {
+            maximum_accounts: 2,
+            maximum_reservations: 4,
+            maximum_settlements: 4,
+            maximum_bytes: 100_000,
+        },
+    };
+    let fills = Default::default();
+    let currencies = Default::default();
+    let mut image = RunBundle::capture(
+        &mut controller,
+        &mut candidates,
+        &mut portfolio,
+        &manifest,
+        &cut,
+        &fills,
+        &currencies,
+        &limits,
+    )
+    .unwrap();
+    let context =
+        arte_core::content_hash(&("arte.playback-controller-cut.v1", manifest.hash(), &cut))
+            .unwrap();
+    let empty_rows = candidates
+        .scope_hashes()
+        .map(|key| (key.to_owned(), vec![]))
+        .collect();
+    let restore_run = |bundle: &RunBundle, expected: &str| {
+        bundle.restore(
+            expected,
+            &manifest,
+            &cut,
+            &recovery.catalog,
+            recovery.prepared.clone(),
+            arte_core::market_structure::scheduler::checkpoint::Request {
+                context_hash: &context,
+                run_id: "run",
+                seed_hash: &recovery.seed_hash,
+                configuration_hash: &recovery.configuration_hash,
+                quote_policy: std::sync::Arc::new(crate::test_quote_policy()),
+                maximum_pending: 10,
+                maximum_bytes: 4_000_000,
+            },
+            1,
+            2,
+            &[],
+            arte_core::simulation_costs::Pinned::new(cost_model.clone(), &manifest).unwrap(),
+            Document::decode(&bytes).unwrap().bind(&manifest).unwrap(),
+            &empty_rows,
+            &currencies,
+            &limits,
+        )
+    };
+    assert!(restore_run(&image, &"f".repeat(64)).is_err());
+    image.portfolio.payload[0] ^= 1;
+    assert!(restore_run(&image, &image.root.id).is_err());
+    image.portfolio.payload[0] ^= 1;
+    let original_id = image.candidates.root.id.clone();
+    image.candidates.root.id = "f".repeat(64);
+    assert!(restore_run(&image, &image.root.id).is_err());
+    image.candidates.root.id = original_id;
+    let mut restored_run = restore_run(&image, &image.root.id).unwrap();
+    assert_eq!(
+        RunBundle::capture(
+            &mut restored_run.controller,
+            &mut restored_run.candidates,
+            &mut restored_run.portfolio,
+            &manifest,
+            &cut,
+            &fills,
+            &currencies,
+            &limits
+        )
+        .unwrap()
+        .root
+        .id,
+        image.root.id
+    );
+    // Unsubmitted reservations cannot silently become an incomplete checkpoint.
+    portfolio
+        .reserve(
+            "a",
+            arte_core::portfolio::Reservation {
+                command_id: "unowned".into(),
+                instrument: 1,
+                cash_minor: 1,
+            },
+            cut.at_ns,
+        )
+        .unwrap();
+    assert!(RunBundle::capture(
+        &mut controller,
+        &mut candidates,
+        &mut portfolio,
+        &manifest,
+        &cut,
+        &fills,
+        &currencies,
+        &limits
+    )
+    .is_err());
+    controller = restored_run.controller;
+    candidates = restored_run.candidates;
+    controller.resume().unwrap();
     struct Never;
     impl Publisher for Never {
         async fn append(&mut self, _: &Batch) -> Result<Vec<Record>> {

@@ -14,6 +14,7 @@ mod actions;
 pub mod candidate_position;
 pub mod candidates;
 pub mod checkpoint;
+pub mod recovery;
 pub use actions::PendingAction;
 
 pub struct Runtime {

@@ -6,6 +6,31 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Common-cut backtest recovery
+
+The playback recovery bundle now pins controller, candidate-owner and portfolio
+roots under one manifest and boundary cut. Capture takes exclusive references to
+the three owners. The combined serialized graph is capped at 64 MiB. Component
+capture consumes the remaining budget rather than receiving a fresh full budget.
+
+Restore validates the trusted root, component pins, journal readbacks, effective
+policies and funding reconciliation before returning any recovered owner. It
+returns paused and does not advance input or publish orders. Missing, extra or
+unowned reservations and settlement receipts fail closed. Reserved plans not yet
+submitted must be resolved before this checkpoint can be captured.
+
+This API currently supports one instrument across multiple accounts. It rejects
+multi-instrument manifests explicitly. Multi-instrument coordination and durable
+publication of this combined graph remain unfinished.
+
+The two-account retry fixtures now restore all three owners before candidate
+evaluation, compare recaptured root hashes and continue through journal retries
+and later boundaries. Negative cases cover wrong root pins, corrupt portfolio
+bytes, substituted candidate roots and unowned funding. Core tests also check
+exact reserved and settled command populations. Offline validation: 389 Rust
+tests, formatting, Clippy and copied-source hashes passed. Source-oracle parity
+was not rerun. No service or network test ran.
+
 ## Candidate-owner checkpoint graph
 
 The candidate owner now captures shared feature state and each declared strategy
@@ -23,8 +48,8 @@ checkpoint hashes and continue playback using the restored instances. All 388
 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
 Source-oracle parity was not rerun. No service or network test ran.
 
-This is component recovery. A whole-run publication must still bind candidate,
-controller and portfolio roots at one cut and coordinate their restore sequence.
+The common-cut bundle above now coordinates these component roots for one
+instrument. Durable publication and multi-instrument recovery remain open.
 
 ## Recovery with working targets
 

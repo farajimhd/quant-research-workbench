@@ -109,6 +109,32 @@ fn encode(root: &Root, maximum: usize) -> Result<Object> {
     Ok(Object::new(writer.bytes))
 }
 impl Runtime {
+    /// Whole-lane capture rejects funding absent from the execution graph.
+    /// Reserved-but-unsubmitted plans must be resolved before this cut.
+    pub fn require_complete_portfolio(
+        &self,
+        portfolio: &mut arte_core::portfolio::Portfolio,
+        accounts: impl Iterator<Item = String>,
+        currencies: &BTreeMap<u64, arte_core::simulation_costs::SettlementCurrency>,
+    ) -> Result<()> {
+        self.require_portfolio(portfolio, currencies)?;
+        let mut expected: BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)> = accounts
+            .map(|id| (id, (BTreeSet::new(), BTreeSet::new())))
+            .collect();
+        for order in self.simulator.positions() {
+            let command = &order.bracket.command_id;
+            let owner = &self.owners[command];
+            let (reserved, settled) = expected
+                .get_mut(&owner.account)
+                .ok_or_else(|| Error::Conflict("checkpoint funding owner account".into()))?;
+            if !self.released.contains(command) {
+                reserved.insert(command.clone());
+            } else if order.entry_filled > 0 {
+                settled.insert(command.clone());
+            }
+        }
+        portfolio.require_checkpoint_funding(&expected)
+    }
     /// Validate this instrument lane against a quiescent shared portfolio. The
     /// coordinator must separately account for other lanes and unsubmitted plans.
     pub fn require_portfolio(

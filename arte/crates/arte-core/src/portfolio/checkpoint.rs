@@ -164,6 +164,30 @@ fn encode(snapshot: &impl Serialize, maximum: usize) -> Result<Vec<u8>> {
     Ok(output.bytes)
 }
 impl Portfolio {
+    /// Require complete funding coverage, not merely membership of known orders.
+    /// An exclusive borrow prevents reservations changing during this check.
+    pub fn require_checkpoint_funding(
+        &mut self,
+        expected: &BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)>,
+    ) -> Result<()> {
+        if !self.accounts.keys().eq(expected.keys()) {
+            return Err(Error::Conflict("checkpoint funding accounts differ".into()));
+        }
+        for (account, state) in &mut self.accounts {
+            let state = state
+                .get_mut()
+                .map_err(|_| Error::Unready("account lock poisoned".into()))?;
+            let (reserved, settled) = &expected[account];
+            if !state.account.reservations.keys().eq(reserved.iter())
+                || !state.settlements.keys().eq(settled.iter())
+            {
+                return Err(Error::Conflict(
+                    "unowned portfolio checkpoint funding".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
     pub fn checkpoint(&self, run: &Pinned, cut: &Cut, limits: &Limits) -> Result<Object> {
         check_context(run, cut, limits)?;
         if self.accounts.len() > limits.maximum_accounts {
@@ -314,6 +338,29 @@ mod tests {
             },
             request,
         )
+    }
+    #[test]
+    fn complete_funding_requires_exact_reserved_and_settled_populations() {
+        let (mut portfolio, _, _, _, request) = fixture();
+        let mut expected = BTreeMap::from([(
+            "a".into(),
+            (
+                BTreeSet::from([request.reservation.command_id.clone()]),
+                BTreeSet::new(),
+            ),
+        )]);
+        portfolio.require_checkpoint_funding(&expected).unwrap();
+        assert!(portfolio
+            .require_checkpoint_funding(&BTreeMap::new())
+            .is_err());
+        portfolio.settle_simulated("a", &request, 2).unwrap();
+        assert!(portfolio.require_checkpoint_funding(&expected).is_err());
+        let state = expected.get_mut("a").unwrap();
+        state.0.clear();
+        state.1.insert(request.reservation.command_id);
+        portfolio.require_checkpoint_funding(&expected).unwrap();
+        expected.get_mut("a").unwrap().1.clear();
+        assert!(portfolio.require_checkpoint_funding(&expected).is_err());
     }
     #[test]
     fn restored_settlement_receipts_prevent_double_cash_and_preserve_pending_funding() {
