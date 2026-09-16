@@ -6,6 +6,30 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Funded playback lifecycle integration
+
+Two offline integration scenarios now traverse the public playback controller.
+Orders are not preloaded. Each account commits its entry decision, derives a
+bracket, reserves cash and submits through the protected execution path. Accounts
+have different cash budgets and submit different quantities for the same ticker.
+
+Later quotes create fills. An injected ambiguous journal write blocks decisions
+until exact retry succeeds. Journaled positions supply the next decision's
+quantity. Target replacements and explicit exits are dispatched twice to check
+controller retry idempotency. Both scenarios reach playback completion with flat
+positions, four distinct fill records and the expected gross realized P&L.
+
+The target scenario holds positions through a quote above the original target
+but below its replacement. A later quote reaches the replacement and closes the
+positions. This checks that replacement affects fills, not only action status.
+
+All 340 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+These fixtures use synthetic committed strategy proposals. They do not prove
+the candidate's entry logic, profitability, latency or historical/live parity.
+Reservation release, durable recovery, candidate-driven lifecycle integration
+and connected acceptance remain unfinished. No services ran; source parity was
+not rerun.
+
 ## Strategy-scoped protection dispatch
 
 Playback now dispatches committed stop and target replacements. The retained

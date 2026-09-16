@@ -1,4 +1,5 @@
 use super::*;
+mod lifecycle;
 use arte_core::{
     market_structure::scheduler::{
         playback::{
@@ -143,6 +144,12 @@ async fn released_playback_quote_drives_one_fill_with_retryable_journal() {
 }
 
 fn run_with_quote(include_quote: bool) -> Run {
+    run_fixture(include_quote, false)
+}
+fn run_fixture(include_quote: bool, lifecycle: bool) -> Run {
+    run_data(include_quote, lifecycle, false)
+}
+fn run_data(include_quote: bool, lifecycle: bool, target_exit: bool) -> Run {
     const S: u64 = 1_000_000_000;
     let bars: Vec<_> = (100..118)
         .map(|t| Candle {
@@ -270,12 +277,28 @@ fn run_with_quote(include_quote: bool) -> Run {
                         },
                     );
                 }
+                if lifecycle {
+                    for sequence in [2, 3, 4] {
+                        let mut quote = inputs[0].clone();
+                        quote.observation.key.sequence = sequence;
+                        quote.observation.sip.ns += sequence;
+                        quote.observation.available_at_ns += sequence;
+                        if target_exit && sequence >= 3 {
+                            if let Payload::Quote { bid, ask, .. } = &mut quote.observation.payload
+                            {
+                                bid.atoms = if sequence == 3 { 1120 } else { 1150 };
+                                ask.atoms = bid.atoms + 2;
+                            }
+                        }
+                        inputs.push(quote);
+                    }
+                }
                 inputs
             },
         }],
         Limits {
             maximum_frames: 1,
-            maximum_events: 2,
+            maximum_events: 5,
             maximum_serialized_bytes: 10000,
         },
     )
