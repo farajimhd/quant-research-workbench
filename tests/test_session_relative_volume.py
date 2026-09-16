@@ -241,3 +241,131 @@ def test_baseline_semantic_provenance_rejected(bad):
     value['content_hash'] = B.baseline_content_hash(value)
     with pytest.raises(ValueError):
         B.validate_baseline(value, 'TEST', session)
+
+
+def batch_fixture(tickers, token='source-token'):
+    from datetime import date, timedelta
+    from src.backend import session_relative_volume as B
+    session = date(2026, 8, 21)
+    days = []
+    day = session
+    while len(days) < 20:
+        day -= timedelta(days=1)
+        if day.weekday() < 5:
+            days.insert(0, day.isoformat())
+    value = dict(contract=BASELINE_CONTRACT, session_date=str(session), sessions=days,
+                 session_start='2026-08-21T08:00:00+00:00', boundary_seconds=1,
+                 profiles={ticker: [None]+[10.]*57600 for ticker in tickers},
+                 content_hash='', content_hash_contract=B.HASH_CONTRACT,
+                 source_revision=dict(complete_for_history=True, request_complete=True,
+                                      token=token, source_plan_hash='source-plan'))
+    value['content_hash'] = B.baseline_content_hash(value)
+    return value
+
+
+def full_revision(token='source-token'):
+    return dict(complete_for_history=True, request_complete=True, token=token,
+                source_plan_hash='source-plan', calculation_revision='calc-1', corporate_action_revision='corp-1')
+
+
+def test_prepare_many_batches_shared_original_scope_and_checkpoint_identity(tmp_path, monkeypatch):
+    from src.backend import session_relative_volume as B
+    calls, revisions, progress = [], [], []
+    def fetch(_url, payload, **_):
+        calls.append(payload['tickers'])
+        return batch_fixture(payload['tickers'])
+    def revision(**query):
+        revisions.append(query)
+        return full_revision()
+    monkeypatch.setattr(B, 'qmd_history_post_json', fetch)
+    monkeypatch.setattr(B, 'qmd_historical_source_revision', revision)
+    tickers = [f'T{i:02}' for i in range(18)]
+    with B.BaselineStore(tmp_path/'run1', '2026-08-21', shared_directory=tmp_path/'shared') as store:
+        status = store.prepare_many(tickers, progress=lambda n, total: progress.append((n, total)))
+        assert [len(c) for c in calls] == [16, 2]
+        assert status['fetched'] == 18 and status['completed'] == 18
+        assert progress == [(i, 18) for i in range(19)]
+        first = store.cached('T00')
+        assert first['batch_provenance']['tickers'] == tickers[:16]
+        assert first['content_hash'] != first['batch_provenance']['content_hash']
+        identities = dict(store.identities)
+    assert len(revisions) == 2
+    with B.BaselineStore(tmp_path/'run2', '2026-08-21', shared_directory=tmp_path/'shared') as store:
+        status = store.prepare_many(tickers)
+        assert status['shared'] == 18 and status['fetched'] == 0
+        assert len(calls) == 2 and len(revisions) == 4  # Once per original batch.
+        assert revisions[2:] == revisions[:2]
+        assert store.identities == identities
+        assert revisions[0]['start'] == '2026-07-24T04:00:00-04:00'
+        assert revisions[0]['end'] == '2026-08-20T20:00:00-04:00'
+    with B.BaselineStore(tmp_path/'run2', '2026-08-21', identities) as store:
+        assert store.prepare_many(tickers)['restored'] == 18
+        assert len(calls) == 2 and len(revisions) == 4
+
+
+@pytest.mark.parametrize('bad', ['mutated', 'missing', 'extra', 'source_drift'])
+def test_prepare_many_rejects_bad_batch_before_writing(tmp_path, monkeypatch, bad):
+    from src.backend import session_relative_volume as B
+    def fetch(_url, payload, **_):
+        value = batch_fixture(payload['tickers'])
+        if bad == 'mutated':
+            value['profiles']['AAA'][-1] = 11.
+        elif bad == 'missing':
+            del value['profiles']['BBB']
+            value['content_hash'] = B.baseline_content_hash(value)
+        elif bad == 'extra':
+            value['profiles']['EXTRA'] = value['profiles']['AAA']
+            value['content_hash'] = B.baseline_content_hash(value)
+        return value
+    monkeypatch.setattr(B, 'qmd_history_post_json', fetch)
+    monkeypatch.setattr(B, 'qmd_historical_source_revision', lambda **_: full_revision('changed' if bad == 'source_drift' else 'source-token'))
+    with B.BaselineStore(tmp_path, '2026-08-21') as store:
+        with pytest.raises(ValueError):
+            store.prepare_many(['AAA', 'BBB'])
+        assert not store.cache and not store.identities
+        assert not list(tmp_path.glob('*.json'))
+
+
+def test_prepare_many_stop_retains_completed_and_missing_checkpoint_never_fetches(tmp_path, monkeypatch):
+    from src.backend import session_relative_volume as B
+    calls = []
+    def fetch(_url, payload, **_):
+        calls.append(payload['tickers'])
+        return batch_fixture(payload['tickers'])
+    monkeypatch.setattr(B, 'qmd_history_post_json', fetch)
+    monkeypatch.setattr(B, 'qmd_historical_source_revision', lambda **_: full_revision())
+    counts = []
+    with B.BaselineStore(tmp_path, '2026-08-21') as store:
+        with pytest.raises(InterruptedError):
+            store.prepare_many(['AAA', 'BBB', 'CCC'], progress=lambda n, _: counts.append(n),
+                               stopped=lambda: bool(counts and counts[-1] == 1))
+        assert store.status['stage'] == 'stopped' and set(store.identities) == {'AAA'}
+        identities = dict(store.identities)
+    (tmp_path/'AAA.json').unlink()
+    with B.BaselineStore(tmp_path, '2026-08-21', identities) as store:
+        with pytest.raises(ValueError, match='missing'):
+            store.prepare_many(['AAA'])
+    assert len(calls) == 1
+
+
+def test_shared_revision_drift_rebuilds_without_overwriting_pinned_run(tmp_path, monkeypatch):
+    from src.backend import session_relative_volume as B
+    token = ['old']
+    calls = []
+    def fetch(_url, payload, **_):
+        calls.append(payload['tickers'])
+        return batch_fixture(payload['tickers'], token[0])
+    monkeypatch.setattr(B, 'qmd_history_post_json', fetch)
+    monkeypatch.setattr(B, 'qmd_historical_source_revision', lambda **_: full_revision(token[0]))
+    with B.BaselineStore(tmp_path/'one', '2026-08-21', shared_directory=tmp_path/'shared') as store:
+        store.prepare_many(['AAA', 'BBB'])
+        original = dict(store.identities)
+    token[0] = 'new'
+    with B.BaselineStore(tmp_path/'two', '2026-08-21', shared_directory=tmp_path/'shared') as store:
+        result = store.prepare_many(['AAA', 'BBB'])
+        assert result['fetched'] == 2 and result['shared'] == 0
+        assert store.identities != original
+    with B.BaselineStore(tmp_path/'one', '2026-08-21', original) as store:
+        assert store.prepare_many(['AAA', 'BBB'])['restored'] == 2
+        assert store.identities == original
+    assert len(calls) == 2
