@@ -5,6 +5,7 @@ use crate::{content_hash, event_order::Scope, events::Observation, Error, Result
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
+pub mod accounts;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Input {

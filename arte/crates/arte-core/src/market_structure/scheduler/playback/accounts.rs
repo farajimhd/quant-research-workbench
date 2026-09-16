@@ -1,0 +1,137 @@
+//! Manifest-bound account fan-out. No mutable playback escape hatch is exposed.
+//! Journal receipts gate the market cursor; broker/fill completion is separate.
+use super::{Boundary, Playback, Poll, Prepared, Runtime, Scheduler, Status};
+use crate::{
+    account_boundary::Barrier,
+    run_manifest::Pinned,
+    strategy_dispatch::{Mode, Scope},
+    strategy_transaction::Committed,
+    Error, Result,
+};
+
+pub struct Run {
+    playback: Playback,
+    manifest_hash: String,
+    scopes: Vec<Scope>,
+    barrier: Option<Barrier>,
+    maximum_consumers: usize,
+}
+impl Run {
+    pub fn new(
+        manifest: &Pinned,
+        scheduler: Scheduler,
+        prepared: Prepared,
+        frames_per_poll: usize,
+        maximum_consumers: usize,
+    ) -> Result<Self> {
+        if manifest.manifest().mode != Mode::Backtest
+            || scheduler.run_id != manifest.manifest().run_id
+        {
+            return Err(Error::Conflict(
+                "backtest playback run identity or mode".into(),
+            ));
+        }
+        if maximum_consumers == 0 || maximum_consumers > 4096 {
+            return Err(Error::Capacity("backtest consumer budget".into()));
+        }
+        let instrument = scheduler.scope().instrument;
+        let mut scopes = Vec::new();
+        for consumer in &manifest.manifest().consumers {
+            if consumer.instrument == instrument {
+                if scopes.len() == maximum_consumers {
+                    return Err(Error::Capacity(
+                        "declared consumers exceed playback budget".into(),
+                    ));
+                }
+                scopes.push(manifest.scope(
+                    &consumer.account,
+                    instrument,
+                    &consumer.strategy_instance,
+                )?);
+            }
+        }
+        if scopes.is_empty() {
+            return Err(Error::Unready(
+                "instrument has no declared strategy consumers".into(),
+            ));
+        }
+        Ok(Self {
+            playback: Playback::new(scheduler, prepared, frames_per_poll)?,
+            manifest_hash: manifest.hash().into(),
+            scopes,
+            barrier: None,
+            maximum_consumers,
+        })
+    }
+    pub fn manifest_hash(&self) -> &str {
+        &self.manifest_hash
+    }
+    pub fn scopes(&self) -> &[Scope] {
+        &self.scopes
+    }
+    pub fn market(&self) -> Result<&Runtime> {
+        self.playback.market()
+    }
+    pub fn pending(&self) -> Result<Option<Boundary<'_>>> {
+        self.playback.pending()
+    }
+    pub fn status(&self) -> Status {
+        self.playback.status()
+    }
+    pub fn pause(&mut self) -> Result<()> {
+        self.playback.pause()
+    }
+    pub fn resume(&mut self) -> Result<()> {
+        self.playback.resume()
+    }
+    pub fn step(&mut self) -> Result<()> {
+        self.playback.step()
+    }
+    pub fn poll(&mut self) -> Result<Poll> {
+        let result = self.playback.poll()?;
+        if result == Poll::Boundary && self.barrier.is_none() {
+            let boundary = self
+                .playback
+                .pending()?
+                .ok_or_else(|| Error::Unready("playback boundary missing".into()))?;
+            // Each account may provide its own feature hash. The barrier binds
+            // the common source identity and clocks, not account-specific data.
+            self.barrier = Some(Barrier::new(
+                boundary.input(String::new()),
+                &self.scopes,
+                self.maximum_consumers,
+            )?);
+        }
+        Ok(result)
+    }
+    pub fn needs_decision(&self, scope: &Scope) -> Result<bool> {
+        self.barrier
+            .as_ref()
+            .ok_or_else(|| Error::Unready("no account boundary".into()))?
+            .needs_decision(scope)
+    }
+    pub fn remaining(&self) -> Option<usize> {
+        self.barrier.as_ref().map(Barrier::remaining)
+    }
+    pub fn record(&mut self, committed: &Committed) -> Result<bool> {
+        self.barrier
+            .as_mut()
+            .ok_or_else(|| Error::Unready("no account boundary".into()))?
+            .record(committed)
+    }
+    /// Cannot omit a declared consumer or advance on an uncommitted decision.
+    pub fn acknowledge(&mut self) -> Result<()> {
+        let input = self
+            .playback
+            .pending()?
+            .ok_or_else(|| Error::Unready("no playback boundary".into()))?
+            .input(String::new());
+        let barrier = self
+            .barrier
+            .as_mut()
+            .ok_or_else(|| Error::Unready("no account boundary".into()))?;
+        barrier.acknowledge_market(&input, |id| self.playback.acknowledge(id))?;
+        self.barrier = None;
+        Ok(())
+    }
+}

@@ -1,6 +1,93 @@
 use super::*;
 use crate::events::{Decimal, EventKind, Payload, SourceTime};
 const SECOND: u64 = 1_000_000_000;
+fn account_run_manifest() -> crate::run_manifest::Manifest {
+    use crate::run_manifest::{Clock, Consumer, Execution, Manifest};
+    Manifest {
+        schema_version: 1,
+        run_id: "causal-offline-test".into(),
+        mode: crate::strategy_dispatch::Mode::Backtest,
+        code_release_hash: "a".repeat(64),
+        source_manifest_hash: "b".repeat(64),
+        reference_manifest_hash: "c".repeat(64),
+        seed_manifest_hash: "d".repeat(64),
+        algorithm_manifest_hash: "e".repeat(64),
+        dependency_plan_hash: "f".repeat(64),
+        hardware_profile_hash: "1".repeat(64),
+        clock: Clock::Historical,
+        execution: Execution::Simulated {
+            fill_model_hash: "2".repeat(64),
+            cost_model_hash: "3".repeat(64),
+        },
+        consumers: ["a", "b"]
+            .into_iter()
+            .map(|account| Consumer {
+                account: account.into(),
+                instrument: 1,
+                strategy_instance: "candidate".into(),
+                effective_config_hash: "4".repeat(64),
+            })
+            .collect(),
+    }
+}
+#[test]
+fn manifest_playback_requires_all_account_receipts_before_advancing() {
+    use crate::account_boundary::tests::receipt;
+    use playback::{accounts::Run, Poll};
+    let m = account_run_manifest();
+    let hash = m.hash().unwrap();
+    let pinned = crate::run_manifest::Pinned::new(m, &hash).unwrap();
+    let mut run = Run::new(&pinned, scheduler(10), prepared_playback(), 1, 2).unwrap();
+    assert_eq!(run.manifest_hash(), hash);
+    run.resume().unwrap();
+    let mut count = 0;
+    loop {
+        match run.poll().unwrap() {
+            Poll::Boundary => {
+                let input = run.pending().unwrap().unwrap().input("features".into());
+                let scopes = run.scopes().to_vec();
+                assert_eq!(run.remaining(), Some(2));
+                assert!(run.acknowledge().is_err());
+                let a = receipt(scopes[0].clone(), input.clone());
+                assert!(run.record(&a).unwrap());
+                assert!(!run.record(&a).unwrap());
+                assert!(!run.needs_decision(&scopes[0]).unwrap());
+                assert!(run.needs_decision(&scopes[1]).unwrap());
+                assert!(run.acknowledge().is_err());
+                assert_eq!(run.poll().unwrap(), Poll::Boundary);
+                assert_eq!(run.pending().unwrap().unwrap().id, input.event_id);
+                let mut foreign = scopes[1].clone();
+                foreign.account = "undeclared".into();
+                assert!(run.record(&receipt(foreign, input.clone())).is_err());
+                run.record(&receipt(scopes[1].clone(), input)).unwrap();
+                run.acknowledge().unwrap();
+                assert_eq!(run.remaining(), None);
+                count += 1;
+            }
+            Poll::Yield => {}
+            Poll::Complete => break,
+            Poll::Paused => panic!("unexpected pause"),
+        }
+    }
+    assert!(count >= 4);
+    assert_eq!(run.status().acknowledged_boundaries, count);
+}
+#[test]
+fn manifest_playback_rejects_run_mismatch_missing_consumers_and_capacity() {
+    use playback::accounts::Run;
+    let mut m = account_run_manifest();
+    let pinned = crate::run_manifest::Pinned::new(m.clone(), &m.hash().unwrap()).unwrap();
+    assert!(Run::new(&pinned, scheduler(10), prepared_playback(), 1, 1).is_err());
+    m.run_id = "other".into();
+    let pinned = crate::run_manifest::Pinned::new(m.clone(), &m.hash().unwrap()).unwrap();
+    assert!(Run::new(&pinned, scheduler(10), prepared_playback(), 1, 2).is_err());
+    m.run_id = "causal-offline-test".into();
+    for row in &mut m.consumers {
+        row.instrument = 999;
+    }
+    let pinned = crate::run_manifest::Pinned::new(m.clone(), &m.hash().unwrap()).unwrap();
+    assert!(Run::new(&pinned, scheduler(10), prepared_playback(), 1, 2).is_err());
+}
 fn empty_quote_policy(provider: u16) -> crate::quote_state::eligibility::Pinned {
     use crate::quote_state::eligibility::{Pinned, Policy};
     let p = Policy {

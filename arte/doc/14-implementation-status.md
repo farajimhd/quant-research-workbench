@@ -6,6 +6,26 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Manifest-bound multi-account playback
+
+An account-aware playback controller now derives every consumer for its instrument
+from the pinned run manifest. It rejects non-Backtest mode, a different scheduler
+run ID, missing consumers and insufficient consumer capacity. Callers cannot pass
+a reduced account list or access mutable playback through this controller.
+
+Each market boundary creates the shared account journal barrier. Partial receipt
+completion retains that boundary. Duplicate receipts are idempotent. Undeclared
+consumer receipts are rejected. The cursor advances only after all declared
+consumers have committed; pause, step and resume remain available.
+
+This is journal coordination, not execution completion. The controller does not
+yet verify prepared data against the manifest's source certificate or execute the
+candidate and quote-driven simulator itself. Full backtest orchestration and
+durable restart remain unfinished. No service or network call was started.
+
+All 320 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Source-oracle parity was not rerun.
+
 ## ClickHouse run manifest publication
 
 The ClickHouse adapter now publishes and loads chunked run manifests. It reads

@@ -133,7 +133,7 @@ impl Barrier {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::strategy_dispatch::{Action, Mode, Safety};
     use crate::strategy_lifecycle::Phase;
@@ -159,7 +159,7 @@ mod tests {
             feature_hash: "shared".into(),
         }
     }
-    fn receipt(scope: Scope, input: InputBoundary) -> Committed {
+    pub(crate) fn receipt(scope: Scope, input: InputBoundary) -> Committed {
         let mut runtime = Runtime::new(scope, 0_u64, 1024).unwrap();
         let safety = Safety {
             position_quantity: 0,
