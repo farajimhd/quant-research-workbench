@@ -22,7 +22,7 @@ use std::{io::Read, sync::Arc};
 
 pub const MAXIMUM_BYTES: usize = 1024 * 1024;
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Document {

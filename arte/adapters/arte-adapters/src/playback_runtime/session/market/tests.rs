@@ -9,7 +9,7 @@ use arte_core::{
     v7_stream::StreamPolicy,
 };
 const S: u64 = 1_000_000_000;
-fn fixture() -> (Document, Pinned, Catalog, Prepared, Bundle) {
+pub(crate) fn fixture() -> (Document, Pinned, Catalog, Prepared, Bundle) {
     let bars: Vec<_> = (100..118)
         .map(|t| Candle {
             t,

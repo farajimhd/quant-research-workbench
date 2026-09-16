@@ -145,6 +145,20 @@ multi-instrument portfolio run. The executable coordinator remains unfinished.
 
 ### Strategy and account inputs
 
+`initialize_backtest` connects these startup stages for a fresh historical run.
+It checks extraction/durability acceptance, ownership and startup-document identity
+before loading data. The read-only bootstrap verifies market/source scope, loads
+the exact historical seed, checks its manifest binding, loads certified sources
+and assembles the paused market run. It never edits the pinned run manifest to
+accept changed inputs.
+
+The existing session constructor then validates strategy configurations, simulated
+accounts and model bindings before startup publication. Exact publication readback
+precedes returning the paused session. Initialization does not resume playback,
+restore a checkpoint or contact a broker. Source input and the seed remain
+available for recovery assembly. The market-startup document still needs its own
+durable run-plan binding; the executable loop remains unfinished.
+
 `arte.backtest-startup.v1` binds the run manifest hash, effective configuration
 map, initial simulated accounts, price precision, fill model, cost model and
 resource limits. Startup requires its independently supplied expected hash.

@@ -6,6 +6,24 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Connected historical initialization
+
+The initialization adapter now connects pinned historical seed loading, certified
+source assembly, checked market construction and the existing strategy/account
+session publication path. It verifies startup identity and acceptance/ownership
+before reads. Strategy/account validation precedes the first startup write.
+Successful publication returns a paused session, source input and seed graph.
+There is no implicit resume, broker call or checkpoint recovery.
+
+Two fixtures exercise read-only bootstrap into a paused market run and rejection
+of changed domain/seed inputs before source loading. The fresh-session publication
+components retain their existing offline tests. The combined connected database
+path has not run. The executable loop and durable market-run-plan binding remain
+unfinished.
+
+All 428 offline tests, formatting, Clippy and copied-source checks pass. No
+services started or migrations ran. Source parity was not rerun.
+
 ## Historical source startup assembly
 
 A read-only assembler now connects pinned certificate reads, trade-policy loading,

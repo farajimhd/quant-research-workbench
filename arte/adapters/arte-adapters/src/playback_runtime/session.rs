@@ -11,6 +11,7 @@ use arte_core::{
     simulation_costs, simulation_model, Error, Result,
 };
 use std::collections::{BTreeMap, BTreeSet};
+pub mod bootstrap;
 pub mod document;
 pub mod market;
 
