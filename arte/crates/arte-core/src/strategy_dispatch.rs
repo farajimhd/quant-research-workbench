@@ -101,6 +101,27 @@ pub struct State {
     last_evaluated_at_ns: u64,
 }
 impl State {
+    pub(crate) fn from_last_decision(scope: Scope, decision: &Decision) -> Result<Self> {
+        crate::journal::Record::from_decision(decision)?;
+        if decision.scope != scope {
+            return Err(Error::Conflict("recovered decision scope differs".into()));
+        }
+        let mut state = Self::new(scope)?;
+        let mut validated = state.evaluate(
+            decision.input.clone(),
+            &decision.safety,
+            decision.evidence_hash.clone(),
+            || Ok(decision.actions.clone()),
+        )?;
+        validated.sequence = decision.sequence;
+        if content_hash(&validated)? != content_hash(decision)? {
+            return Err(Error::Conflict(
+                "recovered decision arbitration differs".into(),
+            ));
+        }
+        state.last_decision = Some(decision.clone());
+        Ok(state)
+    }
     pub fn scope(&self) -> &Scope {
         &self.scope
     }

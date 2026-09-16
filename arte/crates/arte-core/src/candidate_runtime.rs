@@ -36,6 +36,40 @@ pub fn configuration_hash(
     ))
 }
 impl Runtime {
+    pub fn checkpoint(
+        &self,
+        context: &str,
+        maximum_bytes: usize,
+    ) -> Result<crate::seed_storage::Object> {
+        self.transaction.checkpoint(context, maximum_bytes)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore_checkpoint(
+        image: &crate::seed_storage::Object,
+        expected_hash: &str,
+        context: &str,
+        scope: &dispatch::Scope,
+        maximum_state_bytes: usize,
+        maximum_bytes: usize,
+        readback: &[crate::journal::Record],
+    ) -> Result<(Self, Option<transaction::Committed>)> {
+        let (transaction, receipt) = transaction::Runtime::<candidate::State>::restore_checkpoint(
+            image,
+            expected_hash,
+            context,
+            scope,
+            maximum_state_bytes,
+            maximum_bytes,
+            readback,
+        )?;
+        let mut runtime = Self::new(
+            scope.clone(),
+            transaction.committed_state().clone(),
+            maximum_state_bytes,
+        )?;
+        runtime.transaction = transaction;
+        Ok((runtime, receipt))
+    }
     pub fn from_manifest(
         manifest: &crate::run_manifest::Pinned,
         account: &str,
@@ -254,4 +288,46 @@ fn require_quote_policy_hash(hash: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    #[test]
+    fn candidate_recovery_preserves_configuration_and_account_scope() {
+        let scope = dispatch::Scope {
+            run_id: "recovery".into(),
+            mode: dispatch::Mode::Backtest,
+            account: "a".into(),
+            strategy_instance: "candidate".into(),
+            instrument: 1,
+            code_hash: "b".repeat(64),
+            config_hash: "c".repeat(64),
+        };
+        let runtime = Runtime::new(scope.clone(), candidate::State::default(), 100_000).unwrap();
+        let context = "d".repeat(64);
+        let image = runtime.checkpoint(&context, 200_000).unwrap();
+        let restore = |scope: &dispatch::Scope| {
+            Runtime::restore_checkpoint(&image, &image.id, &context, scope, 100_000, 200_000, &[])
+        };
+        let (restored, receipt) = restore(&scope).unwrap();
+        assert!(receipt.is_none());
+        assert_eq!(restored.checkpoint(&context, 200_000).unwrap().id, image.id);
+        let mut changed = scope.clone();
+        changed.account = "b".into();
+        assert!(restore(&changed).is_err());
+        changed = scope.clone();
+        changed.config_hash = "e".repeat(64);
+        assert!(restore(&changed).is_err());
+        assert!(Runtime::restore_checkpoint(
+            &image,
+            &image.id,
+            &context,
+            &scope,
+            99999,
+            200_000,
+            &[]
+        )
+        .is_err());
+    }
 }

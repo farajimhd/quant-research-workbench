@@ -4,6 +4,7 @@ use crate::journal::{Batch, Record};
 use crate::strategy_dispatch::{Action, Decision, InputBoundary, Safety, Scope, State as Dispatch};
 use crate::{content_hash, Error, Result};
 use serde::Serialize;
+pub mod checkpoint;
 
 struct Pending<S> {
     request_hash: String,
@@ -188,6 +189,80 @@ mod tests {
         Ok(vec![Action::Wait {
             reason: "gate".into(),
         }])
+    }
+    #[test]
+    fn recovery_preserves_committed_and_prepared_state_and_retry_identity() {
+        let mut original = runtime();
+        let scope = original.scope().clone();
+        let context = "a".repeat(64);
+        let restore = |image: &crate::seed_storage::Object, rows: &[Record]| {
+            Runtime::<u64>::restore_checkpoint(
+                image, &image.id, &context, &scope, 1024, 100_000, rows,
+            )
+        };
+        let genesis = original.checkpoint(&context, 100_000).unwrap();
+        assert!(restore(&genesis, &[]).unwrap().1.is_none());
+        original
+            .prepare(input(1), &safety(), "proof".into(), compute)
+            .unwrap();
+        let prepared = original.checkpoint(&context, 100_000).unwrap();
+        let (mut recovered, receipt) = restore(&prepared, &[]).unwrap();
+        assert!(receipt.is_none());
+        assert_eq!(*recovered.committed_state(), 0);
+        assert!(recovered.acknowledge(&[]).is_err());
+        let rows = original.pending_batch().unwrap().records().to_vec();
+        recovered
+            .prepare(input(1), &safety(), "proof".into(), |_| {
+                panic!("must not calculate again")
+            })
+            .unwrap();
+        original.acknowledge(&rows).unwrap();
+        recovered.acknowledge(&rows).unwrap();
+        assert_eq!(*recovered.committed_state(), 1);
+        let committed = original.checkpoint(&context, 100_000).unwrap();
+        assert!(restore(&committed, &[]).is_err());
+        assert!(restore(&genesis, &rows).is_err());
+        let (mut recovered, receipt) = restore(&committed, &rows).unwrap();
+        assert_eq!(receipt.unwrap().decision().sequence, 1);
+        original
+            .prepare(input(2), &safety(), "next".into(), compute)
+            .unwrap();
+        recovered
+            .prepare(input(2), &safety(), "next".into(), compute)
+            .unwrap();
+        assert_eq!(
+            original.checkpoint(&context, 100_000).unwrap().id,
+            recovered.checkpoint(&context, 100_000).unwrap().id
+        );
+        let (mut recovered, receipt) =
+            restore(&original.checkpoint(&context, 100_000).unwrap(), &rows).unwrap();
+        assert_eq!(receipt.unwrap().decision().sequence, 1);
+        assert_eq!(*recovered.committed_state(), 1);
+        let next_rows = original.pending_batch().unwrap().records().to_vec();
+        original.acknowledge(&next_rows).unwrap();
+        recovered.acknowledge(&next_rows).unwrap();
+        assert_eq!(*recovered.committed_state(), 2);
+        let (mut recovered, receipt) = restore(
+            &recovered.checkpoint(&context, 100_000).unwrap(),
+            &next_rows,
+        )
+        .unwrap();
+        assert_eq!(receipt.unwrap().decision().sequence, 2);
+        recovered
+            .prepare(input(2), &safety(), "next".into(), |_| {
+                panic!("committed retry")
+            })
+            .unwrap();
+        let (mut recovered, _) = restore(
+            &recovered.checkpoint(&context, 100_000).unwrap(),
+            &next_rows,
+        )
+        .unwrap();
+        recovered.acknowledge(&next_rows).unwrap();
+        assert_eq!(
+            original.checkpoint(&context, 100_000).unwrap().id,
+            recovered.checkpoint(&context, 100_000).unwrap().id
+        );
     }
     #[test]
     fn journal_failure_preserves_state_and_pending_identity() {

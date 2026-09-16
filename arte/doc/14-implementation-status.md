@@ -6,6 +6,30 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Candidate transaction recovery
+
+Candidate runtime recovery now uses the shared strategy transaction codec. The
+image preserves committed state, the last committed decision, and any prepared
+decision with its uncommitted next state. Scope, effective configuration, state
+budget and parent context are pinned. The image has a caller-selected byte limit
+capped at 64 MiB.
+
+Restore verifies the last committed decision against independently read journal
+rows. Only then can it return a committed receipt for account-barrier recovery.
+Prepared state stays pending and uses the normal journal acknowledgment path.
+Dispatch is reconstructed through the existing safety arbitration and identity
+rules. Retrying the last committed or prepared input does not rerun calculation.
+
+All 380 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Tests cover genesis, prepared and committed recovery, subsequent decisions,
+committed retries, missing journal rows, account/configuration mismatches and
+state-budget pins. Source-oracle parity was not rerun. No services or network
+tests ran.
+
+Shared feature-state recovery and its integration with candidate, controller and
+portfolio images remain incomplete. These component tests do not establish
+whole-run recovery or strategy robustness.
+
 ## Controller recovery
 
 Controller restore now rebuilds the manifest-bound playback graph, simulated
