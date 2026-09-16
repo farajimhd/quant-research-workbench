@@ -176,6 +176,16 @@ fn cut(sequence: u64) -> Cut {
         at_ns: sequence,
     }
 }
+pub(crate) fn publication_fixture() -> (Run, Cut, Model, Limits, Bundle) {
+    let run = run();
+    let mut runtime = fixture(&run);
+    runtime.advance_playback_clock(1).unwrap();
+    let cut = cut(1);
+    let bundle = runtime
+        .checkpoint(&run, &cut, &BTreeMap::new(), limits())
+        .unwrap();
+    (run, cut, model(), limits(), bundle)
+}
 #[derive(Default)]
 struct Journal {
     last: BTreeMap<String, Fill>,
@@ -366,4 +376,60 @@ async fn terminal_release_markers_and_quote_retry_survive_restore() {
             .id,
         image.root.id
     );
+}
+
+#[test]
+fn database_archive_roundtrip_and_multichunk_integrity() {
+    use super::storage::{Header, Stored, CHUNK_BYTES};
+    let run = run();
+    let mut runtime = fixture(&run);
+    runtime.advance_playback_clock(1).unwrap();
+    let mut limits = limits();
+    limits.maximum_bytes = 4 * CHUNK_BYTES;
+    let mut image = runtime
+        .checkpoint(&run, &cut(1), &BTreeMap::new(), limits)
+        .unwrap();
+    let stored = Stored::from_execution(&image, limits).unwrap();
+    let restored = stored.hydrate(limits).unwrap();
+    Runtime::restore_checkpoint(
+        &restored,
+        &image.root.id,
+        &run,
+        &cut(1),
+        Costs::new(model(), &run).unwrap(),
+        limits,
+    )
+    .unwrap();
+    assert_eq!(restored.root.payload, image.root.payload);
+    // Transport-codec fixture: a binary object crosses several chunk boundaries.
+    // It is not a valid execution graph; semantic restore must still reject it.
+    let blob = Object::new([0u8, 255, 195, 169].repeat(CHUNK_BYTES / 2 + 1));
+    image.objects.insert(blob.id.clone(), blob);
+    let mut stored = Stored::from_execution(&image, limits).unwrap();
+    assert!(stored.chunks.len() > 1);
+    let restored = stored.hydrate(limits).unwrap();
+    assert!(Runtime::restore_checkpoint(
+        &restored,
+        &image.root.id,
+        &run,
+        &cut(1),
+        Costs::new(model(), &run).unwrap(),
+        limits
+    )
+    .is_err());
+    for (id, object) in &image.objects {
+        assert_eq!(restored.objects[id].payload, object.payload);
+    }
+    let id = stored.chunks.keys().next().unwrap().clone();
+    let chunk = stored.chunks.remove(&id).unwrap();
+    assert!(stored.hydrate(limits).is_err());
+    stored.chunks.insert(id.clone(), chunk);
+    stored.chunks.get_mut(&id).unwrap().payload[0] ^= 1;
+    assert!(stored.hydrate(limits).is_err());
+    let mut small = limits;
+    small.maximum_bytes = 1;
+    assert!(Header::decode(&stored.root, small).is_err());
+    let mut payload = stored.root.payload.clone();
+    payload.push(b' ');
+    assert!(Header::decode(&Object::new(payload), limits).is_err());
 }

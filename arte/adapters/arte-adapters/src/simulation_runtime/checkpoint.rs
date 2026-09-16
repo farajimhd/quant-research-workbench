@@ -14,8 +14,9 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io::Write,
 };
+pub mod storage;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 #[derive(Default)]
 struct Aggregate {

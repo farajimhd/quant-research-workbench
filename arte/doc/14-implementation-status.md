@@ -6,6 +6,31 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## ClickHouse execution checkpoint publication
+
+Execution checkpoints now have a chunked archive and a ClickHouse publisher and
+loader. The archive uses explicit byte lengths and ordered objects. It preserves
+payload bytes without embedding them in JSON arrays. Database chunks are 1 MiB;
+the total payload remains bounded at 64 MiB, plus bounded framing overhead.
+
+The publication slot binds run manifest, instrument and boundary sequence. A
+different cut at the same slot is rejected. Every chunk requires exact readback
+before the header is published. The publisher then reloads and validates the
+complete execution runtime. It requires extraction and durability acceptance plus
+cooperative lease ownership. Storage policy and active part placement use the
+existing verifier. This is not a distributed transaction or whole-run fence.
+
+Schema 016 defines the chunk and publication tables on `live_market_ssd`. It is
+unapplied. All 367 offline Rust tests, formatting, Clippy and copied-source hash
+checks pass. Tests cover multi-chunk binary round-trip, missing and corrupt chunks,
+budget enforcement, incomplete writes, ambiguous retries, ownership loss and a
+real execution graph's publish/load/restore path through an in-memory store.
+No ClickHouse call or service ran. Source-oracle parity was not rerun.
+
+Database durability still needs connected acceptance after repository extraction.
+Whole-run recovery must coordinate execution with portfolio settlement receipts,
+strategy state, market/input cursors and pending actions before resuming a run.
+
 ## Manifest-bound simulated fill policy
 
 Playback now requires an explicit fill policy. Its hash binds the algorithm,
@@ -27,7 +52,8 @@ Source-oracle parity was not rerun. No service or network test ran.
 The supported policy is a hypothetical quote-touch model with a fixed entry
 submission delay. It does not estimate real broker latency or queue priority.
 Amendments retain the algorithm's immediate boundary-acknowledgment semantics.
-Durable execution publication and whole-run recovery remain unfinished.
+The publication adapter is implemented above. Connected durability acceptance
+and whole-run recovery remain unfinished.
 
 ## Combined simulated execution recovery
 
@@ -54,7 +80,7 @@ missing or surplus objects, wrong cuts, inconsistent source identity and budgets
 These fixtures seed orders directly. They do not prove strategy acceptance or
 portfolio settlement durability. Source-oracle parity was not rerun.
 
-This graph is not yet published to ClickHouse. Whole-run recovery must coordinate
+No graph has been published to ClickHouse during validation. Whole-run recovery must coordinate
 it with portfolio receipts, strategy state, input cursors and pending actions.
 The fill-policy manifest binding identified during this stage is implemented in
 the version 2 checkpoint described above.

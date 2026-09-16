@@ -35,7 +35,7 @@ pub fn portfolio_checkpoint_scope(run: &Pinned, cut: &Cut) -> Result<String> {
         cut.boundary_sequence,
     ))
 }
-fn to_hex(bytes: &[u8]) -> String {
+pub(super) fn to_hex(bytes: &[u8]) -> String {
     const HEX: &[u8] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -44,7 +44,7 @@ fn to_hex(bytes: &[u8]) -> String {
     }
     out
 }
-fn from_hex(text: &str, maximum: usize) -> Result<Vec<u8>> {
+pub(super) fn from_hex(text: &str, maximum: usize) -> Result<Vec<u8>> {
     if text.len() > maximum * 2 || !text.len().is_multiple_of(2) {
         return Err(Error::Capacity("checkpoint hex byte bound".into()));
     }
@@ -58,7 +58,7 @@ fn from_hex(text: &str, maximum: usize) -> Result<Vec<u8>> {
         .map(|pair| Ok((digit(pair[0])? << 4) | digit(pair[1])?))
         .collect()
 }
-trait Store {
+pub(super) trait Store {
     fn read(&self, root: bool, key: &str) -> impl Future<Output = Result<Option<Vec<u8>>>>;
     fn write(&self, root: bool, key: &str, bytes: &[u8]) -> impl Future<Output = Result<()>>;
 }
@@ -79,7 +79,7 @@ impl Store for ClickHouse {
         .await
     }
 }
-async fn put(
+pub(super) async fn put(
     store: &impl Store,
     root: bool,
     key: &str,
@@ -89,7 +89,9 @@ async fn put(
     owned()?;
     match store.read(root, key).await? {
         Some(previous) if previous != payload => {
-            return Err(Error::Conflict("portfolio publication slot differs".into()))
+            return Err(Error::Conflict(
+                "checkpoint publication slot differs".into(),
+            ))
         }
         Some(_) => {}
         None => {
@@ -100,7 +102,7 @@ async fn put(
     owned()?;
     if store.read(root, key).await?.as_deref() != Some(payload) {
         return Err(Error::Unready(
-            "portfolio readback missing or different".into(),
+            "checkpoint readback missing or different".into(),
         ));
     }
     Ok(())
