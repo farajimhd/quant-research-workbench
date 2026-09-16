@@ -1,0 +1,141 @@
+//! Read-only cash/risk sizing from the owned executable quote. Reservation and
+//! final validation remain in enter_action; another lane may consume cash first.
+use super::*;
+use arte_core::{events::Payload, order_funding};
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Sizing {
+    pub price_scale: u8,
+    pub tick: i64,
+    pub maximum_quantity: u64,
+    pub lot_size: u64,
+    pub order_lifetime_ns: u64,
+}
+pub struct SizingRequest<'a> {
+    pub sizing: &'a Sizing,
+    pub portfolio: &'a arte_core::portfolio::Portfolio,
+    pub cash_policy: &'a order_funding::Policy,
+    pub safety: simulation_runtime::AmendmentSafety<'a>,
+    pub latency_ns: u64,
+}
+impl Runtime {
+    /// Initial proposal only. Retain a funded allocation for retry; never resize
+    /// it using the remaining balance after its own reservation has been deducted.
+    pub fn allocate_entry_action(
+        &self,
+        decision_id: &str,
+        action_index: usize,
+        request: SizingRequest<'_>,
+    ) -> Result<Allocation> {
+        let run = self.decision_view()?;
+        let now = run
+            .pending()?
+            .ok_or_else(|| Error::Unready("allocation boundary missing".into()))?
+            .evaluated_at_ns;
+        let item = self
+            .actions
+            .items
+            .get(&(decision_id.into(), action_index))
+            .ok_or_else(|| Error::Unready("allocation committed action missing".into()))?;
+        if item.reserved_request.is_some() || item.completed_request.is_some() {
+            return Err(Error::Conflict(
+                "funded action must retry its retained allocation".into(),
+            ));
+        }
+        let sizing = request.sizing;
+        if sizing.price_scale > 9
+            || sizing.tick <= 0
+            || sizing.maximum_quantity == 0
+            || sizing.lot_size == 0
+            || sizing.order_lifetime_ns == 0
+        {
+            return Err(Error::Invalid("allocation sizing policy".into()));
+        }
+        let scope = &item.receipt.decision().scope;
+        self.execution
+            .require_instrument_scale(scope.instrument, sizing.price_scale)?;
+        let quote = run
+            .quotes()?
+            .require_executable(now, self.maximum_quote_age_ns)?;
+        if quote.key.instrument != scope.instrument {
+            return Err(Error::Conflict("allocation quote instrument".into()));
+        }
+        let Payload::Quote { ask, .. } = &quote.payload else {
+            return Err(Error::Invalid("allocation requires quote".into()));
+        };
+        let mut allocation = Allocation {
+            account: scope.account.clone(),
+            instrument: scope.instrument,
+            quantity: sizing.maximum_quantity,
+            price_scale: sizing.price_scale,
+            tick: sizing.tick,
+            entry_limit: ask.atoms_at_scale(sizing.price_scale)?,
+            deadline_ns: now
+                .checked_add(sizing.order_lifetime_ns)
+                .ok_or_else(|| Error::Capacity("allocation deadline overflow".into()))?,
+        };
+        let regular = request.safety.session.require_phase(now)?;
+        let mut plan = decision_orders::bracket(
+            &item.receipt,
+            action_index,
+            &allocation,
+            now,
+            regular,
+            request.safety.bands,
+            request.safety.risk_policy,
+        )?;
+        let account = request.portfolio.snapshot(&scope.account)?;
+        if account.balance_at_ns > now || now - account.balance_at_ns > account.max_balance_age_ns {
+            return Err(Error::Unready(
+                "allocation account balance stale or future".into(),
+            ));
+        }
+        if account.reservations.contains_key(&plan.bracket.command_id) {
+            return Err(Error::Conflict("reserved command cannot be resized".into()));
+        }
+        let used = account
+            .reservations
+            .values()
+            .try_fold(0u64, |n, r| n.checked_add(r.cash_minor))
+            .ok_or_else(|| Error::Capacity("allocation reserved cash overflow".into()))?;
+        let available = account
+            .budget_minor
+            .min(account.broker_available_minor)
+            .saturating_sub(used);
+        allocation.quantity = order_funding::quantity(
+            plan.bracket.entry as u64,
+            plan.bracket
+                .stop
+                .ok_or_else(|| Error::Unready("allocation stop missing".into()))?
+                as u64,
+            sizing.price_scale,
+            request.cash_policy,
+            available,
+            sizing.maximum_quantity,
+            sizing.lot_size,
+        )?;
+        plan.bracket.quantity = allocation.quantity;
+        let funding = order_funding::requirements(
+            &plan,
+            request.cash_policy,
+            now,
+            regular,
+            request.safety.bands,
+            request.safety.risk_policy,
+        )?;
+        self.execution
+            .validate_submission(&simulation_runtime::Submission {
+                plan: &plan,
+                funding: &funding,
+                portfolio: request.portfolio,
+                cash_policy: request.cash_policy,
+                risk_policy: request.safety.risk_policy,
+                bands: request.safety.bands,
+                session: request.safety.session,
+                now_ns: now,
+                latency_ns: request.latency_ns,
+            })?;
+        Ok(allocation)
+    }
+}

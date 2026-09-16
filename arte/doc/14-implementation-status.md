@@ -6,6 +6,30 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Quote-backed portfolio allocation
+
+The controller now proposes entry/add allocations from its owned executable quote
+and the committed strategy action. The limit price is the exact ask at the
+instrument scale. Quote eligibility and age use the pinned playback policy.
+Missing, stale, future, crossed or unrepresentable quotes are not replaced with
+another price. Strategy price caps and complete bracket geometry still apply.
+
+Quantity uses unreserved account cash, the account budget, order cash/risk limits,
+fee reserve, lot size and an explicit quantity cap. The proposal does not reserve
+cash. Submission revalidates and reserves atomically through Portfolio. A funded
+action cannot be resized; its retained allocation must be used for retry.
+
+The caller still supplies approved tick, lot, lifetime and cash policy inputs.
+Reference/configuration assembly for the standalone runner is not yet complete.
+The allocation API does not certify those inputs merely because they deserialize.
+
+Multi-account lifecycle tests now generate their dispatch allocations through this
+API. They check quote-derived prices, cash-limited quantity, lot rejection,
+read-only preparation and refusal to resize funded actions. They continue through
+fills, exits, settlement and recovery with unchanged expected balances. All 391
+offline Rust tests, formatting, Clippy and copied-source checks pass. Source-oracle
+parity was not rerun. No service or network test ran.
+
 ## Bounded funding reconciliation
 
 The playback controller now reconciles terminal order funding in bounded batches.

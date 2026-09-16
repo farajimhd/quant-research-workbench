@@ -15,7 +15,9 @@ pub mod candidate_position;
 pub mod candidates;
 pub mod checkpoint;
 pub mod recovery;
-pub use actions::{ActionInputs, ActionOutcome, EntryRequest, PendingAction};
+pub use actions::{
+    ActionInputs, ActionOutcome, EntryRequest, PendingAction, Sizing, SizingRequest,
+};
 
 pub struct Runtime {
     run: Run,

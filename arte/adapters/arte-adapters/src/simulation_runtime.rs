@@ -54,6 +54,14 @@ pub struct AmendmentSafety<'a> {
     pub bands: Option<&'a arte_core::orders::Bands>,
 }
 impl Runtime {
+    pub(crate) fn require_instrument_scale(&self, instrument: u64, scale: u8) -> Result<()> {
+        if instrument != self.simulator.instrument() || scale != self.simulator.price_scale() {
+            return Err(Error::Conflict(
+                "allocation instrument or price scale differs".into(),
+            ));
+        }
+        Ok(())
+    }
     pub fn new(
         simulator: Simulator,
         projection: Projection,

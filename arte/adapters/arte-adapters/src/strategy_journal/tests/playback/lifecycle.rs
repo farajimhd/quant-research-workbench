@@ -369,18 +369,53 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, fail_submission: bo
                 .filter_map(|write| {
                     let decision = write.receipt().unwrap().decision();
                     matches!(decision.actions[0], Action::Enter(_)).then(|| {
-                        (
-                            (decision.decision_id.clone(), 0),
-                            decision_orders::Allocation {
-                                account: decision.scope.account.clone(),
-                                instrument: 1,
-                                quantity: if decision.scope.account == "a" { 1 } else { 2 },
-                                price_scale: 2,
-                                tick: 1,
-                                entry_limit: 1001,
-                                deadline_ns: 202_000_000_000,
+                        let sizing = crate::playback_runtime::Sizing {
+                            price_scale: 2,
+                            tick: 1,
+                            maximum_quantity: if decision.scope.account == "a" {
+                                100
+                            } else {
+                                2
                             },
-                        )
+                            lot_size: 1,
+                            order_lifetime_ns: 1_000_000_000,
+                        };
+                        let request = |sizing| crate::playback_runtime::SizingRequest {
+                            sizing,
+                            portfolio: &portfolio,
+                            cash_policy: &cash,
+                            safety: crate::simulation_runtime::AmendmentSafety {
+                                session: &session,
+                                risk_policy: &risk,
+                                bands: None,
+                            },
+                            latency_ns: 0,
+                        };
+                        let before = portfolio
+                            .snapshot(&decision.scope.account)
+                            .unwrap()
+                            .reservations;
+                        let allocation = controller
+                            .allocate_entry_action(&decision.decision_id, 0, request(&sizing))
+                            .unwrap();
+                        assert_eq!(
+                            allocation.quantity,
+                            if decision.scope.account == "a" { 1 } else { 2 }
+                        );
+                        assert_eq!(allocation.entry_limit, 1001);
+                        assert_eq!(
+                            portfolio
+                                .snapshot(&decision.scope.account)
+                                .unwrap()
+                                .reservations,
+                            before
+                        );
+                        let mut invalid = sizing.clone();
+                        invalid.lot_size = 1000;
+                        assert!(controller
+                            .allocate_entry_action(&decision.decision_id, 0, request(&invalid))
+                            .is_err());
+                        ((decision.decision_id.clone(), 0), allocation)
                     })
                 })
                 .collect();
@@ -418,6 +453,31 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, fail_submission: bo
                 .execute_actions(inputs(&allocations, 1))
                 .unwrap()
                 .is_empty());
+            for (id, index) in allocations.keys() {
+                assert!(controller
+                    .allocate_entry_action(
+                        id,
+                        *index,
+                        crate::playback_runtime::SizingRequest {
+                            sizing: &crate::playback_runtime::Sizing {
+                                price_scale: 2,
+                                tick: 1,
+                                maximum_quantity: 100,
+                                lot_size: 1,
+                                order_lifetime_ns: 1_000_000_000
+                            },
+                            portfolio: &portfolio,
+                            cash_policy: &cash,
+                            safety: crate::simulation_runtime::AmendmentSafety {
+                                session: &session,
+                                risk_policy: &risk,
+                                bands: None
+                            },
+                            latency_ns: 0,
+                        }
+                    )
+                    .is_err());
+            }
         }
         for write in &writes {
             let receipt = write.receipt().unwrap();
