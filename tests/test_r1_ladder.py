@@ -178,11 +178,13 @@ def test_actual_fill_callback_advances_only_completed_target(role, remaining, in
     asyncio.run(assigned.on_order_group_update(fill, aggregate_position_quantity=remaining))
     state = assigned.assignments()[0].state
     assert bool((state.get('r1_exit') or {}).get('level')) == advance
+    if advance:
+        assert 'broken_profit_target' in state['r1_levels'][-1]['uses'][-1]['role']
     if remaining or increment == 0:
         assert 'r1_entry' in state
 
 
-def test_reentry_requires_fresh_post_exit_cross_of_previous_target_upper():
+def test_reentry_requires_open_macd_episode_high_after_completed_target_exit():
     host, a, _ = acquired()
     R.record_exit(a.state, NOW+timedelta(seconds=4), 'profit_target', 0.)
     a = replace(a, status=S.AssignmentStatus.WATCHING)
@@ -191,22 +193,57 @@ def test_reentry_requires_fresh_post_exit_cross_of_previous_target_upper():
     assert not blocked.evaluation.intents
     assert blocked.evaluation.signals[0].reason == 'waiting_for_post_exit_breakout'
     a = replace(a, state=blocked.state, status=blocked.status)
-    # Reset below the old target, then cross its far edge on a new complete bar.
-    for o in (obs(5, 10.96, source_timeframe='5s'), obs(5, 10.96)):
-        result = host.evaluate(a, o)
-        a = replace(a, state=result.state, status=result.status)
-    result = host.evaluate(a, obs(6, 11.0))
+    # The prior episode high, rather than the target band's far edge, owns reentry.
+    refreshed = host.evaluate(a, obs(5, 11.0, source_timeframe='5s'))
+    a = replace(a, state=refreshed.state, status=refreshed.status)
+    a.state['r1_market']['macd_episode']['high'] = 11.05
+    waiting = host.evaluate(a, obs(5, 11.0))
+    assert waiting.evaluation.signals[0].reason == 'waiting_for_macd_episode_high_break'
+    a = replace(a, state=waiting.state, status=waiting.status)
+    result = host.evaluate(a, obs(6, 11.1))
     intent, = result.evaluation.intents
     assert intent.metadata['entry_selection']['upper'] == pytest.approx(10.97)
     assert intent.profit_target_price == pytest.approx(11.5)
 
 
-def test_first_close_after_intrasecond_target_fill_can_reenter():
+def test_continuation_ignores_spread_and_stops_20bps_below_broken_level():
     host, a, _ = acquired()
     R.record_exit(a.state, NOW+timedelta(seconds=3.2), 'profit_target', 0.)
     a = replace(a, status=S.AssignmentStatus.WATCHING)
-    intent, = host.evaluate(a, obs(4, 11.0)).evaluation.intents
+    # 153.9 bps exceeds the ordinary 150 bps gate, but the MACD episode is open.
+    result = host.evaluate(a, replace(obs(4, 11.0), bid=10.93, ask=11.10))
+    intent, = result.evaluation.intents
     assert intent.metadata['entry_selection']['upper'] == pytest.approx(10.97)
+    assert intent.invalidation_price == pytest.approx(10.92)
+    assert intent.metadata['initial_stop_selection']['offset_bps'] == 20.
+    assert intent.metadata['r1_fixed_stop']['price'] == pytest.approx(10.92)
+    assert 'r1_stop_bounds' not in intent.metadata
+    quality = result.evaluation.signals[0].metadata['liquidity_admission']
+    assert quality['ignored_for_macd_continuation'] == ['current_spread']
+    assert quality['effective_failed'] == []
+
+
+def test_initial_entry_does_not_ignore_spread():
+    host, a, o = ready()
+    result = host.evaluate(a, replace(o, bid=10.50, ask=10.70))
+    assert not result.evaluation.intents
+    assert result.evaluation.signals[0].reason == 'liquidity_or_spread_gate'
+
+
+def test_completed_5s_episodes_and_operated_levels_are_retained():
+    host, a, _ = acquired()
+    first = deepcopy(a.state['r1_market']['macd_episode'])
+    assert first['high'] >= 10.6
+    assert {use['role'] for item in a.state['r1_levels'] for use in item['uses']} == {
+        'initial_breakout', 'profit_target'}
+    closed = host.evaluate(a, replace(obs(5, 10.7, source_timeframe='5s'),
+                                      macd_line=-.01, macd_signal=0.))
+    assert 'macd_episode' not in closed.state['r1_market']
+    assert closed.state['r1_market']['macd_episodes'][-1]['episode_id'] == first['episode_id']
+    a = replace(a, state=closed.state, status=closed.status)
+    reopened = host.evaluate(a, replace(obs(10, 10.8, source_timeframe='5s'),
+                                        macd_line=.02, macd_signal=.01))
+    assert reopened.state['r1_market']['macd_episode']['episode_id'] != first['episode_id']
 
 
 def test_unrepresentable_actual_fill_stop_exits_only_remaining_position():
@@ -259,9 +296,8 @@ def test_unfilled_continuation_preserves_target_for_retry_until_actual_fill():
     R.record_exit(a.state, NOW+timedelta(seconds=3.2), 'profit_target', 0.)
     saved_exit = deepcopy(a.state['r1_exit'])
     a = replace(a, status=S.AssignmentStatus.WATCHING)
-    for o in (obs(5, 10.96, source_timeframe='5s'), obs(5, 10.96), obs(6, 11.0)):
-        result = host.evaluate(a, o)
-        a = replace(a, state=result.state, status=result.status)
+    result = host.evaluate(a, obs(4, 11.0))
+    a = replace(a, state=result.state, status=result.status)
     assert result.evaluation.intents[0].action == 'enter_long'
     assert a.state['r1_exit'] == saved_exit
     assigned = S.AssignedLongMomentumStrategy([a])
@@ -273,8 +309,9 @@ def test_unfilled_continuation_preserves_target_for_retry_until_actual_fill():
         assert assigned.assignments()[0].state['r1_exit'] == saved_exit
     a = assigned.assignments()[0]
     assert a.status in (S.AssignmentStatus.WATCHING, S.AssignmentStatus.REENTRY_COOLDOWN)
-    # Move current HOD/R1 elsewhere; the retry must still clear the saved target.
-    for o in (replace(obs(7, 10.96), structural_session_high=12.), obs(8, 11.0)):
+    # A later new episode high can retry; rejected acquisition does not consume the level.
+    for o in (obs(5, 10.96, source_timeframe='5s'),
+              replace(obs(7, 10.96), structural_session_high=12.), obs(8, 11.1)):
         result = host.evaluate(a, o)
         a = replace(a, state=result.state, status=result.status)
     intent, = result.evaluation.intents

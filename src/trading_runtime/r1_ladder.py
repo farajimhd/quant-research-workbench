@@ -10,6 +10,7 @@ from . import historical_hod as H, session_relative_volume
 
 CONTRACT = 'r1-hod-resistance-ladder-v1'
 DEFAULTS = dict(minimum_rvol=2., cash_fraction=.9, maximum_quantity=10000.)
+CONTINUATION_STOP_OFFSET_BPS = 20.
 
 
 def configure(p):
@@ -41,6 +42,15 @@ def stop_price(entry, swing_lower, tick):
     return round(max(low_tick, min(high_tick, desired))*tick, 10)
 
 
+def continuation_stop(level, tick):
+    """Place continuation protection 20 bps below the broken band's lower edge."""
+    lower = level.get('lower')
+    if type(lower) not in (int, float) or not isfinite(lower) or lower <= 0:
+        return None
+    raw = lower*(1-CONTINUATION_STOP_OFFSET_BPS/10000)
+    return round(floor((raw+1e-10)/tick)*tick, 10)
+
+
 def r1_level(rows, hod):
     return max((r for r in rows if resistance(r) and r['upper'] < hod),
                key=lambda r:(r['upper'], r['price'], str(r['unified_level_id'])), default=None)
@@ -56,6 +66,41 @@ def resistance(level):
     return level.get('side') in (-1, 'resistance') and level.get('role') != 'transition'
 
 
+def _track_level(state, level, role, at):
+    """Retain every structural level used by the session ladder and its roles."""
+    if not level:
+        return
+    level_id = str(level.get('unified_level_id') or '')
+    ledger = state.setdefault('r1_levels', [])
+    existing = next((item for item in ledger if item.get('level_id') == level_id), None)
+    use = dict(at=float(at), role=role)
+    if existing is None:
+        ledger.append(dict(level_id=level_id, level=deepcopy(level), uses=[use]))
+    else:
+        existing['level'] = deepcopy(level)
+        existing.setdefault('uses', []).append(use)
+
+
+def _update_macd_episode(d, now, line, signal, high=None):
+    """Advance the causal completed-5s episode ledger."""
+    valid = all(type(value) in (int, float) and isfinite(value) for value in (line, signal))
+    bullish = valid and line > signal
+    episode = d.get('macd_episode')
+    if bullish:
+        if not episode:
+            episode = dict(episode_id=f"{d.get('session','')}:{now}", started_at=now,
+                           high=0., high_at=None)
+            d['macd_episode'] = episode
+        episode.update(last_macd_at=now, line=line, signal=signal)
+        if type(high) in (int, float) and isfinite(high) and high > episode.get('high', 0):
+            episode.update(high=high, high_at=now)
+    elif episode:
+        closed = dict(episode, ended_at=now, closing_line=line, closing_signal=signal)
+        d.setdefault('macd_episodes', []).append(closed)
+        d.pop('macd_episode', None)
+    d['macd'] = dict(at=now, line=line, signal=signal)
+
+
 def record_exit(state, at, role, remaining):
     """Only a fully liquidated, actually filled target advances the ladder."""
     active = state.get('r1_entry')
@@ -68,8 +113,10 @@ def record_exit(state, at, role, remaining):
     origin = role if active['non_target_exit'] else 'profit_target'
     if active['non_target_exit'] and origin == 'profit_target':
         origin = 'mixed_exit'
-    state['r1_exit'] = dict(at=at.timestamp(), role=origin,
-        level=deepcopy(active['target_level']) if origin == 'profit_target' else None)
+    target = deepcopy(active['target_level']) if origin == 'profit_target' else None
+    state['r1_exit'] = dict(at=at.timestamp(), role=origin, level=target)
+    if target:
+        _track_level(state, target, 'broken_profit_target', at.timestamp())
     state.pop('r1_entry', None)
 
 
@@ -85,6 +132,7 @@ def evaluate(host, a, o, p, state):
     if d.get('session') != session:
         d.clear(); d['session'] = session
         state.pop('r1_exit', None)
+        state.pop('r1_levels', None)
     adapter = p['historical_hod']; s = p['r1_ladder']; tick = p['execution']['tick_size']
     market = o.structural_detector_state or {}
     passive = market.get('historical_hod_observation') or {}
@@ -96,13 +144,15 @@ def evaluate(host, a, o, p, state):
                      rows=passive.get('prior_rows', []), hod=passive.get('prior_hod'))
         completed = passive.get('completed_macd') or {}
         if completed:
-            d['macd'] = {k:completed.get(k) for k in ('at','line','signal')}
+            _update_macd_episode(d, completed.get('at'), completed.get('line'),
+                                 completed.get('signal'), (passive.get('prior_bar') or {}).get('high'))
     fresh = ('bar_close' in o.evaluation_events and o.source_timeframe == '1s'
              and now > d.get('closed_at', 0))
     if 'bar_close' in o.evaluation_events and o.source_timeframe == '5s':
         if now > d.get('macd', {}).get('at', 0):
-            d['macd'] = dict(at=now,line=o.macd_line,signal=o.macd_signal)
+            _update_macd_episode(d, now, o.macd_line, o.macd_signal, o.bar_high)
     prior_close, prior_at = d.get('close'), d.get('closed_at')
+    prior_episode = deepcopy(d.get('macd_episode') or {})
     prior_rows, prior_hod = d.get('rows', []), d.get('hod') or 0
     selected_r1 = r1_level(prior_rows, prior_hod)
     if fresh:
@@ -112,14 +162,20 @@ def evaluate(host, a, o, p, state):
         else:
             d.update(closed_at=now,close=o.price,rows=H.selected_levels(o,adapter,now),
                      hod=max(prior_hod,o.bar_high,o.structural_session_high or 0))
+            episode = d.get('macd_episode')
+            if episode and o.bar_high > episode.get('high', 0):
+                episode.update(high=o.bar_high, high_at=now)
     current_r1 = r1_level(d.get('rows', []), d.get('hod') or 0)
     saved_exit = state.get('r1_exit') or {}
     boundary = saved_exit.get('level') or selected_r1
+    reference_level = boundary or current_r1
     reference = dict(contract=CONTRACT,hod=prior_hod if fresh else d.get('hod'),
-        resistance_upper=(selected_r1 or current_r1 or {}).get('upper'),
-        threshold=(boundary or {}).get('upper'),level_id=(selected_r1 or current_r1 or {}).get('unified_level_id'))
+        resistance_upper=(reference_level or {}).get('upper'),
+        threshold=(boundary or {}).get('upper'),level_id=(reference_level or {}).get('unified_level_id'))
     evidence = dict(contract=CONTRACT, historical_hod_reference=dict(reference,at=now,
-        changed=reference != previous.get('chart_reference')),macd=dict(d.get('macd') or {},timeframe='5s',kind='completed'))
+        changed=reference != previous.get('chart_reference')),macd=dict(d.get('macd') or {},timeframe='5s',kind='completed'),
+        macd_episode=dict(prior_episode or d.get('macd_episode') or {}),
+        completed_macd_episode_count=len(d.get('macd_episodes', [])))
     d['chart_reference'] = reference
     def result(action, reason, status=None, **kw):
         metadata = dict(evidence, **kw.pop('metadata', {}))
@@ -160,7 +216,20 @@ def evaluate(host, a, o, p, state):
     row = market.get('row') or {}
     if market.get('book',{}).get('version') not in H.BOOK_VERSIONS or not market.get('book',{}).get('fingerprint') or row.get('effective_at') != now:
         return result('wait','completed_structure_unavailable')
+    macd = d.get('macd') or {}
+    if not (0 <= now-macd.get('at',0) <= adapter['maximum_macd_age_ms']/1000
+            and all(type(macd.get(k)) in (int,float) and isfinite(macd[k]) for k in ('line','signal'))
+            and macd['line'] > macd['signal']):
+        return result('wait','completed_5s_macd_not_bullish')
+    continuation = bool(saved_exit.get('role') == 'profit_target'
+                        and saved_exit.get('level') and d.get('macd_episode'))
     ready, quality = H.tradability(o,dict(p,structural_recovery=dict(H.QUALITY_DEFAULTS,**adapter)),row,state,producer_freshness=True)
+    if continuation:
+        ignored = [item for item in quality['failed'] if item == 'current_spread']
+        remaining = [item for item in quality['failed'] if item != 'current_spread']
+        quality = dict(quality, ignored_for_macd_continuation=ignored,
+                       effective_failed=remaining)
+        ready = not remaining
     evidence['liquidity_admission'] = quality
     if not ready:
         return result('wait','liquidity_or_spread_gate')
@@ -169,18 +238,22 @@ def evaluate(host, a, o, p, state):
     evidence['session_relative_volume'] = rvol
     if not rvol['passed']:
         return result('wait','session_rvol_not_above_two')
-    macd = d.get('macd') or {}
-    if not (0 <= now-macd.get('at',0) <= adapter['maximum_macd_age_ms']/1000
-            and all(type(macd.get(k)) in (int,float) and isfinite(macd[k]) for k in ('line','signal'))
-            and macd['line'] > macd['signal']):
-        return result('wait','completed_5s_macd_not_bullish')
     if not boundary:
         return result('wait','resistance_below_hod_unavailable')
-    # A failed entry opportunity cannot turn into a late entry at the same level.
-    if prior_close is None or prior_at is None or not prior_close <= boundary['upper'] < o.price:
-        return result('wait','waiting_for_fresh_resistance_break')
     if saved_exit and now <= saved_exit['at']:
         return result('wait','waiting_for_post_exit_breakout')
+    if continuation:
+        episode_high = prior_episode.get('high')
+        evidence['continuation'] = dict(broken_level=deepcopy(saved_exit['level']),
+            episode_id=prior_episode.get('episode_id'), episode_high=episode_high,
+            spread_ignored=True)
+        if type(episode_high) not in (int, float) or not isfinite(episode_high) or episode_high <= 0:
+            return result('wait','macd_episode_high_unavailable')
+        if not o.price > episode_high:
+            return result('wait','waiting_for_macd_episode_high_break')
+    elif prior_close is None or prior_at is None or not prior_close <= boundary['upper'] < o.price:
+        # Initial entries still require a fresh resistance crossover.
+        return result('wait','waiting_for_fresh_resistance_break')
     entry_price = round(ceil((o.ask-1e-10)/tick)*tick,10)
     # A completed trade can be above the current ask. Both execution and
     # completed-candle geometry must have an overhead target.
@@ -188,29 +261,40 @@ def evaluate(host, a, o, p, state):
     target = next_target(d['rows'],target_floor)
     if not target:
         return result('wait','next_resistance_unavailable')
-    swing = H.initial_swing_low(row,dict(lower=o.bid),now)
-    if not swing:
-        return result('wait','confirmed_swing_low_unavailable')
-    stop = stop_price(entry_price,swing['lower'],tick)
+    if continuation:
+        stop = continuation_stop(saved_exit['level'], tick)
+        stop_selection = dict(source='broken_resistance_lower_20bps',
+            offset_bps=CONTINUATION_STOP_OFFSET_BPS, level=deepcopy(saved_exit['level']))
+    else:
+        swing = H.initial_swing_low(row,dict(lower=o.bid),now)
+        if not swing:
+            return result('wait','confirmed_swing_low_unavailable')
+        stop = stop_price(entry_price,swing['lower'],tick)
+        stop_selection = swing
     target_price = round(floor((target['lower']+1e-10)/tick)*tick,10)
     if (stop is None or not 0 < stop < o.bid <= o.ask <= entry_price
             or target_price <= target_floor):
         return result('wait','invalid_executable_stop_or_target')
     active = dict(level=deepcopy(boundary),target_level=deepcopy(target),confirmed_at=now,
-                  stop=stop,maximum_buy_price=entry_price,hod=prior_hod)
+                  stop=stop,maximum_buy_price=entry_price,hod=prior_hod,
+                  macd_episode=deepcopy(prior_episode))
+    _track_level(state, boundary, 'continuation_support' if continuation else 'initial_breakout', now)
+    _track_level(state, target, 'profit_target', now)
     state.update(r1_entry=active,initial_stop=stop,active_stop=stop,
         structural_profit_targets=[target_price],entry_reference_price=entry_price,
         entry_at=o.observed_at.isoformat(),entries=state.get('entries',0)+1,
         last_exit_reason='',entry_acquisition_exit_latched=False)
     state.pop('r1_stop_error', None)
-    return result('enter_long','r1_resistance_breakout',Status.ENTRY_PENDING,
+    return result('enter_long','r1_macd_episode_continuation' if continuation else 'r1_resistance_breakout',Status.ENTRY_PENDING,
         invalidation_price=stop,profit_target_price=target_price,
         capital_request=CapitalRequest(mode='mandate_fraction',value=s['cash_fraction'],maximum_quantity=s['maximum_quantity'],allow_replacement=False),
         order_intent={'execution_policy':'adaptive_urgent','protection_profile':'structural-single-target'},
         metadata=dict(initial_stop=stop,active_stop=stop,profit_targets=[target_price],
-            r1_stop_bounds=dict(swing_lower=swing['lower'],tick_size=tick),
             profit_target=target_price,mandatory_broker_target=True,maximum_buy_price=entry_price,
-            wait_for_capital=False,entry_selection=deepcopy(boundary),initial_stop_selection=swing,
+            wait_for_capital=False,entry_selection=deepcopy(boundary),initial_stop_selection=stop_selection,
             profit_target_selection=deepcopy(target),
+            **({'r1_fixed_stop':dict(price=stop,source='broken_resistance_lower_20bps',
+                offset_bps=CONTINUATION_STOP_OFFSET_BPS)} if continuation else
+               {'r1_stop_bounds':dict(swing_lower=stop_selection['lower'],tick_size=tick)}),
             unified_structural_trigger={'current_snapshot':{'levels':[dict(boundary,entry_boundary=boundary['upper'])],
                 'session_high':prior_hod,'selected_at':o.observed_at.isoformat(),'frozen_at_entry':True}}))
