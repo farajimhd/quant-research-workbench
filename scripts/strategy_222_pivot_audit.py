@@ -80,6 +80,8 @@ def run(manifest, run_id, configuration, summary, output):
     swing_settings = SwingSettings(reversal_bps=settings.reversal_bps,
         volatility_multiple=settings.volatility_multiple)
     streams, counts, events = {}, Counter(), []
+    witness_observations = 0
+    maximum_retained_clocks = 0
     support_tags = {'local:swing_low_confirmed', 'local:higher_low_confirmed', 'local:equal_low_confirmed'}
     print('Pivot audit: active=1 queued=0 completed=0 failed=0', flush=True)
     with gzip.open(path, 'rt', encoding='utf-8') as source:
@@ -111,13 +113,21 @@ def run(manifest, run_id, configuration, summary, output):
             events.extend(dict(symbol=symbol, **e) for e in engine.events)
             engine.events.clear()
             engine.segments.clear()
-            referenced = {seq}
+            referenced = {seq} | engine.referenced_clocks()
             for level in engine.active.values():
                 level.pop('segment', None)
                 referenced.update((level['pivot_at'], level['confirmed_at']))
             for detector in engine.detectors:
                 referenced.update(detector[k][1] for k in ('high', 'low') if detector.get(k))
             engine.clock = {k:v for k,v in engine.clock.items() if k in referenced}
+            maximum_retained_clocks = max(maximum_retained_clocks, len(engine.clock))
+            if not engine.latest_pivots.keys() <= engine.active.keys():
+                raise ValueError('Expired level retained a pivot witness')
+            for key in engine.latest_pivots:
+                evidence = engine.event_evidence(engine.active[key], engine.clock)
+                if evidence is None or not evidence['pivot_at'] < evidence['confirmed_at'] <= at:
+                    raise ValueError('Active pivot witness has stale role or noncausal event clock')
+                witness_observations += 1
             streams[symbol] = dict(engine=engine, sequence=seq, at=at, session=row['session'])
             counts[symbol] += 1
     if dict(counts) != receipt['by_symbol'] or sum(counts.values()) != receipt['rows']:
@@ -128,6 +138,8 @@ def run(manifest, run_id, configuration, summary, output):
             Path(__file__), Path(witnesses.__file__))},
         source_pins=pins, candles=dict(counts), support_label_parity_rows=sum(counts.values()),
         support_pivots=len(events), merged_support_pivots=len(merged),
+        validated_active_witness_observations=witness_observations,
+        maximum_retained_clock_count_per_symbol=maximum_retained_clocks,
         merged_by_symbol=dict(Counter(e['symbol'] for e in merged)), events=events,
         limitations='Local swing subsystem reconstruction only; every native support-confirmation label matched. Merged pivot witnesses are diagnostic observations, not entry permission or profitable trades. Level identity and original clocks remain unchanged. No global-book, recovery, liquidity, sizing or execution policy is bypassed.'))
     print(f'Pivot audit: active=0 queued=0 completed=1 failed=0 candles={sum(counts.values())} merged_supports={len(merged)}', flush=True)
