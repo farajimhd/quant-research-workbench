@@ -5,6 +5,10 @@ from src.trading_runtime.quote_geometry import QuoteGeometryTracker
 from src.trading_runtime.trade_volume import TradeVolumeTracker
 from src.trading_runtime.session_relative_volume import SessionVolumeTracker
 from src.backend.session_relative_volume import BaselineStore
+from src.backend.prepared_frame_reuse import (
+    frame_identity, register_identity, compatible_artifacts, revalidate,
+    copy_completed_stream, joined_thread,
+)
 from src.trading_runtime.estimated_luld import reference_from_indicator as _backtest_luld_reference
 
 from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD, CONTRACT as LEVEL_LOAD_CONTRACT
@@ -6122,11 +6126,19 @@ class ReplayRunController:
         cache_lock = _PREPARED_FRAME_CACHE_LOCKS.setdefault(
             str(cache_path), asyncio.Lock()
         )
+        identity = frame_identity(
+            schema_version=PREPARED_FRAME_CACHE_SCHEMA_VERSION,
+            start=self.definition.session_start, end=evaluation_end,
+            requests=ordered_requests, indicator_columns=indicator_columns,
+            source_revision=cache_source_revision,
+        )
         async with cache_lock:
             if durable_cache and cache_path.is_file():
                 cached = ReplayFrameSpool(cache_path, reset=False)
                 completed = await asyncio.to_thread(cached.completed_streams)
                 if requests.issubset(completed):
+                    await asyncio.to_thread(register_identity, cache_path, identity,
+                                            warmup_days=INDICATOR_EMA_WARMUP_DAYS)
                     authorities = await asyncio.to_thread(cached.stream_authorities)
                     for (ticker, timeframe), authority in authorities.items():
                         if (ticker, timeframe) in requests and authority:
@@ -6158,6 +6170,48 @@ class ReplayRunController:
             )
             completed_requests = requests.intersection(completed_streams)
             self._preparation_completed_units = len(completed_requests)
+            if completed_requests:
+                for request, authority in (await asyncio.to_thread(spool.stream_authorities)).items():
+                    if request in completed_requests and authority:
+                        self._record_data_authority(f"derived:{request[0]}:{request[1]}", authority)
+            reused_requests: set[tuple[str, str]] = set()
+            if durable_cache and requests - completed_requests:
+                donors = await asyncio.to_thread(
+                    lambda: list(compatible_artifacts(cache_path.parent, identity,
+                                                     warmup_days=INDICATOR_EMA_WARMUP_DAYS))
+                )
+                for donor_path, donor_identity, donor_requests in donors:
+                    usable = donor_requests - completed_requests
+                    if not usable or donor_path == cache_path:
+                        continue
+                    valid = await asyncio.to_thread(
+                        revalidate, donor_identity, warmup_days=INDICATOR_EMA_WARMUP_DAYS,
+                        revision_fetch=qmd_historical_source_revision,
+                    )
+                    if not valid:
+                        continue
+                    self._strategy_frame_cache_status = "reusing"
+                    for ticker, timeframe in sorted(usable):
+                        if self._stop_requested:
+                            raise asyncio.CancelledError("Prepared stream reuse stopped")
+                        authority = await joined_thread(
+                            copy_completed_stream, build_path, donor_path, ticker, timeframe,
+                            end=evaluation_end,
+                        )
+                        if authority is None:
+                            continue
+                        completed_requests.add((ticker, timeframe))
+                        reused_requests.add((ticker, timeframe))
+                        if authority:
+                            self._record_data_authority(f"derived:{ticker}:{timeframe}", authority)
+                        self._preparation_completed_units = len(completed_requests)
+                        self.updated_at = datetime.now(UTC)
+                        await self._publish(force=True)
+                    self._record_data_authority(f"prepared_frame_reuse:{donor_path.stem}", {
+                        "original_identity": donor_identity,
+                        "requested_start": identity["start"], "requested_end": identity["end"],
+                        "streams": [list(row) for row in sorted(usable.intersection(reused_requests))],
+                    })
             self._strategy_frame_cache_status = (
                 "partial_hit"
                 if completed_requests
@@ -6288,7 +6342,12 @@ class ReplayRunController:
                     )
                     spool = ReplayFrameSpool(cache_path, reset=False)
                     await asyncio.to_thread(spool.finalize, events_by_ticker)
-                    self._strategy_frame_cache_status = "built"
+                    await asyncio.to_thread(register_identity, cache_path, identity,
+                                            warmup_days=INDICATOR_EMA_WARMUP_DAYS)
+                    self._strategy_frame_cache_status = (
+                        "reused" if reused_requests == requests else
+                        "reused_and_built" if reused_requests else "built"
+                    )
                 return spool
             except Exception:
                 # Completed streams remain restart-safe in the deterministic
@@ -7387,27 +7446,10 @@ def _prepared_frame_cache_path(
 ) -> Path:
     """Identify one immutable, restart-persistent derived-frame preparation."""
 
-    identity = {
-        "schema_version": PREPARED_FRAME_CACHE_SCHEMA_VERSION,
-        "start": start.isoformat(),
-        "end": end.isoformat(),
-        "requests": [list(request) for request in sorted(requests)],
-        "indicator_columns": (
-            list(indicator_columns) if indicator_columns is not None else None
-        ),
-        "source_revision": {
-            "token": str(dict(source_revision or {}).get("token") or ""),
-            "source_plan_hash": str(
-                dict(source_revision or {}).get("source_plan_hash") or ""
-            ),
-            "calculation_revision": str(
-                dict(source_revision or {}).get("calculation_revision") or ""
-            ),
-            "corporate_action_revision": str(
-                dict(source_revision or {}).get("corporate_action_revision") or ""
-            ),
-        },
-    }
+    identity = frame_identity(
+        schema_version=PREPARED_FRAME_CACHE_SCHEMA_VERSION, start=start, end=end,
+        requests=requests, indicator_columns=indicator_columns, source_revision=source_revision,
+    )
     encoded = json.dumps(identity, separators=(",", ":"), sort_keys=True).encode(
         "utf-8"
     )
