@@ -34,6 +34,14 @@ pub struct ActionInputs<'a> {
     pub latency_ns: u64,
     pub maximum_actions: usize,
 }
+pub struct SizedActionInputs<'a> {
+    pub sizing: &'a BTreeMap<String, Sizing>,
+    pub cash_policies: &'a BTreeMap<String, arte_core::order_funding::Policy>,
+    pub portfolio: &'a arte_core::portfolio::Portfolio,
+    pub safety: simulation_runtime::AmendmentSafety<'a>,
+    pub latency_ns: u64,
+    pub maximum_actions: usize,
+}
 pub struct ActionOutcome {
     pub action: PendingAction,
     /// Some(plan) for an entry/add; None for other successful action types.
@@ -222,11 +230,37 @@ impl Runtime {
     /// reservations remain serial here to avoid scheduler-dependent cash races.
     /// Failure blocks later actions in that decision, not independent decisions.
     pub fn execute_actions(&mut self, inputs: ActionInputs<'_>) -> Result<Vec<ActionOutcome>> {
+        self.execute_actions_inner(inputs, None)
+    }
+    /// Size new entries immediately before funding; retry funded entries using
+    /// controller-owned allocations. Policy maps are keyed by declared account.
+    pub fn execute_sized_actions(
+        &mut self,
+        inputs: SizedActionInputs<'_>,
+    ) -> Result<Vec<ActionOutcome>> {
+        self.execute_actions_inner(
+            ActionInputs {
+                allocations: &BTreeMap::new(),
+                cash_policies: inputs.cash_policies,
+                portfolio: inputs.portfolio,
+                safety: inputs.safety,
+                latency_ns: inputs.latency_ns,
+                maximum_actions: inputs.maximum_actions,
+            },
+            Some(inputs.sizing),
+        )
+    }
+    fn execute_actions_inner(
+        &mut self,
+        inputs: ActionInputs<'_>,
+        sizing: Option<&BTreeMap<String, Sizing>>,
+    ) -> Result<Vec<ActionOutcome>> {
         let run = self.decision_view()?;
         if inputs.maximum_actions == 0
             || inputs.maximum_actions > 4096
             || inputs.allocations.len() > 4096 * 16
             || inputs.cash_policies.len() > 4096
+            || sizing.is_some_and(|policies| policies.len() > 4096)
         {
             return Err(Error::Capacity("action dispatch limits".into()));
         }
@@ -239,6 +273,13 @@ impl Runtime {
             if !accounts.contains(account.as_str()) {
                 return Err(Error::Conflict("undeclared action cash account".into()));
             }
+        }
+        if sizing.is_some_and(|policies| {
+            policies
+                .keys()
+                .any(|account| !accounts.contains(account.as_str()))
+        }) {
+            return Err(Error::Conflict("undeclared action sizing account".into()));
         }
         for key in inputs.allocations.keys() {
             if !self.actions.items.get(key).is_some_and(|item| {
@@ -272,8 +313,12 @@ impl Runtime {
                             .allocations
                             .get(&(action.decision_id.clone(), action.action_index));
                         let cash = inputs.cash_policies.get(&action.account);
-                        match (allocation, cash) {
-                            (Some(allocation), Some(cash_policy)) => self
+                        match (
+                            allocation,
+                            cash,
+                            sizing.and_then(|policies| policies.get(&action.account)),
+                        ) {
+                            (Some(allocation), Some(cash_policy), _) => self
                                 .enter_action(
                                     &action.decision_id,
                                     action.action_index,
@@ -286,8 +331,41 @@ impl Runtime {
                                     },
                                 )
                                 .map(Some),
+                            (None, Some(cash_policy), Some(sizing)) => self
+                                .retained_entry_allocation(&action.decision_id, action.action_index)
+                                .map(|retained| retained.cloned())
+                                .and_then(|retained| {
+                                    if let Some(allocation) = retained {
+                                        self.enter_action(
+                                            &action.decision_id,
+                                            action.action_index,
+                                            EntryRequest {
+                                                allocation: &allocation,
+                                                portfolio: inputs.portfolio,
+                                                cash_policy,
+                                                safety,
+                                                latency_ns: inputs.latency_ns,
+                                            },
+                                        )
+                                        .map(Some)
+                                    } else {
+                                        self.allocate_and_enter_action(
+                                            &action.decision_id,
+                                            action.action_index,
+                                            &SizingRequest {
+                                                sizing,
+                                                portfolio: inputs.portfolio,
+                                                cash_policy,
+                                                safety,
+                                                latency_ns: inputs.latency_ns,
+                                            },
+                                        )
+                                        .and_then(|attempt| attempt.result)
+                                        .map(Some)
+                                    }
+                                }),
                             _ => Err(Error::Unready(
-                                "action allocation or cash mandate missing".into(),
+                                "action allocation, sizing policy or cash mandate missing".into(),
                             )),
                         }
                     }

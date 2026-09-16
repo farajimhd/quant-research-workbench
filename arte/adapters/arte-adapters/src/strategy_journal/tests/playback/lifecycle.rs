@@ -513,6 +513,47 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, scenario: Scenario)
                 }
             );
             assert_eq!(pending[0].action_index, 0);
+            if matches!(scenario, Scenario::Capacity) {
+                let sizing_policies =
+                    BTreeMap::from([("a".into(), sizing.clone()), ("b".into(), sizing.clone())]);
+                let cash_policies =
+                    BTreeMap::from([("a".into(), cash.clone()), ("b".into(), cash.clone())]);
+                let before = portfolio.snapshot("b").unwrap().reservations;
+                let retained = content_hash(
+                    controller
+                        .retained_entry_allocation(&pending[0].decision_id, 0)
+                        .unwrap()
+                        .unwrap(),
+                )
+                .unwrap();
+                let outcomes = controller
+                    .execute_sized_actions(crate::playback_runtime::SizedActionInputs {
+                        sizing: &sizing_policies,
+                        cash_policies: &cash_policies,
+                        portfolio: &portfolio,
+                        safety: crate::simulation_runtime::AmendmentSafety {
+                            session: &session,
+                            risk_policy: &risk,
+                            bands: None,
+                        },
+                        latency_ns: 0,
+                        maximum_actions: 2,
+                    })
+                    .unwrap();
+                assert_eq!(outcomes.len(), 1);
+                assert!(outcomes[0].result.is_err());
+                assert_eq!(portfolio.snapshot("b").unwrap().reservations, before);
+                assert_eq!(
+                    content_hash(
+                        controller
+                            .retained_entry_allocation(&pending[0].decision_id, 0)
+                            .unwrap()
+                            .unwrap()
+                    )
+                    .unwrap(),
+                    retained
+                );
+            }
             assert!(controller.acknowledge().is_err());
             return;
         }
@@ -595,15 +636,49 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, scenario: Scenario)
                 assert!(controller.acknowledge().is_err());
             }
             // Bounded calls drain the remaining work. Successes are never replayed.
+            let sizing = BTreeMap::from([
+                (
+                    "a".into(),
+                    crate::playback_runtime::Sizing {
+                        price_scale: 2,
+                        tick: 1,
+                        maximum_quantity: 100,
+                        lot_size: 1,
+                        order_lifetime_ns: 1_000_000_000,
+                    },
+                ),
+                (
+                    "b".into(),
+                    crate::playback_runtime::Sizing {
+                        price_scale: 2,
+                        tick: 1,
+                        maximum_quantity: 2,
+                        lot_size: 1,
+                        order_lifetime_ns: 1_000_000_000,
+                    },
+                ),
+            ]);
+            let sized_inputs = || crate::playback_runtime::SizedActionInputs {
+                sizing: &sizing,
+                cash_policies: &policies,
+                portfolio: &portfolio,
+                safety: crate::simulation_runtime::AmendmentSafety {
+                    session: &session,
+                    risk_policy: &risk,
+                    bands: None,
+                },
+                latency_ns: 0,
+                maximum_actions: 1,
+            };
             while !controller.pending_actions().is_empty() {
                 let before = controller.pending_actions().len();
-                let outcomes = controller.execute_actions(inputs(&allocations, 1)).unwrap();
+                let outcomes = controller.execute_sized_actions(sized_inputs()).unwrap();
                 assert_eq!(outcomes.len(), 1);
                 outcomes.into_iter().next().unwrap().result.unwrap();
                 assert_eq!(controller.pending_actions().len(), before - 1);
             }
             assert!(controller
-                .execute_actions(inputs(&allocations, 1))
+                .execute_sized_actions(sized_inputs())
                 .unwrap()
                 .is_empty());
             for (id, index) in allocations.keys() {

@@ -6,6 +6,29 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Automatic sized-action dispatch
+
+Bounded dispatch now accepts declared-account sizing and cash policies directly.
+New entries are sized immediately before funding. Funded entries retry the
+controller-owned allocation instead of recalculating quantity. Both paths use the
+same action queue, bracket checks, reservation authority and completion records.
+Protection changes, exits and cancellations retain their existing dispatch path.
+
+Missing entry policies produce per-action errors. Undeclared policy accounts fail
+preflight. Successful actions are excluded from later batches. A failed funded
+submission retains its reservation and allocation. No strategy decision is
+silently dropped to let playback advance.
+
+Lifecycle fixtures now drain work through automatic sized dispatch. They continue
+through fills, settlement and checkpoint recovery. The capacity-failure fixture
+also retries through this API and confirms unchanged allocation and reservation.
+All 393 offline Rust tests, formatting, Clippy and copied-source checks pass.
+Source-oracle parity was not rerun. No service or network test ran.
+
+The runner still needs verified configuration/reference assembly, candidate
+evidence assembly and its outer control loop. This is not a complete backtest CLI
+or a live-trading release.
+
 ## Controller-owned allocation recovery
 
 The controller retains the allocation when an entry is funded. Callers can read
