@@ -1,4 +1,5 @@
-use crate::bars::{TradeAggregationRules, TradeUpdateRule};
+use crate::bars::{TradeAggregationRules, TradeUpdateRule, FORM_T_EXTENDED_HOURS_CONDITION,
+    REGULAR_SESSION_START_SECONDS, REGULAR_SESSION_END_SECONDS};
 use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::intraday_bars::{DurableCompactEvents, IntradayBarRouter};
@@ -173,6 +174,39 @@ pub struct CompactEventDecoder {
 }
 
 impl CompactEventDecoder {
+    /// SQL equivalent of decode(...).conditions followed by resolve(...).update_volume.
+    /// Unknown compact tokens are dropped by decode and therefore do not veto a trade.
+    /// Derive the token rules from the loaded authority, including Form T's
+    /// extended-hours override, rather than embedding a second condition table.
+    pub fn volume_eligibility_sql(&self, rules: &TradeAggregationRules, alias: &str) -> String {
+        let (regular_denied, extended_form_t_denied, form_t_tokens) = self.volume_token_rules(rules);
+        let tokens = format!("[{alias}.condition_token_1,{alias}.condition_token_2,{alias}.condition_token_3,{alias}.condition_token_4,{alias}.condition_token_5]");
+        let list = |values: &[u8]| format!("[{}]", values.iter().map(u8::to_string).collect::<Vec<_>>().join(","));
+        let local_time = format!("fromUnixTimestamp64Micro(toInt64({alias}.sip_timestamp_us), 'America/New_York')");
+        let seconds = format!("(toHour({local_time}) * 3600 + toMinute({local_time}) * 60 + toSecond({local_time}))");
+        format!("if(({seconds} < {REGULAR_SESSION_START_SECONDS} OR {seconds} >= {REGULAR_SESSION_END_SECONDS}) AND hasAny({tokens}, {}), NOT hasAny({tokens}, {}), NOT hasAny({tokens}, {}))",
+            list(&form_t_tokens), list(&extended_form_t_denied), list(&regular_denied))
+    }
+
+    fn volume_token_rules(&self, rules: &TradeAggregationRules) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let mut regular_denied = Vec::new();
+        let mut extended_denied = Vec::new();
+        let mut form_t = Vec::new();
+        for (&token, &condition) in &self.trade_conditions {
+            if !rules.resolve_for_session(&[condition], false).update_volume {
+                regular_denied.push(token);
+            }
+            if !rules.resolve_for_session(&[FORM_T_EXTENDED_HOURS_CONDITION, condition], true).update_volume {
+                extended_denied.push(token);
+            }
+            if condition == FORM_T_EXTENDED_HOURS_CONDITION { form_t.push(token); }
+        }
+        regular_denied.sort_unstable();
+        extended_denied.sort_unstable();
+        form_t.sort_unstable();
+        (regular_denied, extended_denied, form_t)
+    }
+
     pub fn new(
         quote_conditions: impl IntoIterator<Item = (u8, u16)>,
         trade_conditions: impl IntoIterator<Item = (u8, u16)>,
@@ -2415,6 +2449,45 @@ fn escape_sql_string(value: &str) -> String {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    #[test]
+    fn volume_sql_token_rules_match_decoder_and_resolver_combinations() {
+        let decoder = CompactEventDecoder::new([], [(1, 0), (2, 12), (3, 5), (4, 6), (5, 7), (6, 99)], [], []);
+        let regular = Utc.with_ymd_and_hms(2026, 8, 19, 14, 0, 0).unwrap();
+        let extended = Utc.with_ymd_and_hms(2026, 8, 19, 8, 0, 0).unwrap();
+        for form_t_volume in [false, true] {
+            let rules = TradeAggregationRules::new([
+                (0, TradeUpdateRule::regular()),
+                (12, TradeUpdateRule { update_high_low: false, update_last: false, update_volume: form_t_volume }),
+                (5, TradeUpdateRule::regular()),
+                (6, TradeUpdateRule { update_high_low: true, update_last: false, update_volume: true }),
+                (7, TradeUpdateRule { update_high_low: true, update_last: true, update_volume: false }),
+            ]).unwrap();
+            let (regular_denied, extended_denied, form_t) = decoder.volume_token_rules(&rules);
+            for a in [0, 1, 2, 3, 4, 5, 6, 255] {
+                for b in [0, 1, 2, 3, 4, 5, 6, 255] {
+                    for c in [0, 1, 2, 3, 4, 5, 6, 255] {
+                        let tokens = [a, b, c, 0, 0];
+                        let conditions = tokens.iter().filter_map(|token| decoder.trade_conditions.get(token).copied()).collect::<Vec<_>>();
+                        for (at, extended_hours) in [(regular, false), (extended, true)] {
+                            let denied = if extended_hours && tokens.iter().any(|token| form_t.contains(token)) {
+                                &extended_denied
+                            } else { &regular_denied };
+                            let sql_decision = !tokens.iter().any(|token| denied.contains(token));
+                            assert_eq!(sql_decision, rules.resolve(&conditions, at).update_volume,
+                                "tokens={tokens:?}, extended={extended_hours}, form_t_volume={form_t_volume}");
+                        }
+                    }
+                }
+            }
+            let sql = decoder.volume_eligibility_sql(&rules, "events");
+            assert!(sql.contains("America/New_York"));
+            assert!(sql.contains("< 34200 OR"));
+            assert!(sql.contains(">= 57600"));
+            assert!(!regular_denied.contains(&255));
+            assert!(!extended_denied.contains(&255));
+        }
+    }
 
     fn references() -> CompactEventReferences {
         CompactEventReferences {

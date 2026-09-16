@@ -3,20 +3,278 @@ use crate::config::HistoricalGatewayConfig;
 use crate::source::{EventWindow, HistoricalEventSource, SourceRevision};
 use chrono::{DateTime, Datelike, NaiveDate, TimeZone, Timelike, Utc, Weekday};
 use chrono_tz::America::New_York;
-use qmd_core::event::MarketEvent;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
 pub const CONTRACT: &str = "session-relative-volume-baseline-1";
 pub const HASH_CONTRACT: &str = "typed-json-sha256-1";
 const SECONDS: usize = 57_600;
+
+// Cache exact f64 bits rather than round-tripping volume through JSON numbers.
+// Each daily artifact retains the complete original source-revision scope.
+#[derive(Deserialize, Serialize)]
+struct DailyVolume {
+    contract: String,
+    date: NaiveDate,
+    ticker: String,
+    source_start: DateTime<Utc>,
+    source_end: DateTime<Utc>,
+    source_tickers: Vec<String>,
+    source_revision: SourceRevision,
+    buckets: Vec<(usize, u64, u64)>,
+}
+
+struct PendingDaily(Vec<(PathBuf, PathBuf)>);
+impl Drop for PendingDaily {
+    fn drop(&mut self) {
+        for (pending, _) in &self.0 {
+            let _ = std::fs::remove_file(pending);
+        }
+    }
+}
+
+fn same_revision(a: &SourceRevision, b: &SourceRevision) -> bool {
+    a.complete_for_history
+        && a.request_complete
+        && b.complete_for_history
+        && b.request_complete
+        && a.token == b.token
+        && a.source_plan_hash == b.source_plan_hash
+}
+
+fn daily_directory(config: &HistoricalGatewayConfig, date: NaiveDate, ticker: &str) -> PathBuf {
+    config
+        .prepared_bar_cache_root
+        .join("session-volume-v1")
+        .join(date.to_string())
+        .join(ticker)
+}
+
+async fn cached_daily(
+    config: &HistoricalGatewayConfig,
+    source: &HistoricalEventSource,
+    date: NaiveDate,
+    ticker: &str,
+    checked: &mut BTreeMap<String, bool>,
+) -> Result<Option<Vec<(usize, f64, u64)>>, String> {
+    let directory = daily_directory(config, date, ticker);
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("RVOL daily cache read failed: {e}")),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        if entry.metadata().map_err(|e| e.to_string())?.len() > 4 * 1024 * 1024 {
+            continue;
+        }
+        let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+        let hash = format!("{:x}", Sha256::digest(&bytes));
+        if path.file_stem().and_then(|s| s.to_str()) != Some(hash.as_str()) {
+            continue;
+        }
+        let Ok(cache) = serde_json::from_slice::<DailyVolume>(&bytes) else {
+            continue;
+        };
+        if cache.contract != "session-volume-daily-1"
+            || cache.date != date
+            || cache.ticker != ticker
+            || !cache.source_tickers.iter().any(|t| t == ticker)
+            || cache.source_start > boundary(date, 4)?
+            || cache.source_end < boundary(date, 20)?
+            || cache.buckets.len() > SECONDS
+            || cache.buckets.windows(2).any(|v| v[0].0 >= v[1].0)
+            || cache.buckets.iter().any(|&(i, bits, _)| {
+                i == 0
+                    || i > SECONDS
+                    || !f64::from_bits(bits).is_finite()
+                    || f64::from_bits(bits) < 0.
+            })
+        {
+            continue;
+        }
+        let key = serde_json::to_string(&(
+            &cache.source_start,
+            &cache.source_end,
+            &cache.source_tickers,
+            &cache.source_revision.token,
+            &cache.source_revision.source_plan_hash,
+        ))
+        .map_err(|e| e.to_string())?;
+        let valid = if let Some(valid) = checked.get(&key) {
+            *valid
+        } else {
+            let current = source
+                .source_revision(&EventWindow {
+                    start: cache.source_start,
+                    end: cache.source_end,
+                    tickers: cache.source_tickers.clone(),
+                })
+                .await?;
+            let valid = same_revision(&cache.source_revision, &current);
+            checked.insert(key, valid);
+            valid
+        };
+        if valid {
+            return Ok(Some(
+                cache
+                    .buckets
+                    .into_iter()
+                    .map(|(i, b, n)| (i, f64::from_bits(b), n))
+                    .collect(),
+            ));
+        }
+    }
+    Ok(None)
+}
+
+fn stage_daily(
+    config: &HistoricalGatewayConfig,
+    cache: &DailyVolume,
+    pending: &mut PendingDaily,
+) -> Result<(), String> {
+    let bytes = serde_json::to_vec(cache).map_err(|e| e.to_string())?;
+    let directory = daily_directory(config, cache.date, &cache.ticker);
+    std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+    let target = directory.join(format!("{:x}.json", Sha256::digest(&bytes)));
+    if target.exists() {
+        return Ok(());
+    }
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let temporary = target.with_extension(format!("{}-{nonce}.pending", std::process::id()));
+    pending.0.push((temporary.clone(), target));
+    std::fs::write(&temporary, bytes).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn publish_daily(pending: &PendingDaily) -> Result<(), String> {
+    for (temporary, target) in &pending.0 {
+        if target.exists() {
+            continue;
+        }
+        std::fs::rename(temporary, target)
+            .map_err(|e| format!("RVOL daily cache publish failed: {e}"))?;
+    }
+    Ok(())
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BaselineRequest {
     pub session_date: NaiveDate,
     pub tickers: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionVolumeRequest {
+    pub session_date: NaiveDate,
+    pub ticker: String,
+    pub as_of: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SessionVolumeResponse {
+    pub contract: &'static str,
+    pub session_date: NaiveDate,
+    pub ticker: String,
+    pub session_start: DateTime<Utc>,
+    pub as_of: DateTime<Utc>,
+    pub boundary_seconds: u32,
+    pub profile: Vec<f64>,
+    pub source_revision: SourceRevision,
+}
+
+pub async fn session_volume(
+    config: &HistoricalGatewayConfig,
+    source: &HistoricalEventSource,
+    request: SessionVolumeRequest,
+) -> Result<SessionVolumeResponse, String> {
+    let tickers = validate_request(&BaselineRequest {
+        session_date: request.session_date,
+        tickers: vec![request.ticker],
+    })?;
+    let ticker = tickers.into_iter().next().ok_or("Missing ticker")?;
+    let start = boundary(request.session_date, 4)?;
+    let end = request
+        .as_of
+        .with_nanosecond(0)
+        .ok_or("Invalid RVOL clock")?;
+    if end <= start || end > boundary(request.session_date, 20)? {
+        return Err(
+            "Session volume requires a completed second after 04:00 and no later than 20:00 ET"
+                .into(),
+        );
+    }
+    let window = EventWindow {
+        start,
+        end,
+        tickers: vec![ticker.clone()],
+    };
+    let revision = source.source_revision(&window).await?;
+    if !revision.complete_for_history || !revision.request_complete {
+        return Err("RVOL current-session source is incomplete".into());
+    }
+    let mut checked = BTreeMap::new();
+    let buckets =
+        match cached_daily(config, source, request.session_date, &ticker, &mut checked).await? {
+            Some(buckets) => buckets,
+            None => source
+                .daily_session_volume(&window)
+                .await?
+                .into_iter()
+                .map(|(_, i, v, n)| (i, v, n))
+                .collect(),
+        };
+    let length = (end - start).num_seconds() as usize + 1;
+    let profile = cumulative_profile(buckets, length)?;
+    let after = source.source_revision(&window).await?;
+    if !same_revision(&revision, &after) {
+        return Err("RVOL current-session source changed during load; retry".into());
+    }
+    Ok(SessionVolumeResponse {
+        contract: "session-volume-profile-1",
+        session_date: request.session_date,
+        ticker,
+        session_start: start,
+        as_of: end,
+        boundary_seconds: 1,
+        profile,
+        source_revision: revision,
+    })
+}
+
+fn cumulative_profile(buckets: Vec<(usize, f64, u64)>, length: usize) -> Result<Vec<f64>, String> {
+    if length == 0 || length > SECONDS + 1 {
+        return Err("Invalid session-volume prefix length".into());
+    }
+    let mut profile = vec![0.; length];
+    for (index, volume, _) in buckets {
+        if index == 0 || index > SECONDS || !volume.is_finite() || volume < 0. {
+            return Err("Invalid session-volume aggregate".into());
+        }
+        if index < length {
+            profile[index] += volume;
+        }
+    }
+    let mut total = 0.;
+    for volume in &mut profile {
+        total += *volume;
+        if !total.is_finite() {
+            return Err("Session volume overflow".into());
+        }
+        *volume = total;
+    }
+    Ok(profile)
 }
 
 #[derive(Debug, Serialize)]
@@ -47,6 +305,8 @@ pub fn validate_request(request: &BaselineRequest) -> Result<BTreeSet<String>, S
     if tickers.len() != request.tickers.len()
         || tickers.iter().any(|s| {
             s.is_empty()
+                || s == "."
+                || s == ".."
                 || s.len() > 32
                 || !s
                     .bytes()
@@ -83,6 +343,7 @@ fn validate_dates(session: NaiveDate, dates: &[NaiveDate]) -> Result<(), String>
     Ok(())
 }
 
+#[cfg(test)]
 fn increment_index(at: DateTime<Utc>) -> Option<usize> {
     let seconds = at
         .with_timezone(&New_York)
@@ -128,40 +389,70 @@ pub async fn load(
         .iter()
         .map(|t| (t.clone(), vec![0.; SECONDS + 1]))
         .collect::<BTreeMap<_, _>>();
-    let rules = source.trade_aggregation_rules();
-    // Quotes never contribute to volume. Push the existing canonical trade
-    // predicate into the reader instead of transferring/decoding them for 20 days.
-    let mut batches = source.stream_ordered_filtered(
-        window.clone(),
-        config.batch_size.clamp(1, 100_000),
-        revision.live_continuation_sequence,
-        Some(qmd_core::compact_event::TRADE_EVENT_TYPE),
-    )?;
     let mut event_count = 0u64;
     let limit = (config.scanner_max_events_per_snapshot as u64).saturating_mul(4);
-    while let Some(batch) = batches.recv().await {
-        for compact in batch? {
-            event_count += 1;
-            if event_count > limit {
-                return Err(format!("RVOL baseline exceeded event_limit={limit}"));
-            }
-            let event = source.market_event(&compact);
-            if let MarketEvent::Trade(trade) = event {
-                if !dates.contains(&trade.ts.with_timezone(&New_York).date_naive())
-                    || !rules.resolve(&trade.conditions, trade.ts).update_volume
-                    || !trade.size.is_finite()
-                    || trade.size <= 0.
-                {
-                    continue;
+    let mut checked = BTreeMap::new();
+    let mut pending = PendingDaily(Vec::new());
+    for &date in &dates {
+        let mut daily = BTreeMap::new();
+        let mut missing = Vec::new();
+        for ticker in &tickers {
+            match cached_daily(config, source, date, ticker, &mut checked).await? {
+                Some(buckets) => {
+                    daily.insert(ticker.clone(), buckets);
                 }
-                if let Some(index) = increment_index(trade.ts) {
-                    let profile = profiles
-                        .get_mut(&trade.ticker.to_ascii_uppercase())
-                        .ok_or("Unexpected RVOL source ticker")?;
-                    profile[index] += trade.size;
-                    if !profile[index].is_finite() {
-                        return Err("RVOL volume overflow".into());
-                    }
+                None => missing.push(ticker.clone()),
+            }
+        }
+        if !missing.is_empty() {
+            let day_window = EventWindow {
+                start: boundary(date, 4)?,
+                end: boundary(date, 20)?,
+                tickers: missing.clone(),
+            };
+            for ticker in &missing {
+                daily.insert(ticker.clone(), Vec::new());
+            }
+            for (ticker, index, volume, count) in source.daily_session_volume(&day_window).await? {
+                daily
+                    .get_mut(&ticker)
+                    .ok_or("Unexpected RVOL aggregate ticker")?
+                    .push((index, volume, count));
+            }
+            for ticker in missing {
+                let cache = DailyVolume {
+                    contract: "session-volume-daily-1".into(),
+                    date,
+                    ticker: ticker.clone(),
+                    source_start: window.start,
+                    source_end: window.end,
+                    source_tickers: window.tickers.clone(),
+                    source_revision: revision.clone(),
+                    buckets: daily[&ticker]
+                        .iter()
+                        .map(|&(i, v, n)| (i, v.to_bits(), n))
+                        .collect(),
+                };
+                stage_daily(config, &cache, &mut pending)?;
+            }
+        }
+        for (ticker, buckets) in daily {
+            let profile = profiles
+                .get_mut(&ticker)
+                .ok_or("Unexpected RVOL aggregate ticker")?;
+            for (index, volume, count) in buckets {
+                event_count = event_count
+                    .checked_add(count)
+                    .ok_or("RVOL event count overflow")?;
+                if event_count > limit {
+                    return Err(format!("RVOL baseline exceeded event_limit={limit}"));
+                }
+                if index == 0 || index > SECONDS || !volume.is_finite() || volume < 0. {
+                    return Err("Invalid RVOL aggregate bucket".into());
+                }
+                profile[index] += volume;
+                if !profile[index].is_finite() {
+                    return Err("RVOL volume overflow".into());
                 }
             }
         }
@@ -178,6 +469,7 @@ pub async fn load(
     {
         return Err("RVOL source revision or session selection changed during load; retry".into());
     }
+    publish_daily(&pending)?;
     let mut response = BaselineResponse {
         contract: CONTRACT,
         session_date: request.session_date,
@@ -191,7 +483,7 @@ pub async fn load(
             .collect(),
         source_revision: revision,
         event_count,
-        event_count_basis: "trade_events",
+        event_count_basis: "session_trade_events",
         content_hash: String::new(),
         content_hash_contract: HASH_CONTRACT,
     };
@@ -263,6 +555,117 @@ fn baseline_content_hash(mut value: serde_json::Value) -> Result<String, String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    #[ignore = "Requires canonical database and explicit RVOL_TEST_DATE/TICKER/AS_OF"]
+    async fn canonical_current_session_matches_event_replay() {
+        qmd_core::config::load_env_files();
+        let config = HistoricalGatewayConfig::from_env();
+        let source = HistoricalEventSource::initialize(config.clone())
+            .await
+            .unwrap();
+        let request = SessionVolumeRequest {
+            session_date: std::env::var("RVOL_TEST_DATE").unwrap().parse().unwrap(),
+            ticker: std::env::var("RVOL_TEST_TICKER").unwrap(),
+            as_of: std::env::var("RVOL_TEST_AS_OF").unwrap().parse().unwrap(),
+        };
+        let response = session_volume(&config, &source, request).await.unwrap();
+        let window = EventWindow {
+            start: response.session_start,
+            end: response.as_of,
+            tickers: vec![response.ticker.clone()],
+        };
+        let mut batches = source
+            .stream_ordered_filtered(
+                window.clone(),
+                25_000,
+                response.source_revision.live_continuation_sequence,
+                Some(qmd_core::compact_event::TRADE_EVENT_TYPE),
+            )
+            .unwrap();
+        let mut increments = vec![0.; response.profile.len()];
+        let rules = source.trade_aggregation_rules();
+        let mut count = 0;
+        while let Some(batch) = batches.recv().await {
+            for compact in batch.unwrap() {
+                count += 1;
+                assert!(count <= config.scanner_max_events_per_snapshot);
+                if let qmd_core::event::MarketEvent::Trade(trade) = source.market_event(&compact) {
+                    if rules.resolve(&trade.conditions, trade.ts).update_volume
+                        && trade.size.is_finite()
+                        && trade.size > 0.
+                    {
+                        increments[increment_index(trade.ts).unwrap()] += trade.size;
+                    }
+                }
+            }
+        }
+        let expected = cumulative_profile(
+            increments
+                .into_iter()
+                .enumerate()
+                .skip(1)
+                .map(|(i, v)| (i, v, 0))
+                .collect(),
+            response.profile.len(),
+        )
+        .unwrap();
+        assert!(same_revision(
+            &response.source_revision,
+            &source.source_revision(&window).await.unwrap()
+        ));
+        assert_eq!(response.profile, expected);
+        println!(
+            "Canonical replay parity: {count} trades, {} completed-second values",
+            response.profile.len()
+        );
+    }
+    #[test]
+    fn chart_prefix_does_not_expose_cached_future_volume() {
+        let buckets = vec![(1, 2.5, 1), (3, 10., 1), (10, 1000., 1)];
+        assert_eq!(
+            cumulative_profile(buckets, 4).unwrap(),
+            vec![0., 2.5, 2.5, 12.5]
+        );
+        assert!(cumulative_profile(vec![(1, f64::NAN, 1)], 4).is_err());
+        assert!(cumulative_profile(vec![(0, 1., 1)], 4).is_err());
+    }
+
+    #[test]
+    fn daily_cache_preserves_exact_volume_bits_and_revision_scope() {
+        let date = "2026-08-21".parse().unwrap();
+        let revision = SourceRevision {
+            complete_for_history: true,
+            request_complete: true,
+            event_count: 1,
+            live_continuation_sequence: None,
+            max_build_step: 1,
+            max_updated_at: "revision-time".into(),
+            source_plan_hash: "plan".into(),
+            source_tiers: vec!["archive".into()],
+            token: "token".into(),
+        };
+        let cache = DailyVolume {
+            contract: "session-volume-daily-1".into(),
+            date,
+            ticker: "TEST".into(),
+            source_start: boundary(date, 4).unwrap(),
+            source_end: boundary(date, 20).unwrap(),
+            source_tickers: vec!["TEST".into(), "OTHER".into()],
+            source_revision: revision.clone(),
+            buckets: vec![(1, 1.2345678901234567f64.to_bits(), 1)],
+        };
+        let loaded: DailyVolume =
+            serde_json::from_slice(&serde_json::to_vec(&cache).unwrap()).unwrap();
+        assert_eq!(loaded.buckets, cache.buckets);
+        assert_eq!(loaded.source_tickers, cache.source_tickers);
+        assert!(same_revision(&revision, &loaded.source_revision));
+        let mut changed = revision.clone();
+        changed.source_plan_hash = "different".into();
+        assert!(!same_revision(&revision, &changed));
+        changed = revision.clone();
+        changed.request_complete = false;
+        assert!(!same_revision(&revision, &changed));
+    }
     #[test]
     fn typed_json_hash_matches_python_golden() {
         let value = serde_json::json!({

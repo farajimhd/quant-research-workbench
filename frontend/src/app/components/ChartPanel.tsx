@@ -1747,7 +1747,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   function updateOscillatorPaneSeries(runtime: OscillatorPaneRuntime, seriesList: ChartSeries[]) {
     const chart = priceChartRef.current;
     if (!chart) return;
-    if (seriesList[0]?.chartRole === 'ema-acceleration') {
+    if (seriesList[0]?.chartRole === 'ema-acceleration' || seriesList[0]?.column === 'session_relative_volume') {
       runtime.timelineRenderer?.applyOptions({priceFormat: adaptiveSeriesPriceFormat(seriesList[0])});
     }
     if (seriesList.some((series) => oscillatorPaneKey(series) === "oscillator:macd")) {
@@ -2196,7 +2196,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
             </button>
           ))}
         </div>
-        {dataStatus ? <span className="chart-data-status" title="Historical prices and share quantities use the recorded stock-split basis.">{dataStatus}</span> : null}
+        {dataStatus ? <span className="chart-data-status" title={dataStatus === "Split-adjusted" ? "Historical prices and share quantities use the recorded stock-split basis." : dataStatus}>{dataStatus}</span> : null}
         {showIndicatorControls || showSupervisionControls ? (
           <>
             <span className="toolbar-divider" />
@@ -5632,6 +5632,7 @@ function seriesAutoscaleInfoProvider(series: ChartSeries) {
 }
 
 function adaptiveSeriesPriceFormat(series: ChartSeries) {
+  if (series.column === "session_relative_volume") return { type: "custom" as const, minMove: 0.01, formatter: (value: number) => `${value.toFixed(2)}x` };
   if(series.chartRole==='ema-acceleration'){
     const magnitude=series.data.reduce((m,p)=>Math.max(m,Math.abs(p.value)),0);
     return {type:'custom' as const,minMove:magnitude>0?10**(Math.floor(Math.log10(magnitude))-3):1e-8,formatter:(value:number)=>value===0?'0':value.toPrecision(4)};

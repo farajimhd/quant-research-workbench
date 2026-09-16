@@ -95,6 +95,14 @@ export const CHART_INDICATORS: ChartDisplayItem[] = [
   displayIndicator("indicator.atr", "ATR 14", "volatility", ["atr_14"], "atr"),
   displayIndicator("indicator.bollinger_std", "Bollinger Std Dev", "volatility", ["bollinger_std_20"], "bollinger_std"),
   displayIndicator("indicator.volume_sma", "Volume SMA 20", "volume_liquidity", ["volume_sma_20"], "volume"),
+  displayIndicator("indicator.session_relative_volume", "Session RVOL (20 days)", "volume_liquidity", ["session_relative_volume"], "session_relative_volume", indicatorGuide(
+    "Compare cumulative extended-session volume with its usual pace at the same time of day. Values are multiples: 1x is the prior-session average.",
+    "Eligible cumulative volume since 04:00 ET divided by the average cumulative volume at the same completed second across the prior 20 completed sessions. Values come from the canonical backend RVOL authority.",
+    "Above 1x means more participation than usual; rising prices still require separate directional confirmation.",
+    "Below 1x means less participation than usual. RVOL alone does not distinguish buying from selling.",
+    "The baseline always uses 20 prior sessions, independent of chart timeframe. Each point uses only completed volume available at that candle boundary.",
+    ["An unavailable or zero baseline leaves a gap, not a zero reading.", "RVOL measures participation rather than direction."],
+  )),
   displayIndicator("indicator.return", "1-bar Return", "price_action", ["return_1_bar"], "return"),
   displayIndicator("indicator.price_ema", "Price vs EMA 20", "momentum", ["price_vs_ema20_pct"], "distance"),
   displayIndicator("indicator.price_vwap", "Price vs VWAP", "volume_liquidity", ["price_vs_execution_vwap_pct"], "distance"),
@@ -253,6 +261,7 @@ export const CHART_INDICATORS: ChartDisplayItem[] = [
 ];
 
 export const INDICATOR_SERIES = [
+  { axisTitle: "RVOL (x)", autoscaleScope: "loaded-series", column: "session_relative_volume", color: "var(--info)", displayItemId: "indicator.session_relative_volume", label: "Session RVOL (20 days)", pane: "session_relative_volume", priceScaleId: "right" },
   { column: "execution_vwap", color: "var(--info)", displayItemId: "indicator.vwap", label: "VWAP", pane: "price" },
   { column: "ema_9", color: "var(--info)", displayItemId: "indicator.ema_9", label: "EMA 9", pane: "price" },
   { column: "ema_20", color: "var(--primary)", displayItemId: "indicator.ema_20", label: "EMA 20", pane: "price" },

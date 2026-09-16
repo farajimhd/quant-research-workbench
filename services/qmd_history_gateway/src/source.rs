@@ -1,5 +1,5 @@
 use crate::config::HistoricalGatewayConfig;
-use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, TimeZone, Utc, Weekday};
+use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc, Weekday};
 use chrono_tz::America::New_York;
 use qmd_core::bars::TradeAggregationRules;
 use qmd_core::compact_event::{
@@ -2172,6 +2172,77 @@ impl HistoricalEventSource {
         live_continuation_sequence: Option<u64>,
     ) -> Result<mpsc::Receiver<Result<Vec<LiveCompactEvent>, String>>, String> {
         self.stream_ordered_filtered(window, batch_size, live_continuation_sequence, None)
+    }
+
+    /// Canonical volume increments at the first integer second strictly after
+    /// each SIP timestamp. Counts include all trades; volume uses loaded rules.
+    /// Callers pin/revalidate source_revision around their complete operation.
+    pub async fn daily_session_volume(
+        &self,
+        window: &EventWindow,
+    ) -> Result<Vec<(String, usize, f64, u64)>, String> {
+        validate_window(window)?;
+        let start = window.start.with_timezone(&New_York);
+        let end = window.end.with_timezone(&New_York);
+        if window.tickers.is_empty() || window.tickers.len() > 16
+            || start.date_naive() != end.date_naive()
+            || start.time().num_seconds_from_midnight() != 4 * 3600
+            || start.nanosecond() != 0
+            || end.time().num_seconds_from_midnight() > 20 * 3600
+            || (end.time().num_seconds_from_midnight() == 20 * 3600 && end.nanosecond() != 0)
+        {
+            return Err("Daily volume requires 1..16 tickers and one 04:00..20:00 ET window".into());
+        }
+        let plan = self.source_plan(window).await?;
+        if self.requires_archive_execution_clock() {
+            self.archive_execution_clock_revision(window, &plan).await?;
+        }
+        let filter = format!("{} AND bitAnd(source.event_meta, 1) = toUInt8(1)", ticker_filter(&window.tickers)?);
+        let mut selects = Vec::new();
+        for segment in &plan.segments {
+            if matches!(segment.tier, MarketSourceTier::ClosedMarket) { continue; }
+            if !segment.queryable_by_history {
+                return Err("Daily volume source is not completely canonical historical data".into());
+            }
+            let (table, recent) = match segment.tier {
+                MarketSourceTier::Archive => (format!("{}.{}{}", self.config.clickhouse_database, self.config.table_prefix, segment.start.year()), false),
+                MarketSourceTier::Recent => (format!("{}.{}", self.config.recent_database, self.config.recent_event_table), true),
+                _ => return Err("Daily volume does not support a live or missing source segment".into()),
+            };
+            let clock = (!recent && self.requires_archive_execution_clock()).then(||
+                format!("{}.{}", self.config.execution_clock_database, self.config.execution_clock_table));
+            selects.push(event_select(&table, recent, clock.as_deref(), segment.start, segment.end, &filter, None));
+        }
+        if selects.is_empty() { return Ok(Vec::new()); }
+        let max_bucket = ((window.end.timestamp_micros() - window.start.timestamp_micros() + 999_999) / 1_000_000) as usize;
+        let max_rows = max_bucket * window.tickers.len();
+        let eligibility = self.decoder.volume_eligibility_sql(&self.trade_rules, "events");
+        let sql = format!(
+            "SELECT ticker, toUInt64(intDiv(sip_timestamp_us - {}, 1000000) + 1) AS bucket, \
+             sumIf(toFloat64(size_primary), isFinite(toFloat64(size_primary)) AND size_primary > 0 AND ({eligibility})) AS volume, count() AS trades \
+             FROM ({}) AS events GROUP BY ticker, bucket ORDER BY ticker, bucket \
+             LIMIT {} SETTINGS max_rows_to_group_by={}, group_by_overflow_mode='throw', max_result_rows={}, result_overflow_mode='throw' FORMAT TabSeparated",
+            window.start.timestamp_micros(), selects.join(" UNION ALL "), max_rows + 1, max_rows + 1, max_rows + 1);
+        let text = self.query_bounded(&sql, 300).await?;
+        let mut rows: Vec<(String, usize, f64, u64)> = Vec::new();
+        let tickers = window.tickers.iter().map(|value| value.to_ascii_uppercase()).collect::<Vec<_>>();
+        for line in text.lines().filter(|line| !line.is_empty()) {
+            let fields = line.split('\t').collect::<Vec<_>>();
+            if fields.len() != 4 { return Err("Invalid daily volume aggregate row".into()); }
+            let bucket = fields[1].parse::<usize>().map_err(|_| "Invalid daily volume bucket")?;
+            let volume = fields[2].parse::<f64>().map_err(|_| "Invalid daily volume value")?;
+            let trades = fields[3].parse::<u64>().map_err(|_| "Invalid daily volume count")?;
+            if !tickers.iter().any(|ticker| ticker == fields[0]) || bucket == 0 || bucket > max_bucket
+                || !volume.is_finite() || volume < 0.0 || trades == 0 || rows.len() >= max_rows
+            { return Err("Daily volume aggregate violated its bounded window".into()); }
+            if let Some((previous_ticker, previous_bucket, _, _)) = rows.last() {
+                if (previous_ticker.as_str(), *previous_bucket) >= (fields[0], bucket) {
+                    return Err("Daily volume aggregate is duplicate or unordered".into());
+                }
+            }
+            rows.push((fields[0].to_string(), bucket, volume, trades));
+        }
+        Ok(rows)
     }
 
     pub fn stream_ordered_filtered(

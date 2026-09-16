@@ -19,9 +19,9 @@ pub const BAR_SCHEMA_VERSION: u16 = 4;
 const EXECUTION_VWAP_MAX_QUOTE_AGE_MS: i64 = 1_000;
 const ESTIMATED_LULD_WINDOW_SECONDS: i64 = 300;
 const ESTIMATED_LULD_NEAR_BAND_PCT: f64 = 1.0;
-const FORM_T_EXTENDED_HOURS_CONDITION: u16 = 12;
-const REGULAR_SESSION_START_SECONDS: u32 = 9 * 60 * 60 + 30 * 60;
-const REGULAR_SESSION_END_SECONDS: u32 = 16 * 60 * 60;
+pub const FORM_T_EXTENDED_HOURS_CONDITION: u16 = 12;
+pub const REGULAR_SESSION_START_SECONDS: u32 = 9 * 60 * 60 + 30 * 60;
+pub const REGULAR_SESSION_END_SECONDS: u32 = 16 * 60 * 60;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TradeUpdateRule {
@@ -74,6 +74,14 @@ impl TradeAggregationRules {
             .num_seconds_from_midnight();
         let extended_hours =
             !(REGULAR_SESSION_START_SECONDS..REGULAR_SESSION_END_SECONDS).contains(&local_seconds);
+        self.resolve_for_session(conditions, extended_hours)
+    }
+
+    /// Shared eligibility authority for event decoding and canonical SQL projections.
+    pub fn resolve_for_session(&self, conditions: &[u16], extended_hours: bool) -> TradeUpdateRule {
+        if conditions.is_empty() {
+            return TradeUpdateRule::regular();
+        }
         // Massive includes Form T in extended-hours custom bars only when every
         // additional non-regular condition is itself fully price-eligible. A
         // partial rule such as Prior Reference Price must not leak a Form T

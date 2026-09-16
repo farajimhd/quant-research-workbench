@@ -6327,6 +6327,25 @@ def trading_canvas_live_chart_history(
         projected_columns = [column.strip() for column in indicator_columns.split(",") if column.strip()]
         if len(projected_columns) > 128 or any(not re.fullmatch(r"[A-Za-z0-9_]{1,64}", column) for column in projected_columns):
             raise HTTPException(status_code=400, detail="indicator_columns contains an invalid column")
+    relative_volume_requested = 'session_relative_volume' in (projected_columns or ())
+    if relative_volume_requested:
+        projected_columns = [column for column in projected_columns if column != 'session_relative_volume']
+    controller = None
+    def with_relative_volume(payload):
+        if not relative_volume_requested or mode != 'backtest':
+            return payload
+        from src.backend.chart_session_relative_volume import attach
+        cutoff = as_of or payload.get('as_of')
+        if not cutoff:
+            raise ValueError('Backtest RVOL chart requires an as-of cursor')
+        same_session = controller is not None and (
+            not session_date or str(controller.definition.session_date) == session_date)
+        store = getattr(controller, '_session_relative_volume_store', None)
+        identities = (store.identities if store is not None else
+                      getattr(controller, 'session_relative_volume_artifacts', {}))
+        pinned = identities.get(ticker) if same_session else None
+        return attach(payload, ticker=ticker, as_of=cutoff, runtime_root=backtest_runtime_root(),
+                      run_directory=controller.run_dir if pinned else None, pinned_hash=pinned)
     try:
         if run_id and mode == 'backtest':
             controller = backtest_run_service.get(run_id)
@@ -6361,18 +6380,18 @@ def trading_canvas_live_chart_history(
                     session_date=session_date, as_of=cutoff.isoformat(), before_bar=before_bar,
                     indicator_columns=['bar_start', *extra_columns], allow_persisted_bars=allow_persisted_bars,
                     include_market_signals=include_market_signals, include_structure=False, stage=stage,
-                    mode=mode, row_limit=row_limit, full_session=full_session) if extra_columns else {}
-                return {**base, 'history': base.get('history', []), 'indicators': [*base.get('indicators', []), *timeline],
+                    mode=mode, row_limit=row_limit, full_session=full_session) if extra_columns or relative_volume_requested else {}
+                return with_relative_volume({**base, 'history': base.get('history', []), 'indicators': [*base.get('indicators', []), *timeline],
                     'indicators_available': True, 'market_signal_events': base.get('market_signal_events', []), 'structure_events': [],
                     'structure_level_history': [], 'indicator_provenance': {'authority': 'clickhouse-closing-book-1',
-                    'database': build_id, 'fingerprint': controller.definition.experimental_structure_fingerprint}}
+                    'database': build_id, 'fingerprint': controller.definition.experimental_structure_fingerprint}})
         cache_key = (
             ticker, timeframe, before or "", session_date or "", as_of or "",
             before_bar or "", tuple(projected_columns or ()), allow_persisted_bars, include_market_signals,
             include_structure, stage, mode, row_limit,
             full_session,
         )
-        return _CANVAS_CHART_HISTORY_CACHE.get_or_load(
+        return with_relative_volume(_CANVAS_CHART_HISTORY_CACHE.get_or_load(
             cache_key,
             lambda: _canvas_live_chart_history(
                 ticker=ticker,
@@ -6390,7 +6409,7 @@ def trading_canvas_live_chart_history(
                 row_limit=row_limit,
                 full_session=full_session,
             ),
-        )
+        ))
     except QmdServiceError as exc:
         raise _qmd_http_exception(exc) from exc
     except Exception as exc:

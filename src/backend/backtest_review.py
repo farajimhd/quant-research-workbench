@@ -51,9 +51,10 @@ class SavedBacktestReview:
             # Project only identity and financial state, never hydrate detector,
             # assignment, source-reader or strategy-observation restart state.
             row = self._journal._fetchone("""SELECT json_extract(state_json,
-                '$.schema_version','$.complete','$.identity','$.broker') AS projection
+                '$.schema_version','$.complete','$.identity','$.broker',
+                '$.controller.session_relative_volume_artifacts') AS projection
                 FROM checkpoints WHERE run_id = ?""", (self.run_id,))
-            version, complete, identity, broker = json.loads(row['projection']) if row else (None, None, None, None)
+            version, complete, identity, broker, rvol_artifacts = json.loads(row['projection']) if row else (None, None, None, None, None)
             from src.backend.replay_run_service import RESTART_CHECKPOINT_SCHEMA_VERSION
             if version != RESTART_CHECKPOINT_SCHEMA_VERSION or not complete or not isinstance(broker, dict):
                 raise ValueError('Saved Backtest has no complete review checkpoint')
@@ -63,6 +64,7 @@ class SavedBacktestReview:
             if any(identity.get(key) != value for key, value in expected.items()):
                 raise ValueError('Historical review checkpoint identity changed')
             self._broker_state = self._journal._hydrate(broker)
+            self.session_relative_volume_artifacts = dict(rvol_artifacts or {})
             if list(identity.get('account_ids') or []) != self._broker_state['account_ids']:
                 raise ValueError('Historical review checkpoint account identity changed')
             self.sequence = self._journal.latest_sequence(self.run_id)
@@ -72,7 +74,7 @@ class SavedBacktestReview:
         self._run['presentation_sequence'] = self.sequence
         self._run['presentation_as_of'] = self.current_time.isoformat()
         self.definition = SimpleNamespace(**{key: definition.get(key, '') for key in
-            ('experimental_structure_book', 'experimental_structure_fingerprint')},
+            ('session_date', 'experimental_structure_book', 'experimental_structure_fingerprint')},
             configuration_revision={'payload': {'strategy': {'strategy_id': selection.get('strategy_id'),
                 'name': selection.get('strategy_name'), 'revision': selection.get('strategy_revision')}}})
         self._canvas_task = None
