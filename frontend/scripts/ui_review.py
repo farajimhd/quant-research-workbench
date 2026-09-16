@@ -2259,6 +2259,9 @@ def capture(args: argparse.Namespace) -> int:
         try:
             for index, scenario in enumerate(scenarios, start=1):
                 context = browser.new_context(viewport=scenario["viewport"])
+                if args.labeler:
+                    from labeler_review import install_labeler_fixture
+                    labeler_state = install_labeler_fixture(context)
                 scale_value = str(scenario["scale"]).rstrip("0").rstrip(".")
                 context.add_init_script(
                     "localStorage.setItem('quant-research-workbench.theme', "
@@ -3355,6 +3358,9 @@ def capture(args: argparse.Namespace) -> int:
                             if args.swing_book_version==6:label+=' - daily survivors'
                             prefix=re.escape(label+' · '+ticker+' · ').replace('/',r'\/')
                             page.get_by_role('option',name=re.compile('^'+prefix)).first.wait_for(state='visible',timeout=args.timeout_ms)
+                    if args.labeler:
+                        from labeler_review import review_labeler
+                        review_labeler(page, labeler_state, screenshot_path)
                     if args.strategy_activity_evidence:
                         review_strategy_activity_evidence(page, screenshot_path)
                     page.screenshot(path=str(screenshot_path), full_page=True)
@@ -3435,6 +3441,9 @@ def capture(args: argparse.Namespace) -> int:
                         "issues": issues,
                     })
                 except Exception as exc:
+                    if args.labeler:
+                        result["labeler_state"] = page.locator('.labeler-page').inner_text()
+                        page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem + '__failed.png')), full_page=True)
                     if args.hindsight_positions:
                         result["hindsight_status"] = page.locator('.hindsight-controls').all_text_contents()
                         page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem + '__failed.png')), full_page=True)
@@ -3482,6 +3491,7 @@ def parser() -> argparse.ArgumentParser:
         description="Capture route, theme, scale, and viewport evidence for UX review."
     )
     result.add_argument("--url", default="http://127.0.0.1:5173")
+    result.add_argument("--labeler", action="store_true", help="exercise manual interval labeling with isolated deterministic API fixtures")
     result.add_argument("--canvas-id", help="open trading routes directly in the named child canvas")
     result.add_argument("--historical-run-id", help="review a portable Backtest Canvas or restore the main Backtest page by run ID")
     result.add_argument("--canvas-session-date", help="seed a deterministic Canvas preview session date (YYYY-MM-DD)")

@@ -1,4 +1,5 @@
 export const PAGE_KEYS = [
+  "labeler",
   "real-live-trading",
   "replay-trading",
   "backtest-trading",
@@ -90,6 +91,7 @@ export const NAVIGATION_GROUPS = [
       { key: "backtest-trading", label: "Backtest", icon: "backtest" },
       { key: "backtest-debug", label: "Debug", icon: "debug" },
       { key: "research-workspace", label: "Research", icon: "research" },
+      { key: "labeler", label: "Labeler", icon: "research" },
     ],
   },
   {

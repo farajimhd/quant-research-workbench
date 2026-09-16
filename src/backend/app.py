@@ -599,6 +599,8 @@ async def application_lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Quant Research Workbench API", version="1.0.0", lifespan=application_lifespan)
+from src.backend.chart_labeler_service import router as chart_labeler_router
+app.include_router(chart_labeler_router)
 app.include_router(hindsight_router)
 app.include_router(swing_structure_router)
 app.include_router(structure_gap_router)

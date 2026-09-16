@@ -1,5 +1,6 @@
 import {EMA_ACCELERATION_ID,EMA_ACCELERATION_KEY,emaAcceleration,emaPeriod,accelerationUnit,accelerationUnits,emaStates,type EmaState,type AccelerationUnit} from './emaAcceleration';
 import {ReactionBookPrimitive,useReactionBook} from './ReactionBook';
+import { ChartLabelOverlay, type ChartLabeling } from './ChartLabelOverlay';
 import { positionReferenceSegments, tradeGuideSpan } from "./tradeGuideGeometry";
 import { strategyReferenceLabel, type StrategyReferenceSegment } from "../../features/canvas/strategyReferencePresentation";
 import { LevelReactionPrimitive, useLevelReaction } from "./LevelReaction";
@@ -702,6 +703,7 @@ export type ChartPanelHandle = {
 };
 
 type ChartPanelProps = {
+  labeling?: ChartLabeling;
   levelBookMode?: 'history' | 'live';
   hindsightSessionDate?: string;
   appearanceDefaults?: ChartAppearanceDefaults;
@@ -891,6 +893,7 @@ type ChartPalette = {
 const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   appearanceDefaults,
   baseHeight = 620,
+  labeling,
   catalogColumns = [],
   displayItemOptions = [],
   emptyMessage = "No chart data for the selected ticker/date range/timeframe.",
@@ -952,6 +955,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const oscillatorLayerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const shellRef = useRef<HTMLDivElement | null>(null);
   const priceLayerRef = useRef<HTMLDivElement | null>(null);
+  const [labelingChart, setLabelingChart] = useState<IChartApi | null>(null);
   const referenceLayerRef = useRef<HTMLDivElement | null>(null);
   const timelineEventLayerRef = useRef<HTMLDivElement | null>(null);
   const priceChartRef = useRef<IChartApi | null>(null);
@@ -1422,6 +1426,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const palette = readChartPalette();
     const priceChart = createChart(priceRef.current, chartOptions(priceRef.current.clientWidth, priceRef.current.clientHeight, false, palette, chartSettingsRef.current, timeframe, true, alignLeftPriceScale, reserveRightPriceScale));
     priceChartRef.current = priceChart;
+    if (labeling) setLabelingChart(priceChart);
     const candleSeries = priceChart.addSeries(CandlestickSeries, {
       ...candleSeriesOptions(chartSettingsRef.current),
       autoscaleInfoProvider: padCandleAutoscale,
@@ -1454,9 +1459,11 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const gapPrimitive = new StructureGapPrimitive();
     candleSeries.attachPrimitive(gapPrimitive);
     structureGapPrimitiveRef.current = gapPrimitive;
-    const detectorPrimitive = new StructuralDetectorPrimitive();
-    candleSeries.attachPrimitive(detectorPrimitive);
-    structuralDetectorPrimitiveRef.current = detectorPrimitive;
+    if (!labeling) {
+      const detectorPrimitive = new StructuralDetectorPrimitive();
+      candleSeries.attachPrimitive(detectorPrimitive);
+      structuralDetectorPrimitiveRef.current = detectorPrimitive;
+    }
     const reactionPrimitive=new LevelReactionPrimitive();
     candleSeries.attachPrimitive(reactionPrimitive);levelReactionPrimitiveRef.current=reactionPrimitive;
     const bookPrimitive=new ReactionBookPrimitive();candleSeries.attachPrimitive(bookPrimitive);reactionBookPrimitiveRef.current=bookPrimitive;
@@ -1564,14 +1571,14 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         if (reference) {
           fitAroundReference(priceChartRef.current, currentPayload.candles, reference, timeframe, chartSettingsRef.current.hideEmptyIntervals);
         } else {
-          centerReferenceOrLatest(priceChartRef.current, currentPayload.candles, undefined, timeframe, undefined, chartSettingsRef.current.hideEmptyIntervals);
+          centerReferenceOrLatest(priceChartRef.current, currentPayload.candles, undefined, timeframe, labeling ? initialFitMode : undefined, chartSettingsRef.current.hideEmptyIntervals);
         }
         drawCurrentRegions();
         // Freeze the initial price fit once it has been resolved by the chart.
         window.requestAnimationFrame(() => {
           const scale = candleRef.current?.priceScale();
           const range = scale?.getVisibleRange();
-          if (range) scale?.setVisibleRange(range);
+          if (range && !labeling) scale?.setVisibleRange(range);
         });
         initialFitTimerRef.current = null;
       }, 20);
@@ -1584,7 +1591,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         priceChartRef.current.timeScale().setVisibleLogicalRange({ from: currentRange.from + shift, to: currentRange.to + shift });
       }
       drawCurrentRegions();
-      if (currentPriceRange) candleRef.current.priceScale().setVisibleRange(currentPriceRange);
+      if (currentPriceRange && !labeling) candleRef.current.priceScale().setVisibleRange(currentPriceRange);
       scheduleOverlayRedrawBurst();
     }
   }, [deferInitialFitUntilLoaded, effectiveChartSettings.hideEmptyIntervals, initialFitMode, loading, payload, reference, referenceKey, ticker, timeframe]);
@@ -2283,11 +2290,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           />
         ) : null}
         <div className="toolbar-spacer" />
-        {hindsight.controls}
-        {levelReaction.controls}
-        {structuralDetector.controls}
-        {supertrendIndicator.controls}
-        {formingMacd.controls}
+        {!labeling ? <>{hindsight.controls}{levelReaction.controls}{structuralDetector.controls}{supertrendIndicator.controls}{formingMacd.controls}</> : null}
         <button
           className="toolbar-button"
           data-chart-settings-trigger="true"
@@ -2349,6 +2352,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         ) : null}
           <div className="chart-native-surface chart-price" style={{ height: nativeChartHeight }}>
             <div className="chart-pane-canvas" ref={priceRef} />
+            {labeling && labelingChart ? <ChartLabelOverlay chart={labelingChart} candles={payload?.candles ?? []} editor={labeling} /> : null}
             <div className="chart-reference-stack-layer" ref={referenceLayerRef} />
             <div className="chart-timeline-event-layer" ref={timelineEventLayerRef}>
               {(payload?.timeline_events ?? []).map((event) => (
