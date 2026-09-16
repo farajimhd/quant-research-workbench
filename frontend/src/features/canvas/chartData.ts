@@ -76,7 +76,9 @@ const BAR_DERIVED_INDICATOR_COLUMNS = new Set([
 // History and the raw structure-event stream is still requested separately for
 // swing/break audit overlays.
 function isBarDerivedIndicatorColumn(column: string): boolean {
-  return BAR_DERIVED_INDICATOR_COLUMNS.has(column) || column.startsWith("qmd_structure_");
+  // Session RVOL is attached by the backend using its canonical baseline;
+  // requesting it must not start the full event/structure indicator replay.
+  return column === "session_relative_volume" || BAR_DERIVED_INDICATOR_COLUMNS.has(column) || column.startsWith("qmd_structure_");
 }
 
 type HistoricalChartMode = "backtest" | "debug" | "replay";
@@ -167,7 +169,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
             historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : "",
             indicators: merged.indicators,
             indicatorsAvailable: payload.indicators_available,
-            indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
+            indicatorProvenance: { ...current.indicatorProvenance, ...payload.indicator_provenance },
             structureEvents: mergeStructureEvents(current.structureEvents, payload.structure_events),
             structureLevelHistory: mergeStructureLevelHistory(current.structureLevelHistory, payload.structure_level_history),
           };
@@ -191,7 +193,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
       setState((current) => ({
         ...current,
         indicators: limitIndicatorRowsToLatest(mergeIndicatorRowsByTime(current.indicators, rows), rowBudget),
-        indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
+        indicatorProvenance: { ...current.indicatorProvenance, ...payload.indicator_provenance },
       }));
     }).catch((reason) => {
       if (controller.signal.aborted || requestKeyRef.current !== requestKey) return;
@@ -300,7 +302,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
               bars: merged.bars,
               indicators: merged.indicators,
               indicatorsAvailable: payload.indicators_available,
-              indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
+              indicatorProvenance: { ...current.indicatorProvenance, ...payload.indicator_provenance },
               splitAdjusted: payload.split_adjusted ?? current.splitAdjusted,
               marketSignalEvents: mergeMarketSignalEvents(current.marketSignalEvents, payload.market_signal_events),
               structureEvents: mergeStructureEvents(current.structureEvents, payload.structure_events),
@@ -314,7 +316,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
           setState((current) => ({
             ...current,
             indicators: limitIndicatorRowsToLatest(mergeIndicatorRowsByTime(current.indicators, rows), rowBudget),
-            indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
+            indicatorProvenance: { ...current.indicatorProvenance, ...payload.indicator_provenance },
             // Unified structure is fetched independently from the ordinary
             // indicator projection. When it is the only deferred request it
             // owns completion of the loading notice as well as the rows.
@@ -354,7 +356,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
                 : progressive ? liveTail ? "Loading current QMD indicators..." : standardIndicatorsRequested || unifiedStructureSelected ? "Loading requested indicators..." : "" : liveTail ? "Historical base loaded; connecting the QMD live tail..." : "",
               indicators: merged.indicators,
               indicatorsAvailable: progressive ? current.indicatorsAvailable : payload.indicators_available,
-              indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
+              indicatorProvenance: { ...current.indicatorProvenance, ...payload.indicator_provenance },
               splitAdjusted: payload.split_adjusted ?? current.splitAdjusted,
               structureEvents: mergeStructureEvents(replaceDisplayedTimeframe ? [] : current.structureEvents, payload.structure_events),
               structureLevelHistory: mergeStructureLevelHistory(replaceDisplayedTimeframe ? [] : current.structureLevelHistory, payload.structure_level_history),
@@ -390,7 +392,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
               historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : "",
               indicators: merged.indicators,
               indicatorsAvailable: payload.indicators_available,
-              indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
+              indicatorProvenance: { ...current.indicatorProvenance, ...payload.indicator_provenance },
               structureEvents: mergeStructureEvents(current.structureEvents, payload.structure_events),
               structureLevelHistory: mergeStructureLevelHistory(current.structureLevelHistory, payload.structure_level_history),
             };
@@ -452,7 +454,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
               canLoadEarlier: payload.has_more && !merged.atCapacity,
               indicators: merged.indicators,
               indicatorsAvailable: payload.indicators_available,
-              indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
+              indicatorProvenance: { ...current.indicatorProvenance, ...payload.indicator_provenance },
               splitAdjusted: payload.split_adjusted ?? current.splitAdjusted,
               lastUpdateAt: new Date().toISOString(),
               marketSignalEvents: mergeMarketSignalEvents(replacingRewind ? [] : current.marketSignalEvents, payload.market_signal_events),
@@ -493,7 +495,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
             structureEvents: mergeStructureEvents(replacingRewind ? [] : current.structureEvents, payload.structure_events),
             structureLevelHistory: mergeStructureLevelHistory(replacingRewind ? [] : current.structureLevelHistory, payload.structure_level_history),
             indicators: limitIndicatorRowsToLatest(mergeIndicatorRowsByTime(current.indicators, rows), rowBudget),
-            indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
+            indicatorProvenance: { ...current.indicatorProvenance, ...payload.indicator_provenance },
           }));
         }).catch((reason) => {
           failed = true;
@@ -512,7 +514,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
           setState((current) => ({
             ...current,
             indicators: limitIndicatorRowsToLatest(mergeIndicatorRowsByTime(current.indicators, rows), rowBudget),
-            indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
+            indicatorProvenance: { ...current.indicatorProvenance, ...payload.indicator_provenance },
           }));
         }).catch((reason) => {
           failed = true;

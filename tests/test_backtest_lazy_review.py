@@ -38,6 +38,7 @@ def test_review_financial_parity_and_fenced_pages_without_execution_restore(tmp_
         for n in range(5):
             source._journal.append(run_id=source.run_id, category='strategy_decision', entity_type='signal', entity_id=str(n),
                 event_time=at, payload={'ticker': 'AAPL', 'action': 'wait', 'reason': str(n)})
+        source._session_relative_volume_store.identities['AAPL'] = 'sha256:pinned-rvol-baseline'
         source._save_restart_checkpoint(source.current_time)
         source._write_approved_configuration()
         source._write_manifest()
@@ -50,6 +51,9 @@ def test_review_financial_parity_and_fenced_pages_without_execution_restore(tmp_
             review = await service.review_saved(source.run_id)
             assert await service.review_saved(source.run_id) is review
             assert review.status == status
+            assert str(review.definition.session_date) == '2026-07-28'
+            assert review.session_relative_volume_artifacts == {'AAPL': 'sha256:pinned-rvol-baseline'}
+            assert not hasattr(review, '_session_relative_volume_store')
             assert review.snapshot()["error"] == source.error
             try:
                 actual = (await review.canvas_payload('AAPL', include_chart=False))['trading']

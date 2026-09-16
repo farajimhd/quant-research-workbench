@@ -388,6 +388,7 @@ export type QmdBarHistory = {
   timeframe: string;
 };
 export type QmdIndicatorProvenance = {
+  session_relative_volume?: { status?: "ready" | "unavailable"; reason?: string };
   as_of?: string;
   complete?: boolean;
   calculation_revision?: string;
