@@ -15,6 +15,7 @@ import json
 
 from src.market_engine.swing_structure import SwingSettings, SwingStructure
 from src.market_engine.structural_detector import DetectorSettings
+from src.market_engine import swing_pivot_witness as witnesses
 from src.runtime_paths import runtime_root
 from strategy_222_recorded_sequences import recording
 from strategy_222_supervised_research import digest, save
@@ -43,12 +44,14 @@ class PivotAudit(SwingStructure):
                 level = self.selected
                 if level is None:
                     raise ValueError('Local pivot has no selected anchored level')
+                witness = witnesses.capture(level, extreme, t, reason)
                 self.events.append(dict(at=self.clock[t], pivot_at=self.clock[extreme[1]],
                     pivot_price=extreme[0], reversal_distance=extreme[2],
                     merged=self.sequence == before, level_id=level['level_id'],
                     level_price=level['price'], level_lower=level['lower'], level_upper=level['upper'],
                     level_pivot_at=self.clock[level['pivot_at']],
-                    level_confirmed_at=self.clock[level['confirmed_at']]))
+                    level_confirmed_at=self.clock[level['confirmed_at']],
+                    fresh_pivot_witness=witnesses.event_times(witness, self.clock) if witness else None))
         finally:
             self.pending = None
 
@@ -119,7 +122,8 @@ def run(manifest, run_id, configuration, summary, output):
         raise ValueError('Native recording coverage mismatch')
     merged = [e for e in events if e['merged']]
     save(output, dict(status='completed', run_id=run_id,
-        inputs={str(p.resolve()):digest(p) for p in (manifest, path, configuration, summary, Path(__file__))},
+        inputs={str(p.resolve()):digest(p) for p in (manifest, path, configuration, summary,
+            Path(__file__), Path(witnesses.__file__))},
         source_pins=pins, candles=dict(counts), support_label_parity_rows=sum(counts.values()),
         support_pivots=len(events), merged_support_pivots=len(merged),
         merged_by_symbol=dict(Counter(e['symbol'] for e in merged)), events=events,
