@@ -104,6 +104,22 @@ async fn publish(
     put(store, true, slot, &graph.root.payload, owned).await
 }
 impl ClickHouse {
+    /// Independently read the startup authority before restoring current state.
+    /// Returns paused; this is not permission to resume or submit orders.
+    pub async fn load_backtest_session(
+        &self,
+        request: &RestoreRequest<'_>,
+    ) -> Result<crate::playback_runtime::session::Session> {
+        let startup = request
+            .startup
+            .ok_or_else(|| Error::Unready("session startup pin missing".into()))?;
+        self.load_backtest_startup(request.manifest, &startup.hash()?)
+            .await?;
+        crate::playback_runtime::session::Session::restore(
+            &read_bundle(&Storage(self), request).await?,
+            request,
+        )
+    }
     /// Holds exclusive runtime owners across publication. Cancellation never
     /// acknowledges the boundary; retain `finalized` and retry it unchanged.
     pub async fn commit_backtest_boundary(

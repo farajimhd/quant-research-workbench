@@ -55,7 +55,7 @@ fn request<'a>(
 
 #[tokio::test]
 async fn assembled_session_is_paused_and_preserves_separate_account_budgets() {
-    let (run, costs, manifest, _) = run_candidate_fixture(true, false, false, true);
+    let (run, costs, manifest, recovery) = run_candidate_fixture(true, false, false, true);
     let input = request(&run, &manifest, &costs);
     let document = crate::playback_runtime::session::document::Document::from_request(&input);
     let hash = document.hash().unwrap();
@@ -90,6 +90,157 @@ async fn assembled_session_is_paused_and_preserves_separate_account_budgets() {
             .len(),
         2
     );
+    verify_session_recovery(&mut session, &manifest, &loaded, &recovery);
+}
+
+fn verify_session_recovery(
+    session: &mut Session,
+    manifest: &Pinned,
+    startup: &crate::playback_runtime::session::document::Document,
+    source: &RecoveryInput,
+) {
+    use crate::playback_runtime::recovery::{Bundle, Limits, RestoreRequest};
+    use arte_core::portfolio::checkpoint::Cut;
+    let boundary = session
+        .controller
+        .decision_view()
+        .unwrap()
+        .pending()
+        .unwrap()
+        .unwrap();
+    let cut = Cut {
+        boundary_sequence: 1,
+        boundary_hash: boundary.id.into(),
+        at_ns: boundary.evaluated_at_ns,
+    };
+    let limits = Limits {
+        maximum_bytes: 4_000_000,
+        maximum_state_bytes: 100_000,
+        execution: crate::simulation_runtime::checkpoint::Limits {
+            maximum_bytes: 1_000_000,
+            maximum_orders: 4,
+            maximum_pending_fills: 8,
+            projection: arte_core::execution_positions::checkpoint::Limits {
+                positions: 2,
+                fills: 100,
+                lots_per_position: 8,
+                bytes: 100_000,
+            },
+        },
+        portfolio: arte_core::portfolio::checkpoint::Limits {
+            maximum_accounts: 2,
+            maximum_reservations: 4,
+            maximum_settlements: 4,
+            maximum_bytes: 100_000,
+        },
+    };
+    // Model changed current cash without resetting it from initial startup inputs.
+    let mut current: BTreeMap<_, _> = ["a", "b"]
+        .into_iter()
+        .map(|id| (id.into(), session.portfolio.snapshot(id).unwrap()))
+        .collect();
+    current.get_mut("a").unwrap().broker_available_minor -= 50;
+    session.portfolio = arte_core::portfolio::Portfolio::new(current).unwrap();
+    let fills = BTreeMap::new();
+    let currencies = BTreeMap::new();
+    let bundle = Bundle::capture(
+        &mut session.controller,
+        &mut session.candidates,
+        &mut session.portfolio,
+        manifest,
+        &cut,
+        &fills,
+        &currencies,
+        &limits,
+    )
+    .unwrap();
+    let context =
+        arte_core::content_hash(&("arte.playback-controller-cut.v1", manifest.hash(), &cut))
+            .unwrap();
+    let readbacks = session
+        .candidates
+        .scope_hashes()
+        .map(|id| (id.into(), vec![]))
+        .collect();
+    let mut request = RestoreRequest {
+        startup: Some(startup),
+        expected_root: &bundle.root.id,
+        manifest,
+        cut: &cut,
+        sources: &source.catalog,
+        prepared: &source.prepared,
+        market: arte_core::market_structure::scheduler::checkpoint::Request {
+            context_hash: &context,
+            run_id: "run",
+            seed_hash: &source.seed_hash,
+            configuration_hash: &source.configuration_hash,
+            quote_policy: std::sync::Arc::new(crate::test_quote_policy()),
+            maximum_pending: 10,
+            maximum_bytes: 4_000_000,
+        },
+        frames_per_poll: 1,
+        maximum_consumers: 2,
+        receipts: &[],
+        costs: &startup.cost_model,
+        configurations: &startup.configurations,
+        readbacks: &readbacks,
+        currencies: &currencies,
+        limits: &limits,
+    };
+    let mut restored = Session::restore(&bundle, &request).unwrap();
+    assert_eq!(restored.startup_hash(), session.startup_hash());
+    assert_eq!(
+        restored.controller.status().mode,
+        arte_core::market_structure::scheduler::playback::Mode::Paused
+    );
+    assert_eq!(
+        restored
+            .portfolio
+            .snapshot("a")
+            .unwrap()
+            .broker_available_minor,
+        14950
+    );
+    assert_eq!(
+        Bundle::capture(
+            &mut restored.controller,
+            &mut restored.candidates,
+            &mut restored.portfolio,
+            manifest,
+            &cut,
+            &fills,
+            &currencies,
+            &limits
+        )
+        .unwrap()
+        .root
+        .id,
+        bundle.root.id
+    );
+    request.startup = None;
+    assert!(Session::restore(&bundle, &request).is_err());
+    assert!(request.restore(&bundle).is_err());
+    let mut changed = startup.clone();
+    changed.accounts.get_mut("a").unwrap().budget_minor += 1;
+    request.startup = Some(&changed);
+    assert!(Session::restore(&bundle, &request).is_err());
+    request.startup = Some(startup);
+    let mut old = Bundle::capture(
+        &mut restored.controller,
+        &mut restored.candidates,
+        &mut restored.portfolio,
+        manifest,
+        &cut,
+        &fills,
+        &currencies,
+        &limits,
+    )
+    .unwrap();
+    let mut payload: serde_json::Value = serde_json::from_slice(&old.root.payload).unwrap();
+    payload["version"] = 1.into();
+    old.root = arte_core::seed_storage::Object::new(serde_json::to_vec(&payload).unwrap());
+    request.expected_root = &old.root.id;
+    assert!(Session::restore(&old, &request).is_err());
 }
 
 #[tokio::test]

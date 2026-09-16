@@ -29,6 +29,7 @@ pub struct Runtime {
     dispatched_boundary: Option<String>,
     actions: actions::Work,
     targets: std::collections::BTreeMap<String, candidate_position::TargetRecord>,
+    startup_hash: Option<String>,
 }
 impl Runtime {
     #[cfg(test)]
@@ -70,6 +71,7 @@ impl Runtime {
             dispatched_boundary: None,
             actions: actions::Work::default(),
             targets: Default::default(),
+            startup_hash: None,
         })
     }
     pub fn status(&self) -> Status {

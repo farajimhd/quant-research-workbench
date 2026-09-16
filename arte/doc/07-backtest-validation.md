@@ -57,8 +57,15 @@ advancing the session and retain its expected identity in recovery metadata.
 `create_backtest_session` validates a fresh session before publishing and returns
 it paused after verified startup readback. On failure, rebuild the unused prepared
 run and retry the same document. Do not use fresh creation as checkpoint recovery.
-The executable loop and recovery linkage are not implemented yet. Storage
-readback does not prove strategy acceptance or power-loss durability.
+Common-cut root version 2 pins the startup identity for sessions. Restore requires
+the matching document and configuration/cost bindings. It restores current
+portfolio state; it does not reset balances from the initial startup document.
+Version 1 common-cut roots are rejected without implicit migration. Component-only
+graphs may omit startup identity, but cannot be restored as complete sessions.
+`load_backtest_session` independently reads the persisted startup document before
+restoring the checkpoint, then returns paused. The executable loop remains
+unfinished. Storage readback does not prove strategy acceptance or power-loss
+durability.
 
 ## Explicit simulated costs
 

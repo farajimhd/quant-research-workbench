@@ -719,6 +719,7 @@ async fn candidate_owner_retry(cancel: bool) {
             &empty_rows,
             &currencies,
             &limits,
+            None,
         )
     };
     assert!(restore_run(&image, &"f".repeat(64)).is_err());
@@ -731,6 +732,7 @@ async fn candidate_owner_retry(cancel: bool) {
     image.candidates.root.id = original_id;
     let configurations = Document::decode(&bytes).unwrap().bind(&manifest).unwrap();
     let request = crate::playback_runtime::recovery::RestoreRequest {
+        startup: None,
         expected_root: &image.root.id,
         manifest: &manifest,
         cut: &cut,

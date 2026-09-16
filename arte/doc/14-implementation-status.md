@@ -6,6 +6,25 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Startup-bound session recovery
+
+Common-cut recovery root version 2 now pins startup identity for assembled
+sessions. Restore requires the matching startup document, configuration map and
+cost model. The restored controller retains that identity on subsequent captures.
+`Session::restore` returns current checkpoint state paused; it does not rebuild
+initial balances. Component-only graphs cannot be restored as sessions. Version 1
+common-cut roots are rejected without implicit migration.
+
+`load_backtest_session` independently loads the startup document from ClickHouse
+before restoring the checkpoint. That database-backed entry point has compiled
+but has not been exercised against a service.
+
+The offline fixture preserves changed current cash, verifies paused recovery and
+identical recapture, and rejects missing/changed startup identity and old roots.
+All 404 offline tests, formatting, Clippy and copied-source checks pass. No
+services started or migrations ran. Source parity was not rerun. The executable
+runner, source-loading orchestration and multi-instrument recovery remain open.
+
 ## Persisted fresh-session creation
 
 `create_backtest_session` connects semantic session assembly to startup storage.

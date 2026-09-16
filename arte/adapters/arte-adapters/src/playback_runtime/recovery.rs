@@ -32,6 +32,7 @@ pub mod storage;
 struct Root {
     version: u32,
     manifest: String,
+    startup: Option<String>,
     cut: Cut,
     controller: String,
     candidates: String,
@@ -57,6 +58,8 @@ pub struct Limits {
 /// Independent recovery evidence. None of these pins is inferred from the
 /// checkpoint being loaded. This request is reusable for publication readback.
 pub struct RestoreRequest<'a> {
+    /// Required for session checkpoints; None is only for component-only graphs.
+    pub startup: Option<&'a super::session::document::Document>,
     pub expected_root: &'a str,
     pub manifest: &'a Pinned,
     pub cut: &'a Cut,
@@ -97,6 +100,7 @@ impl RestoreRequest<'_> {
             self.readbacks,
             self.currencies,
             self.limits,
+            self.startup,
         )
     }
 }
@@ -187,8 +191,9 @@ impl Bundle {
         let portfolio_image = portfolio.checkpoint(manifest, cut, &portfolio_limits)?;
         let root = Object::new(
             serde_json::to_vec(&Root {
-                version: 1,
+                version: 2,
                 manifest: manifest.hash().into(),
+                startup: controller.startup_hash.clone(),
                 cut: cut.clone(),
                 controller: controller_image.root.id.clone(),
                 candidates: candidates_image.root.id.clone(),
@@ -240,6 +245,7 @@ impl Bundle {
         readbacks: &BTreeMap<String, Vec<Record>>,
         currencies: &BTreeMap<u64, SettlementCurrency>,
         limits: &Limits,
+        startup: Option<&super::session::document::Document>,
     ) -> Result<Recovered> {
         require(manifest, limits)?;
         self.require_size(limits.maximum_bytes)?;
@@ -249,8 +255,19 @@ impl Bundle {
         self.root.verify()?;
         let root: Root = serde_json::from_slice(&self.root.payload)
             .map_err(|e| Error::Serialization(e.to_string()))?;
-        if root.version != 1
+        let startup_hash = startup.map(|d| d.hash()).transpose()?;
+        if let Some(document) = startup {
+            if document.manifest_hash != manifest.hash()
+                || configuration_hash(&document.configurations)?
+                    != configuration_hash(&configurations)?
+                || document.cost_model.hash()? != costs.model().hash()?
+            {
+                return Err(Error::Conflict("recovery startup policies differ".into()));
+            }
+        }
+        if root.version != 2
             || root.manifest != manifest.hash()
+            || root.startup != startup_hash
             || root.cut != *cut
             || root.controller != self.controller.root.id
             || root.candidates != self.candidates.root.id
@@ -267,7 +284,7 @@ impl Bundle {
             &root.portfolio,
             &limits.portfolio,
         )?;
-        let controller = Runtime::restore_checkpoint(
+        let mut controller = Runtime::restore_checkpoint(
             &self.controller,
             &root.controller,
             manifest,
@@ -282,6 +299,7 @@ impl Bundle {
             limits.execution,
             limits.maximum_bytes,
         )?;
+        controller.startup_hash = startup_hash;
         controller.execution.require_complete_portfolio(
             &mut portfolio,
             manifest
@@ -306,4 +324,7 @@ impl Bundle {
             portfolio,
         })
     }
+}
+fn configuration_hash(configurations: &BTreeMap<String, Config>) -> Result<String> {
+    arte_core::content_hash(configurations)
 }

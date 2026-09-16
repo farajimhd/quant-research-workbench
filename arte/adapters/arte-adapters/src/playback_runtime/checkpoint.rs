@@ -157,6 +157,7 @@ impl Runtime {
             dispatched_boundary: Some(cut.boundary_hash.clone()),
             actions,
             targets: root.targets,
+            startup_hash: None,
         };
         restored.validate_targets(cut.at_ns)?;
         restored.validate_allocations()?;

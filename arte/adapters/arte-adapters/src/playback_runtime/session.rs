@@ -39,6 +39,22 @@ pub struct Session {
     startup_hash: String,
 }
 impl Session {
+    /// Restore current state, never reset balances or candidates to startup values.
+    pub fn restore(
+        bundle: &super::recovery::Bundle,
+        request: &super::recovery::RestoreRequest<'_>,
+    ) -> Result<Self> {
+        let document = request
+            .startup
+            .ok_or_else(|| Error::Unready("session recovery needs startup document".into()))?;
+        let recovered = request.restore(bundle)?;
+        Ok(Self {
+            controller: recovered.controller,
+            candidates: recovered.candidates,
+            portfolio: recovered.portfolio,
+            startup_hash: document.hash()?,
+        })
+    }
     /// Require a separately supplied startup identity before constructing owners.
     pub fn from_document(
         run: Run,
@@ -126,7 +142,8 @@ impl Session {
             request.limits.maximum_pending_fills,
         )?;
         execution.bind_source(run.market()?.source_scope())?;
-        let controller = Runtime::new(run, execution, request.fill_model, costs)?;
+        let mut controller = Runtime::new(run, execution, request.fill_model, costs)?;
+        controller.startup_hash = Some(startup_hash.clone());
         let candidates = Candidates::configured(
             &controller,
             manifest,
