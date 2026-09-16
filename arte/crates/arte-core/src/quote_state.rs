@@ -4,6 +4,7 @@ use crate::{
     events::{Decimal, EventKind, Observation, Payload},
     Error, Result,
 };
+pub mod checkpoint;
 pub mod eligibility;
 #[derive(Debug, PartialEq, Eq)]
 pub enum Update {

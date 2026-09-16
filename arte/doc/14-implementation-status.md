@@ -6,6 +6,30 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Quote-book recovery
+
+The shared quote book now has a bounded, versioned recovery image. It binds the
+parent context, source scope and quote-eligibility policy. It preserves the raw
+latest observation, including receipt, availability, SIP and participant clocks.
+Restore does not refresh timestamps or grant permission to trade.
+
+Unusable observations remain visible. A crossed quote is not replaced by an older
+valid quote during recovery. Duplicate observations still cannot refresh age.
+Faulted or policy-unbound books cannot produce an operational checkpoint. Images
+have a 1 MiB ceiling and must also fit the caller's byte budget.
+
+All 369 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+New tests cover timestamp preservation, duplicate replay, stale/crossed quotes,
+empty books, changed scope/policy/context, noncanonical images and faulted capture.
+Source-oracle parity was not rerun. No service or network test ran.
+
+Scheduler recovery is not implemented by this codec. Its quote identity ledger,
+pending buffers, completed-bar queue and pending decision boundary still need
+coordinated recovery. The existing ordered-trade restore assumes queued events
+are not behind its watermark. A scheduler paused mid-frame can retain releasable
+events behind that watermark, so its recovery cannot reuse that assumption
+without preserving the partial-release state explicitly.
+
 ## ClickHouse execution checkpoint publication
 
 Execution checkpoints now have a chunked archive and a ClickHouse publisher and
