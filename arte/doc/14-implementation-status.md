@@ -6,6 +6,28 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Partial-release ordering recovery
+
+The shared event-ordering buffer now checkpoints its exact pending observations,
+capacity and watermark. Restore reconstructs the already-admitted queue before
+installing the saved watermark. This preserves a partially processed batch without
+treating its remaining events as newly arriving late data.
+
+Normal admission is unchanged. New events behind the watermark still fail closed.
+Pending duplicates retain their original availability timestamps. Recovery rejects
+duplicate or reordered image rows, changed context/capacity, corrupt bytes and
+faulted buffers. Encoding and decoding enforce a caller budget capped at 64 MiB.
+
+All 371 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+The new interrupted-release test compares the remaining event sequence after
+restore with uninterrupted processing, including the half-open watermark boundary.
+Source-oracle parity was not rerun. No service or network test ran.
+
+This is a buffer component, not scheduler recovery. It does not decide whether a
+consumer already applied the pending head. The scheduler must bind that fact to
+its calculation state, pending decision and journal acknowledgment when composing
+the recovery graph. The existing ordered-market recovery path is unchanged.
+
 ## Quote-book recovery
 
 The shared quote book now has a bounded, versioned recovery image. It binds the

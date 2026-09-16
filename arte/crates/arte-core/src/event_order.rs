@@ -5,6 +5,7 @@ use crate::{
     Error, Result,
 };
 use std::collections::BTreeMap;
+pub mod checkpoint;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Scope {
     pub provider: u16,
