@@ -195,7 +195,7 @@ async def run_locked(args):
         recorder_paths = [Path(__file__).with_name(name) for name in
             ('run_strategy_222_refinement.py', 'strategy_222_sequence_recorder.py', 'strategy_222_candle_sequences.py')]
         recorder_paths += list((repository/'src/market_engine').glob('structural*.py'))
-        recorder_paths += [repository/'src/market_engine'/name for name in ('swing_structure.py', 'immutable_evidence.py')]
+        recorder_paths += [repository/'src/market_engine'/name for name in ('swing_structure.py', 'swing_pivot_witness.py', 'immutable_evidence.py')]
         identity['sequence_recorder_sources'] = {
             str(path.relative_to(repository)): hashlib.sha256(path.read_bytes()).hexdigest()
             for path in recorder_paths}

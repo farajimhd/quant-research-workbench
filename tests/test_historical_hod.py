@@ -1240,7 +1240,7 @@ def test_replay_passive_adapter_observes_both_clocks_before_assignment():
                 indicator={'macd_line':.01,'macd_signal':0.,'qmd_structure_session_high':10.3})
             asyncio.run(ReplayRunController._observe_episode_candle(fake,frame))
     stream=fake._candle_detector_states['TEST']['structural_recovery']
-    assert stream['row']['contract']=='structural-candle-detector-10'
+    assert stream['row']['contract']=='structural-candle-detector-11'
     assert stream['row']['sequence']==2
     persisted=ReplayRunController._checkpoint_candle_detectors(fake)['TEST']['structural_recovery']
     assert persisted['historical_hod_observation']==stream['historical_hod_observation']

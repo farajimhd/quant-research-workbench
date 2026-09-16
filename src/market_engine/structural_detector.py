@@ -10,7 +10,8 @@ from math import isfinite
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from .swing_structure import SwingSettings, SwingStructure
+from .swing_structure import SwingSettings
+from .swing_pivot_witness import PivotWitnessStructure
 from .structural_evidence import Interactions, morphology, swing_bias, interaction_focus
 from .structural_progression import Progression
 from .structural_volume import VolumeLevels
@@ -18,7 +19,7 @@ from .structural_labels import label_packet
 from .structural_momentum import observe as observe_momentum
 from .structural_signal import observe as observe_signal
 
-VERSION = 'structural-candle-detector-10'
+VERSION = 'structural-candle-detector-11'
 
 
 @dataclass(frozen=True)
@@ -97,7 +98,7 @@ def compact(level):
 class StructuralDetector:
     def __init__(self, settings=DetectorSettings()):
         self.settings = settings
-        self.swings = SwingStructure(SwingSettings(reversal_bps=settings.reversal_bps,
+        self.swings = PivotWitnessStructure(SwingSettings(reversal_bps=settings.reversal_bps,
             volatility_multiple=settings.volatility_multiple))
         self.last = None
         self.body = None
@@ -125,11 +126,13 @@ class StructuralDetector:
         self.momentum_state = {}
         self.signal_state = {}
 
-    def local_evidence(self, level):
+    def local_evidence(self, level, *, include_pivot=False):
         result = compact(level)
         for key in ('pivot_at', 'confirmed_at'):
             if result.get(key) is not None:
                 result[key] = self.close_times[result[key]]
+        if include_pivot:
+            result['fresh_pivot'] = self.swings.event_evidence(level, self.close_times)
         return result
 
     def observe(self, bar, levels=None, global_status='unavailable', *, continuity=None):
@@ -287,6 +290,8 @@ class StructuralDetector:
             expired_interactions=dict(local=local_expired,global_count=global_expired), local_events=local_events, global_events=global_events,
             global_context=('mixed_breaks' if held and below else 'above_broken_resistance' if held else 'below_broken_support' if below else 'between_levels') if global_status=='available' else 'unavailable',
             global_status=global_status, local_swings=local_before, confirmed_swings=new_local,
+            pivot_swings=[self.local_evidence(l, include_pivot=True) for l in self.swings.active.values()
+                if l['scale']=='local' and l['state']=='active' and l['level_id'] in self.swings.latest_pivots],
             broken_resistance=compact(max(held, key=lambda l:l['upper'])) if held else None,
             broken_support=compact(min(below,key=lambda l:l['lower'])) if below else None,
             body_baseline=baseline, pullback=deepcopy(self.pullback),
@@ -303,7 +308,7 @@ class StructuralDetector:
         self.recent_bars.append(dict(bar))
         self.last = dict(bar)
         self.global_levels = deepcopy(levels or []) if global_status=='available' else []
-        referenced = {local_time}
+        referenced = {local_time} | self.swings.referenced_clocks()
         for level in self.swings.active.values():
             referenced.update((level['pivot_at'], level['confirmed_at']))
         for detector in self.swings.detectors:
