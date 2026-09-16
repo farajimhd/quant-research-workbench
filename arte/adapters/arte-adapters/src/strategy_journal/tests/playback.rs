@@ -1,5 +1,6 @@
 use super::*;
 mod lifecycle;
+mod policies;
 use arte_core::{
     market_structure::scheduler::{
         playback::{
@@ -416,7 +417,19 @@ fn run_candidate_fixture(
                 account: account.into(),
                 instrument: 1,
                 strategy_instance: "s".into(),
-                effective_config_hash: "3".repeat(64),
+                effective_config_hash: if features {
+                    let config = policies::config(account);
+                    let state = arte_core::candidate_features::State::new(
+                        scheduler.state().unwrap(),
+                        config.features.clone(),
+                    )
+                    .unwrap();
+                    config
+                        .effective_hash(&state, scheduler.quotes().unwrap().policy_hash().unwrap())
+                        .unwrap()
+                } else {
+                    "3".repeat(64)
+                },
             })
             .collect(),
     };
@@ -475,7 +488,36 @@ async fn candidate_owner_retry(cancel: bool) {
         maximum_completed_bar_age_ns: 2_000_000_000,
         maximum_levels: 100,
     };
-    let mut candidates = Candidates::new(&controller, &manifest, config.clone(), 100_000).unwrap();
+    let configurations: std::collections::BTreeMap<_, _> = manifest
+        .manifest()
+        .consumers
+        .iter()
+        .map(|c| {
+            let scope = manifest
+                .scope(&c.account, c.instrument, &c.strategy_instance)
+                .unwrap();
+            (
+                arte_core::content_hash(&scope).unwrap(),
+                policies::config(&c.account),
+            )
+        })
+        .collect();
+    let mut wrong = configurations.clone();
+    wrong.pop_first();
+    assert!(Candidates::configured(&controller, &manifest, wrong, 100_000).is_err());
+    let mut wrong = configurations.clone();
+    wrong
+        .values_mut()
+        .next()
+        .unwrap()
+        .position
+        .failure_buffer_ticks += 1.;
+    assert!(Candidates::configured(&controller, &manifest, wrong, 100_000).is_err());
+    let mut wrong = configurations.clone();
+    wrong.insert("foreign".into(), policies::config("a"));
+    assert!(Candidates::configured(&controller, &manifest, wrong, 100_000).is_err());
+    let mut candidates =
+        Candidates::configured(&controller, &manifest, configurations, 100_000).unwrap();
     assert_eq!(candidates.scope_hashes().count(), 2);
     assert!(candidates.state("unknown").is_err());
     assert!(candidates.observe(&controller).is_err());
@@ -651,6 +693,54 @@ async fn candidate_owner_retry(cancel: bool) {
             &broker
         )
         .is_err());
+    for scope in &scopes {
+        let mut broker = broker.clone();
+        broker.revision = 2;
+        let safety = prepared_account(&scope.account)
+            .pending_decision()
+            .unwrap()
+            .safety
+            .clone();
+        let decision = candidates
+            .prepare_configured_intrabar(
+                &controller,
+                &arte_core::content_hash(scope).unwrap(),
+                arte_core::candidate_features::AcquisitionContext {
+                    tradable: true,
+                    regular_block: false,
+                    encounter_blocked: false,
+                    pending_capital: false,
+                },
+                &safety,
+                &broker,
+            )
+            .unwrap();
+        assert!(matches!(
+            decision.actions.as_slice(),
+            [Action::Hold { .. }] | [Action::Wait { .. }]
+        ));
+    }
+    let mut next_stores = keys
+        .iter()
+        .map(|key| {
+            (
+                key.clone(),
+                RetryStore {
+                    calls: 0,
+                    fail: false,
+                    delay: false,
+                    stored: vec![],
+                },
+            )
+        })
+        .collect();
+    let results = candidates
+        .commit_accounts(&mut controller, &mut next_stores, 2)
+        .await
+        .unwrap();
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|r| r.result.is_ok()));
+    controller.acknowledge().unwrap();
 }
 
 #[test]

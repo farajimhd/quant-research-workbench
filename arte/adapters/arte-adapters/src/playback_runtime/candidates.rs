@@ -17,12 +17,53 @@ pub struct Candidates {
     manifest_hash: String,
     features: features::State,
     slots: BTreeMap<String, Slot>,
+    configurations: BTreeMap<String, arte_core::candidate_config::Config>,
 }
 pub struct Outcome {
     pub scope_hash: String,
     pub result: Result<()>,
 }
+pub struct EntryEvidence<'a> {
+    pub admission: &'a arte_core::strategy_entry::Admission,
+    pub swings: &'a [arte_core::strategy_targets::Swing],
+    pub regular: bool,
+    pub regular_target: Option<f64>,
+}
 impl Candidates {
+    pub fn configured(
+        controller: &Runtime,
+        manifest: &Pinned,
+        configurations: BTreeMap<String, arte_core::candidate_config::Config>,
+        maximum_state_bytes: usize,
+    ) -> Result<Self> {
+        let first = configurations
+            .values()
+            .next()
+            .ok_or_else(|| Error::Invalid("candidate configurations missing".into()))?;
+        let mut owner = Self::new(
+            controller,
+            manifest,
+            first.features.clone(),
+            maximum_state_bytes,
+        )?;
+        if !configurations.keys().eq(owner.slots.keys()) {
+            return Err(Error::Conflict(
+                "candidate configuration scope set differs".into(),
+            ));
+        }
+        let quote_policy = controller.run.quotes()?.policy_hash()?;
+        for (scope, config) in &configurations {
+            if config.effective_hash(&owner.features, quote_policy)?
+                != owner.slots[scope].runtime.scope().config_hash
+            {
+                return Err(Error::Conflict(
+                    "candidate effective policy differs from manifest".into(),
+                ));
+            }
+        }
+        owner.configurations = configurations;
+        Ok(owner)
+    }
     pub fn new(
         controller: &Runtime,
         manifest: &Pinned,
@@ -62,6 +103,7 @@ impl Candidates {
             manifest_hash: manifest.hash().into(),
             features,
             slots,
+            configurations: BTreeMap::new(),
         })
     }
     fn require(&self, controller: &Runtime) -> Result<()> {
@@ -119,6 +161,73 @@ impl Candidates {
             &self.features,
             safety,
             broker,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_configured_completed(
+        &mut self,
+        controller: &Runtime,
+        scope: &str,
+        context: EntryEvidence<'_>,
+        safety: &Safety,
+        broker: &candidate::PositionObservation,
+        gates: &arte_core::strategy_adds::Gates,
+    ) -> Result<Decision> {
+        self.require(controller)?;
+        let config = self
+            .configurations
+            .get(scope)
+            .ok_or_else(|| Error::Unready("candidate policy not bound".into()))?;
+        let slot = self
+            .slots
+            .get_mut(scope)
+            .ok_or_else(|| Error::Invalid("candidate consumer missing".into()))?;
+        let recovery = slot.runtime.state().recovery.clone();
+        let context = features::EntryContext {
+            admission: context.admission,
+            swings: context.swings,
+            regular: context.regular,
+            regular_target: context.regular_target,
+            recovery: &recovery,
+            recovery_policy: &config.recovery,
+        };
+        controller.decision_view()?.prepare_completed(
+            &mut slot.runtime,
+            &self.features,
+            context,
+            safety,
+            broker,
+            gates,
+            &config.policy()?,
+            &config.acquisition,
+        )
+    }
+    pub fn prepare_configured_intrabar(
+        &mut self,
+        controller: &Runtime,
+        scope: &str,
+        context: features::AcquisitionContext,
+        safety: &Safety,
+        broker: &candidate::PositionObservation,
+    ) -> Result<Decision> {
+        self.require(controller)?;
+        let config = self
+            .configurations
+            .get(scope)
+            .ok_or_else(|| Error::Unready("candidate policy not bound".into()))?;
+        let slot = self
+            .slots
+            .get_mut(scope)
+            .ok_or_else(|| Error::Invalid("candidate consumer missing".into()))?;
+        controller.decision_view()?.prepare_intrabar(
+            &mut slot.runtime,
+            &self.features,
+            context,
+            safety,
+            broker,
+            &config.policy()?,
+            &config.acquisition,
+            &config.recovery,
         )
     }
     #[allow(clippy::too_many_arguments)]

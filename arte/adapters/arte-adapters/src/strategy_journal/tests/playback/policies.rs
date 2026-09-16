@@ -1,0 +1,81 @@
+//! Explicit offline fixture values, not deployable defaults or strategy approval.
+use arte_core::*;
+pub(super) fn config(account: &str) -> candidate_config::Config {
+    let targets = strategy_targets::Policy {
+        distance_fraction: 0.1,
+        offset_ticks: 1.,
+        stop_buffer_bps: 0.,
+        all_origins: true,
+        encounter_transitions: true,
+    };
+    candidate_config::Config {
+        schema_version: 1,
+        features: candidate_features::Config {
+            setup: strategy_setup::SetupSettings {
+                range_ns: 30_000_000_000,
+                minimum_bars: 1,
+                maximum_gap_ns: 0,
+            },
+            forming_macd: true,
+            minimum_range_pct: 0.,
+            minimum_progress_pct: 0.,
+            maximum_quote_age_ns: 2_000_000_000,
+            maximum_completed_bar_age_ns: 2_000_000_000,
+            maximum_levels: 100,
+        },
+        entry: strategy_entry::Policy {
+            tick: 0.01,
+            price_only: false,
+            zone_fraction: 0.1,
+            minimum_body_bps: 0.,
+            maximum_chase_bps: 100.,
+            minimum_quote_clearance_spreads: 1.,
+            early_base: true,
+            base_maximum_age_ns: 30_000_000_000,
+            base_maximum_risk_pct: 10.,
+            base_maximum_range_pct: 10.,
+            base_maximum_extension_fraction: 1.,
+            recovery_compact_range_pct: 10.,
+            episode_high_entry: true,
+            breakout_buffer_bps: 0.,
+            breakout_buffer_ticks: 1.,
+            maximum_macd_age_ns: 2_000_000_000,
+            maximum_admission_age_ns: 2_000_000_000,
+            targets: targets.clone(),
+        },
+        adds: strategy_adds::Policy {
+            tick: 0.01,
+            buffer_ticks: 1.,
+            buffer_bps: 0.,
+            maximum_chase_bps: 100.,
+            maximum_upper_wick_fraction: 0.5,
+            price_only: false,
+            tranche_count: 3,
+            maximum_pending_levels: 16,
+        },
+        protection: strategy_protection::Policy {
+            tick: 0.01,
+            price_only: false,
+            minimum_progress_r: 0.,
+            requires_current_gain: false,
+            current_gain_requires_bid: false,
+            requires_breakout: false,
+            activation_r: 0.,
+            maximum_pending_targets: 16,
+            levels: targets,
+        },
+        acquisition: strategy_candidate::AcquisitionPolicy {
+            maximum_macd_age_ns: 2_000_000_000,
+            confirmation_lifetime_ns: 10_000_000_000,
+        },
+        recovery: strategy_lifecycle::RecoveryPolicy::default(),
+        position: candidate_config::Position {
+            phase_minimum_progress_r: 0.,
+            failure_window_ns: 0,
+            failure_buffer_ticks: if account == "a" { 1. } else { 2. },
+            failure_exit_enabled: false,
+            preserve_peak: true,
+            stop_gain_guard: true,
+        },
+    }
+}

@@ -6,6 +6,27 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Manifest-bound candidate policies
+
+The playback candidate owner now accepts one owned policy per declared
+account/strategy scope. Construction rejects missing scopes, extra scopes and
+effective hashes that differ from the run manifest. Shared feature settings
+must agree. Account-specific strategy settings may differ.
+
+Configured completed-bar and intrabar methods use these bound policies. The
+completed-bar method obtains recovery state from the owned candidate rather
+than accepting a separate recovery snapshot from the caller. External admission,
+session and swing evidence remain explicit inputs.
+
+The two-account tests now use distinct manifest-bound policies. They exercise
+intrabar preparation, journal publication and boundary acknowledgment after the
+quote cancellation/retry path. These fixtures do not prove strategy-driven
+entry, fill and exit acceptance. Deployment configuration loading and combined
+owner recovery remain unfinished.
+
+All 383 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Source-oracle parity was not rerun. No service or network test ran.
+
 ## Candidate policy bundle and cancelled journal acknowledgment
 
 The shared core now has an owned, serializable candidate policy bundle. It holds
@@ -17,7 +38,7 @@ Algorithm-specific parameter admissibility remains in the existing evaluators.
 
 The policy round-trip test reproduces the existing evaluator's effective hash.
 Changed feature settings and unsupported schema versions are rejected. Deployment
-loading and per-consumer policy binding still need integration.
+loading still needs integration. Per-consumer binding is implemented above.
 
 A virtual-time journal test now cancels the candidate owner's commit future after
 the second account stores its row but before readback arrives. Retry verifies the
