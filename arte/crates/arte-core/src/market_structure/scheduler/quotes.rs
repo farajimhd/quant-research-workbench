@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 pub(super) struct Quotes {
     pub buffer: Buffer,
     pub book: Book,
-    applied: BTreeMap<EventKey, String>,
-    maximum: usize,
+    pub(super) applied: BTreeMap<EventKey, String>,
+    pub(super) maximum: usize,
     pub newest_receipt_ns: u64,
 }
 impl Quotes {

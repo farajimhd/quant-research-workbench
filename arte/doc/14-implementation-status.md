@@ -6,6 +6,30 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Scheduler recovery
+
+The scheduler now saves one recovery graph for market calculations, both event
+queues, the quote book, quote identities, trade eligibility, completed-bar queues
+and the pending consumer boundary. Applied events awaiting acknowledgment remain
+in their queues. Restore verifies their payloads against the calculation or quote
+ledger instead of applying them again.
+
+Recovery pins the run, parent context, calculation configuration, historical seed,
+quote policy and queue capacity. It rejects changed component hashes, duplicate
+identities, invalid clocks and changed pending-boundary identities. The combined
+image has a caller-selected byte limit, capped at 64 MiB.
+
+All 373 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+The new mixed-stream test restores at every boundary, including unacknowledged
+trades, quotes and completed bars across multiple timeframes. It compares boundary
+identities and recovery images with uninterrupted execution. Source-oracle parity
+was not rerun. No service or network test ran.
+
+This completes the scheduler component, not coordinated whole-run recovery.
+Restoration does not acknowledge the decision journal or authorize trading.
+The playback cursor, strategy, portfolio and execution recovery still need a
+shared durable recovery boundary in the production coordinator.
+
 ## Partial-release ordering recovery
 
 The shared event-ordering buffer now checkpoints its exact pending observations,

@@ -7,6 +7,7 @@ use crate::{
     market::Completed,
     Error, Result,
 };
+pub mod checkpoint;
 pub mod playback;
 mod quotes;
 
@@ -19,11 +20,13 @@ pub struct Scheduler {
     quotes: quotes::Quotes,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Pending {
     id: String,
     evaluated_at_ns: u64,
     kind: PendingKind,
 }
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 enum PendingKind {
     Quote {
         key: EventKey,

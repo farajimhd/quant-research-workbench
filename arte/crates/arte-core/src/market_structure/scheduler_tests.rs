@@ -1,6 +1,110 @@
 use super::*;
 use crate::events::{Decimal, EventKind, Payload, SourceTime};
 const SECOND: u64 = 1_000_000_000;
+#[test]
+fn recovery_at_every_boundary_preserves_mixed_stream_and_unacknowledged_heads() {
+    use checkpoint::Request;
+    let runtime = super::super::tests::runtime_with_timeframes(
+        20,
+        vec![super::super::Timeframe {
+            interval_ns: 5 * SECOND,
+            macd_periods: (2, 3, 2),
+            maximum_bars: 20,
+        }],
+    );
+    let seed = runtime.structure.seed_hash.clone();
+    let config = runtime.configuration_hash().to_owned();
+    let mut original =
+        Scheduler::new(Ordered::new(runtime, 10).unwrap(), "recovery-test".into()).unwrap();
+    let policy = std::sync::Arc::new(empty_quote_policy(1));
+    original.bind_quote_policy(policy.clone()).unwrap();
+    for (e, eligible) in [
+        (replay_quote(1, 200), false),
+        (event(2, 200, 10), true),
+        (event(3, 204, 12), true),
+        (replay_quote(4, 205), false),
+        (event(5, 205, 13), true),
+    ] {
+        original.enqueue(&e, eligible).unwrap();
+    }
+    let context = "a".repeat(64);
+    let restore = |bundle: &checkpoint::Bundle| {
+        Scheduler::restore_checkpoint(
+            bundle,
+            &bundle.root.id,
+            Request {
+                context_hash: &context,
+                run_id: "recovery-test",
+                seed_hash: &seed,
+                configuration_hash: &config,
+                quote_policy: policy.clone(),
+                maximum_pending: 10,
+                maximum_bytes: 10_000_000,
+            },
+        )
+        .unwrap()
+    };
+    let mut recovered = restore(&original.checkpoint(&context, 10_000_000).unwrap());
+    let mut count = 0;
+    loop {
+        // Different evaluation clocks also exercise already-computed bars waiting
+        // in the completion queue rather than recalculating their availability.
+        let at = 206 * SECOND + count;
+        let more = original.prepare_next(206 * SECOND, at).unwrap();
+        assert_eq!(recovered.prepare_next(206 * SECOND, at).unwrap(), more);
+        assert_eq!(
+            original.checkpoint(&context, 10_000_000).unwrap().root.id,
+            recovered.checkpoint(&context, 10_000_000).unwrap().root.id
+        );
+        if !more {
+            break;
+        }
+        let image = recovered.checkpoint(&context, 10_000_000).unwrap();
+        let id = original.pending().unwrap().unwrap().id.to_owned();
+        recovered = restore(&image);
+        assert_eq!(recovered.pending().unwrap().unwrap().id, id);
+        assert!(recovered.acknowledge("wrong").is_err());
+        original.acknowledge(&id).unwrap();
+        recovered.acknowledge(&id).unwrap();
+        count += 1;
+    }
+    assert!(count > 7);
+    assert!(!recovered.enqueue(&replay_quote(1, 200), false).unwrap());
+    assert_eq!(recovered.pending_events(), 0);
+}
+#[test]
+fn recovery_rejects_changed_pending_identity_and_external_pins() {
+    let mut scheduler = scheduler(10);
+    let policy = std::sync::Arc::new(empty_quote_policy(1));
+    scheduler.bind_quote_policy(policy.clone()).unwrap();
+    scheduler.enqueue(&event(1, 200, 10), true).unwrap();
+    scheduler.prepare_next(201 * SECOND, 201 * SECOND).unwrap();
+    let context = "a".repeat(64);
+    let seed = scheduler.market.runtime.structure.seed_hash.clone();
+    let config = scheduler.market.runtime.configuration_hash().to_owned();
+    let mut image = scheduler.checkpoint(&context, 10_000_000).unwrap();
+    let request = || checkpoint::Request {
+        context_hash: &context,
+        run_id: "causal-offline-test",
+        seed_hash: &seed,
+        configuration_hash: &config,
+        quote_policy: policy.clone(),
+        maximum_pending: 10,
+        maximum_bytes: 10_000_000,
+    };
+    assert!(Scheduler::restore_checkpoint(&image, "wrong", request()).is_err());
+    let wrong = checkpoint::Request {
+        maximum_pending: 9,
+        ..request()
+    };
+    assert!(Scheduler::restore_checkpoint(&image, &image.root.id, wrong).is_err());
+    let id = scheduler.pending().unwrap().unwrap().id;
+    let text = String::from_utf8(image.root.payload)
+        .unwrap()
+        .replace(id, &"0".repeat(64));
+    image.root = crate::seed_storage::Object::new(text.into_bytes());
+    assert!(Scheduler::restore_checkpoint(&image, &image.root.id, request()).is_err());
+}
 fn replay_quote(sequence: u64, second: u64) -> crate::events::Observation {
     let mut quote = event(sequence, second, 10);
     quote.key.kind = EventKind::Quote;
