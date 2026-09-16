@@ -37,6 +37,27 @@ pub struct Evidence<'a> {
     pub adds: &'a arte_core::strategy_adds::Gates,
 }
 impl Candidates {
+    pub fn prepare_owned(
+        &mut self,
+        controller: &Runtime,
+        scope: &str,
+        evidence: Evidence<'_>,
+        external_safety: &Safety,
+    ) -> Result<Decision> {
+        self.require(controller)?;
+        let slot = self
+            .slots
+            .get(scope)
+            .ok_or_else(|| Error::Invalid("candidate consumer missing".into()))?;
+        let reconciled = controller.owned_candidate_position(slot.runtime.scope())?;
+        self.prepare_configured(
+            controller,
+            scope,
+            evidence,
+            &reconciled.safety(external_safety),
+            &reconciled.position,
+        )
+    }
     pub fn prepare_reconciled(
         &mut self,
         controller: &Runtime,

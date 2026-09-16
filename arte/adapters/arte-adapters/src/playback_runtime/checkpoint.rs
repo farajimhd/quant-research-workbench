@@ -26,6 +26,7 @@ struct Root {
     execution: String,
     maximum_quote_age_ns: u64,
     actions: Vec<ActionProgress>,
+    targets: BTreeMap<String, super::candidate_position::TargetRecord>,
 }
 pub struct Bundle {
     pub root: Object,
@@ -99,7 +100,7 @@ impl Runtime {
         let root: Root = serde_json::from_slice(&bundle.root.payload)
             .map_err(|e| Error::Serialization(e.to_string()))?;
         let context = content_hash(&("arte.playback-controller-cut.v1", manifest.hash(), cut))?;
-        if root.version != 1
+        if root.version != 2
             || root.manifest_hash != manifest.hash()
             || root.cut != *cut
             || root.playback != bundle.playback.root.id
@@ -140,13 +141,16 @@ impl Runtime {
         )?;
         execution.require_recovered_playback(&run, root.maximum_quote_age_ns)?;
         let actions = actions::Work::restore(&root.actions, receipts)?;
-        Ok(Self {
+        let restored = Self {
             run,
             execution,
             maximum_quote_age_ns: root.maximum_quote_age_ns,
             dispatched_boundary: Some(cut.boundary_hash.clone()),
             actions,
-        })
+            targets: root.targets,
+        };
+        restored.validate_targets(cut.at_ns)?;
+        Ok(restored)
     }
     /// Capture after fill journal publication, before market acknowledgment. The
     /// caller must bind portfolio and candidate images to the same cut separately.
@@ -177,6 +181,7 @@ impl Runtime {
             return Err(Error::Conflict("controller recovery cut differs".into()));
         }
         let context = content_hash(&("arte.playback-controller-cut.v1", manifest.hash(), cut))?;
+        self.validate_targets(cut.at_ns)?;
         let execution = self
             .execution
             .checkpoint(manifest, cut, last_fills, execution_limits)?;
@@ -218,13 +223,14 @@ impl Runtime {
         serde_json::to_writer(
             &mut writer,
             &Root {
-                version: 1,
+                version: 2,
                 manifest_hash: manifest.hash().into(),
                 cut: cut.clone(),
                 playback: playback.root.id.clone(),
                 execution: execution.root.id.clone(),
                 maximum_quote_age_ns: self.maximum_quote_age_ns,
                 actions: self.actions.checkpoint()?,
+                targets: self.targets.clone(),
             },
         )
         .map_err(|e| Error::Serialization(e.to_string()))?;

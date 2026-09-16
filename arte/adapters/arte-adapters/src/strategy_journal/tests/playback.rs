@@ -845,7 +845,7 @@ async fn candidate_owner_retry(cancel: bool) {
                 .safety
                 .clone();
             let decision = candidates
-                .prepare_reconciled(
+                .prepare_owned(
                     &controller,
                     &arte_core::content_hash(scope).unwrap(),
                     crate::playback_runtime::candidates::Evidence {
@@ -864,7 +864,6 @@ async fn candidate_owner_retry(cancel: bool) {
                         adds: &gates,
                     },
                     &safety,
-                    None,
                 )
                 .unwrap();
             assert!(matches!(

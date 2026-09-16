@@ -22,6 +22,7 @@ pub struct Runtime {
     maximum_quote_age_ns: u64,
     dispatched_boundary: Option<String>,
     actions: actions::Work,
+    targets: std::collections::BTreeMap<String, candidate_position::TargetRecord>,
 }
 impl Runtime {
     #[cfg(test)]
@@ -62,6 +63,7 @@ impl Runtime {
             maximum_quote_age_ns,
             dispatched_boundary: None,
             actions: actions::Work::default(),
+            targets: Default::default(),
         })
     }
     pub fn status(&self) -> Status {

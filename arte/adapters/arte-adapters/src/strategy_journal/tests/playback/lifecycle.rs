@@ -53,7 +53,7 @@ async fn cancelled_unfilled_orders_release_exact_funding_without_fabricated_cash
     lifecycle(false, true).await;
 }
 async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
-    let (run, costs) = run_with_costs(true, true, target_exit);
+    let (run, costs, manifest, _) = run_recovery_fixture(true, true, target_exit);
     let mut runtimes: Vec<_> = run
         .scopes()
         .iter()
@@ -252,7 +252,7 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
                 price: if quotes >= 3 { 11.5 } else { 11. },
             };
             let reconciled = controller
-                .candidate_position(runtime.scope(), Some(&target))
+                .owned_candidate_position(runtime.scope())
                 .unwrap();
             assert_eq!(reconciled.position.quantity, quantity);
             assert_eq!(reconciled.position.at_ns, now);
@@ -412,6 +412,42 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
             released = true;
         }
         assert!(controller.pending_actions().is_empty());
+        let mut last_fills: BTreeMap<String, arte_core::execution_events::Fill> = BTreeMap::new();
+        for row in fills.rows.values() {
+            let fill: arte_core::execution_events::Fill = serde_json::from_str(row).unwrap();
+            if last_fills
+                .get(&fill.command_id)
+                .is_none_or(|previous| previous.sequence < fill.sequence)
+            {
+                last_fills.insert(fill.command_id.clone(), fill);
+            }
+        }
+        let image = controller
+            .checkpoint(
+                &manifest,
+                &arte_core::portfolio::checkpoint::Cut {
+                    boundary_sequence: input.source_sequence,
+                    boundary_hash: input.event_id.clone(),
+                    at_ns: now,
+                },
+                &last_fills,
+                crate::simulation_runtime::checkpoint::Limits {
+                    maximum_bytes: 1_000_000,
+                    maximum_orders: 4,
+                    maximum_pending_fills: 8,
+                    projection: arte_core::execution_positions::checkpoint::Limits {
+                        positions: 2,
+                        fills: 100,
+                        lots_per_position: 8,
+                        bytes: 100_000,
+                    },
+                },
+                2_000_000,
+            )
+            .unwrap();
+        let root: serde_json::Value = serde_json::from_slice(&image.root.payload).unwrap();
+        assert_eq!(root["version"], 2);
+        assert_eq!(root["targets"].as_object().unwrap().len(), 2);
         controller
             .require_portfolio(
                 &portfolio,

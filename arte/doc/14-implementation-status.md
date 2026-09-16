@@ -6,6 +6,24 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Owned target metadata
+
+Successful committed entry and target-replacement actions now retain target
+metadata, decision hash and action time in the playback controller. Entry targets
+retain structural selection when present. Adds must match the retained target.
+Failed execution actions do not update this state.
+
+The candidate owner can now prepare from controller-owned position and target
+evidence without a caller-supplied target. Controller checkpoint version 2 captures
+the metadata and validates scope, clocks and prices against held and pending orders.
+Older controller images are rejected. No persisted database data was migrated.
+
+Lifecycle fixtures consume owned targets and capture them at each boundary.
+Configured completed-bar playback uses the owned preparation path. All 388 offline
+Rust tests, formatting, Clippy and copied-source hash checks pass. Source-oracle
+parity was not rerun. No service or network test ran. Direct recovery testing with
+nonempty target metadata and full candidate-driven lifecycle acceptance remain open.
+
 ## Candidate reconciliation bridge
 
 The playback controller now builds the long candidate's position observation

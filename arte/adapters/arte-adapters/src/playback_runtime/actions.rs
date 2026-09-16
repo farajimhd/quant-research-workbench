@@ -166,6 +166,18 @@ impl Runtime {
                 Err(Error::Conflict("completed protection changed".into()))
             };
         }
+        let target_update = if let Action::ReplaceTarget(proposal) = action {
+            Some((
+                content_hash(&decision.scope)?,
+                super::candidate_position::TargetRecord {
+                    target: proposal.target.clone(),
+                    decision_hash: content_hash(decision)?,
+                    at_ns,
+                },
+            ))
+        } else {
+            None
+        };
         self.execution.replace_for(
             &decision.scope,
             action,
@@ -173,6 +185,9 @@ impl Runtime {
             at_ns,
             safety,
         )?;
+        if let Some((scope, target)) = target_update {
+            self.targets.insert(scope, target);
+        }
         item.completed_request = Some(fingerprint);
         Ok(())
     }
@@ -316,7 +331,43 @@ impl Runtime {
                 "submitted bracket differs from committed strategy action".into(),
             ));
         }
+        let decision = item.receipt.decision();
+        let scope_hash = content_hash(&decision.scope)?;
+        let target = match &decision.actions[request.plan.action_index] {
+            Action::Enter(proposal) => proposal
+                .target_selection
+                .clone()
+                .map(|target| {
+                    arte_core::strategy_protection::ActiveTarget::Structure(Box::new(target))
+                })
+                .unwrap_or(arte_core::strategy_protection::ActiveTarget::Official {
+                    price: proposal.target,
+                }),
+            Action::Add(proposal) => {
+                let record = self
+                    .targets
+                    .get(&scope_hash)
+                    .ok_or_else(|| Error::Unready("add target provenance missing".into()))?;
+                if record.target.price() != proposal.target {
+                    return Err(Error::Conflict("add target provenance differs".into()));
+                }
+                record.target.clone()
+            }
+            _ => return Err(Error::Invalid("submission action has no target".into())),
+        };
+        if arte_core::events::Decimal::parse(&target.price().to_string())?
+            .atoms_at_scale(bracket.price_scale)?
+            != bracket.target.unwrap_or(0)
+        {
+            return Err(Error::Conflict("submitted target metadata differs".into()));
+        }
+        let target = super::candidate_position::TargetRecord {
+            target,
+            decision_hash: content_hash(decision)?,
+            at_ns: request.now_ns,
+        };
         self.execution.submit_reserved(request)?;
+        self.targets.insert(scope_hash, target);
         item.completed_request = Some(fingerprint);
         Ok(())
     }

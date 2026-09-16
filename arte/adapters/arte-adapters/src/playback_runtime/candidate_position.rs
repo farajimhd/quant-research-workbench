@@ -10,6 +10,13 @@ pub struct Reconciled {
     pub position: PositionObservation,
     pub pending_exit_quantity: u64,
 }
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TargetRecord {
+    pub target: ActiveTarget,
+    pub decision_hash: String,
+    pub at_ns: u64,
+}
 impl Reconciled {
     /// External risk/admission flags are retained; execution-owned fields cannot
     /// be supplied independently by the coordinator.
@@ -23,6 +30,56 @@ impl Reconciled {
     }
 }
 impl Runtime {
+    pub(super) fn validate_targets(&self, at_ns: u64) -> Result<()> {
+        let mut expected = std::collections::BTreeSet::new();
+        for scope in self.run.scopes() {
+            let key = arte_core::content_hash(scope)?;
+            expected.insert(key.clone());
+            let position = self.owned_candidate_position(scope)?;
+            if position.position.pending_entry && !self.targets.contains_key(&key) {
+                return Err(Error::Unready(
+                    "pending entry target provenance missing".into(),
+                ));
+            }
+            if let Some(record) = self.targets.get(&key) {
+                let account = self.account_view(&scope.account)?;
+                for owned in account.orders.iter().filter(|owned| owned.scope == scope) {
+                    let order = owned.order;
+                    if order.entry_filled > order.exit_filled
+                        || (!order.entry_cancelled && order.entry_filled < order.bracket.quantity)
+                    {
+                        let price =
+                            arte_core::events::Decimal::parse(&record.target.price().to_string())?
+                                .atoms_at_scale(order.bracket.price_scale)?;
+                        if price != order.active_target {
+                            return Err(Error::Conflict(
+                                "target recovery differs from working order".into(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        for (key, record) in &self.targets {
+            if !expected.contains(key)
+                || record.at_ns > at_ns
+                || record.decision_hash.len() != 64
+                || !record
+                    .decision_hash
+                    .bytes()
+                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+                || !record.target.price().is_finite()
+                || record.target.price() <= 0.
+            {
+                return Err(Error::Conflict("target recovery metadata differs".into()));
+            }
+        }
+        Ok(())
+    }
+    pub fn owned_candidate_position(&self, scope: &Scope) -> Result<Reconciled> {
+        let target = self.targets.get(&arte_core::content_hash(scope)?);
+        self.candidate_position(scope, target.map(|record| &record.target))
+    }
     /// Target provenance remains strategy-owned and must match actual protection.
     /// Heterogeneous working protection cannot be collapsed into the candidate's
     /// scalar stop/target contract. Reconcile it explicitly before evaluation.
