@@ -115,6 +115,13 @@ impl Run {
     pub fn remaining(&self) -> Option<usize> {
         self.barrier.as_ref().map(Barrier::remaining)
     }
+    /// Check every prepared decision before any account writer performs I/O.
+    pub fn validate_decision(&self, decision: &crate::strategy_dispatch::Decision) -> Result<()> {
+        self.barrier
+            .as_ref()
+            .ok_or_else(|| Error::Unready("no account boundary".into()))?
+            .validate_decision(decision)
+    }
     pub fn record(&mut self, committed: &Committed) -> Result<bool> {
         self.barrier
             .as_mut()

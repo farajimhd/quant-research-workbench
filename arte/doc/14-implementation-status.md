@@ -6,6 +6,22 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Concurrent playback journal integration
+
+The concurrent account journal writer now accepts the manifest-bound playback
+controller directly. Preflight and committed-receipt registration use that same
+controller. Its private barrier cannot be replaced or reduced by the writer.
+Existing live/general barrier consumers keep the same commit implementation.
+
+An offline integration test constructs a seeded market scheduler, pinned source
+catalog and two-account playback run. One simulated journal write fails. The
+boundary stays pending; retry writes only the failed account, then allows one
+cursor acknowledgment. This tests journal coordination, not candidate performance
+or broker/fill completion. Full strategy-backtest orchestration remains unfinished.
+
+All 323 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+No services or network calls ran. Source-oracle parity was not rerun.
+
 ## Recorded-live receipt requirements
 
 Recorded-live playback now requires a receive receipt for every input event.

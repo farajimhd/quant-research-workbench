@@ -94,6 +94,7 @@ pub async fn commit(
 
 #[cfg(test)]
 mod tests {
+    mod playback;
     use super::*;
     use arte_core::strategy_dispatch::*;
     fn prepared() -> arte_core::strategy_transaction::Runtime<u64> {

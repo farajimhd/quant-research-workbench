@@ -4,6 +4,29 @@ use arte_core::{account_boundary::Barrier, strategy_transaction::Committed, Erro
 use futures_util::{stream, StreamExt};
 use std::collections::BTreeSet;
 
+/// Preflight and receipt registration share the same boundary owner. This avoids
+/// extracting or replacing a manifest-bound playback controller's private barrier.
+pub trait Boundary {
+    fn validate_decision(&self, decision: &arte_core::strategy_dispatch::Decision) -> Result<()>;
+    fn record(&mut self, committed: &Committed) -> Result<bool>;
+}
+impl Boundary for Barrier {
+    fn validate_decision(&self, decision: &arte_core::strategy_dispatch::Decision) -> Result<()> {
+        self.validate_decision(decision)
+    }
+    fn record(&mut self, committed: &Committed) -> Result<bool> {
+        self.record(committed)
+    }
+}
+impl Boundary for arte_core::market_structure::scheduler::playback::accounts::Run {
+    fn validate_decision(&self, decision: &arte_core::strategy_dispatch::Decision) -> Result<()> {
+        self.validate_decision(decision)
+    }
+    fn record(&mut self, committed: &Committed) -> Result<bool> {
+        self.record(committed)
+    }
+}
+
 /// Keep these slots alive across cancellation and retry. A successful account is
 /// never submitted again. Dropping a slot is not a durable recovery mechanism.
 pub struct Write<'a, R, P> {
@@ -32,7 +55,7 @@ pub struct Outcome {
 /// the full consumer set and cannot release an omitted or failed consumer.
 pub async fn commit_accounts<R: Prepared, P: Publisher>(
     writes: &mut [Write<'_, R, P>],
-    barrier: &mut Barrier,
+    barrier: &mut impl Boundary,
     concurrency: usize,
 ) -> Result<Vec<Outcome>> {
     if writes.is_empty() || writes.len() > 4096 || concurrency == 0 || concurrency > 64 {
