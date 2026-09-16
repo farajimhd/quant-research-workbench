@@ -2,7 +2,8 @@ from copy import deepcopy
 
 import pytest
 
-from src.market_engine.swing_pivot_witness import capture, event_times
+from src.market_engine.swing_pivot_witness import capture, event_times, PivotWitnessStructure
+from src.market_engine.swing_structure import SwingSettings, SwingStructure
 
 
 def level():
@@ -51,3 +52,31 @@ def test_explicit_clock_conversion_preserves_raw_sequence_witness():
 def test_clock_conversion_never_invents_missing_timestamps(times):
     with pytest.raises(ValueError):
         event_times(capture(level(), (3.87, 10, .04), 11), times)
+
+
+def test_observer_keeps_latest_pivot_without_changing_base_engine_outputs():
+    observer, base = PivotWitnessStructure(SwingSettings()), SwingStructure(SwingSettings())
+    for engine in (observer, base):
+        engine._found(engine.detectors[0], (10., 1, .1), 'support', 2)
+        engine._found(engine.detectors[0], (10., 3, .1), 'support', 4)
+    assert observer.active == base.active
+    assert observer.segments == base.segments
+    assert observer.counts == base.counts
+    assert observer.latest_pivots[1]['pivot_at'] == 3
+    assert observer.latest_pivots[1]['confirmed_at'] == 4
+    assert observer.active[1]['confirmed_at'] == 2
+    assert observer._capturing_pivot is False
+    assert observer._pivot_level_id is None
+
+
+@pytest.mark.parametrize('change', ['side', 'confirmation', 'expiry'])
+def test_observer_drops_witness_when_anchor_role_changes_or_expires(change):
+    observer = PivotWitnessStructure(SwingSettings())
+    observer._found(observer.detectors[0], (10., 1, .1), 'support', 2)
+    if change == 'expiry':
+        observer._level_removed(1)
+    else:
+        if change == 'side': observer.active[1]['side'] = 'resistance'
+        else: observer.active[1]['confirmed_at'] = 3
+        observer._level_updated(observer.active[1])
+    assert observer.latest_pivots == {}
