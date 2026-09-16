@@ -90,3 +90,32 @@ def test_ambiguous_decisions_fail_instead_of_selecting_a_convenient_one(tmp_path
     path = journal_file(tmp_path, duplicate=True)
     with pytest.raises(ValueError, match='Ambiguous'):
         attach_decisions(path, 'run', [dict(symbol='TEST', at=3)])
+
+
+@pytest.mark.parametrize('conflict', [None, 'source', 'state', 'action'])
+def test_same_candle_management_intents_are_preserved_only_with_common_authority(tmp_path, conflict):
+    path = journal_file(tmp_path, duplicate=True)
+    connection = sqlite3.connect(path)
+    for seq, action in [(1, 'replace_protective_stop'), (2, 'replace_profit_target')]:
+        decision = dict(ticker='TEST', source_signal_ids=['qmd-derived:TEST:1s:row'],
+            action=action, reason=action, metadata=dict(status='managing',
+                causation_id='event:qmd-derived:TEST:1s:row'))
+        if seq == 2:
+            if conflict == 'source': decision['metadata']['causation_id'] += '-other'
+            if conflict == 'state': decision['metadata']['status'] = 'watching'
+            if conflict == 'action': decision['action'] = 'replace_protective_stop'
+        connection.execute('update journal set payload_json=? where sequence=?',
+            (json.dumps(decision), seq))
+    connection.commit()
+    connection.close()
+    samples = [dict(symbol='TEST', at=3)]
+    if conflict:
+        with pytest.raises(ValueError, match='Ambiguous'):
+            attach_decisions(path, 'run', samples)
+    else:
+        assert attach_decisions(path, 'run', samples) == {'matched': 1}
+        context = samples[0]['decision_context']
+        assert context['flat_entry_state'] is False
+        assert [i['sequence'] for i in context['intents']] == [1, 2]
+        assert [i['action'] for i in context['intents']] == [
+            'replace_protective_stop', 'replace_profit_target']
