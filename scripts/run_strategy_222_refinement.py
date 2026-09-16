@@ -352,7 +352,8 @@ def load_recipe(path):
         'minimum_current_trade_rate_60s'},'historical_hod':{'setup_minimum_body_bps','setup_minimum_300s_range_pct',
         'setup_phase_minimum_progress_r','setup_range_seconds','setup_base_recovery_maximum_range_pct',
         'setup_support_quote_clearance_selection','setup_base_diagnostics_enabled',
-        'setup_below_vwap_base_enabled','setup_below_vwap_support_age_s','setup_below_vwap_trade_acceleration'}}
+        'setup_below_vwap_base_enabled','setup_below_vwap_support_age_s','setup_below_vwap_trade_acceleration',
+        'setup_below_vwap_maximum_distance_atr'}}
     parameters=json.loads(path.read_text())['parameters']
     if not isinstance(parameters,dict) or not parameters:raise ValueError('Empty research recipe')
     for section,values in parameters.items():

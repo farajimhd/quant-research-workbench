@@ -3,6 +3,23 @@ from copy import deepcopy
 from math import isfinite
 
 
+def below_vwap_distance(market, price, *, now, maximum_atr, maximum_age):
+    """Use only ATR delivered with the last completed 1s candle."""
+    evidence = dict(maximum_atr=maximum_atr, observed_at=now)
+    if not maximum_atr:
+        return dict(evidence, enabled=False, passed=True)
+    atr, vwap, at = market.get('closed_atr'), market.get('vwap'), market.get('closed_at')
+    valid = (all(type(v) in (int, float) and isfinite(v) and v > 0
+                 for v in (atr, vwap, price, at))
+             and at == (market.get('bar') or {}).get('end')
+             and 0 <= now-at <= maximum_age)
+    distance = max(0., vwap-price)/atr if valid else None
+    return dict(evidence, enabled=True, passed=bool(valid and distance <= maximum_atr),
+        atr=atr, vwap=vwap, price=price, candle_at=at, distance_atr=distance,
+        reason=('completed_atr_missing_or_stale' if not valid else
+                'below_vwap_distance_exceeded' if distance > maximum_atr else ''))
+
+
 def fresh_support_momentum(assessment, facts, *, now, maximum_age, minimum_acceleration):
     """Alternative entry evidence; never manufactures a MACD episode."""
     checks = assessment.get('checks') or {}
