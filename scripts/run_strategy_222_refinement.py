@@ -24,6 +24,19 @@ BOOK_HASH = 'd5473e71fb1a4935733bd1c0a3760a1cf93b971cca255c52f732d425d596058c'
 TERMINAL = {'completed', 'stopped', 'failed', 'cancelled'}
 
 
+async def request_stop(controller):
+    """Request once; terminal status can precede asynchronous resource cleanup."""
+    if (controller._task is None or controller._task.done() or controller.status in TERMINAL
+            or getattr(controller, '_stop_requested', False)):
+        return
+    try:
+        await controller.command('stop')
+    except ValueError:
+        # The controller may finish while command() awaits its condition lock.
+        if controller.status not in TERMINAL:
+            raise
+
+
 def save(path, value):
     temporary = path.with_suffix('.tmp')
     temporary.write_text(json.dumps(value, indent=2), encoding='utf-8')
@@ -255,7 +268,7 @@ async def run_locked(args):
             while True:
                 await asyncio.wait({controller._task}, timeout=15)
                 if args.stop_request_file and args.stop_request_file.exists() and not controller._task.done():
-                    await controller.command('stop')
+                    await request_stop(controller)
                 trial.update(status=controller.status, current_time=str(controller.current_time),
                              events=controller.processed_events, error=controller.error,
                              preparation_stage=controller._preparation_stage,
@@ -289,7 +302,7 @@ async def run_locked(args):
                         break
         finally:
             if controller._task is not None and not controller._task.done():
-                await controller.command('stop')
+                await request_stop(controller)
                 await asyncio.shield(controller._task)
             trial.update(status=controller.status, error=controller.error)
             if getattr(args, 'prepare_frames_only', False):
