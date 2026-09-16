@@ -6,6 +6,27 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## ClickHouse run manifest publication
+
+The ClickHouse adapter now publishes and loads chunked run manifests. It reads
+back every chunk before publishing the root. Exact retries reuse existing rows.
+A stable run-ID slot rejects replacement by a different manifest. Readers require
+the expected manifest hash and reject missing or corrupted chunks.
+
+Publication requires extraction and durability acceptance plus a cooperative
+single-host lease keyed by run ID. This is not a distributed fencing mechanism.
+Both tables use the existing storage-policy and active-part placement verifier.
+Schema 014 is authored but unapplied. No database calls or services ran.
+
+Offline tests cover child-write failure, root-last publication, exact retry,
+conflicting run reuse, lost root acknowledgment, missing/corrupt children and
+missing ownership. Referenced-content certification, power-loss durability and
+full restart orchestration remain separate, unfinished obligations.
+
+All 318 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Source-oracle parity was not rerun. These checks do not establish connected
+ClickHouse durability or complete live/backtest run recovery.
+
 ## Bounded run manifest storage codec
 
 Run manifests can now be encoded as content-addressed chunks with an ordered root.

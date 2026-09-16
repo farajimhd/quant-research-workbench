@@ -11,8 +11,10 @@ mod fills;
 mod order_authorizations;
 mod quote_policies;
 mod references;
+mod run_manifests;
 pub use fills::FillPublisher;
 pub use order_authorizations::OrderPublisher;
+pub use run_manifests::run_manifest_scope;
 
 pub fn identifier(value: &str) -> Result<&str> {
     if value.is_empty()
