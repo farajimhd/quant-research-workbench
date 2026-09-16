@@ -516,8 +516,45 @@ async fn candidate_owner_retry(cancel: bool) {
     let mut wrong = configurations.clone();
     wrong.insert("foreign".into(), policies::config("a"));
     assert!(Candidates::configured(&controller, &manifest, wrong, 100_000).is_err());
+    use arte_core::candidate_config::document::{Consumer, Document};
+    let document = Document {
+        schema_version: 1,
+        manifest_hash: manifest.hash().into(),
+        consumers: manifest
+            .manifest()
+            .consumers
+            .iter()
+            .map(|c| Consumer {
+                account: c.account.clone(),
+                instrument: c.instrument,
+                strategy_instance: c.strategy_instance.clone(),
+                config: policies::config(&c.account),
+            })
+            .collect(),
+    };
+    let bytes = serde_json::to_vec(&document).unwrap();
+    let mut wrong = document.clone();
+    wrong.consumers[1] = wrong.consumers[0].clone();
+    assert!(wrong.bind(&manifest).is_err());
+    let mut wrong = document.clone();
+    wrong.manifest_hash = "a".repeat(64);
+    assert!(wrong.bind(&manifest).is_err());
+    let mut wrong = document.clone();
+    wrong.consumers[0].account = "foreign".into();
+    assert!(wrong.bind(&manifest).is_err());
+    let mut wrong = serde_json::to_value(&document).unwrap();
+    wrong["consumers"][0]["config"]["entry"]["maximum_chase_typo"] = 1.into();
+    assert!(Document::decode(&serde_json::to_vec(&wrong).unwrap()).is_err());
+    assert!(Document::decode(b"{}").is_err());
+    assert!(
+        Candidates::from_reader(&controller, &manifest, &bytes[..bytes.len() - 1], 100_000)
+            .is_err()
+    );
+    assert!(
+        Candidates::from_reader(&controller, &manifest, std::io::repeat(b' '), 100_000).is_err()
+    );
     let mut candidates =
-        Candidates::configured(&controller, &manifest, configurations, 100_000).unwrap();
+        Candidates::from_reader(&controller, &manifest, bytes.as_slice(), 100_000).unwrap();
     assert_eq!(candidates.scope_hashes().count(), 2);
     assert!(candidates.state("unknown").is_err());
     assert!(candidates.observe(&controller).is_err());

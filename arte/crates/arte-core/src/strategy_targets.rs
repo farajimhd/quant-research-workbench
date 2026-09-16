@@ -12,6 +12,7 @@ pub struct TargetLevel {
     pub synthetic: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Policy {
     pub distance_fraction: f64,
     pub offset_ticks: f64,

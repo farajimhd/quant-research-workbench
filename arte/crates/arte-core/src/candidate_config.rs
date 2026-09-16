@@ -2,6 +2,7 @@
 //! The effective identity remains the shared candidate runtime's existing hash.
 use crate::{candidate_features, candidate_runtime, strategy_candidate, Error, Result};
 use serde::{Deserialize, Serialize};
+pub mod document;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 pub mod checkpoint;
 const SECOND: u64 = 1_000_000_000;
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub setup: SetupSettings,
     pub forming_macd: bool,

@@ -163,6 +163,7 @@ pub struct RecoveryState {
     pub retired_swings: BTreeMap<String, u64>,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RecoveryPolicy {
     pub stop_gain_guard: bool,
     pub tight_base: bool,

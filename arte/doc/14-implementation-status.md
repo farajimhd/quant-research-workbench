@@ -6,6 +6,25 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Portable policy loading
+
+Candidate policies now have a versioned JSON document. It names the pinned run
+manifest and each account, instrument and strategy instance. Duplicate, missing
+and foreign consumers are rejected. Nested settings reject unknown field names.
+Required values have no deserialization defaults.
+
+The playback owner accepts an explicit reader. Reads are bounded to 16 MiB plus
+one overflow-detection byte. Documents accept at most 4,096 consumers. Larger
+inputs fail; they are not truncated. No parent configuration, environment fallback
+or filesystem discovery is used. Effective policy hashes are still checked
+against the actual market features and quote policy before constructing the owner.
+
+Two-account offline playback now starts from serialized policy input. Tests cover
+unknown settings, duplicate/foreign accounts, mismatched manifests, truncated
+JSON and an oversized reader. CLI and deployment startup wiring remain unfinished.
+All 383 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Source-oracle parity was not rerun. No service or network test ran.
+
 ## Configured boundary routing
 
 The candidate owner now selects its evaluator from the controller's pending

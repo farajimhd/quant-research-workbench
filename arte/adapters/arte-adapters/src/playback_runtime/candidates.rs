@@ -37,6 +37,28 @@ pub struct Evidence<'a> {
     pub adds: &'a arte_core::strategy_adds::Gates,
 }
 impl Candidates {
+    /// Read only the supplied configuration stream. No filesystem discovery,
+    /// environment fallback, network access or service startup occurs here.
+    pub fn from_reader(
+        controller: &Runtime,
+        manifest: &Pinned,
+        reader: impl std::io::Read,
+        maximum_state_bytes: usize,
+    ) -> Result<Self> {
+        use arte_core::candidate_config::document::{Document, MAXIMUM_BYTES};
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        reader
+            .take(MAXIMUM_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| Error::Unready(format!("candidate policy read: {error}")))?;
+        Self::configured(
+            controller,
+            manifest,
+            Document::decode(&bytes)?.bind(manifest)?,
+            maximum_state_bytes,
+        )
+    }
     pub fn prepare_configured(
         &mut self,
         controller: &Runtime,

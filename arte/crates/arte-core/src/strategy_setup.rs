@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 
 pub const SOURCE_PROFILE: &str = "v7-setup-recovery-v9";
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SetupSettings {
     pub range_ns: u64,
     pub minimum_bars: usize,

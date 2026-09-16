@@ -31,6 +31,7 @@ pub struct State {
     encounter_cancel_notified: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AcquisitionPolicy {
     pub maximum_macd_age_ns: u64,
     pub confirmation_lifetime_ns: u64,
