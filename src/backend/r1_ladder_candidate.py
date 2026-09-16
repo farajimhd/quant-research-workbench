@@ -4,8 +4,8 @@ from copy import deepcopy
 from .historical_hod_candidate import build as build_template
 from src.trading_runtime.historical_hod import DEFAULTS as TRANSPORT_DEFAULTS
 
-PROFILE_ID = 'r1-hod-resistance-ladder-v2'
-LABEL = 'R1 resistance ladder v2 — ATR targets and structural stops'
+PROFILE_ID = 'r1-hod-resistance-ladder-v3'
+LABEL = 'R1 resistance ladder v3 — swing-first continuation ladder'
 DESCRIPTION = (
     'Do not enter before 04:02 ET and calculate HOD only from completed 1s bars '
     'at or after 04:02. R1 is the closest resistance below that HOD. Enter on a completed 1s breakout '
@@ -16,8 +16,10 @@ DESCRIPTION = (
     'target by one resistance. Place the full-position target one tick below the selected '
     'band midpoint. After a target exit, reentry requires a completed close '
     'above the open 5s MACD episode high; spread is ignored for that continuation '
-    'only. Protect below the resistance immediately before the selected target once '
-    'price closes above that level; until then retain the entry stop. The structural '
+    'only. The initial position keeps its confirmed swing-low stop within the configured '
+    'risk bounds until its target actually fills. Only a continuation in that same open '
+    '5s MACD episode may protect below the resistance immediately before its target once '
+    'price closes above that level. The structural '
     'offset is 20 bps below the band lower edge. Fallback initial swing-stop distance '
     'below $2 is clamped to $0.10–$0.30; otherwise $0.10–5% of entry. '
     'One portfolio cash allocation up to 90%, no adds or risk-based sizing. '

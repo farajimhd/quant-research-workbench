@@ -31,7 +31,7 @@ def test_independent_policy_preserves_source_gates_and_portfolio_authority():
     payload, canvas, plan_id = build(base, source_parameters=inputs)
     profile = next(p for p in payload['strategy']['profiles'] if p['profile_id']==PROFILE_ID)
     p = profile['parameters']
-    assert p['r1_ladder_contract'] == 'r1-hod-resistance-ladder-v2'
+    assert p['r1_ladder_contract'] == 'r1-hod-resistance-ladder-v3'
     assert p['liquidity_admission'] == dict(inputs['liquidity_admission'], minimum_price=.01)
     assert p['execution'] == inputs['execution']
     assert p['historical_hod']['maximum_quote_age_ms'] == 777.

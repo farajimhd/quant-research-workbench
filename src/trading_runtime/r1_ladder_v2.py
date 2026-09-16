@@ -9,11 +9,8 @@ from math import ceil, floor, isfinite
 
 from . import historical_hod as H, session_relative_volume
 
-CONTRACT = 'r1-hod-resistance-ladder-v3'
-LEGACY_CONTRACTS = {
-    'r1-hod-resistance-ladder-v1': '.r1_ladder_v1',
-    'r1-hod-resistance-ladder-v2': '.r1_ladder_v2',
-}
+CONTRACT = 'r1-hod-resistance-ladder-v2'
+LEGACY_CONTRACT = 'r1-hod-resistance-ladder-v1'
 DEFAULTS = dict(minimum_rvol=2., cash_fraction=.9, maximum_quantity=10000.,
     entry_start_time='04:02:00', minimum_target_gap_atr=2.,
     fallback_target_gap_atr=2.5, late_entry_gap_fraction=.5,
@@ -21,13 +18,9 @@ DEFAULTS = dict(minimum_rvol=2., cash_fraction=.9, maximum_quantity=10000.,
 
 
 def configure(p):
-    legacy = LEGACY_CONTRACTS.get(p.get('r1_ladder_contract'))
-    if legacy:
-        if legacy.endswith('v1'):
-            from .r1_ladder_v1 import configure as configure_legacy
-        else:
-            from .r1_ladder_v2 import configure as configure_legacy
-        return configure_legacy(p)
+    if p.get('r1_ladder_contract') == LEGACY_CONTRACT:
+        from .r1_ladder_v1 import configure as configure_v1
+        return configure_v1(p)
     if p.get('r1_ladder_contract') != CONTRACT or p.get('historical_hod_contract') != H.CONTRACT:
         raise ValueError('R1 ladder requires its versioned shared market adapter')
     raw = p.get('r1_ladder', {})
@@ -198,26 +191,16 @@ def record_exit(state, at, role, remaining):
     if active['non_target_exit'] and origin == 'profit_target':
         origin = 'mixed_exit'
     target = deepcopy(active['target_level']) if origin == 'profit_target' else None
-    open_episode = (state.get('r1_market') or {}).get('macd_episode') or {}
-    entry_episode = active.get('macd_episode') or {}
-    continuation_episode_id = (open_episode.get('episode_id') if target
-        and active.get('contract') == CONTRACT
-        and open_episode.get('episode_id') == entry_episode.get('episode_id') else None)
-    state['r1_exit'] = dict(at=at.timestamp(), role=origin, level=target,
-                            continuation_episode_id=continuation_episode_id)
+    state['r1_exit'] = dict(at=at.timestamp(), role=origin, level=target)
     if target:
         _track_level(state, target, 'broken_profit_target', at.timestamp())
     state.pop('r1_entry', None)
 
 
 def evaluate(host, a, o, p, state):
-    legacy = LEGACY_CONTRACTS.get(p.get('r1_ladder_contract'))
-    if legacy:
-        if legacy.endswith('v1'):
-            from .r1_ladder_v1 import evaluate as evaluate_legacy
-        else:
-            from .r1_ladder_v2 import evaluate as evaluate_legacy
-        return evaluate_legacy(host,a,o,p,state)
+    if p.get('r1_ladder_contract') == LEGACY_CONTRACT:
+        from .r1_ladder_v1 import evaluate as evaluate_v1
+        return evaluate_v1(host,a,o,p,state)
     from .strategy_engine import AssignmentStatus as Status, _at_or_after_session_time
     from .signals import CapitalRequest
     previous = state.get('r1_market', {})
@@ -268,11 +251,7 @@ def evaluate(host, a, o, p, state):
                 episode.update(high=o.bar_high, high_at=now)
     current_r1 = r1_level(d.get('rows', []), d.get('hod') or 0)
     saved_exit = state.get('r1_exit') or {}
-    open_episode_id = (d.get('macd_episode') or {}).get('episode_id')
-    continuation_exit = bool(saved_exit.get('role') == 'profit_target'
-        and saved_exit.get('level') and saved_exit.get('continuation_episode_id')
-            == open_episode_id)
-    boundary = saved_exit.get('level') if continuation_exit else selected_r1
+    boundary = saved_exit.get('level') or selected_r1
     reference_level = boundary or current_r1
     reference = dict(contract=CONTRACT,hod=prior_hod if fresh else d.get('hod'),
         resistance_upper=(reference_level or {}).get('upper'),
@@ -305,8 +284,7 @@ def evaluate(host, a, o, p, state):
         stop_anchor = active.get('stop_anchor_level') or {}
         proposed = continuation_stop(stop_anchor,tick,s['stop_offset_bps'])
         current_stop = state.get('active_stop') or 0.
-        if (active.get('continuation') and fresh and stop_anchor
-                and o.price > stop_anchor.get('upper',float('inf'))
+        if (fresh and stop_anchor and o.price > stop_anchor.get('upper',float('inf'))
                 and proposed is not None and current_stop < proposed < o.bid):
             state['active_stop'] = proposed
             _track_level(state,stop_anchor,'protective_stop_earned',now)
@@ -342,7 +320,8 @@ def evaluate(host, a, o, p, state):
             and all(type(macd.get(k)) in (int,float) and isfinite(macd[k]) for k in ('line','signal'))
             and macd['line'] > macd['signal']):
         return result('wait','completed_5s_macd_not_bullish')
-    continuation = continuation_exit
+    continuation = bool(saved_exit.get('role') == 'profit_target'
+                        and saved_exit.get('level') and d.get('macd_episode'))
     ready, quality = H.tradability(o,dict(p,structural_recovery=dict(H.QUALITY_DEFAULTS,**adapter)),row,state,producer_freshness=True)
     if continuation:
         ignored = [item for item in quality['failed'] if item == 'current_spread']
@@ -394,7 +373,7 @@ def evaluate(host, a, o, p, state):
         stop = stop_price(entry_price,swing['lower'],tick)
         stop_selection = swing
     earned_stop = continuation_stop(stop_anchor,tick,s['stop_offset_bps'])
-    if (continuation and earned_stop is not None and o.price > stop_anchor['upper']
+    if (earned_stop is not None and o.price > stop_anchor['upper']
             and earned_stop < o.bid):
         stop = earned_stop
         stop_selection = dict(source='target_predecessor_resistance_lower_offset',
@@ -406,7 +385,7 @@ def evaluate(host, a, o, p, state):
     active = dict(level=deepcopy(boundary),target_level=deepcopy(target),confirmed_at=now,
                   stop=stop,maximum_buy_price=entry_price,hod=prior_hod,
                   macd_episode=deepcopy(prior_episode),stop_anchor_level=deepcopy(stop_anchor),
-                  target_plan=deepcopy(plan),continuation=continuation,contract=CONTRACT)
+                  target_plan=deepcopy(plan))
     _track_level(state, boundary, 'continuation_support' if continuation else 'initial_breakout', now)
     _track_level(state, target, 'profit_target', now)
     _track_level(state, stop_anchor, 'protective_stop_anchor', now)
