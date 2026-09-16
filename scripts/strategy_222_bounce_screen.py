@@ -74,16 +74,36 @@ def attach_decisions(journal, run_id, samples):
             if key not in wanted or not any(str(s).startswith(f'qmd-derived:{symbol}:1s:')
                     for s in decision.get('source_signal_ids', ())):
                 continue
-            if key in found:
-                raise ValueError('Ambiguous exact completed-candle decision')
             metadata = decision.get('metadata') or {}
             checks = (metadata.get('liquidity_admission') or {}).get('checks') or {}
-            found[key] = dict(status='matched', sequence=sequence, at=at,
+            context = dict(status='matched', sequence=sequence, at=at,
                 strategy_status=metadata.get('status'),
                 flat_entry_state=flat_entry_state(metadata),
                 action=decision.get('action'), first_blocker=decision.get('reason'),
                 liquidity_failed=[k for k, v in checks.items() if v is False],
-                liquidity_checks_available=bool(checks))
+                liquidity_checks_available=bool(checks),
+                source_event=metadata.get('causation_id'))
+            if key in found:
+                previous = found[key]
+                intents = previous.get('intents', [previous])
+                management_actions = {'replace_protective_stop', 'replace_profit_target', 'add_long'}
+                # One observation may legitimately emit several management intents.
+                # Preserve every intent; never choose one to represent a flat entry.
+                if (not context['source_event']
+                        or context['source_event'] != previous.get('source_event')
+                        or context['source_event'] not in {
+                            'event:'+str(s) for s in decision.get('source_signal_ids', ())
+                            if str(s).startswith(f'qmd-derived:{symbol}:1s:')}
+                        or any(i['strategy_status'] != 'managing' for i in [*intents, context])
+                        or context['action'] not in management_actions
+                        or any(i['action'] not in management_actions for i in intents)
+                        or context['action'] in {i['action'] for i in intents}):
+                    raise ValueError('Ambiguous exact completed-candle decision')
+                found[key] = dict(status='matched', at=at, strategy_status='managing',
+                    flat_entry_state=False, source_event=context['source_event'],
+                    intents=[*intents, context])
+            else:
+                found[key] = context
     finally:
         connection.close()
     counts = Counter()
