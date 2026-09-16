@@ -92,3 +92,16 @@ def test_new_setting_rejects_non_boolean_numeric_values(value):
     _, assignment, _ = merged_candidate()
     assignment.parameters['historical_hod']['setup_fresh_pivot_enabled'] = value
     with pytest.raises(ValueError): H.configure(assignment.parameters)
+
+
+def test_new_pivot_cannot_revive_previously_retired_anchor():
+    host, assignment, observation = merged_candidate()
+    row = observation.structural_detector_state['row']
+    level = row['pivot_swings'][0]
+    anchor_key = V.swing_key(level)
+    projected = V.fresh_pivot_supports(row, row['effective_at'])[0]
+    assert V.swing_key(projected) == anchor_key
+    assignment.state['v7_setup']['retired_swings'] = {anchor_key:row['effective_at']-20}
+    assert host.evaluate(deepcopy(assignment), observation).evaluation.signals[0].action == 'wait'
+    level['fresh_pivot'].update(pivot_at=row['effective_at']-2,confirmed_at=row['effective_at'])
+    assert host.evaluate(assignment, observation).evaluation.signals[0].action == 'wait'
