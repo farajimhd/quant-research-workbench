@@ -3,6 +3,37 @@ from copy import deepcopy
 from math import isfinite
 
 
+def fresh_pivot_supports(row, now):
+    """Project confirmed pivot clocks for entry use; keep anchored stop geometry."""
+    from ..market_engine.structural_detector import VERSION
+    from ..market_engine.swing_pivot_witness import CONTRACT
+    at = row.get('effective_at')
+    if (row.get('contract') != VERSION or type(at) not in (int,float)
+            or not isfinite(at) or not 0 < at <= now):
+        return []
+    result = []
+    for level in row.get('pivot_swings', []):
+        witness = level.get('fresh_pivot') or {}
+        values = [level.get(k) for k in ('lower','price','upper','pivot_at','confirmed_at')]
+        values += [witness.get(k) for k in ('price','pivot_at','confirmed_at','reversal_distance')]
+        if (any(type(v) not in (int,float) or not isfinite(v) or v <= 0 for v in values)
+                or level.get('side') != 'support' or level.get('scale') != 'local'
+                or level.get('state','active') != 'active'
+                or witness.get('contract') != CONTRACT or witness.get('clock') != 'event_time'
+                or witness.get('level_id') != level.get('level_id') or level.get('level_id') is None
+                or witness.get('side') != level['side'] or witness.get('scale') != level['scale']):
+            continue
+        if not (level['lower'] <= level['price'] <= level['upper']
+                and level['lower']-1e-9 <= witness['price'] <= level['upper']+1e-9
+                and level['pivot_at'] < level['confirmed_at'] <= witness['confirmed_at'] <= at
+                and level['pivot_at'] <= witness['pivot_at'] < witness['confirmed_at']):
+            continue
+        original = deepcopy(level)
+        result.append(dict(original, pivot_at=witness['pivot_at'], confirmed_at=witness['confirmed_at'],
+            anchored_level=original, pivot_source='confirmed_directional_change'))
+    return result
+
+
 def below_vwap_distance(market, price, *, now, maximum_atr, maximum_age):
     """Use only ATR delivered with the last completed 1s candle."""
     evidence = dict(maximum_atr=maximum_atr, observed_at=now)
@@ -148,7 +179,7 @@ def swing_key(swing):
     return str((swing.get('scale'), swing.get('pivot_at'), swing.get('lower')))
 
 
-def recovery_observe(state, entry, market, observation, stop, row, fresh, *, preserve_peak=False, stop_gain_guard=False):
+def recovery_observe(state, entry, market, observation, stop, row, fresh, *, preserve_peak=False, stop_gain_guard=False, fresh_pivots=False):
     """Persist filled lifecycle failures and retire breached support across positions."""
     if observation.position_quantity > 0 and entry:
         body_high = market.get('body_high', 0)
@@ -173,7 +204,11 @@ def recovery_observe(state, entry, market, observation, stop, row, fresh, *, pre
     retired = state.setdefault('retired_swings', {})
     if fresh and market.get('bar'):
         bar = market['bar']
-        for swing in row.get('local_swings', []) + row.get('confirmed_swings', []):
+        extra = fresh_pivot_supports(row, bar['end']) if fresh_pivots else []
+        previous = state.get('pivot_supports', []) if fresh_pivots else []
+        if fresh_pivots:
+            state['pivot_supports'] = deepcopy(extra)
+        for swing in row.get('local_swings', []) + row.get('confirmed_swings', []) + previous + extra:
             if swing.get('side') in (1, 'support') and swing.get('confirmed_at', float('inf')) <= bar['end']:
                 if bar['low'] < swing.get('lower', 0) - 1e-9:
                     retired[swing_key(swing)] = bar['end']

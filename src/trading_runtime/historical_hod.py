@@ -31,7 +31,7 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     setup_failure_exit_enabled=1,setup_recovery_unprotected_reentry=0,setup_recovery_entry_reclaim=0,setup_recovery_regular_base=0,setup_recovery_regular_full_range=0,
     setup_minimum_60s_progress_pct=0.,setup_minimum_300s_range_pct=0.,setup_add_maximum_upper_wick_fraction=1.,
     setup_acquisition_quality_enabled=0,setup_initial_tranche_fraction=1.,
-    setup_base_diagnostics_enabled=0,setup_early_base_enabled=0,setup_base_maximum_swing_age_s=15.,
+    setup_fresh_pivot_enabled=0,setup_base_diagnostics_enabled=0,setup_early_base_enabled=0,setup_base_maximum_swing_age_s=15.,
     setup_below_vwap_base_enabled=0,setup_below_vwap_support_age_s=5.,setup_below_vwap_trade_acceleration=1.5,
     setup_below_vwap_maximum_distance_atr=0.,
     setup_base_maximum_risk_pct=5.,setup_base_maximum_range_pct=10.,setup_base_maximum_extension_fraction=.25,
@@ -51,6 +51,10 @@ def configure(p):
     if set(raw)-set(DEFAULTS):
         raise ValueError('Unknown historical HOD setting')
     s = dict(DEFAULTS, **raw)
+    if (type(s['setup_fresh_pivot_enabled']) not in (int,float)
+            or s['setup_fresh_pivot_enabled'] not in (0,1)
+            or s['setup_fresh_pivot_enabled'] and not (s['v7_setup_enabled'] and s['setup_early_base_enabled'])):
+        raise ValueError('Fresh pivot entry requires early V7 bases and a numeric boolean switch')
     distance = s['setup_below_vwap_maximum_distance_atr']
     if type(distance) not in (int,float) or not isfinite(distance) or distance < 0:
         raise ValueError('Below-VWAP ATR distance must be finite and nonnegative')
@@ -103,7 +107,7 @@ def configure(p):
         raise ValueError('Phase progress requires V7 setup')
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_below_vwap_base_enabled','setup_base_diagnostics_enabled','setup_support_quote_clearance_selection','setup_recovery_regular_full_range','setup_trail_current_gain_requires_bid','setup_phase_minimum_progress_r','setup_trail_requires_current_gain','setup_recovery_regular_base','setup_base_maximum_extension_fraction','setup_recovery_entry_reclaim','setup_recovery_unprotected_reentry','setup_minimum_300s_range_pct','setup_minimum_60s_progress_pct','setup_add_maximum_upper_wick_fraction','setup_failure_exit_enabled','setup_base_recovery_maximum_range_pct','setup_minimum_trail_progress_r','setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k not in ('sizing_mode','setup_below_vwap_maximum_distance_atr')):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_fresh_pivot_enabled','setup_below_vwap_base_enabled','setup_base_diagnostics_enabled','setup_support_quote_clearance_selection','setup_recovery_regular_full_range','setup_trail_current_gain_requires_bid','setup_phase_minimum_progress_r','setup_trail_requires_current_gain','setup_recovery_regular_base','setup_base_maximum_extension_fraction','setup_recovery_entry_reclaim','setup_recovery_unprotected_reentry','setup_minimum_300s_range_pct','setup_minimum_60s_progress_pct','setup_add_maximum_upper_wick_fraction','setup_failure_exit_enabled','setup_base_recovery_maximum_range_pct','setup_minimum_trail_progress_r','setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k not in ('sizing_mode','setup_below_vwap_maximum_distance_atr')):
         raise ValueError('Historical HOD settings must be finite and positive')
     if not 0 <= s['setup_failure_seconds'] <= 5 or int(s['setup_failure_seconds']) != s['setup_failure_seconds']:
         raise ValueError('Initial setup failure window must be zero to five completed seconds')
@@ -308,9 +312,10 @@ def stop_below(value, s, tick):
 
 
 def initial_swing_low(row, boundary, now, *, closest=False, confirmed_after=0, price_only=False,
-                      pivot_not_before=0, maximum_age_s=None, eligible=None):
+                      pivot_not_before=0, maximum_age_s=None, eligible=None, fresh_pivots=False):
     candidates = []
-    for level in row.get('local_swings',[]) + row.get('confirmed_swings',[]):
+    extra = v7_setup.fresh_pivot_supports(row, now) if fresh_pivots else []
+    for level in row.get('local_swings',[]) + row.get('confirmed_swings',[]) + extra:
         if (level.get('side') not in (1,'support') or level.get('state','active') != 'active'
                 or any(type(level.get(k)) not in (int,float) or not isfinite(level[k])
                        for k in ('lower','price','upper','pivot_at','confirmed_at'))):
@@ -337,12 +342,15 @@ def assess_early_base(o,row,setup_state,d,s,tick,price_only):
     decision_ask=o.price if price_only else o.ask
     previous=d['prior_close']
     consolidation = setup_state.get('range')
+    def eligible(level):
+        if s['setup_fresh_pivot_enabled'] and v7_setup.swing_key(level) in setup_state.get('retired_swings', {}):
+            return False
+        return (not (s['setup_support_quote_clearance_selection'] and s['setup_minimum_quote_clearance_spreads'])
+            or stop_clears_quote(stop_below(level['lower'],s,tick),o.bid,o.ask,s['setup_minimum_quote_clearance_spreads']))
     candidate = initial_swing_low(row,dict(lower=min(o.price,decision_bid)),now,
         closest=True,price_only=price_only,pivot_not_before=consolidation['start'],
-        maximum_age_s=s['setup_base_maximum_swing_age_s'],
-        eligible=(lambda level:stop_clears_quote(stop_below(level['lower'],s,tick),o.bid,o.ask,
-            s['setup_minimum_quote_clearance_spreads'])) if s['setup_support_quote_clearance_selection']
-            and s['setup_minimum_quote_clearance_spreads'] else None) if consolidation else None
+        maximum_age_s=s['setup_base_maximum_swing_age_s'],fresh_pivots=bool(s['setup_fresh_pivot_enabled']),
+        eligible=eligible) if consolidation else None
     risk_pct=(decision_ask-stop_below(candidate['lower'],s,tick))/decision_ask*100 if candidate else None
     range_pct=(consolidation['high']/consolidation['low']-1)*100 if consolidation else None
     extension_limit=(consolidation['high']+s['setup_base_maximum_extension_fraction']*(consolidation['high']-consolidation['low'])) if consolidation else None
@@ -858,7 +866,7 @@ def evaluate(host, a, o, p, state):
     if s.get('setup_recovery_enabled'):
         recovery_row = v7_setup.recovery_observe(setup_state,active,d,o,stop,
             (o.structural_detector_state or {}).get('row',{}),fresh,preserve_peak=bool(s['setup_recovery_preserve_peak']),
-            stop_gain_guard=bool(s['setup_recovery_stop_gain_guard']))
+            stop_gain_guard=bool(s['setup_recovery_stop_gain_guard']),fresh_pivots=bool(s['setup_fresh_pivot_enabled']))
     acquired = o.position_quantity > 0
     local_clock = o.observed_at.astimezone(NY)
     # TODO(paper-trading halt review): LULD buffers do not guarantee an exit
