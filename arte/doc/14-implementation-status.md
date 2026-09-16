@@ -6,6 +6,24 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Order cash component recovery
+
+Per-order simulated cash now has a versioned checkpoint codec. Restore requires
+the expected object hash, pinned run cost model and exact last durable fill.
+It checks scope, sequence, observation time, fill hash, quantities, direction and
+fee bounds. The public cash type cannot be deserialized without these checks.
+Images are capped at 16 KiB. Noncanonical encoding and unknown fields fail closed.
+
+All 358 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Long and short partial exits continue identically after restore. Retrying the last
+fill does not charge its fee twice. Tests also reject changed fills, changed cost
+models, corrupted bytes and inconsistent quantities. Source parity was not rerun.
+
+This does not establish journal durability or whole-run recovery. The coordinator
+must obtain the last fill from the committed journal and pin both components in
+its recovery manifest. Execution ownership, reservations and release markers still
+need coordinated adapter recovery. No service or network test ran.
+
 ## Fill-position component recovery
 
 The fill-derived position projection now has a bounded, content-addressed

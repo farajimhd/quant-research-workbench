@@ -1,6 +1,7 @@
 //! Per-order modeled trade cash. Updating this object does not settle a portfolio.
 use super::*;
 use crate::execution_events::{Direction, Leg};
+pub mod checkpoint;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct OrderCash {
