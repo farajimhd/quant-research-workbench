@@ -54,6 +54,40 @@ pub struct AmendmentSafety<'a> {
     pub bands: Option<&'a arte_core::orders::Bands>,
 }
 impl Runtime {
+    pub(crate) fn require_recovered_allocation(
+        &self,
+        command: &str,
+        allocation: &arte_core::decision_orders::Allocation,
+        completed: bool,
+    ) -> Result<()> {
+        self.ready()?;
+        let order = self
+            .simulator
+            .positions()
+            .iter()
+            .find(|order| order.bracket.command_id == command);
+        if completed != order.is_some() {
+            return Err(Error::Conflict(
+                "recovered allocation completion differs from execution".into(),
+            ));
+        }
+        if let Some(order) = order {
+            let bracket = &order.bracket;
+            if bracket.account != allocation.account
+                || bracket.instrument != allocation.instrument
+                || bracket.quantity != allocation.quantity
+                || bracket.price_scale != allocation.price_scale
+                || bracket.tick != allocation.tick
+                || bracket.entry != allocation.entry_limit
+                || bracket.deadline_ns != allocation.deadline_ns
+            {
+                return Err(Error::Conflict(
+                    "recovered allocation differs from submitted order".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
     pub(crate) fn require_instrument_scale(&self, instrument: u64, scale: u8) -> Result<()> {
         if instrument != self.simulator.instrument() || scale != self.simulator.price_scale() {
             return Err(Error::Conflict(

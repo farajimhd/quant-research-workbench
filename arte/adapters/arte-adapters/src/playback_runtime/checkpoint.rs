@@ -16,6 +16,7 @@ pub(super) struct ActionProgress {
     pub decision_hash: String,
     pub completed_request: Option<String>,
     pub reserved_request: Option<String>,
+    pub allocation: Option<arte_core::decision_orders::Allocation>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -101,7 +102,7 @@ impl Runtime {
         let root: Root = serde_json::from_slice(&bundle.root.payload)
             .map_err(|e| Error::Serialization(e.to_string()))?;
         let context = content_hash(&("arte.playback-controller-cut.v1", manifest.hash(), cut))?;
-        if root.version != 3
+        if root.version != 4
             || root.manifest_hash != manifest.hash()
             || root.cut != *cut
             || root.playback != bundle.playback.root.id
@@ -151,6 +152,7 @@ impl Runtime {
             targets: root.targets,
         };
         restored.validate_targets(cut.at_ns)?;
+        restored.validate_allocations()?;
         Ok(restored)
     }
     /// Capture after fill journal publication, before market acknowledgment. The
@@ -183,6 +185,7 @@ impl Runtime {
         }
         let context = content_hash(&("arte.playback-controller-cut.v1", manifest.hash(), cut))?;
         self.validate_targets(cut.at_ns)?;
+        self.validate_allocations()?;
         let execution = self
             .execution
             .checkpoint(manifest, cut, last_fills, execution_limits)?;
@@ -224,7 +227,7 @@ impl Runtime {
         serde_json::to_writer(
             &mut writer,
             &Root {
-                version: 3,
+                version: 4,
                 manifest_hash: manifest.hash().into(),
                 cut: cut.clone(),
                 playback: playback.root.id.clone(),

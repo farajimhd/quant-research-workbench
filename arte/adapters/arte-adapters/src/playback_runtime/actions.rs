@@ -44,6 +44,7 @@ struct Item {
     receipt: Arc<Committed>,
     completed_request: Option<String>,
     reserved_request: Option<String>,
+    allocation: Option<Allocation>,
 }
 #[derive(Default)]
 pub(super) struct Work {
@@ -105,6 +106,7 @@ impl Work {
                     item.receipt.decision().actions[*index],
                     Action::Enter(_) | Action::Add(_)
                 ) && saved.reserved_request.is_some())
+                || saved.reserved_request.is_some() != saved.allocation.is_some()
             {
                 return Err(Error::Conflict(
                     "action recovery receipt or identity differs".into(),
@@ -112,6 +114,23 @@ impl Work {
             }
             item.completed_request = saved.completed_request.clone();
             item.reserved_request = saved.reserved_request.clone();
+            if let Some(allocation) = &saved.allocation {
+                let scope = &item.receipt.decision().scope;
+                if allocation.account != scope.account
+                    || allocation.instrument != scope.instrument
+                    || allocation.quantity == 0
+                    || allocation.price_scale > 9
+                    || allocation.tick <= 0
+                    || allocation.entry_limit <= 0
+                    || allocation.entry_limit % allocation.tick != 0
+                    || allocation.deadline_ns <= item.receipt.decision().input.evaluated_at_ns
+                {
+                    return Err(Error::Conflict(
+                        "recovered allocation invalid or out of scope".into(),
+                    ));
+                }
+            }
+            item.allocation = saved.allocation.clone();
         }
         Ok(work)
     }
@@ -130,6 +149,7 @@ impl Work {
                     decision_hash: content_hash(item.receipt.decision())?,
                     completed_request: item.completed_request.clone(),
                     reserved_request: item.reserved_request.clone(),
+                    allocation: item.allocation.clone(),
                 })
             })
             .collect()
@@ -153,6 +173,7 @@ impl Work {
                         receipt: Arc::clone(&receipt),
                         completed_request: None,
                         reserved_request: None,
+                        allocation: None,
                     },
                 );
             }
@@ -172,6 +193,31 @@ impl Work {
     }
 }
 impl Runtime {
+    pub fn retained_entry_allocation(
+        &self,
+        decision_id: &str,
+        action_index: usize,
+    ) -> Result<Option<&Allocation>> {
+        self.decision_view()?;
+        self.actions
+            .items
+            .get(&(decision_id.into(), action_index))
+            .map(|item| item.allocation.as_ref())
+            .ok_or_else(|| Error::Unready("retained allocation action missing".into()))
+    }
+    pub(super) fn validate_allocations(&self) -> Result<()> {
+        for ((id, index), item) in &self.actions.items {
+            if let Some(allocation) = &item.allocation {
+                let command = content_hash(&("decision-bracket-v1", id, index))?;
+                self.execution.require_recovered_allocation(
+                    &command,
+                    allocation,
+                    item.completed_request.is_some(),
+                )?;
+            }
+        }
+        Ok(())
+    }
     /// Deterministic bounded dispatch from the retained decision journal. Account
     /// reservations remain serial here to avoid scheduler-dependent cash races.
     /// Failure blocks later actions in that decision, not independent decisions.
@@ -339,11 +385,13 @@ impl Runtime {
                 request.safety.bands,
                 request.safety.risk_policy,
             )?;
-            self.actions
+            let item = self
+                .actions
                 .items
                 .get_mut(&(decision_id.into(), action_index))
-                .unwrap()
-                .reserved_request = Some(fingerprint);
+                .unwrap();
+            item.reserved_request = Some(fingerprint);
+            item.allocation = Some(request.allocation.clone());
         }
         self.submit_reserved(submission)?;
         Ok(plan)
@@ -601,6 +649,15 @@ impl Runtime {
         };
         self.execution.validate_submission(&request)?;
         item.reserved_request = Some(fingerprint.clone());
+        item.allocation = Some(Allocation {
+            account: bracket.account.clone(),
+            instrument: bracket.instrument,
+            quantity: bracket.quantity,
+            price_scale: bracket.price_scale,
+            tick: bracket.tick,
+            entry_limit: bracket.entry,
+            deadline_ns: bracket.deadline_ns,
+        });
         self.execution.submit_reserved(request)?;
         self.targets.insert(scope_hash, target);
         item.completed_request = Some(fingerprint);

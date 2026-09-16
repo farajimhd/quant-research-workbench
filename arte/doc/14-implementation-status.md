@@ -6,6 +6,29 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Controller-owned allocation recovery
+
+The controller retains the allocation when an entry is funded. Callers can read
+that allocation for retry after a submission failure. The retained copy is bound
+to the existing funded-request fingerprint; changed retries still fail.
+
+Controller checkpoints are version 4. They include retained allocations beside
+action progress. Recovery checks account/instrument scope, positive quantity,
+price precision, tick alignment and deadline. Completed allocations must match
+the actual submitted order, including quantity, price, tick and deadline.
+Allocation presence must agree with funded-request progress. Earlier controller
+checkpoint versions are rejected; no implicit migration is provided.
+
+The lifecycle tests compare retained allocations before and after recovery. They
+also reject a validly hashed checkpoint with a changed allocation quantity and
+confirm that failed submissions expose the retained allocation. All 393 offline
+Rust tests, formatting, Clippy and copied-source checks pass. Source-oracle parity
+was not rerun. No service or network test ran.
+
+Common-cut recovery still rejects reserved-but-unsubmitted portfolio funding.
+This change does not weaken that check or complete the runner's failure-resolution
+workflow. Runner, multi-instrument and runtime/UI integration remain unfinished.
+
 ## Sequential sizing and funded retries
 
 The controller now offers a size-and-submit operation. Sizing runs immediately
@@ -28,8 +51,8 @@ The one-entry-per-decision strategy contract remains unchanged.
 
 All 393 offline Rust tests, formatting, Clippy and copied-source checks pass.
 Source-oracle parity was not rerun. No service or network test ran. The runner
-still needs to own these returned allocations across its lifecycle and persist
-any additional retry state required by its final recovery protocol.
+now has controller-owned allocation recovery as described above. Failure-resolution
+and complete runner wiring remain open.
 
 ## Quote-backed portfolio allocation
 

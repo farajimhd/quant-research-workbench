@@ -433,6 +433,16 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, scenario: Scenario)
                 if matches!(scenario, Scenario::Capacity) && decision.scope.account == "b" {
                     assert!(attempt.result.is_err());
                     assert_eq!(attempt.allocation.quantity, 3);
+                    assert_eq!(
+                        content_hash(
+                            controller
+                                .retained_entry_allocation(&decision.decision_id, 0)
+                                .unwrap()
+                                .unwrap()
+                        )
+                        .unwrap(),
+                        content_hash(&attempt.allocation).unwrap()
+                    );
                     let reserved = portfolio.snapshot("b").unwrap().reservations;
                     assert_eq!(reserved.len(), 1);
                     assert!(controller
@@ -821,7 +831,7 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, scenario: Scenario)
             .checkpoint(&manifest, &cut, &last_fills, limits, 2_000_000)
             .unwrap();
         let root: serde_json::Value = serde_json::from_slice(&image.root.payload).unwrap();
-        assert_eq!(root["version"], 3);
+        assert_eq!(root["version"], 4);
         assert_eq!(root["targets"].as_object().unwrap().len(), 2);
         let context =
             content_hash(&("arte.playback-controller-cut.v1", manifest.hash(), &cut)).unwrap();
@@ -865,6 +875,25 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, scenario: Scenario)
         );
         for receipt in &receipts {
             let scope = &receipt.decision().scope;
+            if !matches!(
+                receipt.decision().actions[0],
+                Action::Hold { .. } | Action::Wait { .. }
+            ) {
+                assert_eq!(
+                    content_hash(
+                        &restored
+                            .retained_entry_allocation(&receipt.decision().decision_id, 0)
+                            .unwrap()
+                    )
+                    .unwrap(),
+                    content_hash(
+                        &controller
+                            .retained_entry_allocation(&receipt.decision().decision_id, 0)
+                            .unwrap()
+                    )
+                    .unwrap()
+                );
+            }
             assert_eq!(
                 content_hash(&restored.owned_candidate_position(scope).unwrap().position).unwrap(),
                 content_hash(&controller.owned_candidate_position(scope).unwrap().position)
@@ -873,6 +902,23 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, scenario: Scenario)
         }
         let original = image.root.clone();
         let text = String::from_utf8(original.payload.clone()).unwrap();
+        if let Some(saved) = root["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["allocation"].is_object())
+        {
+            let quantity = saved["allocation"]["quantity"].as_u64().unwrap();
+            let changed = text.replacen(
+                &format!("\"quantity\":{quantity},"),
+                &format!("\"quantity\":{},", quantity + 1),
+                1,
+            );
+            assert_ne!(changed, text);
+            image.root = arte_core::seed_storage::Object::new(changed.into_bytes());
+            assert!(restore(&image).is_err());
+            image.root = original.clone();
+        }
         // Preserve canonical field order while changing one target clock.
         let record = root["targets"]
             .as_object()
