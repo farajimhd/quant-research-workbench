@@ -8,6 +8,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+pub mod cash;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -152,7 +153,7 @@ mod tests {
         execution_events::{Direction, Leg},
         run_manifest::{Clock, Consumer, Manifest},
     };
-    fn model() -> Model {
+    pub(super) fn model() -> Model {
         Model {
             schema_version: 1,
             currency: "USD".into(),
@@ -163,7 +164,7 @@ mod tests {
             minimum_per_fill_minor: 2,
         }
     }
-    fn run(cost_model_hash: String) -> Run {
+    pub(super) fn run(cost_model_hash: String) -> Run {
         let manifest = Manifest {
             schema_version: 1,
             run_id: "r".into(),
@@ -190,7 +191,7 @@ mod tests {
         let hash = manifest.hash().unwrap();
         Run::new(manifest, &hash).unwrap()
     }
-    fn fill(quantity: u64) -> Fill {
+    pub(super) fn fill(quantity: u64) -> Fill {
         Fill {
             schema_version: 1,
             origin: Origin::Simulated {

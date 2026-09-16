@@ -148,6 +148,7 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
                 assert!(controller
                     .release_unfilled_reservation(command, &portfolio)
                     .is_err());
+                assert!(controller.closed_net_cash_minor(command).is_err());
             }
             if fills.fail {
                 assert!(controller.commit_fills(&mut fills).await.is_err());
@@ -342,11 +343,19 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
         );
     }
     assert_eq!(fills.rows.len(), if cancel_unfilled { 0 } else { 4 });
-    for command in &commands {
+    for (index, command) in commands.iter().enumerate() {
         assert_eq!(
             controller.fees_minor(command).unwrap(),
             if cancel_unfilled { None } else { Some(4) }
         );
+        if cancel_unfilled {
+            assert!(controller.closed_net_cash_minor(command).is_err());
+        } else {
+            assert_eq!(
+                controller.closed_net_cash_minor(command).unwrap(),
+                (if target_exit { 149 } else { -2 }) * (index as i128 + 1) - 4
+            );
+        }
     }
 }
 

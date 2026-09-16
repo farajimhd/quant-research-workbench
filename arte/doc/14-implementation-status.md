@@ -6,6 +6,28 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Journaled per-order cash
+
+The simulated execution lane now tracks trade cash, entry/exit quantities and fees
+per command from the same journaled fills as the position projection. A bounded
+batch is preflighted before publication. Accounting advances only after journal
+readback and position projection succeed. Cash replaces the separate fee-only
+accumulator; there is one accounting state per order.
+
+The projection rejects missing entry history, direction changes, over-exits,
+changed retries and command/scope mismatches. Net cash is available only when the
+order's journaled entry and exit quantities match and no fill batch is pending.
+It uses actual fill prices and the pinned cost model. Gross P&L remains separate.
+
+All 347 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Core tests cover partial fills, shorts, exact retries and rejected mutations.
+Funded playback scenarios check net cash after explicit exits and replacement
+target fills. Unfilled cancellations have no fabricated cash projection.
+
+This is accounting evidence, not account settlement. Currency certification,
+atomic portfolio settlement, filled-order reservation release and durable recovery
+remain unfinished. No services ran; source parity was not rerun.
+
 ## Manifest-bound simulated costs
 
 Playback now requires a cost model bound to the exact run manifest. The initial

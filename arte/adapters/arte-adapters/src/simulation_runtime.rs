@@ -30,7 +30,7 @@ pub struct Runtime {
     reservations: std::collections::BTreeMap<String, arte_core::portfolio::Reservation>,
     released: std::collections::BTreeSet<String>,
     costs: Option<arte_core::simulation_costs::Pinned>,
-    fees: std::collections::BTreeMap<String, u64>,
+    cash: std::collections::BTreeMap<String, arte_core::simulation_costs::cash::OrderCash>,
 }
 pub struct Submission<'a> {
     pub plan: &'a arte_core::decision_orders::Plan,
@@ -72,7 +72,7 @@ impl Runtime {
             reservations: Default::default(),
             released: Default::default(),
             costs: None,
-            fees: Default::default(),
+            cash: Default::default(),
         })
     }
     fn ready(&self) -> Result<()> {
@@ -100,7 +100,18 @@ impl Runtime {
         if self.costs.is_none() {
             return Err(Error::Unready("simulation cost model unbound".into()));
         }
-        Ok(self.fees.get(command).copied())
+        Ok(self.cash.get(command).map(|cash| cash.fees_minor()))
+    }
+    pub fn closed_net_cash_minor(&self, command: &str) -> Result<i128> {
+        self.ready()?;
+        let costs = self
+            .costs
+            .as_ref()
+            .ok_or_else(|| Error::Unready("simulation cost model unbound".into()))?;
+        self.cash
+            .get(command)
+            .ok_or_else(|| Error::Unready("journaled order cash missing".into()))?
+            .closed_net_cash_minor(costs)
     }
     pub(crate) fn require_new_playback(
         &self,
@@ -545,20 +556,29 @@ impl Runtime {
             p.current = Some((end, Committer::new(batch)));
         }
         let (end, committer) = p.current.as_mut().unwrap();
-        let mut fees = std::collections::BTreeMap::new();
+        let mut cash = std::collections::BTreeMap::new();
         if let Some(costs) = &self.costs {
             for fill in &p.fills[p.applied..*end] {
-                let charge = costs.charge(fill)?;
-                let total = fees
-                    .entry(fill.command_id.clone())
-                    .or_insert_with(|| self.fees.get(&fill.command_id).copied().unwrap_or(0));
-                *total = total
-                    .checked_add(charge.fee_minor)
-                    .ok_or_else(|| Error::Capacity("cumulative simulation fees overflow".into()))?;
+                use std::collections::btree_map::Entry;
+                match cash.entry(fill.command_id.clone()) {
+                    Entry::Vacant(slot) => {
+                        let next = if let Some(previous) = self.cash.get(&fill.command_id) {
+                            let mut next = previous.clone();
+                            next.apply(fill, costs)?;
+                            next
+                        } else {
+                            arte_core::simulation_costs::cash::OrderCash::new(fill, costs)?
+                        };
+                        slot.insert(next);
+                    }
+                    Entry::Occupied(mut slot) => {
+                        slot.get_mut().apply(fill, costs)?;
+                    }
+                }
             }
         }
         committer.commit(publisher, &mut self.projection).await?;
-        self.fees.extend(fees);
+        self.cash.extend(cash);
         p.applied = *end;
         p.current = None;
         if p.applied == p.fills.len() {

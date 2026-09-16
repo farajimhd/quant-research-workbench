@@ -111,6 +111,10 @@ impl Runtime {
     pub fn fees_minor(&self, command: &str) -> Result<Option<u64>> {
         self.execution.fees_minor(command)
     }
+    /// Journaled net trade cash only; this does not release funding or settle an account.
+    pub fn closed_net_cash_minor(&self, command: &str) -> Result<i128> {
+        self.execution.closed_net_cash_minor(command)
+    }
     pub fn position(
         &self,
         key: &arte_core::execution_positions::Key,
