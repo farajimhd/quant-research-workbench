@@ -130,7 +130,17 @@ def terminal_account(path, actual_episodes, *, not_before=None, initial_cash=100
         positions=positions)
 
 
-def summarize(root):
+def trial_session(identity, summary, run_id):
+    expected=identity.get('session_date','2026-08-21')
+    end=datetime.fromisoformat(summary['session_end'])
+    if (summary.get('status')!='completed' or summary.get('run_id')!=run_id
+            or summary.get('session_date')!=expected or end.tzinfo is None
+            or end.astimezone(ZoneInfo('America/New_York')).date().isoformat()!=expected):
+        raise ValueError('Completed replay session differs from manifest authority')
+    return expected
+
+
+def summarize(root, *, audit_original_positions=True):
     root=root.resolve();root.relative_to(Path('D:/TradingML/runtimes').resolve())
     trials=[];pending=[]
     for manifest in sorted(root.rglob('manifest.json')):
@@ -143,9 +153,11 @@ def summarize(root):
                 pending.append(trial['run_id'])
                 print(f"Awaiting journal close: {trial['run_id']}; excluded from current coverage",flush=True)
                 continue
+            session=trial_session(state['identity'],json.loads((directory/'run-summary.json').read_text()),trial['run_id'])
             data=episodes(directory/'journal.sqlite3')
             closed=[e for e in data['episodes'] if 'closed_at' in e]
             row=dict(**trial,symbol=state['identity']['symbol'],end=state['identity']['end'],
+                session_date=session,
                 tickers=state['identity'].get('tickers',[state['identity']['symbol']]),
                 experiment=str(manifest.parent.relative_to(root)),**data,
                 closed_count=len(closed),open_count=len(data['episodes'])-len(closed),
@@ -153,12 +165,14 @@ def summarize(root):
             row['account_mark']=terminal_account(directory/'journal.sqlite3',data['episodes'],
                 not_before=trial.get('current_time'))
             trials.append(row)
+    if audit_original_positions and any(t['session_date']!='2026-08-21' for t in trials):
+        raise ValueError('Frozen position labels belong to 2026-08-21; use --trades-only for other sessions')
     (root/'comparison.json').write_text(json.dumps(trials,indent=2),encoding='utf-8')
     (root/'comparison-pending.json').write_text(json.dumps(dict(awaiting_journal_close=pending),indent=2),encoding='utf-8')
     lines=['# Strategy 222 replay refinement','',
         'Same-day development evidence; hindsight selects evaluation windows only. Each run starts at 04:00 with $10,000. Single-symbol rows exclude portfolio competition; PORTFOLIO rows share capital across their listed tickers. Do not sum isolated rows as portfolio profit. Closed net includes simulated commissions and excludes open episodes. Marked gain reconciles all fill cash flows and terminal broker position marks; open positions are not liquidated and future exit costs are excluded.', '',
-        '| Experiment | Symbol | Variant | Entries | Closed wins | Open | Closed net | Marked gain | First entry (ET) |',
-        '|---|---|---|---:|---:|---:|---:|---:|---|']
+        '| Experiment | Session | Symbol | Variant | Entries | Closed wins | Open | Closed net | Marked gain | First entry (ET) |',
+        '|---|---|---|---|---:|---:|---:|---:|---:|---|']
     if pending:lines.insert(4,f"{len(pending)} terminal runs still have an open journal and are excluded until the writer closes.\n")
     mark_notices=[]
     for row in trials:
@@ -166,13 +180,19 @@ def summarize(root):
         stamp=datetime.fromisoformat(first['opened_at']).astimezone(ZoneInfo('America/New_York')).strftime('%H:%M:%S') if first else 'none'
         mark=row['account_mark']
         marked=f"${mark['marked_gain']:.2f}" if mark['status']=='verified' else 'unavailable'
-        lines.append(f"| {row['experiment']} | {row['symbol']} | {row['name']} | {len(row['episodes'])} | {row['wins']}/{row['closed_count']} | {row['open_count']} | ${row['net_closed']:.2f} | {marked} | {stamp} |")
+        lines.append(f"| {row['experiment']} | {row['session_date']} | {row['symbol']} | {row['name']} | {len(row['episodes'])} | {row['wins']}/{row['closed_count']} | {row['open_count']} | ${row['net_closed']:.2f} | {marked} | {stamp} |")
         if mark['status']!='verified':
             mark_notices.append(f"Account marks unavailable for {row['run_id']}: {mark['reason']}.")
         print(row['symbol'],row['name'],f"entries={len(row['episodes'])} wins={row['wins']}/{row['closed_count']} open={row['open_count']} closed_net=${row['net_closed']:.2f} marked_gain={marked} first={stamp}",flush=True)
     if mark_notices:lines.extend(['',*mark_notices])
     (root/'comparison.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
-    compare_positions(root,trials)
+    if audit_original_positions:
+        compare_positions(root,trials)
+    else:
+        (root/'position-comparison.json').write_text(json.dumps(dict(
+            status='not_requested', reason='Trades-only summary; frozen original-position labels were not applied',
+            session_dates=sorted({t['session_date'] for t in trials}), cases=[]),indent=2),encoding='utf-8')
+        print('Position audit not requested: trades-only summary; no hindsight coverage claim',flush=True)
 
 
 def compare_positions(root,trials):
@@ -243,4 +263,6 @@ def compare_positions(root,trials):
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--runtime',type=Path,default=Path('D:/TradingML/runtimes/analysis/strategy-222-refinement'))
-    summarize(parser.parse_args().runtime)
+    parser.add_argument('--trades-only',action='store_true',help='Summarize actual trades without applying the frozen 2026-08-21 position labels')
+    args=parser.parse_args()
+    summarize(args.runtime,audit_original_positions=not args.trades_only)
