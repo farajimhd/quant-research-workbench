@@ -281,8 +281,8 @@ pub fn validate_plan(
             "historical Watchlist chunk duration does not match cadence budget".to_string(),
         );
     }
-    if plan.maximum_size == 0 || plan.maximum_size > 5_000 {
-        return Err("historical Watchlist maximum_size must be 1..=5000".to_string());
+    if plan.maximum_size == 0 || plan.maximum_size > 10_000 {
+        return Err("historical Watchlist maximum_size must be 1..=10000".to_string());
     }
     if plan.focused_seed_multiplier == 0 || plan.focused_seed_multiplier > 20 {
         return Err("historical Watchlist focused_seed_multiplier must be 1..=20".to_string());
@@ -1266,7 +1266,7 @@ mod tests {
     #[test]
     fn rejects_hash_or_resource_broadening() {
         let mut invalid = plan();
-        invalid.maximum_size = 5_001;
+        invalid.maximum_size = 10_001;
         assert!(validate_plan(&invalid)
             .unwrap_err()
             .contains("maximum_size"));
@@ -1275,6 +1275,17 @@ mod tests {
         assert!(validate_plan(&invalid)
             .unwrap_err()
             .contains("hash mismatch"));
+    }
+
+    #[test]
+    fn accepts_large_watchlists_only_with_bounded_chunks() {
+        let mut large = plan();
+        large.maximum_size = 10_000;
+        assert!(validate_plan(&large).unwrap_err().contains("membership-slot budget"));
+        large.max_evaluations_per_chunk = super::MAX_MEMBERSHIP_SLOTS_PER_CHUNK / 10_000;
+        large.chunk_duration_ms = large.cadence_ms * large.max_evaluations_per_chunk;
+        rehash(&mut large);
+        assert!(validate_plan(&large).unwrap().valid);
     }
 
     #[test]
