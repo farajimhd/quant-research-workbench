@@ -9,12 +9,30 @@ use arte_core::{
 use futures_util::{stream, StreamExt, TryStreamExt};
 use std::future::Future;
 pub mod projection;
+pub mod startup;
 
+#[derive(Clone, Copy)]
 pub struct Limits {
     pub maximum_batches: usize,
     pub maximum_events: usize,
     pub maximum_bytes: usize,
     pub concurrency: usize,
+}
+impl Limits {
+    fn validate(&self) -> Result<()> {
+        if self.maximum_batches == 0
+            || self.maximum_batches > 1_000_000
+            || self.maximum_events == 0
+            || self.maximum_events > 10_000_000
+            || self.maximum_bytes == 0
+            || self.maximum_bytes > 1024 * 1024 * 1024
+            || self.concurrency == 0
+            || self.concurrency > 64
+        {
+            return Err(Error::Capacity("replay source limits".into()));
+        }
+        Ok(())
+    }
 }
 pub struct Source {
     certificate: VerifiedCertificate,
@@ -46,17 +64,7 @@ pub async fn load(
     as_of_ns: u64,
     limits: Limits,
 ) -> Result<Source> {
-    if limits.maximum_batches == 0
-        || limits.maximum_batches > 1_000_000
-        || limits.maximum_events == 0
-        || limits.maximum_events > 10_000_000
-        || limits.maximum_bytes == 0
-        || limits.maximum_bytes > 1024 * 1024 * 1024
-        || limits.concurrency == 0
-        || limits.concurrency > 64
-    {
-        return Err(Error::Capacity("replay source limits".into()));
-    }
+    limits.validate()?;
     if certificate.id()? != expected_id || certificate.published_at_ns > as_of_ns {
         return Err(Error::Conflict(
             "replay source identity or knowledge cutoff".into(),
@@ -226,6 +234,202 @@ mod tests {
             },
             events,
         )
+    }
+    struct StartupReader {
+        batches: Memory,
+        trade_id: String,
+        quote_id: String,
+        trade: Certificate,
+        quote: Certificate,
+        policy: arte_core::trade_eligibility::Policy,
+        policy_hash: String,
+    }
+    impl Reader for StartupReader {
+        async fn batch(&self, id: &str) -> Result<Batch> {
+            self.batches.batch(id).await
+        }
+    }
+    impl startup::Reader for StartupReader {
+        async fn certificate(&self, id: &str) -> Result<Certificate> {
+            if id == self.trade_id {
+                Ok(self.trade.clone())
+            } else if id == self.quote_id {
+                Ok(self.quote.clone())
+            } else {
+                Err(Error::Unready("fixture certificate missing".into()))
+            }
+        }
+        async fn policy(
+            &self,
+            _: u16,
+            _: &str,
+            _: u64,
+        ) -> Result<arte_core::trade_eligibility::Pinned> {
+            // Deliberately do not trust the adapter: the assembler must recheck.
+            arte_core::trade_eligibility::Pinned::new(self.policy.clone(), &self.policy.hash()?)
+        }
+    }
+    impl StartupReader {
+        fn new() -> Self {
+            let (batches, trade, _) = fixture();
+            let mut quote = trade.clone();
+            quote.authority.kind = EventKind::Quote;
+            quote.pages.truncate(1);
+            let page = &mut quote.pages[0];
+            page.next_request_hash = None;
+            page.source_rows = 0;
+            page.accepted_rows = 0;
+            page.batches.clear();
+            let policy = arte_core::trade_eligibility::Policy {
+                schema_version: 1,
+                provider: 1,
+                valid_from_ns: 10,
+                valid_to_ns: 20,
+                available_at_ns: 9,
+                source_manifest_hash: "a".repeat(64),
+                allowed_conditions: Default::default(),
+                excluded_conditions: Default::default(),
+                allow_empty_conditions: true,
+            };
+            Self {
+                trade_id: trade.id().unwrap(),
+                quote_id: quote.id().unwrap(),
+                batches,
+                trade,
+                quote,
+                policy_hash: policy.hash().unwrap(),
+                policy,
+            }
+        }
+        fn request(&self) -> startup::Request<'_> {
+            startup::Request {
+                scope: arte_core::event_order::Scope {
+                    provider: 1,
+                    instrument: 1,
+                    session: 20260915,
+                },
+                interval: Interval { start: 10, end: 20 },
+                trade_certificate: &self.trade_id,
+                quote_certificate: &self.quote_id,
+                trade_policy: &self.policy_hash,
+                source_as_of_ns: 40,
+                timing: projection::Policy { delay_ns: 2 },
+            }
+        }
+    }
+    fn startup_limits() -> startup::Limits {
+        startup::Limits {
+            channel: limits(),
+            prepared: arte_core::market_structure::scheduler::playback::Limits {
+                maximum_frames: 10,
+                maximum_events: 2,
+                maximum_serialized_bytes: 10000,
+            },
+        }
+    }
+    #[tokio::test]
+    async fn startup_assembles_verified_channels_without_double_loading_batches() {
+        let reader = StartupReader::new();
+        let input = startup::load(&reader, reader.request(), startup_limits())
+            .await
+            .unwrap();
+        assert_eq!(reader.batches.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(input.trades.observations().len(), 2);
+        assert!(input.quotes.observations().is_empty());
+        assert_eq!(input.trades.observations()[0].available_at_ns, 30);
+        assert_eq!(input.projection.manifest.trade_certificate, reader.trade_id);
+        assert_eq!(input.projection.manifest.quote_certificate, reader.quote_id);
+        assert_eq!(
+            input.projection.manifest.eligibility_policy,
+            reader.policy_hash
+        );
+        input
+            .projection
+            .prepared
+            .require_interval(Interval { start: 10, end: 20 })
+            .unwrap();
+    }
+    #[tokio::test]
+    async fn startup_fails_closed_before_batch_io_for_wrong_pins_and_cutoffs() {
+        for fault in 0..6 {
+            let mut reader = StartupReader::new();
+            let mut limits = startup_limits();
+            match fault {
+                0 => reader.quote.interval.end = 21,
+                1 => reader.policy.allow_empty_conditions = false,
+                2 => {
+                    reader.policy.available_at_ns = 11;
+                    reader.policy_hash = reader.policy.hash().unwrap();
+                }
+                3 => limits.prepared.maximum_events = 1,
+                4 => limits.channel.concurrency = 0,
+                _ => {}
+            }
+            let mut request = reader.request();
+            if fault == 5 {
+                request.source_as_of_ns = 39;
+            }
+            assert!(
+                startup::load(&reader, request, limits).await.is_err(),
+                "fault {fault}"
+            );
+            assert_eq!(reader.batches.calls.load(Ordering::SeqCst), 0);
+        }
+    }
+    #[tokio::test]
+    async fn startup_loads_nonempty_quotes_and_preserves_both_channel_clocks() {
+        let mut reader = StartupReader::new();
+        let mut quote = fixture().2.remove(0);
+        quote.key.kind = EventKind::Quote;
+        let price = Decimal {
+            atoms: 100,
+            scale: 2,
+        };
+        let size = Decimal { atoms: 1, scale: 0 };
+        quote.payload = Payload::Quote {
+            bid: price,
+            ask: price,
+            bid_size: size,
+            ask_size: size,
+            bid_exchange: 1,
+            ask_exchange: 1,
+            conditions: vec![],
+            indicators: vec![],
+        };
+        let batch = Batch::prepare(std::slice::from_ref(&quote)).unwrap();
+        let id = batch.id().unwrap();
+        reader.batches.rows.insert(id.clone(), vec![quote.clone()]);
+        let page = &mut reader.quote.pages[0];
+        page.source_rows = 1;
+        page.accepted_rows = 1;
+        page.batches = vec![id];
+        reader.quote_id = reader.quote.id().unwrap();
+        let mut limits = startup_limits();
+        limits.prepared.maximum_events = 3;
+        let input = startup::load(&reader, reader.request(), limits)
+            .await
+            .unwrap();
+        assert_eq!(input.quotes.observations(), std::slice::from_ref(&quote));
+        assert_eq!(reader.batches.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(reader.batches.peak.load(Ordering::SeqCst), 2);
+        assert_eq!(input.projection.manifest.quote_certificate, reader.quote_id);
+    }
+    #[tokio::test]
+    async fn startup_never_returns_partial_sources_after_missing_corrupt_or_over_budget_data() {
+        for fault in 0..3 {
+            let mut reader = StartupReader::new();
+            let mut limits = startup_limits();
+            match fault {
+                0 => reader.batches.rows.clear(),
+                1 => reader.batches.rows.values_mut().next().unwrap()[0].available_at_ns += 1,
+                2 => limits.channel.maximum_bytes = 1,
+                _ => unreachable!(),
+            }
+            assert!(startup::load(&reader, reader.request(), limits)
+                .await
+                .is_err());
+            assert!(reader.batches.calls.load(Ordering::SeqCst) > 0);
+        }
     }
     #[tokio::test]
     async fn concurrent_loading_preserves_certified_order_and_original_clocks() {

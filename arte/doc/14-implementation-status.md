@@ -6,6 +6,24 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Historical source startup assembly
+
+A read-only assembler now connects pinned certificate reads, trade-policy loading,
+verified channel batches and historical projection. Certificate metadata and policy
+scope/cutoffs are checked before batch I/O. Each event batch is read once through
+the existing verifier. Raw acquisition timestamps remain unchanged.
+
+The source channels retain separate budgets and load sequentially. Each channel
+uses bounded concurrent batch reads. Projection limits apply to combined events.
+Failure returns no partial input and performs no writes. A metadata-only
+ClickHouse certificate read is explicitly not a verified-coverage receipt.
+
+Four fixtures cover both empty and populated quote input, exact batch-read counts,
+wrong identities, future evidence, budgets and missing/corrupt data. Executable
+coordination remains unfinished; connected ClickHouse reads remain untested.
+All 426 offline tests, formatting, Clippy and copied-source checks pass. No
+services started or migrations ran. Source parity was not rerun.
+
 ## Pinned trade-policy persistence
 
 Trade policies now have exact-hash startup reads and guarded ClickHouse publication.

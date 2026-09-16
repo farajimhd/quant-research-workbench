@@ -301,6 +301,15 @@ impl ClickHouse {
         &self,
         id: &str,
     ) -> Result<arte_core::acquisition::VerifiedCertificate> {
+        self.verify_acquisition(self.load_acquisition_manifest(id).await?)
+            .await
+    }
+    /// Metadata only. This is not verified coverage. Consumers must verify every
+    /// referenced batch before using the certificate to admit events or readiness.
+    pub async fn load_acquisition_manifest(
+        &self,
+        id: &str,
+    ) -> Result<arte_core::acquisition::Certificate> {
         let values = self
             .event_values("event_coverage_staging_v1", &[id.to_owned()])
             .await?;
@@ -312,7 +321,7 @@ impl ClickHouse {
         if certificate.id()? != id {
             return Err(Error::Conflict("coverage certificate hash mismatch".into()));
         }
-        self.verify_acquisition(certificate).await
+        Ok(certificate)
     }
     pub(super) async fn event_values(
         &self,

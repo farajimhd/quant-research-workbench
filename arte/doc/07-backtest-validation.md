@@ -31,6 +31,25 @@ It must not invent a historical receive or execution timestamp. The certified
 source loader and a retrospective clock projection are implemented. The
 executable backtest loop is not yet connected to them.
 
+### Historical source startup
+
+The read-only startup assembler accepts exact trade and quote certificate IDs,
+the trade-policy hash, scope, session interval and source knowledge cutoff. It
+checks both certificate manifests before reading event batches. Policy loading
+uses session start as its knowledge cutoff, not the later REST acquisition time.
+
+The ClickHouse metadata-only certificate read does not return verified coverage.
+The existing source loader verifies every referenced batch while retaining its
+observations. This avoids downloading batches once for verification and again
+for replay. Both fully verified sources feed the shared policy and timing
+projection. An error returns no partial input and performs no writes.
+
+Metadata reads run concurrently. Channels load sequentially, with bounded batch
+concurrency inside each channel. Source byte/event limits apply separately to
+each retained channel. Prepared-input limits apply to their combined projection.
+Peak memory includes both source channels, prepared input and bounded in-flight
+batches; the serialized-byte limits are not total process-memory guarantees.
+
 ### Retrospective projection contract
 
 `arte.historical-projection.v1` pins both acquisition certificate IDs, the session,
