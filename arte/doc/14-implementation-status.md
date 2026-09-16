@@ -6,6 +6,24 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Fill-position component recovery
+
+The fill-derived position projection now has a bounded, content-addressed
+checkpoint. It preserves FIFO lots, gross P&L, trade cash, causal cursors and
+duplicate-fill receipts. Restore requires externally pinned content and context
+hashes. It checks lot totals, signed cash accounting, position geometry, capacity
+and canonical serialization. Invalid images fail before a projection is returned.
+
+All 356 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+The new tests compare uninterrupted and restored long/short partial-exit paths.
+They also check duplicate replay, changed context, byte budgets, altered accounting
+and noncanonical payload rejection. Source-oracle parity was not rerun.
+
+This is a component codec, not coordinated execution recovery. The adapter still
+needs one checkpoint covering simulator orders, owners, reservations, costs,
+cash and release markers. The run coordinator must bind its market and strategy
+state to the same cut. No service, database writer or network test ran.
+
 ## ClickHouse portfolio checkpoint publication
 
 Portfolio checkpoints now have a chunked content-addressed storage format and a
