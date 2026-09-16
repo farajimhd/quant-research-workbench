@@ -153,10 +153,28 @@ def prepare(name, overrides=None, recipe_base=None):
         # the existing 10-second rate, spread, freshness and setup checks.
         profile['parameters']['liquidity_admission']['minimum_current_trade_rate_60s']=2.
     for section,values in (overrides or {}).items():
-        profile['parameters'][section].update(values)
+        if section == 'portfolio_mandate':
+            apply_mandate_override(payload, values)
+        else:
+            profile['parameters'][section].update(values)
     return create_test_candidate(label='Strategy 222 refinement / '+label_name,
         canvas_revision=payload['canvas']['revision'], canvas_profile=payload['canvas']['profile'],
         configuration=payload, run_plan_id=PLAN, strategy_profile_id=profile['profile_id'])
+
+
+def apply_mandate_override(payload, values):
+    """Change only the replay plan's single explicitly bound research mandate."""
+    if (set(values) != {'maximum_positions'} or
+            type(values['maximum_positions']) is not int or values['maximum_positions'] < 1):
+        raise ValueError('Invalid research parameter maximum_positions: expected a positive integer')
+    plans = [p for p in payload['run_plans']['plans'] if p['run_plan_id'] == PLAN]
+    ids = plans[0].get('mandate_ids', []) if len(plans) == 1 else []
+    mandates = [m for m in payload.get('portfolio', {}).get('mandates', [])
+                if m.get('mandate_id') in ids]
+    if (len(ids) != 1 or len(mandates) != 1 or mandates[0].get('run_plan_id') != PLAN
+            or mandates[0].get('account_key') != 'replay'):
+        raise ValueError('Research capacity override requires one explicitly bound replay mandate')
+    mandates[0]['maximum_positions'] = values['maximum_positions']
 
 
 async def run(args):
@@ -371,6 +389,9 @@ def main():
         key=hashlib.sha256(json.dumps(recipe_identity,sort_keys=True).encode()).hexdigest()[:10]
         args.variants=['supervised-'+key]
         print(f'Research recipe base={args.recipe_base or "full-v6"}; variant={args.variants[0]}',flush=True)
+        if 'portfolio_mandate' in args.recipe_parameters:
+            print(f"Research capacity: maximum positions={args.recipe_parameters['portfolio_mandate']['maximum_positions']}; "
+                  'applies only to the candidate replay mandate', flush=True)
     elif args.variants is None:args.variants=['corrected-baseline','early-v1']
     if args.portfolio_symbols:
         if args.position_symbols or args.symbol or not args.end:
@@ -405,7 +426,8 @@ def main():
 
 def load_recipe(path):
     from math import isfinite
-    allowed={'liquidity_admission':{'minimum_session_dollar_volume','minimum_session_share_volume',
+    allowed={'portfolio_mandate':{'maximum_positions'},
+        'liquidity_admission':{'minimum_session_dollar_volume','minimum_session_share_volume',
         'maximum_admission_spread_bps','maximum_current_spread_bps','maximum_spread_bps',
         'minimum_current_trade_rate_60s'},'historical_hod':{'setup_minimum_body_bps','setup_minimum_300s_range_pct',
         'setup_phase_minimum_progress_r','setup_range_seconds','setup_base_recovery_maximum_range_pct',
@@ -421,6 +443,9 @@ def load_recipe(path):
             raise ValueError('Recipe contains an unapproved parameter path')
         if any(type(v) not in (int,float) or not isfinite(v) or v<0 for v in values.values()):
             raise ValueError('Invalid research parameter value')
+        if section=='portfolio_mandate' and (type(values['maximum_positions']) is not int
+                or values['maximum_positions'] < 1):
+            raise ValueError('Invalid research parameter maximum_positions: expected a positive integer')
         if section=='historical_hod' and 'cash_fraction' in values and not 0 < values['cash_fraction'] <= 1:
             raise ValueError('Invalid research parameter cash_fraction: expected 0 < value <= 1')
     return parameters

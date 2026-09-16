@@ -147,11 +147,41 @@ def test_recipe_rejects_invalid_cash_fraction(tmp_path, fraction):
         load_recipe(path)
 
 
+@pytest.mark.parametrize('value', [0, -1, 4.5, 4.0, True, '4', float('nan'), float('inf')])
+def test_capacity_recipe_rejects_invalid_count(tmp_path, value):
+    path=tmp_path/'recipe.json'
+    path.write_text(json.dumps({'parameters':{'portfolio_mandate':{'maximum_positions':value}}}))
+    with pytest.raises(ValueError,match='Invalid research parameter'):
+        load_recipe(path)
+
+
+def test_capacity_recipe_requires_explicit_replay_mandate(tmp_path):
+    from scripts.run_strategy_222_refinement import apply_mandate_override
+    path=tmp_path/'recipe.json'
+    path.write_text(json.dumps({'parameters':{'portfolio_mandate':{'maximum_positions':4}}}))
+    assert load_recipe(path)=={'portfolio_mandate':{'maximum_positions':4}}
+    payload={'run_plans':{'plans':[{'run_plan_id':PLAN,'mandate_ids':['m']}]},
+             'portfolio':{'mandates':[{'mandate_id':'m','run_plan_id':PLAN,'account_key':'live','maximum_positions':3}]}}
+    for invalid in ('live','missing','duplicate','other_plan'):
+        p=deepcopy(payload)
+        if invalid=='missing':p['run_plans']['plans'][0]['mandate_ids']=[]
+        elif invalid=='duplicate':p['portfolio']['mandates']*=2
+        elif invalid=='other_plan':p['portfolio']['mandates'][0].update(account_key='replay',run_plan_id='other')
+        before=deepcopy(p)
+        with pytest.raises(ValueError,match='explicitly bound replay mandate'):
+            apply_mandate_override(p,{'maximum_positions':4})
+        assert p==before
+
+
 def test_recipe_preserves_selected_version_and_changes_only_requested_parameter(monkeypatch):
     from src.backend import trading_configuration_service as service
     original=dict(profile_id=PROFILE,parameters=dict(
         historical_hod=dict(unrelated_setting=123),liquidity_admission={},execution=dict(tick_size=.01)))
-    payload=dict(strategy=dict(profiles=[original]),run_plans=dict(plans=[dict(run_plan_id=PLAN)]),
+    payload=dict(strategy=dict(profiles=[original]),
+                 run_plans=dict(plans=[dict(run_plan_id=PLAN,mandate_ids=['research'])]),
+                 portfolio=dict(mandates=[dict(mandate_id='research',run_plan_id=PLAN,account_key='replay',
+                     maximum_positions=3,maximum_planned_risk_fraction=.08),
+                     dict(mandate_id='unrelated',maximum_positions=9)]),
                  canvas=dict(revision=1,profile='fixture'))
     frozen=deepcopy(payload)
     monkeypatch.setattr(service,'configuration_candidate',lambda *a,**kw:dict(payload=payload,
@@ -170,6 +200,13 @@ def test_recipe_preserves_selected_version_and_changes_only_requested_parameter(
     assert actual['parameters']['liquidity_admission']['minimum_current_trade_rate_60s']==2
     assert trial['strategy_profile_id']==actual['profile_id']=='v7-222-range-experiment'
     assert trial['configuration']['run_plans']['plans'][0]['profile_id']==actual['profile_id']
+    assert payload==frozen
+
+    capacity_trial=prepare('capacity-experiment',{'portfolio_mandate':{'maximum_positions':4}},'regular-origin-v31')
+    expected_portfolio=deepcopy(baseline['configuration']['portfolio'])
+    expected_portfolio['mandates'][0]['maximum_positions']=4
+    assert capacity_trial['configuration']['portfolio']==expected_portfolio
+    assert capacity_trial['configuration']['strategy']['profiles'][-1]['parameters']==baseline['configuration']['strategy']['profiles'][-1]['parameters']
     assert payload==frozen
 
     capital_trial=prepare('capital-experiment',{'historical_hod':{'cash_fraction':.3}},'regular-origin-v31')
