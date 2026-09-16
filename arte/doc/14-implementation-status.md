@@ -6,6 +6,24 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Boundary-derived intrabar preparation
+
+The shared feature authority now builds intrabar acquisition observations from
+the exact pending eligible trade. Price, VWAP, MACD and candle body-high come from
+the shared market state. Ask and quote-policy identity come from the executable
+quote book. Missing quotes, mismatched feature boundaries and trades outside the
+developing candle are rejected. Admission/account gates remain explicit inputs.
+
+The playback controller can pass these observations into the existing candidate
+intrabar evaluator after validating the declared consumer scope. No independent
+historical strategy algorithm was introduced.
+
+The multi-account playback test covers operand derivation, quote-policy binding,
+missing quotes and changed boundary rejection. All 323 offline Rust tests,
+formatting, Clippy and copied-source hash checks pass. Full candidate entry-to-fill
+acceptance, merged quote scheduling and fill feedback remain unfinished. No
+services or network calls ran. Source-oracle parity was not rerun.
+
 ## Playback candidate preparation
 
 The account playback controller can now advance the shared candidate feature state

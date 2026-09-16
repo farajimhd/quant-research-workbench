@@ -169,6 +169,43 @@ impl Run {
     pub fn remaining(&self) -> Option<usize> {
         self.barrier.as_ref().map(Barrier::remaining)
     }
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_intrabar(
+        &self,
+        candidate: &mut crate::candidate_runtime::Runtime,
+        features: &crate::candidate_features::State,
+        quotes: &crate::quote_state::Book,
+        context: crate::candidate_features::AcquisitionContext,
+        safety: &crate::strategy_dispatch::Safety,
+        broker: &crate::strategy_candidate::PositionObservation,
+        policy: &crate::strategy_candidate::Policy<'_>,
+        intrabar: &crate::strategy_candidate::AcquisitionPolicy,
+        recovery: &crate::strategy_lifecycle::RecoveryPolicy,
+    ) -> Result<crate::strategy_dispatch::Decision> {
+        if !self.needs_decision(candidate.scope())? {
+            return Err(Error::Conflict(
+                "playback consumer already committed".into(),
+            ));
+        }
+        let boundary = self
+            .pending()?
+            .ok_or_else(|| Error::Unready("no playback boundary".into()))?;
+        let (observation, body_high) =
+            features.acquisition_frame(&boundary, self.market()?, quotes, context)?;
+        let decision = candidate.intrabar(
+            boundary.input(String::new()),
+            safety,
+            &observation,
+            broker,
+            body_high,
+            policy,
+            intrabar,
+            features,
+            recovery,
+        )?;
+        self.validate_decision(&decision)?;
+        Ok(decision)
+    }
     /// Check every prepared decision before any account writer performs I/O.
     pub fn validate_decision(&self, decision: &crate::strategy_dispatch::Decision) -> Result<()> {
         self.barrier

@@ -51,6 +51,13 @@ pub struct EntryContext<'a> {
     pub recovery: &'a crate::strategy_lifecycle::RecoveryState,
     pub recovery_policy: &'a crate::strategy_lifecycle::RecoveryPolicy,
 }
+/// Admission/account authorities not inferred from price or indicator state.
+pub struct AcquisitionContext {
+    pub tradable: bool,
+    pub regular_block: bool,
+    pub encounter_blocked: bool,
+    pub pending_capital: bool,
+}
 #[derive(Debug, Clone, Serialize)]
 pub struct Snapshot {
     pub boundary_id: String,
@@ -124,6 +131,68 @@ impl State {
             return Err(Error::Unready("candidate features require recovery".into()));
         }
         Ok(self.snapshot.as_ref())
+    }
+    /// Derive intrabar market operands from exactly the pending shared boundary.
+    pub fn acquisition_frame(
+        &self,
+        boundary: &Boundary<'_>,
+        market: &Runtime,
+        quotes: &crate::quote_state::Book,
+        context: AcquisitionContext,
+    ) -> Result<(crate::strategy_candidate::AcquisitionObservation, f64)> {
+        let snapshot = self
+            .snapshot()?
+            .ok_or_else(|| Error::Unready("candidate features missing".into()))?;
+        if snapshot.boundary_id != boundary.id
+            || snapshot.sequence != boundary.sequence
+            || snapshot.evaluated_at_ns != boundary.evaluated_at_ns
+            || market.configuration_hash() != self.market_hash
+        {
+            return Err(Error::Conflict("intrabar feature boundary differs".into()));
+        }
+        let Kind::Trade {
+            observation,
+            eligible: true,
+        } = &boundary.kind
+        else {
+            return Err(Error::Unready(
+                "intrabar acquisition requires an eligible trade".into(),
+            ));
+        };
+        let crate::events::Payload::Trade { price, .. } = observation.payload else {
+            return Err(Error::Invalid("intrabar trade payload differs".into()));
+        };
+        if price.atoms > (1_i64 << 53) {
+            return Err(Error::Invalid(
+                "intrabar trade exceeds exact integer conversion range".into(),
+            ));
+        }
+        let series = market.market()?;
+        let bar = series
+            .developing()
+            .ok_or_else(|| Error::Unready("intrabar candle missing".into()))?;
+        if observation.sip.ns < bar.start_ns || observation.sip.ns >= bar.end_ns {
+            return Err(Error::Conflict(
+                "intrabar candle does not contain pending trade".into(),
+            ));
+        }
+        let macd = snapshot.macd.as_ref();
+        let frame = crate::strategy_candidate::AcquisitionObservation {
+            quote_policy_hash: String::new(),
+            at_ns: boundary.evaluated_at_ns,
+            price: price.to_f64(),
+            ask: 0.,
+            vwap: series.session_vwap()?,
+            macd_at_ns: macd.map(|reading| reading.at_ns),
+            macd_positive: macd.is_some_and(|reading| reading.positive()),
+            macd_episode_present: macd.is_some_and(|reading| reading.episode_at_ns.is_some()),
+            tradable: context.tradable,
+            regular_block: context.regular_block,
+            encounter_blocked: context.encounter_blocked,
+            pending_capital: context.pending_capital,
+        }
+        .bind_quote(quotes, self.scope, self.config.maximum_quote_age_ns)?;
+        Ok((frame, bar.open.max(bar.close)))
     }
     /// Borrow shared arrays once for each account's candidate evaluation. This
     /// only constructs an entry frame; it neither grants admission nor processes

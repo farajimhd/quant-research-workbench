@@ -99,6 +99,80 @@ fn manifest_playback_requires_all_account_receipts_before_advancing() {
             Poll::Boundary => {
                 assert!(run.observe_features(&mut features).unwrap());
                 assert!(!run.observe_features(&mut features).unwrap());
+                let boundary = run.pending().unwrap().unwrap();
+                if let Kind::Trade { observation, .. } = boundary.kind {
+                    let context = || crate::candidate_features::AcquisitionContext {
+                        tradable: true,
+                        regular_block: false,
+                        encounter_blocked: true,
+                        pending_capital: false,
+                    };
+                    let mut quotes =
+                        crate::quote_state::Book::new(run.market().unwrap().source_scope())
+                            .unwrap();
+                    quotes.bind_policy(empty_quote_policy(1)).unwrap();
+                    assert!(features
+                        .acquisition_frame(&boundary, run.market().unwrap(), &quotes, context())
+                        .is_err());
+                    let mut quote = observation.clone();
+                    quote.key.kind = EventKind::Quote;
+                    quote.sip.ns = boundary.evaluated_at_ns;
+                    quote.available_at_ns = boundary.evaluated_at_ns;
+                    quote.payload = Payload::Quote {
+                        bid: Decimal {
+                            atoms: 1000,
+                            scale: 2,
+                        },
+                        ask: Decimal {
+                            atoms: 1001,
+                            scale: 2,
+                        },
+                        bid_size: Decimal {
+                            atoms: 10,
+                            scale: 0,
+                        },
+                        ask_size: Decimal {
+                            atoms: 10,
+                            scale: 0,
+                        },
+                        bid_exchange: 1,
+                        ask_exchange: 1,
+                        conditions: vec![],
+                        indicators: vec![],
+                    };
+                    quotes.observe(&quote).unwrap();
+                    let (frame, high) = features
+                        .acquisition_frame(&boundary, run.market().unwrap(), &quotes, context())
+                        .unwrap();
+                    let Payload::Trade { price, .. } = observation.payload else {
+                        panic!("trade required")
+                    };
+                    assert_eq!(frame.price, price.to_f64());
+                    assert_eq!(frame.ask, 10.01);
+                    assert_eq!(frame.at_ns, boundary.evaluated_at_ns);
+                    assert_eq!(frame.quote_policy_hash, quotes.policy_hash().unwrap());
+                    assert!(frame.encounter_blocked);
+                    let bar = run
+                        .market()
+                        .unwrap()
+                        .market()
+                        .unwrap()
+                        .developing()
+                        .unwrap();
+                    assert_eq!(high, bar.open.max(bar.close));
+                    let wrong = Boundary {
+                        id: "wrong",
+                        sequence: boundary.sequence,
+                        evaluated_at_ns: boundary.evaluated_at_ns,
+                        kind: Kind::Trade {
+                            observation,
+                            eligible: true,
+                        },
+                    };
+                    assert!(features
+                        .acquisition_frame(&wrong, run.market().unwrap(), &quotes, context())
+                        .is_err());
+                }
                 let input = run.pending().unwrap().unwrap().input("features".into());
                 let scopes = run.scopes().to_vec();
                 let candidate = crate::candidate_runtime::Runtime::new(
