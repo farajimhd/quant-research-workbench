@@ -178,6 +178,22 @@ impl Runtime {
         self.execution
             .release_unfilled_reservation(command, portfolio)
     }
+    /// Reconcile only terminal owned orders after durable fill publication.
+    /// Open positions and still-fillable entries retain their reservations.
+    pub fn reconcile_funding(
+        &mut self,
+        portfolio: &arte_core::portfolio::Portfolio,
+        currencies: &std::collections::BTreeMap<
+            u64,
+            arte_core::simulation_costs::SettlementCurrency,
+        >,
+        maximum_orders: usize,
+        maximum_receipts: usize,
+    ) -> Result<Vec<simulation_runtime::funding::Outcome>> {
+        self.decision_view()?;
+        self.execution
+            .reconcile_funding(portfolio, currencies, maximum_orders, maximum_receipts)
+    }
     pub fn settle_closed_order(
         &mut self,
         command: &str,

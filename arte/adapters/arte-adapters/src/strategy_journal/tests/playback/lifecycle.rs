@@ -161,6 +161,9 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, fail_submission: bo
             assert!(controller.account_view("a").is_err());
             assert!(controller.account_view("b").is_err());
             assert!(controller.acknowledge().is_err());
+            assert!(controller
+                .reconcile_funding(&portfolio, &BTreeMap::from([(1, currency.clone())]), 2, 10)
+                .is_err());
             for command in &commands {
                 assert!(controller
                     .release_unfilled_reservation(command, &portfolio)
@@ -188,20 +191,48 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, fail_submission: bo
         }
         let input = boundary.input("fixture-features".into());
         let now = input.evaluated_at_ns;
+        if !cancel_unfilled && quotes < 4 {
+            assert!(controller
+                .reconcile_funding(&portfolio, &BTreeMap::from([(1, currency.clone())]), 2, 10)
+                .unwrap()
+                .is_empty());
+        }
         if quote && quotes == 4 && !cancel_unfilled {
+            assert!(controller
+                .reconcile_funding(&portfolio, &BTreeMap::new(), 0, 10)
+                .is_err());
+            let missing = controller
+                .reconcile_funding(&portfolio, &BTreeMap::new(), 2, 10)
+                .unwrap();
+            assert_eq!(missing.len(), 2);
+            assert!(missing.iter().all(|o| o.result.is_err()));
+            let mut settled_commands = std::collections::BTreeSet::new();
             for command in &commands {
                 let mut wrong = currency.clone();
                 wrong.currency = "CAD".into();
                 assert!(controller
                     .settle_closed_order(command, &portfolio, &wrong, 10)
                     .is_err());
-                assert!(controller
-                    .settle_closed_order(command, &portfolio, &currency, 10)
-                    .unwrap());
+                let outcomes = controller
+                    .reconcile_funding(&portfolio, &BTreeMap::from([(1, currency.clone())]), 1, 10)
+                    .unwrap();
+                assert_eq!(outcomes.len(), 1);
+                assert_eq!(
+                    outcomes[0].kind,
+                    crate::simulation_runtime::funding::Kind::SettleClosed
+                );
+                let outcome = outcomes.into_iter().next().unwrap();
+                assert!(outcome.result.unwrap());
                 assert!(!controller
-                    .settle_closed_order(command, &portfolio, &currency, 10)
+                    .settle_closed_order(&outcome.command_id, &portfolio, &currency, 10)
                     .unwrap());
+                assert!(settled_commands.insert(outcome.command_id));
             }
+            assert_eq!(settled_commands, commands.iter().cloned().collect());
+            assert!(controller
+                .reconcile_funding(&portfolio, &BTreeMap::from([(1, currency.clone())]), 2, 10)
+                .unwrap()
+                .is_empty());
         }
         for command in &commands {
             if released {
@@ -538,10 +569,18 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, fail_submission: bo
             }
         }
         if cancel_unfilled && !quote && quotes == 1 {
+            let outcomes = controller
+                .reconcile_funding(&portfolio, &BTreeMap::new(), 2, 10)
+                .unwrap();
+            assert_eq!(outcomes.len(), 2);
+            for outcome in outcomes {
+                assert_eq!(
+                    outcome.kind,
+                    crate::simulation_runtime::funding::Kind::ReleaseUnfilled
+                );
+                assert!(outcome.result.unwrap());
+            }
             for command in &commands {
-                assert!(controller
-                    .release_unfilled_reservation(command, &portfolio)
-                    .unwrap());
                 assert!(!controller
                     .release_unfilled_reservation(command, &portfolio)
                     .unwrap());

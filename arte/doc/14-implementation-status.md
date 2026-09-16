@@ -6,6 +6,28 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Bounded funding reconciliation
+
+The playback controller now reconciles terminal order funding in bounded batches.
+Cancelled entries with no fills release their exact reservation. Fully closed
+orders settle their journaled cash and costs through the existing portfolio
+authority. Open positions and entries that can still fill retain their funding.
+
+Reconciliation requires a dispatched boundary with all fills committed. Each
+call returns per-order results and handles at most 4,096 orders in stable
+submission order. Missing currency evidence or settlement errors retain funding.
+Successful orders are excluded from subsequent batches, including after recovery.
+This does not release reserved-but-unsubmitted plans or authorize broker activity.
+
+The multi-account lifecycle fixtures now use this path for cancelled-entry
+release and closed-order settlement. They verify missing evidence, fill-journal
+gating, one-order batches, nonterminal exclusion, exact retry and unchanged final
+cash. All 391 offline Rust tests and static checks pass. Source-oracle parity was
+not rerun. No service or network test ran.
+
+Market/evidence input assembly, allocation policy wiring, the complete CLI runner,
+multi-instrument orchestration and runtime/UI integration remain unfinished.
+
 ## Bounded committed-action dispatch
 
 The playback controller now dispatches all executable action types through one
@@ -32,7 +54,8 @@ cancellation and recovery. All 391 offline Rust tests, formatting, Clippy and
 copied-source checks pass. Source-oracle parity was not rerun. No service ran.
 
 The standalone runner still needs market/evidence input assembly, allocation
-policy wiring, funding settlement orchestration and CLI integration.
+policy wiring and CLI integration. Bounded funding reconciliation is implemented
+above and must be called at the appropriate runner boundaries.
 
 ## Controller-owned entry submission
 

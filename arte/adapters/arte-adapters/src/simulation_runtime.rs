@@ -11,6 +11,7 @@ use arte_core::{
 use serde::Serialize;
 pub mod account_view;
 pub mod checkpoint;
+pub mod funding;
 struct Pending {
     quote_hash: String,
     fills: Vec<Fill>,
