@@ -14,6 +14,7 @@ use arte_core::{
 };
 use serde::Serialize;
 use std::collections::BTreeMap;
+pub mod continuity;
 
 /// A caller supplies decisions from its approved trade-condition authority. This
 /// adapter verifies complete identity binding; it does not approve that policy.
@@ -79,6 +80,11 @@ pub struct Manifest {
     pub eligibility_policy: String,
     pub eligibility_decisions: String,
     pub session: u32,
+}
+impl Manifest {
+    pub fn hash(&self) -> Result<String> {
+        content_hash(&("arte.historical-projection.v1", self))
+    }
 }
 fn valid_hash(value: &str) -> bool {
     value.len() == 64
@@ -170,7 +176,7 @@ pub fn prepare(
         eligibility_decisions: content_hash(&eligibility.trades.iter().collect::<Vec<_>>())?,
         session: scope.session,
     };
-    let authority = content_hash(&("arte.historical-projection.v1", &manifest))?;
+    let authority = manifest.hash()?;
     let clock_model = format!("historical-sip-delay-v1:{authority}");
     let clock = |at: u64| {
         at.checked_add(manifest.policy.delay_ns)

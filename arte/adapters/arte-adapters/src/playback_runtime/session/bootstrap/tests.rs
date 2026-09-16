@@ -173,6 +173,71 @@ async fn bootstrap_connects_loaded_sources_and_historical_seed_to_paused_market_
         planned.projection.prepared.hash()
     );
     assert_eq!(reader.seed_calls.load(Ordering::SeqCst), 1);
+    let scope = reader.request().scope;
+    let gap = Interval {
+        start: 210 * S,
+        end: 215 * S,
+    };
+    let proof = prepared
+        .input
+        .projection
+        .empty_trade_span(&prepared.input.trades, &manifest, scope, gap, 400 * S)
+        .unwrap();
+    assert_eq!(proof.provenance().source_published_at_ns, 400 * S);
+    assert_eq!(proof.provenance().modeled_available_at_ns, 215 * S + 1);
+    proof.require(&manifest, scope, gap, 215 * S + 1).unwrap();
+    assert!(proof.require(&manifest, scope, gap, 215 * S).is_err());
+    assert!(proof
+        .require(
+            &manifest,
+            Scope {
+                instrument: 2,
+                ..scope
+            },
+            gap,
+            216 * S
+        )
+        .is_err());
+    assert!(prepared
+        .input
+        .projection
+        .empty_trade_span(&prepared.input.trades, &manifest, scope, gap, 399 * S)
+        .is_err());
+    assert!(prepared
+        .input
+        .projection
+        .empty_trade_span(&planned.trades, &manifest, scope, gap, 400 * S)
+        .is_err());
+    let mut other = manifest.manifest().clone();
+    other.source_manifest_hash = "f".repeat(64);
+    let other = Pinned::new(other.clone(), &other.hash().unwrap()).unwrap();
+    assert!(proof.require(&other, scope, gap, 216 * S).is_err());
+    assert!(prepared
+        .input
+        .projection
+        .empty_trade_span(&prepared.input.trades, &other, scope, gap, 400 * S)
+        .is_err());
+}
+
+#[tokio::test]
+async fn indexed_startup_rejects_bad_domains_before_source_reads() {
+    let (_, _, _, _, seed) = market::tests::fixture();
+    let reader = Memory::new(&seed);
+    for fault in 0..3 {
+        let mut request = reader.request();
+        let maximum = match fault {
+            0 => 0,
+            1 => 99,
+            _ => {
+                request.interval.start += 1;
+                100
+            }
+        };
+        assert!(startup::load_indexed(&reader, request, limits(), maximum)
+            .await
+            .is_err());
+    }
+    assert_eq!(reader.certificate_calls.load(Ordering::SeqCst), 0);
 }
 #[tokio::test]
 async fn bootstrap_rejects_changed_domain_and_seed_before_loading_sources() {

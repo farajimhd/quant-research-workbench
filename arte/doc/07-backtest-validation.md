@@ -131,9 +131,18 @@ them from verified source batches after recovery.
 
 This certifies recorded checks for one source revision, not absolute provider
 completeness. Source knowledge time must not be confused with simulated session
-time. The plain loader and existing startup path do not grant gap authority.
-Binding indexed loading into startup and mapping its provenance through historical
-projection before consuming it in swing continuity remain required work.
+time. The plain loader grants no gap authority. Fresh backtest bootstrap now uses
+indexed startup with a 172,800-second maximum; alignment and capacity failures
+reject startup instead of falling back.
+
+Historical projection can bind an empty-span proof to the pinned backtest run,
+source catalog, certificate and explicit delay model. Its provenance retains both
+actual source publication time and modeled availability at interval end plus the
+pinned delay. This does not rewrite source facts or create a live receipt.
+Creation rejects unindexed sources, changed pins and unavailable source evidence.
+Consumption checks run identity, scope, interval and modeled clock. The token is
+historical-backtest-only and cannot authorize live or recorded-live continuity.
+Wiring it into swing continuity remains required.
 
 ## Replay modes
 

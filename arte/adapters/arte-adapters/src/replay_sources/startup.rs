@@ -73,7 +73,37 @@ fn check(c: &Certificate, id: &str, kind: EventKind, request: &Request<'_>) -> R
 /// only the shared source loader checks batch identities, payloads and counts.
 /// Failures and cancellation return no partial Input and perform no writes.
 pub async fn load(reader: &impl Reader, request: Request<'_>, limits: Limits) -> Result<Input> {
+    load_inner(reader, request, limits, None).await
+}
+/// Historical market startup explicitly requests verified trade-second evidence.
+/// Invalid domains never silently revert to unindexed loading.
+pub async fn load_indexed(
+    reader: &impl Reader,
+    request: Request<'_>,
+    limits: Limits,
+    maximum_seconds: usize,
+) -> Result<Input> {
+    load_inner(reader, request, limits, Some(maximum_seconds)).await
+}
+async fn load_inner(
+    reader: &impl Reader,
+    request: Request<'_>,
+    limits: Limits,
+    index_seconds: Option<usize>,
+) -> Result<Input> {
     request.interval.validate()?;
+    if let Some(maximum) = index_seconds {
+        if maximum == 0
+            || maximum > 172_800
+            || !request.interval.start.is_multiple_of(1_000_000_000)
+            || !request.interval.end.is_multiple_of(1_000_000_000)
+            || (request.interval.end - request.interval.start) / 1_000_000_000 > maximum as u64
+        {
+            return Err(Error::Invalid(
+                "indexed startup interval or occupancy budget".into(),
+            ));
+        }
+    }
     limits.channel.validate()?;
     if request.scope.provider == 0
         || request.scope.instrument == 0
@@ -140,14 +170,27 @@ pub async fn load(reader: &impl Reader, request: Request<'_>, limits: Limits) ->
         ));
     }
     policy.require_interval(request.interval, request.interval.start)?;
-    let trades = super::load(
-        reader,
-        trades,
-        request.trade_certificate,
-        request.source_as_of_ns,
-        limits.channel,
-    )
-    .await?;
+    let trades = if let Some(maximum) = index_seconds {
+        super::load_indexed_trades(
+            reader,
+            trades,
+            request.trade_certificate,
+            request.source_as_of_ns,
+            limits.channel,
+            request.scope,
+            maximum,
+        )
+        .await?
+    } else {
+        super::load(
+            reader,
+            trades,
+            request.trade_certificate,
+            request.source_as_of_ns,
+            limits.channel,
+        )
+        .await?
+    };
     let quotes = super::load(
         reader,
         quotes,

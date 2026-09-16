@@ -6,6 +6,23 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Indexed bootstrap and historical gap projection
+
+Fresh backtest bootstrap now uses verified indexed trade loading. Indexed startup
+rejects unaligned domains and invalid capacities before source metadata reads.
+It retains the ordinary plain loader for callers that do not request gap evidence;
+that path never grants continuity authority.
+
+Historical empty-span projection binds verified evidence to the exact run,
+source catalog, source certificate and delay model. Actual publication time stays
+separate from modeled interval-end availability. Wrong scope, run, cutoff or
+modeled clock fails. The token is historical-backtest-only, not live authority.
+
+All 443 offline tests, formatting, Clippy and copied-source checks pass. Bootstrap
+tests exercise indexed evidence and both clocks. No services or database writes
+ran; source parity was not rerun. Swing-continuity consumption and executable
+orchestration remain unfinished.
+
 ## Verified empty-trade evidence
 
 Added bounded per-second trade occupancy built through the existing batch

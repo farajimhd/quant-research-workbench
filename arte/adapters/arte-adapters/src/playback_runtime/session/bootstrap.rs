@@ -95,7 +95,7 @@ pub async fn prepare(reader: &impl Reader, request: Request<'_>) -> Result<Prepa
             "backtest bootstrap seed manifest differs".into(),
         ));
     }
-    let input = startup::load(reader, request.source, request.limits).await?;
+    let input = startup::load_indexed(reader, request.source, request.limits, 172_800).await?;
     let run = request.market.assemble(
         request.market_hash,
         request.manifest,
