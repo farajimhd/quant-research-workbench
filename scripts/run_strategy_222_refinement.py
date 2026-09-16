@@ -392,7 +392,8 @@ def load_recipe(path):
         'setup_support_quote_clearance_selection','setup_base_diagnostics_enabled',
         'setup_below_vwap_base_enabled','setup_below_vwap_support_age_s','setup_below_vwap_trade_acceleration',
         'setup_below_vwap_maximum_distance_atr','setup_fresh_pivot_enabled',
-        'setup_reversal_enabled','setup_reversal_volume_acceleration','setup_reversal_support_age_s'}}
+        'setup_reversal_enabled','setup_reversal_volume_acceleration','setup_reversal_support_age_s',
+        'cash_fraction'}}
     parameters=json.loads(path.read_text())['parameters']
     if not isinstance(parameters,dict) or not parameters:raise ValueError('Empty research recipe')
     for section,values in parameters.items():
@@ -400,6 +401,8 @@ def load_recipe(path):
             raise ValueError('Recipe contains an unapproved parameter path')
         if any(type(v) not in (int,float) or not isfinite(v) or v<0 for v in values.values()):
             raise ValueError('Invalid research parameter value')
+        if section=='historical_hod' and 'cash_fraction' in values and not 0 < values['cash_fraction'] <= 1:
+            raise ValueError('Invalid research parameter cash_fraction: expected 0 < value <= 1')
     return parameters
 
 
