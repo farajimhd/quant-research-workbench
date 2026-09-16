@@ -7,6 +7,8 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
+pub mod storage;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Clock {
@@ -204,7 +206,7 @@ impl Manifest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn manifest() -> Manifest {
+    pub(super) fn manifest() -> Manifest {
         Manifest {
             schema_version: 1,
             run_id: "run-1".into(),

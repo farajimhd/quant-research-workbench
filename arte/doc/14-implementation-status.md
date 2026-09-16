@@ -6,6 +6,24 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Bounded run manifest storage codec
+
+Run manifests can now be encoded as content-addressed chunks with an ordered root.
+Chunks are limited to 1 MiB. The complete payload is limited to 64 MiB; the root is
+limited to 16 KiB. Identical chunks are stored once. The full supported limit of
+100,000 consumers, including maximum-length names, fits and round-trips in tests.
+
+Hydration requires the expected run ID and manifest hash. It rejects missing or
+surplus chunks, corrupted content, wrong chunk sizes and noncanonical JSON. The
+codec reuses the existing immutable object hash contract. It does not establish
+database durability or verify the content referenced by the manifest.
+
+All 315 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+No services or database calls ran. Source-oracle parity was not rerun. The next
+storage step is a ClickHouse adapter that verifies chunks before publishing the
+root, with exclusive ownership keyed by run ID rather than manifest content.
+Database publication and restart orchestration remain unfinished.
+
 ## Aggregate run manifest contract
 
 A shared run manifest now pins code release, source/reference/seed/algorithm
