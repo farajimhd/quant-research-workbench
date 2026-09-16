@@ -18,6 +18,8 @@ struct Image {
     entry_direction: Direction,
     entry_quantity: u64,
     exit_quantity: u64,
+    entry_notional_atoms: i128,
+    exit_notional_atoms: i128,
     trade_cash_atoms: i128,
     fees_minor: u64,
     last_sequence: u64,
@@ -39,6 +41,14 @@ struct View<'a> {
 impl OrderCash {
     fn require_checkpoint(&self, costs: &Pinned, last_fill: &Fill) -> Result<()> {
         let charge = costs.charge(last_fill)?;
+        let expected_cash = match self.entry_direction {
+            Direction::Buy => self
+                .exit_notional_atoms
+                .checked_sub(self.entry_notional_atoms),
+            Direction::Sell => self
+                .entry_notional_atoms
+                .checked_sub(self.exit_notional_atoms),
+        };
         if self.manifest_hash != costs.manifest_hash()
             || self.cost_model_hash != costs.hash()
             || self.command_id != last_fill.command_id
@@ -50,6 +60,12 @@ impl OrderCash {
             || self.last_fill_hash != content_hash(last_fill)?
             || self.entry_quantity == 0
             || self.exit_quantity > self.entry_quantity
+            || self.entry_notional_atoms <= 0
+            || self.exit_notional_atoms < 0
+            || self.entry_notional_atoms < i128::from(self.entry_quantity)
+            || self.exit_notional_atoms < i128::from(self.exit_quantity)
+            || (self.exit_quantity == 0) != (self.exit_notional_atoms == 0)
+            || expected_cash != Some(self.trade_cash_atoms)
             || self.fees_minor < charge.fee_minor
             || if last_fill.leg == Leg::Entry {
                 self.exit_quantity != 0
@@ -78,7 +94,7 @@ impl OrderCash {
             return Err(Error::Capacity("cash checkpoint identity budget".into()));
         }
         let bytes = serde_json::to_vec(&View {
-            version: 1,
+            version: 2,
             cash: self,
         })
         .map_err(|e| Error::Serialization(e.to_string()))?;
@@ -103,7 +119,7 @@ impl OrderCash {
         object.verify()?;
         let snapshot: Snapshot = serde_json::from_slice(&object.payload)
             .map_err(|e| Error::Serialization(e.to_string()))?;
-        if snapshot.version != 1
+        if snapshot.version != 2
             || snapshot.cash.checkpoint(costs, last_fill)?.payload != object.payload
         {
             return Err(Error::Invalid(
@@ -118,6 +134,57 @@ impl OrderCash {
 mod tests {
     use super::*;
     use crate::simulation_costs::tests::{fill, model, run};
+    #[test]
+    fn partial_exit_preserves_entry_notional_and_recovery_checks_cash_equation() {
+        let model = model();
+        let costs = Pinned::new(model.clone(), &run(model.hash().unwrap())).unwrap();
+        for direction in [Direction::Buy, Direction::Sell] {
+            let mut trade = fill(2);
+            trade.price = 100;
+            trade.direction = direction;
+            let mut state = OrderCash::new(&trade, &costs).unwrap();
+            trade.sequence = 2;
+            trade.quantity = 1;
+            trade.price = 120;
+            state.apply(&trade, &costs).unwrap();
+            trade.sequence = 3;
+            trade.leg = Leg::Exit;
+            trade.direction = if direction == Direction::Buy {
+                Direction::Sell
+            } else {
+                Direction::Buy
+            };
+            trade.price = 150;
+            state.apply(&trade, &costs).unwrap();
+            assert_eq!(state.entry_quantity(), 3);
+            assert_eq!(state.entry_notional_atoms(), 320);
+            assert_eq!(state.exit_notional_atoms(), 150);
+            assert_eq!(
+                state.trade_cash_atoms(),
+                if direction == Direction::Buy {
+                    -170
+                } else {
+                    170
+                }
+            );
+            let image = state.checkpoint(&costs, &trade).unwrap();
+            let restored =
+                OrderCash::restore_checkpoint(&image, &image.id, &costs, &trade).unwrap();
+            assert_eq!(restored.entry_notional_atoms(), 320);
+            for field in ["entry_notional_atoms", "exit_notional_atoms"] {
+                let mut value: serde_json::Value = serde_json::from_slice(&image.payload).unwrap();
+                value["cash"][field] = 1.into();
+                let changed = Object::new(serde_json::to_vec(&value).unwrap());
+                assert!(
+                    OrderCash::restore_checkpoint(&changed, &changed.id, &costs, &trade).is_err()
+                );
+            }
+            let mut value: serde_json::Value = serde_json::from_slice(&image.payload).unwrap();
+            value["version"] = 1.into();
+            let old = Object::new(serde_json::to_vec(&value).unwrap());
+            assert!(OrderCash::restore_checkpoint(&old, &old.id, &costs, &trade).is_err());
+        }
+    }
     #[test]
     fn restored_partial_cash_continues_without_duplicate_fees() {
         let model = model();

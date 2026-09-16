@@ -14,6 +14,8 @@ pub struct OrderCash {
     entry_direction: Direction,
     entry_quantity: u64,
     exit_quantity: u64,
+    entry_notional_atoms: i128,
+    exit_notional_atoms: i128,
     trade_cash_atoms: i128,
     fees_minor: u64,
     last_sequence: u64,
@@ -37,6 +39,8 @@ impl OrderCash {
             entry_direction: fill.direction,
             entry_quantity: 0,
             exit_quantity: 0,
+            entry_notional_atoms: 0,
+            exit_notional_atoms: 0,
             trade_cash_atoms: 0,
             fees_minor: 0,
             last_sequence: 0,
@@ -100,6 +104,14 @@ impl OrderCash {
         } else {
             notional
         };
+        let total = if entry {
+            &mut next.entry_notional_atoms
+        } else {
+            &mut next.exit_notional_atoms
+        };
+        *total = total
+            .checked_add(notional)
+            .ok_or_else(|| Error::Capacity("order notional overflow".into()))?;
         next.trade_cash_atoms = next
             .trade_cash_atoms
             .checked_add(change)
@@ -116,6 +128,17 @@ impl OrderCash {
     }
     pub fn fees_minor(&self) -> u64 {
         self.fees_minor
+    }
+    /// Cumulative entry cost, not the cost basis of remaining FIFO lots.
+    /// Divide by entry_quantity and 10^price_scale for average entry fill price.
+    pub fn entry_notional_atoms(&self) -> i128 {
+        self.entry_notional_atoms
+    }
+    pub fn exit_notional_atoms(&self) -> i128 {
+        self.exit_notional_atoms
+    }
+    pub fn price_scale(&self) -> u8 {
+        self.price_scale
     }
     pub fn last_at_ns(&self) -> u64 {
         self.last_at_ns

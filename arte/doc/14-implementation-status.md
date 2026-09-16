@@ -6,6 +6,24 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Exact per-order fill notionals
+
+The order cash ledger now retains cumulative entry and exit notionals as exact
+integer price atoms. Partial exits no longer leave consumers with only net cash
+when they need average entry fill cost. This is cumulative entry cost, not the
+FIFO cost basis of remaining lots. The account projection remains the FIFO owner.
+
+Each order in the journal-gated account view exposes its cash evidence. The view
+checks entry/exit quantities, price scale and clock against execution state.
+Cash checkpoints are now version 2 and verify the signed cash equation and
+notional bounds. Version 1 is rejected; it must be rebuilt from verified fills,
+not upgraded by guessing missing costs. No persisted data was migrated.
+
+Tests cover multiple entry prices, partial exits, both directions, recovery and
+corrupted notionals. All 386 offline Rust tests, formatting, Clippy and copied-source
+hash checks pass. Source-oracle parity was not rerun. No service or network test
+ran. Candidate position reconciliation remains unfinished.
+
 ## Journal-gated execution account view
 
 The playback controller now exposes a borrowed account view only at a dispatched

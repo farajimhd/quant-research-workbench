@@ -5,6 +5,8 @@ use arte_core::strategy_dispatch::Scope;
 pub struct OwnedOrder<'a> {
     pub scope: &'a Scope,
     pub order: &'a arte_core::simulated_execution::Position,
+    /// Present only after the first journaled fill. Retains cumulative fill cost.
+    pub cash: Option<&'a arte_core::simulation_costs::cash::OrderCash>,
 }
 pub struct AccountView<'a> {
     /// Playback clock of this read, not a fabricated broker/provider receipt.
@@ -64,7 +66,19 @@ impl Runtime {
                 }
                 direction = Some(next);
             }
-            orders.push(OwnedOrder { scope, order });
+            let cash = self.cash.get(&order.bracket.command_id);
+            if cash.map_or(0, |c| c.entry_quantity()) != order.entry_filled
+                || cash.map_or(0, |c| c.exit_quantity()) != order.exit_filled
+                || cash.is_some_and(|c| {
+                    c.price_scale() != order.bracket.price_scale
+                        || c.last_at_ns() > self.simulator.clock_ns()
+                })
+            {
+                return Err(Error::Conflict(
+                    "order cash differs from journaled execution".into(),
+                ));
+            }
+            orders.push(OwnedOrder { scope, order, cash });
         }
         if position.map_or(0, |p| p.quantity) != held
             || (held > 0 && position.and_then(|p| p.direction) != direction)
