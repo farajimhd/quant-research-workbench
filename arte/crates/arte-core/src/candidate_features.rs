@@ -60,6 +60,16 @@ pub struct AcquisitionContext {
     pub encounter_blocked: bool,
     pub pending_capital: bool,
 }
+/// Non-market admission evidence. These facts must come from their own causal
+/// authorities; a ready indicator or structural book cannot grant permission.
+pub struct AdmissionAuthorities {
+    pub at_ns: u64,
+    pub permissions: bool,
+    pub session_open: bool,
+    pub tradable: bool,
+    pub encounter_blocked: bool,
+    pub regular_block: Option<String>,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     pub boundary_id: String,
@@ -81,6 +91,68 @@ pub struct State {
     failed: bool,
 }
 impl State {
+    /// Bind completed-bar admission to this exact feature/structural snapshot.
+    /// An empty qualified level book is valid evidence, not invented geometry.
+    /// The caller still supplies permission, tradability and encounter authority.
+    pub fn completed_admission(
+        &self,
+        boundary: &Boundary<'_>,
+        authority: AdmissionAuthorities,
+    ) -> Result<crate::strategy_entry::Admission> {
+        let snapshot = self
+            .snapshot()?
+            .ok_or_else(|| Error::Unready("admission feature snapshot missing".into()))?;
+        let Kind::Completed {
+            interval_ns: SECOND,
+            bar,
+            ..
+        } = &boundary.kind
+        else {
+            return Err(Error::Invalid(
+                "completed admission requires one-second boundary".into(),
+            ));
+        };
+        let one = snapshot
+            .one_second
+            .as_ref()
+            .ok_or_else(|| Error::Unready("admission completed-second evidence missing".into()))?;
+        if snapshot.boundary_id != boundary.id
+            || snapshot.sequence != boundary.sequence
+            || snapshot.evaluated_at_ns != boundary.evaluated_at_ns
+            || one.at_ns != bar.bar.end_ns
+            || authority.at_ns > one.at_ns
+            || snapshot.macd.as_ref().is_some_and(|r| r.at_ns > one.at_ns)
+        {
+            return Err(Error::Conflict(
+                "admission boundary mismatch or future evidence".into(),
+            ));
+        }
+        let detector_fingerprint = content_hash(&(
+            "arte.causal-structure-admission.v1",
+            &self.config_hash,
+            &self.market_hash,
+            (
+                self.scope.provider,
+                self.scope.instrument,
+                self.scope.session,
+            ),
+            one.at_ns,
+            &one.levels,
+        ))?;
+        Ok(crate::strategy_entry::Admission {
+            at_ns: authority.at_ns,
+            permissions: authority.permissions,
+            session_open: authority.session_open,
+            tradable: authority.tradable,
+            encounter_blocked: authority.encounter_blocked,
+            regular_block: authority.regular_block,
+            macd_at_ns: snapshot.macd.as_ref().map(|r| r.at_ns),
+            macd_positive: snapshot.macd.as_ref().is_some_and(|r| r.positive()),
+            detector_at_ns: Some(one.at_ns),
+            detector_fingerprint,
+            activity_block: one.activity_block().map(str::to_owned),
+        })
+    }
     pub fn new(market: &Runtime, config: Config) -> Result<Self> {
         market.market()?;
         if !market.timeframe(5 * SECOND)?.macd_periods_match(12, 26, 9)

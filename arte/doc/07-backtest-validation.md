@@ -10,6 +10,23 @@ Do not build a second strategy implementation for historical runs.
 Historical V7 extraction is a shared historical module. It prepares seeds for both
 future Live sessions and historical runs. It is not the intraday streaming updater.
 
+## Shared completed-bar admission
+
+The feature owner can now assemble the market-derived portion of entry admission
+for its exact pending one-second boundary. It uses its retained MACD reading,
+activity evidence and causal V7 level snapshot. The detector fingerprint binds
+the feature/market configuration, source scope, completed timestamp and qualified
+level geometry. An empty qualified book does not create synthetic levels.
+
+Permissions, session-open state, tradability, encounter blocking and regular-hours
+restrictions remain explicit inputs from their own authorities. The assembler
+preserves them; it does not infer permission from indicator readiness. Future
+authority timestamps, non-one-second boundaries and snapshot mismatches fail.
+Existing entry-evaluator age limits still apply at decision time.
+
+Live and replay expose this same assembler. External-authority integration,
+encounter-state orchestration and swing evidence remain required coordinator work.
+
 ## Replay modes
 
 | Mode | Input | Claim |

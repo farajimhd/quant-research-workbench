@@ -38,6 +38,18 @@ pub struct Evidence<'a> {
     pub adds: &'a arte_core::strategy_adds::Gates,
 }
 impl Candidates {
+    pub fn completed_admission(
+        &self,
+        controller: &Runtime,
+        authority: features::AdmissionAuthorities,
+    ) -> Result<arte_core::strategy_entry::Admission> {
+        self.require(controller)?;
+        let view = controller.decision_view()?;
+        let boundary = view
+            .pending()?
+            .ok_or_else(|| Error::Unready("admission boundary missing".into()))?;
+        self.features.completed_admission(&boundary, authority)
+    }
     pub fn prepare_owned(
         &mut self,
         controller: &Runtime,

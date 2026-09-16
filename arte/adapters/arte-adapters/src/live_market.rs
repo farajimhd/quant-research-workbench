@@ -166,6 +166,17 @@ impl Lane {
         self.available()?;
         self.features.snapshot()
     }
+    pub fn completed_admission(
+        &self,
+        authority: candidate_features::AdmissionAuthorities,
+    ) -> Result<arte_core::strategy_entry::Admission> {
+        self.available()?;
+        let boundary = self
+            .market
+            .pending()?
+            .ok_or_else(|| Error::Unready("live admission boundary missing".into()))?;
+        self.features.completed_admission(&boundary, authority)
+    }
     pub fn entry_frame<'a>(
         &'a self,
         context: candidate_features::EntryContext<'a>,
@@ -578,6 +589,41 @@ mod tests {
             features.macd.as_ref().unwrap().kind,
             arte_core::strategy_macd::Kind::Unavailable
         );
+        let at_ns = features.one_second.as_ref().unwrap().at_ns;
+        let authority = || candidate_features::AdmissionAuthorities {
+            at_ns,
+            permissions: false,
+            session_open: true,
+            tradable: false,
+            encounter_blocked: true,
+            regular_block: Some("fixture restriction".into()),
+        };
+        let admission = lane.completed_admission(authority()).unwrap();
+        assert_eq!(admission.detector_at_ns, Some(at_ns));
+        assert_eq!(admission.detector_fingerprint.len(), 64);
+        assert!(!admission.permissions && !admission.tradable && !admission.macd_positive);
+        assert!(admission.encounter_blocked && admission.regular_block.is_some());
+        if let arte_core::market_structure::scheduler::Kind::Completed {
+            interval_ns,
+            bar,
+            available_at_ns,
+        } = boundary.kind
+        {
+            let mismatched = Boundary {
+                id: boundary.id,
+                sequence: boundary.sequence + 1,
+                evaluated_at_ns: boundary.evaluated_at_ns,
+                kind: arte_core::market_structure::scheduler::Kind::Completed {
+                    interval_ns,
+                    bar,
+                    available_at_ns,
+                },
+            };
+            assert!(lane
+                .features
+                .completed_admission(&mismatched, authority())
+                .is_err());
+        }
         use arte_core::strategy_dispatch::{Action, Mode, Safety, Scope};
         let scopes = ["a", "b"].map(|account| Scope {
             run_id: "live-test".into(),

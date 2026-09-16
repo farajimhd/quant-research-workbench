@@ -6,6 +6,23 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Causal market admission assembly
+
+Completed-bar admission now derives detector identity, MACD state and activity
+restrictions from the shared boundary-aligned feature owner. Live and replay use
+the same assembler. Detector identity binds actual qualified V7 geometry and
+source/configuration identity; it no longer needs a test-only placeholder.
+
+External permissions, session state, tradability and encounter restrictions remain
+explicit inputs and are preserved unchanged. Future authority timestamps and
+wrong boundary kinds/identities fail. Existing live and multi-account coordinator
+fixtures now exercise this path, deterministic repetition and restriction
+preservation. External-authority and encounter/swing orchestration remain open.
+
+All 428 offline tests, formatting, Clippy and copied-source checks pass. Existing
+fixtures were extended; no services started or migrations ran. Source parity was
+not rerun.
+
 ## Connected historical initialization
 
 The initialization adapter now connects pinned historical seed loading, certified

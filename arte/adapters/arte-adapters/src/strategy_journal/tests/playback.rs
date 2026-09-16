@@ -1269,6 +1269,66 @@ async fn candidate_owner_retry(cancel: bool) {
                 .and_then(|one| one.activity_block())
                 .map(str::to_owned),
         };
+        let authority = |at_ns| arte_core::candidate_features::AdmissionAuthorities {
+            at_ns,
+            permissions: true,
+            session_open: true,
+            tradable: true,
+            encounter_blocked: false,
+            regular_block: None,
+        };
+        let admission = match &boundary.kind {
+            arte_core::market_structure::scheduler::Kind::Completed {
+                interval_ns: 1_000_000_000,
+                bar,
+                ..
+            } => {
+                let at = bar.bar.end_ns;
+                let assembled = candidates
+                    .completed_admission(&controller, authority(at))
+                    .unwrap();
+                assert_eq!(assembled.detector_at_ns, Some(at));
+                assert_eq!(assembled.detector_fingerprint.len(), 64);
+                assert_eq!(assembled.macd_at_ns, admission.macd_at_ns);
+                assert_eq!(assembled.macd_positive, admission.macd_positive);
+                assert_eq!(assembled.activity_block, admission.activity_block);
+                let repeated = candidates
+                    .completed_admission(&controller, authority(at))
+                    .unwrap();
+                assert_eq!(
+                    arte_core::content_hash(&assembled).unwrap(),
+                    arte_core::content_hash(&repeated).unwrap()
+                );
+                assert!(candidates
+                    .completed_admission(&controller, authority(at + 1))
+                    .is_err());
+                let mut restricted = authority(at);
+                restricted.permissions = false;
+                restricted.session_open = false;
+                restricted.tradable = false;
+                restricted.encounter_blocked = true;
+                restricted.regular_block = Some("fixture restriction".into());
+                let restricted = candidates
+                    .completed_admission(&controller, restricted)
+                    .unwrap();
+                assert!(
+                    !restricted.permissions && !restricted.session_open && !restricted.tradable
+                );
+                assert!(restricted.encounter_blocked && restricted.regular_block.is_some());
+                assert_eq!(
+                    restricted.detector_fingerprint,
+                    assembled.detector_fingerprint
+                );
+                assembled
+            }
+            _ => {
+                assert!(candidates
+                    .completed_admission(&controller, authority(now))
+                    .is_err());
+                // Non-entry boundaries do not consume completed-bar admission.
+                admission
+            }
+        };
         let gates = arte_core::strategy_adds::Gates {
             at_ns: now,
             detector_fresh: false,
