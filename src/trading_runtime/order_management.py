@@ -228,6 +228,9 @@ class OrderGroupSnapshot:
     protection_coverage_quantity: float = 0.0
     protection_delegated: bool = False
     entry_submission_closed: bool = False
+    r1_initial_stop: float | None = None
+    r1_actual_entry_average: float | None = None
+    r1_stop_error: str = ""
     high_water_price: float = 0.0
     low_water_price: float = 0.0
     protection_task: asyncio.Task[None] | None = None
@@ -302,6 +305,9 @@ class _ManagedOrderGroup:
             policy_version=policy_version,
             reentry_after_fill=bool(self.intent.metadata.get("buy_back") or self.intent.metadata.get("reentry_after_fill")),
             assignment_id=str(self.intent.metadata.get("assignment_id") or ""),
+            r1_initial_stop=(self.intent.invalidation_price if self.intent.metadata.get('r1_stop_bounds') else None),
+            r1_actual_entry_average=self.intent.metadata.get('r1_actual_entry_average'),
+            r1_stop_error=str(self.intent.metadata.get('r1_stop_error') or ''),
             fill_role=fill_role,
             broker_order_id=broker_order_id,
             slice_id=slice_id,
@@ -1315,13 +1321,15 @@ class OrderManagementEngine:
                 broker_order_id=order_id,
                 slice_id=group.broker_order_slices.get(order_id, ""),
             )
-        group.broker_order_state_fingerprints[order_id] = fingerprint
         incremental = _apply_cumulative_fill(
             group,
             order_id,
             float(order.filledQuantity),
             fill_role,
         )
+        if fill_role == 'entry' and float(order.filledQuantity) > 0:
+            await self._reconcile_r1_entry_stop(group, order_id, float(order.filledQuantity), float(order.avgPrice))
+        group.broker_order_state_fingerprints[order_id] = fingerprint
         next_state = _management_state(order)
         if next_state in TERMINAL_MANAGEMENT_STATES:
             group.terminal_broker_order_ids.add(str(order.orderId))
@@ -2774,13 +2782,16 @@ class OrderManagementEngine:
                 broker_order_id=order.broker_order_id,
                 slice_id=group.broker_order_slices.get(order.broker_order_id, ""),
             )
-        group.broker_order_state_fingerprints[order.broker_order_id] = fingerprint
         incremental = _apply_cumulative_fill(
             group,
             order.broker_order_id,
             float(order.filled_quantity),
             fill_role,
         )
+        if fill_role == 'entry' and float(order.filled_quantity) > 0:
+            await self._reconcile_r1_entry_stop(group, order.broker_order_id,
+                float(order.filled_quantity), float(order.average_fill_price))
+        group.broker_order_state_fingerprints[order.broker_order_id] = fingerprint
         next_state = _canonical_management_state(order)
         if next_state in TERMINAL_MANAGEMENT_STATES:
             group.terminal_broker_order_ids.add(order.broker_order_id)
@@ -2859,6 +2870,75 @@ class OrderManagementEngine:
                 if self.state_callback is not None:
                     await self.state_callback(group.snapshot(self.policy.version))
         return snapshot
+
+    async def _reconcile_r1_entry_stop(self, group, order_id, quantity, average):
+        """Rebase only R1 acquisition stops to actual cumulative fill cost.
+
+        Cumulative per-root evidence is persisted with the intent, so partial
+        fills, duplicate updates and restart do not double-count notional.
+        This is entry reconciliation, never subsequent market-price trailing.
+        """
+        bounds = group.intent.metadata.get('r1_stop_bounds')
+        if not bounds or str(group.intent.action) != 'enter_long':
+            return
+        from .r1_ladder import stop_price
+        if not math.isfinite(average) or average <= 0:
+            raise ValueError('R1 actual-fill stop requires a positive broker average fill price')
+        fills = dict(group.intent.metadata.get('r1_entry_fill_costs') or {})
+        prior = fills.get(order_id) or {}
+        if quantity < prior.get('quantity', 0):
+            return
+        fills[order_id] = dict(quantity=quantity, notional=quantity*average)
+        total_quantity = sum(item['quantity'] for item in fills.values())
+        average = sum(item['notional'] for item in fills.values())/total_quantity
+        desired = stop_price(average, float(bounds['swing_lower']), float(bounds['tick_size']))
+        if desired is None or group.intent.metadata.get('r1_stop_error'):
+            # A fill already exists: keep its broker protection, stop acquiring,
+            # and surface a durable full-exit requirement to the strategy. Never
+            # round outside the contract or crash the fill-processing callback.
+            group.intent = replace(group.intent, metadata={**group.intent.metadata,
+                'r1_entry_fill_costs':fills, 'r1_actual_entry_average':average,
+                'r1_stop_error':'actual_fill_stop_not_representable'})
+            self._transition(group, group.state, {'event':'r1_stop_reconciliation_failed',
+                'average_fill_price':average, 'reason':'actual_fill_stop_not_representable'})
+            await self._cancel_open_entry_roots(group, 'r1_actual_fill_stop_not_representable')
+            return
+        profile = group.intent.resolved_protection_profile()
+        if profile is None:
+            raise ValueError('R1 actual-fill stop requires a protection profile')
+        profile = replace(profile, slices=tuple(
+            replace(item, stop=replace(item.stop, price=desired)) for item in profile.slices))
+        group.intent = replace(group.intent, invalidation_price=desired, protection_profile=profile,
+            metadata={**group.intent.metadata, 'initial_stop': desired, 'active_stop': desired,
+                'confirmed_support_stop': desired, 'r1_entry_fill_costs': fills,
+                'r1_actual_entry_average': average})
+        # Persist the desired repair authority before broker amendments. A
+        # failed acknowledgement can then be retried without losing the cost.
+        self._transition(group, group.state, {'event':'r1_actual_fill_stop',
+            'average_fill_price':average, 'filled_quantity':total_quantity, 'stop_price':desired})
+        for order in await self.broker.live_orders():
+            broker_id = str(order.orderId)
+            if (group.broker_order_roles.get(broker_id) != 'protective_stop'
+                    or order.order_status not in OPEN_ORDER_STATUSES
+                    or order.orderType.upper() not in {'STP', 'STOP_LIMIT'}):
+                continue
+            index = group.broker_order_request_indexes.get(broker_id)
+            if index is None:
+                raise RuntimeError('R1 protective order lacks its registered amendment request')
+            request = group.orders[index]
+            replacement = replace(request, quantity=float(order.filledQuantity)+float(order.remainingQuantity),
+                auxPrice=desired, price=(float(request.price)+desired-float(request.auxPrice)
+                    if request.orderType == 'STOP_LIMIT' and request.price is not None else request.price))
+            if abs(float(order.auxPrice or 0)-desired) > 1e-9:
+                async with self._command_lane(group.account_id):
+                    response = await self.broker.modify_order(group.account_id, broker_id, replacement)
+                if _warning_response(response):
+                    async with self._warning_lane:
+                        response = await self._resolve_warning_chain_locked(group, response)
+                _require_modify_acknowledgement(response)
+                self._record_protection(group, replacement, phase='effective', broker_order_id=broker_id)
+            group.orders[index] = replacement
+        self._transition(group, group.state, {'event':'r1_actual_fill_stop_reconciled', 'stop_price':desired})
 
     async def reconcile_protection(self, group: _ManagedOrderGroup) -> dict[str, Any]:
         # Portfolio grants this capability only to the isolated threshold backtest.

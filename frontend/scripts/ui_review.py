@@ -2840,9 +2840,10 @@ def capture(args: argparse.Namespace) -> int:
                                 {bar_start:iso(0),qmd_structure_unified_levels:[level]},
                                 {bar_start:iso(30),qmd_structure_unified_level_delta:{upserts:[{...level,lifecycle:'awaiting_retest'}],removed:[]}}
                             ],[{bar_start:iso(0),bar_end:iso(60)}],[],[],['indicator.qmd_unified_structure'],'1s');
-                            if(zones.length!==2 || zones[0].end!==t+30 || zones[1].start!==t+30 ||
-                               zones[1].borderStyle!=='dashed' || !zones[1].latest || !zones[1].label.includes('awaiting retest'))
-                                throw Error('Broken resistance disappeared or its prior active interval was rewritten: '+JSON.stringify(zones));
+                            // Unified levels now belong exclusively to the V7
+                            // chart primitive; the legacy V5 path must stay empty.
+                            if(zones.length!==0)
+                                throw Error('Retired V5 levels leaked into the V7 chart: '+JSON.stringify(zones));
                             const {detectorRows,detectorCandleMarkers}=await import('/src/features/canvas/DetectorTimeline.tsx');
                             const detectorEvents=['advance','pullback','recovery','rejection','continuation'].map((state,i)=>({
                                 ticker:'TEST',strategy_id:'fixture',strategy_revision:1,sequence:100+i,event_time:iso(10+i*10),
@@ -2905,10 +2906,11 @@ def capture(args: argparse.Namespace) -> int:
                                 preview.orders=preview.orders.map(o=>({...o,stop_price:o.stop_price?10.6:undefined,limit_price:o.limit_price?11.7:undefined}));
                                 preview.as_of=iso(66); trim=30; window.__openProtectionLabels=[]; render();
                             };
-                            window.__showStrategyReferences=()=>{
+                            window.__showStrategyReferences=(contract)=>{
+                                preview.strategy_chart_activity=preview.strategy_chart_activity.filter(x=>!x.chart_plan?.historical_hod_reference);
                                 preview.strategy_chart_activity.push(...[[1,10.5,10.21],[30,10.8,10.51],[40,11,10.71],[70,99,98]].map(([s,hod,resistance_upper])=>({
                                     ticker:'TEST',event_time:iso(s),sequence:200+s,
-                                    chart_plan:{historical_hod_reference:{at:t+s,hod,resistance_upper,changed:true}}})));
+                                    chart_plan:{historical_hod_reference:{contract,at:t+s,hod,resistance_upper,changed:true}}})));
                                 window.__openProtectionLabels=[];render();
                             };
                         }""")
@@ -2947,7 +2949,7 @@ def capture(args: argparse.Namespace) -> int:
                             raise RuntimeError('Detector period filter must retain the state spanning the period')
                         page.get_by_role('button', name='Full period', exact=True).click()
                         page.evaluate('window.__showStrategyReferences()')
-                        page.wait_for_function("window.__openProtectionLabels.includes('HOD 11') && window.__openProtectionLabels.includes('Entry R 10.71')")
+                        page.wait_for_function("window.__openProtectionLabels.includes('HOD 10.5') && window.__openProtectionLabels.includes('Entry R 10.21')")
                         if page.evaluate("window.__openProtectionLabels.some(x=>x==='HOD 99'||x==='Entry R 98')"):
                             raise RuntimeError('Future strategy reference leaked into chart')
                         presentation_button=page.locator('#staged-strategy-fixture').get_by_role('button',name=re.compile('Strategy Presentation'))
@@ -2958,6 +2960,11 @@ def capture(args: argparse.Namespace) -> int:
                             if toggle.is_checked():raise RuntimeError('Reference visibility toggle did not persist')
                             toggle.check()
                         presentation_button.click()
+
+                        page.evaluate("window.__showStrategyReferences('r1-hod-resistance-ladder-v1')")
+                        page.wait_for_function("window.__openProtectionLabels.includes('HOD 10.5') && window.__openProtectionLabels.includes('R1 10.21')")
+                        if page.evaluate("window.__openProtectionLabels.some(x=>x==='HOD 99'||x==='R1 98')"):
+                            raise RuntimeError('Future R1 ladder reference leaked into chart')
 
                     if args.structure_time_placement:
                         page.evaluate("""async () => {

@@ -15,6 +15,10 @@ def test_entry_hod_survives_activity_and_chart_compaction():
                  "prior_snapshot_levels": [{"price": 3.6}, {"price": 3.55}, {"price": 3.52}]}
     result = _compact_strategy_chart_plan(_compact_strategy_gate_snapshot({"unified_structural_trigger": selection}))
     assert result["unified_structural_trigger"] == selection
+    ladder = dict(contract='r1-hod-resistance-ladder-v1', hod=4.1,
+                  resistance_upper=4.0, threshold=4.3, level_id='r1', at=100, changed=True)
+    projected = _compact_strategy_chart_plan(_compact_strategy_gate_snapshot({'historical_hod_reference': ladder}))
+    assert projected['historical_hod_reference'] == ladder
 
 
 def test_waiting_reference_changes_survive_runtime_and_chart_projection(tmp_path):
@@ -82,7 +86,7 @@ const {createRequire}=await import('node:module');
 const require=createRequire(process.cwd()+'/package.json');
 const ts=require('typescript'),assert=require('node:assert/strict');
 const js=ts.transpileModule(require('node:fs').readFileSync(SOURCE_PATH,'utf8'),{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
-const {strategyReferencePresentation:project}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
+const {strategyReferencePresentation:project,strategyReferenceLabel:label}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
 const row=(at,hod,r,ticker='SUGP')=>({ticker,event_time:new Date(at*1000).toISOString(),chart_plan:{historical_hod_reference:{at,hod,resistance_upper:r,changed:true}}});
 const rows=[row(10,4.5,4.44),row(11,4.5,4.44),row(12,4.6,4.55),row(14,null,null),row(16,99,98),row(13,100,90,'JUNS')];
 assert.deepEqual(project(rows,'SUGP',new Date(15000).toISOString()),[
@@ -93,6 +97,16 @@ assert.equal(project(rows,'SUGP',new Date(11500).toISOString())[0].end,11.5);
 const zoneRow=row(20,5,4.85);zoneRow.chart_plan.historical_hod_reference.zone_lower=4.7;
 assert.equal(project([zoneRow],'SUGP',new Date(21000).toISOString())[0].zoneLower,4.7);
 assert.deepEqual(project([zoneRow],'SUGP',new Date(19000).toISOString()),[]);
+const ladder=row(21,5,4.85);
+Object.assign(ladder.chart_plan.historical_hod_reference,{contract:'r1-hod-resistance-ladder-v1',threshold:4.95,resistance_center:4.8});
+const projected=project([zoneRow,ladder],'SUGP',new Date(22000).toISOString());
+assert.equal(projected.length,2); // A contract change cannot inherit the old label.
+assert.equal(projected[1].resistance,4.85); // R1 upper, never the continuation threshold or center.
+assert.equal(label('resistance',projected[1]),'R1');
+assert.equal(label('hod',projected[1]),'HOD');
+assert.equal(label('resistance',projected[0]),'Entry R');
+assert.equal(label('zoneLower',projected[0]),'Entry zone floor');
+assert.equal(project([ladder],'SUGP',new Date(20500).toISOString()).length,0);
 '''.replace('SOURCE_PATH',json.dumps(str(source)))
     result=subprocess.run([shutil.which('node') or 'node','--input-type=module','-'],input=script,text=True,
         cwd=frontend_runtime_root(),capture_output=True)
