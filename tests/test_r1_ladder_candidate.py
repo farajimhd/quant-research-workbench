@@ -31,7 +31,7 @@ def test_independent_policy_preserves_source_gates_and_portfolio_authority():
     payload, canvas, plan_id = build(base, source_parameters=inputs)
     profile = next(p for p in payload['strategy']['profiles'] if p['profile_id']==PROFILE_ID)
     p = profile['parameters']
-    assert p['r1_ladder_contract'] == 'r1-hod-resistance-ladder-v1'
+    assert p['r1_ladder_contract'] == 'r1-hod-resistance-ladder-v2'
     assert p['liquidity_admission'] == dict(inputs['liquidity_admission'], minimum_price=.01)
     assert p['execution'] == inputs['execution']
     assert p['historical_hod']['maximum_quote_age_ms'] == 777.
@@ -40,6 +40,11 @@ def test_independent_policy_preserves_source_gates_and_portfolio_authority():
     assert p['historical_hod']['v7_zone_enabled'] == 1
     assert p['historical_hod']['setup_minimum_session_relative_volume'] == 2.
     assert p['r1_ladder']['minimum_rvol'] == 2.
+    assert p['r1_ladder']['entry_start_time'] == '04:02:00'
+    assert p['r1_ladder']['minimum_target_gap_atr'] == 2.
+    assert p['r1_ladder']['fallback_target_gap_atr'] == 2.5
+    assert p['r1_ladder']['target_midpoint_offset_ticks'] == 1.
+    assert p['r1_ladder']['stop_offset_bps'] == 20.
     lifecycle = profile['lifecycle']
     assert lifecycle['initial_entry']['add_steps'] == []
     for stage in ('initial_entry','reentry'):

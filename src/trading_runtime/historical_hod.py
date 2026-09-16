@@ -680,6 +680,9 @@ def observe_frame(frame, saved, parameters, snapshot=None):
         structural_session_high=frame.indicator.get('qmd_structure_session_high') or snapshot.get('session_high'),
         execution_vwap=frame.indicator.get('execution_vwap'),volatility=frame.indicator.get('atr_14'))
     observe(o,d,parameters.get('historical_hod',DEFAULTS))
+    if parameters.get('r1_ladder_contract') == 'r1-hod-resistance-ladder-v2':
+        from .r1_ladder import observe_session_hod
+        observe_session_hod(o,d,parameters['r1_ladder'])
     d['observed_at'] = frame.as_of.timestamp()
     return d
 

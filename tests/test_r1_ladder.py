@@ -2,7 +2,7 @@
 import asyncio
 from copy import deepcopy
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -15,7 +15,7 @@ from tests.test_structural_recovery import NOW, level, parameters
 def obs(i, price, **kw):
     value = candle(i, price, **kw)
     now = value.observed_at.timestamp()
-    return replace(value, structural_session_high=10.8, market_pressure={
+    return replace(value, structural_session_high=10.8, volatility=.1, market_pressure={
         'session_relative_volume': dict(contract='session-relative-volume-1', observed_at=now,
                                        effective_at=int(now), ready=True, ratio=3.)})
 
@@ -31,10 +31,27 @@ def ready():
     a = S.StrategyAssignment('r1', S.STRATEGY_ID, 47, 'sim', 'TEST', 123,
         S.AssignmentStatus.WATCHING, S.StrategyPermissions(enter=True, reenter=True, add=True), p)
     host = S.LongMomentumStrategyEngine(revision=47)
-    for o in (obs(0, 10.5, source_timeframe='5s'), obs(1, 10.55)):
+    for o in (obs(0, 10.5, source_timeframe='5s'), obs(1, 10.55, bar_high=10.8)):
         result = host.evaluate(a, o)
         a = replace(a, state=result.state, status=result.status)
     return host, a, obs(2, 10.6)
+
+
+def legacy_ready():
+    from src.trading_runtime import r1_ladder_v1 as V1
+    p = parameters()
+    p.pop('structural_recovery_contract')
+    p.pop('structural_recovery')
+    p.update(historical_hod_contract=H.CONTRACT,
+             historical_hod=dict(H.DEFAULTS,forming_macd_entry_enabled=0),
+             r1_ladder_contract=V1.CONTRACT,r1_ladder=dict(V1.DEFAULTS))
+    p = S.resolve_long_momentum_parameters(p,revision=47)
+    a = S.StrategyAssignment('r1-v1',S.STRATEGY_ID,47,'sim','TEST',123,
+        S.AssignmentStatus.WATCHING,S.StrategyPermissions(enter=True,reenter=True),p)
+    host = S.LongMomentumStrategyEngine(revision=47)
+    for o in (obs(0,10.5,source_timeframe='5s'),obs(1,10.55)):
+        result=host.evaluate(a,o);a=replace(a,state=result.state,status=result.status)
+    return host,a,obs(2,10.6)
 
 
 def acquired():
@@ -50,12 +67,59 @@ def test_r1_is_closest_resistance_under_hod_not_closest_to_price():
     assert R.r1_level(rows, 9.9)['upper'] == 8.1
 
 
+def test_published_v1_contract_retains_its_original_executor():
+    host,a,o = legacy_ready()
+    intent, = host.evaluate(a,o).evaluation.intents
+    assert intent.profit_target_price == pytest.approx(10.95)
+    assert a.parameters['r1_ladder_contract'] == R.LEGACY_CONTRACT
+
+
 def test_retired_resistance_transition_is_neither_r1_nor_target():
     live = level(-1, 9., 9.1)
     transition = dict(level(-1, 9.8, 9.9), role='transition',
                       transition_from='resistance', v7_all_origins=True)
     assert R.r1_level([live, transition], 10) == live
     assert R.next_target([live, transition], 9.2) is None
+
+
+def test_target_plan_uses_immediate_band_only_when_gap_is_at_least_two_atr():
+    boundary = level(-1,10.,10.02)
+    near = level(-1,10.15,10.17)
+    far = level(-1,10.30,10.32)
+    plan = R.target_plan([boundary,near,far],boundary,10.03,.10,R.DEFAULTS,.01)
+    assert plan['target']['unified_level_id'] == far['unified_level_id']
+    assert plan['target_price'] == pytest.approx(10.30)
+    assert plan['stop_anchor']['unified_level_id'] == near['unified_level_id']
+    assert plan['selection'] == 'first_resistance_at_or_above_2_5atr'
+
+
+def test_late_episode_entry_advances_one_resistance_and_retains_crossing_anchor():
+    boundary = level(-1,10.,10.02)
+    next_level = level(-1,10.40,10.42)
+    following = level(-1,10.80,10.82)
+    # 10.22 is beyond half the 10.01 -> 10.41 midpoint gap.
+    plan = R.target_plan([boundary,next_level,following],boundary,10.22,.10,R.DEFAULTS,.01)
+    assert plan['target']['unified_level_id'] == following['unified_level_id']
+    assert plan['stop_anchor']['unified_level_id'] == next_level['unified_level_id']
+    assert plan['target_price'] == pytest.approx(10.80)
+    assert plan['selection'].endswith('late_episode_extension')
+
+
+def test_configured_start_excludes_early_hod_and_entries():
+    early = replace(obs(0,10.5),observed_at=datetime(2026,8,21,8,1,59,tzinfo=timezone.utc),bar_high=99.)
+    at_start = replace(obs(1,10.5),observed_at=datetime(2026,8,21,8,2,tzinfo=timezone.utc),bar_high=10.8)
+    saved = {}
+    R.observe_session_hod(early,saved,R.DEFAULTS)
+    assert saved.get('r1_hod_after_start') is None
+    R.observe_session_hod(at_start,saved,R.DEFAULTS)
+    assert saved['prior_r1_hod_after_start'] is None
+    assert saved['r1_hod_after_start'] == pytest.approx(10.8)
+
+    host,a,o = ready()
+    a.parameters['strategy_behavior']['eligible_sessions'].append('premarket')
+    o = replace(o,observed_at=datetime(2026,8,21,8,1,59,tzinfo=timezone.utc))
+    result = host.evaluate(a,o)
+    assert result.evaluation.signals[0].reason == 'before_configured_entry_start'
 
 
 def test_entry_uses_completed_crossover_full_target_and_cash_fraction():
@@ -94,7 +158,7 @@ def test_tick_rounding_cannot_turn_target_into_non_overhead_price():
     o = replace(o, structural_resistance_levels=(band,))
     result = host.evaluate(a, o)
     assert not result.evaluation.intents
-    assert result.evaluation.signals[0].reason == 'invalid_executable_stop_or_target'
+    assert result.evaluation.signals[0].reason == 'atr_qualified_resistance_target_unavailable'
 
 
 @pytest.mark.parametrize('changes', [
@@ -141,7 +205,7 @@ def test_no_next_resistance_means_no_entry():
     result = host.evaluate(a, replace(o, structural_resistance_levels=tuple(
         row for row in o.structural_resistance_levels if row['upper'] < 10.8)))
     assert not result.evaluation.intents
-    assert result.evaluation.signals[0].reason == 'next_resistance_unavailable'
+    assert result.evaluation.signals[0].reason == 'atr_qualified_resistance_target_unavailable'
 
 
 @pytest.mark.parametrize('entry,swing', [(1.5,.5),(1.5,1.49),(1.99,1.),(2.,1.),(2.,2.),(10.,1.),(10.,10.)])
@@ -154,7 +218,7 @@ def test_stop_distance_is_clamped_on_both_price_regimes(entry, swing):
     assert stop > 0
 
 
-def test_acquired_position_does_not_add_trail_or_change_full_target():
+def test_acquired_position_keeps_earned_stop_and_full_target_fixed():
     host, a, _ = acquired()
     stop = a.state['active_stop']
     result = host.evaluate(a, obs(3, 11.1, position_quantity=100))
@@ -162,6 +226,28 @@ def test_acquired_position_does_not_add_trail_or_change_full_target():
     assert result.evaluation.signals[0].reason == 'fixed_stop_and_resistance_target'
     assert result.state['active_stop'] == stop
     assert result.state['structural_profit_targets'] == a.state['structural_profit_targets']
+
+
+def test_stop_moves_below_target_predecessor_only_after_completed_cross():
+    host,a,o = ready()
+    # A late entry beyond the halfway mark selects 11.50; 10.95 becomes the
+    # stop anchor and has not been crossed at entry.
+    o = replace(o,price=10.80,bid=10.795,ask=10.805,bar_open=10.55,bar_low=10.55,bar_high=10.80)
+    result = host.evaluate(a,o)
+    intent, = result.evaluation.intents
+    assert intent.profit_target_price == pytest.approx(11.50)
+    assert intent.metadata['stop_anchor_level']['upper'] == pytest.approx(10.97)
+    initial = intent.invalidation_price
+    a = replace(a,state=result.state,status=S.AssignmentStatus.MANAGING)
+    waiting = host.evaluate(a,obs(3,10.96,position_quantity=100))
+    assert not waiting.evaluation.intents
+    assert waiting.state['active_stop'] == initial
+    a = replace(a,state=waiting.state,status=waiting.status)
+    crossed = host.evaluate(a,obs(4,11.00,position_quantity=100))
+    replacement, = crossed.evaluation.intents
+    assert replacement.action == 'replace_protective_stop'
+    assert replacement.invalidation_price == pytest.approx(10.92)
+    assert replacement.metadata['previous_stop'] == initial
 
 
 @pytest.mark.parametrize('role,remaining,increment,advance', [
@@ -235,7 +321,7 @@ def test_completed_5s_episodes_and_operated_levels_are_retained():
     first = deepcopy(a.state['r1_market']['macd_episode'])
     assert first['high'] >= 10.6
     assert {use['role'] for item in a.state['r1_levels'] for use in item['uses']} == {
-        'initial_breakout', 'profit_target'}
+        'initial_breakout', 'profit_target', 'protective_stop_anchor'}
     closed = host.evaluate(a, replace(obs(5, 10.7, source_timeframe='5s'),
                                       macd_line=-.01, macd_signal=0.))
     assert 'macd_episode' not in closed.state['r1_market']

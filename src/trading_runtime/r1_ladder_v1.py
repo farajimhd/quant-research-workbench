@@ -4,40 +4,26 @@ The historical-HOD adapter supplies shared market inputs only. Its entry,
 trailing, reversal and cash-tranche policies are never evaluated here.
 """
 from copy import deepcopy
-from datetime import time
 from math import ceil, floor, isfinite
 
 from . import historical_hod as H, session_relative_volume
 
-CONTRACT = 'r1-hod-resistance-ladder-v2'
-LEGACY_CONTRACT = 'r1-hod-resistance-ladder-v1'
-DEFAULTS = dict(minimum_rvol=2., cash_fraction=.9, maximum_quantity=10000.,
-    entry_start_time='04:02:00', minimum_target_gap_atr=2.,
-    fallback_target_gap_atr=2.5, late_entry_gap_fraction=.5,
-    target_midpoint_offset_ticks=1., stop_offset_bps=20.)
+CONTRACT = 'r1-hod-resistance-ladder-v1'
+DEFAULTS = dict(minimum_rvol=2., cash_fraction=.9, maximum_quantity=10000.)
+CONTINUATION_STOP_OFFSET_BPS = 20.
 
 
 def configure(p):
-    if p.get('r1_ladder_contract') == LEGACY_CONTRACT:
-        from .r1_ladder_v1 import configure as configure_v1
-        return configure_v1(p)
     if p.get('r1_ladder_contract') != CONTRACT or p.get('historical_hod_contract') != H.CONTRACT:
         raise ValueError('R1 ladder requires its versioned shared market adapter')
     raw = p.get('r1_ladder', {})
     if set(raw)-set(DEFAULTS):
         raise ValueError('Unknown R1 ladder setting')
     s = dict(DEFAULTS, **raw)
-    numeric = {k:v for k,v in s.items() if k != 'entry_start_time'}
-    if any(type(v) not in (int, float) or not isfinite(v) or v <= 0 for v in numeric.values()):
+    if any(type(v) not in (int, float) or not isfinite(v) or v <= 0 for v in s.values()):
         raise ValueError('R1 ladder settings must be finite and positive')
-    try:
-        time.fromisoformat(s['entry_start_time'])
-    except (TypeError, ValueError):
-        raise ValueError('R1 ladder entry start time must be HH:MM:SS') from None
-    if (s['cash_fraction'] > 1 or s['minimum_rvol'] != 2
-            or s['fallback_target_gap_atr'] < s['minimum_target_gap_atr']
-            or not 0 < s['late_entry_gap_fraction'] < 1):
-        raise ValueError('Invalid R1 ladder policy thresholds')
+    if s['cash_fraction'] > 1 or s['minimum_rvol'] != 2:
+        raise ValueError('R1 ladder requires RVOL > 2 and cash fraction at most one')
     if p['historical_hod']['forming_macd_entry_enabled']:
         raise ValueError('R1 ladder requires completed 5s MACD')
     p['r1_ladder'] = s
@@ -56,12 +42,12 @@ def stop_price(entry, swing_lower, tick):
     return round(max(low_tick, min(high_tick, desired))*tick, 10)
 
 
-def continuation_stop(level, tick, offset_bps=20.):
-    """Place protection below a crossed resistance band's lower edge."""
+def continuation_stop(level, tick):
+    """Place continuation protection 20 bps below the broken band's lower edge."""
     lower = level.get('lower')
     if type(lower) not in (int, float) or not isfinite(lower) or lower <= 0:
         return None
-    raw = lower*(1-offset_bps/10000)
+    raw = lower*(1-CONTINUATION_STOP_OFFSET_BPS/10000)
     return round(floor((raw+1e-10)/tick)*tick, 10)
 
 
@@ -74,69 +60,6 @@ def next_target(rows, price):
     # Sell at the approaching edge; reentry requires clearing the far edge.
     return min((r for r in rows if resistance(r) and r['lower'] > price),
                key=lambda r:(r['lower'], str(r['unified_level_id'])), default=None)
-
-
-def _midpoint(level):
-    return (float(level['lower'])+float(level['upper']))/2
-
-
-def target_plan(rows, boundary, price, atr, settings, tick):
-    """Select a causal overhead target and the resistance that earns its stop."""
-    if not boundary or type(atr) not in (int, float) or not isfinite(atr) or atr <= 0:
-        return None
-    all_resistance = sorted((r for r in rows if resistance(r)),
-                            key=lambda r:(_midpoint(r), str(r['unified_level_id'])))
-    boundary_index = next((i for i,row in enumerate(all_resistance)
-                           if row.get('unified_level_id') == boundary.get('unified_level_id')), -1)
-    if boundary_index < 0:
-        return None
-    overhead = all_resistance[boundary_index+1:]
-    if not overhead:
-        return None
-    base = _midpoint(boundary)
-    immediate = overhead[0]
-    gap_atr = (_midpoint(immediate)-base)/atr
-    index = 0
-    selection = 'minimum_2atr_gap'
-    if gap_atr < settings['minimum_target_gap_atr']:
-        selection = 'first_resistance_at_or_above_2_5atr'
-        index = next((i for i,row in enumerate(overhead)
-                      if _midpoint(row)-base >= settings['fallback_target_gap_atr']*atr), -1)
-        if index < 0:
-            return None
-    halfway = base+(_midpoint(immediate)-base)*settings['late_entry_gap_fraction']
-    if price > halfway:
-        if len(overhead) < 2:
-            return None
-        index = max(index, 1)
-        selection += '_late_episode_extension'
-    target = overhead[index]
-    target_index = next((i for i,row in enumerate(all_resistance)
-                         if row.get('unified_level_id') == target.get('unified_level_id')), -1)
-    if target_index <= 0:
-        return None
-    stop_anchor = all_resistance[target_index-1]
-    target_price = floor((_midpoint(target)-settings['target_midpoint_offset_ticks']*tick+1e-10)/tick)*tick
-    if target_price <= price:
-        return None
-    return dict(target=target, target_price=round(target_price,10), stop_anchor=stop_anchor,
-                selection=selection, immediate_target=immediate, immediate_gap_atr=gap_atr,
-                halfway_price=halfway)
-
-
-def observe_session_hod(o, state, settings):
-    """Maintain a separate HOD that excludes every completed bar before the configured start."""
-    if o.source_timeframe != '1s' or 'bar_close' not in o.evaluation_events:
-        return
-    now = o.observed_at.timestamp()
-    state['prior_r1_hod_after_start'] = state.get('r1_hod_after_start')
-    state['prior_r1_hod_at'] = state.get('r1_hod_at')
-    if o.observed_at.astimezone(H.NY).time() < time.fromisoformat(settings['entry_start_time']):
-        return
-    high = o.bar_high
-    if type(high) in (int, float) and isfinite(high) and high > 0:
-        state['r1_hod_after_start'] = max(state.get('r1_hod_after_start') or 0., high)
-        state['r1_hod_at'] = now
 
 
 def resistance(level):
@@ -198,9 +121,6 @@ def record_exit(state, at, role, remaining):
 
 
 def evaluate(host, a, o, p, state):
-    if p.get('r1_ladder_contract') == LEGACY_CONTRACT:
-        from .r1_ladder_v1 import evaluate as evaluate_v1
-        return evaluate_v1(host,a,o,p,state)
     from .strategy_engine import AssignmentStatus as Status, _at_or_after_session_time
     from .signals import CapitalRequest
     previous = state.get('r1_market', {})
@@ -221,9 +141,7 @@ def evaluate(host, a, o, p, state):
         if passive.get('prior_bar'):
             prior = passive['prior_bar']
             d.update(closed_at=prior['end'], close=prior['close'],
-                     rows=passive.get('prior_rows', []),
-                     hod=passive.get('prior_r1_hod_after_start') or 0.,
-                     atr=passive.get('closed_atr'))
+                     rows=passive.get('prior_rows', []), hod=passive.get('prior_hod'))
         completed = passive.get('completed_macd') or {}
         if completed:
             _update_macd_episode(d, completed.get('at'), completed.get('line'),
@@ -242,10 +160,8 @@ def evaluate(host, a, o, p, state):
                    for v in (o.price,o.bar_high,o.bar_low,o.bar_open)):
             fresh = False
         else:
-            after_start = o.observed_at.astimezone(H.NY).time() >= time.fromisoformat(s['entry_start_time'])
             d.update(closed_at=now,close=o.price,rows=H.selected_levels(o,adapter,now),
-                     hod=max(prior_hod,o.bar_high) if after_start else prior_hod,
-                     atr=o.volatility if type(o.volatility) in (int,float) and isfinite(o.volatility) else None)
+                     hod=max(prior_hod,o.bar_high,o.structural_session_high or 0))
             episode = d.get('macd_episode')
             if episode and o.bar_high > episode.get('high', 0):
                 episode.update(high=o.bar_high, high_at=now)
@@ -281,20 +197,7 @@ def evaluate(host, a, o, p, state):
                 return result('hold','exit_fill_pending',Status.EXIT_PENDING)
             reason = 'session_flatten' if flatten else 'unrepresentable_fill_stop' if state.get('r1_stop_error') else 'manual_exit'
             return result('exit',reason,Status.EXIT_PENDING,quantity=quantity)
-        stop_anchor = active.get('stop_anchor_level') or {}
-        proposed = continuation_stop(stop_anchor,tick,s['stop_offset_bps'])
-        current_stop = state.get('active_stop') or 0.
-        if (fresh and stop_anchor and o.price > stop_anchor.get('upper',float('inf'))
-                and proposed is not None and current_stop < proposed < o.bid):
-            state['active_stop'] = proposed
-            _track_level(state,stop_anchor,'protective_stop_earned',now)
-            return result('replace_protective_stop','target_predecessor_resistance_crossed',Status.MANAGING,
-                quantity=o.position_quantity,invalidation_price=proposed,
-                profit_target_price=(state.get('structural_profit_targets') or [None])[0],
-                metadata={'previous_stop':current_stop,'active_stop':proposed,
-                    'stop_anchor_level':deepcopy(stop_anchor),
-                    'stop_offset_bps':s['stop_offset_bps']})
-        # Broker brackets own the full target and the latest earned structural stop.
+        # Bracket orders own both fixed stop and full target, including partial fills.
         return result('hold','fixed_stop_and_resistance_target',Status.MANAGING,
                       invalidation_price=state.get('active_stop'),
                       profit_target_price=(state.get('structural_profit_targets') or [None])[0])
@@ -308,8 +211,6 @@ def evaluate(host, a, o, p, state):
     phase = 'premarket' if (local.hour,local.minute)<(9,30) else 'regular' if local.hour<16 else 'after_hours'
     if flatten or not o.market_open or phase not in behavior.get('eligible_sessions',[]) or _at_or_after_session_time(o.observed_at,behavior.get('entry_cutoff_time','15:45:00')):
         return result('wait','outside_entry_session')
-    if local.time() < time.fromisoformat(s['entry_start_time']):
-        return result('wait','before_configured_entry_start')
     if not fresh:
         return result('wait','waiting_for_completed_1s')
     row = market.get('row') or {}
@@ -357,38 +258,28 @@ def evaluate(host, a, o, p, state):
     # A completed trade can be above the current ask. Both execution and
     # completed-candle geometry must have an overhead target.
     target_floor = max(entry_price, o.price)
-    plan = target_plan(d['rows'],boundary,target_floor,d.get('atr'),s,tick)
-    if not plan:
-        return result('wait','atr_qualified_resistance_target_unavailable')
-    target = plan['target']
-    stop_anchor = plan['stop_anchor']
+    target = next_target(d['rows'],target_floor)
+    if not target:
+        return result('wait','next_resistance_unavailable')
     if continuation:
-        stop = continuation_stop(saved_exit['level'], tick, s['stop_offset_bps'])
+        stop = continuation_stop(saved_exit['level'], tick)
         stop_selection = dict(source='broken_resistance_lower_20bps',
-            offset_bps=s['stop_offset_bps'], level=deepcopy(saved_exit['level']))
+            offset_bps=CONTINUATION_STOP_OFFSET_BPS, level=deepcopy(saved_exit['level']))
     else:
         swing = H.initial_swing_low(row,dict(lower=o.bid),now)
         if not swing:
             return result('wait','confirmed_swing_low_unavailable')
         stop = stop_price(entry_price,swing['lower'],tick)
         stop_selection = swing
-    earned_stop = continuation_stop(stop_anchor,tick,s['stop_offset_bps'])
-    if (earned_stop is not None and o.price > stop_anchor['upper']
-            and earned_stop < o.bid):
-        stop = earned_stop
-        stop_selection = dict(source='target_predecessor_resistance_lower_offset',
-            offset_bps=s['stop_offset_bps'],level=deepcopy(stop_anchor))
-    target_price = plan['target_price']
+    target_price = round(floor((target['lower']+1e-10)/tick)*tick,10)
     if (stop is None or not 0 < stop < o.bid <= o.ask <= entry_price
             or target_price <= target_floor):
         return result('wait','invalid_executable_stop_or_target')
     active = dict(level=deepcopy(boundary),target_level=deepcopy(target),confirmed_at=now,
                   stop=stop,maximum_buy_price=entry_price,hod=prior_hod,
-                  macd_episode=deepcopy(prior_episode),stop_anchor_level=deepcopy(stop_anchor),
-                  target_plan=deepcopy(plan))
+                  macd_episode=deepcopy(prior_episode))
     _track_level(state, boundary, 'continuation_support' if continuation else 'initial_breakout', now)
     _track_level(state, target, 'profit_target', now)
-    _track_level(state, stop_anchor, 'protective_stop_anchor', now)
     state.update(r1_entry=active,initial_stop=stop,active_stop=stop,
         structural_profit_targets=[target_price],entry_reference_price=entry_price,
         entry_at=o.observed_at.isoformat(),entries=state.get('entries',0)+1,
@@ -401,11 +292,9 @@ def evaluate(host, a, o, p, state):
         metadata=dict(initial_stop=stop,active_stop=stop,profit_targets=[target_price],
             profit_target=target_price,mandatory_broker_target=True,maximum_buy_price=entry_price,
             wait_for_capital=False,entry_selection=deepcopy(boundary),initial_stop_selection=stop_selection,
-            profit_target_selection=dict(deepcopy(target),target_price=target_price,
-                selection_method=plan['selection'],immediate_gap_atr=plan['immediate_gap_atr'],
-                halfway_price=plan['halfway_price']),stop_anchor_level=deepcopy(stop_anchor),
-            **({'r1_fixed_stop':dict(price=stop,source=stop_selection['source'],
-                offset_bps=s['stop_offset_bps'])} if stop_selection.get('source') else
+            profit_target_selection=deepcopy(target),
+            **({'r1_fixed_stop':dict(price=stop,source='broken_resistance_lower_20bps',
+                offset_bps=CONTINUATION_STOP_OFFSET_BPS)} if continuation else
                {'r1_stop_bounds':dict(swing_lower=stop_selection['lower'],tick_size=tick)}),
             unified_structural_trigger={'current_snapshot':{'levels':[dict(boundary,entry_boundary=boundary['upper'])],
                 'session_high':prior_hod,'selected_at':o.observed_at.isoformat(),'frozen_at_entry':True}}))
