@@ -940,6 +940,7 @@ def evaluate(host, a, o, p, state):
         evidence['research_base_assessment']=(dict(status='unavailable',reason=reason,observed_at=now) if reason else
             dict(status='measured',**assess_early_base(o,diagnostic_row,setup_state,d,s,tick,price_only)))
     cancel_acquisition = False
+    cancel_acquisition_reason = 'unresolved_level_rejection'
     def result(action, reason, status=None, **kw):
         nonlocal cancel_acquisition
         metadata = dict(evidence, **kw.pop('metadata', {}))
@@ -955,7 +956,7 @@ def evaluate(host, a, o, p, state):
             cancel_acquisition = False
             cancel = StrategyIntent(intent_id=output.evaluation.signals[0].signal_id+'-cancel-entry',
                 ticker=o.ticker,event_time=o.observed_at,action='cancel_entry',quantity=0,
-                reference_price=o.price,reason='unresolved_level_rejection',metadata={'assignment_id':a.assignment_id})
+                reference_price=o.price,reason=cancel_acquisition_reason,metadata={'assignment_id':a.assignment_id})
             return replace(output,evaluation=replace(output.evaluation,intents=(cancel,*output.evaluation.intents)))
         return output
     if acquired and d.get('episode') is not None:
@@ -1085,13 +1086,20 @@ def evaluate(host, a, o, p, state):
                 maximum_quote_age_ms=s['maximum_quote_age_ms'])
         if reversal_assessment:evidence['support_reversal']=deepcopy(reversal_assessment)
     acquisition_momentum_ready = macd_ready or momentum_ready or reversal_ready
-    if ((encounter_blocked and (pending or acquired) and not encounter_state.get('cancel_notified')) or (pending and (state.get('pending_capital_request') or regular_block) and (regular_block or not active or not ready or not acquisition_momentum_ready or (not momentum_ready and o.price <= (d.get('vwap') or float('inf')))
+    reversal_invalid = bool(pending and active.get('support_reversal') and (
+        not reversal_ready or not ready or regular_block
+        or o.price <= (d.get('vwap') or float('inf'))
+        or o.ask > active.get('maximum_buy_price',0)))
+    if reversal_invalid:
+        cancel_acquisition_reason='support_reversal_acquisition_invalidated'
+
+    if (reversal_invalid or (encounter_blocked and (pending or acquired) and not encounter_state.get('cancel_notified')) or (pending and (state.get('pending_capital_request') or regular_block) and (regular_block or not active or not ready or not acquisition_momentum_ready or (not momentum_ready and o.price <= (d.get('vwap') or float('inf')))
             or now-active.get('confirmed_at',0) >= s['confirmation_lifetime_ms']/1000
             or o.ask > active.get('maximum_buy_price',0)))):
         if encounter_blocked:
             encounter_state['cancel_notified'] = True
         state.pop('pending_capital_request',None)
-        if acquired and encounter_blocked:
+        if acquired and (encounter_blocked or reversal_invalid):
             # Cancellation must not suppress a simultaneous swing-stop ratchet.
             cancel_acquisition = True
         else:
