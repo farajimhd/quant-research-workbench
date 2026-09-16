@@ -408,6 +408,7 @@ class ReplayRunDefinition:
     experimental_structure_book: str = ""
     experimental_structure_fingerprint: str = ""
     archived_review_only: bool = False
+    prepare_frames_only: bool = False
     minimum_p_norm: float = DEFAULT_THRESHOLD
     historical_frame_cache: dict[tuple[str, str, str, str], Any] | None = field(
         default=None,
@@ -421,6 +422,8 @@ class ReplayRunDefinition:
     )
 
     def __post_init__(self) -> None:
+        if type(self.prepare_frames_only) is not bool or (self.prepare_frames_only and self.mode != RunMode.BACKTEST):
+            raise ValueError('Frame preparation only requires Backtest mode and a boolean flag')
         if not 0 <= self.minimum_p_norm <= 1:
             raise ValueError('minimum_p_norm must be between zero and one')
         normalized_tickers = tuple(dict.fromkeys(
@@ -533,6 +536,7 @@ class ReplayRunDefinition:
             "requested_start": self.requested_start.isoformat(),
             "initial_cash": self.initial_cash,
             "simulation_profile": self.simulation_profile,
+            "prepare_frames_only": self.prepare_frames_only,
             "new_order_activation_delay_ms": self.new_order_activation_delay_ms,
             "experimental_structure_book": self.experimental_structure_book,
             "minimum_p_norm": self.minimum_p_norm,
@@ -2457,6 +2461,19 @@ class ReplayRunController:
             self._preparation_stage = "strategy_frames"
             await self._publish(force=True)
             frame_source = await self._load_strategy_frames()
+            if self.definition.prepare_frames_only:
+                if self._preparation_completed_units != self._preparation_total_units:
+                    raise RuntimeError('Frame preparation returned incomplete streams')
+                self._preparation_stage = 'strategy_frames_prepared'
+                self._record_data_authority('frame_preparation_only', {
+                    'status': 'completed', 'completed_streams': self._preparation_completed_units,
+                    'total_streams': self._preparation_total_units,
+                    'cache_status': self._strategy_frame_cache_status,
+                    'cache_path': str(frame_source.path),
+                    'execution_started': False,
+                })
+                await self._finish('stopped')
+                return
             await self._prepare_v7_stream(frame_source)
             if self.definition.mode == RunMode.BACKTEST:
                 self._journal.enable_write_batching()
@@ -7369,6 +7386,7 @@ def _definition_from_manifest(
     session_end = _checkpoint_time(definition.get("session_end"))
     return ReplayRunDefinition(
         archived_review_only=archived_review_only,
+        prepare_frames_only=definition.get("prepare_frames_only", False),
         session_date=session_date,
         final_session_date=session_end.astimezone(NEW_YORK).date(),
         start_time=clock_time.fromisoformat(str(definition.get("start_time") or "")),
