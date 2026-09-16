@@ -164,6 +164,71 @@ fn playback_source_binding_rejects_changed_data_clock_and_scope() {
     catalog.shards.push(catalog.shards[0].clone());
     assert!(catalog.hash().is_err());
 }
+#[test]
+fn recorded_playback_requires_captured_receipts_and_preserves_lane_order() {
+    use playback::{Frame, Input, Limits, Prepared};
+    let check = |events: Vec<crate::events::Observation>| {
+        let prepared = Prepared::new(
+            scheduler(10).scope(),
+            "captured-v1",
+            vec![Frame {
+                watermark_ns: 204 * SECOND,
+                evaluated_at_ns: 204 * SECOND,
+                inputs: events
+                    .into_iter()
+                    .map(|observation| Input {
+                        observation,
+                        eligible: true,
+                    })
+                    .collect(),
+            }],
+            Limits {
+                maximum_frames: 1,
+                maximum_events: 10,
+                maximum_serialized_bytes: 10000,
+            },
+        )
+        .unwrap();
+        let mut catalog = playback_catalog();
+        catalog.clock = crate::run_manifest::Clock::RecordedLive;
+        catalog.shards[0].prepared_hash = prepared.hash().into();
+        catalog.shards[0].clock_model = "captured-v1".into();
+        let mut manifest = account_run_manifest();
+        manifest.clock = catalog.clock.clone();
+        manifest.source_manifest_hash = catalog.hash().unwrap();
+        let pinned =
+            crate::run_manifest::Pinned::new(manifest.clone(), &manifest.hash().unwrap()).unwrap();
+        catalog.require(&pinned, &prepared)
+    };
+    let mut a = event(1, 200, 10);
+    assert!(check(vec![a.clone()]).is_err());
+    a.receipt = Some(crate::events::Receipt {
+        run_id: "capture".into(),
+        lane: 0,
+        sequence: 7,
+        utc_ns: a.available_at_ns,
+        monotonic_ns: 10,
+    });
+    let mut b = event(2, 203, 20);
+    b.receipt = Some(crate::events::Receipt {
+        run_id: "capture".into(),
+        lane: 0,
+        sequence: 9,
+        utc_ns: b.available_at_ns,
+        monotonic_ns: 10,
+    });
+    assert!(check(vec![a.clone(), b.clone()]).is_ok());
+    assert!(check(vec![a.clone(), a.clone(), b.clone()]).is_ok());
+    b.receipt.as_mut().unwrap().sequence = 7;
+    assert!(check(vec![a.clone(), b.clone()]).is_err());
+    b.receipt.as_mut().unwrap().sequence = 9;
+    b.receipt.as_mut().unwrap().monotonic_ns = 9;
+    assert!(check(vec![a.clone(), b.clone()]).is_err());
+    b.receipt.as_mut().unwrap().lane = 1;
+    assert!(check(vec![a.clone(), b]).is_ok());
+    a.receipt.as_mut().unwrap().sequence = 0;
+    assert!(check(vec![a]).is_err());
+}
 fn empty_quote_policy(provider: u16) -> crate::quote_state::eligibility::Pinned {
     use crate::quote_state::eligibility::{Pinned, Policy};
     let p = Policy {

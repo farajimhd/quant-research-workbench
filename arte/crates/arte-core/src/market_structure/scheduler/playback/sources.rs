@@ -7,6 +7,7 @@ use crate::{
     Error, Result,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -88,6 +89,50 @@ impl Catalog {
                 "prepared input or clock model differs".into(),
             ));
         }
+        if self.clock == Clock::RecordedLive {
+            require_recorded_receipts(prepared)?;
+        }
         Ok(())
     }
+}
+
+/// Capture sequence is per run/lane, not per ticker. Gaps are valid in a ticker
+/// projection. Multiple events may share one frame's monotonic receive time.
+fn require_recorded_receipts(prepared: &Prepared) -> Result<()> {
+    let mut lanes = BTreeMap::new();
+    for input in prepared.frames.iter().flat_map(|frame| &frame.inputs) {
+        let event = &input.observation;
+        let receipt = event
+            .receipt
+            .as_ref()
+            .ok_or_else(|| Error::Unready("recorded-live input lacks capture receipt".into()))?;
+        if receipt.sequence == 0 || receipt.run_id.len() > 128 {
+            return Err(Error::Invalid(
+                "invalid recorded-live capture identity".into(),
+            ));
+        }
+        let lane = (receipt.run_id.as_str(), receipt.lane);
+        if !lanes.contains_key(&lane) && lanes.len() == 256 {
+            return Err(Error::Capacity("recorded-live capture lane budget".into()));
+        }
+        if let Some(previous) = lanes.get(&lane) {
+            let previous: &&crate::events::Observation = previous;
+            let prior = previous.receipt.as_ref().unwrap();
+            if receipt.sequence == prior.sequence {
+                if event == *previous {
+                    continue;
+                }
+                return Err(Error::Conflict(
+                    "capture sequence reused for changed observation".into(),
+                ));
+            }
+            if receipt.sequence < prior.sequence || receipt.monotonic_ns < prior.monotonic_ns {
+                return Err(Error::Conflict(
+                    "recorded-live capture ordering regressed".into(),
+                ));
+            }
+        }
+        lanes.insert(lane, event);
+    }
+    Ok(())
 }

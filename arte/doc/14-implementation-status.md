@@ -6,6 +6,23 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Recorded-live receipt requirements
+
+Recorded-live playback now requires a receive receipt for every input event.
+Capture sequences must be positive. Within each capture run/lane, sequences and
+monotonic receive times cannot regress. Identical repeated observations are
+allowed; a changed observation cannot reuse the same capture sequence. Sequence
+gaps from ticker filtering and shared frame receive times remain valid.
+
+The check retains at most 256 capture-lane cursors and does not rewrite timestamps.
+It rejects missing evidence rather than deriving a receive timestamp from SIP.
+The underlying capture authority still requires independent certification; receipt
+fields alone do not prove authenticity. Full late-event fault replay and captured
+evaluation-clock verification remain unfinished.
+
+All 322 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+No services or network calls ran. Source-oracle parity was not rerun.
+
 ## Prepared playback source binding
 
 Account-aware playback now requires a source catalog whose hash matches the run
