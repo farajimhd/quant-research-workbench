@@ -6,6 +6,31 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Sequential sizing and funded retries
+
+The controller now offers a size-and-submit operation. Sizing runs immediately
+before reservation, so sequential entries observe earlier account reservations.
+Portfolio still arbitrates concurrent lane races at reservation time. This is
+not an atomic snapshot-and-reserve transaction across threads.
+
+A preparation error occurs before funding. Once sizing succeeds, the operation
+returns the allocation together with the submission result. Callers retain that
+allocation for exact retry if submission fails. They must not rerun sizing after
+the reservation has reduced available cash. The existing funded-request pin and
+bracket checks remain authoritative.
+
+New offline fixtures cover two strategy instances sharing account cash while a
+second account remains independent. The first strategy reserves cash, the second
+is rejected without another reservation, and the other account can submit. A
+separate simulator-capacity failure proves that the allocation remains available
+for retry and the reservation is neither duplicated nor silently released.
+The one-entry-per-decision strategy contract remains unchanged.
+
+All 393 offline Rust tests, formatting, Clippy and copied-source checks pass.
+Source-oracle parity was not rerun. No service or network test ran. The runner
+still needs to own these returned allocations across its lifecycle and persist
+any additional retry state required by its final recovery protocol.
+
 ## Quote-backed portfolio allocation
 
 The controller now proposes entry/add allocations from its owned executable quote

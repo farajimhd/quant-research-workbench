@@ -42,22 +42,44 @@ impl crate::fill_journal::Publisher for Fills {
 
 #[tokio::test]
 async fn funded_multiaccount_entry_protection_exit_and_journal_feedback() {
-    lifecycle(false, false, false).await;
+    lifecycle(false, false, Scenario::Normal).await;
 }
 #[tokio::test]
 async fn replacement_target_controls_later_fills_not_the_original_target() {
-    lifecycle(true, false, false).await;
+    lifecycle(true, false, Scenario::Normal).await;
 }
 #[tokio::test]
 async fn cancelled_unfilled_orders_release_exact_funding_without_fabricated_cash() {
-    lifecycle(false, true, false).await;
+    lifecycle(false, true, Scenario::Normal).await;
 }
 #[tokio::test]
 async fn failed_owned_submission_retains_funding_and_rejects_changed_retry() {
-    lifecycle(false, false, true).await;
+    lifecycle(false, false, Scenario::FailedSubmission).await;
 }
-async fn lifecycle(target_exit: bool, cancel_unfilled: bool, fail_submission: bool) {
-    let (run, costs, manifest, recovery) = run_recovery_fixture(true, true, target_exit);
+#[tokio::test]
+async fn sequential_sizing_does_not_spend_reserved_cash_twice() {
+    lifecycle(false, false, Scenario::SharedCash).await;
+}
+#[tokio::test]
+async fn sized_submission_failure_returns_allocation_for_exact_retry() {
+    lifecycle(false, false, Scenario::Capacity).await;
+}
+#[derive(Clone, Copy)]
+enum Scenario {
+    Normal,
+    FailedSubmission,
+    SharedCash,
+    Capacity,
+}
+async fn lifecycle(target_exit: bool, cancel_unfilled: bool, scenario: Scenario) {
+    let fail_submission = matches!(scenario, Scenario::FailedSubmission);
+    let (run, costs, manifest, recovery) = run_configured_fixture(
+        true,
+        true,
+        target_exit,
+        false,
+        matches!(scenario, Scenario::SharedCash),
+    );
     let cost_model = costs.model().clone();
     let mut runtimes: Vec<_> = run
         .scopes()
@@ -67,7 +89,18 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, fail_submission: bo
         })
         .collect();
     let mut execution = crate::simulation_runtime::Runtime::new(
-        Simulator::new_scoped("run", 1, 2, 4, 10000).unwrap(),
+        Simulator::new_scoped(
+            "run",
+            1,
+            2,
+            if matches!(scenario, Scenario::Capacity) {
+                1
+            } else {
+                4
+            },
+            10000,
+        )
+        .unwrap(),
         Projection::new(2, 20, 8).unwrap(),
         8,
     )
@@ -138,7 +171,7 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, fail_submission: bo
         fail: true,
         rows: BTreeMap::new(),
     };
-    let mut stores = [Decisions::default(), Decisions::default()];
+    let mut stores: Vec<_> = (0..runtimes.len()).map(|_| Decisions::default()).collect();
     let mut quotes = 0;
     let mut entries = 0;
     let mut exits = 0;
@@ -362,6 +395,116 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, fail_submission: bo
             .unwrap()
         {
             outcome.result.unwrap();
+        }
+        if matches!(scenario, Scenario::SharedCash | Scenario::Capacity) {
+            let sizing = crate::playback_runtime::Sizing {
+                price_scale: 2,
+                tick: 1,
+                maximum_quantity: 100,
+                lot_size: 1,
+                order_lifetime_ns: 1_000_000_000,
+            };
+            let request = crate::playback_runtime::SizingRequest {
+                sizing: &sizing,
+                portfolio: &portfolio,
+                cash_policy: &cash,
+                safety: crate::simulation_runtime::AmendmentSafety {
+                    session: &session,
+                    risk_policy: &risk,
+                    bands: None,
+                },
+                latency_ns: 0,
+            };
+            for write in &writes {
+                let decision = write.receipt().unwrap().decision();
+                assert!(matches!(decision.actions[0], Action::Enter(_)));
+                if decision.scope.strategy_instance == "t" {
+                    let before = portfolio.snapshot("a").unwrap().reservations;
+                    assert!(controller
+                        .allocate_and_enter_action(&decision.decision_id, 0, &request)
+                        .is_err());
+                    assert_eq!(portfolio.snapshot("a").unwrap().reservations, before);
+                    assert_eq!(before.len(), 1);
+                    continue;
+                }
+                let attempt = controller
+                    .allocate_and_enter_action(&decision.decision_id, 0, &request)
+                    .unwrap();
+                if matches!(scenario, Scenario::Capacity) && decision.scope.account == "b" {
+                    assert!(attempt.result.is_err());
+                    assert_eq!(attempt.allocation.quantity, 3);
+                    let reserved = portfolio.snapshot("b").unwrap().reservations;
+                    assert_eq!(reserved.len(), 1);
+                    assert!(controller
+                        .enter_action(
+                            &decision.decision_id,
+                            0,
+                            crate::playback_runtime::EntryRequest {
+                                allocation: &attempt.allocation,
+                                portfolio: &portfolio,
+                                cash_policy: &cash,
+                                safety: crate::simulation_runtime::AmendmentSafety {
+                                    session: &session,
+                                    risk_policy: &risk,
+                                    bands: None
+                                },
+                                latency_ns: 0,
+                            }
+                        )
+                        .is_err());
+                    assert!(controller
+                        .allocate_and_enter_action(&decision.decision_id, 0, &request)
+                        .is_err());
+                    assert_eq!(portfolio.snapshot("b").unwrap().reservations, reserved);
+                    continue;
+                }
+                let plan = attempt.result.unwrap();
+                assert_eq!(
+                    plan.bracket.quantity,
+                    if decision.scope.account == "a" { 1 } else { 3 }
+                );
+                assert_eq!(plan.bracket.quantity, attempt.allocation.quantity);
+                let before = portfolio
+                    .snapshot(&decision.scope.account)
+                    .unwrap()
+                    .reservations;
+                assert_eq!(before.len(), 1);
+                // Already-funded actions require the retained allocation, not a
+                // fresh sizing pass using their own reduced account balance.
+                assert!(controller
+                    .allocate_and_enter_action(&decision.decision_id, 0, &request)
+                    .is_err());
+                controller
+                    .enter_action(
+                        &decision.decision_id,
+                        0,
+                        crate::playback_runtime::EntryRequest {
+                            allocation: &attempt.allocation,
+                            portfolio: &portfolio,
+                            cash_policy: &cash,
+                            safety: crate::simulation_runtime::AmendmentSafety {
+                                session: &session,
+                                risk_policy: &risk,
+                                bands: None,
+                            },
+                            latency_ns: 0,
+                        },
+                    )
+                    .unwrap();
+            }
+            let pending = controller.pending_actions();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(
+                pending[0].account,
+                if matches!(scenario, Scenario::Capacity) {
+                    "b"
+                } else {
+                    "a"
+                }
+            );
+            assert_eq!(pending[0].action_index, 0);
+            assert!(controller.acknowledge().is_err());
+            return;
         }
         if !fail_submission {
             let allocations: BTreeMap<_, _> = writes

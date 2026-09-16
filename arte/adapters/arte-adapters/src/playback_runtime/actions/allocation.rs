@@ -19,7 +19,54 @@ pub struct SizingRequest<'a> {
     pub safety: simulation_runtime::AmendmentSafety<'a>,
     pub latency_ns: u64,
 }
+pub struct AllocatedEntry {
+    /// Retain this for enter_action retry when result is an error. Never rerun
+    /// sizing after the order's own reservation has reduced available cash.
+    pub allocation: Allocation,
+    pub result: Result<decision_orders::Plan>,
+}
 impl Runtime {
+    /// Size immediately before funding, rather than preparing all account orders
+    /// from one cash snapshot. Portfolio still arbitrates concurrent lane races.
+    /// Outer errors occur before funding; inner errors retain the exact allocation.
+    pub fn allocate_and_enter_action(
+        &mut self,
+        decision_id: &str,
+        action_index: usize,
+        request: &SizingRequest<'_>,
+    ) -> Result<AllocatedEntry> {
+        let allocation = self.allocate_entry_action(
+            decision_id,
+            action_index,
+            SizingRequest {
+                sizing: request.sizing,
+                portfolio: request.portfolio,
+                cash_policy: request.cash_policy,
+                safety: simulation_runtime::AmendmentSafety {
+                    session: request.safety.session,
+                    risk_policy: request.safety.risk_policy,
+                    bands: request.safety.bands,
+                },
+                latency_ns: request.latency_ns,
+            },
+        )?;
+        let result = self.enter_action(
+            decision_id,
+            action_index,
+            EntryRequest {
+                allocation: &allocation,
+                portfolio: request.portfolio,
+                cash_policy: request.cash_policy,
+                safety: simulation_runtime::AmendmentSafety {
+                    session: request.safety.session,
+                    risk_policy: request.safety.risk_policy,
+                    bands: request.safety.bands,
+                },
+                latency_ns: request.latency_ns,
+            },
+        );
+        Ok(AllocatedEntry { allocation, result })
+    }
     /// Initial proposal only. Retain a funded allocation for retry; never resize
     /// it using the remaining balance after its own reservation has been deducted.
     pub fn allocate_entry_action(

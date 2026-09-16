@@ -6,7 +6,7 @@ use arte_core::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 mod allocation;
-pub use allocation::{Sizing, SizingRequest};
+pub use allocation::{AllocatedEntry, Sizing, SizingRequest};
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PendingAction {

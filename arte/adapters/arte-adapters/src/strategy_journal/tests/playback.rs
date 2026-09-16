@@ -212,6 +212,20 @@ fn run_candidate_fixture(
     Pinned,
     RecoveryInput,
 ) {
+    run_configured_fixture(include_quote, lifecycle, target_exit, features, false)
+}
+fn run_configured_fixture(
+    include_quote: bool,
+    lifecycle: bool,
+    target_exit: bool,
+    features: bool,
+    shared_cash: bool,
+) -> (
+    Run,
+    arte_core::simulation_costs::Pinned,
+    Pinned,
+    RecoveryInput,
+) {
     const S: u64 = 1_000_000_000;
     let bars: Vec<_> = (100..118)
         .map(|t| Candle {
@@ -411,32 +425,44 @@ fn run_candidate_fixture(
             fill_model_hash: crate::test_fill_model().hash().unwrap(),
             cost_model_hash: cost_model.hash().unwrap(),
         },
-        consumers: ["a", "b"]
-            .into_iter()
-            .map(|account| Consumer {
-                account: account.into(),
-                instrument: 1,
-                strategy_instance: "s".into(),
-                effective_config_hash: if features {
-                    let config = policies::config(account);
-                    let state = arte_core::candidate_features::State::new(
-                        scheduler.state().unwrap(),
-                        config.features.clone(),
-                    )
-                    .unwrap();
-                    config
-                        .effective_hash(&state, scheduler.quotes().unwrap().policy_hash().unwrap())
-                        .unwrap()
-                } else {
-                    "3".repeat(64)
-                },
-            })
-            .collect(),
+        consumers: if shared_cash {
+            vec![("a", "s"), ("a", "t"), ("b", "s")]
+        } else {
+            vec![("a", "s"), ("b", "s")]
+        }
+        .into_iter()
+        .map(|(account, strategy)| Consumer {
+            account: account.into(),
+            instrument: 1,
+            strategy_instance: strategy.into(),
+            effective_config_hash: if features {
+                let config = policies::config(account);
+                let state = arte_core::candidate_features::State::new(
+                    scheduler.state().unwrap(),
+                    config.features.clone(),
+                )
+                .unwrap();
+                config
+                    .effective_hash(&state, scheduler.quotes().unwrap().policy_hash().unwrap())
+                    .unwrap()
+            } else {
+                "3".repeat(64)
+            },
+        })
+        .collect(),
     };
     let hash = m.hash().unwrap();
     let manifest = Pinned::new(m, &hash).unwrap();
     let costs = arte_core::simulation_costs::Pinned::new(cost_model, &manifest).unwrap();
-    let run = Run::new(&manifest, &catalog, scheduler, prepared.clone(), 1, 2).unwrap();
+    let run = Run::new(
+        &manifest,
+        &catalog,
+        scheduler,
+        prepared.clone(),
+        1,
+        if shared_cash { 3 } else { 2 },
+    )
+    .unwrap();
     (
         run,
         costs,
