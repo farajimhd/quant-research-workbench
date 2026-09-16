@@ -43,7 +43,8 @@ class CoveragePreflightTests(IsolatedAsyncioTestCase):
             assert report['excluded'][0]['ticker'] == 'LGHL'
             assert controller._journal.append.call_args.kwargs['category'] == 'warning'
             # No configuration/cache access or activation is possible for an excluded ticker.
-            await controller._process_external_signal_event(SimpleNamespace(ticker='LGHL'))
+            await controller._process_external_signal_event(SimpleNamespace(
+                ticker='LGHL', available_at=controller.definition.requested_start))
 
 
 class ArtifactTests(TestCase):
@@ -78,6 +79,18 @@ class ArtifactTests(TestCase):
         self.assertIsNone(_structural_recovery_projection_tickers(config, ()))
         self.assertEqual(_structural_recovery_projection_tickers(config, ('SUGP',)), ['SUGP'])
         config['run_plan']['activation']['watch_duration'] = 'episode'
+        with self.assertRaisesRegex(ValueError, 'selected ticker'):
+            _structural_recovery_projection_tickers(config, ())
+
+    def test_r1_watchlist_population_supports_full_market_and_selected_scope(self):
+        from src.trading_runtime.r1_ladder import CONTRACT
+        config = dict(strategy=dict(parameters=dict(
+            historical_hod_contract=True, r1_ladder_contract=CONTRACT)),
+            run_plan=dict(activation=dict(watchlist_policy='any_selected')))
+        self.assertIsNone(_structural_recovery_projection_tickers(config, ()))
+        self.assertEqual(_structural_recovery_projection_tickers(
+            config, (' bbb ', 'AAA', 'aaa', '')), ['AAA', 'BBB'])
+        config['strategy']['parameters']['r1_ladder_contract'] = 'unsupported'
         with self.assertRaisesRegex(ValueError, 'selected ticker'):
             _structural_recovery_projection_tickers(config, ())
 
