@@ -957,6 +957,16 @@ pub fn market_structure_reference_sql(
     ticker: Option<&str>,
     as_of: DateTime<Utc>,
 ) -> Result<String, String> {
+    market_structure_reference_sql_partition(database, table, ticker, as_of, None)
+}
+
+pub fn market_structure_reference_sql_partition(
+    database: &str,
+    table: &str,
+    ticker: Option<&str>,
+    as_of: DateTime<Utc>,
+    partition: Option<(u16, u16)>,
+) -> Result<String, String> {
     for (name, value) in [("database", database), ("table", table)] {
         if value.is_empty()
             || !value
@@ -967,13 +977,14 @@ pub fn market_structure_reference_sql(
         }
     }
     let as_of_date = as_of.with_timezone(&New_York).date_naive();
-    let daily_bars = daily_session_trade_bars_sql(
+    let daily_bars = daily_session_trade_bars_sql_partition(
         database,
         table,
         ticker,
         as_of_date - chrono::Duration::days(364),
         as_of_date,
         as_of,
+        partition,
     )?;
     Ok(format!(
         r#"SELECT
@@ -1000,6 +1011,25 @@ pub fn daily_session_trade_bars_sql(
     end_date: NaiveDate,
     as_of: DateTime<Utc>,
 ) -> Result<String, String> {
+    daily_session_trade_bars_sql_partition(database, table, ticker, start_date, end_date, as_of, None)
+}
+
+fn daily_session_trade_bars_sql_partition(
+    database: &str,
+    table: &str,
+    ticker: Option<&str>,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+    as_of: DateTime<Utc>,
+    partition: Option<(u16, u16)>,
+) -> Result<String, String> {
+    let partition_filter = match partition {
+        Some((index, count)) if count > 0 && index < count => format!(
+            "AND cityHash64(ifNull(canonical_ticker, source_ticker)) % {count} = {index}"
+        ),
+        Some(_) => return Err("invalid daily-session symbol partition".to_string()),
+        None => String::new(),
+    };
     for (name, value) in [("database", database), ("table", table)] {
         if value.is_empty()
             || !value
@@ -1055,6 +1085,7 @@ pub fn daily_session_trade_bars_sql(
           AND identity_status != 'ambiguous_source_ticker'
           AND available_at_us <= toUInt64(toUnixTimestamp64Micro(parseDateTime64BestEffort('{as_of}')))
           {ticker_filter}
+          {partition_filter}
         GROUP BY sym, session_date
         HAVING uniqExact(session_kind) = 3 AND event_count > 0"#,
         as_of = as_of.to_rfc3339(),
@@ -5049,6 +5080,27 @@ mod tests {
         assert_eq!(aapl.high_52_week, 331.78);
         assert_eq!(aapl.prior_month_close, 289.0);
         assert_eq!(aapl.previous_session_close, 301.0);
+    }
+
+    #[test]
+    fn daily_reference_partitions_preserve_complete_symbol_history() {
+        let as_of = Utc.with_ymd_and_hms(2026, 7, 14, 13, 45, 0).unwrap();
+        let full = market_structure_reference_sql("db", "bars", None, as_of).unwrap();
+        for index in 0..16 {
+            let sql = super::market_structure_reference_sql_partition(
+                "db", "bars", None, as_of, Some((index, 16)),
+            ).unwrap();
+            let predicate = format!(
+                "AND cityHash64(ifNull(canonical_ticker, source_ticker)) % 16 = {index}"
+            );
+            assert!(sql.find(&predicate).unwrap() < sql.find("GROUP BY sym, session_date").unwrap());
+            assert_eq!(sql.replace(&predicate, ""), full);
+        }
+        for partition in [(0, 0), (16, 16)] {
+            assert!(super::market_structure_reference_sql_partition(
+                "db", "bars", None, as_of, Some(partition),
+            ).is_err());
+        }
     }
 
     #[tokio::test]

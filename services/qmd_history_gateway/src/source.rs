@@ -12,7 +12,7 @@ use qmd_core::generic_structure::{
     GENERIC_STRUCTURE_ALGORITHM_VERSION,
 };
 use qmd_core::indicators::{
-    daily_session_trade_bars_sql, market_structure_reference_sql,
+    daily_session_trade_bars_sql, market_structure_reference_sql, market_structure_reference_sql_partition,
     parse_market_structure_reference_rows, MarketStructureReferenceLevels,
 };
 use qmd_core::market_products::parse_resolution_us;
@@ -3393,13 +3393,25 @@ impl HistoricalEventSource {
         &self,
         as_of: DateTime<Utc>,
     ) -> Result<std::collections::HashMap<String, MarketStructureReferenceLevels>, String> {
-        let sql = market_structure_reference_sql(
-            &self.config.clickhouse_database,
-            &self.config.daily_session_bars_table,
-            None,
-            as_of,
-        )?;
-        parse_market_structure_reference_rows(&self.query(&sql).await?)
+        // Partition before daily aggregation, keeping every session of a
+        // canonical symbol together. Serial queries bound database memory;
+        // the final reference map has only one row per symbol.
+        let mut result = std::collections::HashMap::new();
+        for partition in 0..16 {
+            let sql = market_structure_reference_sql_partition(
+                &self.config.clickhouse_database,
+                &self.config.daily_session_bars_table,
+                None,
+                as_of,
+                Some((partition, 16)),
+            )?;
+            for (ticker, levels) in parse_market_structure_reference_rows(&self.query(&sql).await?)? {
+                if result.insert(ticker.clone(), levels).is_some() {
+                    return Err(format!("daily reference symbol repeated across partitions: {ticker}"));
+                }
+            }
+        }
+        Ok(result)
     }
 
     pub async fn persisted_structure_events_before(
