@@ -116,6 +116,49 @@ fn fixture(run: &Run) -> Runtime {
     }
     runtime
 }
+#[test]
+fn execution_recovery_requires_matching_active_reservations() {
+    use arte_core::portfolio::{Account, Portfolio};
+    let run = run();
+    let runtime = fixture(&run);
+    let portfolio = Portfolio::new(
+        ["a", "b"]
+            .into_iter()
+            .map(|account| {
+                (
+                    account.into(),
+                    Account {
+                        currency: "USD".into(),
+                        currency_scale: 2,
+                        simulation_run_id: Some("recovery".into()),
+                        budget_minor: 1000,
+                        broker_available_minor: 1000,
+                        balance_at_ns: 0,
+                        max_balance_age_ns: 100,
+                        reservations: BTreeMap::from([(
+                            account.into(),
+                            runtime.reservations[account].clone(),
+                        )]),
+                    },
+                )
+            })
+            .collect(),
+    )
+    .unwrap();
+    runtime
+        .require_portfolio(&portfolio, &BTreeMap::new())
+        .unwrap();
+    assert!(portfolio.release("a", "a").unwrap());
+    assert!(runtime
+        .require_portfolio(&portfolio, &BTreeMap::new())
+        .is_err());
+    let mut wrong = runtime.reservations["a"].clone();
+    wrong.cash_minor += 1;
+    portfolio.reserve("a", wrong, 0).unwrap();
+    assert!(runtime
+        .require_portfolio(&portfolio, &BTreeMap::new())
+        .is_err());
+}
 fn quote(runtime: &mut Runtime, sequence: u64, bid: i64, size: u64) {
     let quote = Quote {
         sequence,

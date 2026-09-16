@@ -68,6 +68,16 @@ impl Runtime {
     pub fn execution_status(&self) -> simulation_runtime::Status {
         self.execution.status()
     }
+    pub fn require_portfolio(
+        &self,
+        portfolio: &arte_core::portfolio::Portfolio,
+        currencies: &std::collections::BTreeMap<
+            u64,
+            arte_core::simulation_costs::SettlementCurrency,
+        >,
+    ) -> Result<()> {
+        self.execution.require_portfolio(portfolio, currencies)
+    }
     pub fn pause(&mut self) -> Result<()> {
         self.run.pause()
     }

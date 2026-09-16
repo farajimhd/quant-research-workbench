@@ -445,6 +445,20 @@ impl Runtime {
         currency: &arte_core::simulation_costs::SettlementCurrency,
         maximum_receipts: usize,
     ) -> Result<bool> {
+        let request = self.settlement_request(command, currency)?;
+        let owner = self
+            .owners
+            .get(command)
+            .ok_or_else(|| Error::Unready("order owner missing".into()))?;
+        let changed = portfolio.settle_simulated(&owner.account, &request, maximum_receipts)?;
+        self.released.insert(command.into());
+        Ok(changed)
+    }
+    fn settlement_request(
+        &self,
+        command: &str,
+        currency: &arte_core::simulation_costs::SettlementCurrency,
+    ) -> Result<arte_core::portfolio::SimulatedSettlement> {
         self.ready()?;
         let costs = self
             .costs
@@ -479,7 +493,7 @@ impl Runtime {
             ));
         }
         costs.require_currency(owner.instrument, currency, cash.last_at_ns())?;
-        let request = arte_core::portfolio::SimulatedSettlement {
+        Ok(arte_core::portfolio::SimulatedSettlement {
             run_id: owner.run_id.clone(),
             reservation: reservation.clone(),
             currency: costs.model().currency.clone(),
@@ -487,10 +501,7 @@ impl Runtime {
             net_cash_minor: cash.closed_net_cash_minor(costs)?,
             at_ns: cash.last_at_ns(),
             evidence_hash: content_hash(&(owner, cash, currency))?,
-        };
-        let changed = portfolio.settle_simulated(&owner.account, &request, maximum_receipts)?;
-        self.released.insert(command.into());
-        Ok(changed)
+        })
     }
     pub(crate) fn cancel_entries_for(
         &mut self,

@@ -55,7 +55,33 @@ pub struct SimulatedSettlement {
     pub at_ns: u64,
     pub evidence_hash: String,
 }
+/// Read-only funding evidence for one command. This does not reserve or release cash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FundingStatus {
+    Reserved(Reservation),
+    Settled(String),
+    Absent,
+}
 impl Portfolio {
+    pub fn funding_status(&self, account: &str, command: &str) -> Result<FundingStatus> {
+        let state = self
+            .accounts
+            .get(account)
+            .ok_or_else(|| Error::Invalid("account not allowed".into()))?
+            .lock()
+            .map_err(|_| Error::Unready("account lock poisoned".into()))?;
+        match (
+            state.reservations.get(command),
+            state.settlements.get(command),
+        ) {
+            (Some(_), Some(_)) => Err(Error::Conflict(
+                "command is both reserved and settled".into(),
+            )),
+            (Some(r), None) => Ok(FundingStatus::Reserved(r.clone())),
+            (None, Some(hash)) => Ok(FundingStatus::Settled(hash.clone())),
+            (None, None) => Ok(FundingStatus::Absent),
+        }
+    }
     pub fn new(accounts: BTreeMap<String, Account>) -> Result<Self> {
         if accounts.is_empty()
             || accounts.iter().any(|(id, a)| {

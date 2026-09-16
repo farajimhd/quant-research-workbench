@@ -108,6 +108,74 @@ fn encode(root: &Root, maximum: usize) -> Result<Object> {
     Ok(Object::new(writer.bytes))
 }
 impl Runtime {
+    /// Validate this instrument lane against a quiescent shared portfolio. The
+    /// coordinator must separately account for other lanes and unsubmitted plans.
+    pub fn require_portfolio(
+        &self,
+        portfolio: &arte_core::portfolio::Portfolio,
+        currencies: &BTreeMap<u64, arte_core::simulation_costs::SettlementCurrency>,
+    ) -> Result<()> {
+        use arte_core::portfolio::FundingStatus;
+        self.ready()?;
+        let costs = self
+            .costs
+            .as_ref()
+            .ok_or_else(|| Error::Unready("execution costs unbound".into()))?;
+        if self.owners.len() != self.simulator.positions().len()
+            || self.reservations.len() != self.owners.len()
+        {
+            return Err(Error::Conflict(
+                "funding recovery population differs".into(),
+            ));
+        }
+        for order in self.simulator.positions() {
+            let command = &order.bracket.command_id;
+            let owner = self
+                .owners
+                .get(command)
+                .ok_or_else(|| Error::Unready("funding owner missing".into()))?;
+            let expected = self
+                .reservations
+                .get(command)
+                .ok_or_else(|| Error::Unready("funding reservation missing".into()))?;
+            portfolio.require_simulation(
+                &owner.account,
+                &owner.run_id,
+                costs.model().currency_scale,
+                Some(&costs.model().currency),
+            )?;
+            let actual = portfolio.funding_status(&owner.account, command)?;
+            if !self.released.contains(command) {
+                if actual != FundingStatus::Reserved(expected.clone()) {
+                    return Err(Error::Conflict(
+                        "execution reservation differs from portfolio".into(),
+                    ));
+                }
+            } else if order.entry_filled == 0 {
+                if !order.entry_cancelled
+                    || order.exit_filled != 0
+                    || actual != FundingStatus::Absent
+                {
+                    return Err(Error::Conflict(
+                        "cancelled funding release differs from portfolio".into(),
+                    ));
+                }
+            } else {
+                let currency = currencies
+                    .get(&owner.instrument)
+                    .ok_or_else(|| Error::Unready("settlement currency evidence missing".into()))?;
+                let request = self.settlement_request(command, currency)?;
+                let hash =
+                    content_hash(&("arte.simulated-settlement.v1", &owner.account, &request))?;
+                if actual != FundingStatus::Settled(hash) {
+                    return Err(Error::Conflict(
+                        "execution settlement differs from portfolio".into(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
     /// Call only after all generated fills have durable journal acknowledgments.
     /// Last fills must be supplied from that journal; missing or extra rows fail.
     pub fn checkpoint(

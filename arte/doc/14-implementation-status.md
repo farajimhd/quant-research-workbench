@@ -6,6 +6,28 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Execution and portfolio consistency
+
+The simulated execution lane now exposes a read-only funding consistency check.
+Every owned, unreleased order must retain its exact portfolio reservation. A
+released unfilled order must be cancelled and have neither reservation nor
+settlement receipt. A released filled order must be terminal and have the exact
+settlement receipt reconstructed from its journaled cash and pinned currency
+evidence. The normal settlement path and this check share request construction.
+
+The check does not repair balances, recreate reservations or settle orders. It
+requires the shared portfolio to be quiescent. Other instrument lanes and funded
+plans not yet submitted still require accounting by the run coordinator; this
+lane check alone cannot prove that the portfolio has no orphan reservations.
+
+Multi-account lifecycle tests now exercise the check before each market
+acknowledgment, including filled exits and unfilled cancellations. Negative tests
+cover missing or changed active reservations, missing settlement receipts and
+missing settlement currency evidence.
+
+All 381 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Source-oracle parity was not rerun. No service or network test ran.
+
 ## Shared feature recovery
 
 The shared feature authority now captures and restores MACD episode state, setup

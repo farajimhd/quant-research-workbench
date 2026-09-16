@@ -345,9 +345,33 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
             released = true;
         }
         assert!(controller.pending_actions().is_empty());
+        controller
+            .require_portfolio(
+                &portfolio,
+                &std::collections::BTreeMap::from([(1, currency.clone())]),
+            )
+            .unwrap();
         controller.acknowledge().unwrap();
     }
     assert!(completed);
+    if !cancel_unfilled {
+        let without_receipts = Portfolio::new(
+            ["a", "b"]
+                .into_iter()
+                .map(|id| (id.into(), portfolio.snapshot(id).unwrap()))
+                .collect(),
+        )
+        .unwrap();
+        assert!(controller
+            .require_portfolio(
+                &without_receipts,
+                &std::collections::BTreeMap::from([(1, currency.clone())])
+            )
+            .is_err());
+        assert!(controller
+            .require_portfolio(&portfolio, &std::collections::BTreeMap::new())
+            .is_err());
+    }
     assert_eq!(
         (quotes, entries, exits),
         (4, 2, if target_exit || cancel_unfilled { 0 } else { 2 })
