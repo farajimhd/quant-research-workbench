@@ -149,10 +149,13 @@ def prepare(name, overrides=None, recipe_base=None):
 async def run(args):
     if getattr(args, 'record_sequences', False) and args.restart_at:
         raise ValueError('Sequence recording does not yet support checkpoint restart; use separate runs')
+    if getattr(args, 'prepare_frames_only', False) and (args.restart_at or getattr(args, 'record_sequences', False)):
+        raise ValueError('Frame preparation cannot record decisions or restart playback')
     # QMD's prepared-book authority admits one stream per manager. Serialize
     # study processes without altering the service limit; SQLite releases the
     # lease automatically if a worker dies.
-    lease=Path('D:/TradingML/runtimes/analysis/strategy-222-refinement/_prepared-run-lease.sqlite3')
+    lease_name = '_frame-preparation-lease.sqlite3' if getattr(args, 'prepare_frames_only', False) else '_prepared-run-lease.sqlite3'
+    lease=Path('D:/TradingML/runtimes/analysis/strategy-222-refinement')/lease_name
     lease.parent.mkdir(parents=True,exist_ok=True)
     connection=sqlite3.connect(lease,timeout=.1,isolation_level=None)
     try:
@@ -163,7 +166,7 @@ async def run(args):
                 break
             except sqlite3.OperationalError as exc:
                 if 'locked' not in str(exc).lower():raise
-                print(f'Queued {args.symbol}: another Strategy 222 replay holds the prepared-stream lease',flush=True)
+                print(f'Queued {args.symbol}: another worker holds {lease_name}',flush=True)
                 await asyncio.sleep(15)
         await run_locked(args)
     finally:
@@ -183,6 +186,7 @@ async def run_locked(args):
     identity = dict(source=source_identity(), symbol=args.symbol, end=args.end,
                     session_date=args.session_date.isoformat(),
                     variants=args.variants, baseline=BASELINE, book_hash=BOOK_HASH)
+    if getattr(args, 'prepare_frames_only', False):identity['prepare_frames_only']=True
     if args.portfolio_symbols:identity['tickers']=args.portfolio_symbols
     if getattr(args, 'historical_watchlist_universe', False):
         identity.update(universe='historical_watchlist', tickers=[])
@@ -213,7 +217,9 @@ async def run_locked(args):
         if args.stop_request_file and args.stop_request_file.exists():raise RuntimeError('Research stop requested before next trial')
         prior = next((t for t in state['trials'] if t['name'] == name), None)
         if prior:
-            if prior['status'] == 'completed':
+            if prior['status'] == 'completed' or (getattr(args, 'prepare_frames_only', False)
+                    and prior['status'] == 'stopped' and not prior.get('error')
+                    and prior.get('frame_preparation', {}).get('status') == 'completed'):
                 continue
             raise ValueError(f"Recorded {prior['status']} run {prior['run_id']}; preserve and investigate before a new trial")
         candidate = prepare(name,args.recipe_parameters,getattr(args,'recipe_base',None))
@@ -222,6 +228,7 @@ async def run_locked(args):
             end_time=time.fromisoformat(args.end), initial_cash=10000,
             tickers=replay_tickers(args),
             configuration_revision=revision, mode=RunMode.BACKTEST,
+            prepare_frames_only=getattr(args, 'prepare_frames_only', False),
             experimental_structure_book='level-book-v7', experimental_structure_fingerprint=BOOK_HASH)
         controller = ReplayRunController(definition, runtime_root=Path('D:/TradingML/runtimes/trading/backtest'))
         recorder = None
@@ -250,14 +257,18 @@ async def run_locked(args):
                 if args.stop_request_file and args.stop_request_file.exists() and not controller._task.done():
                     await controller.command('stop')
                 trial.update(status=controller.status, current_time=str(controller.current_time),
-                             events=controller.processed_events, error=controller.error)
+                             events=controller.processed_events, error=controller.error,
+                             preparation_stage=controller._preparation_stage,
+                             prepared_streams=controller._preparation_completed_units,
+                             total_streams=controller._preparation_total_units)
                 if recorder is not None:
                     trial['sequence_rows'] = dict(recorder.counts)
                 save(manifest,state)
                 completed = sum(t['status']=='completed' for t in state['trials'])
                 failed = sum(t['status']=='failed' for t in state['trials'])
                 print(f"{name} {args.symbol} status={controller.status} market={controller.current_time} "
-                      f"events={controller.processed_events} active={int(not controller._task.done())} "
+                      f"events={controller.processed_events} stage={controller._preparation_stage} "
+                      f"streams={controller._preparation_completed_units}/{controller._preparation_total_units} active={int(not controller._task.done())} "
                       f"queued={len(args.variants)-len(state['trials'])} completed={completed} failed={failed} retries=0", flush=True)
                 if controller._task.done():
                     await controller._task
@@ -281,6 +292,8 @@ async def run_locked(args):
                 await controller.command('stop')
                 await asyncio.shield(controller._task)
             trial.update(status=controller.status, error=controller.error)
+            if getattr(args, 'prepare_frames_only', False):
+                trial['frame_preparation'] = deepcopy(controller._data_authority.get('frame_preparation_only', {}))
             if recorder is not None:
                 trial['candle_sequences'] = recorder.close()
             # Unlike an interactive review service, this one-shot worker has no
@@ -291,14 +304,19 @@ async def run_locked(args):
                 controller._journal.close()
                 controller._journal=None
             save(manifest,state)
-        if controller.status != 'completed':
+        prepared_only = (getattr(args, 'prepare_frames_only', False) and controller.status == 'stopped'
+                         and trial.get('frame_preparation', {}).get('status') == 'completed' and not controller.error)
+        if controller.status != 'completed' and not prepared_only:
             raise RuntimeError(f"Run {controller.run_id} {controller.status}: {controller.error}")
-    print(f'Completed comparisons: {manifest}', flush=True)
+    label = 'Completed stream preparation' if getattr(args, 'prepare_frames_only', False) else 'Completed comparisons'
+    print(f'{label}: {manifest}', flush=True)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--runtime', type=Path, required=True)
+    parser.add_argument('--prepare-frames-only', action='store_true',
+                        help='Build durable strategy-frame cache and stop before level-book stream or execution')
     parser.add_argument('--session-date', type=date.fromisoformat, default=date(2026,8,21),
                         help='Replay session date, YYYY-MM-DD; frozen position windows apply only to 2026-08-21')
     parser.add_argument('--historical-watchlist-universe', action='store_true',
