@@ -42,17 +42,21 @@ impl crate::fill_journal::Publisher for Fills {
 
 #[tokio::test]
 async fn funded_multiaccount_entry_protection_exit_and_journal_feedback() {
-    lifecycle(false, false).await;
+    lifecycle(false, false, false).await;
 }
 #[tokio::test]
 async fn replacement_target_controls_later_fills_not_the_original_target() {
-    lifecycle(true, false).await;
+    lifecycle(true, false, false).await;
 }
 #[tokio::test]
 async fn cancelled_unfilled_orders_release_exact_funding_without_fabricated_cash() {
-    lifecycle(false, true).await;
+    lifecycle(false, true, false).await;
 }
-async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
+#[tokio::test]
+async fn failed_owned_submission_retains_funding_and_rejects_changed_retry() {
+    lifecycle(false, false, true).await;
+}
+async fn lifecycle(target_exit: bool, cancel_unfilled: bool, fail_submission: bool) {
     let (run, costs, manifest, recovery) = run_recovery_fixture(true, true, target_exit);
     let cost_model = costs.model().clone();
     let mut runtimes: Vec<_> = run
@@ -351,24 +355,100 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
                         &risk,
                     )
                     .unwrap();
-                    let funding =
-                        order_funding::reserve(&portfolio, &plan, &cash, now, false, None, &risk)
-                            .unwrap();
-                    for _ in 0..2 {
-                        controller
-                            .submit_reserved(crate::simulation_runtime::Submission {
-                                plan: &plan,
-                                funding: &funding,
-                                portfolio: &portfolio,
-                                cash_policy: &cash,
-                                risk_policy: &risk,
-                                bands: None,
-                                session: &session,
-                                now_ns: now,
-                                latency_ns: 0,
-                            })
-                            .unwrap();
+                    let allocation = decision_orders::Allocation {
+                        account: plan.bracket.account.clone(),
+                        instrument: plan.bracket.instrument,
+                        quantity: plan.bracket.quantity,
+                        price_scale: plan.bracket.price_scale,
+                        tick: plan.bracket.tick,
+                        entry_limit: plan.bracket.entry,
+                        deadline_ns: plan.bracket.deadline_ns,
+                    };
+                    let request = |allocation, latency_ns| crate::playback_runtime::EntryRequest {
+                        allocation,
+                        portfolio: &portfolio,
+                        cash_policy: &cash,
+                        safety: crate::simulation_runtime::AmendmentSafety {
+                            session: &session,
+                            risk_policy: &risk,
+                            bands: None,
+                        },
+                        latency_ns,
+                    };
+                    let before = portfolio
+                        .snapshot(&decision.scope.account)
+                        .unwrap()
+                        .reservations;
+                    if fail_submission {
+                        // Valid economic geometry but a scale different from the
+                        // simulator instrument. Submission fails after reservation.
+                        let mut bad = allocation.clone();
+                        bad.price_scale = 3;
+                        bad.entry_limit *= 10;
+                        assert!(controller
+                            .enter_action(&decision.decision_id, 0, request(&bad, 0))
+                            .is_err());
+                        let reserved = portfolio
+                            .snapshot(&decision.scope.account)
+                            .unwrap()
+                            .reservations;
+                        assert_eq!(reserved.len(), before.len() + 1);
+                        assert!(reserved.contains_key(&plan.bracket.command_id));
+                        assert!(controller
+                            .enter_action(&decision.decision_id, 0, request(&bad, 0))
+                            .is_err());
+                        assert!(controller
+                            .enter_action(&decision.decision_id, 0, request(&allocation, 0))
+                            .is_err());
+                        assert_eq!(
+                            portfolio
+                                .snapshot(&decision.scope.account)
+                                .unwrap()
+                                .reservations,
+                            reserved
+                        );
+                        assert!(!controller.pending_actions().is_empty());
+                        assert!(controller.acknowledge().is_err());
+                        return;
                     }
+                    assert!(controller
+                        .enter_action(&decision.decision_id, 0, request(&allocation, 1))
+                        .is_err());
+                    assert_eq!(
+                        portfolio
+                            .snapshot(&decision.scope.account)
+                            .unwrap()
+                            .reservations,
+                        before
+                    );
+                    assert!(controller
+                        .enter_action("unknown", 0, request(&allocation, 0))
+                        .is_err());
+                    for _ in 0..2 {
+                        let submitted = controller
+                            .enter_action(&decision.decision_id, 0, request(&allocation, 0))
+                            .unwrap();
+                        assert_eq!(
+                            content_hash(&submitted).unwrap(),
+                            content_hash(&plan).unwrap()
+                        );
+                    }
+                    let mut changed = allocation.clone();
+                    changed.quantity += 1;
+                    let before = portfolio
+                        .snapshot(&decision.scope.account)
+                        .unwrap()
+                        .reservations;
+                    assert!(controller
+                        .enter_action(&decision.decision_id, 0, request(&changed, 0))
+                        .is_err());
+                    assert_eq!(
+                        portfolio
+                            .snapshot(&decision.scope.account)
+                            .unwrap()
+                            .reservations,
+                        before
+                    );
                     entries += 1;
                     commands.push(plan.bracket.command_id.clone());
                 }
@@ -443,7 +523,7 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
             .checkpoint(&manifest, &cut, &last_fills, limits, 2_000_000)
             .unwrap();
         let root: serde_json::Value = serde_json::from_slice(&image.root.payload).unwrap();
-        assert_eq!(root["version"], 2);
+        assert_eq!(root["version"], 3);
         assert_eq!(root["targets"].as_object().unwrap().len(), 2);
         let context =
             content_hash(&("arte.playback-controller-cut.v1", manifest.hash(), &cut)).unwrap();

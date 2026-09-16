@@ -13,9 +13,19 @@ pub struct PendingAction {
     pub account: String,
     pub kind: String,
 }
+/// Explicit portfolio allocation and verified market/risk inputs. The strategy
+/// decision is deliberately absent: the controller owns its committed receipt.
+pub struct EntryRequest<'a> {
+    pub allocation: &'a Allocation,
+    pub portfolio: &'a arte_core::portfolio::Portfolio,
+    pub cash_policy: &'a arte_core::order_funding::Policy,
+    pub safety: simulation_runtime::AmendmentSafety<'a>,
+    pub latency_ns: u64,
+}
 struct Item {
     receipt: Arc<Committed>,
     completed_request: Option<String>,
+    reserved_request: Option<String>,
 }
 #[derive(Default)]
 pub(super) struct Work {
@@ -62,12 +72,28 @@ impl Work {
                             .bytes()
                             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
                 })
+                || saved.reserved_request.as_ref().is_some_and(|h| {
+                    h.len() != 64
+                        || !h
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                })
+                || (matches!(
+                    item.receipt.decision().actions[*index],
+                    Action::Enter(_) | Action::Add(_)
+                ) && saved.completed_request.is_some()
+                    && saved.reserved_request != saved.completed_request)
+                || (!matches!(
+                    item.receipt.decision().actions[*index],
+                    Action::Enter(_) | Action::Add(_)
+                ) && saved.reserved_request.is_some())
             {
                 return Err(Error::Conflict(
                     "action recovery receipt or identity differs".into(),
                 ));
             }
             item.completed_request = saved.completed_request.clone();
+            item.reserved_request = saved.reserved_request.clone();
         }
         Ok(work)
     }
@@ -85,6 +111,7 @@ impl Work {
                     action_index: *action_index,
                     decision_hash: content_hash(item.receipt.decision())?,
                     completed_request: item.completed_request.clone(),
+                    reserved_request: item.reserved_request.clone(),
                 })
             })
             .collect()
@@ -107,6 +134,7 @@ impl Work {
                     Item {
                         receipt: Arc::clone(&receipt),
                         completed_request: None,
+                        reserved_request: None,
                     },
                 );
             }
@@ -126,6 +154,90 @@ impl Work {
     }
 }
 impl Runtime {
+    /// Build, reserve and submit exactly the retained committed entry/add action.
+    /// On submission failure the reservation remains for exact retry. This does
+    /// not resize orders or silently discard an unfunded strategy decision.
+    pub fn enter_action(
+        &mut self,
+        decision_id: &str,
+        action_index: usize,
+        request: EntryRequest<'_>,
+    ) -> Result<decision_orders::Plan> {
+        let at_ns = self
+            .decision_view()?
+            .pending()?
+            .ok_or_else(|| Error::Unready("no entry boundary".into()))?
+            .evaluated_at_ns;
+        let item = self
+            .actions
+            .items
+            .get(&(decision_id.into(), action_index))
+            .ok_or_else(|| Error::Unready("no committed entry action".into()))?;
+        let regular = request.safety.session.require_phase(at_ns)?;
+        let plan = decision_orders::bracket(
+            &item.receipt,
+            action_index,
+            request.allocation,
+            at_ns,
+            regular,
+            request.safety.bands,
+            request.safety.risk_policy,
+        )?;
+        // A completed request must be compared before touching portfolio state.
+        // submit_reserved retains the exact completion fingerprint for retries.
+        let funding = arte_core::order_funding::requirements(
+            &plan,
+            request.cash_policy,
+            at_ns,
+            regular,
+            request.safety.bands,
+            request.safety.risk_policy,
+        )?;
+        let submission = simulation_runtime::Submission {
+            plan: &plan,
+            funding: &funding,
+            portfolio: request.portfolio,
+            cash_policy: request.cash_policy,
+            risk_policy: request.safety.risk_policy,
+            bands: request.safety.bands,
+            session: request.safety.session,
+            now_ns: at_ns,
+            latency_ns: request.latency_ns,
+        };
+        let fingerprint = content_hash(&(
+            "playback-submit-v1",
+            &plan,
+            &funding,
+            at_ns,
+            request.latency_ns,
+        ))?;
+        if item
+            .reserved_request
+            .as_ref()
+            .is_some_and(|previous| previous != &fingerprint)
+        {
+            return Err(Error::Conflict("reserved action request changed".into()));
+        }
+        if item.completed_request.is_none() {
+            self.execution.validate_submission(&submission)?;
+            arte_core::order_funding::reserve(
+                request.portfolio,
+                &plan,
+                request.cash_policy,
+                at_ns,
+                regular,
+                request.safety.bands,
+                request.safety.risk_policy,
+            )?;
+            self.actions
+                .items
+                .get_mut(&(decision_id.into(), action_index))
+                .unwrap()
+                .reserved_request = Some(fingerprint);
+        }
+        self.submit_reserved(submission)?;
+        Ok(plan)
+    }
     pub fn protection_action(
         &mut self,
         decision_id: &str,
@@ -299,6 +411,13 @@ impl Runtime {
             request.now_ns,
             request.latency_ns,
         ))?;
+        if item
+            .reserved_request
+            .as_ref()
+            .is_some_and(|previous| previous != &fingerprint)
+        {
+            return Err(Error::Conflict("reserved action submission changed".into()));
+        }
         if let Some(previous) = &item.completed_request {
             return if previous == &fingerprint {
                 Ok(())
@@ -366,6 +485,8 @@ impl Runtime {
             decision_hash: content_hash(decision)?,
             at_ns: request.now_ns,
         };
+        self.execution.validate_submission(&request)?;
+        item.reserved_request = Some(fingerprint.clone());
         self.execution.submit_reserved(request)?;
         self.targets.insert(scope_hash, target);
         item.completed_request = Some(fingerprint);

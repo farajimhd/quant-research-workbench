@@ -316,7 +316,7 @@ impl Runtime {
         self.ready()?;
         self.simulator.submit(bracket, now_ns, latency_ns)
     }
-    pub fn submit_reserved(&mut self, request: Submission<'_>) -> Result<()> {
+    pub(crate) fn validate_submission(&self, request: &Submission<'_>) -> Result<()> {
         self.ready()?;
         validate_run(request.plan, self.simulator.run_id())?;
         self.fill_model
@@ -387,6 +387,12 @@ impl Runtime {
                 "original simulation reservation changed".into(),
             ));
         }
+        Ok(())
+    }
+    pub fn submit_reserved(&mut self, request: Submission<'_>) -> Result<()> {
+        self.validate_submission(&request)?;
+        let command = &request.plan.bracket.command_id;
+        let expected = request.funding;
         let b = &request.plan.bracket;
         request.portfolio.with_reservation(
             &b.account,

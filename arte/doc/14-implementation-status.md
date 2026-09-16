@@ -6,6 +6,30 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Controller-owned entry submission
+
+The playback controller now derives entry/add bracket plans directly from its
+retained committed strategy receipt. Callers supply portfolio allocations and
+verified session, risk, band and cash inputs. They no longer need to supply a
+second strategy decision or construct the executable plan themselves.
+
+The path checks execution context, reserves account cash, then submits through
+the existing simulator authority. Invalid latency and missing decision authority
+are rejected before reservation. Successful retries do not reserve twice. Once
+funded, the request fingerprint is pinned. A failed submission leaves the exact
+reservation in place and blocks boundary acknowledgment. Changing the funded
+request is rejected; no automatic release or resizing occurs.
+
+Controller checkpoints are now version 3 and include reserved-request progress.
+Earlier controller images are rejected; no migration is implemented. The existing
+multi-account entry, target replacement, exit and cancellation fixtures use this
+new path and still recover at each boundary. An additional failure fixture checks
+retained funding and changed-retry rejection. All 391 offline Rust tests and
+static checks pass. Source-oracle parity was not rerun. No service ran.
+
+This closes one execution-wiring gap. A complete standalone backtest command,
+multi-instrument orchestration and runtime/UI integration remain unfinished.
+
 ## Durable common-cut checkpoint adapter
 
 The single-instrument common-cut bundle now has a binary archive format and a
