@@ -393,7 +393,7 @@ def load_recipe(path):
         'setup_below_vwap_base_enabled','setup_below_vwap_support_age_s','setup_below_vwap_trade_acceleration',
         'setup_below_vwap_maximum_distance_atr','setup_fresh_pivot_enabled',
         'setup_reversal_enabled','setup_reversal_volume_acceleration','setup_reversal_support_age_s',
-        'cash_fraction'}}
+        'setup_quote_confirmation_enabled','setup_quote_range_minimum_fraction','cash_fraction'}}
     parameters=json.loads(path.read_text())['parameters']
     if not isinstance(parameters,dict) or not parameters:raise ValueError('Empty research recipe')
     for section,values in parameters.items():

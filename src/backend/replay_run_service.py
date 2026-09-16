@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from src.trading_runtime.market_pressure import PressureTracker
+from src.trading_runtime.quote_geometry import QuoteGeometryTracker
 from src.trading_runtime.estimated_luld import reference_from_indicator as _backtest_luld_reference
 
 from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD, CONTRACT as LEVEL_LOAD_CONTRACT
@@ -1090,6 +1091,10 @@ class ReplayRunController:
             dict(row.get("parameters") or {}).get("market_pressure", {}).get("enabled")
             or dict(row.get("parameters") or {}).get("historical_hod", {}).get("setup_reversal_enabled")
             for row in pressure_profiles)
+        self._quote_geometry_trackers: dict[str, QuoteGeometryTracker] = {}
+        self._quote_geometry_enabled = any(
+            dict(row.get("parameters") or {}).get("historical_hod", {}).get("setup_quote_confirmation_enabled")
+            for row in pressure_profiles)
         self._historical_prepared_structure: dict[str, dict[str, Any]] = {}
         self._event_structure_sessions: dict[str, tuple[str, datetime, int]] = {}
         self._historical_structure_context: dict[
@@ -1560,6 +1565,10 @@ class ReplayRunController:
     async def _can_skip_to_navigation_target(self) -> bool:
         """Allow raw-event skipping only before a source-native activation boundary."""
 
+        if self._quote_geometry_enabled:
+            # Initial entries require pre-activation quote history. Navigation
+            # must consume the same events as ordinary playback.
+            return False
         if self._navigation_prerequisite_action is None or self._runtime is None:
             return False
         activation = dict(
@@ -1586,7 +1595,8 @@ class ReplayRunController:
 
     def _navigation_skip_boundary(self) -> datetime | None:
         if (
-            not self._navigation_skip_to_target
+            self._quote_geometry_enabled
+            or not self._navigation_skip_to_target
             or self._navigation_prerequisite_action is None
         ):
             return None
@@ -1917,6 +1927,7 @@ class ReplayRunController:
                 "historical_liquidity": liquidity_checkpoint(self._historical_market_quality),
                 "latest_strategy_observations": {ticker: _strategy_observation_checkpoint(observation)
                     for ticker, observation in self._latest_strategy_observations.items()},
+                "quote_geometry_trackers": {ticker: tracker.checkpoint() for ticker, tracker in self._quote_geometry_trackers.items()},
                 "pressure_trackers": {ticker: tracker.checkpoint() for ticker, tracker in self._pressure_trackers.items()},
                 "provisional_macd_states": {
                     ticker: state.checkpoint()
@@ -3130,6 +3141,10 @@ class ReplayRunController:
         self._strategy_source_values = deepcopy(
             dict(controller.get("strategy_source_values") or {})
         )
+        if self._quote_geometry_enabled and "quote_geometry_trackers" not in controller:
+            raise ValueError("Enabled quote confirmation requires quote geometry checkpoint history")
+        self._quote_geometry_trackers = {ticker: QuoteGeometryTracker(saved)
+            for ticker, saved in controller.get("quote_geometry_trackers", {}).items()}
         self._pressure_trackers = {ticker: PressureTracker(saved) for ticker, saved in controller.get("pressure_trackers", {}).items()}
         self._provisional_macd_states = {
             str(ticker).upper(): _ProvisionalMacdState.restore(dict(payload))
@@ -3246,6 +3261,15 @@ class ReplayRunController:
             if event.ts >= self.definition.requested_start:
                 await self._process_strategy_market_event(event)
 
+    def _market_pressure_snapshot(self, ticker, at):
+        tracker = self._pressure_trackers.get(ticker)
+        result = (tracker if tracker is not None else PressureTracker()).snapshot(at)
+        if self._quote_geometry_enabled:
+            geometry = self._quote_geometry_trackers.get(ticker)
+            if geometry is not None:
+                result['quote_geometry'] = geometry.snapshot(at)
+        return result
+
     async def _process_market_event(
         self,
         event: MarketEvent,
@@ -3259,6 +3283,11 @@ class ReplayRunController:
             if tracker is None:
                 tracker = self._pressure_trackers[event.ticker] = PressureTracker()
             tracker.observe(event)
+        if self._quote_geometry_enabled:
+            geometry = self._quote_geometry_trackers.get(event.ticker)
+            if geometry is None:
+                geometry = self._quote_geometry_trackers[event.ticker] = QuoteGeometryTracker()
+            geometry.observe(event)
         self._observe_historical_market_quality_event(event)
         if isinstance(event, TradeEvent) and event.price_eligible:
             self._experimental_session_high(event.ticker, event.ts, event.price)
@@ -3554,7 +3583,7 @@ class ReplayRunController:
             completed_range_context=self._completed_range_context(frame),
             ticker=frame.ticker,
             observed_at=frame.as_of,
-            market_pressure=self._pressure_trackers.get(frame.ticker, PressureTracker()).snapshot(frame.as_of),
+            market_pressure=self._market_pressure_snapshot(frame.ticker, frame.as_of),
             price=float(indicator.get("close") or bar.get("close") or 0),
             bar_open=_optional_positive(bar.get("open")),
             bar_low=_optional_positive(bar.get("low")),
@@ -3994,7 +4023,7 @@ class ReplayRunController:
         observation = replace(
             base,
             observed_at=event.ts,
-            market_pressure=self._pressure_trackers.get(event.ticker, PressureTracker()).snapshot(event.ts),
+            market_pressure=self._market_pressure_snapshot(event.ticker, event.ts),
             price=price,
             bar_open=forming_open,
             bar_high=None,
