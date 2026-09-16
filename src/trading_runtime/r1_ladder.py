@@ -10,6 +10,7 @@ from math import ceil, floor, isfinite
 from . import historical_hod as H, session_relative_volume
 
 CONTRACT = 'r1-hod-resistance-ladder-v3'
+VWAP_CONTRACT = 'r1-hod-resistance-ladder-v4'
 LEGACY_CONTRACTS = {
     'r1-hod-resistance-ladder-v1': '.r1_ladder_v1',
     'r1-hod-resistance-ladder-v2': '.r1_ladder_v2',
@@ -28,7 +29,7 @@ def configure(p):
         else:
             from .r1_ladder_v2 import configure as configure_legacy
         return configure_legacy(p)
-    if p.get('r1_ladder_contract') != CONTRACT or p.get('historical_hod_contract') != H.CONTRACT:
+    if p.get('r1_ladder_contract') not in (CONTRACT, VWAP_CONTRACT) or p.get('historical_hod_contract') != H.CONTRACT:
         raise ValueError('R1 ladder requires its versioned shared market adapter')
     raw = p.get('r1_ladder', {})
     if set(raw)-set(DEFAULTS):
@@ -150,6 +151,34 @@ def resistance(level):
     return level.get('side') in (-1, 'resistance') and level.get('role') != 'transition'
 
 
+def episode_entry_gate(boundary, rows, prior_close, prior_vwap, prior_at, o):
+    """V4 initial entry: unobstructed green VWAP cross or an R1 cross.
+
+    Both VWAP samples belong to adjacent completed 1s observations. Bands
+    overlapping the open interval between VWAP and R1 count as obstruction.
+    R1 itself is excluded, and a missing VWAP cannot prove a clear interval.
+    """
+    vwap = o.execution_vwap
+    valid = type(vwap) in (int, float) and isfinite(vwap) and vwap > 0
+    crossed_r1 = prior_close is not None and prior_close <= boundary['upper'] < o.price
+    if not valid:
+        return crossed_r1, dict(path='r1', vwap_available=False, crossed=crossed_r1)
+    near_edge = boundary['lower'] if vwap < boundary['lower'] else boundary['upper']
+    lower, upper = sorted((vwap, near_edge))
+    blocking = [r['unified_level_id'] for r in rows if resistance(r)
+                and r['unified_level_id'] != boundary['unified_level_id']
+                and r['upper'] > lower and r['lower'] < upper]
+    if blocking:
+        return crossed_r1, dict(path='r1', vwap=vwap, blocking_level_ids=blocking,
+                               crossed=crossed_r1)
+    prior_valid = type(prior_vwap) in (int, float) and isfinite(prior_vwap) and prior_vwap > 0
+    crossed = bool(prior_valid and prior_close is not None and prior_at is not None
+                   and 0 < o.observed_at.timestamp()-prior_at <= 1.
+                   and prior_close <= prior_vwap and o.price > vwap and o.price > o.bar_open)
+    return crossed, dict(path='vwap', vwap=vwap, prior_vwap=prior_vwap,
+                         blocking_level_ids=[], green=o.price > o.bar_open, crossed=crossed)
+
+
 def _track_level(state, level, role, at):
     """Retain every structural level used by the session ladder and its roles."""
     if not level:
@@ -201,7 +230,7 @@ def record_exit(state, at, role, remaining):
     open_episode = (state.get('r1_market') or {}).get('macd_episode') or {}
     entry_episode = active.get('macd_episode') or {}
     continuation_episode_id = (open_episode.get('episode_id') if target
-        and active.get('contract') == CONTRACT
+        and active.get('contract') in (CONTRACT, VWAP_CONTRACT)
         and open_episode.get('episode_id') == entry_episode.get('episode_id') else None)
     state['r1_exit'] = dict(at=at.timestamp(), role=origin, level=target,
                             continuation_episode_id=continuation_episode_id)
@@ -231,6 +260,7 @@ def evaluate(host, a, o, p, state):
         state.pop('r1_exit', None)
         state.pop('r1_levels', None)
     adapter = p['historical_hod']; s = p['r1_ladder']; tick = p['execution']['tick_size']
+    contract = p['r1_ladder_contract']
     market = o.structural_detector_state or {}
     passive = market.get('historical_hod_observation') or {}
     # Seed certified pre-assignment history without granting an old breakout.
@@ -241,6 +271,8 @@ def evaluate(host, a, o, p, state):
                      rows=passive.get('prior_rows', []),
                      hod=passive.get('prior_r1_hod_after_start') or 0.,
                      atr=passive.get('closed_atr'))
+            if contract == VWAP_CONTRACT:
+                d['vwap'] = passive.get('prior_r1_vwap')
         completed = passive.get('completed_macd') or {}
         if completed:
             _update_macd_episode(d, completed.get('at'), completed.get('line'),
@@ -251,6 +283,7 @@ def evaluate(host, a, o, p, state):
         if now > d.get('macd', {}).get('at', 0):
             _update_macd_episode(d, now, o.macd_line, o.macd_signal, o.bar_high)
     prior_close, prior_at = d.get('close'), d.get('closed_at')
+    prior_vwap = d.get('vwap')
     prior_episode = deepcopy(d.get('macd_episode') or {})
     prior_rows, prior_hod = d.get('rows', []), d.get('hod') or 0
     selected_r1 = r1_level(prior_rows, prior_hod)
@@ -263,6 +296,8 @@ def evaluate(host, a, o, p, state):
             d.update(closed_at=now,close=o.price,rows=H.selected_levels(o,adapter,now),
                      hod=max(prior_hod,o.bar_high) if after_start else prior_hod,
                      atr=o.volatility if type(o.volatility) in (int,float) and isfinite(o.volatility) else None)
+            if contract == VWAP_CONTRACT:
+                d['vwap'] = o.execution_vwap
             episode = d.get('macd_episode')
             if episode and o.bar_high > episode.get('high', 0):
                 episode.update(high=o.bar_high, high_at=now)
@@ -274,10 +309,10 @@ def evaluate(host, a, o, p, state):
             == open_episode_id)
     boundary = saved_exit.get('level') if continuation_exit else selected_r1
     reference_level = boundary or current_r1
-    reference = dict(contract=CONTRACT,hod=prior_hod if fresh else d.get('hod'),
+    reference = dict(contract=contract,hod=prior_hod if fresh else d.get('hod'),
         resistance_upper=(reference_level or {}).get('upper'),
         threshold=(boundary or {}).get('upper'),level_id=(reference_level or {}).get('unified_level_id'))
-    evidence = dict(contract=CONTRACT, historical_hod_reference=dict(reference,at=now,
+    evidence = dict(contract=contract, historical_hod_reference=dict(reference,at=now,
         changed=reference != previous.get('chart_reference')),macd=dict(d.get('macd') or {},timeframe='5s',kind='completed'),
         macd_episode=dict(prior_episode or d.get('macd_episode') or {}),
         completed_macd_episode_count=len(d.get('macd_episodes', [])))
@@ -371,6 +406,12 @@ def evaluate(host, a, o, p, state):
             return result('wait','macd_episode_high_unavailable')
         if not o.price > episode_high:
             return result('wait','waiting_for_macd_episode_high_break')
+    elif contract == VWAP_CONTRACT:
+        passed, gate = episode_entry_gate(boundary, d['rows'], prior_close, prior_vwap, prior_at, o)
+        evidence['episode_entry_gate'] = dict(gate, episode_id=prior_episode.get('episode_id'))
+        if not passed:
+            return result('wait', 'waiting_for_green_vwap_cross' if gate['path'] == 'vwap'
+                          else 'waiting_for_fresh_resistance_break')
     elif prior_close is None or prior_at is None or not prior_close <= boundary['upper'] < o.price:
         # Initial entries still require a fresh resistance crossover.
         return result('wait','waiting_for_fresh_resistance_break')
@@ -406,7 +447,7 @@ def evaluate(host, a, o, p, state):
     active = dict(level=deepcopy(boundary),target_level=deepcopy(target),confirmed_at=now,
                   stop=stop,maximum_buy_price=entry_price,hod=prior_hod,
                   macd_episode=deepcopy(prior_episode),stop_anchor_level=deepcopy(stop_anchor),
-                  target_plan=deepcopy(plan),continuation=continuation,contract=CONTRACT)
+                  target_plan=deepcopy(plan),continuation=continuation,contract=contract)
     _track_level(state, boundary, 'continuation_support' if continuation else 'initial_breakout', now)
     _track_level(state, target, 'profit_target', now)
     _track_level(state, stop_anchor, 'protective_stop_anchor', now)
@@ -415,7 +456,9 @@ def evaluate(host, a, o, p, state):
         entry_at=o.observed_at.isoformat(),entries=state.get('entries',0)+1,
         last_exit_reason='',entry_acquisition_exit_latched=False)
     state.pop('r1_stop_error', None)
-    return result('enter_long','r1_macd_episode_continuation' if continuation else 'r1_resistance_breakout',Status.ENTRY_PENDING,
+    entry_reason = ('r1_macd_episode_continuation' if continuation else 'r1_vwap_episode_entry'
+        if evidence.get('episode_entry_gate', {}).get('path') == 'vwap' else 'r1_resistance_breakout')
+    return result('enter_long',entry_reason,Status.ENTRY_PENDING,
         invalidation_price=stop,profit_target_price=target_price,
         capital_request=CapitalRequest(mode='mandate_fraction',value=s['cash_fraction'],maximum_quantity=s['maximum_quantity'],allow_replacement=False),
         order_intent={'execution_policy':'adaptive_urgent','protection_profile':'structural-single-target'},
