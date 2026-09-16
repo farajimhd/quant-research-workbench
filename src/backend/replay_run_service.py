@@ -2703,7 +2703,7 @@ class ReplayRunController:
         finally:
             pool=getattr(self,'_prepared_v7',None)
             if pool is not None:
-                try:await asyncio.to_thread(pool.close)
+                try:await self._release_prepared_v7_stream(pool)
                 finally:self._prepared_v7=None
 
     async def _market_event_batches(self):
@@ -4015,6 +4015,26 @@ class ReplayRunController:
         await self._evaluate_strategy_observation(observation, ticker_assignments)
         return True
 
+    def _record_prepared_v7_lease(self, pool, phase, *, error_type=None):
+        if self._journal is None:
+            raise RuntimeError('Prepared V7 ownership requires a durable journal')
+        self._journal.append(run_id=self.run_id, category='resource_lease',
+            entity_type='prepared_v7_stream', entity_id=pool.stream_id,
+            event_time=self.current_time or self.definition.session_start,
+            payload=dict(stream_id=pool.stream_id, owner_run_id=self.run_id,
+                owner_pid=os.getpid(), phase=phase, error_type=error_type,
+                recorded_at=datetime.now(UTC).isoformat()))
+        # Commit before contacting QMD, including when replay batches writes.
+        self._journal.flush()
+
+    async def _release_prepared_v7_stream(self, pool):
+        try:
+            await asyncio.to_thread(pool.close)
+        except BaseException as exc:
+            self._record_prepared_v7_lease(pool, 'release_failed', error_type=type(exc).__name__)
+            raise
+        self._record_prepared_v7_lease(pool, 'released')
+
     async def _prepare_v7_stream(self, frames):
         if self.definition.mode != RunMode.BACKTEST or self.definition.experimental_structure_book!='level-book-v7' or self.definition.debug_fixture is not None:
             return
@@ -4036,6 +4056,7 @@ class ReplayRunController:
         self._preparation_total_units=len(tickers)
         await self._publish(force=True)
         receipts=[]
+        self._record_prepared_v7_lease(pool, 'acquiring')
         try:
             for start in range(0,len(tickers),32):
                 if self._stop_requested:raise asyncio.CancelledError('V7 warm-up cancelled')
@@ -4060,6 +4081,7 @@ class ReplayRunController:
                 self.updated_at=datetime.now(UTC)
                 await self._publish(force=True)
             self._prepared_v7=pool
+            self._record_prepared_v7_lease(pool, 'acquired')
             self._structure_prefetch_progress = dict(mode='resident_v7',tickers=len(receipts),
                 retained_bytes=sum(r['retained_bytes'] for r in receipts))
             identities=[{k:row[k] for k in ('ticker','checkpoint_hash','input_hash','bars')} for row in receipts]
@@ -4067,7 +4089,7 @@ class ReplayRunController:
                 catalog_hash=build['fingerprint'],tickers=len(receipts),
                 input_hash=hashlib.sha256(json.dumps(sorted(identities,key=lambda r:r['ticker']),sort_keys=True).encode()).hexdigest()))
         except BaseException:
-            await asyncio.to_thread(pool.close)
+            await self._release_prepared_v7_stream(pool)
             raise
 
     def _warm_prepared_v7_projection(self, ticker, seed):
