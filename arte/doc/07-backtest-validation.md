@@ -115,6 +115,26 @@ closed. These recovery objects are not historical V7 seeds.
 
 Certified-empty-gap handling and executable orchestration remain unfinished.
 
+### Verified empty-trade evidence
+
+Explicit indexed source loading verifies each trade batch once and builds an
+exact per-second occupancy array. Its configured capacity is at most 172,800
+seconds, separate from the retained observation byte budget. Quote sources cannot
+create this evidence. Unaligned or over-budget requests fail without fallback.
+
+Only complete successful verification returns an index. An empty-span proof binds
+source certificate, provider, instrument, session, half-open interval and source
+publication time. Every recorded trade occupies its second, including trades a
+calculation policy might exclude. Silence, sequence gaps and eligibility decisions
+cannot manufacture empty coverage. Proofs are not deserializable authority; rebuild
+them from verified source batches after recovery.
+
+This certifies recorded checks for one source revision, not absolute provider
+completeness. Source knowledge time must not be confused with simulated session
+time. The plain loader and existing startup path do not grant gap authority.
+Binding indexed loading into startup and mapping its provenance through historical
+projection before consuming it in swing continuity remain required work.
+
 ## Replay modes
 
 | Mode | Input | Claim |

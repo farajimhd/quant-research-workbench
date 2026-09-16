@@ -6,6 +6,26 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Verified empty-trade evidence
+
+Added bounded per-second trade occupancy built through the existing batch
+verifier. Only completed readback verification can issue an index. Empty spans
+pin certificate, scope, interval and publication time; occupied, unaligned,
+out-of-domain or not-yet-known spans fail. All recorded trades count regardless
+of calculation eligibility. Evidence never derives from live silence.
+
+The explicit indexed source loader builds this index without fetching batches
+twice. Plain loading grants no gap authority, and indexing failures do not fall
+back. Tests cover boundaries, empty pages, incomplete/corrupt scope, capacity,
+knowledge-time rejection and exactly-once batch reads.
+
+Startup selection, historical clock/provenance binding and swing-continuity
+consumption remain unfinished. No fabricated historical availability or automatic
+continuity was introduced.
+
+All 442 offline tests, formatting, Clippy and copied-source checks pass. No
+services, network checks or database writes ran. Source parity was not rerun.
+
 ## Owned swing entry assembly
 
 Configured replay entry and live completed-candidate preparation now consume the

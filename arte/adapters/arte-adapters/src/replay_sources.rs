@@ -37,6 +37,7 @@ impl Limits {
 pub struct Source {
     certificate: VerifiedCertificate,
     observations: Vec<Observation>,
+    trade_seconds: Option<arte_core::acquisition::trade_seconds::Index>,
 }
 impl Source {
     pub fn certificate(&self) -> &Certificate {
@@ -45,6 +46,22 @@ impl Source {
     pub fn observations(&self) -> &[Observation] {
         &self.observations
     }
+    pub fn prove_empty_trade_seconds(
+        &self,
+        interval: arte_core::coverage::Interval,
+        as_of_ns: u64,
+    ) -> Result<arte_core::acquisition::trade_seconds::EmptySpan> {
+        self.trade_seconds
+            .as_ref()
+            .ok_or_else(|| {
+                Error::Unready("source was not loaded with verified trade occupancy".into())
+            })?
+            .prove_empty(interval, as_of_ns)
+    }
+}
+enum Verification {
+    Plain(Verifier),
+    Indexed(arte_core::acquisition::trade_seconds::Builder),
 }
 pub trait Reader {
     fn batch(&self, id: &str) -> impl Future<Output = Result<Batch>> + Send;
@@ -64,13 +81,53 @@ pub async fn load(
     as_of_ns: u64,
     limits: Limits,
 ) -> Result<Source> {
+    load_inner(reader, certificate, expected_id, as_of_ns, limits, None).await
+}
+/// Explicit indexed loading. Alignment/budget failures do not fall back to plain
+/// loading. Quotes cannot create trade-continuity authority.
+pub async fn load_indexed_trades(
+    reader: &impl Reader,
+    certificate: Certificate,
+    expected_id: &str,
+    as_of_ns: u64,
+    limits: Limits,
+    scope: arte_core::event_order::Scope,
+    maximum_seconds: usize,
+) -> Result<Source> {
+    load_inner(
+        reader,
+        certificate,
+        expected_id,
+        as_of_ns,
+        limits,
+        Some((scope, maximum_seconds)),
+    )
+    .await
+}
+async fn load_inner(
+    reader: &impl Reader,
+    certificate: Certificate,
+    expected_id: &str,
+    as_of_ns: u64,
+    limits: Limits,
+    index: Option<(arte_core::event_order::Scope, usize)>,
+) -> Result<Source> {
     limits.validate()?;
     if certificate.id()? != expected_id || certificate.published_at_ns > as_of_ns {
         return Err(Error::Conflict(
             "replay source identity or knowledge cutoff".into(),
         ));
     }
-    let mut verifier = Verifier::new(certificate.clone())?;
+    let mut verifier = match index {
+        Some((scope, maximum)) => {
+            Verification::Indexed(arte_core::acquisition::trade_seconds::Builder::new(
+                certificate.clone(),
+                scope,
+                maximum,
+            )?)
+        }
+        None => Verification::Plain(Verifier::new(certificate.clone())?),
+    };
     let count = certificate
         .pages
         .iter()
@@ -95,7 +152,10 @@ pub async fn load(
     let mut observations = Vec::new();
     let mut bytes = 0usize;
     while let Some(batch) = batches.try_next().await? {
-        verifier.observe(&batch)?;
+        match &mut verifier {
+            Verification::Plain(v) => v.observe(&batch)?,
+            Verification::Indexed(v) => v.observe(&batch)?,
+        }
         let events = batch.hydrate()?;
         for event in events {
             let size = serde_json::to_vec(&event)
@@ -112,9 +172,17 @@ pub async fn load(
             observations.push(event);
         }
     }
+    let (certificate, trade_seconds) = match verifier {
+        Verification::Plain(v) => (v.finish()?, None),
+        Verification::Indexed(v) => {
+            let (c, index) = v.finish()?;
+            (c, Some(index))
+        }
+    };
     Ok(Source {
-        certificate: verifier.finish()?,
+        certificate,
         observations,
+        trade_seconds,
     })
 }
 
@@ -243,6 +311,98 @@ mod tests {
         quote: Certificate,
         policy: arte_core::trade_eligibility::Policy,
         policy_hash: String,
+    }
+    #[tokio::test]
+    async fn indexed_loading_verifies_empty_seconds_without_reading_batches_twice() {
+        const S: u64 = 1_000_000_000;
+        let (mut memory, mut certificate, mut events) = fixture();
+        memory.rows.clear();
+        certificate.interval.start *= S;
+        certificate.interval.end *= S;
+        certificate.published_at_ns *= S;
+        for (i, event) in events.iter_mut().enumerate() {
+            event.sip.ns *= S;
+            event.available_at_ns *= S;
+            let batch = Batch::prepare(std::slice::from_ref(event)).unwrap();
+            let id = batch.id().unwrap();
+            memory.rows.insert(id.clone(), vec![event.clone()]);
+            certificate.pages[i].batches = vec![id];
+            certificate.pages[i].acquired_at_ns = event.available_at_ns;
+        }
+        let id = certificate.id().unwrap();
+        let scope = arte_core::event_order::Scope {
+            provider: 1,
+            instrument: 1,
+            session: 20260915,
+        };
+        let source = load_indexed_trades(
+            &memory,
+            certificate.clone(),
+            &id,
+            40 * S,
+            limits(),
+            scope,
+            10,
+        )
+        .await
+        .unwrap();
+        assert_eq!(memory.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(source.observations().len(), 2);
+        source
+            .prove_empty_trade_seconds(
+                Interval {
+                    start: 12 * S,
+                    end: 20 * S,
+                },
+                40 * S,
+            )
+            .unwrap()
+            .require(
+                scope,
+                Interval {
+                    start: 12 * S,
+                    end: 20 * S,
+                },
+                40 * S,
+            )
+            .unwrap();
+        assert!(source
+            .prove_empty_trade_seconds(
+                Interval {
+                    start: 10 * S,
+                    end: 11 * S
+                },
+                40 * S
+            )
+            .is_err());
+        assert!(source
+            .prove_empty_trade_seconds(
+                Interval {
+                    start: 12 * S,
+                    end: 20 * S
+                },
+                39 * S
+            )
+            .is_err());
+        let plain = load(&memory, certificate.clone(), &id, 40 * S, limits())
+            .await
+            .unwrap();
+        assert!(plain
+            .prove_empty_trade_seconds(
+                Interval {
+                    start: 12 * S,
+                    end: 20 * S
+                },
+                40 * S
+            )
+            .is_err());
+        let before = memory.calls.load(Ordering::SeqCst);
+        assert!(
+            load_indexed_trades(&memory, certificate, &id, 40 * S, limits(), scope, 9)
+                .await
+                .is_err()
+        );
+        assert_eq!(memory.calls.load(Ordering::SeqCst), before);
     }
     impl Reader for StartupReader {
         async fn batch(&self, id: &str) -> Result<Batch> {

@@ -6,6 +6,7 @@ use crate::{content_hash, Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 pub const MAX_PAGES: usize = 100_000;
+pub mod trade_seconds;
 pub const MAX_BATCH_REFERENCES: usize = 1_000_000;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Authority {

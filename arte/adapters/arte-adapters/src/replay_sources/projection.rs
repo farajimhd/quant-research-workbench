@@ -359,6 +359,7 @@ mod tests {
         Source {
             certificate: verifier.finish().unwrap(),
             observations,
+            trade_seconds: None,
         }
     }
     fn eligibility(source: &Source) -> Eligibility {
