@@ -218,7 +218,7 @@ def recovery_observe(state, entry, market, observation, stop, row, fresh, *, pre
         for field in ('local_swings', 'confirmed_swings')}}
 
 
-def recovery_permission(state, swing, market, *, stop_gain_guard=False, tight_base=False, unprotected_reentry=False, entry_reclaim=False, regular_session_start=0., regular_full_range=False, independent_base=False):
+def recovery_permission(state, swing, market, *, stop_gain_guard=False, tight_base=False, unprotected_reentry=False, entry_reclaim=False, regular_session_start=0., regular_full_range=False, independent_base=False, support_reversal=False):
     previous = state.get('last_exit')
     if not previous:
         return '', 'building'
@@ -234,6 +234,13 @@ def recovery_permission(state, swing, market, *, stop_gain_guard=False, tight_ba
     # support; a position exited after the open cannot use this exception.
     base_range = state.get('range') or {}
     outcome = previous.get('completed_trade_outcome') or {}
+    # A separately qualified reversal may start below a protected prior leg,
+    # only after an entirely new base. Retirement/freshness/reclaim checks above
+    # still apply; no existing breakout or recovery family receives this bypass.
+    if (support_reversal and previous['at'] < base_range.get('start',0)
+            < base_range.get('end',0) <= market['bar']['end']):
+        return '', 'building'
+
     # The opt-in below-VWAP branch can treat a complete post-exit base as
     # independent of an unprotected attempt. Failed-entry reclaim above and
     # previously protected profits keep their existing recovery requirements.

@@ -10,7 +10,7 @@ from math import ceil, floor, isfinite
 from zoneinfo import ZoneInfo
 
 from .structural_recovery import DEFAULTS as QUALITY_DEFAULTS, LIQUIDITY_181, tradability
-from . import v7_encounters, v7_setup
+from . import v7_encounters, v7_setup, support_reversal
 
 CONTRACT = 'historical-hod-1s-macd-5s-1'
 BOOK_VERSION = 'causal-swing-closing-book-6'
@@ -31,6 +31,7 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     setup_failure_exit_enabled=1,setup_recovery_unprotected_reentry=0,setup_recovery_entry_reclaim=0,setup_recovery_regular_base=0,setup_recovery_regular_full_range=0,
     setup_minimum_60s_progress_pct=0.,setup_minimum_300s_range_pct=0.,setup_add_maximum_upper_wick_fraction=1.,
     setup_acquisition_quality_enabled=0,setup_initial_tranche_fraction=1.,
+    setup_reversal_enabled=0,setup_reversal_volume_acceleration=1.5,setup_reversal_support_age_s=5.,
     setup_fresh_pivot_enabled=0,setup_base_diagnostics_enabled=0,setup_early_base_enabled=0,setup_base_maximum_swing_age_s=15.,
     setup_below_vwap_base_enabled=0,setup_below_vwap_support_age_s=5.,setup_below_vwap_trade_acceleration=1.5,
     setup_below_vwap_maximum_distance_atr=0.,
@@ -55,6 +56,12 @@ def configure(p):
             or s['setup_fresh_pivot_enabled'] not in (0,1)
             or s['setup_fresh_pivot_enabled'] and not (s['v7_setup_enabled'] and s['setup_early_base_enabled'])):
         raise ValueError('Fresh pivot entry requires early V7 bases and a numeric boolean switch')
+    if (type(s['setup_reversal_enabled']) not in (int,float)
+            or s['setup_reversal_enabled'] not in (0,1)
+            or s['setup_reversal_enabled'] and not (s['v7_setup_enabled']
+                and s['setup_early_base_enabled'] and s['setup_recovery_enabled']
+                and not s['setup_episode_high_entry'])):
+        raise ValueError('Support reversal requires early V7 bases and recovery without episode-high entry')
     distance = s['setup_below_vwap_maximum_distance_atr']
     if type(distance) not in (int,float) or not isfinite(distance) or distance < 0:
         raise ValueError('Below-VWAP ATR distance must be finite and nonnegative')
@@ -107,7 +114,7 @@ def configure(p):
         raise ValueError('Phase progress requires V7 setup')
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_fresh_pivot_enabled','setup_below_vwap_base_enabled','setup_base_diagnostics_enabled','setup_support_quote_clearance_selection','setup_recovery_regular_full_range','setup_trail_current_gain_requires_bid','setup_phase_minimum_progress_r','setup_trail_requires_current_gain','setup_recovery_regular_base','setup_base_maximum_extension_fraction','setup_recovery_entry_reclaim','setup_recovery_unprotected_reentry','setup_minimum_300s_range_pct','setup_minimum_60s_progress_pct','setup_add_maximum_upper_wick_fraction','setup_failure_exit_enabled','setup_base_recovery_maximum_range_pct','setup_minimum_trail_progress_r','setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k not in ('sizing_mode','setup_below_vwap_maximum_distance_atr')):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_reversal_enabled','setup_fresh_pivot_enabled','setup_below_vwap_base_enabled','setup_base_diagnostics_enabled','setup_support_quote_clearance_selection','setup_recovery_regular_full_range','setup_trail_current_gain_requires_bid','setup_phase_minimum_progress_r','setup_trail_requires_current_gain','setup_recovery_regular_base','setup_base_maximum_extension_fraction','setup_recovery_entry_reclaim','setup_recovery_unprotected_reentry','setup_minimum_300s_range_pct','setup_minimum_60s_progress_pct','setup_add_maximum_upper_wick_fraction','setup_failure_exit_enabled','setup_base_recovery_maximum_range_pct','setup_minimum_trail_progress_r','setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k not in ('sizing_mode','setup_below_vwap_maximum_distance_atr')):
         raise ValueError('Historical HOD settings must be finite and positive')
     if not 0 <= s['setup_failure_seconds'] <= 5 or int(s['setup_failure_seconds']) != s['setup_failure_seconds']:
         raise ValueError('Initial setup failure window must be zero to five completed seconds')
@@ -844,6 +851,8 @@ def evaluate(host, a, o, p, state):
     setup_state = state.setdefault('v7_setup', {}) if setup_enabled else {}
     if setup_enabled:
         v7_setup.observe(setup_state,d,s,fresh)
+        if s['setup_reversal_enabled'] and fresh:
+            support_reversal.observe_volume(setup_state.setdefault('reversal_volume',{}),d['bar'],session)
     encounter_state = state.setdefault('v7_encounters', {}) if s['v7_encounters_enabled'] else {}
     encounter_reason = v7_encounters.update(encounter_state,o,d,s,tick,fresh) if s['v7_encounters_enabled'] else ''
     encounter_blocked = s['v7_encounters_enabled'] and v7_encounters.blocked(encounter_state)
@@ -866,7 +875,7 @@ def evaluate(host, a, o, p, state):
     if s.get('setup_recovery_enabled'):
         recovery_row = v7_setup.recovery_observe(setup_state,active,d,o,stop,
             (o.structural_detector_state or {}).get('row',{}),fresh,preserve_peak=bool(s['setup_recovery_preserve_peak']),
-            stop_gain_guard=bool(s['setup_recovery_stop_gain_guard']),fresh_pivots=bool(s['setup_fresh_pivot_enabled']))
+            stop_gain_guard=bool(s['setup_recovery_stop_gain_guard']),fresh_pivots=bool(s['setup_fresh_pivot_enabled'] or s['setup_reversal_enabled']))
     acquired = o.position_quantity > 0
     local_clock = o.observed_at.astimezone(NY)
     # TODO(paper-trading halt review): LULD buffers do not guarantee an exit
@@ -1052,7 +1061,30 @@ def evaluate(host, a, o, p, state):
                 and type(current_vwap) in (int,float) and isfinite(current_vwap) and current_vwap>0
                 and 0 <= (now-d.get('macd_at',0))*1000 <= s['maximum_macd_age_ms'])
             evidence['below_vwap_base'] = dict(momentum,passed=momentum_ready,distance=distance)
-    acquisition_momentum_ready = macd_ready or momentum_ready
+    reversal_ready = False
+    reversal_assessment = None
+    reversal_geometry = None
+    if s['setup_reversal_enabled']:
+        if not acquired and not pending and fresh and detector_fresh and d.get('contiguous') and ready:
+            reversal_assessment = support_reversal.assess(row,o.market_pressure or {},
+                support_reversal.volume_evidence(setup_state.get('reversal_volume',{}),now),
+                now=now,maximum_quote_age_ms=s['maximum_quote_age_ms'],
+                minimum_acceleration=s['setup_reversal_volume_acceleration'])
+            if reversal_assessment['passed']:
+                reversal_settings=dict(s,setup_fresh_pivot_enabled=1,
+                    setup_base_maximum_swing_age_s=s['setup_reversal_support_age_s'])
+                reversal_geometry=assess_early_base(o,row,setup_state,d,reversal_settings,tick,False)
+                # Reversal geometry keeps risk, fresh support and extension limits.
+                # The prior decline's range width is not a consolidation requirement.
+                reversal_ready=all(v for k,v in reversal_geometry['checks'].items() if k!='range_limit')
+                reversal_assessment['geometry']=deepcopy(reversal_geometry)
+                reversal_assessment['passed']=reversal_ready
+        elif pending and active.get('support_reversal'):
+            reversal_ready=support_reversal.pending_ready(active['support_reversal'],o.market_pressure or {},
+                now=now,price=o.price,lifetime_s=s['confirmation_lifetime_ms']/1000,
+                maximum_quote_age_ms=s['maximum_quote_age_ms'])
+        if reversal_assessment:evidence['support_reversal']=deepcopy(reversal_assessment)
+    acquisition_momentum_ready = macd_ready or momentum_ready or reversal_ready
     if ((encounter_blocked and (pending or acquired) and not encounter_state.get('cancel_notified')) or (pending and (state.get('pending_capital_request') or regular_block) and (regular_block or not active or not ready or not acquisition_momentum_ready or (not momentum_ready and o.price <= (d.get('vwap') or float('inf')))
             or now-active.get('confirmed_at',0) >= s['confirmation_lifetime_ms']/1000
             or o.ask > active.get('maximum_buy_price',0)))):
@@ -1309,6 +1341,11 @@ def evaluate(host, a, o, p, state):
             early_base = candidate
             evidence['early_base_entry'] = dict(swing=deepcopy(candidate),range=deepcopy(consolidation),
                 observed_at=now,price=o.price)
+    if reversal_ready and reversal_geometry:
+        early_base=deepcopy(reversal_geometry['swing'])
+        evidence['early_base_entry']=dict(swing=deepcopy(early_base),
+            range=deepcopy(reversal_geometry['range']),observed_at=now,price=o.price,
+            family='support_reversal')
     if s.get('v7_zone_enabled'):
         zone=zone_bounds(d,s)
         if not early_base and (not zone or not zone[0]<=min(o.price,decision_bid)<=max(o.price,decision_ask)<=zone[1]):
@@ -1387,7 +1424,8 @@ def evaluate(host, a, o, p, state):
             unprotected_reentry=bool(s['setup_recovery_unprotected_reentry']),
             entry_reclaim=bool(s['setup_recovery_entry_reclaim']),regular_session_start=regular_start,
             regular_full_range=bool(s['setup_recovery_regular_full_range']),
-            independent_base=bool(momentum_ready and early_base))
+            independent_base=bool(momentum_ready and early_base),
+            support_reversal=bool(reversal_ready and early_base))
         if blocked_reason:return result('wait',blocked_reason)
     stop = stop_below(swing['lower'],s,tick)
     if s['setup_minimum_quote_clearance_spreads']:
@@ -1442,6 +1480,8 @@ def evaluate(host, a, o, p, state):
             boundary_kind='episode_high' if s['setup_episode_high_entry'] else 'setup_rising_close',validated_at=now,
             threshold=setup_state.get('prior_episode_high') if s['setup_episode_high_entry'] else None,range=consolidation)
         evidence['setup_management']=v7_setup.evidence(setup_state,entry)
+    if reversal_ready:
+        entry['support_reversal']=dict(at=now,price=o.price,assessment=deepcopy(reversal_assessment))
     if momentum_ready:
         entry['below_vwap_base'] = dict(assessment=deepcopy(momentum_assessment),price=o.price)
     if initial_green:
