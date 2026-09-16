@@ -2562,6 +2562,58 @@ class BacktestPreflightTests(unittest.TestCase):
             approved = approved_configuration(assignments=[])
             approved["payload"]["run_plan"] = {
                 "signal_stream_ids": ["price-squeeze-early"],
+                "watchlist_ids": ["identity-plan"],
+                "activation": {"watchlist_policy": "not_required"},
+            }
+            approved["payload"]["signal_activation"] = {
+                "signal_streams": [{
+                    "signal_stream_id": "price-squeeze-early",
+                    "occurrence_source": "qmd_squeeze_episode",
+                    "enabled": True,
+                }]
+            }
+            approved["payload"]["universe"] = {
+                "source": "watchlist",
+                "signal_stream_ids": ["price-squeeze-early"],
+                "watchlist_snapshots": [{
+                    "watchlist_id": "identity-plan",
+                    "name": "Point-in-time identity",
+                }],
+                "enabled": True,
+            }
+
+            payload = backtest_preflight(
+                anchor_date=date(2026, 8, 24),
+                session_count=1,
+                configuration_revision=approved,
+            )
+
+        self.assertTrue(payload["strategy_run_ready"])
+        materialize.assert_not_called()
+        check = {row["id"]: row for row in payload["checks"]}[
+            "strategy_assignments"
+        ]
+        self.assertIn("source-native Signal Stream", check["summary"])
+        self.assertIn("bounded ticker", check["evidence"])
+
+    @patch("src.backend.replay_run_service.backtest_runtime_root")
+    @patch("src.backend.replay_run_service.historical_preflight")
+    def test_source_native_signal_preflight_blocks_missing_identity_plan(
+        self,
+        historical,
+        runtime_root,
+    ) -> None:
+        historical.return_value = {
+            "mode": "backtest",
+            "window": {"sessions": ["2026-08-21"], "session_count": 1},
+            "checks": [],
+            "strategy_run_ready": True,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            runtime_root.return_value = Path(directory)
+            approved = approved_configuration(assignments=[])
+            approved["payload"]["run_plan"] = {
+                "signal_stream_ids": ["price-squeeze-early"],
                 "watchlist_ids": [],
                 "activation": {"watchlist_policy": "not_required"},
             }
@@ -2584,13 +2636,10 @@ class BacktestPreflightTests(unittest.TestCase):
                 configuration_revision=approved,
             )
 
-        self.assertTrue(payload["strategy_run_ready"])
-        materialize.assert_not_called()
-        check = {row["id"]: row for row in payload["checks"]}[
-            "strategy_assignments"
-        ]
-        self.assertIn("source-native Signal Stream", check["summary"])
-        self.assertIn("bounded ticker", check["evidence"])
+        self.assertFalse(payload["strategy_run_ready"])
+        check = {row["id"]: row for row in payload["checks"]}["strategy_assignments"]
+        self.assertEqual(check["status"], "blocked")
+        self.assertIn("causal identity plan", check["summary"])
 
     def test_preflight_rejects_an_invalid_intraday_period(self) -> None:
         with self.assertRaisesRegex(ValueError, "start before end"):
