@@ -1,5 +1,5 @@
 //! Bounded multi-account journal barrier for one shared market boundary.
-//! Does not authorize orders, roll back accounts, or provide crash recovery.
+//! Does not authorize orders or roll back accounts. Recovery requires receipts.
 use crate::{
     content_hash,
     strategy_dispatch::{InputBoundary, Scope, State},
@@ -7,6 +7,7 @@ use crate::{
     Error, Result,
 };
 use std::collections::{BTreeMap, BTreeSet};
+pub mod checkpoint;
 
 pub struct Barrier {
     input: InputBoundary,
@@ -186,6 +187,91 @@ pub(crate) mod tests {
             .unwrap();
         let rows = runtime.pending_batch().unwrap().records().to_vec();
         runtime.acknowledge(&rows).unwrap()
+    }
+    #[test]
+    fn recovery_requires_exact_independent_receipts() {
+        let scopes = [scope("a"), scope("b")];
+        let a = receipt(scopes[0].clone(), input());
+        let b = receipt(scopes[1].clone(), input());
+        let context = "a".repeat(64);
+        let mut barrier = Barrier::new(input(), &scopes, 2).unwrap();
+        barrier.record(&a).unwrap();
+        let image = barrier.checkpoint(&context, 4096).unwrap();
+        let restore = |receipts: &[&Committed]| {
+            Barrier::restore_checkpoint(
+                &image,
+                &image.id,
+                &context,
+                input(),
+                &scopes,
+                2,
+                4096,
+                receipts,
+            )
+        };
+        assert!(restore(&[]).is_err());
+        assert!(restore(&[&b]).is_err());
+        assert!(restore(&[&a, &a]).is_err());
+        assert!(restore(&[&a, &b]).is_err());
+        let mut recovered = restore(&[&a]).unwrap();
+        assert!(!recovered.needs_decision(&scopes[0]).unwrap());
+        assert!(recovered.needs_decision(&scopes[1]).unwrap());
+        assert!(recovered
+            .acknowledge_market(&input(), |_| panic!("pending consumer"))
+            .is_err());
+        recovered.record(&b).unwrap();
+        barrier.record(&b).unwrap();
+        let complete = barrier.checkpoint(&context, 4096).unwrap();
+        let all = Barrier::restore_checkpoint(
+            &complete,
+            &complete.id,
+            &context,
+            input(),
+            &scopes,
+            2,
+            4096,
+            &[&b, &a],
+        )
+        .unwrap();
+        assert_eq!(all.remaining(), 0);
+        assert!(!all.finished());
+        assert_eq!(
+            recovered.checkpoint(&context, 4096).unwrap().id,
+            barrier.checkpoint(&context, 4096).unwrap().id
+        );
+        recovered.acknowledge_market(&input(), |_| Ok(())).unwrap();
+        assert!(recovered.checkpoint(&context, 4096).is_err());
+    }
+    #[test]
+    fn recovery_rejects_changed_scope_context_clock_and_payload() {
+        let scopes = [scope("a")];
+        let context = "a".repeat(64);
+        let barrier = Barrier::new(input(), &scopes, 1).unwrap();
+        let image = barrier.checkpoint(&context, 4096).unwrap();
+        assert!(barrier.checkpoint(&context, 1).is_err());
+        let restore =
+            |image: &crate::seed_storage::Object, context: &str, input, scopes: &[Scope]| {
+                Barrier::restore_checkpoint(image, &image.id, context, input, scopes, 1, 4096, &[])
+            };
+        assert!(restore(&image, &"b".repeat(64), input(), &scopes).is_err());
+        assert!(restore(&image, &context, input(), &[scope("b")]).is_err());
+        let mut changed = input();
+        changed.evaluated_at_ns += 1;
+        assert!(restore(&image, &context, changed, &scopes).is_err());
+        let mut changed = input();
+        changed.feature_hash = "different".into();
+        assert!(restore(&image, &context, changed, &scopes).is_err());
+        let mut corrupt = crate::seed_storage::Object::new(image.payload.clone());
+        corrupt.payload.push(b' ');
+        assert!(restore(&corrupt, &context, input(), &scopes).is_err());
+        let noncanonical = crate::seed_storage::Object::new(corrupt.payload);
+        assert!(restore(&noncanonical, &context, input(), &scopes).is_err());
+        assert_eq!(
+            restore(&image, &context, input(), &scopes)
+                .unwrap()
+                .remaining(),
+            1
+        );
     }
     #[test]
     fn partial_commit_retry_and_market_acknowledgment() {

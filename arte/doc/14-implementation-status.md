@@ -6,6 +6,28 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Account journal barrier recovery
+
+The account barrier now has a bounded recovery image. It pins the parent context,
+complete market-input identity and exact consumer set. It stores only scope and
+decision hashes, not copied market arrays or decision payloads.
+
+Restore requires independently verified transaction receipts. Those receipts must
+reproduce the saved consumer ledger exactly. A saved hash cannot stand in for a
+journal acknowledgment. Missing, duplicate, extra or changed receipts fail closed.
+Consumers without receipts still require decisions. A fully committed barrier
+still requires market acknowledgment. An already acknowledged barrier cannot
+produce an operational image.
+
+Tests cover partial and fully committed recovery, continuation after recovery,
+changed scopes and clocks, context mismatches, corrupt and noncanonical images,
+and insufficient byte budgets. Images are capped at 1 MiB. The playback account
+wrapper and production coordinator still need to compose this component with
+their other recovery state; this is not whole-run recovery.
+
+All 376 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Source-oracle parity was not rerun. No service or network test ran.
+
 ## Playback cursor recovery
 
 Playback recovery now combines the scheduler graph with its prepared-input hash,
