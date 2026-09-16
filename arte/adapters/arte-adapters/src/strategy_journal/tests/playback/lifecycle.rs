@@ -53,7 +53,7 @@ async fn cancelled_unfilled_orders_release_exact_funding_without_fabricated_cash
     lifecycle(false, true).await;
 }
 async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
-    let run = run_data(true, true, target_exit);
+    let (run, costs) = run_with_costs(true, true, target_exit);
     let mut runtimes: Vec<_> = run
         .scopes()
         .iter()
@@ -71,7 +71,7 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
         .bind_source(run.market().unwrap().source_scope())
         .unwrap();
     let mut controller =
-        crate::playback_runtime::Runtime::new(run, execution, 2_000_000_000).unwrap();
+        crate::playback_runtime::Runtime::new(run, execution, 2_000_000_000, costs).unwrap();
     let portfolio = Portfolio::new(
         [("a", 2000), ("b", 4000)]
             .into_iter()
@@ -342,6 +342,12 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
         );
     }
     assert_eq!(fills.rows.len(), if cancel_unfilled { 0 } else { 4 });
+    for command in &commands {
+        assert_eq!(
+            controller.fees_minor(command).unwrap(),
+            if cancel_unfilled { None } else { Some(4) }
+        );
+    }
 }
 
 fn position_key(account: &str) -> Key {

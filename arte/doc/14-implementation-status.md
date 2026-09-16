@@ -6,6 +6,27 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Manifest-bound simulated costs
+
+Playback now requires a cost model bound to the exact run manifest. The initial
+model uses explicit fixed-per-fill, per-share and minimum-per-fill parameters.
+It has no implicit zero-fee default and makes no claim to reproduce broker fees.
+Integer arithmetic checks overflow and rounds charges conservatively.
+
+The execution lane preflights charges for each bounded fill publication. Fee
+totals advance only after journal readback and position projection succeed.
+Failed or repeated publications cannot duplicate charges. Unbound lower-level
+execution adapters report cost accounting as unavailable, not zero.
+
+All 345 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Tests cover exact fees, partial-fill minimums, currency rounding, overflow, wrong
+run/consumer origins, manifest mismatch and journal-retry idempotency. Both funded
+lifecycle scenarios verify final fees; unfilled cancellations produce no charges.
+
+Filled-order cash settlement, currency certification and recovery of accounting
+state remain unfinished. Model publication to ClickHouse is also pending. No
+services ran; source parity was not rerun.
+
 ## Unfilled-order reservation cleanup
 
 Simulation retains each accepted order's exact original cash reservation. A

@@ -29,6 +29,8 @@ pub struct Runtime {
     owners: std::collections::BTreeMap<String, arte_core::strategy_dispatch::Scope>,
     reservations: std::collections::BTreeMap<String, arte_core::portfolio::Reservation>,
     released: std::collections::BTreeSet<String>,
+    costs: Option<arte_core::simulation_costs::Pinned>,
+    fees: std::collections::BTreeMap<String, u64>,
 }
 pub struct Submission<'a> {
     pub plan: &'a arte_core::decision_orders::Plan,
@@ -69,6 +71,8 @@ impl Runtime {
             owners: Default::default(),
             reservations: Default::default(),
             released: Default::default(),
+            costs: None,
+            fees: Default::default(),
         })
     }
     fn ready(&self) -> Result<()> {
@@ -78,6 +82,25 @@ impl Runtime {
             ));
         }
         Ok(())
+    }
+    pub(crate) fn bind_costs(&mut self, costs: arte_core::simulation_costs::Pinned) -> Result<()> {
+        self.ready()?;
+        if self.costs.is_some()
+            || self.last_source_quote.is_some()
+            || costs.run_id() != self.simulator.run_id()
+        {
+            return Err(Error::Conflict(
+                "cost binding must precede execution and match its run".into(),
+            ));
+        }
+        self.costs = Some(costs);
+        Ok(())
+    }
+    pub fn fees_minor(&self, command: &str) -> Result<Option<u64>> {
+        if self.costs.is_none() {
+            return Err(Error::Unready("simulation cost model unbound".into()));
+        }
+        Ok(self.fees.get(command).copied())
     }
     pub(crate) fn require_new_playback(
         &self,
@@ -522,7 +545,20 @@ impl Runtime {
             p.current = Some((end, Committer::new(batch)));
         }
         let (end, committer) = p.current.as_mut().unwrap();
+        let mut fees = std::collections::BTreeMap::new();
+        if let Some(costs) = &self.costs {
+            for fill in &p.fills[p.applied..*end] {
+                let charge = costs.charge(fill)?;
+                let total = fees
+                    .entry(fill.command_id.clone())
+                    .or_insert_with(|| self.fees.get(&fill.command_id).copied().unwrap_or(0));
+                *total = total
+                    .checked_add(charge.fee_minor)
+                    .ok_or_else(|| Error::Capacity("cumulative simulation fees overflow".into()))?;
+            }
+        }
         committer.commit(publisher, &mut self.projection).await?;
+        self.fees.extend(fees);
         p.applied = *end;
         p.current = None;
         if p.applied == p.fills.len() {

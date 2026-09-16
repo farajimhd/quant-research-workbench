@@ -23,8 +23,9 @@ pub struct Runtime {
 impl Runtime {
     pub fn new(
         run: Run,
-        execution: simulation_runtime::Runtime,
+        mut execution: simulation_runtime::Runtime,
         maximum_quote_age_ns: u64,
+        costs: arte_core::simulation_costs::Pinned,
     ) -> Result<Self> {
         if maximum_quote_age_ns == 0 || maximum_quote_age_ns > 60_000_000_000 {
             return Err(Error::Invalid("playback quote age bound".into()));
@@ -39,6 +40,12 @@ impl Runtime {
             ));
         }
         execution.require_new_playback(&run)?;
+        if costs.manifest_hash() != run.manifest_hash() {
+            return Err(Error::Conflict(
+                "playback cost model belongs to another manifest".into(),
+            ));
+        }
+        execution.bind_costs(costs)?;
         Ok(Self {
             run,
             execution,
@@ -100,6 +107,9 @@ impl Runtime {
     }
     pub fn next_fill_scope_hash(&self) -> Result<Option<String>> {
         self.execution.next_scope_hash()
+    }
+    pub fn fees_minor(&self, command: &str) -> Result<Option<u64>> {
+        self.execution.fees_minor(command)
     }
     pub fn position(
         &self,

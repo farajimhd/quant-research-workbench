@@ -31,6 +31,7 @@ pub mod run_manifest;
 pub mod seed_storage;
 pub mod session;
 pub mod simulated_execution;
+pub mod simulation_costs;
 pub mod strategy_adds;
 pub mod strategy_candidate;
 pub mod strategy_dispatch;

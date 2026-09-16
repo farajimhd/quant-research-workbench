@@ -16,10 +16,27 @@ use arte_core::{
     v7_stream::StreamPolicy,
 };
 
+#[test]
+fn playback_rejects_cost_binding_from_different_source_manifest() {
+    use arte_core::{execution_positions::Projection, simulated_execution::Simulator};
+    let run = run_with_quote(true);
+    let costs = run_with_costs(false, false, false).1;
+    let mut execution = crate::simulation_runtime::Runtime::new(
+        Simulator::new_scoped("run", 1, 2, 2, 10000).unwrap(),
+        Projection::new(2, 10, 4).unwrap(),
+        4,
+    )
+    .unwrap();
+    execution
+        .bind_source(run.market().unwrap().source_scope())
+        .unwrap();
+    assert!(crate::playback_runtime::Runtime::new(run, execution, 2_000_000_000, costs).is_err());
+}
+
 #[tokio::test]
 async fn released_playback_quote_drives_one_fill_with_retryable_journal() {
     use arte_core::{execution_positions::Projection, simulated_execution::Simulator};
-    let run = run_with_quote(true);
+    let (run, costs) = run_with_costs(true, false, false);
     let source = run.market().unwrap().source_scope();
     let mut simulator = Simulator::new_scoped("run", 1, 2, 2, 10000).unwrap();
     // Test-only preloaded order: production submission still uses funding/session gates.
@@ -54,12 +71,15 @@ async fn released_playback_quote_drives_one_fill_with_retryable_journal() {
     )
     .unwrap();
     foreign.bind_source(source).unwrap();
-    assert!(
-        crate::playback_runtime::Runtime::new(run_with_quote(true), foreign, 2_000_000_000)
-            .is_err()
-    );
+    assert!(crate::playback_runtime::Runtime::new(
+        run_with_quote(true),
+        foreign,
+        2_000_000_000,
+        run_with_costs(true, false, false).1
+    )
+    .is_err());
     let mut controller =
-        crate::playback_runtime::Runtime::new(run, execution, 2_000_000_000).unwrap();
+        crate::playback_runtime::Runtime::new(run, execution, 2_000_000_000, costs).unwrap();
     controller.resume().unwrap();
     assert_eq!(controller.poll().unwrap(), Poll::Boundary);
     assert_eq!(controller.poll().unwrap(), Poll::Boundary);
@@ -88,6 +108,7 @@ async fn released_playback_quote_drives_one_fill_with_retryable_journal() {
         calls: 0,
     };
     assert!(controller.commit_fills(&mut store).await.is_err());
+    assert_eq!(controller.fees_minor("order").unwrap(), None);
     assert!(controller.decision_view().is_err());
     assert_eq!(controller.execution_status().pending_fills, 1);
     assert!(controller.commit_fills(&mut store).await.unwrap());
@@ -95,6 +116,7 @@ async fn released_playback_quote_drives_one_fill_with_retryable_journal() {
     assert_eq!(controller.poll().unwrap(), Poll::Boundary);
     assert_eq!(controller.execution_status().pending_fills, 0);
     assert_eq!(store.calls, 2);
+    assert_eq!(controller.fees_minor("order").unwrap(), Some(2));
     assert!(controller.acknowledge().is_err()); // Account decisions still missing.
     let view = controller.decision_view().unwrap();
     let input = view.pending().unwrap().unwrap().input("features".into());
@@ -150,6 +172,13 @@ fn run_fixture(include_quote: bool, lifecycle: bool) -> Run {
     run_data(include_quote, lifecycle, false)
 }
 fn run_data(include_quote: bool, lifecycle: bool, target_exit: bool) -> Run {
+    run_with_costs(include_quote, lifecycle, target_exit).0
+}
+fn run_with_costs(
+    include_quote: bool,
+    lifecycle: bool,
+    target_exit: bool,
+) -> (Run, arte_core::simulation_costs::Pinned) {
     const S: u64 = 1_000_000_000;
     let bars: Vec<_> = (100..118)
         .map(|t| Candle {
@@ -315,6 +344,15 @@ fn run_data(include_quote: bool, lifecycle: bool, target_exit: bool) -> Run {
             clock_model: "historical-test".into(),
         }],
     };
+    let cost_model = arte_core::simulation_costs::Model {
+        schema_version: 1,
+        currency: "USD".into(),
+        currency_scale: 2,
+        fixed_per_fill_minor: 1,
+        per_share_atoms: 5,
+        per_share_scale: 3,
+        minimum_per_fill_minor: 2,
+    };
     let m = Manifest {
         schema_version: 1,
         run_id: "run".into(),
@@ -329,7 +367,7 @@ fn run_data(include_quote: bool, lifecycle: bool, target_exit: bool) -> Run {
         clock: Clock::Historical,
         execution: Execution::Simulated {
             fill_model_hash: "1".repeat(64),
-            cost_model_hash: "2".repeat(64),
+            cost_model_hash: cost_model.hash().unwrap(),
         },
         consumers: ["a", "b"]
             .into_iter()
@@ -342,15 +380,10 @@ fn run_data(include_quote: bool, lifecycle: bool, target_exit: bool) -> Run {
             .collect(),
     };
     let hash = m.hash().unwrap();
-    Run::new(
-        &Pinned::new(m, &hash).unwrap(),
-        &catalog,
-        scheduler,
-        prepared,
-        1,
-        2,
-    )
-    .unwrap()
+    let manifest = Pinned::new(m, &hash).unwrap();
+    let costs = arte_core::simulation_costs::Pinned::new(cost_model, &manifest).unwrap();
+    let run = Run::new(&manifest, &catalog, scheduler, prepared, 1, 2).unwrap();
+    (run, costs)
 }
 
 #[tokio::test]
@@ -370,7 +403,7 @@ async fn protection_without_matching_exposure_retains_action_and_boundary() {
 
 async fn check_action_gate(exit: bool, protection: bool) {
     use arte_core::{execution_positions::Projection, simulated_execution::Simulator};
-    let run = run_with_quote(false);
+    let (run, costs) = run_with_costs(false, false, false);
     let mut execution = crate::simulation_runtime::Runtime::new(
         Simulator::new_scoped("run", 1, 2, 2, 10000).unwrap(),
         Projection::new(2, 10, 4).unwrap(),
@@ -381,7 +414,7 @@ async fn check_action_gate(exit: bool, protection: bool) {
         .bind_source(run.market().unwrap().source_scope())
         .unwrap();
     let mut controller =
-        crate::playback_runtime::Runtime::new(run, execution, 2_000_000_000).unwrap();
+        crate::playback_runtime::Runtime::new(run, execution, 2_000_000_000, costs).unwrap();
     controller.resume().unwrap();
     assert_eq!(controller.poll().unwrap(), Poll::Boundary);
     let view = controller.decision_view().unwrap();

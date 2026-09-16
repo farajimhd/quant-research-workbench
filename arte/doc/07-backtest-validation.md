@@ -33,6 +33,28 @@ account-state schemas. Live and historical use the same schemas. Mode and execut
 origin differ explicitly. Compare semantic hashes without wall-clock log timestamps
 or broker-generated IDs.
 
+## Explicit simulated costs
+
+The initial cost contract is `arte.per-fill-costs.v1`. Its hash must match the
+run manifest. Playback rejects a cost binding from another manifest, even when
+the run name is the same. No model is selected implicitly.
+
+The model declares currency, currency precision, fixed charge per fill, per-share
+rate and minimum charge per fill. Variable charges round upward to currency minor
+units. Add the fixed charge, then apply the minimum. Each partial fill is charged
+separately. Cancelled orders with no fills have no modeled fill charges.
+
+These are hypothetical execution costs, not an IBKR commission schedule. The
+contract does not model order-level minimums, rebates, taxes, FX or settlement
+delays. A zero-cost experiment must explicitly pin zero rates. It is not evidence
+of realistic trading performance. Account/instrument currency compatibility must
+be certified before modeled cash settlement.
+
+Charges accumulate only after fill-journal readback and position projection
+succeed. Exact publication retries must not add fees twice. Gross P&L remains
+distinct from costs. Net cash conversion rounds positive fractional minor units
+downward and negative fractions toward minus infinity before subtracting fees.
+
 ## Fast repeated runs
 
 - Prepare source arrays once and reuse immutable data by dependency fingerprint.
