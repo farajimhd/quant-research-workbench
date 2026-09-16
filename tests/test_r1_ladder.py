@@ -37,19 +37,23 @@ def ready():
     return host, a, obs(2, 10.6)
 
 
-def legacy_ready():
-    from src.trading_runtime import r1_ladder_v1 as V1
+def legacy_ready(version=1):
+    if version == 1:
+        from src.trading_runtime import r1_ladder_v1 as legacy
+    else:
+        from src.trading_runtime import r1_ladder_v2 as legacy
     p = parameters()
     p.pop('structural_recovery_contract')
     p.pop('structural_recovery')
     p.update(historical_hod_contract=H.CONTRACT,
              historical_hod=dict(H.DEFAULTS,forming_macd_entry_enabled=0),
-             r1_ladder_contract=V1.CONTRACT,r1_ladder=dict(V1.DEFAULTS))
+             r1_ladder_contract=legacy.CONTRACT,r1_ladder=dict(legacy.DEFAULTS))
     p = S.resolve_long_momentum_parameters(p,revision=47)
     a = S.StrategyAssignment('r1-v1',S.STRATEGY_ID,47,'sim','TEST',123,
         S.AssignmentStatus.WATCHING,S.StrategyPermissions(enter=True,reenter=True),p)
     host = S.LongMomentumStrategyEngine(revision=47)
-    for o in (obs(0,10.5,source_timeframe='5s'),obs(1,10.55)):
+    second = obs(1,10.55,bar_high=10.8) if version == 2 else obs(1,10.55)
+    for o in (obs(0,10.5,source_timeframe='5s'),second):
         result=host.evaluate(a,o);a=replace(a,state=result.state,status=result.status)
     return host,a,obs(2,10.6)
 
@@ -71,7 +75,14 @@ def test_published_v1_contract_retains_its_original_executor():
     host,a,o = legacy_ready()
     intent, = host.evaluate(a,o).evaluation.intents
     assert intent.profit_target_price == pytest.approx(10.95)
-    assert a.parameters['r1_ladder_contract'] == R.LEGACY_CONTRACT
+    assert a.parameters['r1_ladder_contract'] in R.LEGACY_CONTRACTS
+
+
+def test_published_v2_contract_retains_pre_correction_stop_behavior():
+    host,a,o=legacy_ready(2)
+    intent,=host.evaluate(a,o).evaluation.intents
+    assert intent.metadata['r1_fixed_stop']['source'] == 'target_predecessor_resistance_lower_offset'
+    assert a.parameters['r1_ladder_contract'] in R.LEGACY_CONTRACTS
 
 
 def test_retired_resistance_transition_is_neither_r1_nor_target():
@@ -228,7 +239,7 @@ def test_acquired_position_keeps_earned_stop_and_full_target_fixed():
     assert result.state['structural_profit_targets'] == a.state['structural_profit_targets']
 
 
-def test_stop_moves_below_target_predecessor_only_after_completed_cross():
+def test_initial_position_keeps_swing_stop_after_resistance_cross():
     host,a,o = ready()
     # A late entry beyond the halfway mark selects 11.50; 10.95 becomes the
     # stop anchor and has not been crossed at entry.
@@ -237,6 +248,7 @@ def test_stop_moves_below_target_predecessor_only_after_completed_cross():
     intent, = result.evaluation.intents
     assert intent.profit_target_price == pytest.approx(11.50)
     assert intent.metadata['stop_anchor_level']['upper'] == pytest.approx(10.97)
+    assert 'r1_stop_bounds' in intent.metadata
     initial = intent.invalidation_price
     a = replace(a,state=result.state,status=S.AssignmentStatus.MANAGING)
     waiting = host.evaluate(a,obs(3,10.96,position_quantity=100))
@@ -244,10 +256,39 @@ def test_stop_moves_below_target_predecessor_only_after_completed_cross():
     assert waiting.state['active_stop'] == initial
     a = replace(a,state=waiting.state,status=waiting.status)
     crossed = host.evaluate(a,obs(4,11.00,position_quantity=100))
-    replacement, = crossed.evaluation.intents
+    assert not crossed.evaluation.intents
+    assert crossed.state['active_stop'] == initial
+
+
+def test_same_episode_continuation_ratchets_only_after_its_anchor_crosses():
+    host,a,_ = acquired()
+    R.record_exit(a.state,NOW+timedelta(seconds=3.2),'profit_target',0.)
+    a=replace(a,status=S.AssignmentStatus.WATCHING)
+    a.state['r1_market']['macd_episode']['high']=11.20
+    entered=host.evaluate(a,obs(4,11.30))
+    intent,=entered.evaluation.intents
+    assert intent.reason == 'r1_macd_episode_continuation'
+    assert intent.profit_target_price == pytest.approx(12.00)
+    assert intent.metadata['stop_anchor_level']['upper'] == pytest.approx(11.52)
+    initial=intent.invalidation_price
+    assert initial == pytest.approx(10.92)
+    a=replace(a,state=entered.state,status=S.AssignmentStatus.MANAGING)
+    waiting=host.evaluate(a,obs(5,11.50,position_quantity=100))
+    assert not waiting.evaluation.intents
+    a=replace(a,state=waiting.state,status=waiting.status)
+    crossed=host.evaluate(a,obs(6,11.55,position_quantity=100))
+    replacement,=crossed.evaluation.intents
     assert replacement.action == 'replace_protective_stop'
-    assert replacement.invalidation_price == pytest.approx(10.92)
+    assert replacement.invalidation_price == pytest.approx(11.47)
     assert replacement.metadata['previous_stop'] == initial
+
+
+def test_target_fill_after_episode_close_cannot_create_continuation():
+    host,a,_=acquired()
+    closed=host.evaluate(a,replace(obs(3,10.90,source_timeframe='5s'),macd_line=-.01,macd_signal=0.))
+    a=replace(a,state=closed.state,status=closed.status)
+    R.record_exit(a.state,NOW+timedelta(seconds=3.2),'profit_target',0.)
+    assert a.state['r1_exit']['continuation_episode_id'] is None
 
 
 @pytest.mark.parametrize('role,remaining,increment,advance', [
