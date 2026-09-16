@@ -6,6 +6,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 pub mod accounts;
+pub mod sources;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Input {
@@ -32,6 +33,7 @@ pub struct Prepared {
     frames: Arc<[Frame]>,
     hash: String,
     events: usize,
+    clock_model: String,
 }
 impl Prepared {
     pub fn new(
@@ -116,6 +118,7 @@ impl Prepared {
             frames: frames.into(),
             hash,
             events,
+            clock_model: clock_model.into(),
         })
     }
     pub fn hash(&self) -> &str {

@@ -19,11 +19,13 @@ pub struct Run {
 impl Run {
     pub fn new(
         manifest: &Pinned,
+        sources: &super::sources::Catalog,
         scheduler: Scheduler,
         prepared: Prepared,
         frames_per_poll: usize,
         maximum_consumers: usize,
     ) -> Result<Self> {
+        sources.require(manifest, &prepared)?;
         if manifest.manifest().mode != Mode::Backtest
             || scheduler.run_id != manifest.manifest().run_id
         {

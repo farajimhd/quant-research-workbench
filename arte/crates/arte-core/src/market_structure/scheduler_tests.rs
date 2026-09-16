@@ -1,6 +1,21 @@
 use super::*;
 use crate::events::{Decimal, EventKind, Payload, SourceTime};
 const SECOND: u64 = 1_000_000_000;
+fn playback_catalog() -> playback::sources::Catalog {
+    let scope = scheduler(10).scope();
+    playback::sources::Catalog {
+        schema_version: 1,
+        authority_manifest_hash: "b".repeat(64),
+        clock: crate::run_manifest::Clock::Historical,
+        shards: vec![playback::sources::Shard {
+            provider: scope.provider,
+            instrument: scope.instrument,
+            session: scope.session,
+            prepared_hash: prepared_playback().hash().into(),
+            clock_model: "historical-explicit-clock-v1".into(),
+        }],
+    }
+}
 fn account_run_manifest() -> crate::run_manifest::Manifest {
     use crate::run_manifest::{Clock, Consumer, Execution, Manifest};
     Manifest {
@@ -8,7 +23,7 @@ fn account_run_manifest() -> crate::run_manifest::Manifest {
         run_id: "causal-offline-test".into(),
         mode: crate::strategy_dispatch::Mode::Backtest,
         code_release_hash: "a".repeat(64),
-        source_manifest_hash: "b".repeat(64),
+        source_manifest_hash: playback_catalog().hash().unwrap(),
         reference_manifest_hash: "c".repeat(64),
         seed_manifest_hash: "d".repeat(64),
         algorithm_manifest_hash: "e".repeat(64),
@@ -37,7 +52,15 @@ fn manifest_playback_requires_all_account_receipts_before_advancing() {
     let m = account_run_manifest();
     let hash = m.hash().unwrap();
     let pinned = crate::run_manifest::Pinned::new(m, &hash).unwrap();
-    let mut run = Run::new(&pinned, scheduler(10), prepared_playback(), 1, 2).unwrap();
+    let mut run = Run::new(
+        &pinned,
+        &playback_catalog(),
+        scheduler(10),
+        prepared_playback(),
+        1,
+        2,
+    )
+    .unwrap();
     assert_eq!(run.manifest_hash(), hash);
     run.resume().unwrap();
     let mut count = 0;
@@ -77,16 +100,69 @@ fn manifest_playback_rejects_run_mismatch_missing_consumers_and_capacity() {
     use playback::accounts::Run;
     let mut m = account_run_manifest();
     let pinned = crate::run_manifest::Pinned::new(m.clone(), &m.hash().unwrap()).unwrap();
-    assert!(Run::new(&pinned, scheduler(10), prepared_playback(), 1, 1).is_err());
+    assert!(Run::new(
+        &pinned,
+        &playback_catalog(),
+        scheduler(10),
+        prepared_playback(),
+        1,
+        1
+    )
+    .is_err());
     m.run_id = "other".into();
     let pinned = crate::run_manifest::Pinned::new(m.clone(), &m.hash().unwrap()).unwrap();
-    assert!(Run::new(&pinned, scheduler(10), prepared_playback(), 1, 2).is_err());
+    assert!(Run::new(
+        &pinned,
+        &playback_catalog(),
+        scheduler(10),
+        prepared_playback(),
+        1,
+        2
+    )
+    .is_err());
     m.run_id = "causal-offline-test".into();
     for row in &mut m.consumers {
         row.instrument = 999;
     }
     let pinned = crate::run_manifest::Pinned::new(m.clone(), &m.hash().unwrap()).unwrap();
-    assert!(Run::new(&pinned, scheduler(10), prepared_playback(), 1, 2).is_err());
+    assert!(Run::new(
+        &pinned,
+        &playback_catalog(),
+        scheduler(10),
+        prepared_playback(),
+        1,
+        2
+    )
+    .is_err());
+}
+#[test]
+fn playback_source_binding_rejects_changed_data_clock_and_scope() {
+    let mut catalog = playback_catalog();
+    let mut m = account_run_manifest();
+    let pinned = crate::run_manifest::Pinned::new(m.clone(), &m.hash().unwrap()).unwrap();
+    catalog.require(&pinned, &prepared_playback()).unwrap();
+    catalog.shards[0].prepared_hash = "0".repeat(64);
+    assert!(catalog.require(&pinned, &prepared_playback()).is_err());
+    m.source_manifest_hash = catalog.hash().unwrap();
+    let pinned = crate::run_manifest::Pinned::new(m.clone(), &m.hash().unwrap()).unwrap();
+    assert!(catalog.require(&pinned, &prepared_playback()).is_err());
+    catalog = playback_catalog();
+    catalog.shards[0].clock_model = "different-latency-model".into();
+    m.source_manifest_hash = catalog.hash().unwrap();
+    let pinned = crate::run_manifest::Pinned::new(m.clone(), &m.hash().unwrap()).unwrap();
+    assert!(catalog.require(&pinned, &prepared_playback()).is_err());
+    catalog = playback_catalog();
+    catalog.shards[0].instrument = 999;
+    m.source_manifest_hash = catalog.hash().unwrap();
+    let pinned = crate::run_manifest::Pinned::new(m.clone(), &m.hash().unwrap()).unwrap();
+    assert!(catalog.require(&pinned, &prepared_playback()).is_err());
+    catalog = playback_catalog();
+    catalog.clock = crate::run_manifest::Clock::RecordedLive;
+    m.source_manifest_hash = catalog.hash().unwrap();
+    let pinned = crate::run_manifest::Pinned::new(m.clone(), &m.hash().unwrap()).unwrap();
+    assert!(catalog.require(&pinned, &prepared_playback()).is_err());
+    catalog.shards.push(catalog.shards[0].clone());
+    assert!(catalog.hash().is_err());
 }
 fn empty_quote_policy(provider: u16) -> crate::quote_state::eligibility::Pinned {
     use crate::quote_state::eligibility::{Pinned, Policy};

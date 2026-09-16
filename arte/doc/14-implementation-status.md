@@ -6,6 +6,23 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Prepared playback source binding
+
+Account-aware playback now requires a source catalog whose hash matches the run
+manifest. The catalog pins the underlying source authority, clock kind and sorted
+provider/instrument/session shards. Each shard pins prepared event content and its
+explicit clock model. A different source catalog, clock, shard or prepared payload
+is rejected before playback construction.
+
+This defines the playback meaning of the run's source_manifest_hash: it references
+the prepared-source catalog, which in turn references the acquisition authority.
+Live source pins retain their configuration meaning. Catalog persistence, source
+coverage certification and verification of recorded-live clock evidence remain
+unfinished. Hash binding does not replace those checks.
+
+All 321 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+No services or network calls ran. Source-oracle parity was not rerun.
+
 ## Manifest-bound multi-account playback
 
 An account-aware playback controller now derives every consumer for its instrument

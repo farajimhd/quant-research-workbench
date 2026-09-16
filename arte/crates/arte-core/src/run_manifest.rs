@@ -43,8 +43,8 @@ pub struct Manifest {
     pub run_id: String,
     pub mode: Mode,
     pub code_release_hash: String,
-    /// Historical generation or recorded observations; live subscription/source
-    /// configuration in live modes. Never a claim to have frozen future events.
+    /// Playback source catalog (which pins its underlying authority), or live
+    /// subscription/source configuration. Never a claim to freeze future events.
     pub source_manifest_hash: String,
     pub reference_manifest_hash: String,
     pub seed_manifest_hash: String,
