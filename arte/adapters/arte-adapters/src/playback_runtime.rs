@@ -17,7 +17,7 @@ pub mod checkpoint;
 pub mod recovery;
 pub use actions::{
     ActionInputs, ActionOutcome, AllocatedEntry, EntryAssessment, EntryRequest, PendingAction,
-    SizedActionInputs, Sizing, SizingRequest,
+    Resolution, ResolvedAction, SizedActionInputs, Sizing, SizingRequest,
 };
 
 pub struct Runtime {

@@ -66,22 +66,42 @@ impl Runtime {
             let EntryAssessment::Rejected(calculation) = assessment else {
                 return Err(Error::Invalid("fundable entry cannot be rejected".into()));
             };
-            self.require_unfunded_rejection(&key, portfolio)?;
-            let item = self.actions.items.get_mut(&key).unwrap();
-            let pending = action_rejection::Pending::new(
-                &item.receipt,
-                action_index,
-                item.receipt.decision().input.evaluated_at_ns,
-                evidence.ok_or_else(|| Error::Unready("rejection evidence missing".into()))?,
+            self.retain_entry_rejection(
+                &key,
+                portfolio,
                 calculation,
+                evidence.ok_or_else(|| Error::Unready("rejection evidence missing".into()))?,
             )?;
-            item.rejection = Some(State {
-                record: pending.record()?.clone(),
-                journaled: false,
-                verified: false,
-            });
         }
         Ok(&self.actions.items[&key].rejection.as_ref().unwrap().record)
+    }
+    pub(super) fn retain_entry_rejection(
+        &mut self,
+        key: &(String, usize),
+        portfolio: &Portfolio,
+        calculation: arte_core::order_funding::sizing::Assessment,
+        evidence: String,
+    ) -> Result<()> {
+        self.require_unfunded_rejection(key, portfolio)?;
+        let item = self.actions.items.get_mut(key).unwrap();
+        if item.rejection.is_some() {
+            return Err(Error::Conflict(
+                "rejection evidence already retained".into(),
+            ));
+        }
+        let pending = action_rejection::Pending::new(
+            &item.receipt,
+            key.1,
+            item.receipt.decision().input.evaluated_at_ns,
+            evidence,
+            calculation,
+        )?;
+        item.rejection = Some(State {
+            record: pending.record()?.clone(),
+            journaled: false,
+            verified: false,
+        });
+        Ok(())
     }
     /// Includes journaled records: callers must independently load each after
     /// recovery. The checkpoint itself is not a journal readback receipt.

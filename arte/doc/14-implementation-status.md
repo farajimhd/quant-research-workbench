@@ -6,6 +6,31 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Journal-aware bounded action dispatch
+
+One asynchronous dispatcher now handles sized entries, retained-allocation retries,
+protection changes, cancellations, exits and terminal sizing rejections. It uses
+the same input preflight as existing dispatch. Batch size remains bounded. A
+failed action blocks later actions in that decision within the selected batch;
+independent selected decisions can continue.
+
+Results distinguish simulated submission, applied action and journaled rejection.
+Submission here means simulator acceptance, not live broker acknowledgment.
+Rejected entries retain their original evidence before journal publication.
+Cancellation and failed publication leave that evidence available for exact retry.
+Funded submission failures retain their allocation and cannot become rejections.
+
+Lifecycle fixtures now use this dispatcher for normal execution, shared-cash
+rejection and simulator-capacity failures. The rejection case cancels a pending
+publication, retries unavailable and ambiguous journals, and verifies the same
+evidence hash before successful resolution and checkpoint recovery.
+All 396 offline tests, formatting, Clippy and copied-source checks pass.
+Source-oracle parity was not rerun.
+
+This integrates action resolution, not the whole outer runner. Configuration,
+reference and candidate-evidence assembly, complete CLI orchestration and live
+execution integration remain unfinished. No service or network test ran.
+
 ## Controller-owned rejection completion and recovery
 
 The playback controller can now capture an unfundable entry's rejection once and
@@ -35,9 +60,8 @@ The simulator-capacity failure remains funded and cannot take this rejection pat
 All 396 offline tests, formatting, Clippy and copied-source checks pass. Source
 parity was not rerun. No services started and no migrations were applied.
 
-The outer runner still needs to select and drive this explicit rejection workflow
-alongside bounded action dispatch. Live execution integration and complete runner
-configuration/reference/evidence assembly remain unfinished.
+The journal-aware dispatcher above now drives this workflow alongside normal
+actions. The complete outer runner and live integration remain unfinished.
 
 ## Decision-bound rejection journal
 

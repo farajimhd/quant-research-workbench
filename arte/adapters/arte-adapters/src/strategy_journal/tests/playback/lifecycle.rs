@@ -19,6 +19,28 @@ struct Fills {
 struct Decisions {
     rows: Vec<Record>,
 }
+struct RejectionJournalUnavailable;
+struct RejectionJournalPending;
+impl crate::rejection_journal::Publisher for RejectionJournalPending {
+    async fn append(
+        &mut self,
+        _: &arte_core::strategy_transaction::Committed,
+        _: &arte_core::action_rejection::Record,
+    ) -> Result<arte_core::action_rejection::Record> {
+        std::future::pending().await
+    }
+}
+impl crate::rejection_journal::Publisher for RejectionJournalUnavailable {
+    async fn append(
+        &mut self,
+        _: &arte_core::strategy_transaction::Committed,
+        _: &arte_core::action_rejection::Record,
+    ) -> Result<arte_core::action_rejection::Record> {
+        Err(Error::Unready(
+            "fixture rejection journal unavailable".into(),
+        ))
+    }
+}
 impl Publisher for Decisions {
     async fn append(&mut self, batch: &Batch) -> Result<Vec<Record>> {
         self.rows.extend_from_slice(batch.records());
@@ -560,18 +582,22 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, scenario: Scenario)
                 )
                 .unwrap();
                 let outcomes = controller
-                    .execute_sized_actions(crate::playback_runtime::SizedActionInputs {
-                        sizing: &sizing_policies,
-                        cash_policies: &cash_policies,
-                        portfolio: &portfolio,
-                        safety: crate::simulation_runtime::AmendmentSafety {
-                            session: &session,
-                            risk_policy: &risk,
-                            bands: None,
+                    .execute_journaled_actions(
+                        crate::playback_runtime::SizedActionInputs {
+                            sizing: &sizing_policies,
+                            cash_policies: &cash_policies,
+                            portfolio: &portfolio,
+                            safety: crate::simulation_runtime::AmendmentSafety {
+                                session: &session,
+                                risk_policy: &risk,
+                                bands: None,
+                            },
+                            latency_ns: 0,
+                            maximum_actions: 2,
                         },
-                        latency_ns: 0,
-                        maximum_actions: 2,
-                    })
+                        &mut RejectionJournalUnavailable,
+                    )
+                    .await
                     .unwrap();
                 assert_eq!(outcomes.len(), 1);
                 assert!(outcomes[0].result.is_err());
@@ -602,6 +628,44 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, scenario: Scenario)
                     latency_ns: 0,
                 };
                 let before = portfolio.snapshot("a").unwrap().reservations;
+                let sizing_policies =
+                    BTreeMap::from([("a".into(), sizing.clone()), ("b".into(), sizing.clone())]);
+                let cash_policies =
+                    BTreeMap::from([("a".into(), cash.clone()), ("b".into(), cash.clone())]);
+                let dispatch_inputs = || crate::playback_runtime::SizedActionInputs {
+                    sizing: &sizing_policies,
+                    cash_policies: &cash_policies,
+                    portfolio: &portfolio,
+                    safety: crate::simulation_runtime::AmendmentSafety {
+                        session: &session,
+                        risk_policy: &risk,
+                        bands: None,
+                    },
+                    latency_ns: 0,
+                    maximum_actions: 1,
+                };
+                let mut waiting_journal = RejectionJournalPending;
+                let mut cancelled = Box::pin(
+                    controller.execute_journaled_actions(dispatch_inputs(), &mut waiting_journal),
+                );
+                assert!(std::future::Future::poll(
+                    cancelled.as_mut(),
+                    &mut std::task::Context::from_waker(std::task::Waker::noop())
+                )
+                .is_pending());
+                drop(cancelled);
+                let retained_hash = controller.rejection_records()[0].hash().unwrap();
+                let outcomes = controller
+                    .execute_journaled_actions(dispatch_inputs(), &mut RejectionJournalUnavailable)
+                    .await
+                    .unwrap();
+                assert_eq!(outcomes.len(), 1);
+                assert!(outcomes[0].result.is_err());
+                assert_eq!(controller.rejection_records().len(), 1);
+                assert_eq!(
+                    controller.rejection_records()[0].hash().unwrap(),
+                    retained_hash
+                );
                 let record = controller
                     .prepare_entry_rejection(id, 0, request())
                     .unwrap()
@@ -671,10 +735,13 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, scenario: Scenario)
                     .await
                     .is_err());
                 assert!(controller.acknowledge().is_err());
-                assert!(controller
-                    .commit_entry_rejection(id, 0, &portfolio, &mut journal)
+                let outcomes = controller
+                    .execute_journaled_actions(dispatch_inputs(), &mut journal)
                     .await
-                    .unwrap());
+                    .unwrap();
+                assert_eq!(outcomes.len(), 1);
+                assert!(matches!(&outcomes[0].result,
+                    Ok(crate::playback_runtime::Resolution::Rejected { record_hash }) if record_hash == &record.hash().unwrap()));
                 assert!(!controller
                     .commit_entry_rejection(id, 0, &portfolio, &mut journal)
                     .await
@@ -931,13 +998,17 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, scenario: Scenario)
             };
             while !controller.pending_actions().is_empty() {
                 let before = controller.pending_actions().len();
-                let outcomes = controller.execute_sized_actions(sized_inputs()).unwrap();
+                let outcomes = controller
+                    .execute_journaled_actions(sized_inputs(), &mut RejectionJournalUnavailable)
+                    .await
+                    .unwrap();
                 assert_eq!(outcomes.len(), 1);
                 outcomes.into_iter().next().unwrap().result.unwrap();
                 assert_eq!(controller.pending_actions().len(), before - 1);
             }
             assert!(controller
-                .execute_sized_actions(sized_inputs())
+                .execute_journaled_actions(sized_inputs(), &mut RejectionJournalUnavailable)
+                .await
                 .unwrap()
                 .is_empty());
             for (id, index) in allocations.keys() {

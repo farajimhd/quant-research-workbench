@@ -6,8 +6,10 @@ use arte_core::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 mod allocation;
+mod dispatch;
 mod rejections;
 pub use allocation::{AllocatedEntry, EntryAssessment, Sizing, SizingRequest};
+pub use dispatch::{Resolution, ResolvedAction};
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PendingAction {
@@ -286,11 +288,11 @@ impl Runtime {
             Some(inputs.sizing),
         )
     }
-    fn execute_actions_inner(
-        &mut self,
-        inputs: ActionInputs<'_>,
+    fn require_dispatch_inputs(
+        &self,
+        inputs: &ActionInputs<'_>,
         sizing: Option<&BTreeMap<String, Sizing>>,
-    ) -> Result<Vec<ActionOutcome>> {
+    ) -> Result<()> {
         let run = self.decision_view()?;
         if inputs.maximum_actions == 0
             || inputs.maximum_actions > 4096
@@ -329,6 +331,14 @@ impl Runtime {
                 ));
             }
         }
+        Ok(())
+    }
+    fn execute_actions_inner(
+        &mut self,
+        inputs: ActionInputs<'_>,
+        sizing: Option<&BTreeMap<String, Sizing>>,
+    ) -> Result<Vec<ActionOutcome>> {
+        self.require_dispatch_inputs(&inputs, sizing)?;
         let pending = self.pending_actions_bounded(inputs.maximum_actions);
         let mut blocked = std::collections::BTreeSet::new();
         let mut outcomes = Vec::new();
