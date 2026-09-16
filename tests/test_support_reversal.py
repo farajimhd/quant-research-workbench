@@ -173,3 +173,24 @@ def test_reversal_recipe_accepts_only_generic_policy_settings(tmp_path):
     values['ticker']='EXAMPLE'
     p.write_text(json.dumps(dict(parameters=dict(historical_hod=values))))
     with pytest.raises(ValueError,match='unapproved'):load_recipe(p)
+
+
+@pytest.mark.parametrize('location',['strategy_profile','assignment'])
+@pytest.mark.parametrize('enabled',[0,1])
+def test_replay_collects_reversal_pressure_without_enabling_pressure_exits(tmp_path,location,enabled):
+    from datetime import date,time
+    from src.backend.replay_run_service import ReplayRunController,ReplayRunDefinition,RunMode
+    from tests.test_replay_run_service import approved_configuration
+    config=approved_configuration()
+    for entry in [config['payload'].get('strategy_profile',{}),*config['payload'].get('assignments',[])]:
+        entry.setdefault('parameters',{})['market_pressure']={'enabled':False}
+        entry['parameters'].setdefault('historical_hod',{})['setup_reversal_enabled']=0
+    if location=='strategy_profile':target=config['payload'].setdefault('strategy_profile',{})
+    else:
+        config['payload'].setdefault('assignments',[]).append({'parameters':{}})
+        target=config['payload']['assignments'][-1]
+    target.setdefault('parameters',{}).setdefault('historical_hod',{})['setup_reversal_enabled']=enabled
+    controller=ReplayRunController(ReplayRunDefinition(session_date=date(2026,7,28),start_time=time(9,45),
+        mode=RunMode.BACKTEST,configuration_revision=config),runtime_root=tmp_path)
+    assert bool(controller._pressure_enabled)==bool(enabled)
+    assert not target['parameters'].get('market_pressure',{}).get('enabled',False)
