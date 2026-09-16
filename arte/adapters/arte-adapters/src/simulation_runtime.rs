@@ -145,6 +145,32 @@ impl Runtime {
     pub(crate) fn require_committed_fills(&self) -> Result<()> {
         self.ready()
     }
+    pub(crate) fn require_recovered_playback(
+        &self,
+        run: &arte_core::market_structure::scheduler::playback::accounts::Run,
+        maximum_quote_age_ns: u64,
+    ) -> Result<()> {
+        self.ready()?;
+        if self.source != Some(run.market()?.source_scope())
+            || run
+                .scopes()
+                .first()
+                .is_none_or(|s| s.run_id != self.simulator.run_id())
+            || self
+                .costs
+                .as_ref()
+                .is_none_or(|c| c.manifest_hash() != run.manifest_hash())
+            || self
+                .fill_model
+                .as_ref()
+                .is_none_or(|m| m.maximum_quote_age_ns != maximum_quote_age_ns)
+        {
+            return Err(Error::Conflict(
+                "recovered execution and playback differ".into(),
+            ));
+        }
+        Ok(())
+    }
     pub(crate) fn advance_playback_clock(&mut self, at_ns: u64) -> Result<()> {
         self.ready()?;
         self.simulator.advance_clock(at_ns)

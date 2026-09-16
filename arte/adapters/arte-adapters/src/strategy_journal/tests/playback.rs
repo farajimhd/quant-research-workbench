@@ -179,14 +179,25 @@ fn run_with_costs(
     lifecycle: bool,
     target_exit: bool,
 ) -> (Run, arte_core::simulation_costs::Pinned) {
-    let (run, costs, _) = run_recovery_fixture(include_quote, lifecycle, target_exit);
+    let (run, costs, _, _) = run_recovery_fixture(include_quote, lifecycle, target_exit);
     (run, costs)
+}
+struct RecoveryInput {
+    prepared: InputData,
+    catalog: Catalog,
+    seed_hash: String,
+    configuration_hash: String,
 }
 fn run_recovery_fixture(
     include_quote: bool,
     lifecycle: bool,
     target_exit: bool,
-) -> (Run, arte_core::simulation_costs::Pinned, Pinned) {
+) -> (
+    Run,
+    arte_core::simulation_costs::Pinned,
+    Pinned,
+    RecoveryInput,
+) {
     const S: u64 = 1_000_000_000;
     let bars: Vec<_> = (100..118)
         .map(|t| Candle {
@@ -237,6 +248,7 @@ fn run_recovery_fixture(
         &SplitAdjustment::default(),
     )
     .unwrap();
+    let configuration_hash = market.configuration_hash().to_owned();
     let mut scheduler = Scheduler::new(Ordered::new(market, 10).unwrap(), "run".into()).unwrap();
     scheduler
         .bind_quote_policy(std::sync::Arc::new(crate::test_quote_policy()))
@@ -390,8 +402,18 @@ fn run_recovery_fixture(
     let hash = m.hash().unwrap();
     let manifest = Pinned::new(m, &hash).unwrap();
     let costs = arte_core::simulation_costs::Pinned::new(cost_model, &manifest).unwrap();
-    let run = Run::new(&manifest, &catalog, scheduler, prepared, 1, 2).unwrap();
-    (run, costs, manifest)
+    let run = Run::new(&manifest, &catalog, scheduler, prepared.clone(), 1, 2).unwrap();
+    (
+        run,
+        costs,
+        manifest,
+        RecoveryInput {
+            prepared,
+            catalog,
+            seed_hash: seed.hash,
+            configuration_hash,
+        },
+    )
 }
 
 #[test]
@@ -401,7 +423,7 @@ fn controller_capture_pins_execution_playback_and_action_progress() {
         portfolio::checkpoint::Cut,
         simulated_execution::Simulator,
     };
-    let (run, costs, manifest) = run_recovery_fixture(true, false, false);
+    let (run, costs, manifest, recovery) = run_recovery_fixture(true, false, false);
     let mut execution = crate::simulation_runtime::Runtime::new(
         Simulator::new_scoped("run", 1, 2, 2, 10000).unwrap(),
         Projection::new(2, 10, 4).unwrap(),
@@ -473,12 +495,99 @@ fn controller_capture_pins_execution_playback_and_action_progress() {
     controller
         .cancel_entry_action(&receipt.decision().decision_id, 0)
         .unwrap();
-    let completed = controller
+    let mut completed = controller
         .checkpoint(&manifest, &cut, &fills, limits, 10_000_000)
         .unwrap();
     let root: serde_json::Value = serde_json::from_slice(&completed.root.payload).unwrap();
     assert!(root["actions"][0]["completed_request"].is_string());
     assert_ne!(image.root.id, completed.root.id);
+    let context =
+        arte_core::content_hash(&("arte.playback-controller-cut.v1", manifest.hash(), &cut))
+            .unwrap();
+    let restore = |bundle: &crate::playback_runtime::checkpoint::Bundle,
+                   receipts: &[&arte_core::strategy_transaction::Committed]| {
+        crate::playback_runtime::Runtime::restore_checkpoint(
+            bundle,
+            &bundle.root.id,
+            &manifest,
+            &cut,
+            &recovery.catalog,
+            recovery.prepared.clone(),
+            arte_core::market_structure::scheduler::checkpoint::Request {
+                context_hash: &context,
+                run_id: "run",
+                seed_hash: &recovery.seed_hash,
+                configuration_hash: &recovery.configuration_hash,
+                quote_policy: std::sync::Arc::new(crate::test_quote_policy()),
+                maximum_pending: 10,
+                maximum_bytes: 10_000_000,
+            },
+            1,
+            2,
+            receipts,
+            run_with_costs(true, false, false).1,
+            limits,
+            10_000_000,
+        )
+    };
+    assert!(restore(&image, &[]).is_err());
+    let mut pending_restore = restore(&image, &[&receipt]).unwrap();
+    assert_eq!(
+        pending_restore.status().mode,
+        arte_core::market_structure::scheduler::playback::Mode::Paused
+    );
+    assert_eq!(pending_restore.pending_actions().len(), 1);
+    assert_eq!(
+        pending_restore
+            .checkpoint(&manifest, &cut, &fills, limits, 10_000_000)
+            .unwrap()
+            .root
+            .id,
+        image.root.id
+    );
+    pending_restore
+        .cancel_entry_action(&receipt.decision().decision_id, 0)
+        .unwrap();
+    assert_eq!(
+        pending_restore
+            .checkpoint(&manifest, &cut, &fills, limits, 10_000_000)
+            .unwrap()
+            .root
+            .id,
+        completed.root.id
+    );
+    let mut complete_restore = restore(&completed, &[&receipt]).unwrap();
+    assert!(complete_restore.pending_actions().is_empty());
+    complete_restore
+        .cancel_entry_action(&receipt.decision().decision_id, 0)
+        .unwrap();
+    assert_eq!(
+        complete_restore
+            .checkpoint(&manifest, &cut, &fills, limits, 10_000_000)
+            .unwrap()
+            .root
+            .id,
+        completed.root.id
+    );
+    assert!(complete_restore.acknowledge().is_err()); // Other account still has no receipt.
+    let original_root = completed.root.payload.clone();
+    let text = String::from_utf8(original_root.clone()).unwrap();
+    for (from, to) in [
+        (
+            arte_core::content_hash(receipt.decision()).unwrap(),
+            "0".repeat(64),
+        ),
+        (
+            "\"maximum_quote_age_ns\":2000000000".into(),
+            "\"maximum_quote_age_ns\":1".into(),
+        ),
+    ] {
+        let changed = text.replace(&from, &to);
+        assert_ne!(changed, text);
+        completed.root = arte_core::seed_storage::Object::new(changed.into_bytes());
+        assert!(restore(&completed, &[&receipt]).is_err());
+    }
+    completed.root = arte_core::seed_storage::Object::new(original_root);
     assert!(controller
         .checkpoint(&manifest, &cut, &fills, limits, 100)
         .is_err());

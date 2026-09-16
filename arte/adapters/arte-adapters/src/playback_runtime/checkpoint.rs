@@ -5,17 +5,19 @@ use arte_core::{
     content_hash, execution_events::Fill, portfolio::checkpoint::Cut, run_manifest::Pinned,
     seed_storage::Object,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io::Write};
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct ActionProgress {
     pub decision_id: String,
     pub action_index: usize,
     pub decision_hash: String,
     pub completed_request: Option<String>,
 }
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Root {
     version: u32,
     manifest_hash: String,
@@ -49,6 +51,103 @@ impl Write for Writer {
     }
 }
 impl Runtime {
+    /// expected_root must come from a trusted durable publication, not the image
+    /// being supplied. Restore never sends orders or advances market input.
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore_checkpoint(
+        bundle: &Bundle,
+        expected_root: &str,
+        manifest: &Pinned,
+        cut: &Cut,
+        sources: &arte_core::market_structure::scheduler::playback::sources::Catalog,
+        prepared: arte_core::market_structure::scheduler::playback::Prepared,
+        market_request: arte_core::market_structure::scheduler::checkpoint::Request<'_>,
+        frames_per_poll: usize,
+        maximum_consumers: usize,
+        receipts: &[&Committed],
+        costs: arte_core::simulation_costs::Pinned,
+        execution_limits: simulation_runtime::checkpoint::Limits,
+        maximum_bytes: usize,
+    ) -> Result<Self> {
+        if maximum_bytes == 0 || maximum_bytes > 64 * 1024 * 1024 || bundle.root.id != expected_root
+        {
+            return Err(Error::Invalid(
+                "controller recovery identity or budget".into(),
+            ));
+        }
+        let scheduler = &bundle.playback.playback.scheduler;
+        let total = [
+            &bundle.root,
+            &bundle.execution.root,
+            &bundle.playback.root,
+            &bundle.playback.playback.root,
+            &scheduler.root,
+            &scheduler.market,
+            &scheduler.trades,
+            &scheduler.quotes,
+            &scheduler.book,
+        ]
+        .into_iter()
+        .chain(bundle.playback.barrier.iter())
+        .chain(bundle.execution.objects.values())
+        .try_fold(0usize, |n, o| n.checked_add(o.payload.len()))
+        .ok_or_else(|| Error::Capacity("controller recovery size overflow".into()))?;
+        if total > maximum_bytes {
+            return Err(Error::Capacity("controller recovery total bytes".into()));
+        }
+        bundle.root.verify()?;
+        let root: Root = serde_json::from_slice(&bundle.root.payload)
+            .map_err(|e| Error::Serialization(e.to_string()))?;
+        let context = content_hash(&("arte.playback-controller-cut.v1", manifest.hash(), cut))?;
+        if root.version != 1
+            || root.manifest_hash != manifest.hash()
+            || root.cut != *cut
+            || root.playback != bundle.playback.root.id
+            || root.execution != bundle.execution.root.id
+            || market_request.context_hash != context
+            || serde_json::to_vec(&root).map_err(|e| Error::Serialization(e.to_string()))?
+                != bundle.root.payload
+        {
+            return Err(Error::Conflict("controller recovery pins differ".into()));
+        }
+        let run = Run::restore_checkpoint(
+            &bundle.playback,
+            &root.playback,
+            manifest,
+            sources,
+            prepared,
+            market_request,
+            frames_per_poll,
+            maximum_consumers,
+            receipts,
+        )?;
+        let boundary = run
+            .pending()?
+            .ok_or_else(|| Error::Unready("controller recovery boundary missing".into()))?;
+        if boundary.id != cut.boundary_hash
+            || boundary.evaluated_at_ns != cut.at_ns
+            || run.status().acknowledged_boundaries.checked_add(1) != Some(cut.boundary_sequence)
+        {
+            return Err(Error::Conflict("controller recovery cut differs".into()));
+        }
+        let execution = simulation_runtime::Runtime::restore_checkpoint(
+            &bundle.execution,
+            &root.execution,
+            manifest,
+            cut,
+            costs,
+            execution_limits,
+        )?;
+        execution.require_recovered_playback(&run, root.maximum_quote_age_ns)?;
+        let actions = actions::Work::restore(&root.actions, receipts)?;
+        Ok(Self {
+            run,
+            execution,
+            maximum_quote_age_ns: root.maximum_quote_age_ns,
+            dispatched_boundary: Some(cut.boundary_hash.clone()),
+            actions,
+        })
+    }
     /// Capture after fill journal publication, before market acknowledgment. The
     /// caller must bind portfolio and candidate images to the same cut separately.
     pub fn checkpoint(

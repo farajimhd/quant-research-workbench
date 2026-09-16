@@ -33,6 +33,44 @@ fn kind(action: &Action) -> Option<&'static str> {
     }
 }
 impl Work {
+    pub(super) fn restore(
+        progress: &[super::checkpoint::ActionProgress],
+        receipts: &[&Committed],
+    ) -> Result<Self> {
+        if progress.len() > 4096 * 16 || receipts.len() > 4096 {
+            return Err(Error::Capacity("action recovery population".into()));
+        }
+        let mut work = Self::default();
+        let mut decisions = std::collections::BTreeSet::new();
+        for receipt in receipts {
+            Self::validate(receipt.decision())?;
+            if !decisions.insert(&receipt.decision().decision_id) {
+                return Err(Error::Conflict("duplicate action recovery decision".into()));
+            }
+            work.record(receipt);
+        }
+        if progress.len() != work.items.len() {
+            return Err(Error::Conflict("action recovery population differs".into()));
+        }
+        for (saved, ((id, index), item)) in progress.iter().zip(work.items.iter_mut()) {
+            if &saved.decision_id != id
+                || saved.action_index != *index
+                || saved.decision_hash != content_hash(item.receipt.decision())?
+                || saved.completed_request.as_ref().is_some_and(|h| {
+                    h.len() != 64
+                        || !h
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                })
+            {
+                return Err(Error::Conflict(
+                    "action recovery receipt or identity differs".into(),
+                ));
+            }
+            item.completed_request = saved.completed_request.clone();
+        }
+        Ok(work)
+    }
     pub(super) fn checkpoint(&self) -> Result<Vec<super::checkpoint::ActionProgress>> {
         if self.items.len() > 4096 * 16 {
             return Err(Error::Capacity(

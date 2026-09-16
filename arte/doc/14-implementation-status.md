@@ -6,6 +6,30 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Controller recovery
+
+Controller restore now rebuilds the manifest-bound playback graph, simulated
+execution and action ledger from one captured boundary. It checks total byte
+limits, canonical encoding, component hashes, source scope, run identity, clocks,
+cost binding and quote-age policy. Playback restores paused without replaying the
+already dispatched quote.
+
+Verified decision receipts must reconstruct the exact executable-action set.
+Pending actions remain pending. Completed actions retain their request
+fingerprints so identical retries do not repeat the operation. The expected root
+hash must come from trusted durable publication, not from the supplied image.
+Receipt verification does not independently certify a completed execution action;
+that state is authenticated by the externally pinned controller root.
+
+Continuation tests cover pending and completed cancellation recovery, checkpoint
+equality, missing account receipts and altered decision or quote-policy fields.
+Candidate, feature and portfolio coordination, durable root publication and
+whole-run recovery remain incomplete. No live-order recovery is implemented by
+this backtest controller.
+
+All 378 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Source-oracle parity was not rerun. No service or network test ran.
+
 ## Controller checkpoint capture
 
 The adapter can now capture playback, execution and action progress at one
