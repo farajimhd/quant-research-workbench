@@ -7,41 +7,54 @@ import { ConfigGroup, FieldHelp, JsonInspector, SelectField, readableLabel } fro
 import type { Draft, RuntimeMode } from "./contracts";
 import { serializeDraft } from "./draft";
 import { canvasApprovalSnapshot } from "./utilities";
-export type Revision = {
+export type RevisionSummary = {
   approved_at: string;
   content_hash: string;
   label: string;
-  payload: Draft & { canvas: { profile: Record<string, unknown>; revision: string } };
   revision: number;
   revision_id: string;
 };
 
-export type TestCandidate = {
+export type Revision = RevisionSummary & {
+  payload: Draft & { canvas: { profile: Record<string, unknown>; revision: string } };
+};
+
+export type TestCandidateSummary = {
   candidate_id: string;
   candidate_revision: number;
   content_hash: string;
   created_at: string;
   label: string;
-  payload: Revision["payload"];
   release_state: "test_candidate";
 };
 
 
-export function RevisionBadge({ approved, candidate }: { approved: Revision | null; candidate?: TestCandidate }) {
+// Keep list state metadata-only even if an older server returns full documents.
+export function candidateSummary(candidate: TestCandidateSummary): TestCandidateSummary {
+  const { candidate_id, candidate_revision, content_hash, created_at, label, release_state } = candidate;
+  return { candidate_id, candidate_revision, content_hash, created_at, label, release_state };
+}
+
+export function revisionSummary(revision: RevisionSummary): RevisionSummary {
+  const { approved_at, content_hash, label, revision: number, revision_id } = revision;
+  return { approved_at, content_hash, label, revision: number, revision_id };
+}
+
+export function RevisionBadge({ approved, candidate }: { approved: Revision | null; candidate?: TestCandidateSummary }) {
   const Icon = approved || candidate ? BadgeCheck : LockKeyhole;
   return <div className="configuration-revision-badge" data-approved={approved ? "true" : "false"}><span className="configuration-revision-icon"><Icon aria-hidden="true" size={16} /></span><span className="configuration-revision-copy"><small>Runtime authority</small><strong>{approved ? `Release ${approved.revision}` : candidate ? `Test t${candidate.candidate_revision}` : "Session only"}</strong><span>{approved ? approved.label : candidate ? "Debug and Backtest only" : "Create a Test Candidate"}</span></span></div>;
 }
 
 export function RevisionPublisher({ approved, candidates = [], draft, guided = false, label, onLabelChange, onPublish, publishing, revisions }: {
   approved: Revision | null;
-  candidates?: TestCandidate[];
+  candidates?: TestCandidateSummary[];
   draft: Draft | null;
   guided?: boolean;
   label: string;
   onLabelChange: (value: string) => void;
   onPublish: () => void;
   publishing: boolean;
-  revisions: Revision[];
+  revisions: RevisionSummary[];
 }) {
   const canvas = useMemo(canvasApprovalSnapshot, [approved, draft]);
   const checks = draft ? releaseReadiness(draft) : [];

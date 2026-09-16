@@ -49,7 +49,7 @@ import {
 } from "../contracts";
 import { collectLifecycleRuleSetIds, normalizeStrategyProfileReferences } from "../draft";
 import { navigateGuidedStep, reviewRows } from "../guidedNavigation";
-import { EffectiveConfigurationPreview, RevisionPublisher, type Revision, type TestCandidate } from "../release";
+import { EffectiveConfigurationPreview, RevisionPublisher, type Revision, type RevisionSummary, type TestCandidateSummary } from "../release";
 import { AccountsEditor, DeploymentEditor, OmsEditor, PortfolioEditor } from "../sections/OperationalConfigurationSections";
 import {
   AddStepsEditor,
@@ -696,7 +696,7 @@ export function ModeChoices({ onChange, options, values }: { onChange: (values: 
   return <div className="guided-mode-choices">{options.map((option) => <label key={option}><input checked={values.includes(option)} onChange={(event) => onChange(event.target.checked ? [...values, option] : values.filter((value) => value !== option))} type="checkbox" /><span><Check size={13} />{readableLabel(option)}</span></label>)}</div>;
 }
 
-export function GuidedReview({ approved, candidates, draft, label, onLabelChange, onPublish, onReturn, publishing, revisions }: { approved: Revision | null; candidates: TestCandidate[]; draft: Draft; label: string; onLabelChange: (value: string) => void; onPublish: () => void; onReturn: () => void; publishing: boolean; revisions: Revision[] }) {
+export function GuidedReview({ approved, candidates, draft, label, onLabelChange, onPublish, onReturn, publishing, revisions }: { approved: Revision | null; candidates: TestCandidateSummary[]; draft: Draft; label: string; onLabelChange: (value: string) => void; onPublish: () => void; onReturn: () => void; publishing: boolean; revisions: RevisionSummary[] }) {
   const rows = reviewRows(draft, approved);
   return <div className="guided-review">
     <header><span>Final step</span><h2>Review the effective configuration</h2><p>Resolve anything marked invalid or needing a decision. Publication freezes the entire draft and configured Canvas for new runs.</p></header>
@@ -711,7 +711,7 @@ export function GuidedEmpty({ onSwitchToExpert }: { onSwitchToExpert: () => void
 
 export function StrategyStudio({ approved, candidates, draft, label, onChange, onDeleteProfile, onDraftChange, onLabelChange, onPublish, publishing, revisions, section }: {
   approved: Revision | null;
-  candidates: TestCandidate[];
+  candidates: TestCandidateSummary[];
   draft: Draft;
   label: string;
   onChange: (value: StrategySection) => void;
@@ -720,7 +720,7 @@ export function StrategyStudio({ approved, candidates, draft, label, onChange, o
   onLabelChange: (value: string) => void;
   onPublish: (profileId: string) => void;
   publishing: boolean;
-  revisions: Revision[];
+  revisions: RevisionSummary[];
   section: StrategySection;
 }) {
   const [selectedId, setSelectedId] = useState(section.profiles[0]?.profile_id ?? "");
@@ -1028,7 +1028,7 @@ export function StrategyAuthoringFlow({ activeStage, advanced, approved, draft, 
   onStageChange: (value: StrategyAuthoringStage) => void;
   profile: StrategyProfile;
   publishing: boolean;
-  revisions: Revision[];
+  revisions: RevisionSummary[];
   ruleSets: RuleSetDefinition[];
   section: StrategySection;
 }) {

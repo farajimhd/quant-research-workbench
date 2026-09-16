@@ -1,3 +1,4 @@
+import { candidateSummary, type TestCandidateSummary } from "../features/trading-configuration/release";
 import { ArrowLeft, Bug, CheckCircle2, CircleStop, Pause, Play, Save, Square, Trash2, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
@@ -60,12 +61,7 @@ type StoredFixture = {
   symbol: string;
 };
 
-type TestCandidateSummary = {
-  candidate_id: string;
-  candidate_revision: number;
-  content_hash: string;
-  label: string;
-};
+
 
 const STORAGE_KEY = "quant-research-workbench.backtest-debug-fixtures.v1";
 
@@ -106,7 +102,7 @@ export function BacktestDebugPage() {
     api<{ rows: TestCandidateSummary[] }>("/api/trading/configuration/candidates")
       .then((payload) => {
         if (cancelled) return;
-        setCandidates(payload.rows);
+        setCandidates(payload.rows.map(candidateSummary));
         setCandidateId((current) => current || payload.rows[0]?.candidate_id || "");
       })
       .catch((reason) => { if (!cancelled) setError(message(reason)); });
