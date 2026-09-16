@@ -8,6 +8,7 @@ use arte_core::{
 };
 use futures_util::{stream, StreamExt, TryStreamExt};
 use std::future::Future;
+pub mod projection;
 
 pub struct Limits {
     pub maximum_batches: usize,

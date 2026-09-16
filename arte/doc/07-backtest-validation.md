@@ -28,7 +28,41 @@ Certified REST loading preserves acquisition-time availability. That timestamp i
 not automatically the historical simulation clock. Replay preparation must pin an
 explicit projection, preserve source provenance and label modeled availability.
 It must not invent a historical receive or execution timestamp. The certified
-source loader is implemented; the historical clock projection remains unfinished.
+source loader and a retrospective clock projection are implemented. The
+executable backtest loop is not yet connected to them.
+
+### Retrospective projection contract
+
+`arte.historical-projection.v1` pins both acquisition certificate IDs, the session,
+the fixed modeled delay, the trade-eligibility policy hash and every eligibility
+decision. Its hash becomes the historical catalog's authority identity. The
+prepared input also pins the model identity and projected observations.
+
+Preparation requires one trade certificate and one quote certificate for the same
+provider, instrument and exact interval. It does not choose revisions or merge
+overlapping acquisitions. Every trade needs an explicit eligibility decision.
+The adapter checks complete event-key coverage, not the correctness or approval
+of the caller's eligibility policy. Wiring that authority remains required.
+
+Only a simulation copy receives `available_at_ns = sip_ns + delay_ns`. Source
+objects are unchanged. Receive and participant timestamps remain absent when
+absent in the source. The delay must be positive and no greater than one second.
+This path creates `Historical` input, never `RecordedLive` input. Do not persist
+these modeled observations as acquired market data.
+
+Ordering is SIP time, provider sequence, then full event key. Equal-SIP groups
+are admitted in chunks of at most 256. Their watermark advances only after the
+last chunk. The scheduler must have capacity for the whole tied group. The final
+empty frame advances to the certified interval end. Empty certificates create
+no invented trades or quotes. Event, frame and serialized-byte limits fail
+preparation rather than truncate input. These are not total process-RAM limits.
+
+Duplicate event identities and all explicitly marked trade corrections are
+rejected. No numeric correction code is assumed to mean an ordinary trade.
+Supporting those records requires a separate causal correction contract. A
+provider's final REST revision still cannot prove the original as-known tape.
+Historical results must disclose that limitation; modeled timing is not evidence
+of actual websocket latency or executable historical fills.
 
 Pin code release, strategy/configuration, algorithm versions, source generation,
 reference generation, historical seed, clock model, fill model, and cost model.

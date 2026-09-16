@@ -6,6 +6,29 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Explicit historical clock projection
+
+Certified trade and quote sources can now produce a pinned historical catalog and
+prepared replay frames. The projection keeps original source objects unchanged.
+Simulation-only copies use a declared fixed SIP-to-availability delay. No receive
+or participant timestamp is invented. Certificate IDs, the timing model and all
+caller-supplied trade-eligibility decisions contribute to identity.
+
+Preparation requires matching channel intervals and scopes. It rejects missing
+eligibility, duplicate identities, marked corrections, overflow and exceeded
+budgets. Equal-SIP groups release after their final bounded chunk. Empty coverage
+advances the final watermark without inventing events. This remains retrospective
+simulation, not reconstruction of the original as-known tape.
+
+The eligibility policy still needs an approved authority wired by the executable
+runner. The adapter verifies supplied decisions, not their market-rule semantics.
+No service or connected acceptance test is authorized yet.
+
+Five projection fixtures cover timing/provenance, tied groups, empty coverage,
+invalid inputs, explicit ineligibility, correction rejection and conflicting quote
+versions. All 412 offline tests, formatting, Clippy and copied-source checks pass.
+No services started or migrations ran. Source parity was not rerun.
+
 ## Certified historical source loading
 
 A read-only loader now reconstructs observations from the batches named by one
@@ -26,10 +49,9 @@ missing/changed batches, knowledge cutoff and budgets. All 407 offline tests,
 formatting, Clippy and copied-source checks pass. No services started or migrations
 ran. Source parity was not rerun.
 
-Historical clock projection remains a required integration step: REST observations
-carry acquisition-time availability, not the historical simulated decision clock.
-The executable runner must use an explicitly pinned projection rather than
-silently overwriting source timing or presenting modeled latency as measured.
+REST observations carry acquisition-time availability, not the historical
+simulated decision clock. The projection above is available; executable runner
+integration remains unfinished. It must never present modeled latency as measured.
 
 ## Independent rejection readback during recovery
 
