@@ -9,7 +9,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
-pub const MODEL: &str = "quote-touch-shared-size-v3";
+pub const MODEL: &str = "quote-touch-shared-size-v4";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Quote {
     pub sequence: u64,
@@ -69,6 +69,40 @@ impl Quote {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn explicit_clock_allows_cancellation_before_or_between_quotes_without_liquidity() {
+        let mut sim = Simulator::new(1, 2, 1, 10000).unwrap();
+        sim.submit(bracket("a", Side::Long), 0, 0).unwrap();
+        sim.advance_clock(5).unwrap();
+        assert!(sim
+            .acknowledge_amendment("a", 1, 4, &Amendment::CancelEntry)
+            .is_err());
+        sim.acknowledge_amendment("a", 1, 5, &Amendment::CancelEntry)
+            .unwrap();
+        assert!(sim.positions()[0].entry_cancelled);
+        assert_eq!(sim.positions()[0].entry_filled, 0);
+        assert!(sim.quote(&quote(4, 99, 100, 10)).is_err());
+        assert!(sim.advance_clock(4).is_err());
+        assert!(sim.quote(&quote(6, 99, 100, 10)).unwrap().is_empty());
+        sim.advance_clock(8).unwrap();
+        sim.acknowledge_amendment("a", 2, 8, &Amendment::CancelEntry)
+            .unwrap();
+        assert_eq!(sim.positions()[0].entry_filled, 0);
+    }
+    #[test]
+    fn explicit_clock_survives_checkpoint_and_rejects_older_quote_or_corrupt_clock() {
+        let mut sim = Simulator::new(1, 2, 1, 10000).unwrap();
+        sim.quote(&quote(1, 99, 100, 10)).unwrap();
+        sim.advance_clock(10).unwrap();
+        let (hash, bytes) = sim.checkpoint(100000).unwrap();
+        let mut restored = Simulator::restore(&bytes, &hash, 100000).unwrap();
+        assert!(restored.quote(&quote(9, 99, 100, 10)).is_err());
+        assert!(restored.quote(&quote(10, 99, 100, 10)).unwrap().is_empty());
+        let mut bad: Checkpoint = serde_json::from_slice(&bytes).unwrap();
+        bad.clock_ns = 0;
+        let bytes = serde_json::to_vec(&bad).unwrap();
+        assert!(Simulator::restore(&bytes, &content_hash(&bad).unwrap(), 100000).is_err());
+    }
     #[test]
     fn restored_partial_exit_matches_continuous_run() {
         let mut sim = Simulator::new(1, 2, 1, 10000).unwrap();
@@ -262,6 +296,7 @@ pub struct Simulator {
     participation_bps: u32,
     orders: Vec<Position>,
     last: Option<(u64, u64, String)>,
+    clock_ns: u64,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -274,6 +309,7 @@ struct Checkpoint {
     participation_bps: u32,
     orders: Vec<Position>,
     last: Option<(u64, u64, String)>,
+    clock_ns: u64,
 }
 impl Simulator {
     #[cfg(test)]
@@ -306,10 +342,19 @@ impl Simulator {
             participation_bps,
             orders: vec![],
             last: None,
+            clock_ns: 0,
         })
     }
     pub fn positions(&self) -> &[Position] {
         &self.orders
+    }
+    /// Advance modeled time without generating liquidity, prices or fills.
+    pub fn advance_clock(&mut self, at_ns: u64) -> Result<()> {
+        if at_ns < self.clock_ns {
+            return Err(Error::Invalid("simulation clock rewind".into()));
+        }
+        self.clock_ns = at_ns;
+        Ok(())
     }
     pub fn run_id(&self) -> &str {
         &self.run_id
@@ -333,6 +378,7 @@ impl Simulator {
             participation_bps: self.participation_bps,
             orders: self.orders.clone(),
             last: self.last.clone(),
+            clock_ns: self.clock_ns,
         };
         let bytes =
             serde_json::to_vec(&snapshot).map_err(|e| Error::Serialization(e.to_string()))?;
@@ -367,11 +413,9 @@ impl Simulator {
                 && s.bytes()
                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
         };
-        if snapshot
-            .last
-            .as_ref()
-            .is_some_and(|(seq, _, hash)| *seq == 0 || !valid_hash(hash))
-        {
+        if snapshot.last.as_ref().is_some_and(|(seq, at, hash)| {
+            *seq == 0 || *at > snapshot.clock_ns || !valid_hash(hash)
+        }) {
             return Err(Error::Invalid("invalid simulation quote checkpoint".into()));
         }
         let mut commands = std::collections::BTreeSet::new();
@@ -405,9 +449,10 @@ impl Simulator {
         }
         sim.orders = snapshot.orders;
         sim.last = snapshot.last;
+        sim.clock_ns = snapshot.clock_ns;
         Ok(sim)
     }
-    /// Apply a modeled broker acknowledgment after the current quote. The caller
+    /// Apply a modeled broker acknowledgment at the explicit simulation clock. The caller
     /// schedules acknowledgment latency and shared OMS authorization. No retroactive
     /// fills occur; old protection governed the quote already consumed.
     pub fn acknowledge_amendment(
@@ -417,7 +462,7 @@ impl Simulator {
         at_ns: u64,
         amendment: &Amendment,
     ) -> Result<()> {
-        if self.last.as_ref().map(|(_, at, _)| *at) != Some(at_ns) || revision == 0 {
+        if self.clock_ns != at_ns || revision == 0 {
             return Err(Error::Invalid(
                 "amendment must follow the current simulation clock".into(),
             ));
@@ -492,7 +537,7 @@ impl Simulator {
     pub fn submit(&mut self, bracket: Bracket, now_ns: u64, latency_ns: u64) -> Result<()> {
         if bracket.instrument != self.instrument
             || bracket.price_scale != self.scale
-            || self.last.as_ref().is_some_and(|(_, at, _)| now_ns < *at)
+            || now_ns < self.clock_ns
         {
             return Err(Error::Invalid(
                 "simulation submission scope or clock mismatch".into(),
@@ -530,6 +575,7 @@ impl Simulator {
             submitted_sequence: self.last.as_ref().map_or(0, |v| v.0),
             amendment: None,
         });
+        self.clock_ns = now_ns;
         Ok(())
     }
     /// One instrument lane; the displayed liquidity budget is shared across accounts
@@ -552,6 +598,10 @@ impl Simulator {
             }
         }
         let budget = |size| (u128::from(size) * u128::from(self.participation_bps) / 10000) as u64;
+        if quote.at_ns < self.clock_ns {
+            return Err(Error::Invalid("quote predates simulation clock".into()));
+        }
+        self.clock_ns = quote.at_ns;
         let (mut bid_left, mut ask_left) = (budget(quote.bid_size), budget(quote.ask_size));
         let mut fills = vec![];
         for order in &mut self.orders {

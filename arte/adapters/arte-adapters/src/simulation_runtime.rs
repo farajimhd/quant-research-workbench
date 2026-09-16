@@ -94,6 +94,10 @@ impl Runtime {
     pub(crate) fn require_committed_fills(&self) -> Result<()> {
         self.ready()
     }
+    pub(crate) fn advance_playback_clock(&mut self, at_ns: u64) -> Result<()> {
+        self.ready()?;
+        self.simulator.advance_clock(at_ns)
+    }
     pub fn status(&self) -> Status {
         match &self.pending {
             None => Status {

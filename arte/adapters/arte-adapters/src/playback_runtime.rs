@@ -71,6 +71,8 @@ impl Runtime {
                 .ok_or_else(|| Error::Unready("playback boundary missing".into()))?;
             if self.dispatched_boundary.as_deref() != Some(boundary.id) {
                 self.execution.require_committed_fills()?;
+                self.execution
+                    .advance_playback_clock(boundary.evaluated_at_ns)?;
                 if matches!(boundary.kind, Kind::Quote { .. }) {
                     self.execution
                         .quote_playback(&self.run, self.maximum_quote_age_ns)?;

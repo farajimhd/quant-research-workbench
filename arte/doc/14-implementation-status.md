@@ -6,6 +6,24 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Explicit simulation clock
+
+The simulator now owns a monotonic modeled clock independently of its last quote.
+Playback advances it for every released boundary. This lets a future cancellation
+or amendment handler act on trade/bar boundaries without manufacturing a quote.
+Advancing the clock alone creates no liquidity or fills.
+
+Submissions and new quotes cannot precede that clock. Amendment acknowledgment
+must match it. Checkpoints persist the clock and reject a last quote later than
+the stored clock. The execution model is now quote-touch-shared-size-v4; old
+snapshots are not silently migrated.
+
+All 330 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+New tests cover cancellation before the first quote, between quotes, rejected
+rewinds and clock checkpoint restoration. Cancellation dispatch still requires
+strategy/order ownership tracking. No services or network calls ran. Source-oracle
+parity was not rerun.
+
 ## Committed execution-action tracking
 
 The playback controller now retains every executable action from each committed
