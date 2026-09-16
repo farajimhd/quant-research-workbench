@@ -6,6 +6,24 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Unified playback decision/fill gate
+
+A new in-process controller owns account playback and its simulated execution
+lane. It dispatches each released quote once. Decision access and cursor
+acknowledgment stay blocked until pending fills are journaled and projected.
+Account decision receipts then pass through the existing concurrent journal writer.
+The controller exposes no mutable run or execution escape hatch.
+
+The integrated offline test now verifies both gates: a failed fill write blocks
+decision access; committed fills alone do not permit cursor advancement; both
+account receipts finally allow acknowledgment. The resulting position has one
+share. A test lookup was corrected to use the existing position-origin hash domain.
+
+All 326 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+No services or network calls ran. Source-oracle parity was not rerun. This
+controller still needs decision-to-order dispatch, submission/amendment lifecycle,
+complete position feedback and durable recovery. It is not a complete backtest.
+
 ## Playback quote-to-simulation dispatch
 
 The execution adapter can now consume a released quote directly from account

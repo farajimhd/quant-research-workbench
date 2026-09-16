@@ -15,6 +15,7 @@ pub mod massive;
 pub mod massive_stream;
 pub mod order_journal;
 pub mod ownership;
+pub mod playback_runtime;
 pub mod request_governor;
 pub mod rest_acquisition;
 pub mod simulation_runtime;

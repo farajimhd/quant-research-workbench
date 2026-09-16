@@ -73,6 +73,27 @@ impl Runtime {
         }
         Ok(())
     }
+    pub(crate) fn require_new_playback(
+        &self,
+        run: &arte_core::market_structure::scheduler::playback::accounts::Run,
+    ) -> Result<()> {
+        self.ready()?;
+        if self.last_source_quote.is_some()
+            || self.source != Some(run.market()?.source_scope())
+            || run
+                .scopes()
+                .first()
+                .is_none_or(|scope| scope.run_id != self.simulator.run_id())
+        {
+            return Err(Error::Conflict(
+                "execution is not a matching unused playback lane".into(),
+            ));
+        }
+        Ok(())
+    }
+    pub(crate) fn require_committed_fills(&self) -> Result<()> {
+        self.ready()
+    }
     pub fn status(&self) -> Status {
         match &self.pending {
             None => Status {

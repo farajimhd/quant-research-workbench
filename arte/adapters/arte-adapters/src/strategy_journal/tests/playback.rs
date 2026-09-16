@@ -18,7 +18,7 @@ use arte_core::{
 #[tokio::test]
 async fn released_playback_quote_drives_one_fill_with_retryable_journal() {
     use arte_core::{execution_positions::Projection, simulated_execution::Simulator};
-    let mut run = run_with_quote(true);
+    let run = run_with_quote(true);
     let source = run.market().unwrap().source_scope();
     let mut simulator = Simulator::new_scoped("run", 1, 2, 2, 10000).unwrap();
     // Test-only preloaded order: production submission still uses funding/session gates.
@@ -46,8 +46,6 @@ async fn released_playback_quote_drives_one_fill_with_retryable_journal() {
             .unwrap();
     execution.bind_source(source).unwrap();
     assert!(execution.quote_playback(&run, 2_000_000_000).is_err());
-    run.resume().unwrap();
-    assert_eq!(run.poll().unwrap(), Poll::Boundary);
     let mut foreign = crate::simulation_runtime::Runtime::new(
         Simulator::new_scoped("foreign", 1, 2, 2, 10000).unwrap(),
         Projection::new(2, 10, 4).unwrap(),
@@ -55,10 +53,18 @@ async fn released_playback_quote_drives_one_fill_with_retryable_journal() {
     )
     .unwrap();
     foreign.bind_source(source).unwrap();
-    assert!(foreign.quote_playback(&run, 2_000_000_000).is_err());
-    execution.quote_playback(&run, 2_000_000_000).unwrap();
-    execution.quote_playback(&run, 2_000_000_000).unwrap();
-    assert_eq!(execution.status().pending_fills, 1);
+    assert!(
+        crate::playback_runtime::Runtime::new(run_with_quote(true), foreign, 2_000_000_000)
+            .is_err()
+    );
+    let mut controller =
+        crate::playback_runtime::Runtime::new(run, execution, 2_000_000_000).unwrap();
+    controller.resume().unwrap();
+    assert_eq!(controller.poll().unwrap(), Poll::Boundary);
+    assert_eq!(controller.poll().unwrap(), Poll::Boundary);
+    assert_eq!(controller.execution_status().pending_fills, 1);
+    assert!(controller.decision_view().is_err());
+    assert!(controller.acknowledge().is_err());
     struct FillStore {
         fail: bool,
         calls: usize,
@@ -80,13 +86,60 @@ async fn released_playback_quote_drives_one_fill_with_retryable_journal() {
         fail: true,
         calls: 0,
     };
-    assert!(execution.commit_next(&mut store).await.is_err());
-    assert_eq!(execution.status().pending_fills, 1);
-    assert!(execution.commit_next(&mut store).await.unwrap());
-    assert_eq!(execution.status().pending_fills, 0);
-    execution.quote_playback(&run, 2_000_000_000).unwrap();
-    assert_eq!(execution.status().pending_fills, 0);
+    assert!(controller.commit_fills(&mut store).await.is_err());
+    assert!(controller.decision_view().is_err());
+    assert_eq!(controller.execution_status().pending_fills, 1);
+    assert!(controller.commit_fills(&mut store).await.unwrap());
+    assert_eq!(controller.execution_status().pending_fills, 0);
+    assert_eq!(controller.poll().unwrap(), Poll::Boundary);
+    assert_eq!(controller.execution_status().pending_fills, 0);
     assert_eq!(store.calls, 2);
+    assert!(controller.acknowledge().is_err()); // Account decisions still missing.
+    let view = controller.decision_view().unwrap();
+    let input = view.pending().unwrap().unwrap().input("features".into());
+    let mut runtimes: Vec<_> = view
+        .scopes()
+        .iter()
+        .map(|scope| {
+            let mut runtime =
+                arte_core::strategy_transaction::Runtime::new(scope.clone(), 0_u64, 1024).unwrap();
+            let template = prepared_account(&scope.account);
+            let mut safety = template.pending_decision().unwrap().safety.clone();
+            safety.position_quantity = if scope.account == "a" { 1 } else { 0 };
+            runtime
+                .prepare(input.clone(), &safety, "evidence".into(), |_| {
+                    Ok(vec![Action::Hold {
+                        reason: "quote-observed".into(),
+                    }])
+                })
+                .unwrap();
+            runtime
+        })
+        .collect();
+    let mut stores = [timed(0, false), timed(0, false)];
+    let mut writes: Vec<_> = runtimes
+        .iter_mut()
+        .zip(stores.iter_mut())
+        .map(|(r, p)| accounts::Write::new(r, p))
+        .collect();
+    assert!(accounts::commit_accounts(&mut writes, &mut controller, 2)
+        .await
+        .unwrap()
+        .iter()
+        .all(|o| o.result.is_ok()));
+    controller.acknowledge().unwrap();
+    assert_eq!(controller.status().acknowledged_boundaries, 1);
+    let key = arte_core::execution_positions::Key {
+        origin_hash: arte_core::content_hash(&(
+            "simulated-position-v1",
+            "run",
+            arte_core::simulated_execution::MODEL,
+        ))
+        .unwrap(),
+        account: "a".into(),
+        instrument: 1,
+    };
+    assert_eq!(controller.position(&key).unwrap().quantity, 1);
 }
 
 fn run_with_quote(include_quote: bool) -> Run {
