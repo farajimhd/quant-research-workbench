@@ -6,6 +6,24 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Playback candidate preparation
+
+The account playback controller can now advance the shared candidate feature state
+and prepare completed-candle decisions through the same evaluator used by live.
+It checks the candidate's immutable scope against the declared consumer set before
+preparation, then validates the resulting decision against the current boundary.
+Quotes, admission, position state and policies remain explicit authority inputs.
+
+The existing multi-account playback test now uses the required five-second MACD
+timeframe and verifies that features advance once per boundary. Repeated feature
+observation while journals are pending is idempotent. All 323 offline Rust tests,
+formatting, Clippy and copied-source hash checks pass.
+
+The new completed-decision wrapper compiles but does not yet have a full candidate
+entry-to-fill playback acceptance test. Intrabar orchestration, quote scheduling,
+fill feedback and runtime command wiring remain unfinished. No services or network
+calls ran. Source-oracle parity was not rerun.
+
 ## Concurrent playback journal integration
 
 The concurrent account journal writer now accepts the manifest-bound playback

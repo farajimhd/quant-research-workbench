@@ -52,13 +52,43 @@ fn manifest_playback_requires_all_account_receipts_before_advancing() {
     let m = account_run_manifest();
     let hash = m.hash().unwrap();
     let pinned = crate::run_manifest::Pinned::new(m, &hash).unwrap();
+    let market = super::super::tests::runtime_with_timeframes(
+        100,
+        vec![super::super::Timeframe {
+            interval_ns: 5 * SECOND,
+            macd_periods: (12, 26, 9),
+            maximum_bars: 20,
+        }],
+    );
+    let scheduler = Scheduler::new(
+        Ordered::new(market, 10).unwrap(),
+        "causal-offline-test".into(),
+    )
+    .unwrap();
     let mut run = Run::new(
         &pinned,
         &playback_catalog(),
-        scheduler(10),
+        scheduler,
         prepared_playback(),
         1,
         2,
+    )
+    .unwrap();
+    let mut features = crate::candidate_features::State::new(
+        run.market().unwrap(),
+        crate::candidate_features::Config {
+            setup: crate::strategy_setup::SetupSettings {
+                range_ns: 30 * SECOND,
+                minimum_bars: 1,
+                maximum_gap_ns: 0,
+            },
+            forming_macd: true,
+            minimum_range_pct: 0.,
+            minimum_progress_pct: 0.,
+            maximum_quote_age_ns: SECOND,
+            maximum_completed_bar_age_ns: SECOND,
+            maximum_levels: 100,
+        },
     )
     .unwrap();
     assert_eq!(run.manifest_hash(), hash);
@@ -67,8 +97,17 @@ fn manifest_playback_requires_all_account_receipts_before_advancing() {
     loop {
         match run.poll().unwrap() {
             Poll::Boundary => {
+                assert!(run.observe_features(&mut features).unwrap());
+                assert!(!run.observe_features(&mut features).unwrap());
                 let input = run.pending().unwrap().unwrap().input("features".into());
                 let scopes = run.scopes().to_vec();
+                let candidate = crate::candidate_runtime::Runtime::new(
+                    scopes[0].clone(),
+                    crate::strategy_candidate::State::default(),
+                    10000,
+                )
+                .unwrap();
+                assert_eq!(candidate.scope(), &scopes[0]);
                 assert_eq!(run.remaining(), Some(2));
                 assert!(run.acknowledge().is_err());
                 let a = receipt(scopes[0].clone(), input.clone());

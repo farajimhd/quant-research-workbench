@@ -74,6 +74,9 @@ impl Runtime {
     pub fn state(&self) -> &candidate::State {
         self.transaction.committed_state()
     }
+    pub fn scope(&self) -> &dispatch::Scope {
+        self.transaction.scope()
+    }
     pub fn pending_batch(&self) -> Option<&crate::journal::Batch> {
         self.transaction.pending_batch()
     }

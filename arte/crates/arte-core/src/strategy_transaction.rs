@@ -57,6 +57,9 @@ impl<S: Clone + Serialize> Runtime<S> {
     pub fn committed_state(&self) -> &S {
         &self.state
     }
+    pub fn scope(&self) -> &Scope {
+        self.dispatch.scope()
+    }
     pub fn pending_batch(&self) -> Option<&Batch> {
         self.pending.as_ref().map(|p| &p.batch)
     }

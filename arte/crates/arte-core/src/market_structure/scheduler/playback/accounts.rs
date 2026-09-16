@@ -112,6 +112,60 @@ impl Run {
             .ok_or_else(|| Error::Unready("no account boundary".into()))?
             .needs_decision(scope)
     }
+    /// Advance the shared feature authority once per market boundary. Repeated
+    /// calls while account journals are pending are idempotent.
+    pub fn observe_features(
+        &self,
+        features: &mut crate::candidate_features::State,
+    ) -> Result<bool> {
+        let boundary = self
+            .pending()?
+            .ok_or_else(|| Error::Unready("no playback boundary".into()))?;
+        features.observe(&boundary, self.market()?)
+    }
+    /// Use the same completed-candle evaluator as live. Quotes and account
+    /// authorities remain explicit inputs; playback cannot infer their readiness.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_completed(
+        &self,
+        candidate: &mut crate::candidate_runtime::Runtime,
+        features: &crate::candidate_features::State,
+        quotes: &crate::quote_state::Book,
+        context: crate::candidate_features::EntryContext<'_>,
+        safety: &crate::strategy_dispatch::Safety,
+        broker: &crate::strategy_candidate::PositionObservation,
+        gates: &crate::strategy_adds::Gates,
+        policy: &crate::strategy_candidate::Policy<'_>,
+        intrabar: &crate::strategy_candidate::AcquisitionPolicy,
+    ) -> Result<crate::strategy_dispatch::Decision> {
+        if !self.needs_decision(candidate.scope())? {
+            return Err(Error::Conflict(
+                "playback consumer already committed".into(),
+            ));
+        }
+        let boundary = self
+            .pending()?
+            .ok_or_else(|| Error::Unready("no playback boundary".into()))?;
+        let frame = features.entry_frame(
+            &boundary,
+            boundary.evaluated_at_ns,
+            self.market()?,
+            quotes,
+            context,
+        )?;
+        let decision = candidate.completed(
+            boundary.input(String::new()),
+            safety,
+            &frame,
+            broker,
+            gates,
+            policy,
+            intrabar,
+            features,
+        )?;
+        self.validate_decision(&decision)?;
+        Ok(decision)
+    }
     pub fn remaining(&self) -> Option<usize> {
         self.barrier.as_ref().map(Barrier::remaining)
     }

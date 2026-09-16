@@ -101,6 +101,9 @@ pub struct State {
     last_evaluated_at_ns: u64,
 }
 impl State {
+    pub fn scope(&self) -> &Scope {
+        &self.scope
+    }
     pub fn new(scope: Scope) -> Result<Self> {
         if [
             &scope.run_id,
