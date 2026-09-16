@@ -176,7 +176,9 @@ def evidence(state, entry):
 
 
 def swing_key(swing):
-    return str((swing.get('scale'), swing.get('pivot_at'), swing.get('lower')))
+    # A fresh observation of the same anchor does not revive retired support.
+    anchor = swing.get('anchored_level') or swing
+    return str((anchor.get('scale'), anchor.get('pivot_at'), anchor.get('lower')))
 
 
 def recovery_observe(state, entry, market, observation, stop, row, fresh, *, preserve_peak=False, stop_gain_guard=False, fresh_pivots=False):
