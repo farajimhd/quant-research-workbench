@@ -132,6 +132,21 @@ def test_recipe_accepts_only_bounded_parameter_paths(tmp_path):
     with pytest.raises(ValueError,match='unapproved parameter'):load_recipe(path)
 
 
+@pytest.mark.parametrize('fraction', [0.3, 0.5, 0.9, 1.])
+def test_recipe_accepts_bounded_cash_fraction(tmp_path, fraction):
+    path=tmp_path/'recipe.json'
+    path.write_text(json.dumps(dict(parameters=dict(historical_hod=dict(cash_fraction=fraction)))))
+    assert load_recipe(path)['historical_hod']['cash_fraction']==fraction
+
+
+@pytest.mark.parametrize('fraction', [0, -0.1, 1.01, True, '0.5', float('nan'), float('inf')])
+def test_recipe_rejects_invalid_cash_fraction(tmp_path, fraction):
+    path=tmp_path/'recipe.json'
+    path.write_text(json.dumps(dict(parameters=dict(historical_hod=dict(cash_fraction=fraction)))))
+    with pytest.raises(ValueError,match='Invalid research parameter'):
+        load_recipe(path)
+
+
 def test_recipe_preserves_selected_version_and_changes_only_requested_parameter(monkeypatch):
     from src.backend import trading_configuration_service as service
     original=dict(profile_id=PROFILE,parameters=dict(
@@ -155,6 +170,12 @@ def test_recipe_preserves_selected_version_and_changes_only_requested_parameter(
     assert actual['parameters']['liquidity_admission']['minimum_current_trade_rate_60s']==2
     assert trial['strategy_profile_id']==actual['profile_id']=='v7-222-range-experiment'
     assert trial['configuration']['run_plans']['plans'][0]['profile_id']==actual['profile_id']
+    assert payload==frozen
+
+    capital_trial=prepare('capital-experiment',{'historical_hod':{'cash_fraction':.3}},'regular-origin-v31')
+    expected_capital=deepcopy(baseline['configuration']['strategy']['profiles'][-1]['parameters'])
+    expected_capital['historical_hod']['cash_fraction']=.3
+    assert capital_trial['configuration']['strategy']['profiles'][-1]['parameters']==expected_capital
     assert payload==frozen
 
     phase_trial=prepare('phase-experiment',{'historical_hod':{'setup_phase_minimum_progress_r':1.}},'regular-origin-v31')
