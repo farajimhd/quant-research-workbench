@@ -26,6 +26,7 @@ pub struct Runtime {
     pending: Option<Pending>,
     source: Option<arte_core::event_order::Scope>,
     last_source_quote: Option<(arte_core::events::Observation, u64, u64)>,
+    owners: std::collections::BTreeMap<String, arte_core::strategy_dispatch::Scope>,
 }
 pub struct Submission<'a> {
     pub plan: &'a arte_core::decision_orders::Plan,
@@ -63,6 +64,7 @@ impl Runtime {
             pending: None,
             source: None,
             last_source_quote: None,
+            owners: Default::default(),
         })
     }
     fn ready(&self) -> Result<()> {
@@ -220,6 +222,22 @@ impl Runtime {
     pub fn submit_reserved(&mut self, request: Submission<'_>) -> Result<()> {
         self.ready()?;
         validate_run(request.plan, self.simulator.run_id())?;
+        let command = &request.plan.bracket.command_id;
+        if self
+            .owners
+            .get(command)
+            .is_some_and(|scope| scope != &request.plan.scope)
+            || (self
+                .simulator
+                .positions()
+                .iter()
+                .any(|order| &order.bracket.command_id == command)
+                && !self.owners.contains_key(command))
+        {
+            return Err(Error::Conflict(
+                "simulation command ownership differs or is unknown".into(),
+            ));
+        }
         request.session.validate(
             &request.plan.bracket,
             request.now_ns,
@@ -252,7 +270,42 @@ impl Runtime {
                 self.simulator
                     .submit(b.clone(), request.now_ns, request.latency_ns)
             },
-        )
+        )?;
+        self.owners
+            .insert(command.clone(), request.plan.scope.clone());
+        Ok(())
+    }
+    pub(crate) fn cancel_entries_for(
+        &mut self,
+        scope: &arte_core::strategy_dispatch::Scope,
+        at_ns: u64,
+    ) -> Result<usize> {
+        self.ready()?;
+        arte_core::strategy_dispatch::State::new(scope.clone())?;
+        if scope.mode != arte_core::strategy_dispatch::Mode::Backtest
+            || scope.run_id != self.simulator.run_id()
+            || scope.instrument != self.simulator.instrument()
+        {
+            return Err(Error::Conflict(
+                "cancellation escaped simulation scope".into(),
+            ));
+        }
+        let mut commands = Vec::new();
+        for order in self.simulator.positions() {
+            if order.bracket.account != scope.account
+                || order.entry_cancelled
+                || order.entry_filled == order.bracket.quantity
+            {
+                continue;
+            }
+            let owner = self.owners.get(&order.bracket.command_id).ok_or_else(|| {
+                Error::Unready("cannot cancel order with unknown strategy ownership".into())
+            })?;
+            if owner == scope {
+                commands.push(order.bracket.command_id.clone());
+            }
+        }
+        self.simulator.cancel_entries(&commands, at_ns)
     }
     pub fn amend(
         &mut self,
@@ -356,6 +409,41 @@ fn validate_run(plan: &arte_core::decision_orders::Plan, run_id: &str) -> Result
 mod tests {
     use super::*;
     use arte_core::orders::Bracket;
+    #[test]
+    fn cancellation_is_strategy_scoped_and_unknown_ownership_blocks_atomically() {
+        use arte_core::strategy_dispatch::{Mode, Scope};
+        let scope = Scope {
+            run_id: "r".into(),
+            mode: Mode::Backtest,
+            account: "a".into(),
+            instrument: 1,
+            strategy_instance: "one".into(),
+            code_hash: "c".into(),
+            config_hash: "f".into(),
+        };
+        let mut runtime = Runtime::new(
+            Simulator::new_scoped("r", 1, 2, 3, 10000).unwrap(),
+            Projection::new(2, 10, 6).unwrap(),
+            6,
+        )
+        .unwrap();
+        let one = bracket("a");
+        let mut two = one.clone();
+        two.command_id = "two".into();
+        runtime.submit(one, 0, 0).unwrap();
+        runtime.submit(two, 0, 0).unwrap();
+        runtime.owners.insert("a".into(), scope.clone());
+        let before = runtime.simulator.checkpoint(100000).unwrap();
+        assert!(runtime.cancel_entries_for(&scope, 0).is_err());
+        assert_eq!(before, runtime.simulator.checkpoint(100000).unwrap());
+        let mut other = scope.clone();
+        other.strategy_instance = "two".into();
+        runtime.owners.insert("two".into(), other);
+        assert_eq!(runtime.cancel_entries_for(&scope, 0).unwrap(), 1);
+        assert!(runtime.simulator.positions()[0].entry_cancelled);
+        assert!(!runtime.simulator.positions()[1].entry_cancelled);
+        assert_eq!(runtime.cancel_entries_for(&scope, 0).unwrap(), 0);
+    }
     #[test]
     fn reserved_submission_requires_matching_funding_and_held_cash() {
         let mut runtime = Runtime::new(

@@ -70,6 +70,26 @@ impl Quote {
 mod tests {
     use super::*;
     #[test]
+    fn cancellation_batch_preflights_all_commands_and_is_idempotent() {
+        let mut sim = Simulator::new(1, 2, 2, 10000).unwrap();
+        sim.submit(bracket("a", Side::Long), 0, 0).unwrap();
+        sim.submit(bracket("b", Side::Long), 0, 0).unwrap();
+        sim.advance_clock(5).unwrap();
+        let before = sim.checkpoint(100000).unwrap();
+        assert!(sim
+            .cancel_entries(&["a".into(), "missing".into()], 5)
+            .is_err());
+        assert_eq!(before, sim.checkpoint(100000).unwrap());
+        assert!(sim.cancel_entries(&["a".into(), "a".into()], 5).is_err());
+        assert_eq!(before, sim.checkpoint(100000).unwrap());
+        assert_eq!(sim.cancel_entries(&["a".into()], 5).unwrap(), 1);
+        assert!(sim.positions()[0].entry_cancelled);
+        assert!(!sim.positions()[1].entry_cancelled);
+        let after = sim.checkpoint(100000).unwrap();
+        assert_eq!(sim.cancel_entries(&["a".into()], 5).unwrap(), 0);
+        assert_eq!(after, sim.checkpoint(100000).unwrap());
+    }
+    #[test]
     fn explicit_clock_allows_cancellation_before_or_between_quotes_without_liquidity() {
         let mut sim = Simulator::new(1, 2, 1, 10000).unwrap();
         sim.submit(bracket("a", Side::Long), 0, 0).unwrap();
@@ -347,6 +367,47 @@ impl Simulator {
     }
     pub fn positions(&self) -> &[Position] {
         &self.orders
+    }
+    /// Atomic modeled cancellation batch. Selection/ownership is checked upstream.
+    /// All identities and revisions are validated before mutating any order.
+    pub fn cancel_entries(&mut self, commands: &[String], at_ns: u64) -> Result<usize> {
+        if at_ns != self.clock_ns || commands.len() > self.capacity {
+            return Err(Error::Invalid("cancellation clock or capacity".into()));
+        }
+        let mut unique = std::collections::BTreeSet::new();
+        let mut changes = Vec::new();
+        let indices: std::collections::BTreeMap<_, _> = self
+            .orders
+            .iter()
+            .enumerate()
+            .map(|(index, order)| (order.bracket.command_id.as_str(), index))
+            .collect();
+        for command in commands {
+            if !unique.insert(command) {
+                return Err(Error::Conflict("duplicate cancellation command".into()));
+            }
+            let index = indices
+                .get(command.as_str())
+                .copied()
+                .ok_or_else(|| Error::Unready("cancellation command missing".into()))?;
+            let order = &self.orders[index];
+            if order.entry_cancelled || order.entry_filled == order.bracket.quantity {
+                continue;
+            }
+            let revision = order
+                .amendment
+                .as_ref()
+                .map_or(Some(1), |(rev, _)| rev.checked_add(1))
+                .ok_or_else(|| Error::Capacity("amendment revision exhausted".into()))?;
+            let hash = content_hash(&(command, revision, at_ns, &Amendment::CancelEntry))?;
+            changes.push((index, revision, hash));
+        }
+        let count = changes.len();
+        for (index, revision, hash) in changes {
+            self.orders[index].entry_cancelled = true;
+            self.orders[index].amendment = Some((revision, hash));
+        }
+        Ok(count)
     }
     /// Advance modeled time without generating liquidity, prices or fills.
     pub fn advance_clock(&mut self, at_ns: u64) -> Result<()> {

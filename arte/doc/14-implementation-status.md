@@ -6,6 +6,28 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Strategy-scoped cancellation dispatch
+
+Successful reserved submissions now retain the complete owning strategy scope.
+An existing command cannot be silently adopted when its ownership is unknown or
+different. Cancellation selects only that exact scope's remaining entry orders;
+other strategies in the same account are excluded. Unknown ownership blocks the
+batch before any order changes.
+
+The simulator validates every selected command and revision before applying the
+cancellation batch. Lookup is indexed rather than repeatedly scanning all orders.
+Already-cancelled entries are idempotent. Filled positions and protection remain
+intact. The playback controller resolves a committed cancellation action only
+after that batch succeeds, including the valid no-pending-entry case.
+
+All 332 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Tests cover atomic preflight, retries, same-account strategy isolation, unknown
+ownership and release of a committed cancellation's playback gate.
+
+Ownership restoration, reservation release, exits and protection-action dispatch
+remain unfinished. No services or network calls ran. Source-oracle parity was not
+rerun.
+
 ## Explicit simulation clock
 
 The simulator now owns a monotonic modeled clock independently of its last quote.

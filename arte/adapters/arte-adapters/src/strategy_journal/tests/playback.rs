@@ -399,6 +399,16 @@ async fn committed_execution_action_still_blocks_market_acknowledgment() {
         .iter()
         .all(|o| o.result.is_ok()));
     assert_eq!(controller.pending_actions().len(), 1);
+    let action = controller.pending_actions()[0].clone();
+    controller
+        .cancel_entry_action(&action.decision_id, action.action_index)
+        .unwrap();
+    controller
+        .cancel_entry_action(&action.decision_id, action.action_index)
+        .unwrap();
+    assert!(controller.pending_actions().is_empty());
+    controller.acknowledge().unwrap();
+    assert_eq!(controller.status().acknowledged_boundaries, 1);
 }
 
 #[tokio::test(start_paused = true)]

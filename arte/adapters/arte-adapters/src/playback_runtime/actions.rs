@@ -70,6 +70,36 @@ impl Work {
     }
 }
 impl Runtime {
+    pub fn cancel_entry_action(&mut self, decision_id: &str, action_index: usize) -> Result<()> {
+        let at_ns = self
+            .decision_view()?
+            .pending()?
+            .ok_or_else(|| Error::Unready("no cancellation boundary".into()))?
+            .evaluated_at_ns;
+        let item = self
+            .actions
+            .items
+            .get_mut(&(decision_id.into(), action_index))
+            .ok_or_else(|| Error::Unready("no committed cancellation action".into()))?;
+        if !matches!(
+            item.receipt.decision().actions.get(action_index),
+            Some(Action::CancelEntry { .. })
+        ) {
+            return Err(Error::Invalid("action is not an entry cancellation".into()));
+        }
+        let fingerprint = content_hash(&("playback-cancel-v1", decision_id, action_index, at_ns))?;
+        if let Some(previous) = &item.completed_request {
+            return if previous == &fingerprint {
+                Ok(())
+            } else {
+                Err(Error::Conflict("completed cancellation changed".into()))
+            };
+        }
+        self.execution
+            .cancel_entries_for(&item.receipt.decision().scope, at_ns)?;
+        item.completed_request = Some(fingerprint);
+        Ok(())
+    }
     pub fn pending_actions(&self) -> Vec<PendingAction> {
         self.actions
             .items
