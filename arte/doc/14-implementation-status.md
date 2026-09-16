@@ -6,6 +6,25 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Journal-gated execution account view
+
+The playback controller now exposes a borrowed account view only at a dispatched
+boundary after all fills are journaled. It includes the fill-derived net position
+and individual orders with strategy ownership and active protection. It does not
+invent a common stop, target or strategy allocation for the net account position.
+
+The view checks aggregate order quantity and direction against the projection.
+Unknown ownership, contradictory quantities and future projection clocks fail.
+Accounts absent from the run manifest are rejected. The read clock is explicitly
+playback evaluation time, not a broker or provider receipt timestamp.
+
+Multi-account execution lifecycle fixtures consume this view during entry,
+protection replacement, exit and cancellation. Pending or ambiguously acknowledged
+fill journals block it. Mapping this evidence into candidate position state and
+full candidate-driven lifecycle acceptance remain unfinished.
+All 385 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Source-oracle parity was not rerun. No service or network test ran.
+
 ## Offline policy preflight command
 
 The executable now exposes:

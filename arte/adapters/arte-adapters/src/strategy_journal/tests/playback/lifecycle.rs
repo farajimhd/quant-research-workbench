@@ -153,6 +153,8 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
         assert_eq!(poll, Poll::Boundary);
         if controller.execution_status().pending_fills > 0 {
             assert!(controller.decision_view().is_err());
+            assert!(controller.account_view("a").is_err());
+            assert!(controller.account_view("b").is_err());
             assert!(controller.acknowledge().is_err());
             for command in &commands {
                 assert!(controller
@@ -166,6 +168,7 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
             if fills.fail {
                 assert!(controller.commit_fills(&mut fills).await.is_err());
                 assert!(controller.decision_view().is_err());
+                assert!(controller.account_view("a").is_err());
             }
             while controller.commit_fills(&mut fills).await.unwrap() {}
         }
@@ -209,7 +212,27 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
         for runtime in &mut runtimes {
             let account = &runtime.scope().account;
             let key = position_key(account);
-            let quantity = controller.position(&key).map_or(0, |p| p.quantity);
+            let view = controller.account_view(account).unwrap();
+            assert_eq!(view.evaluated_at_ns, now);
+            assert_eq!(view.account, account);
+            assert_eq!(view.instrument, runtime.scope().instrument);
+            assert!(view
+                .orders
+                .iter()
+                .all(|owned| owned.scope == runtime.scope()));
+            assert!(controller.account_view("foreign").is_err());
+            let quantity = view.position.map_or(0, |p| p.quantity);
+            assert_eq!(
+                quantity,
+                controller.position(&key).map_or(0, |p| p.quantity)
+            );
+            assert_eq!(
+                quantity,
+                view.orders
+                    .iter()
+                    .map(|owned| owned.order.entry_filled - owned.order.exit_filled)
+                    .sum::<u64>()
+            );
             let mut safety = prepared_account(account)
                 .pending_decision()
                 .unwrap()

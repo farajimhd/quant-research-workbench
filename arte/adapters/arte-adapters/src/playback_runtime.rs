@@ -140,6 +140,20 @@ impl Runtime {
     ) -> Option<&arte_core::execution_positions::Position> {
         self.execution.position(key)
     }
+    /// One consistent account snapshot after all fills at this boundary commit.
+    /// Orders retain strategy ownership and individual protection geometry.
+    pub fn account_view<'a>(
+        &'a self,
+        account: &'a str,
+    ) -> Result<simulation_runtime::account_view::AccountView<'a>> {
+        let run = self.decision_view()?;
+        if !run.scopes().iter().any(|scope| scope.account == account) {
+            return Err(Error::Invalid(
+                "account absent from playback manifest".into(),
+            ));
+        }
+        self.execution.account_view(account)
+    }
     pub fn release_unfilled_reservation(
         &mut self,
         command: &str,
