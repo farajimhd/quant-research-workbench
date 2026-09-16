@@ -330,6 +330,77 @@ fn run_with_quote(include_quote: bool) -> Run {
     .unwrap()
 }
 
+#[tokio::test]
+async fn committed_execution_action_still_blocks_market_acknowledgment() {
+    use arte_core::{execution_positions::Projection, simulated_execution::Simulator};
+    let run = run_with_quote(false);
+    let mut execution = crate::simulation_runtime::Runtime::new(
+        Simulator::new_scoped("run", 1, 2, 2, 10000).unwrap(),
+        Projection::new(2, 10, 4).unwrap(),
+        4,
+    )
+    .unwrap();
+    execution
+        .bind_source(run.market().unwrap().source_scope())
+        .unwrap();
+    let mut controller =
+        crate::playback_runtime::Runtime::new(run, execution, 2_000_000_000).unwrap();
+    controller.resume().unwrap();
+    assert_eq!(controller.poll().unwrap(), Poll::Boundary);
+    let view = controller.decision_view().unwrap();
+    let input = view.pending().unwrap().unwrap().input("features".into());
+    let mut runtimes: Vec<_> = view
+        .scopes()
+        .iter()
+        .map(|scope| {
+            let mut runtime =
+                arte_core::strategy_transaction::Runtime::new(scope.clone(), 0_u64, 1024).unwrap();
+            let template = prepared_account(&scope.account);
+            let action = if scope.account == "b" {
+                Action::CancelEntry {
+                    reason: "fixture".into(),
+                }
+            } else {
+                Action::Hold {
+                    reason: "fixture".into(),
+                }
+            };
+            runtime
+                .prepare(
+                    input.clone(),
+                    &template.pending_decision().unwrap().safety,
+                    "evidence".into(),
+                    |_| Ok(vec![action]),
+                )
+                .unwrap();
+            runtime
+        })
+        .collect();
+    let mut stores = [timed(0, false), timed(0, false)];
+    let mut writes: Vec<_> = runtimes
+        .iter_mut()
+        .zip(stores.iter_mut())
+        .map(|(r, p)| accounts::Write::new(r, p))
+        .collect();
+    assert!(accounts::commit_accounts(&mut writes, &mut controller, 2)
+        .await
+        .unwrap()
+        .iter()
+        .all(|o| o.result.is_ok()));
+    assert_eq!(controller.decision_view().unwrap().remaining(), Some(0));
+    assert_eq!(controller.pending_actions().len(), 1);
+    assert_eq!(controller.pending_actions()[0].account, "b");
+    assert_eq!(controller.pending_actions()[0].kind, "cancel_entry");
+    assert!(controller.acknowledge().is_err());
+    assert_eq!(controller.status().acknowledged_boundaries, 0);
+    assert!(accounts::commit_accounts(&mut writes, &mut controller, 2)
+        .await
+        .unwrap()
+        .iter()
+        .all(|o| o.result.is_ok()));
+    assert_eq!(controller.pending_actions().len(), 1);
+}
+
 #[tokio::test(start_paused = true)]
 async fn playback_commits_concurrently_and_retries_only_failed_accounts() {
     let mut run = run_with_quote(false);

@@ -10,12 +10,15 @@ use arte_core::{
     strategy_transaction::Committed,
     Error, Result,
 };
+mod actions;
+pub use actions::PendingAction;
 
 pub struct Runtime {
     run: Run,
     execution: simulation_runtime::Runtime,
     maximum_quote_age_ns: u64,
     dispatched_boundary: Option<String>,
+    actions: actions::Work,
 }
 impl Runtime {
     pub fn new(
@@ -41,6 +44,7 @@ impl Runtime {
             execution,
             maximum_quote_age_ns,
             dispatched_boundary: None,
+            actions: actions::Work::default(),
         })
     }
     pub fn status(&self) -> Status {
@@ -103,17 +107,24 @@ impl Runtime {
     }
     pub fn acknowledge(&mut self) -> Result<()> {
         self.decision_view()?;
+        self.actions.require_complete()?;
         self.run.acknowledge()?;
         self.dispatched_boundary = None;
+        self.actions = actions::Work::default();
         Ok(())
     }
 }
 impl Boundary for Runtime {
     fn validate_decision(&self, decision: &Decision) -> Result<()> {
+        actions::Work::validate(decision)?;
         self.decision_view()?.validate_decision(decision)
     }
     fn record(&mut self, committed: &Committed) -> Result<bool> {
-        self.decision_view()?;
-        self.run.record(committed)
+        self.validate_decision(committed.decision())?;
+        let added = self.run.record(committed)?;
+        if added {
+            self.actions.record(committed);
+        }
+        Ok(added)
     }
 }

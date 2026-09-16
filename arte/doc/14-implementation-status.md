@@ -6,6 +6,28 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Committed execution-action tracking
+
+The playback controller now retains every executable action from each committed
+decision. Wait/Hold need no execution work. Entry, add, cancellation, exit and
+protection changes block cursor acknowledgment until handled. Duplicate receipt
+registration does not create duplicate work. Preflight limits each decision to
+16 actions; the existing 4096-consumer bound limits retained action count.
+
+Entry/add submission re-derives the complete bracket from the retained decision
+and allocation, compares it with the supplied plan, then calls the existing
+funding/session/risk-checked simulation path. Submission time must match the
+modeled boundary clock. Successful exact retries do not submit again.
+
+All 328 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+The new integration check proves that committed account receipts alone cannot
+advance a boundary with an unresolved cancellation. The new entry/add wrapper
+still needs a full successful candidate-to-submission acceptance test.
+
+Cancellation, exit and protection dispatch remain unfinished and block rather
+than disappear. Action state is not yet restart-persisted. No services or network
+calls ran. Source-oracle parity was not rerun.
+
 ## Unified playback decision/fill gate
 
 A new in-process controller owns account playback and its simulated execution
