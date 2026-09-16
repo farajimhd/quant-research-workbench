@@ -6,6 +6,34 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Bounded committed-action dispatch
+
+The playback controller now dispatches all executable action types through one
+bounded API. It reads retained committed decisions, not caller-supplied actions.
+Entries/adds require explicit allocations and account cash policies. Protection
+changes use the same session, LULD and risk checks as individual amendments.
+Cancellations and reduce-only exits retain their existing scoped authorities.
+
+Each call returns per-action outcomes and processes at most the requested number
+of actions, with a hard limit of 4,096. Unknown allocation keys and undeclared
+cash accounts fail preflight. Missing entry inputs fail that action. Failed work
+remains pending and blocks boundary acknowledgment. Later actions in the same
+decision are deferred; independent decisions in the batch can still succeed.
+Successful work is not repeated by a later dispatch call.
+
+Dispatch order is stable by decision ID and action index. Reservations are serial
+in this single-instrument controller, avoiding scheduling-dependent cash races.
+This is not a multi-instrument concurrency or latency-performance claim.
+
+The multi-account lifecycle fixtures now use bounded dispatch before checking
+individual-action idempotency. They cover one missing allocation while the other
+account succeeds, exact retry, one-action batches, target replacement, exits,
+cancellation and recovery. All 391 offline Rust tests, formatting, Clippy and
+copied-source checks pass. Source-oracle parity was not rerun. No service ran.
+
+The standalone runner still needs market/evidence input assembly, allocation
+policy wiring, funding settlement orchestration and CLI integration.
+
 ## Controller-owned entry submission
 
 The playback controller now derives entry/add bracket plans directly from its

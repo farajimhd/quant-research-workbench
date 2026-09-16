@@ -22,6 +22,22 @@ pub struct EntryRequest<'a> {
     pub safety: simulation_runtime::AmendmentSafety<'a>,
     pub latency_ns: u64,
 }
+/// Inputs for one instrument boundary. Allocation keys are (decision, action).
+/// Missing allocation or cash mandate fails that action; no defaults are inferred.
+pub struct ActionInputs<'a> {
+    pub allocations: &'a BTreeMap<(String, usize), Allocation>,
+    pub cash_policies: &'a BTreeMap<String, arte_core::order_funding::Policy>,
+    pub portfolio: &'a arte_core::portfolio::Portfolio,
+    pub safety: simulation_runtime::AmendmentSafety<'a>,
+    pub latency_ns: u64,
+    pub maximum_actions: usize,
+}
+pub struct ActionOutcome {
+    pub action: PendingAction,
+    /// Some(plan) for an entry/add; None for other successful action types.
+    /// An error leaves the action pending and prevents market acknowledgment.
+    pub result: Result<Option<decision_orders::Plan>>,
+}
 struct Item {
     receipt: Arc<Committed>,
     completed_request: Option<String>,
@@ -154,6 +170,98 @@ impl Work {
     }
 }
 impl Runtime {
+    /// Deterministic bounded dispatch from the retained decision journal. Account
+    /// reservations remain serial here to avoid scheduler-dependent cash races.
+    /// Failure blocks later actions in that decision, not independent decisions.
+    pub fn execute_actions(&mut self, inputs: ActionInputs<'_>) -> Result<Vec<ActionOutcome>> {
+        let run = self.decision_view()?;
+        if inputs.maximum_actions == 0
+            || inputs.maximum_actions > 4096
+            || inputs.allocations.len() > 4096 * 16
+            || inputs.cash_policies.len() > 4096
+        {
+            return Err(Error::Capacity("action dispatch limits".into()));
+        }
+        let accounts: std::collections::BTreeSet<_> = run
+            .scopes()
+            .iter()
+            .map(|scope| scope.account.as_str())
+            .collect();
+        for account in inputs.cash_policies.keys() {
+            if !accounts.contains(account.as_str()) {
+                return Err(Error::Conflict("undeclared action cash account".into()));
+            }
+        }
+        for key in inputs.allocations.keys() {
+            if !self.actions.items.get(key).is_some_and(|item| {
+                matches!(
+                    item.receipt.decision().actions[key.1],
+                    Action::Enter(_) | Action::Add(_)
+                )
+            }) {
+                return Err(Error::Conflict(
+                    "allocation has no committed exposure action".into(),
+                ));
+            }
+        }
+        let pending = self.pending_actions_bounded(inputs.maximum_actions);
+        let mut blocked = std::collections::BTreeSet::new();
+        let mut outcomes = Vec::new();
+        for action in pending {
+            let result = if blocked.contains(&action.decision_id) {
+                Err(Error::Unready(
+                    "earlier action in this decision failed".into(),
+                ))
+            } else {
+                let safety = simulation_runtime::AmendmentSafety {
+                    session: inputs.safety.session,
+                    risk_policy: inputs.safety.risk_policy,
+                    bands: inputs.safety.bands,
+                };
+                match action.kind.as_str() {
+                    "enter" | "add" => {
+                        let allocation = inputs
+                            .allocations
+                            .get(&(action.decision_id.clone(), action.action_index));
+                        let cash = inputs.cash_policies.get(&action.account);
+                        match (allocation, cash) {
+                            (Some(allocation), Some(cash_policy)) => self
+                                .enter_action(
+                                    &action.decision_id,
+                                    action.action_index,
+                                    EntryRequest {
+                                        allocation,
+                                        cash_policy,
+                                        portfolio: inputs.portfolio,
+                                        safety,
+                                        latency_ns: inputs.latency_ns,
+                                    },
+                                )
+                                .map(Some),
+                            _ => Err(Error::Unready(
+                                "action allocation or cash mandate missing".into(),
+                            )),
+                        }
+                    }
+                    "replace_stop" | "replace_target" => self
+                        .protection_action(&action.decision_id, action.action_index, safety)
+                        .map(|()| None),
+                    "exit" => self
+                        .exit_action(&action.decision_id, action.action_index)
+                        .map(|()| None),
+                    "cancel_entry" => self
+                        .cancel_entry_action(&action.decision_id, action.action_index)
+                        .map(|()| None),
+                    _ => Err(Error::Invalid("unknown retained action kind".into())),
+                }
+            };
+            if result.is_err() {
+                blocked.insert(action.decision_id.clone());
+            }
+            outcomes.push(ActionOutcome { action, result });
+        }
+        Ok(outcomes)
+    }
     /// Build, reserve and submit exactly the retained committed entry/add action.
     /// On submission failure the reservation remains for exact retry. This does
     /// not resize orders or silently discard an unfunded strategy decision.
@@ -372,10 +480,14 @@ impl Runtime {
         Ok(())
     }
     pub fn pending_actions(&self) -> Vec<PendingAction> {
+        self.pending_actions_bounded(4096 * 16)
+    }
+    fn pending_actions_bounded(&self, maximum: usize) -> Vec<PendingAction> {
         self.actions
             .items
             .iter()
             .filter(|(_, item)| item.completed_request.is_none())
+            .take(maximum)
             .map(|((id, index), item)| PendingAction {
                 decision_id: id.clone(),
                 action_index: *index,

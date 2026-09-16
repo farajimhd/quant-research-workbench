@@ -332,6 +332,62 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, fail_submission: bo
         {
             outcome.result.unwrap();
         }
+        if !fail_submission {
+            let allocations: BTreeMap<_, _> = writes
+                .iter()
+                .filter_map(|write| {
+                    let decision = write.receipt().unwrap().decision();
+                    matches!(decision.actions[0], Action::Enter(_)).then(|| {
+                        (
+                            (decision.decision_id.clone(), 0),
+                            decision_orders::Allocation {
+                                account: decision.scope.account.clone(),
+                                instrument: 1,
+                                quantity: if decision.scope.account == "a" { 1 } else { 2 },
+                                price_scale: 2,
+                                tick: 1,
+                                entry_limit: 1001,
+                                deadline_ns: 202_000_000_000,
+                            },
+                        )
+                    })
+                })
+                .collect();
+            let policies = BTreeMap::from([("a".into(), cash.clone()), ("b".into(), cash.clone())]);
+            let mut incomplete = allocations.clone();
+            incomplete.pop_first();
+            let inputs = |allocations, maximum_actions| crate::playback_runtime::ActionInputs {
+                allocations,
+                cash_policies: &policies,
+                portfolio: &portfolio,
+                safety: crate::simulation_runtime::AmendmentSafety {
+                    session: &session,
+                    risk_policy: &risk,
+                    bands: None,
+                },
+                latency_ns: 0,
+                maximum_actions,
+            };
+            assert!(controller.execute_actions(inputs(&allocations, 0)).is_err());
+            if !allocations.is_empty() {
+                let outcomes = controller.execute_actions(inputs(&incomplete, 2)).unwrap();
+                assert_eq!(outcomes.iter().filter(|o| o.result.is_err()).count(), 1);
+                assert_eq!(outcomes.iter().filter(|o| o.result.is_ok()).count(), 1);
+                assert!(controller.acknowledge().is_err());
+            }
+            // Bounded calls drain the remaining work. Successes are never replayed.
+            while !controller.pending_actions().is_empty() {
+                let before = controller.pending_actions().len();
+                let outcomes = controller.execute_actions(inputs(&allocations, 1)).unwrap();
+                assert_eq!(outcomes.len(), 1);
+                outcomes.into_iter().next().unwrap().result.unwrap();
+                assert_eq!(controller.pending_actions().len(), before - 1);
+            }
+            assert!(controller
+                .execute_actions(inputs(&allocations, 1))
+                .unwrap()
+                .is_empty());
+        }
         for write in &writes {
             let receipt = write.receipt().unwrap();
             let decision = receipt.decision();
