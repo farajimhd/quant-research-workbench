@@ -6,6 +6,31 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Certified historical source loading
+
+A read-only loader now reconstructs observations from the batches named by one
+acquisition certificate. It checks the independent certificate hash and knowledge
+cutoff before I/O. Batch reads run with bounded concurrency; verification follows
+the certified pagination order. Batch, event and retained serialized-byte budgets
+are enforced. In-flight batch memory is additional and bounded by concurrency and
+the existing event-batch contract.
+
+The result contains only verified complete input. Errors return no partial source.
+Stored timestamps and missing receive/participant times are unchanged. Certified
+empty intervals return empty input without invented events. The loader does not
+merge revisions, infer eligibility, create replay frames or certify upstream
+provider completeness.
+
+Three fixtures cover concurrent ordered loading, preserved clocks, empty coverage,
+missing/changed batches, knowledge cutoff and budgets. All 407 offline tests,
+formatting, Clippy and copied-source checks pass. No services started or migrations
+ran. Source parity was not rerun.
+
+Historical clock projection remains a required integration step: REST observations
+carry acquisition-time availability, not the historical simulated decision clock.
+The executable runner must use an explicitly pinned projection rather than
+silently overwriting source timing or presenting modeled latency as measured.
+
 ## Independent rejection readback during recovery
 
 The controller now verifies retained sizing rejections through a read-only

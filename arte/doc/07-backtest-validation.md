@@ -24,6 +24,12 @@ Corrections and REST enrichment must not appear before their declared availabili
 
 ## Run identity
 
+Certified REST loading preserves acquisition-time availability. That timestamp is
+not automatically the historical simulation clock. Replay preparation must pin an
+explicit projection, preserve source provenance and label modeled availability.
+It must not invent a historical receive or execution timestamp. The certified
+source loader is implemented; the historical clock projection remains unfinished.
+
 Pin code release, strategy/configuration, algorithm versions, source generation,
 reference generation, historical seed, clock model, fill model, and cost model.
 Persist input capabilities and declared approximations.
