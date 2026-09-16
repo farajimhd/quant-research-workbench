@@ -54,16 +54,18 @@ def test_independent_policy_preserves_source_gates_and_portfolio_authority():
     plan = next(x for x in payload['run_plans']['plans'] if x['run_plan_id']==plan_id)
     assert plan['allowed_environments'] == ['backtest']
     assert plan['signal_stream_ids'] == ['price-squeeze-early']
-    assert plan['watchlist_ids'] == []
+    assert plan['watchlist_ids'] == [PROFILE_ID+'-tradability']
     assert plan['activation'] == dict(event_policy='new_occurrences',
                                       watchlist_policy='not_required',
                                       watch_duration='session')
     universe = next(x for x in payload['run_plans']['universes']
                     if x['universe_id'] == plan['universe_id'])
-    assert universe['source'] == 'signal_stream'
+    assert universe['source'] == 'watchlist'
     assert universe['signal_stream_ids'] == ['price-squeeze-early']
-    assert universe['scanner_view_ids'] == []
-    assert universe['watchlist_snapshots'] == []
+    assert universe['scanner_view_ids'] == [PROFILE_ID+'-tradability']
+    assert [x['watchlist_id'] for x in universe['watchlist_snapshots']] == [
+        PROFILE_ID+'-tradability'
+    ]
     assert [x['signal_stream_id'] for x in universe['signal_stream_snapshots']] == [
         'price-squeeze-early'
     ]
@@ -107,10 +109,12 @@ def test_compiled_candidate_retains_source_native_early_squeeze_scope():
     universe = next(row for row in runtime['run_plans']['universes']
                     if row['universe_id'] == plan['universe_id'])
     assert plan['signal_stream_ids'] == ['price-squeeze-early']
-    assert plan['watchlist_ids'] == []
+    assert plan['watchlist_ids'] == [PROFILE_ID+'-tradability']
     assert plan['activation']['watch_duration'] == 'session'
-    assert universe['source'] == 'signal_stream'
-    assert universe['watchlist_snapshots'] == []
+    assert universe['source'] == 'watchlist'
+    assert [row['watchlist_id'] for row in universe['watchlist_snapshots']] == [
+        PROFILE_ID+'-tradability'
+    ]
     assert [row['signal_stream_id'] for row in universe['signal_stream_snapshots']] == [
         'price-squeeze-early'
     ]
