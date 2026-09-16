@@ -125,6 +125,26 @@ impl Prepared {
     pub fn hash(&self) -> &str {
         &self.hash
     }
+    /// Check the playback domain, not upstream completeness. Empty intervals
+    /// still need their terminal watermark. No clocks or source rows are changed.
+    pub fn require_interval(&self, interval: crate::coverage::Interval) -> Result<()> {
+        interval.validate()?;
+        if self.frames.last().map(|f| f.watermark_ns) != Some(interval.end)
+            || self.frames.iter().any(|f| {
+                f.watermark_ns < interval.start
+                    || f.watermark_ns > interval.end
+                    || f.inputs.iter().any(|i| {
+                        i.observation.sip.ns < interval.start
+                            || i.observation.sip.ns >= interval.end
+                    })
+            })
+        {
+            return Err(Error::Conflict(
+                "prepared playback interval differs from market session".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

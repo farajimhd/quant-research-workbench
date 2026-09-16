@@ -6,6 +6,23 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Checked backtest market startup
+
+A portable market-startup document now assembles the shared market/V7 scheduler
+and account run. It binds the run, historical seed manifest, market configuration,
+quote policy, split adjustment and scheduler limits. Prepared input must match
+the session domain and final watermark. Quote policy availability is checked at
+session start. Seed hydration verifies the complete historical object graph.
+
+Assembly returns a paused single-instrument run without I/O. It does not replace
+the seed/acquisition publication checks or the strategy/account startup document.
+The executable coordinator and multi-instrument session integration remain open.
+
+Three fixtures cover portable decoding and empty-interval completion, wrong pins,
+changed or incomplete seeds, future policies, incompatible source domains and
+bounded input. All 415 offline tests, formatting, Clippy and copied-source checks
+pass. No services started or migrations ran. Source parity was not rerun.
+
 ## Explicit historical clock projection
 
 Certified trade and quote sources can now produce a pinned historical catalog and

@@ -67,7 +67,8 @@ impl Default for SeedPolicy {
         }
     }
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SplitAdjustment {
     pub factor: f64,
     pub evidence: Vec<String>,

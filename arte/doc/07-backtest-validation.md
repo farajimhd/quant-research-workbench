@@ -75,6 +75,31 @@ or broker-generated IDs.
 
 ## Fresh-session startup document
 
+### Market-owner assembly
+
+`arte.backtest-market-startup.v1` pins the run identity, market configuration,
+split adjustment, quote policy and bounded scheduler settings. Its reader accepts
+at most 1 MiB and requires an independently supplied expected hash. It never
+discovers configuration or seeds from the environment or parent application.
+
+The assembly path verifies the source catalog and prepared input. Input timestamps
+must belong to the configured session interval. Its terminal watermark must equal
+the interval end. This domain check is not a source-completeness certificate.
+The quote policy must cover the interval and be available at session start.
+
+For this single-instrument assembly path, the run's `seed_manifest_hash` is the
+canonical content hash of the supplied historical seed manifest. It is not the
+seed's own ID. The seed object graph is hydrated and verified before constructing
+the shared market/V7 runtime. Existing seed causality and split checks still apply.
+The resulting account run starts paused with no admitted events.
+
+Pass that run to the fresh-session publication path below. Connected loaders must
+still prove seed publication and acquisition durability. This constructor neither
+publishes data nor authorizes strategy activation. It does not yet assemble a
+multi-instrument portfolio run. The executable coordinator remains unfinished.
+
+### Strategy and account inputs
+
 `arte.backtest-startup.v1` binds the run manifest hash, effective configuration
 map, initial simulated accounts, price precision, fill model, cost model and
 resource limits. Startup requires its independently supplied expected hash.

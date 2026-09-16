@@ -19,13 +19,15 @@ pub enum ObservationUpdate {
     Duplicate,
     Applied(Update),
 }
-#[derive(Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Timeframe {
     pub interval_ns: u64,
     pub macd_periods: (u32, u32, u32),
     pub maximum_bars: usize,
 }
-#[derive(Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub provider: u16,
     pub instrument: u64,
