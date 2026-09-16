@@ -162,7 +162,7 @@ pub struct RecoveryState {
     pub last_exit: Option<Exit>,
     pub retired_swings: BTreeMap<String, u64>,
 }
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RecoveryPolicy {
     pub stop_gain_guard: bool,
     pub tight_base: bool,

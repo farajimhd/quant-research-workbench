@@ -439,6 +439,13 @@ fn run_candidate_fixture(
 
 #[tokio::test]
 async fn candidate_owner_preflights_consumers_before_journal_io() {
+    candidate_owner_retry(false).await;
+}
+#[tokio::test(start_paused = true)]
+async fn candidate_owner_retains_progress_when_journal_acknowledgment_is_cancelled() {
+    candidate_owner_retry(true).await;
+}
+async fn candidate_owner_retry(cancel: bool) {
     use crate::playback_runtime::{candidates::Candidates, Runtime as Controller};
     use arte_core::{
         candidate_features::Config as Features, execution_positions::Projection,
@@ -543,6 +550,8 @@ async fn candidate_owner_preflights_consumers_before_journal_io() {
     struct RetryStore {
         calls: usize,
         fail: bool,
+        delay: bool,
+        stored: Vec<Record>,
     }
     impl Publisher for RetryStore {
         async fn append(&mut self, batch: &Batch) -> Result<Vec<Record>> {
@@ -551,7 +560,17 @@ async fn candidate_owner_preflights_consumers_before_journal_io() {
                 self.fail = false;
                 return Err(Error::Unready("injected account failure".into()));
             }
-            Ok(batch.records().to_vec())
+            if self.stored.is_empty() {
+                self.stored = batch.records().to_vec();
+            } else {
+                batch.verify_readback(&self.stored)?;
+            }
+            if self.delay {
+                self.delay = false;
+                // Persisted in the in-memory journal, but readback has not arrived.
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            }
+            Ok(self.stored.clone())
         }
     }
     let keys: Vec<_> = candidates.scope_hashes().map(str::to_owned).collect();
@@ -563,17 +582,31 @@ async fn candidate_owner_preflights_consumers_before_journal_io() {
                 key.clone(),
                 RetryStore {
                     calls: 0,
-                    fail: i == 1,
+                    fail: i == 1 && !cancel,
+                    delay: i == 1 && cancel,
+                    stored: vec![],
                 },
             )
         })
         .collect();
-    let outcomes = candidates
-        .commit_accounts(&mut controller, &mut stores, 2)
+    if cancel {
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(1),
+            candidates.commit_accounts(&mut controller, &mut stores, 2)
+        )
         .await
-        .unwrap();
-    assert_eq!(outcomes.iter().filter(|o| o.result.is_ok()).count(), 1);
-    assert_eq!(outcomes.iter().filter(|o| o.result.is_err()).count(), 1);
+        .is_err());
+        assert_eq!(stores[&keys[0]].stored.len(), 1);
+        assert_eq!(stores[&keys[1]].stored.len(), 1);
+        assert_eq!(controller.decision_view().unwrap().remaining(), Some(1));
+    } else {
+        let outcomes = candidates
+            .commit_accounts(&mut controller, &mut stores, 2)
+            .await
+            .unwrap();
+        assert_eq!(outcomes.iter().filter(|o| o.result.is_ok()).count(), 1);
+        assert_eq!(outcomes.iter().filter(|o| o.result.is_err()).count(), 1);
+    }
     assert!(controller.acknowledge().is_err());
     let outcomes = candidates
         .commit_accounts(&mut controller, &mut stores, 2)
@@ -583,6 +616,8 @@ async fn candidate_owner_preflights_consumers_before_journal_io() {
     assert!(outcomes[0].result.is_ok());
     assert_eq!(stores[&keys[0]].calls, 1);
     assert_eq!(stores[&keys[1]].calls, 2);
+    assert_eq!(stores[&keys[0]].stored.len(), 1);
+    assert_eq!(stores[&keys[1]].stored.len(), 1);
     assert!(candidates
         .commit_accounts(&mut controller, &mut stores, 2)
         .await

@@ -6,6 +6,28 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Candidate policy bundle and cancelled journal acknowledgment
+
+The shared core now has an owned, serializable candidate policy bundle. It holds
+feature, entry, add, protection, acquisition, recovery and position settings.
+Fields have no implicit defaults. Its effective hash delegates to the existing
+candidate configuration authority and requires matching feature and quote-policy
+identities. A JSON file hash is not a substitute for that effective hash.
+Algorithm-specific parameter admissibility remains in the existing evaluators.
+
+The policy round-trip test reproduces the existing evaluator's effective hash.
+Changed feature settings and unsupported schema versions are rejected. Deployment
+loading and per-consumer policy binding still need integration.
+
+A virtual-time journal test now cancels the candidate owner's commit future after
+the second account stores its row but before readback arrives. Retry verifies the
+same row; the already committed account is not written again. Both account and
+execution-action acknowledgment gates remain enforced. This proves in-process
+retry behavior, not database crash durability or whole-run recovery.
+
+All 383 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Source-oracle parity was not rerun. No service or network test ran.
+
 ## Quote-boundary candidate decisions
 
 The candidate owner now handles quote and other non-entry-price boundaries.

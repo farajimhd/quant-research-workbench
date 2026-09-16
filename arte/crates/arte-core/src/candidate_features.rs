@@ -12,7 +12,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 pub mod checkpoint;
 const SECOND: u64 = 1_000_000_000;
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Config {
     pub setup: SetupSettings,
     pub forming_macd: bool,
@@ -120,6 +120,9 @@ impl State {
     }
     pub fn configuration_hash(&self) -> &str {
         &self.config_hash
+    }
+    pub(crate) fn config_identity(&self) -> Result<String> {
+        content_hash(&self.config)
     }
     pub fn maximum_completed_bar_age_ns(&self) -> u64 {
         self.config.maximum_completed_bar_age_ns

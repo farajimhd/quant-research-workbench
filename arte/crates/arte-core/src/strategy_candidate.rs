@@ -740,6 +740,45 @@ mod tests {
             };
             let features =
                 crate::candidate_features::State::new(&market, feature_config.clone()).unwrap();
+            let bundle = crate::candidate_config::Config {
+                schema_version: 1,
+                features: feature_config.clone(),
+                entry: ep.clone(),
+                adds: ap.clone(),
+                protection: pp.clone(),
+                acquisition: intrabar_policy.clone(),
+                recovery: f.recovery_policy.clone(),
+                position: crate::candidate_config::Position {
+                    phase_minimum_progress_r: policy.phase_minimum_progress_r,
+                    failure_window_ns: policy.failure_window_ns,
+                    failure_buffer_ticks: policy.failure_buffer_ticks,
+                    failure_exit_enabled: policy.failure_exit_enabled,
+                    preserve_peak: policy.preserve_peak,
+                    stop_gain_guard: policy.stop_gain_guard,
+                },
+            };
+            let json = serde_json::to_vec(&bundle).unwrap();
+            let mut decoded: crate::candidate_config::Config =
+                serde_json::from_slice(&json).unwrap();
+            assert_eq!(
+                decoded
+                    .effective_hash(&features, f.quote_policy_hash)
+                    .unwrap(),
+                crate::candidate_runtime::configuration_hash(
+                    &policy,
+                    &intrabar_policy,
+                    &features,
+                    f.recovery_policy,
+                    f.quote_policy_hash
+                )
+                .unwrap()
+            );
+            decoded.features.maximum_quote_age_ns += 1;
+            assert!(decoded
+                .effective_hash(&features, f.quote_policy_hash)
+                .is_err());
+            decoded.schema_version = 2;
+            assert!(decoded.policy().is_err());
             let mut runtime = crate::candidate_runtime::Runtime::new(
                 crate::strategy_dispatch::Scope {
                     run_id: "r".into(),
