@@ -6,6 +6,24 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Strategy-owned FIFO projection
+
+The core now provides a strategy-scoped wrapper around the existing FIFO
+projection. Command ownership is an explicit input from execution authority.
+The wrapper checks owner, account, instrument, origin and trading mode without
+rewriting the fill. Strategy positions remain separate from account positions.
+
+Recovery binds the projection to the full strategy scope, origin and parent
+checkpoint context. A different strategy cannot restore the same image.
+The test covers two strategies in one account, distinct cost bases, duplicate
+fills, wrong ownership, recovery and a partial exit.
+
+This component is not yet wired into execution-journal publication or the parent
+execution checkpoint. That integration and candidate reconciliation remain
+required before these projections can drive the candidate runtime.
+All 387 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Source-oracle parity was not rerun. No service or network test ran.
+
 ## Exact per-order fill notionals
 
 The order cash ledger now retains cumulative entry and exit notionals as exact
