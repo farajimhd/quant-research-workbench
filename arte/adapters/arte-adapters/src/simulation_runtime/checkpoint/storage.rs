@@ -33,7 +33,7 @@ fn archive_limit(limits: Limits) -> Result<usize> {
     {
         return Err(Error::Invalid("execution archive limits".into()));
     }
-    Ok(limits.maximum_bytes + (limits.maximum_orders + 3) * 8 + 16)
+    Ok(limits.maximum_bytes + (limits.maximum_orders * 2 + 3) * 8 + 16)
 }
 impl Header {
     pub fn decode(object: &Object, limits: Limits) -> Result<Self> {
@@ -67,7 +67,7 @@ impl Header {
 impl Stored {
     pub fn from_execution(bundle: &Bundle, limits: Limits) -> Result<Self> {
         let maximum = archive_limit(limits)?;
-        if bundle.objects.len() > limits.maximum_orders + 2 {
+        if bundle.objects.len() > limits.maximum_orders * 2 + 2 {
             return Err(Error::Capacity("execution archive object budget".into()));
         }
         let total = bundle
@@ -173,7 +173,7 @@ fn unpack(bytes: &[u8], header: &Header, limits: Limits) -> Result<Bundle> {
             .map_err(|_| Error::Capacity("execution archive length".into()))
     }
     let count = length(&mut remaining)?;
-    if count > limits.maximum_orders + 2 {
+    if count > limits.maximum_orders * 2 + 2 {
         return Err(Error::Capacity("execution archive object count".into()));
     }
     let mut used = 0usize;

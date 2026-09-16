@@ -140,6 +140,17 @@ impl Runtime {
     ) -> Option<&arte_core::execution_positions::Position> {
         self.execution.position(key)
     }
+    pub fn strategy_position(
+        &self,
+        scope: &arte_core::strategy_dispatch::Scope,
+    ) -> Result<Option<&arte_core::execution_positions::Position>> {
+        if !self.decision_view()?.scopes().contains(scope) {
+            return Err(Error::Conflict(
+                "strategy absent from playback manifest".into(),
+            ));
+        }
+        self.execution.strategy_position(scope)
+    }
     /// One consistent account snapshot after all fills at this boundary commit.
     /// Orders retain strategy ownership and individual protection geometry.
     pub fn account_view<'a>(

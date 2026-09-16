@@ -53,6 +53,7 @@ struct Root {
     simulator: String,
     simulator_hash: String,
     projection: String,
+    attributed: BTreeMap<String, String>,
     owners: BTreeMap<String, Scope>,
     reservations: BTreeMap<String, Reservation>,
     released: BTreeSet<String>,
@@ -200,7 +201,7 @@ impl Runtime {
         let projection = self.projection.checkpoint(&context, limits.projection)?;
         let mut objects = BTreeMap::new();
         let mut root = Root {
-            version: 2,
+            version: 3,
             manifest_hash: run.hash().into(),
             cost_model_hash: costs.hash().into(),
             fill_model: self
@@ -213,6 +214,7 @@ impl Runtime {
             simulator: simulator.id.clone(),
             simulator_hash,
             projection: projection.id.clone(),
+            attributed: BTreeMap::new(),
             owners: self.owners.clone(),
             reservations: self.reservations.clone(),
             released: self.released.clone(),
@@ -220,6 +222,11 @@ impl Runtime {
         };
         let mut used = 0usize;
         for object in [simulator, projection] {
+            used = add_object(&mut objects, object, used, limits.maximum_bytes)?;
+        }
+        for (scope, projection) in &self.attributed {
+            let object = projection.checkpoint(&context, limits.projection)?;
+            root.attributed.insert(scope.clone(), object.id.clone());
             used = add_object(&mut objects, object, used, limits.maximum_bytes)?;
         }
         for (command, cash) in &self.cash {
@@ -248,7 +255,7 @@ impl Runtime {
         limits: Limits,
     ) -> Result<Self> {
         let context = context(run, cut, limits)?;
-        if bundle.root.id != expected_root || bundle.objects.len() > limits.maximum_orders + 2 {
+        if bundle.root.id != expected_root || bundle.objects.len() > limits.maximum_orders * 2 + 2 {
             return Err(Error::Conflict(
                 "execution root or object count differs".into(),
             ));
@@ -266,7 +273,7 @@ impl Runtime {
         bundle.root.verify()?;
         let root: Root = serde_json::from_slice(&bundle.root.payload)
             .map_err(|e| Error::Serialization(e.to_string()))?;
-        if root.version != 2
+        if root.version != 3
             || root.manifest_hash != run.hash()
             || root.cut != *cut
             || root.cost_model_hash != costs.hash()
@@ -275,6 +282,7 @@ impl Runtime {
             || root.reservations.len() > limits.maximum_orders
             || root.released.len() > limits.maximum_orders
             || root.cash.len() > limits.maximum_orders
+            || root.attributed.len() > limits.maximum_orders
             || encode(&root, limits.maximum_bytes)?.payload != bundle.root.payload
         {
             return Err(Error::Conflict("execution recovery context differs".into()));
@@ -282,6 +290,7 @@ impl Runtime {
         let expected: BTreeSet<_> = [&root.simulator, &root.projection]
             .into_iter()
             .chain(root.cash.values().map(|c| &c.object))
+            .chain(root.attributed.values())
             .cloned()
             .collect();
         if expected != bundle.objects.keys().cloned().collect() {
@@ -328,6 +337,30 @@ impl Runtime {
             fills.insert(command, cash.last_fill);
         }
         restored.owners = root.owners;
+        let origin = content_hash(&(
+            "simulated-position-v1",
+            restored.simulator.run_id(),
+            arte_core::simulated_execution::MODEL,
+        ))?;
+        let scopes: BTreeMap<_, _> = restored
+            .owners
+            .values()
+            .map(|scope| Ok((content_hash(scope)?, scope.clone())))
+            .collect::<Result<_>>()?;
+        for (scope_hash, object_hash) in root.attributed {
+            let scope = scopes
+                .get(&scope_hash)
+                .ok_or_else(|| Error::Conflict("attributed checkpoint owner missing".into()))?;
+            let projection = arte_core::execution_positions::scoped::Scoped::restore(
+                scope.clone(),
+                origin.clone(),
+                &bundle.objects[&object_hash],
+                &object_hash,
+                &context,
+                limits.projection,
+            )?;
+            restored.attributed.insert(scope_hash, projection);
+        }
         restored.reservations = root.reservations;
         restored.released = root.released;
         restored.last_source_quote = root.last_source_quote;
@@ -451,6 +484,51 @@ impl Runtime {
             {
                 return Err(Error::Conflict(
                     "checkpoint projection and cash disagree".into(),
+                ));
+            }
+        }
+        let mut strategy_totals: BTreeMap<String, Aggregate> = BTreeMap::new();
+        for (command, cash) in &self.cash {
+            let scope = &self.owners[command];
+            let fill = &fills[command];
+            let total = strategy_totals.entry(content_hash(scope)?).or_default();
+            total.quantity = total
+                .quantity
+                .checked_add(cash.entry_quantity() - cash.exit_quantity())
+                .ok_or_else(|| Error::Capacity("strategy quantity overflow".into()))?;
+            total.cash = total
+                .cash
+                .checked_add(cash.trade_cash_atoms())
+                .ok_or_else(|| Error::Capacity("strategy cash overflow".into()))?;
+            total.at = total.at.max(fill.at_ns);
+            total.sequence = total.sequence.max(fill.sequence);
+            if cash.entry_quantity() > cash.exit_quantity() {
+                if total.direction.is_some_and(|d| d != cash.entry_direction()) {
+                    return Err(Error::Conflict("opposing strategy quantities".into()));
+                }
+                total.direction = Some(cash.entry_direction());
+            }
+        }
+        if !strategy_totals.keys().eq(self.attributed.keys()) {
+            return Err(Error::Conflict(
+                "strategy projection population differs".into(),
+            ));
+        }
+        for (scope_hash, total) in strategy_totals {
+            let scoped = &self.attributed[&scope_hash];
+            let position = scoped
+                .position()
+                .ok_or_else(|| Error::Unready("strategy position missing".into()))?;
+            if content_hash(scoped.scope())? != scope_hash
+                || position.quantity != total.quantity
+                || position.trade_cash_atoms != total.cash
+                || position.direction != total.direction
+                || position.last_at_ns != total.at
+                || position.last_sequence != total.sequence
+                || position.price_scale != self.simulator.price_scale()
+            {
+                return Err(Error::Conflict(
+                    "strategy projection disagrees with journaled cash".into(),
                 ));
             }
         }

@@ -139,6 +139,18 @@ fn add(a: i128, b: i128) -> Result<i128> {
         .ok_or_else(|| Error::Invalid("position accounting overflow".into()))
 }
 impl Projection {
+    pub fn empty_scoped(
+        &self,
+        scope: crate::strategy_dispatch::Scope,
+        origin_hash: String,
+    ) -> Result<scoped::Scoped> {
+        scoped::Scoped::new(
+            scope,
+            origin_hash,
+            self.maximum_fills,
+            self.maximum_lots_per_position,
+        )
+    }
     pub fn new(
         maximum_positions: usize,
         maximum_fills: usize,

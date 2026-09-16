@@ -116,6 +116,74 @@ fn fixture(run: &Run) -> Runtime {
     }
     runtime
 }
+#[tokio::test]
+async fn shared_account_strategy_attribution_survives_execution_recovery() {
+    let mut manifest = run().manifest().clone();
+    let mut extra = manifest.consumers[0].clone();
+    extra.strategy_instance = "t".into();
+    manifest.consumers.insert(1, extra);
+    let run = Run::new(manifest.clone(), &manifest.hash().unwrap()).unwrap();
+    let mut runtime = fixture(&run);
+    let mut bracket = runtime.simulator.positions()[0].bracket.clone();
+    bracket.command_id = "a-extra".into();
+    runtime.simulator.submit(bracket, 0, 0).unwrap();
+    runtime
+        .owners
+        .insert("a-extra".into(), run.scope("a", 1, "t").unwrap());
+    runtime.reservations.insert(
+        "a-extra".into(),
+        Reservation {
+            command_id: "a-extra".into(),
+            instrument: 1,
+            cash_minor: 300,
+        },
+    );
+    let mut journal = Journal::default();
+    quote(&mut runtime, 1, 99, 20);
+    assert!(runtime
+        .strategy_position(&run.scope("a", 1, "s").unwrap())
+        .is_err());
+    drain(&mut runtime, &mut journal).await;
+    for strategy in ["s", "t"] {
+        assert_eq!(
+            runtime
+                .strategy_position(&run.scope("a", 1, strategy).unwrap())
+                .unwrap()
+                .unwrap()
+                .quantity,
+            3
+        );
+    }
+    let image = runtime
+        .checkpoint(&run, &cut(1), &journal.last, limits())
+        .unwrap();
+    let restored = Runtime::restore_checkpoint(
+        &image,
+        &image.root.id,
+        &run,
+        &cut(1),
+        Costs::new(model(), &run).unwrap(),
+        limits(),
+    )
+    .unwrap();
+    assert_eq!(restored.attributed.len(), 3);
+    for strategy in ["s", "t"] {
+        let scope = run.scope("a", 1, strategy).unwrap();
+        assert_eq!(
+            content_hash(runtime.strategy_position(&scope).unwrap().unwrap()).unwrap(),
+            content_hash(restored.strategy_position(&scope).unwrap().unwrap()).unwrap()
+        );
+    }
+    assert_eq!(
+        restored
+            .account_view("a")
+            .unwrap()
+            .position
+            .unwrap()
+            .quantity,
+        6
+    );
+}
 #[test]
 fn execution_recovery_requires_matching_active_reservations() {
     use arte_core::portfolio::{Account, Portfolio};
@@ -358,7 +426,12 @@ async fn mismatched_components_and_incomplete_graphs_fail_closed() {
     root.version = 1;
     image.root = encode(&root, limits().maximum_bytes).unwrap();
     assert!(restore(&image).is_err());
-    root.version = 2;
+    root.version = 3;
+    let attribution = root.attributed.clone();
+    root.attributed.clear();
+    image.root = encode(&root, limits().maximum_bytes).unwrap();
+    assert!(restore(&image).is_err());
+    root.attributed = attribution;
     root.last_source_quote.as_mut().unwrap().1 += 1;
     image.root = encode(&root, limits().maximum_bytes).unwrap();
     assert!(restore(&image).is_err());

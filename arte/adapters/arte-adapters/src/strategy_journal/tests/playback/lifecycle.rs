@@ -222,6 +222,15 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool) {
                 .all(|owned| owned.scope == runtime.scope()));
             assert!(controller.account_view("foreign").is_err());
             let quantity = view.position.map_or(0, |p| p.quantity);
+            let attributed = controller.strategy_position(runtime.scope()).unwrap();
+            assert_eq!(attributed.map_or(0, |p| p.quantity), quantity);
+            if let (Some(owned), Some(account_position)) = (attributed, view.position) {
+                assert_eq!(owned.open_cost_atoms, account_position.open_cost_atoms);
+                assert_eq!(
+                    owned.realized_gross_pnl_atoms,
+                    account_position.realized_gross_pnl_atoms
+                );
+            }
             assert_eq!(
                 quantity,
                 controller.position(&key).map_or(0, |p| p.quantity)

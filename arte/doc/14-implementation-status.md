@@ -6,6 +6,26 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Strategy attribution in execution and recovery
+
+Journal-acknowledged fills now update both account and strategy FIFO projections.
+The execution owner resolves strategy attribution from command ownership. Reads
+remain blocked while any fill batch is pending. Exact retries reuse fill identity.
+Only legacy raw-order unit fixtures bypass missing ownership; production rejects
+it and has no raw submission API.
+
+The playback controller exposes strategy positions only for exact manifest scopes.
+Execution checkpoints are version 3 and include the attributed projections.
+Recovery verifies their population, ownership, quantity, direction, cash and clocks
+against the owned orders and cash ledger. Older execution images are rejected.
+No database data was migrated. Archive byte limits still bound the whole graph.
+
+Tests cover two strategies sharing an account across fill publication and recovery.
+Existing entry/protection/exit fixtures also compare strategy and account evidence.
+All 388 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Source-oracle parity was not rerun. No service or network test ran.
+Candidate position reconciliation and full-run integration remain unfinished.
+
 ## Strategy-owned FIFO projection
 
 The core now provides a strategy-scoped wrapper around the existing FIFO
@@ -18,9 +38,9 @@ checkpoint context. A different strategy cannot restore the same image.
 The test covers two strategies in one account, distinct cost bases, duplicate
 fills, wrong ownership, recovery and a partial exit.
 
-This component is not yet wired into execution-journal publication or the parent
-execution checkpoint. That integration and candidate reconciliation remain
-required before these projections can drive the candidate runtime.
+Execution-journal and parent checkpoint integration is recorded above.
+Candidate reconciliation remains required before these projections can drive
+the candidate runtime.
 All 387 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
 Source-oracle parity was not rerun. No service or network test ran.
 

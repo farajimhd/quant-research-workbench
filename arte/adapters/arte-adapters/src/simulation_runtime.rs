@@ -25,6 +25,7 @@ pub struct Status {
 pub struct Runtime {
     simulator: Simulator,
     projection: Projection,
+    attributed: std::collections::BTreeMap<String, arte_core::execution_positions::scoped::Scoped>,
     pending: Option<Pending>,
     source: Option<arte_core::event_order::Scope>,
     last_source_quote: Option<(arte_core::events::Observation, u64, u64)>,
@@ -68,6 +69,7 @@ impl Runtime {
         Ok(Self {
             simulator,
             projection,
+            attributed: Default::default(),
             pending: None,
             source: None,
             last_source_quote: None,
@@ -193,6 +195,16 @@ impl Runtime {
     }
     pub fn position(&self, key: &Key) -> Option<&Position> {
         self.projection.position(key)
+    }
+    pub(crate) fn strategy_position(
+        &self,
+        scope: &arte_core::strategy_dispatch::Scope,
+    ) -> Result<Option<&Position>> {
+        self.ready()?;
+        Ok(self
+            .attributed
+            .get(&content_hash(scope)?)
+            .and_then(|p| p.position()))
     }
     /// Bind the historical provider/session once. Changing source needs a new run.
     pub fn bind_source(&mut self, scope: arte_core::event_order::Scope) -> Result<()> {
@@ -711,6 +723,24 @@ impl Runtime {
             }
         }
         committer.commit(publisher, &mut self.projection).await?;
+        for fill in &p.fills[p.applied..*end] {
+            let Some(owner) = self.owners.get(&fill.command_id) else {
+                // Unowned raw submissions exist only in low-level unit fixtures.
+                // Production submission always installs the command owner.
+                #[cfg(test)]
+                continue;
+                #[cfg(not(test))]
+                return Err(Error::Unready("journaled fill owner missing".into()));
+            };
+            let id = content_hash(owner)?;
+            if !self.attributed.contains_key(&id) {
+                let projection = self
+                    .projection
+                    .empty_scoped(owner.clone(), Key::from_fill(fill)?.origin_hash)?;
+                self.attributed.insert(id.clone(), projection);
+            }
+            self.attributed.get_mut(&id).unwrap().apply(owner, fill)?;
+        }
         self.cash.extend(cash);
         p.applied = *end;
         p.current = None;
