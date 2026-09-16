@@ -19,6 +19,38 @@ struct Fills {
 struct Decisions {
     rows: Vec<Record>,
 }
+async fn coordinate(
+    controller: &mut crate::playback_runtime::Runtime,
+    candidates: &mut crate::playback_runtime::candidates::Candidates,
+    actions: crate::playback_runtime::SizedActionInputs<'_>,
+    currencies: &BTreeMap<u64, arte_core::simulation_costs::SettlementCurrency>,
+) -> crate::playback_runtime::runner::Step {
+    // This fixture uses manually committed strategy intents. The coordinator
+    // consumes their real receipts; it does not fabricate candidate decisions.
+    let mut decisions = candidates
+        .scope_hashes()
+        .map(|scope| (scope.to_owned(), Decisions::default()))
+        .collect();
+    let mut fills = BTreeMap::<String, Fills>::new();
+    controller
+        .service_boundary(
+            candidates,
+            crate::playback_runtime::runner::Inputs {
+                actions,
+                currencies,
+                maximum_funding_orders: 1,
+                maximum_settlement_receipts: 10,
+                decision_concurrency: 2,
+            },
+            crate::playback_runtime::runner::Journals {
+                fills: &mut fills,
+                decisions: &mut decisions,
+                rejections: &mut RejectionJournalUnavailable,
+            },
+        )
+        .await
+        .unwrap()
+}
 struct RejectionJournalUnavailable;
 struct RejectionJournalPending;
 impl crate::rejection_journal::Publisher for RejectionJournalPending {
@@ -86,12 +118,21 @@ async fn sequential_sizing_does_not_spend_reserved_cash_twice() {
 async fn sized_submission_failure_returns_allocation_for_exact_retry() {
     lifecycle(false, false, Scenario::Capacity).await;
 }
+#[tokio::test]
+async fn coordinator_drives_funded_entries_protection_exits_and_settlement() {
+    lifecycle(false, false, Scenario::Coordinator).await;
+}
+#[tokio::test]
+async fn coordinator_settles_target_fills_after_protection_replacement() {
+    lifecycle(true, false, Scenario::Coordinator).await;
+}
 #[derive(Clone, Copy)]
 enum Scenario {
     Normal,
     FailedSubmission,
     SharedCash,
     Capacity,
+    Coordinator,
 }
 async fn lifecycle(target_exit: bool, cancel_unfilled: bool, scenario: Scenario) {
     let fail_submission = matches!(scenario, Scenario::FailedSubmission);
@@ -99,7 +140,7 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, scenario: Scenario)
         true,
         true,
         target_exit,
-        false,
+        matches!(scenario, Scenario::Coordinator),
         matches!(scenario, Scenario::SharedCash),
     );
     let cost_model = costs.model().clone();
@@ -133,6 +174,15 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, scenario: Scenario)
     let mut controller =
         crate::playback_runtime::Runtime::new(run, execution, crate::test_fill_model(), costs)
             .unwrap();
+    let mut coordinator_candidates = matches!(scenario, Scenario::Coordinator).then(|| {
+        crate::playback_runtime::candidates::Candidates::new(
+            &controller,
+            &manifest,
+            super::policies::config("a").features,
+            100_000,
+        )
+        .unwrap()
+    });
     let portfolio = Portfolio::new(
         [("a", 2000), ("b", 4000)]
             .into_iter()
@@ -268,9 +318,39 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, scenario: Scenario)
                 assert!(controller
                     .settle_closed_order(command, &portfolio, &wrong, 10)
                     .is_err());
-                let outcomes = controller
-                    .reconcile_funding(&portfolio, &BTreeMap::from([(1, currency.clone())]), 1, 10)
-                    .unwrap();
+                let outcomes = if let Some(candidates) = coordinator_candidates.as_mut() {
+                    let step = coordinate(
+                        &mut controller,
+                        candidates,
+                        crate::playback_runtime::SizedActionInputs {
+                            sizing: &BTreeMap::new(),
+                            cash_policies: &BTreeMap::new(),
+                            portfolio: &portfolio,
+                            safety: crate::simulation_runtime::AmendmentSafety {
+                                session: &session,
+                                risk_policy: &risk,
+                                bands: None,
+                            },
+                            latency_ns: 0,
+                            maximum_actions: 1,
+                        },
+                        &BTreeMap::from([(1, currency.clone())]),
+                    )
+                    .await;
+                    let crate::playback_runtime::runner::Step::Funding(outcomes) = step else {
+                        panic!("closed positions must settle before new evaluation or execution");
+                    };
+                    outcomes
+                } else {
+                    controller
+                        .reconcile_funding(
+                            &portfolio,
+                            &BTreeMap::from([(1, currency.clone())]),
+                            1,
+                            10,
+                        )
+                        .unwrap()
+                };
                 assert_eq!(outcomes.len(), 1);
                 assert_eq!(
                     outcomes[0].kind,
@@ -955,7 +1035,7 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, scenario: Scenario)
                 maximum_actions,
             };
             assert!(controller.execute_actions(inputs(&allocations, 0)).is_err());
-            if !allocations.is_empty() {
+            if !allocations.is_empty() && coordinator_candidates.is_none() {
                 let outcomes = controller.execute_actions(inputs(&incomplete, 2)).unwrap();
                 assert_eq!(outcomes.iter().filter(|o| o.result.is_err()).count(), 1);
                 assert_eq!(outcomes.iter().filter(|o| o.result.is_ok()).count(), 1);
@@ -998,10 +1078,24 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, scenario: Scenario)
             };
             while !controller.pending_actions().is_empty() {
                 let before = controller.pending_actions().len();
-                let outcomes = controller
-                    .execute_journaled_actions(sized_inputs(), &mut RejectionJournalUnavailable)
+                let outcomes = if let Some(candidates) = coordinator_candidates.as_mut() {
+                    let crate::playback_runtime::runner::Step::Actions(outcomes) = coordinate(
+                        &mut controller,
+                        candidates,
+                        sized_inputs(),
+                        &BTreeMap::from([(1, currency.clone())]),
+                    )
                     .await
-                    .unwrap();
+                    else {
+                        panic!("committed actions must resolve before checkpoint readiness");
+                    };
+                    outcomes
+                } else {
+                    controller
+                        .execute_journaled_actions(sized_inputs(), &mut RejectionJournalUnavailable)
+                        .await
+                        .unwrap()
+                };
                 assert_eq!(outcomes.len(), 1);
                 outcomes.into_iter().next().unwrap().result.unwrap();
                 assert_eq!(controller.pending_actions().len(), before - 1);
@@ -1011,6 +1105,20 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, scenario: Scenario)
                 .await
                 .unwrap()
                 .is_empty());
+            if let Some(candidates) = coordinator_candidates.as_mut() {
+                let crate::playback_runtime::runner::Step::CheckpointRequired(cut) = coordinate(
+                    &mut controller,
+                    candidates,
+                    sized_inputs(),
+                    &BTreeMap::from([(1, currency.clone())]),
+                )
+                .await
+                else {
+                    panic!("fully resolved boundary must wait for its checkpoint");
+                };
+                assert_eq!(cut.at_ns, now);
+                assert_eq!(cut.boundary_hash, input.event_id);
+            }
             for (id, index) in allocations.keys() {
                 assert!(controller
                     .allocate_entry_action(
