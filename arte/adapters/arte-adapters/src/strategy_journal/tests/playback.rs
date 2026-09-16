@@ -505,6 +505,7 @@ async fn candidate_owner_retry(cancel: bool) {
         .unwrap();
     let mut controller = Controller::new(run, execution, crate::test_fill_model(), costs).unwrap();
     let config = Features {
+        encounters: policies::config("a").features.encounters,
         setup: arte_core::strategy_setup::SetupSettings {
             range_ns: 30_000_000_000,
             minimum_bars: 1,

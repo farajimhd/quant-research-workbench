@@ -23,7 +23,7 @@ pub struct Config {
     pub settings: Settings,
     pub maximum_prior_levels: usize,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     pub boundary_id: String,
     pub sequence: u64,

@@ -164,9 +164,10 @@ impl Run {
             self.quotes()?,
             context,
         )?;
+        let safety = features.restrict_safety(&boundary.input(String::new()), safety)?;
         let decision = candidate.completed(
             boundary.input(String::new()),
-            safety,
+            &safety,
             &frame,
             broker,
             gates,
@@ -207,8 +208,9 @@ impl Run {
                 "strategy price boundary requires its evaluator".into(),
             ));
         }
+        let safety = features.restrict_safety(&boundary.input(String::new()), safety)?;
         let decision =
-            candidate.observe_only(boundary.input(String::new()), safety, broker, features)?;
+            candidate.observe_only(boundary.input(String::new()), &safety, broker, features)?;
         self.validate_decision(&decision)?;
         Ok(decision)
     }
@@ -234,9 +236,10 @@ impl Run {
             .ok_or_else(|| Error::Unready("no playback boundary".into()))?;
         let (observation, body_high) =
             features.acquisition_frame(&boundary, self.market()?, self.quotes()?, context)?;
+        let safety = features.restrict_safety(&boundary.input(String::new()), safety)?;
         let decision = candidate.intrabar(
             boundary.input(String::new()),
-            safety,
+            &safety,
             &observation,
             broker,
             body_high,

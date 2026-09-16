@@ -6,6 +6,7 @@ use std::io::Write;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Saved {
+    encounters: Object,
     version: u32,
     context: String,
     configuration: String,
@@ -102,7 +103,10 @@ impl State {
         bounds(context, maximum_bytes)?;
         self.require_recovery_boundary(market, boundary)?;
         let saved = Saved {
-            version: 1,
+            encounters: self
+                .encounters
+                .checkpoint(context, market, boundary, maximum_bytes)?,
+            version: 2,
             context: context.into(),
             configuration: self.config_hash.clone(),
             market: market.checkpoint()?.hash,
@@ -142,7 +146,7 @@ impl State {
         let saved: Saved = serde_json::from_slice(&image.payload)
             .map_err(|e| Error::Serialization(e.to_string()))?;
         let mut state = Self::new(market, config)?;
-        if saved.version != 1
+        if saved.version != 2
             || saved.context != context
             || saved.configuration != state.config_hash
             || saved.scope
@@ -156,6 +160,20 @@ impl State {
             return Err(Error::Conflict("feature recovery pins differ".into()));
         }
         state.macd = saved.macd;
+        state.encounters = crate::strategy_encounters::stream::Runtime::restore_checkpoint(
+            &saved.encounters,
+            &saved.encounters.id,
+            context,
+            market,
+            state.config.encounters.clone(),
+            boundary,
+            maximum_bytes,
+        )?;
+        if crate::content_hash(&saved.snapshot.encounters)?
+            != crate::content_hash(state.encounters.snapshot()?.unwrap())?
+        {
+            return Err(Error::Conflict("feature encounter snapshot differs".into()));
+        }
         state.setup = saved.setup;
         state.activity = saved.activity;
         state.snapshot = Some(saved.snapshot);

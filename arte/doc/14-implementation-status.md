@@ -6,6 +6,27 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Encounter ownership and configuration integration
+
+The shared feature owner now owns encounter state for live and replay. Required
+settings participate in feature identity version 3 and effective strategy hashes.
+Candidate configuration rejects differing entry/encounter tick sizes. Missing
+encounter settings fail decoding instead of receiving defaults.
+
+Feature recovery version 2 embeds the encounter object. Candidate and whole-run
+recovery graphs already carry that feature child. Existing recovery tests now
+exercise the combined image; changed encounter settings cannot restore it.
+
+Completed admission and intrabar acquisition preserve external restrictions and
+add internal encounter blocking. Replay decision wrappers and the live completed
+wrapper merge encounter exits before dispatch. Low-level evaluator APIs remain
+injected-evidence interfaces, not substitutes for boundary-owned orchestration.
+
+All 435 offline tests, formatting, Clippy and copied-source checks pass. Tests
+cover configuration identity, required settings, restriction merging and combined
+recovery. No services, migrations, network checks or source-parity checks ran.
+Executable loops, swing evidence and full live orchestration remain unfinished.
+
 ## Encounter recovery
 
 Encounter state now has bounded immutable recovery objects. They pin the market

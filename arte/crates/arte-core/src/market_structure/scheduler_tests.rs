@@ -486,6 +486,17 @@ fn manifest_playback_requires_all_account_receipts_before_advancing() {
     let mut features = crate::candidate_features::State::new(
         run.market().unwrap(),
         crate::candidate_features::Config {
+            encounters: crate::strategy_encounters::stream::Config {
+                tick: 0.01,
+                settings: crate::strategy_encounters::Settings {
+                    breakout_buffer_ticks: 1.,
+                    breakout_buffer_bps: 0.,
+                    rejection_break_offset_bps: 10.,
+                    topping_tail_fraction: 0.5,
+                    maximum_encounters: 100,
+                },
+                maximum_prior_levels: 100,
+            },
             setup: crate::strategy_setup::SetupSettings {
                 range_ns: 30 * SECOND,
                 minimum_bars: 1,
@@ -1174,6 +1185,17 @@ fn timeframes_close_in_order_without_leaking_later_macd_or_filling_empty_interva
     let mut closes = vec![];
     let mut macd = crate::strategy_macd::State::new(true);
     let config = crate::candidate_features::Config {
+        encounters: crate::strategy_encounters::stream::Config {
+            tick: 0.01,
+            settings: crate::strategy_encounters::Settings {
+                breakout_buffer_ticks: 1.,
+                breakout_buffer_bps: 0.,
+                rejection_break_offset_bps: 10.,
+                topping_tail_fraction: 0.5,
+                maximum_encounters: 100,
+            },
+            maximum_prior_levels: 100,
+        },
         setup: crate::strategy_setup::SetupSettings {
             range_ns: 30 * SECOND,
             minimum_bars: 1,
@@ -1228,6 +1250,18 @@ fn timeframes_close_in_order_without_leaking_later_macd_or_filling_empty_interva
             .unwrap());
         let mut changed = config.clone();
         changed.minimum_range_pct += 1.;
+        assert!(crate::candidate_features::State::restore_checkpoint(
+            &image,
+            &image.id,
+            &context,
+            scheduler.state().unwrap(),
+            changed,
+            &boundary,
+            1_000_000
+        )
+        .is_err());
+        let mut changed = config.clone();
+        changed.encounters.settings.breakout_buffer_ticks += 1.;
         assert!(crate::candidate_features::State::restore_checkpoint(
             &image,
             &image.id,
@@ -1360,6 +1394,17 @@ fn timeframes_close_in_order_without_leaking_later_macd_or_filling_empty_interva
 fn feature_owner_rejects_missing_dependencies_and_skipped_or_invalid_boundaries() {
     use crate::candidate_features::{Config, State};
     let config = || Config {
+        encounters: crate::strategy_encounters::stream::Config {
+            tick: 0.01,
+            settings: crate::strategy_encounters::Settings {
+                breakout_buffer_ticks: 1.,
+                breakout_buffer_bps: 0.,
+                rejection_break_offset_bps: 10.,
+                topping_tail_fraction: 0.5,
+                maximum_encounters: 100,
+            },
+            maximum_prior_levels: 100,
+        },
         setup: crate::strategy_setup::SetupSettings {
             range_ns: 30 * SECOND,
             minimum_bars: 1,
@@ -1409,7 +1454,7 @@ fn feature_owner_rejects_missing_dependencies_and_skipped_or_invalid_boundaries(
     assert!(features
         .observe(&supplied, scheduler.state().unwrap())
         .is_err());
-    assert!(features.snapshot().unwrap().is_none());
+    assert!(features.snapshot().is_err());
     supplied.sequence = boundary.sequence;
     supplied.evaluated_at_ns = 1;
     assert!(features

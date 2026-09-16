@@ -11,6 +11,17 @@ pub(super) fn config(account: &str) -> candidate_config::Config {
     candidate_config::Config {
         schema_version: 1,
         features: candidate_features::Config {
+            encounters: arte_core::strategy_encounters::stream::Config {
+                tick: 0.01,
+                settings: arte_core::strategy_encounters::Settings {
+                    breakout_buffer_ticks: 1.,
+                    breakout_buffer_bps: 0.,
+                    rejection_break_offset_bps: 10.,
+                    topping_tail_fraction: 0.5,
+                    maximum_encounters: 100,
+                },
+                maximum_prior_levels: 100,
+            },
             setup: strategy_setup::SetupSettings {
                 range_ns: 30_000_000_000,
                 minimum_bars: 1,

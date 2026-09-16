@@ -235,9 +235,10 @@ impl Lane {
         let frame = self.entry_frame(context, evaluated_at_ns)?;
         let mut input = boundary.input(String::new());
         input.evaluated_at_ns = evaluated_at_ns;
+        let safety = self.features.restrict_safety(&input, safety)?;
         candidate.completed(
             input,
-            safety,
+            &safety,
             &frame,
             broker,
             gates,
@@ -498,6 +499,17 @@ mod tests {
             SECOND / 10,
             SECOND,
             candidate_features::Config {
+                encounters: arte_core::strategy_encounters::stream::Config {
+                    tick: 0.01,
+                    settings: arte_core::strategy_encounters::Settings {
+                        breakout_buffer_ticks: 1.,
+                        breakout_buffer_bps: 0.,
+                        rejection_break_offset_bps: 10.,
+                        topping_tail_fraction: 0.5,
+                        maximum_encounters: 100,
+                    },
+                    maximum_prior_levels: 100,
+                },
                 setup: arte_core::strategy_setup::SetupSettings {
                     range_ns: 30 * SECOND,
                     minimum_bars: 1,

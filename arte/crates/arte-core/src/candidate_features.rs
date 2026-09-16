@@ -11,10 +11,13 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 pub mod checkpoint;
+#[cfg(test)]
+mod tests;
 const SECOND: u64 = 1_000_000_000;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    pub encounters: crate::strategy_encounters::stream::Config,
     pub setup: SetupSettings,
     pub forming_macd: bool,
     pub minimum_range_pct: f64,
@@ -72,6 +75,7 @@ pub struct AdmissionAuthorities {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
+    pub encounters: crate::strategy_encounters::stream::Snapshot,
     pub boundary_id: String,
     pub sequence: u64,
     pub available_at_ns: u64,
@@ -80,6 +84,7 @@ pub struct Snapshot {
     pub one_second: Option<OneSecond>,
 }
 pub struct State {
+    encounters: crate::strategy_encounters::stream::Runtime,
     config: Config,
     config_hash: String,
     market_hash: String,
@@ -91,6 +96,25 @@ pub struct State {
     failed: bool,
 }
 impl State {
+    /// Merge market-derived exits without clearing external safety restrictions.
+    pub fn restrict_safety(
+        &self,
+        input: &crate::strategy_dispatch::InputBoundary,
+        safety: &crate::strategy_dispatch::Safety,
+    ) -> Result<crate::strategy_dispatch::Safety> {
+        let snapshot = self
+            .snapshot()?
+            .ok_or_else(|| Error::Unready("encounter feature snapshot missing".into()))?;
+        if snapshot.boundary_id != input.event_id
+            || snapshot.sequence != input.source_sequence
+            || snapshot.evaluated_at_ns > input.evaluated_at_ns
+        {
+            return Err(Error::Conflict("encounter safety boundary differs".into()));
+        }
+        let mut safety = safety.clone();
+        safety.encounter_exit |= snapshot.encounters.exit_reason.is_some();
+        Ok(safety)
+    }
     /// Bind completed-bar admission to this exact feature/structural snapshot.
     /// An empty qualified level book is valid evidence, not invented geometry.
     /// The caller still supplies permission, tradability and encounter authority.
@@ -144,7 +168,7 @@ impl State {
             permissions: authority.permissions,
             session_open: authority.session_open,
             tradable: authority.tradable,
-            encounter_blocked: authority.encounter_blocked,
+            encounter_blocked: authority.encounter_blocked || snapshot.encounters.blocked,
             regular_block: authority.regular_block,
             macd_at_ns: snapshot.macd.as_ref().map(|r| r.at_ns),
             macd_positive: snapshot.macd.as_ref().is_some_and(|r| r.positive()),
@@ -176,8 +200,12 @@ impl State {
             ));
         }
         Ok(Self {
+            encounters: crate::strategy_encounters::stream::Runtime::new(
+                market,
+                config.encounters.clone(),
+            )?,
             config_hash: content_hash(&(
-                "candidate-market-features-v2",
+                "candidate-market-features-v3",
                 market.configuration_hash(),
                 &config,
             ))?,
@@ -265,7 +293,7 @@ impl State {
             macd_episode_present: macd.is_some_and(|reading| reading.episode_at_ns.is_some()),
             tradable: context.tradable,
             regular_block: context.regular_block,
-            encounter_blocked: context.encounter_blocked,
+            encounter_blocked: context.encounter_blocked || snapshot.encounters.blocked,
             pending_capital: context.pending_capital,
         }
         .bind_quote(quotes, self.scope, self.config.maximum_quote_age_ns)?;
@@ -316,6 +344,7 @@ impl State {
                     .as_ref()
                     .is_some_and(|reading| reading.positive())
             || context.admission.activity_block.as_deref() != one.activity_block()
+            || (snapshot.encounters.blocked && !context.admission.encounter_blocked)
             || context
                 .regular_target
                 .is_some_and(|price| !price.is_finite() || price <= 0.)
@@ -403,6 +432,11 @@ impl State {
     /// rolling-history clone occurs per event. Coherent recovery is still required.
     pub fn observe(&mut self, boundary: &Boundary<'_>, market: &Runtime) -> Result<bool> {
         self.snapshot()?;
+        // The encounter owner validates full retry contents, not only boundary ID.
+        if let Err(error) = self.encounters.observe(boundary, market) {
+            self.failed = true;
+            return Err(error);
+        }
         market.market()?;
         if boundary.id.len() != 64 || !boundary.id.bytes().all(|value| value.is_ascii_hexdigit()) {
             return Err(Error::Invalid("candidate feature boundary identity".into()));
@@ -494,6 +528,11 @@ impl State {
                 None
             };
             self.snapshot = Some(Snapshot {
+                encounters: self
+                    .encounters
+                    .snapshot()?
+                    .ok_or_else(|| Error::Unready("encounter boundary missing".into()))?
+                    .clone(),
                 boundary_id: boundary.id.into(),
                 sequence: boundary.sequence,
                 available_at_ns: input.available_at_ns,

@@ -33,6 +33,11 @@ impl Config {
                 "unsupported candidate configuration schema".into(),
             ));
         }
+        if self.features.encounters.tick != self.entry.tick {
+            return Err(Error::Conflict(
+                "entry and encounter tick sizes differ".into(),
+            ));
+        }
         Ok(strategy_candidate::Policy {
             maximum_completed_bar_age_ns: self.features.maximum_completed_bar_age_ns,
             entry: &self.entry,

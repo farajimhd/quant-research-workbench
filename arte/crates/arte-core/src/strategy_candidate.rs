@@ -727,6 +727,17 @@ mod tests {
                 }],
             );
             let feature_config = crate::candidate_features::Config {
+                encounters: crate::strategy_encounters::stream::Config {
+                    tick: 0.01,
+                    settings: crate::strategy_encounters::Settings {
+                        breakout_buffer_ticks: 1.,
+                        breakout_buffer_bps: 0.,
+                        rejection_break_offset_bps: 10.,
+                        topping_tail_fraction: 0.5,
+                        maximum_encounters: 100,
+                    },
+                    maximum_prior_levels: 100,
+                },
                 setup: crate::strategy_setup::SetupSettings {
                     range_ns: 30 * S,
                     minimum_bars: 5,
@@ -759,6 +770,23 @@ mod tests {
                 },
             };
             let json = serde_json::to_vec(&bundle).unwrap();
+            let mut changed_encounters = feature_config.clone();
+            changed_encounters.encounters.settings.breakout_buffer_ticks += 1.;
+            let changed =
+                crate::candidate_features::State::new(&market, changed_encounters).unwrap();
+            assert_ne!(features.configuration_hash(), changed.configuration_hash());
+            assert!(bundle
+                .effective_hash(&changed, f.quote_policy_hash)
+                .is_err());
+            let mut missing: serde_json::Value = serde_json::from_slice(&json).unwrap();
+            missing["features"]
+                .as_object_mut()
+                .unwrap()
+                .remove("encounters");
+            assert!(serde_json::from_value::<crate::candidate_config::Config>(missing).is_err());
+            let mut wrong_tick = bundle.clone();
+            wrong_tick.features.encounters.tick = 0.02;
+            assert!(wrong_tick.policy().is_err());
             let mut decoded: crate::candidate_config::Config =
                 serde_json::from_slice(&json).unwrap();
             assert_eq!(

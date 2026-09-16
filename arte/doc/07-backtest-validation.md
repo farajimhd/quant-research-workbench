@@ -18,14 +18,14 @@ activity evidence and causal V7 level snapshot. The detector fingerprint binds
 the feature/market configuration, source scope, completed timestamp and qualified
 level geometry. An empty qualified book does not create synthetic levels.
 
-Permissions, session-open state, tradability, encounter blocking and regular-hours
+Permissions, session-open state, tradability, additional encounter blocking and regular-hours
 restrictions remain explicit inputs from their own authorities. The assembler
 preserves them; it does not infer permission from indicator readiness. Future
 authority timestamps, non-one-second boundaries and snapshot mismatches fail.
 Existing entry-evaluator age limits still apply at decision time.
 
-Live and replay expose this same assembler. External-authority integration,
-encounter-state orchestration and swing evidence remain required coordinator work.
+Live and replay expose this same assembler. External-authority integration and
+swing evidence remain required coordinator work.
 
 ### Boundary-owned encounters
 
@@ -51,8 +51,24 @@ These are streaming recovery objects, never historical V7 seeds.
 
 Tests restore at every scheduler boundary and compare exact checkpoint bytes.
 Synthetic warning recovery also checks identical next-opening-trade behavior.
-Database publication, effective strategy configuration binding and candidate/live
-owner integration remain required before this component can drive executable runs.
+The shared feature owner now owns encounter state in live and replay. Required
+encounter settings participate in feature configuration identity version 3 and
+therefore effective strategy identity. Entry and encounter tick sizes must agree.
+Missing settings fail loading; no implicit defaults replace them.
+
+Feature recovery version 2 embeds the encounter object. Existing candidate and
+whole-run recovery graphs carry it through their feature child. Old feature images
+are not silently upgraded. New runs must pin the new configuration and manifests.
+
+Completed admission and intrabar acquisition include internal encounter blocking.
+Entry-frame validation rejects attempts to omit an active internal restriction.
+Replay boundary wrappers and the live completed-candidate wrapper merge encounter
+exits into external safety before dispatch. The lower-level candidate evaluator
+remains an injected-evidence interface for isolated algorithm tests; production
+orchestration must use boundary-owned wrappers.
+
+Executable loops and complete live orchestration remain unfinished. Connected
+checkpoint publication and operational recovery have not been run.
 
 ## Replay modes
 
