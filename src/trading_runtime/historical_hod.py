@@ -10,7 +10,7 @@ from math import ceil, floor, isfinite
 from zoneinfo import ZoneInfo
 
 from .structural_recovery import DEFAULTS as QUALITY_DEFAULTS, LIQUIDITY_181, tradability
-from . import v7_encounters, v7_setup, support_reversal, quote_geometry
+from . import v7_encounters, v7_setup, support_reversal, quote_geometry, trade_volume
 
 CONTRACT = 'historical-hod-1s-macd-5s-1'
 BOOK_VERSION = 'causal-swing-closing-book-6'
@@ -31,7 +31,7 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     setup_failure_exit_enabled=1,setup_recovery_unprotected_reentry=0,setup_recovery_entry_reclaim=0,setup_recovery_regular_base=0,setup_recovery_regular_full_range=0,
     setup_minimum_60s_progress_pct=0.,setup_minimum_300s_range_pct=0.,setup_add_maximum_upper_wick_fraction=1.,
     setup_acquisition_quality_enabled=0,setup_initial_tranche_fraction=1.,
-    setup_quote_confirmation_enabled=0,setup_quote_range_minimum_fraction=.5,
+    setup_quote_confirmation_enabled=0,setup_quote_range_minimum_fraction=.5,setup_minimum_volume_ratio=0.,
     setup_reversal_enabled=0,setup_reversal_volume_acceleration=1.5,setup_reversal_support_age_s=5.,
     setup_fresh_pivot_enabled=0,setup_base_diagnostics_enabled=0,setup_early_base_enabled=0,setup_base_maximum_swing_age_s=15.,
     setup_below_vwap_base_enabled=0,setup_below_vwap_support_age_s=5.,setup_below_vwap_trade_acceleration=1.5,
@@ -70,6 +70,8 @@ def configure(p):
     if (type(s['setup_quote_range_minimum_fraction']) not in (int,float)
             or not 0 < s['setup_quote_range_minimum_fraction'] <= 1):
         raise ValueError('Quote range minimum fraction must be in (0, 1]')
+    if s['setup_minimum_volume_ratio'] and not s['v7_setup_enabled']:
+        raise ValueError('Completed volume confirmation requires V7 setup')
     distance = s['setup_below_vwap_maximum_distance_atr']
     if type(distance) not in (int,float) or not isfinite(distance) or distance < 0:
         raise ValueError('Below-VWAP ATR distance must be finite and nonnegative')
@@ -122,7 +124,7 @@ def configure(p):
         raise ValueError('Phase progress requires V7 setup')
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_quote_confirmation_enabled','setup_reversal_enabled','setup_fresh_pivot_enabled','setup_below_vwap_base_enabled','setup_base_diagnostics_enabled','setup_support_quote_clearance_selection','setup_recovery_regular_full_range','setup_trail_current_gain_requires_bid','setup_phase_minimum_progress_r','setup_trail_requires_current_gain','setup_recovery_regular_base','setup_base_maximum_extension_fraction','setup_recovery_entry_reclaim','setup_recovery_unprotected_reentry','setup_minimum_300s_range_pct','setup_minimum_60s_progress_pct','setup_add_maximum_upper_wick_fraction','setup_failure_exit_enabled','setup_base_recovery_maximum_range_pct','setup_minimum_trail_progress_r','setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k not in ('sizing_mode','setup_below_vwap_maximum_distance_atr')):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_minimum_volume_ratio','setup_quote_confirmation_enabled','setup_reversal_enabled','setup_fresh_pivot_enabled','setup_below_vwap_base_enabled','setup_base_diagnostics_enabled','setup_support_quote_clearance_selection','setup_recovery_regular_full_range','setup_trail_current_gain_requires_bid','setup_phase_minimum_progress_r','setup_trail_requires_current_gain','setup_recovery_regular_base','setup_base_maximum_extension_fraction','setup_recovery_entry_reclaim','setup_recovery_unprotected_reentry','setup_minimum_300s_range_pct','setup_minimum_60s_progress_pct','setup_add_maximum_upper_wick_fraction','setup_failure_exit_enabled','setup_base_recovery_maximum_range_pct','setup_minimum_trail_progress_r','setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k not in ('sizing_mode','setup_below_vwap_maximum_distance_atr')):
         raise ValueError('Historical HOD settings must be finite and positive')
     if not 0 <= s['setup_failure_seconds'] <= 5 or int(s['setup_failure_seconds']) != s['setup_failure_seconds']:
         raise ValueError('Initial setup failure window must be zero to five completed seconds')
@@ -1107,16 +1109,24 @@ def evaluate(host, a, o, p, state):
         quote_invalid = not confirmation['passed']
         if quote_invalid:
             cancel_acquisition_reason='setup_quote_confirmation_invalidated'
+    volume_invalid = False
+    if pending and s['setup_minimum_volume_ratio']:
+        volume_confirmation = trade_volume.confirm((o.market_pressure or {}).get('trade_volume'),
+            now=now,minimum_ratio=s['setup_minimum_volume_ratio'])
+        evidence['setup_volume_confirmation'] = volume_confirmation
+        volume_invalid = not volume_confirmation['passed']
+        if volume_invalid:
+            cancel_acquisition_reason='setup_volume_confirmation_invalidated'
     if reversal_invalid:
         cancel_acquisition_reason='support_reversal_acquisition_invalidated'
 
-    if (quote_invalid or reversal_invalid or (encounter_blocked and (pending or acquired) and not encounter_state.get('cancel_notified')) or (pending and (state.get('pending_capital_request') or regular_block) and (regular_block or not active or not ready or not acquisition_momentum_ready or (not momentum_ready and o.price <= (d.get('vwap') or float('inf')))
+    if (volume_invalid or quote_invalid or reversal_invalid or (encounter_blocked and (pending or acquired) and not encounter_state.get('cancel_notified')) or (pending and (state.get('pending_capital_request') or regular_block) and (regular_block or not active or not ready or not acquisition_momentum_ready or (not momentum_ready and o.price <= (d.get('vwap') or float('inf')))
             or now-active.get('confirmed_at',0) >= s['confirmation_lifetime_ms']/1000
             or o.ask > active.get('maximum_buy_price',0)))):
         if encounter_blocked:
             encounter_state['cancel_notified'] = True
         state.pop('pending_capital_request',None)
-        if acquired and (encounter_blocked or reversal_invalid or quote_invalid):
+        if acquired and (encounter_blocked or reversal_invalid or quote_invalid or volume_invalid):
             # Cancellation must not suppress a simultaneous swing-stop ratchet.
             cancel_acquisition = True
         else:
@@ -1412,6 +1422,12 @@ def evaluate(host, a, o, p, state):
             if not progress['passed']:
                 return result('wait','setup_progress_'+progress['reason'])
         consolidation=setup_state.get('range')
+        if s['setup_minimum_volume_ratio']:
+            volume_confirmation = trade_volume.confirm((o.market_pressure or {}).get('trade_volume'),
+                now=now,minimum_ratio=s['setup_minimum_volume_ratio'])
+            evidence['setup_volume_confirmation'] = volume_confirmation
+            if not volume_confirmation['passed']:
+                return result('wait','setup_volume_'+volume_confirmation['reason'])
         if s['setup_quote_confirmation_enabled']:
             confirmation = quote_geometry.confirm_base((o.market_pressure or {}).get('quote_geometry'),
                 consolidation,now=now,minimum_fraction=s['setup_quote_range_minimum_fraction'])
@@ -1502,6 +1518,8 @@ def evaluate(host, a, o, p, state):
         consolidation=deepcopy(setup_state['range'])
         entry['setup']=dict(phase=entry_phase,range=consolidation,
             breakout_threshold=v7_encounters.threshold(dict(price=consolidation['high']),s,tick))
+        if s['setup_minimum_volume_ratio']:
+            entry['setup']['volume_confirmation'] = deepcopy(volume_confirmation)
         if s['setup_quote_confirmation_enabled']:
             entry['setup']['quote_confirmation'] = deepcopy(confirmation)
         if s['setup_failure_seconds']:
