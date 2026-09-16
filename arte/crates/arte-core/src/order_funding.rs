@@ -6,6 +6,7 @@ use crate::{
     Error, Result,
 };
 use serde::{Deserialize, Serialize};
+pub mod sizing;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -35,37 +36,17 @@ pub fn quantity(
     maximum_quantity: u64,
     lot_size: u64,
 ) -> Result<u64> {
-    if stop == 0
-        || entry <= stop
-        || price_scale > 9
-        || policy.currency_scale > 9
-        || maximum_quantity == 0
-        || lot_size == 0
-        || policy.maximum_order_cash_minor == 0
-        || policy.maximum_order_risk_minor == 0
-    {
-        return Err(Error::Invalid("invalid long sizing operands".into()));
+    sizing::Input {
+        entry,
+        stop,
+        price_scale,
+        policy: policy.clone(),
+        available_cash_minor,
+        maximum_quantity,
+        lot_size,
     }
-    let cash = available_cash_minor
-        .min(policy.maximum_order_cash_minor)
-        .checked_sub(policy.fee_reserve_minor)
-        .ok_or_else(|| Error::Unready("cash cannot cover fees".into()))?;
-    let risk = policy
-        .maximum_order_risk_minor
-        .checked_sub(policy.fee_reserve_minor)
-        .ok_or_else(|| Error::Unready("risk budget cannot cover fees".into()))?;
-    let capacity = |budget: u64, price: u64| -> u128 {
-        u128::from(budget) * 10_u128.pow(u32::from(price_scale))
-            / (u128::from(price) * 10_u128.pow(u32::from(policy.currency_scale)))
-    };
-    let count = capacity(cash, entry)
-        .min(capacity(risk, entry - stop))
-        .min(u128::from(maximum_quantity)) as u64;
-    let count = count / lot_size * lot_size;
-    if count == 0 {
-        return Err(Error::Unready("budget cannot fund one approved lot".into()));
-    }
-    Ok(count)
+    .evaluate()?
+    .quantity()
 }
 /// Size from an account snapshot and atomically reserve through Portfolio. Another
 /// ticker may consume funds between these steps; then reservation fails without

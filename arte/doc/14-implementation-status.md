@@ -6,6 +6,30 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Typed sizing assessments
+
+Shared sizing now distinguishes three business outcomes: cash cannot cover fees,
+risk budget cannot cover fees, and no approved lot fits the limits. Invalid
+operands remain errors. Integer sizing and the existing quantity API retain their
+previous behavior. Live and historical callers use the same calculation.
+
+A versioned assessment stores the operands and result. Reading its outcome
+recomputes the calculation and rejects a mismatched result or unknown version.
+This record does not certify input provenance, freshness or execution authority.
+
+The playback controller exposes a read-only assessment API. It uses its owned
+quote, committed action and current portfolio snapshot. Successful sizing still
+passes submission preflight. A cash rejection does not reserve funds, complete
+an action, release existing funds or allow playback to advance. Durable rejection
+publication, decision binding and recovery integration are still required before
+the runner can dismiss an unfundable entry. Transient errors are not reclassified
+by message text.
+
+All 396 offline Rust tests, formatting, Clippy and copied-source checks pass.
+Tests cover typed reasons, malformed inputs, forged assessment results, extreme
+integer operands and shared-account cash exhaustion. Source-oracle parity was
+not rerun. No service or network test ran.
+
 ## Automatic sized-action dispatch
 
 Bounded dispatch now accepts declared-account sizing and cash policies directly.

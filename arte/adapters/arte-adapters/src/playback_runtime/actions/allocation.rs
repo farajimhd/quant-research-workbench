@@ -25,6 +25,15 @@ pub struct AllocatedEntry {
     pub allocation: Allocation,
     pub result: Result<decision_orders::Plan>,
 }
+/// Read-only result, not an action-completion receipt. A rejected assessment must
+/// still be journaled and reconciled before a runner may advance past the action.
+pub enum EntryAssessment {
+    Sized {
+        allocation: Allocation,
+        calculation: order_funding::sizing::Assessment,
+    },
+    Rejected(order_funding::sizing::Assessment),
+}
 impl Runtime {
     /// Size immediately before funding, rather than preparing all account orders
     /// from one cash snapshot. Portfolio still arbitrates concurrent lane races.
@@ -75,6 +84,23 @@ impl Runtime {
         action_index: usize,
         request: SizingRequest<'_>,
     ) -> Result<Allocation> {
+        match self.assess_entry_action(decision_id, action_index, request)? {
+            EntryAssessment::Sized { allocation, .. } => Ok(allocation),
+            EntryAssessment::Rejected(calculation) => {
+                calculation.outcome()?.quantity()?;
+                Err(Error::Conflict("rejected sizing produced quantity".into()))
+            }
+        }
+    }
+    /// Cash/risk insufficiency is a typed outcome. Missing/stale inputs, invalid
+    /// configuration and uncertain submission state remain errors, not rejection.
+    /// This method never reserves cash or completes a pending action.
+    pub fn assess_entry_action(
+        &self,
+        decision_id: &str,
+        action_index: usize,
+        request: SizingRequest<'_>,
+    ) -> Result<EntryAssessment> {
         let run = self.decision_view()?;
         let now = run
             .pending()?
@@ -150,18 +176,25 @@ impl Runtime {
             .budget_minor
             .min(account.broker_available_minor)
             .saturating_sub(used);
-        allocation.quantity = order_funding::quantity(
-            plan.bracket.entry as u64,
-            plan.bracket
+        let calculation = order_funding::sizing::Assessment::new(order_funding::sizing::Input {
+            entry: plan.bracket.entry as u64,
+            stop: plan
+                .bracket
                 .stop
                 .ok_or_else(|| Error::Unready("allocation stop missing".into()))?
                 as u64,
-            sizing.price_scale,
-            request.cash_policy,
-            available,
-            sizing.maximum_quantity,
-            sizing.lot_size,
-        )?;
+            price_scale: sizing.price_scale,
+            policy: request.cash_policy.clone(),
+            available_cash_minor: available,
+            maximum_quantity: sizing.maximum_quantity,
+            lot_size: sizing.lot_size,
+        })?;
+        allocation.quantity = match calculation.outcome()? {
+            order_funding::sizing::Outcome::Sized(quantity) => quantity,
+            order_funding::sizing::Outcome::Rejected(_) => {
+                return Ok(EntryAssessment::Rejected(calculation));
+            }
+        };
         plan.bracket.quantity = allocation.quantity;
         let funding = order_funding::requirements(
             &plan,
@@ -183,6 +216,9 @@ impl Runtime {
                 now_ns: now,
                 latency_ns: request.latency_ns,
             })?;
-        Ok(allocation)
+        Ok(EntryAssessment::Sized {
+            allocation,
+            calculation,
+        })
     }
 }

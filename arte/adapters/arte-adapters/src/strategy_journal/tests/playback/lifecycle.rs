@@ -420,6 +420,34 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, scenario: Scenario)
                 assert!(matches!(decision.actions[0], Action::Enter(_)));
                 if decision.scope.strategy_instance == "t" {
                     let before = portfolio.snapshot("a").unwrap().reservations;
+                    let assessment = controller
+                        .assess_entry_action(
+                            &decision.decision_id,
+                            0,
+                            crate::playback_runtime::SizingRequest {
+                                sizing: &sizing,
+                                portfolio: &portfolio,
+                                cash_policy: &cash,
+                                safety: crate::simulation_runtime::AmendmentSafety {
+                                    session: &session,
+                                    risk_policy: &risk,
+                                    bands: None,
+                                },
+                                latency_ns: 0,
+                            },
+                        )
+                        .unwrap();
+                    let crate::playback_runtime::EntryAssessment::Rejected(calculation) =
+                        assessment
+                    else {
+                        panic!("second strategy cannot fund a lot from remaining cash");
+                    };
+                    assert_eq!(
+                        calculation.outcome().unwrap(),
+                        arte_core::order_funding::sizing::Outcome::Rejected(
+                            arte_core::order_funding::sizing::Rejection::NoApprovedLot
+                        )
+                    );
                     assert!(controller
                         .allocate_and_enter_action(&decision.decision_id, 0, &request)
                         .is_err());
@@ -606,9 +634,37 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, scenario: Scenario)
                         );
                         let mut invalid = sizing.clone();
                         invalid.lot_size = 1000;
+                        let assessed = controller
+                            .assess_entry_action(&decision.decision_id, 0, request(&invalid))
+                            .unwrap();
+                        let crate::playback_runtime::EntryAssessment::Rejected(calculation) =
+                            assessed
+                        else {
+                            panic!("oversized lot must reject");
+                        };
+                        assert_eq!(
+                            calculation.outcome().unwrap(),
+                            arte_core::order_funding::sizing::Outcome::Rejected(
+                                arte_core::order_funding::sizing::Rejection::NoApprovedLot
+                            )
+                        );
                         assert!(controller
                             .allocate_entry_action(&decision.decision_id, 0, request(&invalid))
                             .is_err());
+                        let invalid = crate::playback_runtime::Sizing {
+                            lot_size: 0,
+                            ..sizing.clone()
+                        };
+                        assert!(controller
+                            .assess_entry_action(&decision.decision_id, 0, request(&invalid))
+                            .is_err());
+                        assert_eq!(
+                            portfolio
+                                .snapshot(&decision.scope.account)
+                                .unwrap()
+                                .reservations,
+                            before
+                        );
                         ((decision.decision_id.clone(), 0), allocation)
                     })
                 })
