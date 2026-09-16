@@ -17,6 +17,7 @@ const SECOND: u64 = 1_000_000_000;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    pub swings: crate::local_swings::Config,
     pub encounters: crate::strategy_encounters::stream::Config,
     pub setup: SetupSettings,
     pub forming_macd: bool,
@@ -28,6 +29,7 @@ pub struct Config {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OneSecond {
+    pub swings: crate::local_swings::Snapshot,
     pub at_ns: u64,
     pub previous_bar_end_ns: Option<u64>,
     pub range: Option<Range>,
@@ -84,6 +86,7 @@ pub struct Snapshot {
     pub one_second: Option<OneSecond>,
 }
 pub struct State {
+    swings: crate::local_swings::State,
     encounters: crate::strategy_encounters::stream::Runtime,
     config: Config,
     config_hash: String,
@@ -96,6 +99,37 @@ pub struct State {
     failed: bool,
 }
 impl State {
+    /// Borrow only the owned swing projection for this completed boundary.
+    pub fn completed_swings(
+        &self,
+        boundary: &Boundary<'_>,
+    ) -> Result<&[crate::strategy_targets::Swing]> {
+        let snapshot = self
+            .snapshot()?
+            .ok_or_else(|| Error::Unready("swing feature snapshot missing".into()))?;
+        let Kind::Completed {
+            interval_ns: SECOND,
+            bar,
+            ..
+        } = &boundary.kind
+        else {
+            return Err(Error::Invalid(
+                "swings require completed one-second boundary".into(),
+            ));
+        };
+        let one = snapshot
+            .one_second
+            .as_ref()
+            .ok_or_else(|| Error::Unready("completed swing evidence missing".into()))?;
+        if snapshot.boundary_id != boundary.id
+            || snapshot.sequence != boundary.sequence
+            || snapshot.evaluated_at_ns != boundary.evaluated_at_ns
+            || one.swings.at_ns != bar.bar.end_ns
+        {
+            return Err(Error::Conflict("swing projection boundary differs".into()));
+        }
+        Ok(&one.swings.swings)
+    }
     /// Merge market-derived exits without clearing external safety restrictions.
     pub fn restrict_safety(
         &self,
@@ -200,12 +234,17 @@ impl State {
             ));
         }
         Ok(Self {
+            swings: crate::local_swings::State::new(
+                market.source_scope().instrument,
+                market.source_scope().session,
+                config.swings.clone(),
+            )?,
             encounters: crate::strategy_encounters::stream::Runtime::new(
                 market,
                 config.encounters.clone(),
             )?,
             config_hash: content_hash(&(
-                "candidate-market-features-v3",
+                "candidate-market-features-v4",
                 market.configuration_hash(),
                 &config,
             ))?,
@@ -504,12 +543,18 @@ impl State {
                     ));
                 }
                 let bars = market.market()?.completed();
+                self.swings.observe(&bar.bar)?;
                 let previous_bar_end_ns = bars
                     .len()
                     .checked_sub(2)
                     .map(|index| bars[index].bar.end_ns)
                     .filter(|end| *end == bar.bar.start_ns);
                 Some(OneSecond {
+                    swings: self
+                        .swings
+                        .snapshot()?
+                        .ok_or_else(|| Error::Unready("local swing snapshot missing".into()))?
+                        .clone(),
                     at_ns: bar.bar.end_ns,
                     previous_bar_end_ns,
                     range: self.setup.prior_range.clone(),

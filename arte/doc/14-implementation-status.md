@@ -6,6 +6,26 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Shared local-swing ownership and recovery
+
+The feature owner now computes local swings at completed one-second boundaries.
+Required settings participate in feature identity version 4. Feature recovery
+version 3 embeds both swing and encounter state, carried by existing whole-run
+checkpoint graphs. A boundary-checked accessor exposes the owned swing array.
+
+Swing recovery pins scope, configuration, context and the last consumed candle.
+It validates clocks, extremes, rolling volatility, levels, pending retests and
+canonical bytes. Tests restore after every candle, including gaps and pending
+break states. A combined test caught and corrected higher-timeframe recovery
+selecting an equal-time one-second candle that had not yet been consumed.
+
+Candidate entry assembly still accepts explicit swing inputs. Switching the
+production path to owned evidence and adding certified-empty-gap support remain
+required. Executable loops and complete live orchestration are unfinished.
+
+All 439 offline tests, formatting, Clippy and copied-source checks pass. No
+services or database writes ran. Source-parity suites were not rerun this turn.
+
 ## Causal local-swing component
 
 Implemented the strategy-local directional-change swing projection in Rust.

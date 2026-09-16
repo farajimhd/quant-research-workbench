@@ -486,6 +486,13 @@ fn manifest_playback_requires_all_account_receipts_before_advancing() {
     let mut features = crate::candidate_features::State::new(
         run.market().unwrap(),
         crate::candidate_features::Config {
+            swings: crate::local_swings::Config {
+                reversal_bps: 50.,
+                volatility_multiple: 2.,
+                volatility_cap_multiple: 2.,
+                lifetime_bars: 1800,
+                maximum_levels: 100,
+            },
             encounters: crate::strategy_encounters::stream::Config {
                 tick: 0.01,
                 settings: crate::strategy_encounters::Settings {
@@ -1185,6 +1192,13 @@ fn timeframes_close_in_order_without_leaking_later_macd_or_filling_empty_interva
     let mut closes = vec![];
     let mut macd = crate::strategy_macd::State::new(true);
     let config = crate::candidate_features::Config {
+        swings: crate::local_swings::Config {
+            reversal_bps: 50.,
+            volatility_multiple: 2.,
+            volatility_cap_multiple: 2.,
+            lifetime_bars: 1800,
+            maximum_levels: 100,
+        },
         encounters: crate::strategy_encounters::stream::Config {
             tick: 0.01,
             settings: crate::strategy_encounters::Settings {
@@ -1228,6 +1242,31 @@ fn timeframes_close_in_order_without_leaking_later_macd_or_filling_empty_interva
         let image = features
             .checkpoint(&context, scheduler.state().unwrap(), &boundary, 1_000_000)
             .unwrap();
+        if matches!(
+            boundary.kind,
+            Kind::Completed {
+                interval_ns: SECOND,
+                ..
+            }
+        ) {
+            assert_eq!(
+                crate::content_hash(&features.completed_swings(&boundary).unwrap()).unwrap(),
+                crate::content_hash(
+                    &features
+                        .snapshot()
+                        .unwrap()
+                        .unwrap()
+                        .one_second
+                        .as_ref()
+                        .unwrap()
+                        .swings
+                        .swings
+                )
+                .unwrap()
+            );
+        } else {
+            assert!(features.completed_swings(&boundary).is_err());
+        }
         assert_eq!(
             image.id,
             recovered
@@ -1250,6 +1289,18 @@ fn timeframes_close_in_order_without_leaking_later_macd_or_filling_empty_interva
             .unwrap());
         let mut changed = config.clone();
         changed.minimum_range_pct += 1.;
+        assert!(crate::candidate_features::State::restore_checkpoint(
+            &image,
+            &image.id,
+            &context,
+            scheduler.state().unwrap(),
+            changed,
+            &boundary,
+            1_000_000
+        )
+        .is_err());
+        let mut changed = config.clone();
+        changed.swings.reversal_bps += 1.;
         assert!(crate::candidate_features::State::restore_checkpoint(
             &image,
             &image.id,
@@ -1394,6 +1445,13 @@ fn timeframes_close_in_order_without_leaking_later_macd_or_filling_empty_interva
 fn feature_owner_rejects_missing_dependencies_and_skipped_or_invalid_boundaries() {
     use crate::candidate_features::{Config, State};
     let config = || Config {
+        swings: crate::local_swings::Config {
+            reversal_bps: 50.,
+            volatility_multiple: 2.,
+            volatility_cap_multiple: 2.,
+            lifetime_bars: 1800,
+            maximum_levels: 100,
+        },
         encounters: crate::strategy_encounters::stream::Config {
             tick: 0.01,
             settings: crate::strategy_encounters::Settings {

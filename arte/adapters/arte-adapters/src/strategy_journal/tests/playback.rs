@@ -505,6 +505,13 @@ async fn candidate_owner_retry(cancel: bool) {
         .unwrap();
     let mut controller = Controller::new(run, execution, crate::test_fill_model(), costs).unwrap();
     let config = Features {
+        swings: arte_core::local_swings::Config {
+            reversal_bps: 50.,
+            volatility_multiple: 2.,
+            volatility_cap_multiple: 2.,
+            lifetime_bars: 1800,
+            maximum_levels: 100,
+        },
         encounters: policies::config("a").features.encounters,
         setup: arte_core::strategy_setup::SetupSettings {
             range_ns: 30_000_000_000,

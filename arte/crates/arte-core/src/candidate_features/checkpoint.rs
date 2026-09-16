@@ -6,6 +6,7 @@ use std::io::Write;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Saved {
+    swings: Object,
     encounters: Object,
     version: u32,
     context: String,
@@ -103,10 +104,11 @@ impl State {
         bounds(context, maximum_bytes)?;
         self.require_recovery_boundary(market, boundary)?;
         let saved = Saved {
+            swings: self.swings.checkpoint(context, maximum_bytes)?,
             encounters: self
                 .encounters
                 .checkpoint(context, market, boundary, maximum_bytes)?,
-            version: 2,
+            version: 3,
             context: context.into(),
             configuration: self.config_hash.clone(),
             market: market.checkpoint()?.hash,
@@ -146,7 +148,7 @@ impl State {
         let saved: Saved = serde_json::from_slice(&image.payload)
             .map_err(|e| Error::Serialization(e.to_string()))?;
         let mut state = Self::new(market, config)?;
-        if saved.version != 2
+        if saved.version != 3
             || saved.context != context
             || saved.configuration != state.config_hash
             || saved.scope
@@ -160,6 +162,39 @@ impl State {
             return Err(Error::Conflict("feature recovery pins differ".into()));
         }
         state.macd = saved.macd;
+        // Higher-timeframe closes are delivered before the one-second close at
+        // the same timestamp. The market array may already contain that candle.
+        let boundary_time = boundary.input(String::new()).event_time_ns;
+        let before_equal =
+            matches!(boundary.kind, Kind::Completed { interval_ns, .. } if interval_ns != SECOND);
+        let last_consumed = market
+            .market()?
+            .completed()
+            .iter()
+            .rev()
+            .find(|b| {
+                b.bar.end_ns < boundary_time || (!before_equal && b.bar.end_ns == boundary_time)
+            })
+            .map(|b| &b.bar);
+        state.swings = crate::local_swings::State::restore_checkpoint(
+            &saved.swings,
+            &saved.swings.id,
+            context,
+            state.scope.instrument,
+            state.scope.session,
+            state.config.swings.clone(),
+            last_consumed,
+            maximum_bytes,
+        )?;
+        if let Some(one) = &saved.snapshot.one_second {
+            if crate::content_hash(&Some(&one.swings))?
+                != crate::content_hash(&state.swings.snapshot()?)?
+            {
+                return Err(Error::Conflict(
+                    "feature local swing snapshot differs".into(),
+                ));
+            }
+        }
         state.encounters = crate::strategy_encounters::stream::Runtime::restore_checkpoint(
             &saved.encounters,
             &saved.encounters.id,

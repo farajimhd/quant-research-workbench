@@ -52,11 +52,11 @@ These are streaming recovery objects, never historical V7 seeds.
 Tests restore at every scheduler boundary and compare exact checkpoint bytes.
 Synthetic warning recovery also checks identical next-opening-trade behavior.
 The shared feature owner now owns encounter state in live and replay. Required
-encounter settings participate in feature configuration identity version 3 and
+encounter and swing settings participate in feature configuration identity version 4 and
 therefore effective strategy identity. Entry and encounter tick sizes must agree.
 Missing settings fail loading; no implicit defaults replace them.
 
-Feature recovery version 2 embeds the encounter object. Existing candidate and
+Feature recovery version 3 embeds encounter and local-swing objects. Existing candidate and
 whole-run recovery graphs carry it through their feature child. Old feature images
 are not silently upgraded. New runs must pin the new configuration and manifests.
 
@@ -91,8 +91,23 @@ projection, not a port of the entire structural detector.
 
 The offline comparison checks geometry, clocks, roles, activity and ordering on
 3,000 candles across six deterministic paths, including gaps and sub-dollar data.
-It does not prove trading parity or profitability. Scheduler/feature ownership,
-recovery and certified-empty-gap handling remain required integration work.
+It does not prove trading parity or profitability.
+
+The shared feature owner computes local swings on completed one-second boundaries.
+Required swing settings are part of effective configuration identity. Completed
+snapshots expose a boundary-checked borrowed swing array. Candidate entry APIs
+still accept explicit swing evidence; switching production entry assembly to the
+owned array remains required. No caller should treat an arbitrary supplied array
+as owned market evidence.
+
+Bounded recovery preserves extremes, thresholds, rolling volatility, anchored
+levels, pending retests and projections. It pins scope, configuration, context and
+the independently selected last consumed candle. Higher-timeframe closes precede
+one-second closes with the same end time; restore excludes that unconsumed candle.
+Genesis requires an empty state. Hash, canonical-byte, clock and state checks fail
+closed. These recovery objects are not historical V7 seeds.
+
+Certified-empty-gap handling and executable orchestration remain unfinished.
 
 ## Replay modes
 

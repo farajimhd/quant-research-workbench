@@ -727,6 +727,13 @@ mod tests {
                 }],
             );
             let feature_config = crate::candidate_features::Config {
+                swings: crate::local_swings::Config {
+                    reversal_bps: 50.,
+                    volatility_multiple: 2.,
+                    volatility_cap_multiple: 2.,
+                    lifetime_bars: 1800,
+                    maximum_levels: 100,
+                },
                 encounters: crate::strategy_encounters::stream::Config {
                     tick: 0.01,
                     settings: crate::strategy_encounters::Settings {

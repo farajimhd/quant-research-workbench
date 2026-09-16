@@ -4,6 +4,7 @@ use crate::{content_hash, market::Bar, strategy_targets::Swing, Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 pub const VERSION: &str = "arte-local-directional-swings-v1";
+mod checkpoint;
 #[cfg(test)]
 mod tests;
 #[derive(Clone, Serialize, Deserialize)]
@@ -56,7 +57,7 @@ struct Level {
     break_at: u64,
     contact_at: u64,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     pub at_ns: u64,
     /// Pre-candle active levels plus confirmations on this candle, matching the

@@ -12,6 +12,13 @@ fn encounter_exit_merges_without_clearing_external_safety() {
         }],
     );
     let config = Config {
+        swings: crate::local_swings::Config {
+            reversal_bps: 50.,
+            volatility_multiple: 2.,
+            volatility_cap_multiple: 2.,
+            lifetime_bars: 1800,
+            maximum_levels: 100,
+        },
         encounters: crate::strategy_encounters::stream::Config {
             tick: 0.01,
             maximum_prior_levels: 100,
