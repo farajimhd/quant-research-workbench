@@ -40,9 +40,19 @@ state. The restriction adapter requires the exact observed boundary and only add
 entry blocking or encounter exits. It never grants account or session permission.
 
 Offline tests cover real scheduler progression and synthetic encounter warnings.
-They do not prove live readiness or strategy profitability. Persisted recovery,
-effective strategy configuration binding and candidate/live owner integration
-remain required before this component can drive executable runs.
+They do not prove live readiness or strategy profitability.
+
+Encounter recovery produces a bounded immutable object. It pins the exact market
+image, encounter configuration, run context and observed boundary. Restore checks
+the content hash, canonical encoding, geometry, thresholds, causal timestamps and
+snapshot consistency. It retains warning opening-consumption state and failures.
+Genesis is recreated from configuration; a failed owner cannot publish an image.
+These are streaming recovery objects, never historical V7 seeds.
+
+Tests restore at every scheduler boundary and compare exact checkpoint bytes.
+Synthetic warning recovery also checks identical next-opening-trade behavior.
+Database publication, effective strategy configuration binding and candidate/live
+owner integration remain required before this component can drive executable runs.
 
 ## Replay modes
 

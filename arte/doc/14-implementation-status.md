@@ -6,6 +6,22 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Encounter recovery
+
+Encounter state now has bounded immutable recovery objects. They pin the market
+image, configuration, context and pending boundary. Restore verifies hashes,
+canonical bytes, geometry, thresholds, timestamps and snapshot consistency.
+Warnings retain whether opening evidence was consumed. Failure state survives.
+
+The scheduler fixture now restores at every boundary. Two new tests cover warning
+continuation, failed-state recovery and invalid images or pins. All 434 offline
+tests, formatting, Clippy and copied-source checks pass. No services started,
+migrations ran or source-parity checks ran.
+
+This completes component recovery, not executable integration. Candidate/live
+ownership, effective configuration binding and recovery-graph publication remain
+required. The whole ARTE goal remains active.
+
 ## Boundary-owned encounter state
 
 The shared encounter runtime now consumes sequential scheduler boundaries. It

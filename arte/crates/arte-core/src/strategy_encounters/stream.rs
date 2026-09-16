@@ -12,6 +12,7 @@ use crate::{
     Error, Result,
 };
 use serde::{Deserialize, Serialize};
+mod checkpoint;
 #[cfg(test)]
 mod tests;
 

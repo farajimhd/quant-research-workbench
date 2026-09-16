@@ -200,12 +200,162 @@ fn real_scheduler_consumes_every_boundary_once() {
         assert!(!runtime
             .observe(&boundary, scheduler.state().unwrap())
             .unwrap());
+        let context = "c".repeat(64);
+        let image = runtime
+            .checkpoint(&context, scheduler.state().unwrap(), &boundary, 100_000)
+            .unwrap();
+        let mut restored = Runtime::restore_checkpoint(
+            &image,
+            &image.id,
+            &context,
+            scheduler.state().unwrap(),
+            config(),
+            &boundary,
+            100_000,
+        )
+        .unwrap();
+        assert!(!restored
+            .observe(&boundary, scheduler.state().unwrap())
+            .unwrap());
+        assert_eq!(
+            restored
+                .checkpoint(&context, scheduler.state().unwrap(), &boundary, 100_000)
+                .unwrap()
+                .payload,
+            image.payload
+        );
+        runtime = restored;
         count += 1;
         assert_eq!(runtime.snapshot().unwrap().unwrap().sequence, count);
         let id = boundary.id.to_owned();
         scheduler.acknowledge(&id).unwrap();
     }
     assert_eq!(count, 6);
+}
+
+#[test]
+fn warning_recovery_preserves_next_open_and_failed_state() {
+    let market = market();
+    let mut runtime = Runtime::new(&market, config()).unwrap();
+    warning(&mut runtime);
+    let excluded = event(1, 200);
+    let first = boundary(&excluded, 1, false);
+    runtime.observe(&first, &market).unwrap();
+    let context = "c".repeat(64);
+    let image = runtime
+        .checkpoint(&context, &market, &first, 100_000)
+        .unwrap();
+    let mut restored = Runtime::restore_checkpoint(
+        &image,
+        &image.id,
+        &context,
+        &market,
+        config(),
+        &first,
+        100_000,
+    )
+    .unwrap();
+    let trade = event(2, 200);
+    let next = boundary(&trade, 2, true);
+    runtime.observe(&next, &market).unwrap();
+    restored.observe(&next, &market).unwrap();
+    assert_eq!(
+        restored.snapshot().unwrap().unwrap().exit_reason,
+        Some(ExitReason::ToppingRejectionNextOpen)
+    );
+    let expected = runtime
+        .checkpoint(&context, &market, &next, 100_000)
+        .unwrap();
+    assert_eq!(
+        restored
+            .checkpoint(&context, &market, &next, 100_000)
+            .unwrap()
+            .payload,
+        expected.payload
+    );
+    let failed = Runtime::restore_checkpoint(
+        &expected,
+        &expected.id,
+        &context,
+        &market,
+        config(),
+        &next,
+        100_000,
+    )
+    .unwrap();
+    assert!(failed.state().unwrap().blocked());
+}
+
+#[test]
+fn recovery_rejects_corruption_wrong_pins_and_semantic_tampering() {
+    use crate::seed_storage::Object;
+    let market = market();
+    let mut runtime = Runtime::new(&market, config()).unwrap();
+    let event = event(1, 200);
+    let input = boundary(&event, 1, true);
+    let context = "c".repeat(64);
+    assert!(runtime
+        .checkpoint(&context, &market, &input, 100_000)
+        .is_err());
+    runtime.observe(&input, &market).unwrap();
+    let image = runtime
+        .checkpoint(&context, &market, &input, 100_000)
+        .unwrap();
+    assert!(runtime.checkpoint(&context, &market, &input, 1).is_err());
+    for case in 0..8 {
+        let mut value: serde_json::Value = serde_json::from_slice(&image.payload).unwrap();
+        match case {
+            0 => value["version"] = 2.into(),
+            1 => value["context"] = "d".repeat(64).into(),
+            2 => value["configuration"] = "d".repeat(64).into(),
+            3 => value["market"] = "d".repeat(64).into(),
+            4 => value["snapshot"]["sequence"] = 2.into(),
+            5 => value["snapshot"]["blocked"] = true.into(),
+            6 => value["state"]["session"] = 1.into(),
+            7 => value["state"]["at_ns"] = (300 * SECOND).into(),
+            _ => unreachable!(),
+        }
+        let changed = Object::new(serde_json::to_vec(&value).unwrap());
+        assert!(
+            Runtime::restore_checkpoint(
+                &changed,
+                &changed.id,
+                &context,
+                &market,
+                config(),
+                &input,
+                100_000
+            )
+            .is_err(),
+            "case {case}"
+        );
+    }
+    assert!(Runtime::restore_checkpoint(
+        &image,
+        &"d".repeat(64),
+        &context,
+        &market,
+        config(),
+        &input,
+        100_000
+    )
+    .is_err());
+    assert!(
+        Runtime::restore_checkpoint(&image, &image.id, &context, &market, config(), &input, 1)
+            .is_err()
+    );
+    let mut changed_config = config();
+    changed_config.tick = 0.02;
+    assert!(Runtime::restore_checkpoint(
+        &image,
+        &image.id,
+        &context,
+        &market,
+        changed_config,
+        &input,
+        100_000
+    )
+    .is_err());
 }
 
 #[test]
