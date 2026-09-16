@@ -139,3 +139,37 @@ def test_reversal_recovery_requires_new_base_and_preserves_retirement_and_reclai
     state['retired_swings']={}
     state['last_exit']['setup']['entry_failure_recovery']=10.2
     assert permission()=='waiting_for_failed_setup_reclaim'
+
+
+@pytest.mark.parametrize('capital',[False,True])
+@pytest.mark.parametrize('restored',[False,True])
+def test_invalid_reversal_cancels_pending_orders_even_when_macd_turns_positive(capital,restored):
+    from dataclasses import replace
+    from datetime import timedelta
+    from src.trading_runtime import strategy_engine as S
+    host,a,o=engine_candidate();entered=host.evaluate(a,o)
+    assert entered.evaluation.signals[0].action=='enter_long'
+    state=deepcopy(entered.state)
+    state.pop('pending_capital_request',None)
+    if capital:state['pending_capital_request']=dict(request_id='test-request',requested_at=o.observed_at.isoformat())
+    state['historical_hod_state']['completed_macd']['signal']=-1.
+    if restored:state=json.loads(json.dumps(state))
+    a=replace(a,state=state,status=S.AssignmentStatus.ENTRY_PENDING)
+    o=replace(o,observed_at=o.observed_at+timedelta(seconds=.1),evaluation_events=('market_data_update',))
+    o.market_pressure['observed_at']=o.observed_at.isoformat()
+    o.market_pressure['fast']['trade_imbalance']=-.5
+    result=host.evaluate(a,o)
+    assert any(i.action=='cancel_entry' for i in result.evaluation.intents)
+    assert not any(i.action in ('enter_long','add_long') for i in result.evaluation.intents)
+    assert 'pending_capital_request' not in result.state
+
+
+def test_reversal_recipe_accepts_only_generic_policy_settings(tmp_path):
+    from scripts.run_strategy_222_refinement import load_recipe
+    p=tmp_path/'recipe.json';values=dict(setup_reversal_enabled=1,
+        setup_reversal_volume_acceleration=1.5,setup_reversal_support_age_s=5.)
+    p.write_text(json.dumps(dict(parameters=dict(historical_hod=values))))
+    assert load_recipe(p)['historical_hod']==values
+    values['ticker']='EXAMPLE'
+    p.write_text(json.dumps(dict(parameters=dict(historical_hod=values))))
+    with pytest.raises(ValueError,match='unapproved'):load_recipe(p)
