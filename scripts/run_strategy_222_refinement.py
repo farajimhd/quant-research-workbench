@@ -268,6 +268,10 @@ async def run_locked(args):
             while True:
                 await asyncio.wait({controller._task}, timeout=15)
                 if args.stop_request_file and args.stop_request_file.exists() and not controller._task.done():
+                    if controller.status not in TERMINAL:
+                        trial['stop_requested'] = True
+                        trial['stop_request_file'] = str(args.stop_request_file)
+                        save(manifest,state)
                     await request_stop(controller)
                 trial.update(status=controller.status, current_time=str(controller.current_time),
                              events=controller.processed_events, error=controller.error,
@@ -319,6 +323,9 @@ async def run_locked(args):
             save(manifest,state)
         prepared_only = (getattr(args, 'prepare_frames_only', False) and controller.status == 'stopped'
                          and trial.get('frame_preparation', {}).get('status') == 'completed' and not controller.error)
+        if controller.status == 'stopped' and trial.get('stop_requested') and not controller.error:
+            print(f'Stopped comparisons on request after cleanup: {manifest}', flush=True)
+            return
         if controller.status != 'completed' and not prepared_only:
             raise RuntimeError(f"Run {controller.run_id} {controller.status}: {controller.error}")
     label = 'Completed stream preparation' if getattr(args, 'prepare_frames_only', False) else 'Completed comparisons'
