@@ -126,6 +126,9 @@ impl OrderCash {
     pub fn entry_quantity(&self) -> u64 {
         self.entry_quantity
     }
+    pub fn entry_direction(&self) -> Direction {
+        self.entry_direction
+    }
     pub fn exit_quantity(&self) -> u64 {
         self.exit_quantity
     }

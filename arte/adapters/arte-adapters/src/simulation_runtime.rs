@@ -9,6 +9,7 @@ use arte_core::{
     Error, Result,
 };
 use serde::Serialize;
+pub mod checkpoint;
 struct Pending {
     quote_hash: String,
     fills: Vec<Fill>,

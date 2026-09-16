@@ -163,6 +163,9 @@ impl Projection {
     pub fn position(&self, key: &Key) -> Option<&Position> {
         self.positions.get(key)
     }
+    pub fn positions(&self) -> impl Iterator<Item = (&Key, &Position)> {
+        self.positions.iter()
+    }
     /// Call after durable fill acknowledgment. Validation failure changes no state.
     /// Returns false for an exact duplicate. Opposing entries and excess exits fail
     /// closed; they require an explicit reconciliation/correction workflow.

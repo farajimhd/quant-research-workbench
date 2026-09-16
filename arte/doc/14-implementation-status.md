@@ -6,6 +6,38 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Combined simulated execution recovery
+
+The historical execution lane now captures one content-addressed graph for:
+
+- Simulator orders, protection state and modeled clock.
+- Fill-derived positions, FIFO lots and duplicate-fill receipts.
+- Strategy ownership and original reservation amounts.
+- Per-order cash, cost-model binding and last journaled fills.
+- Terminal release markers and the last consumed source quote.
+
+Capture requires no pending fill publication. Restore checks the pinned run and
+cut, exact object set, content hashes and canonical root. It checks ownership
+against the run's consumers. It reconciles order quantities with per-order cash
+and aggregate positions. Source quote prices, sizes and identity must match the
+simulator's last quote. Caller budgets bound orders, pending fills and total image
+bytes; the graph has a 64 MiB hard ceiling.
+
+All 361 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+New tests restore two accounts before and during partial exits, then compare
+continued cash and projection state against uninterrupted execution. They cover
+ambiguous journal acknowledgments, duplicate quote replay, release markers,
+missing or surplus objects, wrong cuts, inconsistent source identity and budgets.
+These fixtures seed orders directly. They do not prove strategy acceptance or
+portfolio settlement durability. Source-oracle parity was not rerun.
+
+This graph is not yet published to ClickHouse. Whole-run recovery must coordinate
+it with portfolio receipts, strategy state, input cursors and pending actions.
+The full simulated fill-model configuration still needs its own verified binding
+to the manifest's fill-model hash. The simulator checkpoint checks its internal
+model version, but that alone does not establish the manifest binding.
+No service or network test ran.
+
 ## Order cash component recovery
 
 Per-order simulated cash now has a versioned checkpoint codec. Restore requires

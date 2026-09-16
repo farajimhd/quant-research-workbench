@@ -572,6 +572,14 @@ impl Simulator {
     pub fn price_scale(&self) -> u8 {
         self.scale
     }
+    pub fn clock_ns(&self) -> u64 {
+        self.clock_ns
+    }
+    pub fn last_quote_identity(&self) -> Option<(u64, u64, &str)> {
+        self.last
+            .as_ref()
+            .map(|(sequence, at, hash)| (*sequence, *at, hash.as_str()))
+    }
     pub fn maximum_quote_fills(&self) -> usize {
         self.capacity * 2
     }
