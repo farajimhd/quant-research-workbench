@@ -11,6 +11,9 @@ from . import historical_hod as H, session_relative_volume
 
 CONTRACT = 'r1-hod-resistance-ladder-v3'
 VWAP_CONTRACT = 'r1-hod-resistance-ladder-v4'
+EPISODE_CONTRACT = 'r1-hod-resistance-ladder-v5'
+STAGED_CONTRACT = 'r1-hod-resistance-ladder-v6'
+EPISODE_CONTRACTS = (EPISODE_CONTRACT, STAGED_CONTRACT)
 LEGACY_CONTRACTS = {
     'r1-hod-resistance-ladder-v1': '.r1_ladder_v1',
     'r1-hod-resistance-ladder-v2': '.r1_ladder_v2',
@@ -29,7 +32,7 @@ def configure(p):
         else:
             from .r1_ladder_v2 import configure as configure_legacy
         return configure_legacy(p)
-    if p.get('r1_ladder_contract') not in (CONTRACT, VWAP_CONTRACT) or p.get('historical_hod_contract') != H.CONTRACT:
+    if p.get('r1_ladder_contract') not in (CONTRACT, VWAP_CONTRACT, *EPISODE_CONTRACTS) or p.get('historical_hod_contract') != H.CONTRACT:
         raise ValueError('R1 ladder requires its versioned shared market adapter')
     raw = p.get('r1_ladder', {})
     if set(raw)-set(DEFAULTS):
@@ -179,6 +182,35 @@ def episode_entry_gate(boundary, rows, prior_close, prior_vwap, prior_at, o):
                          blocking_level_ids=[], green=o.price > o.bar_open, crossed=crossed)
 
 
+def persistent_episode_gate(boundary, rows, prior_close, prior_vwap, prior_at, o):
+    """V5 rechecks current episode eligibility instead of consuming one cross."""
+    _, evidence = episode_entry_gate(boundary, rows, prior_close, prior_vwap, prior_at, o)
+    if evidence['path'] == 'vwap':
+        passed = o.price > o.execution_vwap and o.price > o.bar_open
+    else:
+        passed = o.price > boundary['upper']
+    return passed, dict(evidence, eligible=passed, persistent=True)
+
+
+def staged_target_plan(rows, boundary, price, atr, settings, tick, *, completed_price=None):
+    """Before R1, sell at R1. Above R1, climb the existing resistance ladder.
+
+    A filled target remains the next crossing boundary even if the producer
+    subsequently changes its role from resistance to support/transition.
+    """
+    if (price if completed_price is None else completed_price) <= boundary['upper']:
+        target_price = floor((_midpoint(boundary)-settings['target_midpoint_offset_ticks']*tick+1e-10)/tick)*tick
+        if target_price <= price:
+            return None
+        return dict(target=boundary, target_price=round(target_price,10), stop_anchor=boundary,
+                    selection='episode_approach_r1', immediate_target=boundary,
+                    immediate_gap_atr=None, halfway_price=None, phase='approach_r1')
+    anchor = dict(boundary, side=-1, role='resistance')
+    retained = [r for r in rows if r['unified_level_id'] != anchor['unified_level_id']]
+    plan = target_plan([*retained, anchor], anchor, price, atr, settings, tick)
+    return dict(plan, phase='above_r1') if plan else None
+
+
 def _track_level(state, level, role, at):
     """Retain every structural level used by the session ladder and its roles."""
     if not level:
@@ -230,7 +262,7 @@ def record_exit(state, at, role, remaining):
     open_episode = (state.get('r1_market') or {}).get('macd_episode') or {}
     entry_episode = active.get('macd_episode') or {}
     continuation_episode_id = (open_episode.get('episode_id') if target
-        and active.get('contract') in (CONTRACT, VWAP_CONTRACT)
+        and active.get('contract') in (CONTRACT, VWAP_CONTRACT, *EPISODE_CONTRACTS)
         and open_episode.get('episode_id') == entry_episode.get('episode_id') else None)
     state['r1_exit'] = dict(at=at.timestamp(), role=origin, level=target,
                             continuation_episode_id=continuation_episode_id)
@@ -271,7 +303,7 @@ def evaluate(host, a, o, p, state):
                      rows=passive.get('prior_rows', []),
                      hod=passive.get('prior_r1_hod_after_start') or 0.,
                      atr=passive.get('closed_atr'))
-            if contract == VWAP_CONTRACT:
+            if contract in (VWAP_CONTRACT, *EPISODE_CONTRACTS):
                 d['vwap'] = passive.get('prior_r1_vwap')
         completed = passive.get('completed_macd') or {}
         if completed:
@@ -282,6 +314,8 @@ def evaluate(host, a, o, p, state):
     if 'bar_close' in o.evaluation_events and o.source_timeframe == '5s':
         if now > d.get('macd', {}).get('at', 0):
             _update_macd_episode(d, now, o.macd_line, o.macd_signal, o.bar_high)
+            if contract in EPISODE_CONTRACTS and not d.get('macd_episode'):
+                state.pop('r1_exit', None)
     prior_close, prior_at = d.get('close'), d.get('closed_at')
     prior_vwap = d.get('vwap')
     prior_episode = deepcopy(d.get('macd_episode') or {})
@@ -296,7 +330,7 @@ def evaluate(host, a, o, p, state):
             d.update(closed_at=now,close=o.price,rows=H.selected_levels(o,adapter,now),
                      hod=max(prior_hod,o.bar_high) if after_start else prior_hod,
                      atr=o.volatility if type(o.volatility) in (int,float) and isfinite(o.volatility) else None)
-            if contract == VWAP_CONTRACT:
+            if contract in (VWAP_CONTRACT, *EPISODE_CONTRACTS):
                 d['vwap'] = o.execution_vwap
             episode = d.get('macd_episode')
             if episode and o.bar_high > episode.get('high', 0):
@@ -397,7 +431,13 @@ def evaluate(host, a, o, p, state):
         return result('wait','resistance_below_hod_unavailable')
     if saved_exit and now <= saved_exit['at']:
         return result('wait','waiting_for_post_exit_breakout')
-    if continuation:
+    if continuation and contract in EPISODE_CONTRACTS:
+        evidence['continuation'] = dict(broken_level=deepcopy(saved_exit['level']),
+            episode_id=prior_episode.get('episode_id'), spread_ignored=True,
+            threshold=boundary['upper'])
+        if not o.price > boundary['upper']:
+            return result('wait', 'waiting_for_episode_target_cross')
+    elif continuation:
         episode_high = prior_episode.get('high')
         evidence['continuation'] = dict(broken_level=deepcopy(saved_exit['level']),
             episode_id=prior_episode.get('episode_id'), episode_high=episode_high,
@@ -406,11 +446,13 @@ def evaluate(host, a, o, p, state):
             return result('wait','macd_episode_high_unavailable')
         if not o.price > episode_high:
             return result('wait','waiting_for_macd_episode_high_break')
-    elif contract == VWAP_CONTRACT:
-        passed, gate = episode_entry_gate(boundary, d['rows'], prior_close, prior_vwap, prior_at, o)
+    elif contract in (VWAP_CONTRACT, *EPISODE_CONTRACTS):
+        gate_function = persistent_episode_gate if contract in EPISODE_CONTRACTS else episode_entry_gate
+        passed, gate = gate_function(boundary, d['rows'], prior_close, prior_vwap, prior_at, o)
         evidence['episode_entry_gate'] = dict(gate, episode_id=prior_episode.get('episode_id'))
         if not passed:
-            return result('wait', 'waiting_for_green_vwap_cross' if gate['path'] == 'vwap'
+            return result('wait', ('waiting_for_green_above_vwap' if contract in EPISODE_CONTRACTS
+                          else 'waiting_for_green_vwap_cross') if gate['path'] == 'vwap'
                           else 'waiting_for_fresh_resistance_break')
     elif prior_close is None or prior_at is None or not prior_close <= boundary['upper'] < o.price:
         # Initial entries still require a fresh resistance crossover.
@@ -419,15 +461,18 @@ def evaluate(host, a, o, p, state):
     # A completed trade can be above the current ask. Both execution and
     # completed-candle geometry must have an overhead target.
     target_floor = max(entry_price, o.price)
-    plan = target_plan(d['rows'],boundary,target_floor,d.get('atr'),s,tick)
+    plan = (staged_target_plan(d['rows'],boundary,target_floor,d.get('atr'),s,tick,
+                              completed_price=o.price) if contract in EPISODE_CONTRACTS else
+            target_plan(d['rows'],boundary,target_floor,d.get('atr'),s,tick))
     if not plan:
         return result('wait','atr_qualified_resistance_target_unavailable')
     target = plan['target']
     stop_anchor = plan['stop_anchor']
-    if continuation:
-        stop = continuation_stop(saved_exit['level'], tick, s['stop_offset_bps'])
+    structural_stop = continuation or (contract == EPISODE_CONTRACT and plan['phase'] == 'above_r1')
+    if structural_stop:
+        stop = continuation_stop(boundary, tick, s['stop_offset_bps'])
         stop_selection = dict(source='broken_resistance_lower_20bps',
-            offset_bps=s['stop_offset_bps'], level=deepcopy(saved_exit['level']))
+            offset_bps=s['stop_offset_bps'], level=deepcopy(boundary))
     else:
         swing = H.initial_swing_low(row,dict(lower=o.bid),now)
         if not swing:
@@ -435,7 +480,7 @@ def evaluate(host, a, o, p, state):
         stop = stop_price(entry_price,swing['lower'],tick)
         stop_selection = swing
     earned_stop = continuation_stop(stop_anchor,tick,s['stop_offset_bps'])
-    if (continuation and earned_stop is not None and o.price > stop_anchor['upper']
+    if (structural_stop and earned_stop is not None and o.price > stop_anchor['upper']
             and earned_stop < o.bid):
         stop = earned_stop
         stop_selection = dict(source='target_predecessor_resistance_lower_offset',
@@ -448,6 +493,9 @@ def evaluate(host, a, o, p, state):
                   stop=stop,maximum_buy_price=entry_price,hod=prior_hod,
                   macd_episode=deepcopy(prior_episode),stop_anchor_level=deepcopy(stop_anchor),
                   target_plan=deepcopy(plan),continuation=continuation,contract=contract)
+    if contract in EPISODE_CONTRACTS:
+        active['phase'] = plan['phase']
+        evidence['episode_stage'] = plan['phase']
     _track_level(state, boundary, 'continuation_support' if continuation else 'initial_breakout', now)
     _track_level(state, target, 'profit_target', now)
     _track_level(state, stop_anchor, 'protective_stop_anchor', now)
