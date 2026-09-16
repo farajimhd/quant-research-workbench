@@ -21,6 +21,44 @@ pub struct Eligibility {
     pub policy_hash: String,
     pub trades: BTreeMap<EventKey, bool>,
 }
+/// Evaluate the same pinned condition rules used by the live market lane.
+/// Policy must already be known at historical session start, not REST acquisition.
+pub fn prepare_with_policy(
+    trades: &Source,
+    quotes: &Source,
+    scope: Scope,
+    timing: Policy,
+    policy: &arte_core::trade_eligibility::Pinned,
+    limits: Limits,
+) -> Result<Projection> {
+    let interval = trades.certificate().interval;
+    policy.require_interval(interval, interval.start)?;
+    if policy.provider() != scope.provider || trades.observations().len() > limits.maximum_events {
+        return Err(Error::Conflict(
+            "replay trade policy provider or event budget".into(),
+        ));
+    }
+    let mut decisions = BTreeMap::new();
+    for event in trades.observations() {
+        let eligible = policy.evaluate(event, event.sip.ns)?;
+        if decisions.insert(event.key.clone(), eligible).is_some() {
+            return Err(Error::Conflict(
+                "duplicate historical trade identity".into(),
+            ));
+        }
+    }
+    prepare(
+        trades,
+        quotes,
+        scope,
+        timing,
+        &Eligibility {
+            policy_hash: policy.hash().into(),
+            trades: decisions,
+        },
+        limits,
+    )
+}
 #[derive(Clone, Serialize)]
 pub struct Policy {
     /// Positive fixed SIP-to-modeled-availability delay, at most one second.
@@ -560,5 +598,70 @@ mod tests {
             limits()
         )
         .is_err());
+    }
+
+    #[test]
+    fn historical_projection_uses_shared_policy_not_acquisition_time_or_unknown_defaults() {
+        use arte_core::trade_eligibility::{Pinned, Policy as TradePolicy};
+        let mut event = event(EventKind::Trade, 1, 10);
+        if let Payload::Trade { conditions, .. } = &mut event.payload {
+            *conditions = vec![2];
+        }
+        let trades = source(EventKind::Trade, vec![event], 20);
+        let quotes = source(EventKind::Quote, vec![], 20);
+        let policy = TradePolicy {
+            schema_version: 1,
+            provider: 1,
+            valid_from_ns: 10,
+            valid_to_ns: 20,
+            available_at_ns: 9,
+            source_manifest_hash: "a".repeat(64),
+            allowed_conditions: Default::default(),
+            excluded_conditions: [2].into(),
+            allow_empty_conditions: true,
+        };
+        let hash = policy.hash().unwrap();
+        let pinned = Pinned::new(policy.clone(), &hash).unwrap();
+        let projected = prepare_with_policy(
+            &trades,
+            &quotes,
+            scope(),
+            Policy { delay_ns: 2 },
+            &pinned,
+            limits(),
+        )
+        .unwrap();
+        let expected = prepare(
+            &trades,
+            &quotes,
+            scope(),
+            Policy { delay_ns: 2 },
+            &Eligibility {
+                policy_hash: hash,
+                trades: [(trades.observations()[0].key.clone(), false)].into(),
+            },
+            limits(),
+        )
+        .unwrap();
+        assert_eq!(projected.prepared.hash(), expected.prepared.hash());
+        for fault in 0..2 {
+            let mut invalid = policy.clone();
+            if fault == 0 {
+                invalid.available_at_ns = 11;
+            } else {
+                invalid.excluded_conditions.clear();
+            }
+            let hash = invalid.hash().unwrap();
+            let invalid = Pinned::new(invalid, &hash).unwrap();
+            assert!(prepare_with_policy(
+                &trades,
+                &quotes,
+                scope(),
+                Policy { delay_ns: 2 },
+                &invalid,
+                limits()
+            )
+            .is_err());
+        }
     }
 }

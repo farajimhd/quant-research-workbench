@@ -21,6 +21,7 @@ pub struct Lane {
     bands: arte_core::luld::book::Book,
     maximum_quote_age_ns: u64,
     features: candidate_features::State,
+    trade_policy: Option<std::sync::Arc<arte_core::trade_eligibility::Pinned>>,
 }
 impl Lane {
     pub fn new(
@@ -43,6 +44,7 @@ impl Lane {
             bands: arte_core::luld::book::Book::new(market.scope())?,
             maximum_quote_age_ns,
             market,
+            trade_policy: None,
             high: BTreeMap::new(),
             allowed_lateness_ns,
             failed: false,
@@ -68,13 +70,33 @@ impl Lane {
         self.available()?;
         self.quotes.bind_shared_policy(policy)
     }
+    pub fn bind_trade_policy(
+        &mut self,
+        policy: std::sync::Arc<arte_core::trade_eligibility::Pinned>,
+    ) -> Result<()> {
+        self.available()?;
+        if policy.provider() != self.market.scope().provider
+            || self
+                .trade_policy
+                .as_ref()
+                .is_some_and(|old| old.hash() != policy.hash())
+        {
+            return Err(Error::Conflict("live trade policy binding differs".into()));
+        }
+        self.trade_policy = Some(policy);
+        Ok(())
+    }
     /// Persist/audit every observation independently, including duplicate/rejected
     /// input. Eligibility comes from the pinned trade-condition policy, not health.
-    pub fn ingest(&mut self, event: &AuditedEvent, eligible: bool) -> Result<()> {
+    pub fn ingest(&mut self, event: &AuditedEvent) -> Result<()> {
         self.available()?;
         let result = (|| {
             let observation = &event.observation;
             observation.validate()?;
+            let policy = self
+                .trade_policy
+                .as_ref()
+                .ok_or_else(|| Error::Unready("live trade eligibility policy missing".into()))?;
             let scope = self.market.scope();
             if observation.key.provider != scope.provider
                 || observation.key.instrument != scope.instrument
@@ -86,6 +108,7 @@ impl Lane {
                 ));
             }
             if observation.key.kind == EventKind::Trade {
+                let eligible = policy.evaluate(observation, observation.available_at_ns)?;
                 self.market.enqueue(observation, eligible)?;
             } else {
                 self.quotes.observe(observation)?;
@@ -393,11 +416,8 @@ mod tests {
         high.insert(EventKind::Trade, 150);
         assert_eq!(frontier(&high, 10, 95).unwrap(), 110);
     }
-    #[test]
-    fn live_release_obeys_gate_and_requires_each_boundary_acknowledgment() {
+    fn lane() -> Lane {
         use arte_core::{
-            events::{Decimal, EventKey, Observation, Payload, SourceTime},
-            exposure::Gate,
             market_structure::{Config, Ordered, Runtime},
             v7_extraction::Candle,
             v7_seed::{build, input_hash, SeedPolicy, SourceCertificate, SplitAdjustment},
@@ -482,6 +502,16 @@ mod tests {
         )
         .unwrap();
         lane.bind_quote_policy(crate::test_quote_policy()).unwrap();
+        lane
+    }
+    #[test]
+    fn live_release_obeys_gate_and_requires_each_boundary_acknowledgment() {
+        use arte_core::{
+            events::{Decimal, EventKey, Observation, Payload, SourceTime},
+            exposure::Gate,
+        };
+        const SECOND: u64 = 1_000_000_000;
+        let mut lane = lane();
         // This fixture exercises release and current-gate binding, not decoding or
         // ingestion. No real live receipt or provider health evidence is claimed.
         lane.market
@@ -738,5 +768,101 @@ mod tests {
         assert!(lane
             .current_luld(gate.at(101), 202 * SECOND, 2, SECOND)
             .is_err());
+    }
+
+    #[test]
+    fn live_ingestion_uses_pinned_eligibility_and_unknown_rules_poison_lane() {
+        use arte_core::{
+            events::*,
+            latency::{Assessment, Health},
+            trade_eligibility::{Pinned, Policy},
+        };
+        const S: u64 = 1_000_000_000;
+        for fault in 0..4 {
+            let mut lane = lane();
+            let policy = Policy {
+                schema_version: 1,
+                provider: 1,
+                valid_from_ns: 200 * S,
+                valid_to_ns: 300 * S,
+                available_at_ns: 199 * S,
+                source_manifest_hash: "a".repeat(64),
+                allowed_conditions: Default::default(),
+                excluded_conditions: [2].into(),
+                allow_empty_conditions: true,
+            };
+            if fault != 1 {
+                let hash = policy.hash().unwrap();
+                lane.bind_trade_policy(std::sync::Arc::new(Pinned::new(policy, &hash).unwrap()))
+                    .unwrap();
+            }
+            let event = AuditedEvent {
+                observation: Observation {
+                    key: EventKey {
+                        provider: 1,
+                        instrument: 1,
+                        session: 20260915,
+                        kind: EventKind::Trade,
+                        sequence: 1,
+                    },
+                    payload: Payload::Trade {
+                        price: Decimal {
+                            atoms: 10,
+                            scale: 0,
+                        },
+                        size: Decimal { atoms: 1, scale: 0 },
+                        exchange: 1,
+                        trade_id: "1".into(),
+                        trf: None,
+                        conditions: if fault == 2 {
+                            vec![3]
+                        } else if fault == 3 {
+                            vec![2]
+                        } else {
+                            vec![]
+                        },
+                        correction: None,
+                    },
+                    sip: SourceTime {
+                        ns: 201 * S,
+                        precision_ns: 1,
+                    },
+                    participant: None,
+                    available_at_ns: 201 * S + 1,
+                    receipt: Some(Receipt {
+                        run_id: "fixture".into(),
+                        lane: 0,
+                        sequence: 1,
+                        utc_ns: 201 * S + 1,
+                        monotonic_ns: 1,
+                    }),
+                },
+                sip_latency: Assessment {
+                    state: Health::Healthy,
+                    notify: false,
+                    lower_age_ns: 1,
+                    upper_age_ns: 1,
+                },
+                participant_latency: None,
+                exposure_permitted: true,
+            };
+            let result = lane.ingest(&event);
+            if fault == 1 || fault == 2 {
+                assert!(result.is_err());
+                assert!(lane.available().is_err());
+                assert_eq!(lane.market.pending_events(), 0);
+            } else {
+                result.unwrap();
+                assert_eq!(lane.market.pending_events(), 1);
+                assert!(lane.market.prepare_next(201 * S + 1, 201 * S + 1).unwrap());
+                let boundary = lane.market.pending().unwrap().unwrap();
+                match boundary.kind {
+                    arte_core::market_structure::scheduler::Kind::Trade { eligible, .. } => {
+                        assert_eq!(eligible, fault == 0)
+                    }
+                    _ => panic!("expected trade boundary"),
+                }
+            }
+        }
     }
 }

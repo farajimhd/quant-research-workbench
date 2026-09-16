@@ -41,8 +41,23 @@ prepared input also pins the model identity and projected observations.
 Preparation requires one trade certificate and one quote certificate for the same
 provider, instrument and exact interval. It does not choose revisions or merge
 overlapping acquisitions. Every trade needs an explicit eligibility decision.
-The adapter checks complete event-key coverage, not the correctness or approval
-of the caller's eligibility policy. Wiring that authority remains required.
+The low-level adapter checks complete event-key coverage, not the correctness or
+approval of the caller's eligibility policy. Production preparation can instead
+use `prepare_with_policy`, which evaluates the shared pinned trade-condition
+policy and includes its identity in the projection. The policy must cover the
+source interval and be available at its start. REST acquisition time cannot make
+a future policy available earlier.
+
+`arte.trade-eligibility.v1` has disjoint allowed and excluded condition sets plus
+an explicit empty-condition rule. Any unknown condition fails evaluation, even
+when another condition would exclude the trade. All marked corrections remain
+unsupported by this projection. The live market lane uses the same evaluator;
+its ingestion API no longer accepts an arbitrary eligibility boolean.
+
+This implements the existing all-or-none calculation eligibility contract. It
+does not implement independent provider-specific OHLC and volume update rules.
+Provider rule certification, policy persistence and executable startup wiring
+remain required. Hash identity alone does not approve the condition mapping.
 
 Only a simulation copy receives `available_at_ns = sip_ns + delay_ns`. Source
 objects are unchanged. Receive and participant timestamps remain absent when

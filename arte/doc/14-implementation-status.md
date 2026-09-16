@@ -6,6 +6,25 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Shared trade eligibility
+
+Live ingestion and historical projection now share a pinned trade-condition
+evaluator. Policies declare allowed codes, known excluded codes, empty-condition
+behavior, provider, validity interval, availability and source identity. Unknown
+codes fail rather than becoming silently eligible or ineligible. Marked
+corrections require a separate causal contract and remain rejected.
+
+The live lane requires a policy and no longer accepts an eligibility boolean.
+Missing/unknown rules fail the lane before enqueueing the affected trade.
+Historical preparation requires policy availability at interval start, derives
+all decisions and pins their identity. Known exclusions remain observable input.
+
+This is the current all-or-none calculation contract, not a complete interpreter
+of independent provider OHLC/volume rules. Policy certification, persistence and
+executable startup wiring remain open. All 420 offline tests, formatting, Clippy
+and copied-source checks pass. No services started or migrations ran. Source
+parity was not rerun.
+
 ## Checked backtest market startup
 
 A portable market-startup document now assembles the shared market/V7 scheduler
@@ -37,8 +56,8 @@ budgets. Equal-SIP groups release after their final bounded chunk. Empty coverag
 advances the final watermark without inventing events. This remains retrospective
 simulation, not reconstruction of the original as-known tape.
 
-The eligibility policy still needs an approved authority wired by the executable
-runner. The adapter verifies supplied decisions, not their market-rule semantics.
+The shared evaluator above can now derive eligibility decisions. Its provider
+rule source still needs certification and wiring by the executable runner.
 No service or connected acceptance test is authorized yet.
 
 Five projection fixtures cover timing/provenance, tied groups, empty coverage,
