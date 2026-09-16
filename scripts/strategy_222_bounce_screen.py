@@ -19,7 +19,8 @@ import math
 import numpy as np
 from src.runtime_paths import runtime_root
 from strategy_222_recorded_sequences import recording
-from strategy_222_supervised_research import digest, hindsight_label, save
+from strategy_222_supervised_research import digest, flat_entry_state, hindsight_label, save
+from strategy_222_macd_episodes import closed_connection, timestamp
 
 
 class BounceWindow:
@@ -57,7 +58,44 @@ class BounceWindow:
             candle_ends=[r['bar']['end'] for r in self.rows])
 
 
-def run(manifest, run_id, ledger_path, output):
+def attach_decisions(journal, run_id, samples):
+    """Join exact completed-candle decisions; never backfill with a later decision."""
+    wanted = {(s['symbol'], s['at']) for s in samples}
+    found = {}
+    connection = closed_connection(journal)
+    try:
+        for sequence, stamp, raw in connection.execute(
+                "select sequence,event_time,payload_json from journal where run_id=? "
+                "and category='strategy_decision' order by sequence", (run_id,)):
+            at = timestamp(stamp)
+            decision = json.loads(raw)
+            symbol = decision['ticker']
+            key = symbol, at
+            if key not in wanted or not any(str(s).startswith(f'qmd-derived:{symbol}:1s:')
+                    for s in decision.get('source_signal_ids', ())):
+                continue
+            if key in found:
+                raise ValueError('Ambiguous exact completed-candle decision')
+            metadata = decision.get('metadata') or {}
+            checks = (metadata.get('liquidity_admission') or {}).get('checks') or {}
+            found[key] = dict(status='matched', sequence=sequence, at=at,
+                strategy_status=metadata.get('status'),
+                flat_entry_state=flat_entry_state(metadata),
+                action=decision.get('action'), first_blocker=decision.get('reason'),
+                liquidity_failed=[k for k, v in checks.items() if v is False],
+                liquidity_checks_available=bool(checks))
+    finally:
+        connection.close()
+    counts = Counter()
+    for sample in samples:
+        context = found.get((sample['symbol'], sample['at']),
+            dict(status='missing_exact_completed_decision'))
+        sample['decision_context'] = context
+        counts[context['status']] += 1
+    return dict(counts)
+
+
+def run(manifest, run_id, ledger_path, output, journal=None):
     output = output.resolve()
     output.relative_to(runtime_root().resolve())
     if output.exists():
@@ -110,6 +148,7 @@ def run(manifest, run_id, ledger_path, output):
                 features=measured, label=label))
     if dict(counts) != receipt['by_symbol'] or sum(counts.values()) != receipt['rows']:
         raise ValueError('Recording coverage mismatch')
+    context_counts = attach_decisions(journal, run_id, samples) if journal else None
     cohorts = {}
     for candidate in (False, True):
         valid = [s for s in samples if s['candidate'] == candidate and s['label']['valid']]
@@ -117,14 +156,22 @@ def run(manifest, run_id, ledger_path, output):
             profitable=sum(s['label']['profitable'] for s in valid),
             major_good=sum(s['label']['major_good'] for s in valid),
             by_symbol=dict(Counter(s['symbol'] for s in valid)))
+        if journal:
+            flat = [s for s in valid if s['decision_context'].get('flat_entry_state') is True]
+            cohorts[str(candidate)]['flat_state'] = dict(rows=len(flat),
+                profitable=sum(s['label']['profitable'] for s in flat),
+                major_good=sum(s['label']['major_good'] for s in flat))
     save(output, dict(status='completed', run_id=run_id,
         inputs={str(p.resolve()): digest(p) for p in (manifest, path, ledger_path, Path(__file__),
             Path(__file__).with_name('strategy_222_recorded_sequences.py'),
+            Path(__file__).with_name('strategy_222_macd_episodes.py'),
             Path(__file__).with_name('strategy_222_supervised_research.py'))},
+        journal=({'path': str(journal.resolve()), 'sha256': digest(journal),
+            'context_counts': context_counts} if journal else None),
         quote_hashes=hashes, recording_counts=dict(counts), reasons=dict(reasons),
         cohorts=cohorts, samples=samples,
         policy='Two completed green candles, rising close, support rejection on either candle; raw minimum of three completed candle lows as research stop. 100 shares, 100ms delay, 5bps slippage per side, $1 fee per side, 2R target, 300s horizon.',
-        limitations='Overlapping position-selected development observations are not independent trades. No MACD, liquidity, level-room, portfolio or OMS admission is applied. Raw candle low has no strategy stop buffer. This screen does not establish executable strategy returns or generalization.'))
+        limitations='Overlapping position-selected development observations are not independent trades. Optional exact decision joins describe the original strategy state, not counterfactual state under a changed policy. First blocker is not every failed gate; missing checks are not passing checks. No MACD, liquidity, level-room, portfolio or OMS admission is applied. Raw candle low has no strategy stop buffer. This screen does not establish executable strategy returns or generalization.'))
     print(f'Bounce screen: active=0 queued=0 completed=1 failed=0 samples={len(samples)}', flush=True)
 
 
@@ -133,5 +180,6 @@ if __name__ == '__main__':
     for name in ('manifest', 'ledger', 'output'):
         parser.add_argument('--'+name, required=True, type=Path)
     parser.add_argument('--run-id', required=True)
+    parser.add_argument('--journal', type=Path, help='Optional closed journal for exact strategy-state context')
     args = parser.parse_args()
-    run(args.manifest, args.run_id, args.ledger, args.output)
+    run(args.manifest, args.run_id, args.ledger, args.output, args.journal)
