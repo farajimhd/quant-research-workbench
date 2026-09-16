@@ -899,13 +899,77 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, scenario: Scenario)
                     changed,
                 )
                 .unwrap();
+                struct Reader {
+                    record: Option<arte_core::action_rejection::Committed>,
+                    calls: usize,
+                    pause: bool,
+                }
+                impl crate::rejection_journal::Reader for Reader {
+                    async fn read(
+                        &mut self,
+                        _: &arte_core::strategy_transaction::Committed,
+                        _: &arte_core::action_rejection::Record,
+                    ) -> Result<Option<arte_core::action_rejection::Committed>>
+                    {
+                        self.calls += 1;
+                        if self.pause {
+                            std::future::pending::<()>().await;
+                        }
+                        Ok(self.record.clone())
+                    }
+                }
+                let mut reader = Reader {
+                    record: None,
+                    calls: 0,
+                    pause: false,
+                };
                 assert!(restored
-                    .confirm_entry_rejection(&conflicting, &portfolio)
+                    .verify_entry_rejections(&portfolio, &mut reader, 0)
+                    .await
                     .is_err());
+                assert_eq!(reader.calls, 0);
+                for record in [None, Some(conflicting)] {
+                    reader.record = record;
+                    let outcomes = restored
+                        .verify_entry_rejections(&portfolio, &mut reader, 1)
+                        .await
+                        .unwrap();
+                    assert_eq!(outcomes.len(), 1);
+                    assert_eq!(&outcomes[0].decision_id, id);
+                    assert_eq!(outcomes[0].action_index, readback.record().action_index);
+                    assert!(outcomes[0].result.is_err());
+                    assert!(restored.acknowledge().is_err());
+                }
+                reader.record = Some(readback);
+                reader.pause = true;
+                {
+                    use std::{
+                        future::Future,
+                        task::{Context, Poll, Waker},
+                    };
+                    let mut attempt =
+                        Box::pin(restored.verify_entry_rejections(&portfolio, &mut reader, 1));
+                    assert!(matches!(
+                        attempt
+                            .as_mut()
+                            .poll(&mut Context::from_waker(Waker::noop())),
+                        Poll::Pending
+                    ));
+                }
                 assert!(restored.acknowledge().is_err());
-                restored
-                    .confirm_entry_rejection(&readback, &portfolio)
+                reader.pause = false;
+                let outcomes = restored
+                    .verify_entry_rejections(&portfolio, &mut reader, 1)
+                    .await
                     .unwrap();
+                assert_eq!(outcomes.len(), 1);
+                assert!(outcomes[0].result.is_ok());
+                assert!(restored
+                    .verify_entry_rejections(&portfolio, &mut reader, 1)
+                    .await
+                    .unwrap()
+                    .is_empty());
+                assert_eq!(reader.calls, 4);
                 assert!(restored.pending_actions().is_empty());
                 assert_eq!(
                     restored

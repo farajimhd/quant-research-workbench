@@ -88,6 +88,15 @@ impl ClickHouse {
         )?))
     }
 }
+impl crate::rejection_journal::Reader for &ClickHouse {
+    async fn read(
+        &mut self,
+        decision: &DecisionReceipt,
+        expected: &Record,
+    ) -> Result<Option<Committed>> {
+        self.read_action_rejection(decision, expected).await
+    }
+}
 pub struct RejectionPublisher<'a> {
     database: &'a ClickHouse,
     lease: &'a mut crate::ownership::Lease,

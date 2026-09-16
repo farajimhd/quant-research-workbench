@@ -115,10 +115,24 @@ impl ClickHouse {
             .ok_or_else(|| Error::Unready("session startup pin missing".into()))?;
         self.load_backtest_startup(request.manifest, &startup.hash()?)
             .await?;
-        crate::playback_runtime::session::Session::restore(
+        let mut session = crate::playback_runtime::session::Session::restore(
             &read_bundle(&Storage(self), request).await?,
             request,
-        )
+        )?;
+        let mut reader = self;
+        loop {
+            let outcomes = session
+                .controller
+                .verify_entry_rejections(&session.portfolio, &mut reader, 256)
+                .await?;
+            if outcomes.is_empty() {
+                break;
+            }
+            for outcome in outcomes {
+                outcome.result?;
+            }
+        }
+        Ok(session)
     }
     /// Holds exclusive runtime owners across publication. Cancellation never
     /// acknowledges the boundary; retain `finalized` and retry it unchanged.

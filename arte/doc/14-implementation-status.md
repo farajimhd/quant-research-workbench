@@ -6,6 +6,24 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Independent rejection readback during recovery
+
+The controller now verifies retained sizing rejections through a read-only
+journal interface. Each batch is bounded to at most 4096 records and reports
+per-action outcomes. Only exact readback verifies an action. Missing records,
+conflicts and read errors retain pending work. Already verified records are
+skipped on retry. No rejection is recalculated or republished through this path.
+
+Session loading uses batches of 256 before returning the paused restored session.
+The existing funding-absence and decision-ownership checks still apply. The
+shared-cash recovery fixture covers missing/conflicting records, cancellation,
+invalid batch bounds and idempotent verification. It preserves checkpoint identity
+and reservations before acknowledgment.
+
+All 404 offline tests, formatting, Clippy and copied-source checks pass. No
+services started or migrations ran. Source parity was not rerun. Connected
+recovery acceptance and the executable runner remain unfinished.
+
 ## Startup-bound session recovery
 
 Common-cut recovery root version 2 now pins startup identity for assembled

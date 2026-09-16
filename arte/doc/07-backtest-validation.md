@@ -63,7 +63,11 @@ portfolio state; it does not reset balances from the initial startup document.
 Version 1 common-cut roots are rejected without implicit migration. Component-only
 graphs may omit startup identity, but cannot be restored as complete sessions.
 `load_backtest_session` independently reads the persisted startup document before
-restoring the checkpoint, then returns paused. The executable loop remains
+restoring the checkpoint. It also reads sizing-rejection journal records in
+batches of 256. Each must match the retained decision/action evidence exactly.
+Missing or conflicting records fail loading; this read-only path never inserts
+missing records. Verification does not release funds or re-run strategy logic.
+The session returns paused. The executable loop remains
 unfinished. Storage readback does not prove strategy acceptance or power-loss
 durability.
 

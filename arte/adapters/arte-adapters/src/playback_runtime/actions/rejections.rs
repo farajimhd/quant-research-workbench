@@ -8,6 +8,53 @@ pub(super) struct State {
     pub verified: bool,
 }
 impl Runtime {
+    /// Verify a bounded stable batch without republishing or recalculating.
+    /// Successful prefixes survive cancellation/failure. Failed items stay pending.
+    pub async fn verify_entry_rejections(
+        &mut self,
+        portfolio: &Portfolio,
+        reader: &mut impl crate::rejection_journal::Reader,
+        maximum_records: usize,
+    ) -> Result<Vec<crate::rejection_journal::ReadbackOutcome>> {
+        self.decision_view()?;
+        if maximum_records == 0 || maximum_records > 4096 {
+            return Err(Error::Capacity("rejection readback batch size".into()));
+        }
+        let selected: Vec<_> = self
+            .actions
+            .items
+            .iter()
+            .filter_map(|(key, item)| {
+                item.rejection
+                    .as_ref()
+                    .filter(|r| !r.verified)
+                    .map(|r| (key.clone(), item.receipt.clone(), r.record.clone()))
+            })
+            .take(maximum_records)
+            .collect();
+        let mut outcomes = Vec::with_capacity(selected.len());
+        for ((decision_id, action_index), decision, record) in selected {
+            let result = match reader.read(&decision, &record).await {
+                Ok(Some(receipt)) => {
+                    if receipt.record().hash()? != record.hash()? {
+                        Err(Error::Conflict(
+                            "rejection reader returned another record".into(),
+                        ))
+                    } else {
+                        self.confirm_entry_rejection(&receipt, portfolio)
+                    }
+                }
+                Ok(None) => Err(Error::Unready("rejection journal readback missing".into())),
+                Err(error) => Err(error),
+            };
+            outcomes.push(crate::rejection_journal::ReadbackOutcome {
+                decision_id,
+                action_index,
+                result,
+            });
+        }
+        Ok(outcomes)
+    }
     fn require_unfunded_rejection(
         &self,
         key: &(String, usize),

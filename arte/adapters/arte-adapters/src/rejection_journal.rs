@@ -14,6 +14,19 @@ pub trait Publisher {
         record: &Record,
     ) -> impl Future<Output = Result<Record>> + Send;
 }
+/// Recovery readback only. Implementations must not insert missing records.
+pub trait Reader {
+    fn read(
+        &mut self,
+        decision: &DecisionReceipt,
+        expected: &Record,
+    ) -> impl Future<Output = Result<Option<Committed>>> + Send;
+}
+pub struct ReadbackOutcome {
+    pub decision_id: String,
+    pub action_index: usize,
+    pub result: Result<()>,
+}
 pub async fn commit(
     pending: &mut Pending,
     decision: &DecisionReceipt,
