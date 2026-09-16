@@ -6,6 +6,24 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Playback quote-to-simulation dispatch
+
+The execution adapter can now consume a released quote directly from account
+playback. It checks run identity, requires a pending quote boundary and verifies
+that the owned quote book matches that observation. Boundary sequence and modeled
+evaluation time become the simulation coordinates; raw timestamps are unchanged.
+
+An offline test preloads a bracket, releases a playback quote, obtains one modeled
+fill and retries a failed fill-journal publication. Reusing the same boundary does
+not create a second fill. Missing boundaries and foreign run IDs are rejected.
+The fixture's preloaded order bypasses production submission gates only in the
+test; this is not full candidate entry-to-fill acceptance.
+
+All 326 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+No services or network calls ran. Source-oracle parity was not rerun. A unified
+controller still needs to gate market acknowledgment on both account decisions and
+fill publication, then feed reconciled positions back into strategy evaluation.
+
 ## Merged quote and trade playback boundaries
 
 The shared scheduler now accepts quotes with a bounded queue and a session identity

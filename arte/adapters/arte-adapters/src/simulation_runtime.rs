@@ -146,6 +146,42 @@ impl Runtime {
         self.last_source_quote = Some((event.clone(), sequence, at_ns));
         Ok(())
     }
+    /// Consume only a released quote from this exact backtest run. The pending
+    /// boundary supplies simulation identity and clock; raw receive times stay raw.
+    pub fn quote_playback(
+        &mut self,
+        run: &arte_core::market_structure::scheduler::playback::accounts::Run,
+        maximum_age_ns: u64,
+    ) -> Result<()> {
+        if run
+            .scopes()
+            .first()
+            .is_none_or(|scope| scope.run_id != self.simulator.run_id())
+        {
+            return Err(Error::Conflict("simulation and playback run differ".into()));
+        }
+        let boundary = run
+            .pending()?
+            .ok_or_else(|| Error::Unready("no playback quote boundary".into()))?;
+        let arte_core::market_structure::scheduler::Kind::Quote { observation } = boundary.kind
+        else {
+            return Err(Error::Unready(
+                "simulation requires a quote boundary".into(),
+            ));
+        };
+        let book = run.quotes()?;
+        if book.latest() != Some(observation) {
+            return Err(Error::Conflict(
+                "playback quote book differs from boundary".into(),
+            ));
+        }
+        self.quote_book(
+            book,
+            boundary.sequence,
+            boundary.evaluated_at_ns,
+            maximum_age_ns,
+        )
+    }
     #[cfg(test)]
     fn submit(
         &mut self,

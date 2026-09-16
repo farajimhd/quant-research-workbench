@@ -15,7 +15,81 @@ use arte_core::{
     v7_stream::StreamPolicy,
 };
 
-fn run() -> Run {
+#[tokio::test]
+async fn released_playback_quote_drives_one_fill_with_retryable_journal() {
+    use arte_core::{execution_positions::Projection, simulated_execution::Simulator};
+    let mut run = run_with_quote(true);
+    let source = run.market().unwrap().source_scope();
+    let mut simulator = Simulator::new_scoped("run", 1, 2, 2, 10000).unwrap();
+    // Test-only preloaded order: production submission still uses funding/session gates.
+    simulator
+        .submit(
+            arte_core::orders::Bracket {
+                command_id: "order".into(),
+                account: "a".into(),
+                instrument: 1,
+                side: arte_core::orders::Side::Long,
+                quantity: 1,
+                entry: 1001,
+                price_scale: 2,
+                stop: Some(900),
+                target: Some(1100),
+                tick: 1,
+                deadline_ns: 202_000_000_000,
+            },
+            200_000_000_000,
+            0,
+        )
+        .unwrap();
+    let mut execution =
+        crate::simulation_runtime::Runtime::new(simulator, Projection::new(2, 10, 4).unwrap(), 4)
+            .unwrap();
+    execution.bind_source(source).unwrap();
+    assert!(execution.quote_playback(&run, 2_000_000_000).is_err());
+    run.resume().unwrap();
+    assert_eq!(run.poll().unwrap(), Poll::Boundary);
+    let mut foreign = crate::simulation_runtime::Runtime::new(
+        Simulator::new_scoped("foreign", 1, 2, 2, 10000).unwrap(),
+        Projection::new(2, 10, 4).unwrap(),
+        4,
+    )
+    .unwrap();
+    foreign.bind_source(source).unwrap();
+    assert!(foreign.quote_playback(&run, 2_000_000_000).is_err());
+    execution.quote_playback(&run, 2_000_000_000).unwrap();
+    execution.quote_playback(&run, 2_000_000_000).unwrap();
+    assert_eq!(execution.status().pending_fills, 1);
+    struct FillStore {
+        fail: bool,
+        calls: usize,
+    }
+    impl crate::fill_journal::Publisher for FillStore {
+        async fn publish(
+            &mut self,
+            batch: &crate::fill_journal::Batch,
+        ) -> Result<std::collections::BTreeMap<String, String>> {
+            self.calls += 1;
+            if self.fail {
+                self.fail = false;
+                return Err(Error::Unready("injected journal failure".into()));
+            }
+            Ok(batch.rows().clone())
+        }
+    }
+    let mut store = FillStore {
+        fail: true,
+        calls: 0,
+    };
+    assert!(execution.commit_next(&mut store).await.is_err());
+    assert_eq!(execution.status().pending_fills, 1);
+    assert!(execution.commit_next(&mut store).await.unwrap());
+    assert_eq!(execution.status().pending_fills, 0);
+    execution.quote_playback(&run, 2_000_000_000).unwrap();
+    assert_eq!(execution.status().pending_fills, 0);
+    assert_eq!(store.calls, 2);
+}
+
+fn run_with_quote(include_quote: bool) -> Run {
     const S: u64 = 1_000_000_000;
     let bars: Vec<_> = (100..118)
         .map(|t| Candle {
@@ -66,7 +140,10 @@ fn run() -> Run {
         &SplitAdjustment::default(),
     )
     .unwrap();
-    let scheduler = Scheduler::new(Ordered::new(market, 10).unwrap(), "run".into()).unwrap();
+    let mut scheduler = Scheduler::new(Ordered::new(market, 10).unwrap(), "run".into()).unwrap();
+    scheduler
+        .bind_quote_policy(std::sync::Arc::new(crate::test_quote_policy()))
+        .unwrap();
     use arte_core::events::*;
     let prepared = InputData::new(
         scheduler.scope(),
@@ -74,41 +151,78 @@ fn run() -> Run {
         vec![Frame {
             watermark_ns: 201 * S,
             evaluated_at_ns: 201 * S,
-            inputs: vec![Input {
-                eligible: true,
-                observation: Observation {
-                    key: EventKey {
-                        provider: 1,
-                        instrument: 1,
-                        session: 20260915,
-                        kind: EventKind::Trade,
-                        sequence: 1,
+            inputs: {
+                let mut inputs = vec![Input {
+                    eligible: true,
+                    observation: Observation {
+                        key: EventKey {
+                            provider: 1,
+                            instrument: 1,
+                            session: 20260915,
+                            kind: EventKind::Trade,
+                            sequence: 1,
+                        },
+                        payload: Payload::Trade {
+                            price: Decimal {
+                                atoms: 10,
+                                scale: 0,
+                            },
+                            size: Decimal { atoms: 1, scale: 0 },
+                            exchange: 1,
+                            trade_id: "1".into(),
+                            trf: None,
+                            conditions: vec![],
+                            correction: None,
+                        },
+                        sip: SourceTime {
+                            ns: 200 * S,
+                            precision_ns: 1,
+                        },
+                        participant: None,
+                        available_at_ns: 200 * S,
+                        receipt: None,
                     },
-                    payload: Payload::Trade {
-                        price: Decimal {
+                }];
+                if include_quote {
+                    let mut quote = inputs[0].observation.clone();
+                    quote.key.kind = EventKind::Quote;
+                    quote.key.sequence = 0;
+                    quote.payload = Payload::Quote {
+                        bid: Decimal {
+                            atoms: 999,
+                            scale: 2,
+                        },
+                        ask: Decimal {
+                            atoms: 1001,
+                            scale: 2,
+                        },
+                        bid_size: Decimal {
                             atoms: 10,
                             scale: 0,
                         },
-                        size: Decimal { atoms: 1, scale: 0 },
-                        exchange: 1,
-                        trade_id: "1".into(),
-                        trf: None,
+                        ask_size: Decimal {
+                            atoms: 10,
+                            scale: 0,
+                        },
+                        bid_exchange: 1,
+                        ask_exchange: 1,
                         conditions: vec![],
-                        correction: None,
-                    },
-                    sip: SourceTime {
-                        ns: 200 * S,
-                        precision_ns: 1,
-                    },
-                    participant: None,
-                    available_at_ns: 200 * S,
-                    receipt: None,
-                },
-            }],
+                        indicators: vec![],
+                    };
+                    inputs.insert(
+                        0,
+                        Input {
+                            observation: quote,
+                            eligible: false,
+                        },
+                    );
+                }
+                inputs
+            },
         }],
         Limits {
             maximum_frames: 1,
-            maximum_events: 1,
+            maximum_events: 2,
             maximum_serialized_bytes: 10000,
         },
     )
@@ -165,7 +279,7 @@ fn run() -> Run {
 
 #[tokio::test(start_paused = true)]
 async fn playback_commits_concurrently_and_retries_only_failed_accounts() {
-    let mut run = run();
+    let mut run = run_with_quote(false);
     run.resume().unwrap();
     assert_eq!(run.poll().unwrap(), Poll::Boundary);
     let input = run.pending().unwrap().unwrap().input("features".into());
