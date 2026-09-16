@@ -27,6 +27,7 @@ pub mod publication;
 pub mod quote_state;
 pub mod reference_data;
 pub mod replay;
+pub mod run_manifest;
 pub mod seed_storage;
 pub mod session;
 pub mod simulated_execution;

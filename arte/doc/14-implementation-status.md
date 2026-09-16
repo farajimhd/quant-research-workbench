@@ -6,6 +6,31 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Aggregate run manifest contract
+
+A shared run manifest now pins code release, source/reference/seed/algorithm
+manifests, dependency plan, hardware profile, clock model and execution model.
+Per-consumer records contain account, instrument, strategy instance and effective
+configuration hash. Run ID, mode and code identity are stored once and used to
+derive the existing strategy Scope contract.
+
+Backtest manifests require simulated execution and a historical, recorded-live or
+explicitly pinned fault-simulation clock. Live and Paper require a live clock and
+broker session-scope pin. These are contract checks, not credential isolation or
+broker acceptance evidence. A live source pin identifies configuration; it does not
+pretend that future streaming events are already frozen.
+
+Consumers must be sorted and unique. The immutable pinned handle validates once
+and derives scopes by binary search. Candidate runtimes can be constructed from
+declared manifest consumers. Hash identity alone does not certify referenced data.
+
+All 312 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Tests cover scope derivation, round trips, identity changes, undeclared consumers,
+missing pins, duplicate consumers and mode/clock/execution conflicts. No services
+or database calls ran. Source-oracle parity was not rerun. ClickHouse manifest
+publication, referenced-content verification and restart orchestration remain
+unfinished.
+
 ## Run-level quote-policy pinning
 
 The candidate's effective configuration now includes the quote eligibility policy

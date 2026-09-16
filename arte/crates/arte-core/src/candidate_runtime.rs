@@ -36,6 +36,20 @@ pub fn configuration_hash(
     ))
 }
 impl Runtime {
+    pub fn from_manifest(
+        manifest: &crate::run_manifest::Pinned,
+        account: &str,
+        instrument: u64,
+        strategy: &str,
+        state: candidate::State,
+        maximum_state_bytes: usize,
+    ) -> Result<Self> {
+        Self::new(
+            manifest.scope(account, instrument, strategy)?,
+            state,
+            maximum_state_bytes,
+        )
+    }
     pub fn new(
         scope: dispatch::Scope,
         state: candidate::State,
