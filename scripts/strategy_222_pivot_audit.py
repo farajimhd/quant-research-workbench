@@ -13,7 +13,7 @@ from collections import Counter
 import gzip
 import json
 
-from src.market_engine.swing_structure import SwingSettings, SwingStructure
+from src.market_engine.swing_structure import SwingSettings
 from src.market_engine.structural_detector import DetectorSettings
 from src.market_engine import swing_pivot_witness as witnesses
 from src.runtime_paths import runtime_root
@@ -21,7 +21,7 @@ from strategy_222_recorded_sequences import recording
 from strategy_222_supervised_research import digest, save
 
 
-class PivotAudit(SwingStructure):
+class PivotAudit(witnesses.PivotWitnessStructure):
     """Observe the actual level selected by _found, without copying its policy."""
     def __init__(self, settings):
         super().__init__(settings)
@@ -45,6 +45,8 @@ class PivotAudit(SwingStructure):
                 if level is None:
                     raise ValueError('Local pivot has no selected anchored level')
                 witness = witnesses.capture(level, extreme, t, reason)
+                if witness is not None and self.latest_pivots.get(level['level_id']) != witness:
+                    raise ValueError('Fresh pivot observer differs from actual confirmation')
                 self.events.append(dict(at=self.clock[t], pivot_at=self.clock[extreme[1]],
                     pivot_price=extreme[0], reversal_distance=extreme[2],
                     merged=self.sequence == before, level_id=level['level_id'],
