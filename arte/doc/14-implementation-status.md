@@ -6,6 +6,28 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Quote-boundary candidate decisions
+
+The candidate owner now handles quote and other non-entry-price boundaries.
+Previously, those boundaries required account receipts but had no candidate
+preparation path. That could stop playback at its first quote.
+
+The new observation path reconciles account state and uses the same exit-first
+dispatcher as price evaluation. It does not create entries, calculate targets,
+invent body-high prices or update price-derived peaks. Eligible trade boundaries
+and completed one-second bars cannot use this path; their evaluators remain
+required. Feature identity, sequence, availability and evaluation clocks must
+match the observed boundary.
+
+The owner test now prepares real candidate transactions for two accounts. One
+waits; the other's flatten condition produces cancellation. An injected journal
+failure leaves only the failed account eligible for retry. Market acknowledgment
+remains blocked until both journals and the cancellation action finish. Full
+candidate-driven entry/fill/exit and cancellation-of-await tests remain required.
+
+All 382 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Source-oracle parity was not rerun. No service or network test ran.
+
 ## Owned candidate playback coordination
 
 The playback adapter now has an owner for shared features and the manifest's

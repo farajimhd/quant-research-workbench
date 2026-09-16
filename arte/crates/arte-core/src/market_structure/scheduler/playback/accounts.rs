@@ -180,6 +180,38 @@ impl Run {
     pub fn remaining(&self) -> Option<usize> {
         self.barrier.as_ref().map(Barrier::remaining)
     }
+    pub fn prepare_observation(
+        &self,
+        candidate: &mut crate::candidate_runtime::Runtime,
+        features: &crate::candidate_features::State,
+        safety: &crate::strategy_dispatch::Safety,
+        broker: &crate::strategy_candidate::PositionObservation,
+    ) -> Result<crate::strategy_dispatch::Decision> {
+        if !self.needs_decision(candidate.scope())? {
+            return Err(Error::Conflict(
+                "playback consumer already committed".into(),
+            ));
+        }
+        let boundary = self
+            .pending()?
+            .ok_or_else(|| Error::Unready("no playback boundary".into()))?;
+        if matches!(
+            boundary.kind,
+            super::super::Kind::Trade { eligible: true, .. }
+                | super::super::Kind::Completed {
+                    interval_ns: 1_000_000_000,
+                    ..
+                }
+        ) {
+            return Err(Error::Invalid(
+                "strategy price boundary requires its evaluator".into(),
+            ));
+        }
+        let decision =
+            candidate.observe_only(boundary.input(String::new()), safety, broker, features)?;
+        self.validate_decision(&decision)?;
+        Ok(decision)
+    }
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_intrabar(
         &self,

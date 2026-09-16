@@ -197,6 +197,17 @@ impl State {
             reasons,
         })
     }
+    /// Reconcile non-price boundaries without changing observed body-high evidence.
+    pub(crate) fn observe_account(
+        &mut self,
+        broker: &PositionObservation,
+        at_ns: u64,
+    ) -> Result<()> {
+        let mut next = self.clone();
+        next.reconcile(broker, at_ns)?;
+        *self = next;
+        Ok(())
+    }
     /// Apply a reconciled account snapshot before global exit arbitration. Retain
     /// body-high evidence supplied by the causal market authority, not a future bar.
     pub fn observe_reconciled(

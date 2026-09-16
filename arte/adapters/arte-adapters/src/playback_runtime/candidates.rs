@@ -102,6 +102,25 @@ impl Candidates {
             .decision_view()?
             .observe_features(&mut self.features)
     }
+    pub fn prepare_observation(
+        &mut self,
+        controller: &Runtime,
+        scope: &str,
+        safety: &Safety,
+        broker: &candidate::PositionObservation,
+    ) -> Result<Decision> {
+        self.require(controller)?;
+        let slot = self
+            .slots
+            .get_mut(scope)
+            .ok_or_else(|| Error::Invalid("candidate consumer missing".into()))?;
+        controller.decision_view()?.prepare_observation(
+            &mut slot.runtime,
+            &self.features,
+            safety,
+            broker,
+        )
+    }
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_completed(
         &mut self,

@@ -36,6 +36,52 @@ pub fn configuration_hash(
     ))
 }
 impl Runtime {
+    /// No acquisition/target calculation: account reconciliation plus the shared
+    /// exit-first dispatcher for boundaries that are not strategy price samples.
+    pub fn observe_only(
+        &mut self,
+        mut input: dispatch::InputBoundary,
+        safety: &dispatch::Safety,
+        broker: &candidate::PositionObservation,
+        features: &crate::candidate_features::State,
+    ) -> Result<dispatch::Decision> {
+        let snapshot = features
+            .snapshot()?
+            .ok_or_else(|| Error::Unready("candidate features missing".into()))?;
+        if self.instrument != features.source_scope().instrument
+            || snapshot.boundary_id != input.event_id
+            || snapshot.sequence != input.source_sequence
+            || snapshot.available_at_ns != input.available_at_ns
+            || snapshot.evaluated_at_ns != input.evaluated_at_ns
+            || broker.quantity != safety.position_quantity
+            || broker.pending_entry != safety.pending_entry
+            || broker.at_ns > input.evaluated_at_ns
+        {
+            return Err(Error::Conflict(
+                "candidate observation boundary or position differs".into(),
+            ));
+        }
+        input.feature_hash = content_hash(&("candidate-observation-v1", snapshot, broker))?;
+        let at_ns = input.evaluated_at_ns;
+        let evidence = input.feature_hash.clone();
+        self.transaction.prepare_observed(
+            input,
+            safety,
+            evidence,
+            |state| state.observe_account(broker, at_ns),
+            |_| {
+                Ok(vec![if safety.position_quantity > 0 {
+                    dispatch::Action::Hold {
+                        reason: "non_price_boundary_observed".into(),
+                    }
+                } else {
+                    dispatch::Action::Wait {
+                        reason: "non_price_boundary_observed".into(),
+                    }
+                }])
+            },
+        )
+    }
     pub fn checkpoint(
         &self,
         context: &str,

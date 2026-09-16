@@ -501,6 +501,121 @@ async fn candidate_owner_preflights_consumers_before_journal_io() {
         .await
         .is_err());
     assert!(controller.acknowledge().is_err());
+    let scopes = controller.decision_view().unwrap().scopes().to_vec();
+    let at_ns = controller
+        .decision_view()
+        .unwrap()
+        .pending()
+        .unwrap()
+        .unwrap()
+        .evaluated_at_ns;
+    for scope in &scopes {
+        let template = prepared_account(&scope.account);
+        let mut safety = template.pending_decision().unwrap().safety.clone();
+        safety.pending_entry = scope.account == "b";
+        safety.flatten = scope.account == "b";
+        let broker = arte_core::strategy_candidate::PositionObservation {
+            revision: 1,
+            at_ns,
+            quantity: 0,
+            average_price: None,
+            stop: None,
+            target: None,
+            pending_entry: safety.pending_entry,
+        };
+        let decision = candidates
+            .prepare_observation(
+                &controller,
+                &arte_core::content_hash(scope).unwrap(),
+                &safety,
+                &broker,
+            )
+            .unwrap();
+        if scope.account == "b" {
+            assert!(matches!(
+                decision.actions.as_slice(),
+                [Action::CancelEntry { .. }]
+            ));
+        } else {
+            assert!(matches!(decision.actions.as_slice(), [Action::Wait { .. }]));
+        }
+    }
+    struct RetryStore {
+        calls: usize,
+        fail: bool,
+    }
+    impl Publisher for RetryStore {
+        async fn append(&mut self, batch: &Batch) -> Result<Vec<Record>> {
+            self.calls += 1;
+            if self.fail {
+                self.fail = false;
+                return Err(Error::Unready("injected account failure".into()));
+            }
+            Ok(batch.records().to_vec())
+        }
+    }
+    let keys: Vec<_> = candidates.scope_hashes().map(str::to_owned).collect();
+    let mut stores = keys
+        .iter()
+        .enumerate()
+        .map(|(i, key)| {
+            (
+                key.clone(),
+                RetryStore {
+                    calls: 0,
+                    fail: i == 1,
+                },
+            )
+        })
+        .collect();
+    let outcomes = candidates
+        .commit_accounts(&mut controller, &mut stores, 2)
+        .await
+        .unwrap();
+    assert_eq!(outcomes.iter().filter(|o| o.result.is_ok()).count(), 1);
+    assert_eq!(outcomes.iter().filter(|o| o.result.is_err()).count(), 1);
+    assert!(controller.acknowledge().is_err());
+    let outcomes = candidates
+        .commit_accounts(&mut controller, &mut stores, 2)
+        .await
+        .unwrap();
+    assert_eq!(outcomes.len(), 1);
+    assert!(outcomes[0].result.is_ok());
+    assert_eq!(stores[&keys[0]].calls, 1);
+    assert_eq!(stores[&keys[1]].calls, 2);
+    assert!(candidates
+        .commit_accounts(&mut controller, &mut stores, 2)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(controller.acknowledge().is_err());
+    let pending = controller.pending_actions();
+    assert_eq!(pending.len(), 1);
+    controller
+        .cancel_entry_action(&pending[0].decision_id, pending[0].action_index)
+        .unwrap();
+    controller.acknowledge().unwrap();
+    assert_eq!(controller.poll().unwrap(), Poll::Boundary);
+    candidates.observe(&controller).unwrap();
+    let scope = &scopes[0];
+    let template = prepared_account(&scope.account);
+    let broker = arte_core::strategy_candidate::PositionObservation {
+        revision: 1,
+        at_ns,
+        quantity: 0,
+        average_price: None,
+        stop: None,
+        target: None,
+        pending_entry: false,
+    };
+    assert!(candidates
+        .prepare_observation(
+            &controller,
+            &arte_core::content_hash(scope).unwrap(),
+            &template.pending_decision().unwrap().safety,
+            &broker
+        )
+        .is_err());
 }
 
 #[test]
