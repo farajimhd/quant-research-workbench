@@ -88,12 +88,12 @@ impl Prepared {
                 if event.key.provider != scope.provider
                     || event.key.instrument != scope.instrument
                     || event.key.session != scope.session
-                    || event.key.kind != crate::events::EventKind::Trade
+                    || (event.key.kind == crate::events::EventKind::Quote && input.eligible)
                     || event.available_at_ns > frame.evaluated_at_ns
                     || event.sip.ns < prior.0
                 {
                     return Err(Error::Invalid(
-                        "playback trade scope, availability or late input".into(),
+                        "playback event scope, eligibility, availability or late input".into(),
                     ));
                 }
             }
@@ -223,6 +223,9 @@ impl Playback {
     }
     pub fn market(&self) -> Result<&Runtime> {
         self.scheduler.state()
+    }
+    pub fn quotes(&self) -> Result<&crate::quote_state::Book> {
+        self.scheduler.quotes()
     }
     pub fn pending(&self) -> Result<Option<Boundary<'_>>> {
         self.scheduler.pending()

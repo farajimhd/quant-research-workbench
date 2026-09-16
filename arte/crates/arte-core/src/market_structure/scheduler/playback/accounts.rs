@@ -74,6 +74,9 @@ impl Run {
     pub fn market(&self) -> Result<&Runtime> {
         self.playback.market()
     }
+    pub fn quotes(&self) -> Result<&crate::quote_state::Book> {
+        self.playback.quotes()
+    }
     pub fn pending(&self) -> Result<Option<Boundary<'_>>> {
         self.playback.pending()
     }
@@ -130,7 +133,6 @@ impl Run {
         &self,
         candidate: &mut crate::candidate_runtime::Runtime,
         features: &crate::candidate_features::State,
-        quotes: &crate::quote_state::Book,
         context: crate::candidate_features::EntryContext<'_>,
         safety: &crate::strategy_dispatch::Safety,
         broker: &crate::strategy_candidate::PositionObservation,
@@ -150,7 +152,7 @@ impl Run {
             &boundary,
             boundary.evaluated_at_ns,
             self.market()?,
-            quotes,
+            self.quotes()?,
             context,
         )?;
         let decision = candidate.completed(
@@ -174,7 +176,6 @@ impl Run {
         &self,
         candidate: &mut crate::candidate_runtime::Runtime,
         features: &crate::candidate_features::State,
-        quotes: &crate::quote_state::Book,
         context: crate::candidate_features::AcquisitionContext,
         safety: &crate::strategy_dispatch::Safety,
         broker: &crate::strategy_candidate::PositionObservation,
@@ -191,7 +192,7 @@ impl Run {
             .pending()?
             .ok_or_else(|| Error::Unready("no playback boundary".into()))?;
         let (observation, body_high) =
-            features.acquisition_frame(&boundary, self.market()?, quotes, context)?;
+            features.acquisition_frame(&boundary, self.market()?, self.quotes()?, context)?;
         let decision = candidate.intrabar(
             boundary.input(String::new()),
             safety,

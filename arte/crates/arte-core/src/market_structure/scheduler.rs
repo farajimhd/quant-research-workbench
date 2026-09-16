@@ -8,6 +8,7 @@ use crate::{
     Error, Result,
 };
 pub mod playback;
+mod quotes;
 
 pub struct Scheduler {
     market: Ordered,
@@ -15,6 +16,7 @@ pub struct Scheduler {
     sequence: u64,
     pending: Option<Pending>,
     completed: std::collections::VecDeque<(u64, usize, u64)>,
+    quotes: quotes::Quotes,
 }
 
 struct Pending {
@@ -23,6 +25,9 @@ struct Pending {
     kind: PendingKind,
 }
 enum PendingKind {
+    Quote {
+        key: EventKey,
+    },
     Completed {
         interval_ns: u64,
         index: usize,
@@ -43,6 +48,9 @@ pub struct Boundary<'a> {
     pub kind: Kind<'a>,
 }
 pub enum Kind<'a> {
+    Quote {
+        observation: &'a Observation,
+    },
     Completed {
         interval_ns: u64,
         bar: &'a Completed,
@@ -63,7 +71,9 @@ impl Boundary<'_> {
                 available_at_ns,
                 ..
             } => (bar.bar.end_ns, *available_at_ns),
-            Kind::Trade { observation, .. } => (observation.sip.ns, observation.available_at_ns),
+            Kind::Trade { observation, .. } | Kind::Quote { observation } => {
+                (observation.sip.ns, observation.available_at_ns)
+            }
         };
         crate::strategy_dispatch::InputBoundary {
             event_id: self.id.into(),
@@ -81,16 +91,47 @@ impl Scheduler {
         if run_id.is_empty() || run_id.len() > 128 {
             return Err(Error::Invalid("causal scheduler run identity".into()));
         }
+        let quotes = quotes::Quotes::new(
+            market.scope(),
+            market.buffer.maximum(),
+            market.runtime.maximum_market_events,
+            market.watermark_ns(),
+        )?;
         Ok(Self {
             market,
             run_id,
             sequence: 0,
             pending: None,
             completed: std::collections::VecDeque::new(),
+            quotes,
         })
     }
     pub fn enqueue(&mut self, event: &Observation, eligible: bool) -> Result<bool> {
+        if event.key.kind == crate::events::EventKind::Quote {
+            self.state()?;
+            if eligible {
+                return Err(Error::Invalid(
+                    "quote cannot carry trade eligibility".into(),
+                ));
+            }
+            let result = self.quotes.enqueue(event);
+            if result.is_err() {
+                self.market.failed = true;
+            }
+            return result;
+        }
         self.market.enqueue(event, eligible)
+    }
+    pub fn quotes(&self) -> Result<&crate::quote_state::Book> {
+        self.state()?;
+        Ok(&self.quotes.book)
+    }
+    pub fn bind_quote_policy(
+        &mut self,
+        policy: std::sync::Arc<crate::quote_state::eligibility::Pinned>,
+    ) -> Result<()> {
+        self.state()?;
+        self.quotes.book.bind_shared_policy(policy)
     }
     pub fn state(&self) -> Result<&Runtime> {
         self.market.available()?;
@@ -98,7 +139,7 @@ impl Scheduler {
         Ok(&self.market.runtime)
     }
     pub fn pending_events(&self) -> usize {
-        self.market.pending()
+        self.market.pending() + self.quotes.buffer.pending()
     }
     pub fn scope(&self) -> crate::event_order::Scope {
         self.market.scope()
@@ -114,6 +155,14 @@ impl Scheduler {
             return Ok(None);
         };
         let kind = match &pending.kind {
+            PendingKind::Quote { key } => Kind::Quote {
+                observation: self
+                    .quotes
+                    .buffer
+                    .first_releasable()
+                    .filter(|event| &event.key == key)
+                    .ok_or_else(|| Error::Conflict("pending quote missing".into()))?,
+            },
             PendingKind::Completed {
                 interval_ns,
                 index,
@@ -161,7 +210,12 @@ impl Scheduler {
             ));
         }
         self.market.runtime.clock(watermark_ns, evaluated_at_ns)?;
-        if evaluated_at_ns < self.market.newest_receipt_ns {
+        if evaluated_at_ns
+            < self
+                .market
+                .newest_receipt_ns
+                .max(self.quotes.newest_receipt_ns)
+        {
             return Err(Error::Invalid(
                 "causal evaluation precedes received input".into(),
             ));
@@ -172,11 +226,19 @@ impl Scheduler {
             .ok_or_else(|| Error::Capacity("causal boundary sequence exhausted".into()))?;
         let result = (|| {
             self.market.buffer.begin_release(watermark_ns)?;
-            let cutoff = self
-                .market
-                .buffer
-                .first_releasable()
-                .map_or(watermark_ns, |event| event.sip.ns);
+            self.quotes.buffer.begin_release(watermark_ns)?;
+            let trade = self.market.buffer.first_releasable();
+            let quote = self.quotes.buffer.first_releasable();
+            let quote_first = quote.is_some_and(|q| {
+                trade.is_none_or(|t| {
+                    (q.sip.ns, q.key.sequence, &q.key) < (t.sip.ns, t.key.sequence, &t.key)
+                })
+            });
+            let cutoff = if quote_first {
+                quote.unwrap().sip.ns
+            } else {
+                trade.map_or(watermark_ns, |event| event.sip.ns)
+            };
             if self.completed.is_empty() {
                 if let Some(close_ns) = self
                     .market
@@ -207,6 +269,11 @@ impl Scheduler {
                         index,
                         available_at_ns,
                     }
+                } else if quote_first {
+                    self.market.runtime.advance(cutoff, evaluated_at_ns)?;
+                    PendingKind::Quote {
+                        key: self.quotes.apply_first()?,
+                    }
                 } else if let Some(event) = self.market.buffer.first_releasable() {
                     let eligible =
                         *self.market.eligibility.get(&event.key).ok_or_else(|| {
@@ -234,13 +301,14 @@ impl Scheduler {
                 };
             let scope = self.market.scope();
             let id = crate::content_hash(&(
-                "causal-market-boundary-v2",
+                "causal-market-boundary-v3",
                 &self.run_id,
                 (scope.provider, scope.instrument, scope.session),
                 self.market.runtime.configuration_hash(),
                 next_sequence,
                 evaluated_at_ns,
                 match &kind {
+                    PendingKind::Quote { key } => crate::content_hash(&("quote", key))?,
                     PendingKind::Completed {
                         interval_ns,
                         index,
@@ -283,6 +351,9 @@ impl Scheduler {
         if let PendingKind::Trade { key, .. } = &pending.kind {
             self.market.buffer.acknowledge_first(key)?;
             self.market.eligibility.remove(key);
+        }
+        if let PendingKind::Quote { key } = &pending.kind {
+            self.quotes.buffer.acknowledge_first(key)?;
         }
         self.pending = None;
         Ok(())

@@ -6,6 +6,33 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Merged quote and trade playback boundaries
+
+The shared scheduler now accepts quotes with a bounded queue and a session identity
+cache. Quotes and trades are selected by SIP time, provider sequence, then event
+key. This is an explicit deterministic ordering rule, not proof of cross-channel
+arrival order. Completed bars precede events at their closing timestamp. Boundary
+identities now use causal-market-boundary-v3.
+
+Only the currently released quote updates the scheduler's quote book. Future
+queued quotes are not visible. Quote boundaries require acknowledgment just like
+trade/bar boundaries. Repeated source identities are coalesced; changed identities
+fail closed. Quote cache capacity uses maximum_market_events and its queue uses
+maximum_pending, separately from the trade budgets. Capacity does not evict data.
+
+Prepared playback accepts quotes only with trade eligibility false. Playback's
+candidate methods now use the scheduler-owned quote book, not a caller-supplied
+snapshot. Quote eligibility policy must be bound before executable quote use.
+
+All 325 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+Tests verify interleaving, bar-close order, hidden future quotes, acknowledgment,
+duplicate/conflicting quotes and quote-only playback. One initial test assertion
+was corrected to respect the fixture's one-nanosecond timestamp offset.
+
+Scheduler quote checkpoint recovery, live-lane cutover to this shared quote owner,
+quote-to-fill dispatch and full candidate acceptance remain unfinished. No services
+or network calls ran. Source-oracle parity was not rerun.
+
 ## Boundary-derived intrabar preparation
 
 The shared feature authority now builds intrabar acquisition observations from

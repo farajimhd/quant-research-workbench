@@ -1,6 +1,126 @@
 use super::*;
 use crate::events::{Decimal, EventKind, Payload, SourceTime};
 const SECOND: u64 = 1_000_000_000;
+fn replay_quote(sequence: u64, second: u64) -> crate::events::Observation {
+    let mut quote = event(sequence, second, 10);
+    quote.key.kind = EventKind::Quote;
+    quote.payload = Payload::Quote {
+        bid: Decimal {
+            atoms: 999,
+            scale: 2,
+        },
+        ask: Decimal {
+            atoms: 1001,
+            scale: 2,
+        },
+        bid_size: Decimal {
+            atoms: 10,
+            scale: 0,
+        },
+        ask_size: Decimal {
+            atoms: 10,
+            scale: 0,
+        },
+        bid_exchange: 1,
+        ask_exchange: 1,
+        conditions: vec![],
+        indicators: vec![],
+    };
+    quote
+}
+#[test]
+fn quotes_and_trades_share_causal_boundaries_without_future_quote_leakage() {
+    let mut scheduler = scheduler(10);
+    let first = replay_quote(1, 200);
+    for (event, eligible) in [
+        (event(4, 201, 20), true),
+        (replay_quote(3, 201), false),
+        (event(2, 200, 10), true),
+        (first.clone(), false),
+    ] {
+        scheduler.enqueue(&event, eligible).unwrap();
+    }
+    assert!(scheduler.quotes().unwrap().latest().is_none());
+    let mut seen = vec![];
+    while scheduler.prepare_next(202 * SECOND, 202 * SECOND).unwrap() {
+        let boundary = scheduler.pending().unwrap().unwrap();
+        let id = boundary.id.to_owned();
+        match boundary.kind {
+            Kind::Quote { observation } => {
+                assert_eq!(
+                    scheduler.quotes().unwrap().latest().unwrap().key,
+                    observation.key
+                );
+                seen.push(("quote", observation.sip.ns / SECOND));
+            }
+            Kind::Trade { observation, .. } => {
+                assert!(scheduler.quotes().unwrap().latest().unwrap().sip.ns <= observation.sip.ns);
+                seen.push(("trade", observation.sip.ns / SECOND));
+            }
+            Kind::Completed { bar, .. } => {
+                if bar.bar.end_ns == 201 * SECOND {
+                    assert_eq!(
+                        scheduler.quotes().unwrap().latest().unwrap().sip.ns,
+                        first.sip.ns
+                    );
+                }
+                seen.push(("bar", bar.bar.end_ns / SECOND));
+            }
+        }
+        assert!(scheduler.prepare_next(202 * SECOND, 202 * SECOND).is_err());
+        scheduler.acknowledge(&id).unwrap();
+    }
+    assert_eq!(
+        seen,
+        vec![
+            ("quote", 200),
+            ("trade", 200),
+            ("bar", 201),
+            ("quote", 201),
+            ("trade", 201),
+            ("bar", 202)
+        ]
+    );
+    assert_eq!(scheduler.pending_events(), 0);
+    assert!(!scheduler.enqueue(&first, false).unwrap());
+    let mut changed = first;
+    changed.sip.ns += 1;
+    assert!(scheduler.enqueue(&changed, false).is_err());
+    assert!(scheduler.quotes().is_err());
+}
+#[test]
+fn playback_accepts_quotes_only_without_trade_eligibility() {
+    use playback::{Frame, Input, Limits, Playback, Poll, Prepared};
+    let prepare = |eligible| {
+        Prepared::new(
+            scheduler(10).scope(),
+            "merged-source-v1",
+            vec![Frame {
+                watermark_ns: 201 * SECOND,
+                evaluated_at_ns: 201 * SECOND,
+                inputs: vec![Input {
+                    observation: replay_quote(1, 200),
+                    eligible,
+                }],
+            }],
+            Limits {
+                maximum_frames: 1,
+                maximum_events: 1,
+                maximum_serialized_bytes: 10000,
+            },
+        )
+    };
+    assert!(prepare(true).is_err());
+    let mut replay = Playback::new(scheduler(10), prepare(false).unwrap(), 1).unwrap();
+    replay.resume().unwrap();
+    assert_eq!(replay.poll().unwrap(), Poll::Boundary);
+    let boundary = replay.pending().unwrap().unwrap();
+    assert!(matches!(boundary.kind, Kind::Quote { .. }));
+    let id = boundary.id.to_owned();
+    replay.acknowledge(&id).unwrap();
+    while replay.poll().unwrap() == Poll::Yield {}
+    assert_eq!(replay.status().mode, playback::Mode::Complete);
+}
 fn playback_catalog() -> playback::sources::Catalog {
     let scope = scheduler(10).scope();
     playback::sources::Catalog {
@@ -635,6 +755,7 @@ fn every_boundary_is_seen_without_next_trade_or_empty_bar_leakage() {
         assert_eq!(input.evaluated_at_ns, 205 * SECOND);
         assert!(ids.insert(boundary.id.to_owned()));
         match boundary.kind {
+            Kind::Quote { .. } => panic!("trade-only fixture"),
             Kind::Completed {
                 interval_ns, bar, ..
             } => {
