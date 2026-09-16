@@ -1081,7 +1081,11 @@ class ReplayRunController:
         pressure_config = dict(definition.configuration_revision.get("payload") or {})
         pressure_profiles = [dict(pressure_config.get("strategy_profile") or {}),
                              *list(pressure_config.get("assignments") or [])]
-        self._pressure_enabled = any(dict(row.get("parameters") or {}).get("market_pressure", {}).get("enabled") for row in pressure_profiles)
+        # Observation dependencies are independent of the pressure exit policy.
+        self._pressure_enabled = any(
+            dict(row.get("parameters") or {}).get("market_pressure", {}).get("enabled")
+            or dict(row.get("parameters") or {}).get("historical_hod", {}).get("setup_reversal_enabled")
+            for row in pressure_profiles)
         self._historical_prepared_structure: dict[str, dict[str, Any]] = {}
         self._event_structure_sessions: dict[str, tuple[str, datetime, int]] = {}
         self._historical_structure_context: dict[
