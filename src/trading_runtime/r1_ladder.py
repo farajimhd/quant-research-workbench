@@ -182,7 +182,10 @@ def evaluate(host, a, o, p, state):
     if saved_exit and now <= saved_exit['at']:
         return result('wait','waiting_for_post_exit_breakout')
     entry_price = round(ceil((o.ask-1e-10)/tick)*tick,10)
-    target = next_target(d['rows'],entry_price)
+    # A completed trade can be above the current ask. Both execution and
+    # completed-candle geometry must have an overhead target.
+    target_floor = max(entry_price, o.price)
+    target = next_target(d['rows'],target_floor)
     if not target:
         return result('wait','next_resistance_unavailable')
     swing = H.initial_swing_low(row,dict(lower=o.bid),now)
@@ -190,7 +193,8 @@ def evaluate(host, a, o, p, state):
         return result('wait','confirmed_swing_low_unavailable')
     stop = stop_price(entry_price,swing['lower'],tick)
     target_price = round(floor((target['lower']+1e-10)/tick)*tick,10)
-    if stop is None or not 0 < stop < o.bid <= o.ask <= entry_price < target_price:
+    if (stop is None or not 0 < stop < o.bid <= o.ask <= entry_price
+            or target_price <= target_floor):
         return result('wait','invalid_executable_stop_or_target')
     active = dict(level=deepcopy(boundary),target_level=deepcopy(target),confirmed_at=now,
                   stop=stop,maximum_buy_price=entry_price,hod=prior_hod)

@@ -79,6 +79,24 @@ def test_entry_uses_completed_crossover_full_target_and_cash_fraction():
     assert intent.invalidation_price >= envelope.maximum_buy_price * .95 - 1e-9
 
 
+def test_target_must_clear_completed_trade_price_even_when_ask_is_lower():
+    host, a, _ = ready()
+    o = replace(obs(2, 10.96), bid=10.59, ask=10.60)
+    intent, = host.evaluate(a, o).evaluation.intents
+    assert intent.profit_target_price == pytest.approx(11.5)
+    assert intent.profit_target_price > o.price
+
+
+def test_tick_rounding_cannot_turn_target_into_non_overhead_price():
+    host, a, _ = ready()
+    o = replace(obs(2, 10.9501), bid=10.59, ask=10.60)
+    band = dict(o.structural_resistance_levels[0], lower=10.955, price=10.956, upper=10.96)
+    o = replace(o, structural_resistance_levels=(band,))
+    result = host.evaluate(a, o)
+    assert not result.evaluation.intents
+    assert result.evaluation.signals[0].reason == 'invalid_executable_stop_or_target'
+
+
 @pytest.mark.parametrize('changes', [
     dict(evaluation_events=('market_data_update',), source_timeframe=''),
     dict(source_timeframe='5s'), dict(source_timeframe='100ms'),
