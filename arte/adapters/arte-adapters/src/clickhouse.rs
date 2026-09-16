@@ -13,12 +13,16 @@ mod order_authorizations;
 mod portfolio_checkpoints;
 mod quote_policies;
 mod references;
+mod rejections;
 mod run_checkpoints;
 mod run_manifests;
 pub use execution_checkpoints::{execution_checkpoint_scope, ExecutionRecovery};
 pub use fills::FillPublisher;
 pub use order_authorizations::OrderPublisher;
 pub use portfolio_checkpoints::portfolio_checkpoint_scope;
+#[cfg(test)]
+pub(crate) use rejections::exercise as rejection_roundtrip_test;
+pub use rejections::RejectionPublisher;
 pub use run_checkpoints::backtest_checkpoint_scope;
 #[cfg(test)]
 pub(crate) use run_checkpoints::tests::roundtrip as checkpoint_roundtrip_test;

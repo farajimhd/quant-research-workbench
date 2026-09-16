@@ -3,6 +3,7 @@
 
 pub mod account_boundary;
 pub mod acquisition;
+pub mod action_rejection;
 pub mod candidate_config;
 pub mod candidate_features;
 pub mod candidate_runtime;

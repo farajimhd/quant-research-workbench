@@ -448,6 +448,11 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, scenario: Scenario)
                             arte_core::order_funding::sizing::Rejection::NoApprovedLot
                         )
                     );
+                    crate::rejection_journal::exercise(
+                        write.receipt().unwrap(),
+                        calculation.clone(),
+                    )
+                    .await;
                     assert!(controller
                         .allocate_and_enter_action(&decision.decision_id, 0, &request)
                         .is_err());

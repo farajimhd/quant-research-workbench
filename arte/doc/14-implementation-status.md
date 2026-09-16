@@ -6,6 +6,36 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Decision-bound rejection journal
+
+Sizing rejections now have a shared versioned journal contract. Each immutable
+slot identifies one committed decision and action. Validation rejects a different
+decision, invalid clock, unsupported action, fundable assessment, changed stop or
+entry above the strategy cap. The record includes an evidence hash; that hash
+does not itself certify the quote, account snapshot or policy provenance.
+
+Publication retains the pending record across cancellation, transport failure and
+conflicting readback. Only exact readback creates a receipt. Recovery can validate
+a separately loaded row against its expected hash and committed decision.
+
+The ClickHouse publisher requires extraction and durability acceptance, an owned
+strategy scope, and storage-policy/part-placement checks. Reads reject conflicting
+or noncanonical payloads. An ambiguous insert retries the same slot. Migration
+`018-action-rejections.sql` is authored and unapplied. Ownership remains
+cooperative single-host locking, not distributed fencing.
+
+The controller does not yet complete an action from this receipt. It still needs
+owned evidence capture, checks for absent funding/submission, checkpoint storage
+of rejection progress and independent journal readback during recovery. Existing
+actions remain pending; no reserved funds are released by this change.
+
+The existing shared-cash lifecycle fixture exercises the contract and an in-memory
+journal: cancellation, ambiguous writes, conflicting readback, exact retry,
+duplicate acknowledgment, malformed records, and Live/Paper/Backtest clocks.
+No database connection, service start or migration execution is involved.
+All 396 offline Rust tests, formatting, Clippy and copied-source checks pass.
+Source-oracle parity was not rerun.
+
 ## Typed sizing assessments
 
 Shared sizing now distinguishes three business outcomes: cash cannot cover fees,
