@@ -9101,10 +9101,16 @@ def backtest_preflight(
             "required": True,
         }
     )
+    source_native_identity_ready = bool(watchlists)
+    source_native_ready = bool(
+        source_native_activation
+        and watchlist_policy == "not_required"
+        and source_native_identity_ready
+    )
     work_ready = bool(
         assignments
         or watchlist_members
-        or (source_native_activation and watchlist_policy == "not_required")
+        or source_native_ready
     ) and not watchlist_error
     checks.append(
         {
@@ -9113,17 +9119,27 @@ def backtest_preflight(
             "status": "ready" if work_ready else "blocked",
             "summary": (
                 f"{len(activated_signal_streams)} source-native Signal Stream(s) causally seed Strategy evaluation; liquidity and entry rules are evaluated only after each occurrence."
-                if source_native_activation and watchlist_policy == "not_required"
+                if source_native_ready
+                else (
+                    "Source-native historical signals require a causal identity plan before playback."
+                    if source_native_activation and watchlist_policy == "not_required"
+                    and not source_native_identity_ready
                 else (
                     f"{len(assignments)} pinned assignment(s) and {len(watchlist_members)} causal Watchlist member(s) across {watchlist_snapshot_count} transition state(s) are configured."
                     if work_ready
                     else watchlist_error or "Backtest needs an active assignment, source-native Signal Stream, or non-empty causal Watchlist universe."
                 )
+                )
             ),
             "evidence": (
                 "Persisted Signal Stream occurrences define the bounded ticker and event-time population; the controller loads causal market and indicator frames only for those tickers."
-                if source_native_activation and watchlist_policy == "not_required"
+                if source_native_ready
+                else (
+                    "Add a compiled point-in-time identity Watchlist plan; it supplies conids only and does not admit or scan the market population."
+                    if source_native_activation and watchlist_policy == "not_required"
+                    and not source_native_identity_ready
                 else "The revisioned Watchlist timeline is pinned and applied at every configured intraday refresh clock before same-clock Strategy evaluation."
+                )
             ),
             "required": True,
         }
