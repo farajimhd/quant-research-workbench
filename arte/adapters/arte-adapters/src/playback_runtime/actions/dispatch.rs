@@ -7,7 +7,9 @@ pub enum Resolution {
     /// Accepted by the owned historical simulator, not a live broker acknowledgment.
     Submitted(Box<decision_orders::Plan>),
     Applied,
-    Rejected { record_hash: String },
+    Rejected {
+        record_hash: String,
+    },
 }
 pub struct ResolvedAction {
     pub action: PendingAction,
