@@ -70,6 +70,47 @@ impl Quote {
 mod tests {
     use super::*;
     #[test]
+    fn exit_batch_rejects_mismatch_atomically_and_uses_later_liquidity() {
+        let mut sim = Simulator::new(1, 2, 2, 10000).unwrap();
+        sim.submit(bracket("a", Side::Long), 0, 0).unwrap();
+        sim.submit(bracket("b", Side::Long), 0, 0).unwrap();
+        sim.quote(&quote(1, 99, 100, 8)).unwrap();
+        let before = sim.checkpoint(100000).unwrap();
+        for commands in [vec!["a".into()], vec!["a".into(), "missing".into()]] {
+            assert!(sim.exit_entries(&commands, 4, 1).is_err());
+            assert_eq!(before, sim.checkpoint(100000).unwrap());
+        }
+        assert_eq!(sim.exit_entries(&["a".into()], 5, 1).unwrap(), 1);
+        assert!(sim.positions()[0].exit_requested);
+        assert!(!sim.positions()[1].exit_requested);
+        assert_eq!(sim.positions()[0].exit_filled, 0);
+        assert!(sim.quote(&quote(1, 99, 100, 8)).unwrap().is_empty());
+        let fills = sim.quote(&quote(2, 101, 102, 2)).unwrap();
+        assert_eq!(fills.len(), 1);
+        assert_eq!(fills[0].quantity, 2);
+        let fills = sim.quote(&quote(3, 101, 102, 20)).unwrap();
+        assert_eq!(fills.len(), 1);
+        assert_eq!(fills[0].quantity, 3);
+        assert_eq!(sim.positions()[0].exit_filled, 5);
+        assert_eq!(sim.positions()[1].exit_filled, 0);
+        assert!(sim.quote(&quote(4, 101, 102, 20)).unwrap().is_empty());
+    }
+    #[test]
+    fn short_exit_cancels_remaining_entry_and_cannot_double_request_exposure() {
+        let mut sim = Simulator::new(1, 2, 1, 10000).unwrap();
+        sim.submit(bracket("a", Side::Short), 0, 0).unwrap();
+        sim.quote(&quote(1, 100, 101, 3)).unwrap();
+        sim.exit_entries(&["a".into()], 3, 1).unwrap();
+        let before = sim.checkpoint(100000).unwrap();
+        assert!(sim.exit_entries(&["a".into()], 3, 1).is_err());
+        assert_eq!(before, sim.checkpoint(100000).unwrap());
+        let fills = sim.quote(&quote(2, 100, 101, 20)).unwrap();
+        assert_eq!(fills.len(), 1);
+        assert_eq!(fills[0].quantity, 3);
+        assert_eq!(sim.positions()[0].entry_filled, 3);
+        assert_eq!(sim.positions()[0].exit_filled, 3);
+    }
+    #[test]
     fn cancellation_batch_preflights_all_commands_and_is_idempotent() {
         let mut sim = Simulator::new(1, 2, 2, 10000).unwrap();
         sim.submit(bracket("a", Side::Long), 0, 0).unwrap();
@@ -371,11 +412,33 @@ impl Simulator {
     /// Atomic modeled cancellation batch. Selection/ownership is checked upstream.
     /// All identities and revisions are validated before mutating any order.
     pub fn cancel_entries(&mut self, commands: &[String], at_ns: u64) -> Result<usize> {
+        self.control_entries(commands, at_ns, None)
+    }
+    /// Request exits for exactly the selected, not-already-exiting exposure.
+    /// Fills occur only on subsequent quotes; remaining entries are cancelled.
+    pub fn exit_entries(
+        &mut self,
+        commands: &[String],
+        quantity: u64,
+        at_ns: u64,
+    ) -> Result<usize> {
+        if quantity == 0 {
+            return Err(Error::Invalid("exit quantity is zero".into()));
+        }
+        self.control_entries(commands, at_ns, Some(quantity))
+    }
+    fn control_entries(
+        &mut self,
+        commands: &[String],
+        at_ns: u64,
+        exit_quantity: Option<u64>,
+    ) -> Result<usize> {
         if at_ns != self.clock_ns || commands.len() > self.capacity {
             return Err(Error::Invalid("cancellation clock or capacity".into()));
         }
         let mut unique = std::collections::BTreeSet::new();
         let mut changes = Vec::new();
+        let mut held_to_exit = 0_u64;
         let indices: std::collections::BTreeMap<_, _> = self
             .orders
             .iter()
@@ -391,7 +454,16 @@ impl Simulator {
                 .copied()
                 .ok_or_else(|| Error::Unready("cancellation command missing".into()))?;
             let order = &self.orders[index];
-            if order.entry_cancelled || order.entry_filled == order.bracket.quantity {
+            let held = order.entry_filled - order.exit_filled;
+            let request_exit = exit_quantity.is_some() && held > 0 && !order.exit_requested;
+            if request_exit {
+                held_to_exit = held_to_exit
+                    .checked_add(held)
+                    .ok_or_else(|| Error::Capacity("exit quantity overflow".into()))?;
+            }
+            if !request_exit
+                && (order.entry_cancelled || order.entry_filled == order.bracket.quantity)
+            {
                 continue;
             }
             let revision = order
@@ -399,12 +471,25 @@ impl Simulator {
                 .as_ref()
                 .map_or(Some(1), |(rev, _)| rev.checked_add(1))
                 .ok_or_else(|| Error::Capacity("amendment revision exhausted".into()))?;
-            let hash = content_hash(&(command, revision, at_ns, &Amendment::CancelEntry))?;
-            changes.push((index, revision, hash));
+            let amendment = if request_exit {
+                Amendment::ExitPosition
+            } else {
+                Amendment::CancelEntry
+            };
+            let hash = content_hash(&(command, revision, at_ns, &amendment))?;
+            changes.push((index, revision, hash, request_exit));
+        }
+        if exit_quantity.is_some_and(|quantity| quantity != held_to_exit) {
+            return Err(Error::Conflict(
+                "exit quantity differs from selected available exposure".into(),
+            ));
         }
         let count = changes.len();
-        for (index, revision, hash) in changes {
+        for (index, revision, hash, request_exit) in changes {
             self.orders[index].entry_cancelled = true;
+            if request_exit {
+                self.orders[index].exit_requested = true;
+            }
             self.orders[index].amendment = Some((revision, hash));
         }
         Ok(count)

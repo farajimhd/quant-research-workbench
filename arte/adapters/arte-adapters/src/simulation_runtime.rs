@@ -280,6 +280,23 @@ impl Runtime {
         scope: &arte_core::strategy_dispatch::Scope,
         at_ns: u64,
     ) -> Result<usize> {
+        let commands = self.owned_commands(scope, false)?;
+        self.simulator.cancel_entries(&commands, at_ns)
+    }
+    pub(crate) fn exit_for(
+        &mut self,
+        scope: &arte_core::strategy_dispatch::Scope,
+        quantity: u64,
+        at_ns: u64,
+    ) -> Result<usize> {
+        let commands = self.owned_commands(scope, true)?;
+        self.simulator.exit_entries(&commands, quantity, at_ns)
+    }
+    fn owned_commands(
+        &self,
+        scope: &arte_core::strategy_dispatch::Scope,
+        include_positions: bool,
+    ) -> Result<Vec<String>> {
         self.ready()?;
         arte_core::strategy_dispatch::State::new(scope.clone())?;
         if scope.mode != arte_core::strategy_dispatch::Mode::Backtest
@@ -287,25 +304,27 @@ impl Runtime {
             || scope.instrument != self.simulator.instrument()
         {
             return Err(Error::Conflict(
-                "cancellation escaped simulation scope".into(),
+                "execution action escaped simulation scope".into(),
             ));
         }
         let mut commands = Vec::new();
         for order in self.simulator.positions() {
+            let pending_entry =
+                !order.entry_cancelled && order.entry_filled < order.bracket.quantity;
+            let held = order.entry_filled > order.exit_filled && !order.exit_requested;
             if order.bracket.account != scope.account
-                || order.entry_cancelled
-                || order.entry_filled == order.bracket.quantity
+                || !(pending_entry || include_positions && held)
             {
                 continue;
             }
             let owner = self.owners.get(&order.bracket.command_id).ok_or_else(|| {
-                Error::Unready("cannot cancel order with unknown strategy ownership".into())
+                Error::Unready("cannot control order with unknown strategy ownership".into())
             })?;
             if owner == scope {
                 commands.push(order.bracket.command_id.clone());
             }
         }
-        self.simulator.cancel_entries(&commands, at_ns)
+        Ok(commands)
     }
     pub fn amend(
         &mut self,
@@ -409,6 +428,50 @@ fn validate_run(plan: &arte_core::decision_orders::Plan, run_id: &str) -> Result
 mod tests {
     use super::*;
     use arte_core::orders::Bracket;
+    #[test]
+    fn exits_select_owned_filled_positions_and_unknown_ownership_blocks() {
+        use arte_core::strategy_dispatch::{Mode, Scope};
+        let scope = Scope {
+            run_id: "r".into(),
+            mode: Mode::Backtest,
+            account: "a".into(),
+            instrument: 1,
+            strategy_instance: "one".into(),
+            code_hash: "c".into(),
+            config_hash: "f".into(),
+        };
+        let mut simulator = Simulator::new_scoped("r", 1, 2, 3, 10000).unwrap();
+        let one = bracket("a");
+        let quantity = one.quantity;
+        let mut two = one.clone();
+        two.command_id = "two".into();
+        simulator.submit(one, 0, 0).unwrap();
+        simulator.submit(two, 0, 0).unwrap();
+        simulator
+            .quote(&Quote {
+                sequence: 1,
+                at_ns: 1,
+                bid: 99,
+                ask: 100,
+                bid_size: 100,
+                ask_size: 100,
+            })
+            .unwrap();
+        // Isolate ownership dispatch; fill journaling is covered by controller tests.
+        let mut runtime = Runtime::new(simulator, Projection::new(2, 10, 6).unwrap(), 6).unwrap();
+        runtime.owners.insert("a".into(), scope.clone());
+        let before = runtime.simulator.checkpoint(100000).unwrap();
+        assert!(runtime.exit_for(&scope, quantity, 1).is_err());
+        assert_eq!(before, runtime.simulator.checkpoint(100000).unwrap());
+        let mut other = scope.clone();
+        other.strategy_instance = "two".into();
+        runtime.owners.insert("two".into(), other);
+        assert!(runtime.exit_for(&scope, quantity + 1, 1).is_err());
+        assert_eq!(before, runtime.simulator.checkpoint(100000).unwrap());
+        assert_eq!(runtime.exit_for(&scope, quantity, 1).unwrap(), 1);
+        assert!(runtime.simulator.positions()[0].exit_requested);
+        assert!(!runtime.simulator.positions()[1].exit_requested);
+    }
     #[test]
     fn cancellation_is_strategy_scoped_and_unknown_ownership_blocks_atomically() {
         use arte_core::strategy_dispatch::{Mode, Scope};

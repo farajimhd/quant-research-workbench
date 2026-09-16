@@ -332,6 +332,15 @@ fn run_with_quote(include_quote: bool) -> Run {
 
 #[tokio::test]
 async fn committed_execution_action_still_blocks_market_acknowledgment() {
+    check_action_gate(false).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn exit_without_matching_exposure_retains_action_and_boundary() {
+    check_action_gate(true).await;
+}
+
+async fn check_action_gate(exit: bool) {
     use arte_core::{execution_positions::Projection, simulated_execution::Simulator};
     let run = run_with_quote(false);
     let mut execution = crate::simulation_runtime::Runtime::new(
@@ -357,21 +366,31 @@ async fn committed_execution_action_still_blocks_market_acknowledgment() {
                 arte_core::strategy_transaction::Runtime::new(scope.clone(), 0_u64, 1024).unwrap();
             let template = prepared_account(&scope.account);
             let action = if scope.account == "b" {
-                Action::CancelEntry {
-                    reason: "fixture".into(),
+                if exit {
+                    Action::Exit {
+                        reason: arte_core::strategy_dispatch::ExitReason::ManualExit,
+                        quantity: 1,
+                        reduce_only: true,
+                    }
+                } else {
+                    Action::CancelEntry {
+                        reason: "fixture".into(),
+                    }
                 }
             } else {
                 Action::Hold {
                     reason: "fixture".into(),
                 }
             };
+            let mut safety = template.pending_decision().unwrap().safety.clone();
+            // Deliberately stale strategy exposure must not authorize a simulated short.
+            if exit && scope.account == "b" {
+                safety.position_quantity = 1;
+            }
             runtime
-                .prepare(
-                    input.clone(),
-                    &template.pending_decision().unwrap().safety,
-                    "evidence".into(),
-                    |_| Ok(vec![action]),
-                )
+                .prepare(input.clone(), &safety, "evidence".into(), |_| {
+                    Ok(vec![action])
+                })
                 .unwrap();
             runtime
         })
@@ -390,7 +409,10 @@ async fn committed_execution_action_still_blocks_market_acknowledgment() {
     assert_eq!(controller.decision_view().unwrap().remaining(), Some(0));
     assert_eq!(controller.pending_actions().len(), 1);
     assert_eq!(controller.pending_actions()[0].account, "b");
-    assert_eq!(controller.pending_actions()[0].kind, "cancel_entry");
+    assert_eq!(
+        controller.pending_actions()[0].kind,
+        if exit { "exit" } else { "cancel_entry" }
+    );
     assert!(controller.acknowledge().is_err());
     assert_eq!(controller.status().acknowledged_boundaries, 0);
     assert!(accounts::commit_accounts(&mut writes, &mut controller, 2)
@@ -400,6 +422,17 @@ async fn committed_execution_action_still_blocks_market_acknowledgment() {
         .all(|o| o.result.is_ok()));
     assert_eq!(controller.pending_actions().len(), 1);
     let action = controller.pending_actions()[0].clone();
+    if exit {
+        for _ in 0..2 {
+            assert!(controller
+                .exit_action(&action.decision_id, action.action_index)
+                .is_err());
+            assert_eq!(controller.pending_actions().len(), 1);
+            assert!(controller.acknowledge().is_err());
+            assert_eq!(controller.status().acknowledged_boundaries, 0);
+        }
+        return;
+    }
     controller
         .cancel_entry_action(&action.decision_id, action.action_index)
         .unwrap();

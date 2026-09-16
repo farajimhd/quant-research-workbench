@@ -6,6 +6,28 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Strategy-scoped reduce-only exit dispatch
+
+Playback can now dispatch a committed reduce-only exit to its owning strategy's
+simulated positions. The requested quantity must equal the selected exposure
+that is not already pending exit. Quantity mismatches, missing commands, unknown
+ownership and invalid clocks fail before any order changes. Other strategies,
+including those in the same account, remain untouched.
+
+An accepted exit cancels remaining entries. It creates no immediate fill.
+Subsequent quotes supply the modeled liquidity, and fills cannot exceed held
+exposure. The controller retains unsuccessful actions and blocks acknowledgment
+of the market boundary. Successful action retries use the retained request hash.
+
+All 336 offline Rust tests, formatting, Clippy and copied-source hash checks pass.
+New tests cover long and short exits, partial liquidity, atomic quantity mismatch
+rejection, strategy ownership and the controller's stale-exposure rejection gate.
+The successful controller-to-fill exit lifecycle is not yet tested end to end.
+
+This path exits the selected strategy exposure in full. Arbitrary partial-close
+allocation, protection-action dispatch, ownership recovery and reservation release
+remain unfinished. No services or network calls ran. Source parity was not rerun.
+
 ## Strategy-scoped cancellation dispatch
 
 Successful reserved submissions now retain the complete owning strategy scope.

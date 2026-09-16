@@ -70,6 +70,44 @@ impl Work {
     }
 }
 impl Runtime {
+    pub fn exit_action(&mut self, decision_id: &str, action_index: usize) -> Result<()> {
+        let at_ns = self
+            .decision_view()?
+            .pending()?
+            .ok_or_else(|| Error::Unready("no exit boundary".into()))?
+            .evaluated_at_ns;
+        let item = self
+            .actions
+            .items
+            .get_mut(&(decision_id.into(), action_index))
+            .ok_or_else(|| Error::Unready("no committed exit action".into()))?;
+        let Some(Action::Exit {
+            quantity,
+            reduce_only: true,
+            ..
+        }) = item.receipt.decision().actions.get(action_index)
+        else {
+            return Err(Error::Invalid("action is not a reduce-only exit".into()));
+        };
+        let fingerprint = content_hash(&(
+            "playback-exit-v1",
+            decision_id,
+            action_index,
+            at_ns,
+            quantity,
+        ))?;
+        if let Some(previous) = &item.completed_request {
+            return if previous == &fingerprint {
+                Ok(())
+            } else {
+                Err(Error::Conflict("completed exit changed".into()))
+            };
+        }
+        self.execution
+            .exit_for(&item.receipt.decision().scope, *quantity, at_ns)?;
+        item.completed_request = Some(fingerprint);
+        Ok(())
+    }
     pub fn cancel_entry_action(&mut self, decision_id: &str, action_index: usize) -> Result<()> {
         let at_ns = self
             .decision_view()?
