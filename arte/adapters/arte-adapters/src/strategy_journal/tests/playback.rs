@@ -1362,7 +1362,6 @@ async fn candidate_owner_retry(cancel: bool) {
                     crate::playback_runtime::candidates::Evidence {
                         entry: crate::playback_runtime::candidates::EntryEvidence {
                             admission: &admission,
-                            swings: &[],
                             regular: true,
                             regular_target: None,
                         },

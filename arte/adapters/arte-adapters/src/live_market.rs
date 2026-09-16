@@ -219,7 +219,7 @@ impl Lane {
         check: Check<'_>,
         evaluated_at_ns: u64,
         candidate: &mut arte_core::candidate_runtime::Runtime,
-        context: candidate_features::EntryContext<'_>,
+        context: candidate_features::OwnedEntryContext<'_>,
         safety: &arte_core::strategy_dispatch::Safety,
         broker: &arte_core::strategy_candidate::PositionObservation,
         gates: &arte_core::strategy_adds::Gates,
@@ -232,7 +232,13 @@ impl Lane {
             .market
             .pending()?
             .ok_or_else(|| Error::Unready("live candidate boundary missing".into()))?;
-        let frame = self.entry_frame(context, evaluated_at_ns)?;
+        let frame = self.features.owned_entry_frame(
+            &boundary,
+            evaluated_at_ns,
+            self.market.state()?,
+            &self.quotes,
+            context,
+        )?;
         let mut input = boundary.input(String::new());
         input.evaluated_at_ns = evaluated_at_ns;
         let safety = self.features.restrict_safety(&input, safety)?;

@@ -1610,6 +1610,47 @@ fn check_entry_frame(
     assert_eq!(frame.bid, 19.99);
     assert_eq!(frame.ask, 20.01);
     assert_eq!(frame.quote_policy_hash, quotes.policy_hash().unwrap());
+    let owned = features
+        .owned_entry_frame(
+            boundary,
+            boundary.evaluated_at_ns,
+            market,
+            &quotes,
+            crate::candidate_features::OwnedEntryContext {
+                admission: &admission,
+                regular: context.regular,
+                regular_target: context.regular_target,
+                recovery: &recovery,
+                recovery_policy: &recovery_policy,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        crate::content_hash(&owned.swings).unwrap(),
+        crate::content_hash(&features.completed_swings(boundary).unwrap()).unwrap()
+    );
+    assert_eq!(
+        owned.swings.as_ptr(),
+        features.completed_swings(boundary).unwrap().as_ptr()
+    );
+    assert!(!owned.admission.permissions && !owned.admission.tradable);
+    let mut wrong_boundary = Boundary {
+        id: boundary.id,
+        sequence: boundary.sequence + 1,
+        evaluated_at_ns: boundary.evaluated_at_ns,
+        kind: Kind::Completed {
+            interval_ns: SECOND,
+            bar: match &boundary.kind {
+                Kind::Completed { bar, .. } => bar,
+                _ => unreachable!(),
+            },
+            available_at_ns: boundary.evaluated_at_ns,
+        },
+    };
+    assert!(features.completed_swings(&wrong_boundary).is_err());
+    wrong_boundary.sequence = boundary.sequence;
+    wrong_boundary.evaluated_at_ns += 1;
+    assert!(features.completed_swings(&wrong_boundary).is_err());
     let changed_policy_frame = crate::strategy_entry::Frame {
         quote_policy_hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         ..frame

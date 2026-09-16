@@ -58,6 +58,26 @@ pub struct EntryContext<'a> {
     pub recovery: &'a crate::strategy_lifecycle::RecoveryState,
     pub recovery_policy: &'a crate::strategy_lifecycle::RecoveryPolicy,
 }
+/// Production entry inputs exclude swings: the feature owner supplies them.
+pub struct OwnedEntryContext<'a> {
+    pub admission: &'a crate::strategy_entry::Admission,
+    pub regular: bool,
+    pub regular_target: Option<f64>,
+    pub recovery: &'a crate::strategy_lifecycle::RecoveryState,
+    pub recovery_policy: &'a crate::strategy_lifecycle::RecoveryPolicy,
+}
+impl<'a> OwnedEntryContext<'a> {
+    pub(crate) fn bind(self, swings: &'a [crate::strategy_targets::Swing]) -> EntryContext<'a> {
+        EntryContext {
+            admission: self.admission,
+            swings,
+            regular: self.regular,
+            regular_target: self.regular_target,
+            recovery: self.recovery,
+            recovery_policy: self.recovery_policy,
+        }
+    }
+}
 /// Admission/account authorities not inferred from price or indicator state.
 pub struct AcquisitionContext {
     pub tradable: bool,
@@ -99,6 +119,17 @@ pub struct State {
     failed: bool,
 }
 impl State {
+    pub fn owned_entry_frame<'a>(
+        &'a self,
+        boundary: &Boundary<'_>,
+        evaluated_at_ns: u64,
+        market: &'a Runtime,
+        quotes: &'a crate::quote_state::Book,
+        context: OwnedEntryContext<'a>,
+    ) -> Result<crate::strategy_entry::Frame<'a>> {
+        let context = context.bind(self.completed_swings(boundary)?);
+        self.entry_frame(boundary, evaluated_at_ns, market, quotes, context)
+    }
     /// Borrow only the owned swing projection for this completed boundary.
     pub fn completed_swings(
         &self,

@@ -6,6 +6,22 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Owned swing entry assembly
+
+Configured replay entry and live completed-candidate preparation now consume the
+feature owner's swing array. Their production input type has no swing field.
+The shared assembler checks the exact completed boundary and borrows the array
+without per-account copies. Explicit-evidence APIs remain for isolated algorithm
+and execution tests, not configured production runs.
+
+Existing coordinator tests now exercise owned assembly. Feature tests check array
+identity, unchanged external restrictions and rejection of mismatched boundaries.
+This does not establish profitable strategy behavior or complete executable
+orchestration. Certified-empty-gap handling also remains unfinished.
+
+All 439 offline tests, formatting, Clippy and copied-source checks pass. No
+services, network checks or database writes ran. Source parity was not rerun.
+
 ## Shared local-swing ownership and recovery
 
 The feature owner now computes local swings at completed one-second boundaries.

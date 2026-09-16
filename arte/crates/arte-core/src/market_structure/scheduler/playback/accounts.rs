@@ -138,6 +138,27 @@ impl Run {
     /// Use the same completed-candle evaluator as live. Quotes and account
     /// authorities remain explicit inputs; playback cannot infer their readiness.
     #[allow(clippy::too_many_arguments)]
+    pub fn prepare_owned_completed(
+        &self,
+        candidate: &mut crate::candidate_runtime::Runtime,
+        features: &crate::candidate_features::State,
+        context: crate::candidate_features::OwnedEntryContext<'_>,
+        safety: &crate::strategy_dispatch::Safety,
+        broker: &crate::strategy_candidate::PositionObservation,
+        gates: &crate::strategy_adds::Gates,
+        policy: &crate::strategy_candidate::Policy<'_>,
+        intrabar: &crate::strategy_candidate::AcquisitionPolicy,
+    ) -> Result<crate::strategy_dispatch::Decision> {
+        let boundary = self
+            .pending()?
+            .ok_or_else(|| Error::Unready("owned entry boundary missing".into()))?;
+        let context = context.bind(features.completed_swings(&boundary)?);
+        self.prepare_completed(
+            candidate, features, context, safety, broker, gates, policy, intrabar,
+        )
+    }
+    /// Explicit-evidence interface for isolated algorithm and execution tests.
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare_completed(
         &self,
         candidate: &mut crate::candidate_runtime::Runtime,

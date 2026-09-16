@@ -95,10 +95,16 @@ It does not prove trading parity or profitability.
 
 The shared feature owner computes local swings on completed one-second boundaries.
 Required swing settings are part of effective configuration identity. Completed
-snapshots expose a boundary-checked borrowed swing array. Candidate entry APIs
-still accept explicit swing evidence; switching production entry assembly to the
-owned array remains required. No caller should treat an arbitrary supplied array
-as owned market evidence.
+snapshots expose a boundary-checked borrowed swing array. Configured candidate
+entry and live completed-candidate preparation now use `OwnedEntryContext`, which
+has no swing input. Replay resolves it through `prepare_owned_completed`; live
+uses the shared owned-frame assembler. Neither path copies the swing array per
+account or permits a caller to substitute it.
+
+Explicit-evidence entry APIs remain for isolated algorithm and execution tests.
+They are not the configured production path. Owned assembly retains external
+permissions, session evidence and recovery state; having a swing grants no
+permission. Tests check borrowed-array identity and reject mismatched boundaries.
 
 Bounded recovery preserves extremes, thresholds, rolling volatility, anchored
 levels, pending retests and projections. It pins scope, configuration, context and

@@ -26,7 +26,6 @@ pub struct Outcome {
 }
 pub struct EntryEvidence<'a> {
     pub admission: &'a arte_core::strategy_entry::Admission,
-    pub swings: &'a [arte_core::strategy_targets::Swing],
     pub regular: bool,
     pub regular_target: Option<f64>,
 }
@@ -359,15 +358,14 @@ impl Candidates {
             .get_mut(scope)
             .ok_or_else(|| Error::Invalid("candidate consumer missing".into()))?;
         let recovery = slot.runtime.state().recovery.clone();
-        let context = features::EntryContext {
+        let context = features::OwnedEntryContext {
             admission: context.admission,
-            swings: context.swings,
             regular: context.regular,
             regular_target: context.regular_target,
             recovery: &recovery,
             recovery_policy: &config.recovery,
         };
-        controller.decision_view()?.prepare_completed(
+        controller.decision_view()?.prepare_owned_completed(
             &mut slot.runtime,
             &self.features,
             context,
