@@ -854,6 +854,27 @@ impl HistoricalEventSource {
         Ok(dates)
     }
 
+    /// RVOL uses imported canonical coverage, independently of daily-bar warmup.
+    pub async fn relative_volume_session_dates_before(
+        &self,
+        session: NaiveDate,
+    ) -> Result<Vec<NaiveDate>, String> {
+        let sql = relative_volume_session_dates_sql(&self.config.clickhouse_database, session);
+        #[derive(Deserialize)]
+        struct Row { session_date_text: String }
+        let mut dates = self.query(&sql).await?.lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let row: Row = serde_json::from_str(line).map_err(|e| e.to_string())?;
+                NaiveDate::parse_from_str(&row.session_date_text, "%Y-%m-%d").map_err(|e| e.to_string())
+            }).collect::<Result<Vec<_>, String>>()?;
+        dates.reverse();
+        if dates.len() != 20 {
+            return Err(format!("RVOL requires 20 prior canonical sessions; found {}", dates.len()));
+        }
+        Ok(dates)
+    }
+
     pub async fn completed_session_dates_between(
         &self,
         start_date: NaiveDate,
@@ -5065,6 +5086,21 @@ fn persisted_structure_events_sql(
     )
 }
 
+fn relative_volume_session_dates_sql(database: &str, session: NaiveDate) -> String {
+    // Keep the formatted alias distinct from the Date column (ClickHouse alias substitution).
+    format!(r#"SELECT toString(source_date) AS session_date_text
+        FROM (
+            SELECT source.source_date AS source_date, source.ticker AS ticker,
+                argMax(source.event_count, tuple(source.build_step, source.updated_at)) AS event_count
+            FROM `{database}`.`events_ordinal_continuity` AS source
+            PREWHERE source.source_date < toDate('{session}')
+              AND source.source_date >= toDate('{session}') - INTERVAL 90 DAY
+            GROUP BY source.source_date, source.ticker
+        )
+        GROUP BY source_date HAVING sum(event_count) > 0
+        ORDER BY source_date DESC LIMIT 20 FORMAT JSONEachRow"#)
+}
+
 fn completed_session_dates_between_sql(
     database: &str,
     start_date: NaiveDate,
@@ -5177,6 +5213,15 @@ fn split_revision_token<'a>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn relative_volume_sessions_use_canonical_coverage_and_distinct_date_alias() {
+        let sql=super::relative_volume_session_dates_sql("canonical", "2026-08-21".parse().unwrap());
+        assert!(sql.contains("`canonical`.`events_ordinal_continuity`"));
+        assert!(sql.contains("AS session_date_text"));
+        assert!(sql.contains("source.source_date < toDate('2026-08-21')"));
+        assert!(sql.contains("LIMIT 20"));
+        assert!(!sql.contains("daily_session"));
+    }
     use super::{
         adaptive_structure_chunk_minutes, append_scheduled_gap_segments, archive_session_end_utc,
         build_source_plan, completed_session_dates_between_sql, coverage_precedes, event_select,

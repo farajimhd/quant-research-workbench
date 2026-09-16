@@ -3,6 +3,8 @@ from __future__ import annotations
 from src.trading_runtime.market_pressure import PressureTracker
 from src.trading_runtime.quote_geometry import QuoteGeometryTracker
 from src.trading_runtime.trade_volume import TradeVolumeTracker
+from src.trading_runtime.session_relative_volume import SessionVolumeTracker
+from src.backend.session_relative_volume import BaselineStore
 from src.trading_runtime.estimated_luld import reference_from_indicator as _backtest_luld_reference
 
 from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD, CONTRACT as LEVEL_LOAD_CONTRACT
@@ -1100,6 +1102,13 @@ class ReplayRunController:
         self._trade_volume_enabled = any(
             dict(row.get("parameters") or {}).get("historical_hod", {}).get("setup_minimum_volume_ratio")
             for row in pressure_profiles)
+        self._session_relative_volume_enabled = any(
+            dict(row.get('parameters') or {}).get('historical_hod', {}).get('setup_minimum_session_relative_volume')
+            for row in pressure_profiles)
+        if self._session_relative_volume_enabled and self.definition.final_session_date not in (None, self.definition.session_date):
+            raise ValueError('Session relative volume currently requires a single-session backtest')
+        self._session_volume_trackers: dict[str, SessionVolumeTracker] = {}
+        self._session_relative_volume_store = BaselineStore(self.run_dir / 'session-relative-volume', self.definition.session_date)
         self._historical_prepared_structure: dict[str, dict[str, Any]] = {}
         self._event_structure_sessions: dict[str, tuple[str, datetime, int]] = {}
         self._historical_structure_context: dict[
@@ -1570,7 +1579,7 @@ class ReplayRunController:
     async def _can_skip_to_navigation_target(self) -> bool:
         """Allow raw-event skipping only before a source-native activation boundary."""
 
-        if self._quote_geometry_enabled or self._trade_volume_enabled:
+        if self._quote_geometry_enabled or self._trade_volume_enabled or self._session_relative_volume_enabled:
             # Initial entries require pre-activation quote history. Navigation
             # must consume the same events as ordinary playback.
             return False
@@ -1600,7 +1609,7 @@ class ReplayRunController:
 
     def _navigation_skip_boundary(self) -> datetime | None:
         if (
-            self._quote_geometry_enabled or self._trade_volume_enabled
+            self._quote_geometry_enabled or self._trade_volume_enabled or self._session_relative_volume_enabled
             or not self._navigation_skip_to_target
             or self._navigation_prerequisite_action is None
         ):
@@ -1932,6 +1941,8 @@ class ReplayRunController:
                 "historical_liquidity": liquidity_checkpoint(self._historical_market_quality),
                 "latest_strategy_observations": {ticker: _strategy_observation_checkpoint(observation)
                     for ticker, observation in self._latest_strategy_observations.items()},
+                'session_volume_trackers': {ticker: tracker.checkpoint() for ticker, tracker in self._session_volume_trackers.items()},
+                'session_relative_volume_artifacts': dict(self._session_relative_volume_store.identities),
                 "trade_volume_trackers": {ticker: tracker.checkpoint() for ticker, tracker in self._trade_volume_trackers.items()},
                 "quote_geometry_trackers": {ticker: tracker.checkpoint() for ticker, tracker in self._quote_geometry_trackers.items()},
                 "pressure_trackers": {ticker: tracker.checkpoint() for ticker, tracker in self._pressure_trackers.items()},
@@ -2718,6 +2729,7 @@ class ReplayRunController:
             self.error = str(exc)
             await self._finish("failed")
         finally:
+            await asyncio.to_thread(self._session_relative_volume_store.close)
             pool=getattr(self,'_prepared_v7',None)
             if pool is not None:
                 try:await self._release_prepared_v7_stream(pool)
@@ -3147,6 +3159,13 @@ class ReplayRunController:
         self._strategy_source_values = deepcopy(
             dict(controller.get("strategy_source_values") or {})
         )
+        if self._session_relative_volume_enabled and ('session_volume_trackers' not in controller or 'session_relative_volume_artifacts' not in controller):
+            raise ValueError('Enabled session RVOL requires checkpoint history and baseline artifacts')
+        self._session_volume_trackers = {ticker: SessionVolumeTracker(self.definition.session_start, saved)
+            for ticker, saved in controller.get('session_volume_trackers', {}).items()}
+        self._session_relative_volume_store.close()
+        self._session_relative_volume_store = BaselineStore(self.run_dir / 'session-relative-volume',
+            self.definition.session_date, controller.get('session_relative_volume_artifacts', {}))
         if self._trade_volume_enabled and "trade_volume_trackers" not in controller:
             raise ValueError("Enabled volume confirmation requires trade volume checkpoint history")
         self._trade_volume_trackers = {ticker: TradeVolumeTracker(saved)
@@ -3271,6 +3290,14 @@ class ReplayRunController:
             if event.ts >= self.definition.requested_start:
                 await self._process_strategy_market_event(event)
 
+    async def _ensure_session_relative_volume(self, ticker):
+        if self._session_relative_volume_enabled and ticker not in self._session_relative_volume_store.cache:
+            baseline = await asyncio.to_thread(self._session_relative_volume_store.get, ticker)
+            self._record_data_authority(f'session_relative_volume_baseline:{self.definition.session_date}:{ticker}', dict(
+                ticker=ticker, contract=baseline['contract'], content_hash=baseline['content_hash'],
+                artifact_sha256=self._session_relative_volume_store.identities[ticker],
+                sessions=baseline['sessions'], source_revision=baseline['source_revision']))
+
     def _market_pressure_snapshot(self, ticker, at):
         tracker = self._pressure_trackers.get(ticker)
         result = (tracker if tracker is not None else PressureTracker()).snapshot(at)
@@ -3282,6 +3309,11 @@ class ReplayRunController:
             volume = self._trade_volume_trackers.get(ticker)
             if volume is not None:
                 result['trade_volume'] = volume.snapshot(at)
+        if self._session_relative_volume_enabled:
+            volume = self._session_volume_trackers.get(ticker)
+            if volume is not None and ticker in self._session_relative_volume_store.cache:
+                baseline = self._session_relative_volume_store.cached(ticker)
+                result['session_relative_volume'] = volume.snapshot(at, baseline, ticker)
         return result
 
     async def _process_market_event(
@@ -3306,6 +3338,11 @@ class ReplayRunController:
             volume = self._trade_volume_trackers.get(event.ticker)
             if volume is None:
                 volume = self._trade_volume_trackers[event.ticker] = TradeVolumeTracker()
+            volume.observe(event)
+        if self._session_relative_volume_enabled:
+            volume = self._session_volume_trackers.get(event.ticker)
+            if volume is None:
+                volume = self._session_volume_trackers[event.ticker] = SessionVolumeTracker(self.definition.session_start)
             volume.observe(event)
         self._observe_historical_market_quality_event(event)
         if isinstance(event, TradeEvent) and event.price_eligible:
@@ -3532,6 +3569,7 @@ class ReplayRunController:
             if self._processed_frames % 64 == 0:
                 await asyncio.sleep(0)
             return False
+        await self._ensure_session_relative_volume(frame.ticker)
         await self._ensure_bar_gpt_features(frame.as_of)
         quote = self._quotes.get(frame.ticker)
         indicator = frame.indicator
@@ -4039,6 +4077,7 @@ class ReplayRunController:
                 "value": spread_bps,
             }
             changed_source_ids.append("market.spread_bps")
+        await self._ensure_session_relative_volume(event.ticker)
         observation = replace(
             base,
             observed_at=event.ts,
