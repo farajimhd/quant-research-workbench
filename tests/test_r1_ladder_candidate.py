@@ -3,7 +3,10 @@ from copy import deepcopy
 import pytest
 
 from src.backend.r1_ladder_candidate import build, PROFILE_ID
-from src.backend.trading_configuration_service import configuration_base
+from src.backend.trading_configuration_service import (
+    _build_configuration_release,
+    configuration_base,
+)
 from src.trading_runtime.historical_hod import DEFAULTS as TRANSPORT_DEFAULTS
 
 
@@ -50,6 +53,21 @@ def test_independent_policy_preserves_source_gates_and_portfolio_authority():
     assert base == original and inputs == old_inputs
     plan = next(x for x in payload['run_plans']['plans'] if x['run_plan_id']==plan_id)
     assert plan['allowed_environments'] == ['backtest']
+    assert plan['signal_stream_ids'] == ['price-squeeze-early']
+    assert plan['watchlist_ids'] == []
+    assert plan['activation'] == dict(event_policy='new_occurrences',
+                                      watchlist_policy='not_required',
+                                      watch_duration='session')
+    universe = next(x for x in payload['run_plans']['universes']
+                    if x['universe_id'] == plan['universe_id'])
+    assert universe['source'] == 'signal_stream'
+    assert universe['signal_stream_ids'] == ['price-squeeze-early']
+    assert universe['scanner_view_ids'] == []
+    assert universe['watchlist_snapshots'] == []
+    assert [x['signal_stream_id'] for x in universe['signal_stream_snapshots']] == [
+        'price-squeeze-early'
+    ]
+    assert universe['signal_stream_snapshots'][0]['occurrence_source'] == 'qmd_squeeze_episode'
     mandates = {x['mandate_id']:x for x in base['portfolio']['mandates']}
     for m in payload['portfolio']['mandates']:
         if m.get('run_plan_id') == plan_id:
@@ -73,3 +91,27 @@ def test_candidate_parameters_resolve_with_transport_and_independent_policy():
     assert resolved['r1_ladder']['cash_fraction'] == .9
     assert resolved['liquidity_admission']['maximum_current_spread_bps'] == 150.
     assert resolved['historical_hod']['setup_minimum_session_relative_volume'] == 2.
+
+
+def test_compiled_candidate_retains_source_native_early_squeeze_scope():
+    payload, canvas, plan_id = build(configuration_base(), source_parameters=source())
+    runtime, _, _ = _build_configuration_release(
+        canvas_revision=canvas['revision'],
+        canvas_profile=canvas['profile'],
+        configuration=payload,
+        run_plan_id=plan_id,
+        strategy_profile_id=PROFILE_ID,
+    )
+    plan = next(row for row in runtime['run_plans']['plans']
+                if row['run_plan_id'] == plan_id)
+    universe = next(row for row in runtime['run_plans']['universes']
+                    if row['universe_id'] == plan['universe_id'])
+    assert plan['signal_stream_ids'] == ['price-squeeze-early']
+    assert plan['watchlist_ids'] == []
+    assert plan['activation']['watch_duration'] == 'session'
+    assert universe['source'] == 'signal_stream'
+    assert universe['watchlist_snapshots'] == []
+    assert [row['signal_stream_id'] for row in universe['signal_stream_snapshots']] == [
+        'price-squeeze-early'
+    ]
+    assert universe['signal_stream_snapshots'][0]['occurrence_source'] == 'qmd_squeeze_episode'

@@ -70,6 +70,45 @@ def build(base, *, source_parameters, profile_id=PROFILE_ID, label=LABEL):
     plan = next(p for p in payload['run_plans']['plans'] if p['run_plan_id'] == plan_id)
     plan['description'] = DESCRIPTION
 
+    # Whole-market R1 runs are causally seeded by the certified Early Squeeze
+    # occurrence stream.  The structural template's synthetic tradability
+    # stream has no historical occurrence authority; retaining it here makes
+    # an empty ticker selection materialize the entire market Watchlist before
+    # replay.  Keep liquidity as a decision-time strategy gate after each
+    # occurrence instead of using it to construct a second market population.
+    early_stream = deepcopy(next(
+        stream for stream in payload['market_discovery']['signal_streams']
+        if stream['signal_stream_id'] == 'price-squeeze-early'
+    ))
+    plan.update(
+        signal_stream_ids=['price-squeeze-early'],
+        watchlist_ids=[],
+        activation={
+            'event_policy': 'new_occurrences',
+            'watchlist_policy': 'not_required',
+            'watch_duration': 'session',
+        },
+    )
+    universe = next(
+        row for row in payload['run_plans']['universes']
+        if row['universe_id'] == plan['universe_id']
+    )
+    universe.update(
+        name='Early Squeeze R1 candidates',
+        description=(
+            'Tickers enter the R1 observation population at their certified '
+            'Early Squeeze occurrence and remain watched for the session.'
+        ),
+        source='signal_stream',
+        symbols=[],
+        scanner_view_id='',
+        scanner_view_ids=[],
+        watchlist_snapshots=[],
+        signal_stream_ids=['price-squeeze-early'],
+        signal_stream_snapshots=[early_stream],
+        enabled=bool(early_stream.get('enabled', True)),
+    )
+
     # Mirror the exact source admission thresholds into the discovery rules;
     # updating only executor parameters would leave the template's old gates.
     liquidity = parameters['liquidity_admission']

@@ -8935,12 +8935,6 @@ def _structural_recovery_projection_tickers(
         return None
     selected = sorted({ticker.strip().upper() for ticker in tickers if ticker.strip()})
     if not selected:
-        from src.trading_runtime.r1_ladder import CONTRACT as R1_LADDER_CONTRACT
-
-        if parameters.get("r1_ladder_contract") == R1_LADDER_CONTRACT:
-            # R1 uses the historical adapter for market inputs, but discovers
-            # its population through the certified full-market Watchlist.
-            return None
         if (configuration.get("run_plan", {}).get("activation", {}).get("watch_duration") == "session"
                 and _uses_source_native_identity_preparation(configuration, True)):
             # The certified occurrence stream determines the computation scope;
