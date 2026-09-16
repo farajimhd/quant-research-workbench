@@ -80,9 +80,13 @@ def build(base, *, source_parameters, profile_id=PROFILE_ID, label=LABEL):
         stream for stream in payload['market_discovery']['signal_streams']
         if stream['signal_stream_id'] == 'price-squeeze-early'
     ))
+    quality_id = profile_id + '-tradability'
     plan.update(
         signal_stream_ids=['price-squeeze-early'],
-        watchlist_ids=[],
+        # Retain the compiled plan only as point-in-time identity authority.
+        # watchlist_policy=not_required prevents it from admitting or scanning
+        # a whole-market population before the Early Squeeze occurrences.
+        watchlist_ids=[quality_id],
         activation={
             'event_policy': 'new_occurrences',
             'watchlist_policy': 'not_required',
@@ -99,11 +103,10 @@ def build(base, *, source_parameters, profile_id=PROFILE_ID, label=LABEL):
             'Tickers enter the R1 observation population at their certified '
             'Early Squeeze occurrence and remain watched for the session.'
         ),
-        source='signal_stream',
+        source='watchlist',
         symbols=[],
-        scanner_view_id='',
-        scanner_view_ids=[],
-        watchlist_snapshots=[],
+        scanner_view_id=quality_id,
+        scanner_view_ids=[quality_id],
         signal_stream_ids=['price-squeeze-early'],
         signal_stream_snapshots=[early_stream],
         enabled=bool(early_stream.get('enabled', True)),
