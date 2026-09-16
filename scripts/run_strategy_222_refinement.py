@@ -174,6 +174,7 @@ async def run_locked(args):
     root.mkdir(parents=True, exist_ok=True)
     manifest = root/'manifest.json'
     identity = dict(source=source_identity(), symbol=args.symbol, end=args.end,
+                    session_date=args.session_date.isoformat(),
                     variants=args.variants, baseline=BASELINE, book_hash=BOOK_HASH)
     if args.portfolio_symbols:identity['tickers']=args.portfolio_symbols
     if args.recipe_parameters is not None:identity['recipe_parameters']=args.recipe_parameters
@@ -208,7 +209,7 @@ async def run_locked(args):
             raise ValueError(f"Recorded {prior['status']} run {prior['run_id']}; preserve and investigate before a new trial")
         candidate = prepare(name,args.recipe_parameters,getattr(args,'recipe_base',None))
         revision = candidate_runtime_configuration_snapshot('backtest', candidate_id=candidate['candidate_id'], run_plan_id=PLAN)
-        definition = ReplayRunDefinition(session_date=date(2026,8,21), start_time=time(4),
+        definition = ReplayRunDefinition(session_date=args.session_date, start_time=time(4),
             end_time=time.fromisoformat(args.end), initial_cash=10000,
             tickers=tuple(args.portfolio_symbols or (args.symbol,)),
             configuration_revision=revision, mode=RunMode.BACKTEST,
@@ -289,6 +290,8 @@ async def run_locked(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--runtime', type=Path, required=True)
+    parser.add_argument('--session-date', type=date.fromisoformat, default=date(2026,8,21),
+                        help='Replay session date, YYYY-MM-DD; frozen position windows apply only to 2026-08-21')
     parser.add_argument('--symbol')
     parser.add_argument('--end', help='New York time, HH:MM:SS')
     parser.add_argument('--position-symbols', nargs='+', help='Replay the frozen audited windows for these symbols')
@@ -302,6 +305,8 @@ def main():
     parser.add_argument('--variants', nargs='+', choices=['corrected-baseline','early-v1','liquidity-v2','guarded-v3','phase-v4','burst-v5','full-v6','base-v7','trend-v8','body-v9','recovery-v10','support-v11','support-body-v12','trail-v13','trail-no-failure-v14','strict-recovery-v15','failure-memory-v16','progress-v17','add-wick-v18','burst-rate-v19','range-v20','unprotected-v21','reclaim-attempt-v22','surge-base-v23','surge-range-v24','regular-base-v25','current-gain-v26','phase-progress-v27','phase-add-v28','price-trail-v29','price-trail-only-v30','regular-origin-v31'],
                         default=None)
     args=parser.parse_args()
+    if args.position_symbols and args.session_date != date(2026,8,21):
+        parser.error('--position-symbols uses frozen 2026-08-21 windows; select explicit symbols and --end for another date')
     args.recipe_parameters=None
     if args.recipe_base is not None and not args.recipe_file:
         parser.error('--recipe-base requires --recipe-file')
