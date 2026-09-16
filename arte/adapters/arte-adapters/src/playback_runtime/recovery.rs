@@ -24,6 +24,7 @@ use arte_core::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+pub mod publication;
 pub mod storage;
 
 #[derive(Serialize, Deserialize)]

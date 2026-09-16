@@ -241,6 +241,28 @@ impl Candidates {
     pub fn scope_hashes(&self) -> impl Iterator<Item = &str> {
         self.slots.keys().map(String::as_str)
     }
+    /// Receipts registered in this controller's current boundary. Publication
+    /// validation also needs independent decision journal readbacks.
+    pub fn registered_receipts(&self, controller: &Runtime) -> Result<Vec<&Committed>> {
+        self.require(controller)?;
+        let view = controller.decision_view()?;
+        let boundary = view
+            .pending()?
+            .ok_or_else(|| Error::Unready("candidate boundary missing".into()))?;
+        let mut result = Vec::new();
+        for slot in self.slots.values() {
+            if !view.needs_decision(slot.runtime.scope())? {
+                let receipt = slot
+                    .receipt
+                    .as_ref()
+                    .filter(|r| r.decision().input.event_id == boundary.id)
+                    .ok_or_else(|| Error::Unready("registered candidate receipt missing".into()))?;
+                Boundary::validate_decision(controller, receipt.decision())?;
+                result.push(receipt);
+            }
+        }
+        Ok(result)
+    }
     /// Derive missing evaluation work from retained candidate/decision state.
     /// Prepared or committed-but-unregistered work must be retried, not recalculated.
     pub fn needed_evaluations(&self, controller: &Runtime) -> Result<Vec<String>> {

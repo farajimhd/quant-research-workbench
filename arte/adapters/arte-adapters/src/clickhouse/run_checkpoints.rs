@@ -4,6 +4,7 @@ use super::{
     ClickHouse,
 };
 use crate::playback_runtime::recovery::{
+    publication::{Finalized, Published},
     storage::{Header, Stored, CHUNK_BYTES, MAX_ROOT_BYTES},
     Bundle, Recovered, RestoreRequest,
 };
@@ -111,11 +112,11 @@ impl ClickHouse {
     }
     pub async fn publish_backtest_checkpoint(
         &self,
-        bundle: &Bundle,
+        finalized: &Finalized,
         request: &RestoreRequest<'_>,
         passed: &BTreeSet<Acceptance>,
         lease: &mut crate::ownership::Lease,
-    ) -> Result<String> {
+    ) -> Result<Published> {
         for required in [Acceptance::RepositoryExtracted, Acceptance::Durability] {
             if !passed.contains(&required) {
                 return Err(Error::Unready(format!(
@@ -125,18 +126,29 @@ impl ClickHouse {
         }
         let slot = backtest_checkpoint_scope(request.manifest, request.cut)?;
         lease.require(&slot)?;
-        // Full graph, journal and funding validation before the first write.
-        request.restore(bundle)?;
-        let graph = Stored::from_bundle(bundle, request.limits.maximum_bytes)?;
-        require_header(
-            &Header::decode(&graph.root, request.limits.maximum_bytes)?,
-            request,
-        )?;
-        publish(&Storage(self), &slot, &graph, &|| lease.require(&slot)).await?;
-        self.load_backtest_checkpoint(request).await?;
-        lease.require(&slot)?;
-        Ok(bundle.root.id.clone())
+        publish_verified(&Storage(self), finalized, request, &|| lease.require(&slot)).await
     }
+}
+async fn publish_verified(
+    store: &impl Store,
+    finalized: &Finalized,
+    request: &RestoreRequest<'_>,
+    owned: &impl Fn() -> Result<()>,
+) -> Result<Published> {
+    let bundle = finalized.bundle();
+    owned()?;
+    // Full graph, journal and funding validation before the first write.
+    request.restore(bundle)?;
+    let slot = backtest_checkpoint_scope(request.manifest, request.cut)?;
+    let graph = Stored::from_bundle(bundle, request.limits.maximum_bytes)?;
+    require_header(
+        &Header::decode(&graph.root, request.limits.maximum_bytes)?,
+        request,
+    )?;
+    publish(store, &slot, &graph, owned).await?;
+    request.restore(&read_bundle(store, request).await?)?;
+    owned()?;
+    Published::verified(&bundle.root.id, request.manifest, request.cut)
 }
 
 #[cfg(test)]
@@ -165,6 +177,22 @@ pub(crate) mod tests {
             }
             Ok(())
         }
+    }
+    pub(crate) async fn publication(bundle: &Finalized, request: &RestoreRequest<'_>) -> Published {
+        let memory = Memory::default();
+        memory.fail_chunk.set(true);
+        assert!(publish_verified(&memory, bundle, request, &|| Ok(()))
+            .await
+            .is_err());
+        memory.fail_chunk.set(false);
+        memory.ambiguous_root.set(true);
+        assert!(publish_verified(&memory, bundle, request, &|| Ok(()))
+            .await
+            .is_err());
+        memory.ambiguous_root.set(false);
+        publish_verified(&memory, bundle, request, &|| Ok(()))
+            .await
+            .unwrap()
     }
     pub(crate) async fn roundtrip(bundle: &Bundle, request: &RestoreRequest<'_>) -> Recovered {
         request.restore(bundle).unwrap();

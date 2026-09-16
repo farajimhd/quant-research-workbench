@@ -25,6 +25,8 @@ pub(crate) use rejections::exercise as rejection_roundtrip_test;
 pub use rejections::RejectionPublisher;
 pub use run_checkpoints::backtest_checkpoint_scope;
 #[cfg(test)]
+pub(crate) use run_checkpoints::tests::publication as checkpoint_publication_test;
+#[cfg(test)]
 pub(crate) use run_checkpoints::tests::roundtrip as checkpoint_roundtrip_test;
 pub use run_manifests::run_manifest_scope;
 

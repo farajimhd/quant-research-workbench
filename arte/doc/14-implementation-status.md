@@ -6,6 +6,33 @@ The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
 
+## Finalized boundary publication and acknowledgment
+
+The common-cut ClickHouse publisher now requires a typed finalized graph.
+Missing decisions or unfinished actions prevent its capture. This tightens the
+previous publisher contract: partial graphs remain available for in-memory
+recovery validation, but cannot occupy the immutable persisted boundary slot.
+The slot remains unique by manifest and boundary sequence. It cannot be replaced
+with a different graph after action completion.
+
+Publication returns a typed receipt only after full graph and journal validation,
+root-last storage publication, exact readback and ownership checks. The guarded
+acknowledgment recaptures the controller, candidates and portfolio with exclusive
+references. Its root must equal the published root before the boundary advances.
+The receipt is not proof of power-loss durability. The independent durability
+acceptance gate remains mandatory.
+
+Offline fixtures cover missing decisions, pending actions, failed chunk writes,
+ambiguous root writes, exact retries, changed account budgets, unrelated funding
+and duplicate acknowledgment. All 400 offline tests, formatting, Clippy and
+copied-source checks pass. Source parity was not rerun. No services started or
+migrations ran.
+
+Remaining integration: the full runner must use this guarded handoff instead of
+the low-level component acknowledgment. Restart orchestration must restore the
+last finalized cut and replay subsequent journaled work. This change does not
+claim that orchestration or multi-instrument recovery is complete.
+
 ## Funded coordinator lifecycle coverage
 
 Two additional fixtures route funded entry, protection replacement and terminal

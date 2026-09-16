@@ -795,7 +795,24 @@ async fn candidate_owner_retry(cancel: bool) {
     .is_err());
     controller = restored_run.controller;
     candidates = restored_run.candidates;
+    let mut unrelated_funding = portfolio;
+    portfolio = restored_run.portfolio;
     controller.resume().unwrap();
+    assert!(
+        crate::playback_runtime::recovery::publication::Finalized::capture(
+            crate::playback_runtime::recovery::publication::Owners {
+                controller: &mut controller,
+                candidates: &mut candidates,
+                portfolio: &mut portfolio,
+                manifest: &manifest,
+                last_fills: &fills,
+                currencies: &currencies,
+                limits: &limits,
+            },
+            &cut,
+        )
+        .is_err()
+    ); // Missing decisions cannot finalize an otherwise empty action set.
     struct Never;
     impl Publisher for Never {
         async fn append(&mut self, _: &Batch) -> Result<Vec<Record>> {
@@ -994,10 +1011,124 @@ async fn candidate_owner_retry(cancel: bool) {
     assert!(controller.acknowledge().is_err());
     let pending = controller.pending_actions();
     assert_eq!(pending.len(), 1);
+    let old_cut_image = RunBundle::capture(
+        &mut controller,
+        &mut candidates,
+        &mut portfolio,
+        &manifest,
+        &cut,
+        &fills,
+        &currencies,
+        &limits,
+    )
+    .unwrap();
+    let owned_receipts: Vec<_> = candidates
+        .registered_receipts(&controller)
+        .unwrap()
+        .into_iter()
+        .cloned()
+        .collect();
+    let receipt_refs: Vec<_> = owned_receipts.iter().collect();
+    let publication_request = crate::playback_runtime::recovery::RestoreRequest {
+        expected_root: &old_cut_image.root.id,
+        receipts: &receipt_refs,
+        readbacks: &readbacks,
+        ..request
+    };
+    use crate::playback_runtime::recovery::publication::{Finalized, Owners};
+    assert!(Finalized::capture(
+        Owners {
+            controller: &mut controller,
+            candidates: &mut candidates,
+            portfolio: &mut portfolio,
+            manifest: &manifest,
+            last_fills: &fills,
+            currencies: &currencies,
+            limits: &limits,
+        },
+        &cut,
+    )
+    .is_err()); // No partial graph can reach the immutable publication slot.
     controller
         .cancel_entry_action(&pending[0].decision_id, pending[0].action_index)
         .unwrap();
-    controller.acknowledge().unwrap();
+    let finalized = Finalized::capture(
+        Owners {
+            controller: &mut controller,
+            candidates: &mut candidates,
+            portfolio: &mut portfolio,
+            manifest: &manifest,
+            last_fills: &fills,
+            currencies: &currencies,
+            limits: &limits,
+        },
+        &cut,
+    )
+    .unwrap();
+    let publication_request = crate::playback_runtime::recovery::RestoreRequest {
+        expected_root: &finalized.bundle().root.id,
+        ..publication_request
+    };
+    let publication =
+        crate::clickhouse::checkpoint_publication_test(&finalized, &publication_request).await;
+    assert_eq!(publication.root(), finalized.bundle().root.id);
+    assert_eq!(publication.cut(), &cut);
+    let mut changed_accounts: std::collections::BTreeMap<_, _> = scopes
+        .iter()
+        .map(|scope| {
+            (
+                scope.account.clone(),
+                portfolio.snapshot(&scope.account).unwrap(),
+            )
+        })
+        .collect();
+    changed_accounts.get_mut("a").unwrap().budget_minor -= 1;
+    let mut changed_portfolio = arte_core::portfolio::Portfolio::new(changed_accounts).unwrap();
+    assert!(matches!(
+        publication.acknowledge(Owners {
+            controller: &mut controller,
+            candidates: &mut candidates,
+            portfolio: &mut changed_portfolio,
+            manifest: &manifest,
+            last_fills: &fills,
+            currencies: &currencies,
+            limits: &limits,
+        }),
+        Err(Error::Conflict(reason)) if reason == "runtime state differs from published checkpoint"
+    ));
+    assert!(publication
+        .acknowledge(Owners {
+            controller: &mut controller,
+            candidates: &mut candidates,
+            portfolio: &mut unrelated_funding,
+            manifest: &manifest,
+            last_fills: &fills,
+            currencies: &currencies,
+            limits: &limits,
+        })
+        .is_err());
+    publication
+        .acknowledge(crate::playback_runtime::recovery::publication::Owners {
+            controller: &mut controller,
+            candidates: &mut candidates,
+            portfolio: &mut portfolio,
+            manifest: &manifest,
+            last_fills: &fills,
+            currencies: &currencies,
+            limits: &limits,
+        })
+        .unwrap();
+    assert!(publication
+        .acknowledge(crate::playback_runtime::recovery::publication::Owners {
+            controller: &mut controller,
+            candidates: &mut candidates,
+            portfolio: &mut portfolio,
+            manifest: &manifest,
+            last_fills: &fills,
+            currencies: &currencies,
+            limits: &limits,
+        })
+        .is_err());
     assert_eq!(controller.poll().unwrap(), Poll::Boundary);
     candidates.observe(&controller).unwrap();
     let scope = &scopes[0];
