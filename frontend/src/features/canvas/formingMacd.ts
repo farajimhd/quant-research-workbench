@@ -7,15 +7,25 @@ export const MACD_DIFFERENCE_ID = 'indicator.forming_macd_difference';
 export const MACD_DIFFERENCE_PANE = 'forming-macd-difference';
 const durations: Partial<Record<MacdTimeframe, number>> = { '100ms': .1, '1s': 1, '5s': 5, '10s': 10, '30s': 30, '1m': 60, '5m': 300, '1h': 3600 };
 export const macdDuration = (timeframe: MacdTimeframe) => durations[timeframe];
-export type MacdBase = { start: number; end: number; close: number; line: number; signal: number };
+export type MacdBase = { start: number; end: number; close: number; line: number; signal: number; fast?: number; slow?: number };
 export type MacdSample = { time: number; endTime?: number; isClosed?: boolean; close: number };
-export type MacdSource = { rows: MacdBase[]; through: number };
+export type MacdSource = { rows: MacdBase[]; through: number; splitAdjusted?: boolean; basisAsOf?: number; provenance?: {periods: number; seed: string}; adjustments?: Array<{effective_at: string; split_from: number; split_to: number}> };
+
+export function splitFactor(at: number, source: MacdSource) {
+  let factor = 1;
+  for (const split of source.adjustments ?? []) {
+    const effective = Date.parse(split.effective_at) / 1000;
+    if (![effective, split.split_from, split.split_to].every(Number.isFinite) || split.split_from <= 0 || split.split_to <= 0) throw Error('Invalid MACD split basis');
+    if (at < effective && effective <= (source.basisAsOf ?? source.through)) factor *= split.split_from / split.split_to;
+  }
+  return factor;
+}
 
 /** Recover QMD's EMA state instead of reseeding it at the chart's left edge.
  * Two consecutive returned closes suffice because MACD = EMA12 - EMA26.
  * Preview updates always start from the completed state, never another preview.
  */
-export function projectFormingMacd(samples: MacdSample[], source: MacdSource, chartSeconds: number | null, asOf: number) {
+export function projectFormingMacd(samples: MacdSample[], source: MacdSource, chartSeconds: number | null, asOf: number, chartAdjusted = false) {
   const points: Array<{ time: number; value: number }> = [];
   let index = -1, missing = 0;
   for (const sample of samples) {
@@ -26,17 +36,23 @@ export function projectFormingMacd(samples: MacdSample[], source: MacdSource, ch
     const at = sample.isClosed === false ? Math.min(end, asOf) : end;
     while (index + 1 < source.rows.length && source.rows[index + 1].end <= at) index++;
     const base = source.rows[index], previous = source.rows[index - 1];
+    const sourceFactor = source.splitAdjusted ? splitFactor(at - 1e-6, source) : 1;
+    // QMD chart adjustments are keyed by the chart candle's start; a coarse
+    // candle can straddle a split. Convert through nominal price at the sample.
+    const chartFactor = chartAdjusted ? splitFactor(sample.time, source) : 1;
+    const price = sample.close * sourceFactor / chartFactor;
     let value = NaN;
     if (Number.isFinite(at) && at <= source.through && base && Number.isFinite(sample.close) && sample.close > 0) {
       if (Math.abs(base.end - at) < 1e-6) value = base.line - base.signal;
-      else if (previous && [previous.line, base.line, base.signal, base.close].every(Number.isFinite)) {
+      else if (Number.isFinite(base.slow) || previous && [previous.line, base.line, base.signal, base.close].every(Number.isFinite)) {
         const af = 2 / 13, slowAlpha = 2 / 27;
-        const previousSlow = base.close - (base.line - (1 - af) * previous.line) / (af - slowAlpha);
-        const slow = slowAlpha * base.close + (1 - slowAlpha) * previousSlow;
-        const line = af * sample.close + (1 - af) * (slow + base.line) - (slowAlpha * sample.close + (1 - slowAlpha) * slow);
+        const previousSlow = previous ? base.close - (base.line - (1 - af) * previous.line) / (af - slowAlpha) : NaN;
+        const slow = base.slow ?? slowAlpha * base.close + (1 - slowAlpha) * previousSlow;
+        const line = af * price + (1 - af) * (slow + base.line) - (slowAlpha * price + (1 - slowAlpha) * slow);
         value = line - (.2 * line + .8 * base.signal);
       }
     }
+    value *= chartFactor / sourceFactor;
     if (!Number.isFinite(value)) missing++;
     points.push({ time: sample.time, value });
   }
@@ -46,9 +62,11 @@ export function projectFormingMacd(samples: MacdSample[], source: MacdSource, ch
 /** Bounded, sequential canonical pages, including two seed rows before the chart.
  * Never use chart OHLC to invent a lower-timeframe close history.
  */
-export async function loadMacdSource(symbol: string, timeframe: MacdTimeframe, firstSample: number, asOf: number, signal: AbortSignal): Promise<MacdSource> {
+export async function loadMacdSource(symbol: string, timeframe: MacdTimeframe, firstSample: number, asOf: number, signal: AbortSignal, chartAdjusted = false): Promise<MacdSource> {
   const duration = macdDuration(timeframe);
-  if (!duration) throw Error(`${timeframe}: QMD does not provide MACD for this timeframe yet.`);
+  const calendarSource = async (tf: string) => api<MacdSource>(`/api/trading/canvas-chart/macd-source${query({symbol, timeframe: tf, as_of: new Date(asOf * 1000).toISOString()})}`, {signal, timeoutMs: 30000});
+  if (!duration) return calendarSource(timeframe);
+  const basis = chartAdjusted ? await calendarSource('1d') : undefined;
   const rows = new Map<number, MacdBase>();
   let params: Record<string, string | number | boolean> = {
     symbol, timeframe, as_of: new Date(asOf * 1000).toISOString(),
@@ -83,7 +101,7 @@ export async function loadMacdSource(symbol: string, timeframe: MacdTimeframe, f
       if (!sorted.length) throw Error(`${timeframe}: no completed MACD history is available.`);
       // Before the next source boundary no additional source candle can close.
       // Chart-price updates may therefore preview this same completed state.
-      return { rows: sorted, through: Math.max(asOf, (Math.floor(asOf / duration) + 1) * duration - 1e-6) };
+      return { rows: sorted, through: Math.max(asOf, (Math.floor(asOf / duration) + 1) * duration - 1e-6), adjustments: basis?.adjustments, basisAsOf: basis?.basisAsOf };
     }
     const cursor = `${page.next_before}|${page.previous_session_before}|${page.earliest_session_date}`;
     if (cursors.has(cursor) || (!page.next_before && !page.previous_session_before)) throw Error(`${timeframe}: MACD history pagination did not advance.`);
