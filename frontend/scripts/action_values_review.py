@@ -1,4 +1,4 @@
-"""Real endpoint, candle-label and keyboard checks for hindsight opportunities."""
+"""Real endpoint, candle-click and keyboard checks for hindsight opportunities."""
 import json
 from datetime import datetime
 from pathlib import Path
@@ -49,39 +49,49 @@ def review_action_values(page, screenshot_path):
     assert result['labels'][-1]['reason']!='incomplete_90s_horizon'
     slider=page.get_by_role('slider',name='Action decision second');slider.fill('595')
     slider.focus();page.keyboard.press('ArrowRight');assert slider.input_value()=='596';page.keyboard.press('ArrowLeft')
+    table=page.locator('.action-values-inspector > .action-values-table')
+    for name in ('Buy long','Open short','Stay flat'):assert table.get_by_role('cell',name=name,exact=True).count()==1
+    selected=result['labels'][595]
+    assert selected['long']['gross_profit']>0 and selected['short']['gross_profit']<0
+    for side in ('long','short'):
+        value=selected[side]['gross_profit']
+        expected=('+' if value>=0 else '-')+'$'+format(abs(value),'.4f').rstrip('0').rstrip('.')
+        assert expected in table.inner_text()
+    page.get_by_text('Actions for an existing position',exact=True).click()
+    assert page.get_by_role('cell',name='Not calculated',exact=True).count()==4
+    page.get_by_text('Actions for an existing position',exact=True).click()
     page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__action-details.png')),full_page=True)
     page.get_by_role('button',name='Center this second on chart').click();page.mouse.move(0,0);page.wait_for_timeout(500)
     pane=chart.locator('.chart-pane-canvas').first
-    shown=pane.screenshot();page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__candle-labels.png')),full_page=True)
+    page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__clean-chart.png')),full_page=True)
     if page.locator('#action-value-review').count():
-        evidence=page.evaluate("""() => {
+        candle=page.evaluate("""() => {
           const p=window.actionReviewPrimitive;
-          const hits=p.labelHits;
-          const valid=p.candles.filter(c=>c.isClosed!==false && p.result.labels.some(r=>r.time===(c.endTime??c.time+1)));
-          const width=p.chart.timeScale().width();
-          const visible=valid.filter(c=>{const x=p.coordinate(c.time);return x!=null&&x>=0&&x<=width;});
-          return {count:hits.length,expected:visible.length,underCandles:hits.every(h=>{
-            const c=p.candles.find(c=>c.time===h.candleTime);
-            return h.y1>p.series.priceToCoordinate(c.low) && p.result.labels[h.index].time===(c.endTime??c.time+1);
-          }),label:hits.find(h=>h.x1>20&&h.y1>20&&h.y2<p.chart.chartElement().clientHeight-35)};
+          if(p.paneViews || p.autoscaleInfo) throw new Error('Action drawings still attached');
+          for(const c of p.candles){
+            const index=p.result.labels.findIndex(r=>r.time===(c.endTime??c.time+1));
+            const x=p.coordinate(c.time), y=p.series.priceToCoordinate((c.high+c.low)/2);
+            if(c.isClosed!==false && index>=0 && x>30 && x<p.chart.timeScale().width()-30 && y>30 && y<p.chart.chartElement().clientHeight-40)
+              return {x,y,index};
+          }
         }""")
-        assert evidence['count']==evidence['expected'] and evidence['count']>0, evidence
-        assert evidence['underCandles'],evidence
-        label=evidence['label'];assert label
+        assert candle
         bounds=pane.bounding_box();zoom=pane.evaluate('(e)=>e.getBoundingClientRect().width/e.offsetWidth')
         left=page.evaluate('()=>window.actionReviewPrimitive.chart.priceScale("left").width()')
-        page.mouse.click(bounds['x']+(left+(label['x1']+label['x2'])/2)*zoom,bounds['y']+(label['y1']+label['y2'])/2*zoom)
+        page.mouse.click(bounds['x']+(left+candle['x'])*zoom,bounds['y']+candle['y']*zoom)
         dialog=page.get_by_role('dialog',name='Hindsight action values',exact=True);dialog.wait_for(timeout=5000)
-        assert int(page.get_by_role('slider',name='Action decision second').input_value())==label['index']
+        assert int(page.get_by_role('slider',name='Action decision second').input_value())==candle['index']
         box=dialog.bounding_box();viewport=page.viewport_size
         assert dialog.get_attribute('aria-modal')=='true'
         assert abs(box['x']+box['width']/2-viewport['width']/2)<3
         assert abs(box['y']+box['height']/2-viewport['height']/2)<3
-        page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__label-modal.png')),full_page=True)
+        page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__candle-modal.png')),full_page=True)
         page.keyboard.press('Escape')
     toggle.click();page.mouse.move(0,0);page.wait_for_timeout(300)
-    assert pane.screenshot()!=shown,'Candle labels did not hide'
+    if page.locator('#action-value-review').count():
+        page.mouse.click(bounds['x']+(left+candle['x'])*zoom,bounds['y']+candle['y']*zoom)
+        assert not page.get_by_role('dialog',name='Hindsight action values',exact=True).count()
     toggle.click();page.mouse.move(0,0);page.wait_for_timeout(300)
     details.click();page.keyboard.press('Escape')
     assert not page.get_by_role('dialog',name='Hindsight action values',exact=True).count()
-    return dict(counts=result['counts'],max_hold_seconds=90,per_candle=True,modal=True)
+    return dict(counts=result['counts'],max_hold_seconds=90,candle_click=True,modal=True)
