@@ -46,6 +46,11 @@ class FormingMacdBrowserTests(unittest.TestCase):
                   check(Number.isNaN(f(samples,{rows:source,through:150},1,155).points[0].value),'Stale source extrapolated');
                   check(Number.isNaN(f(samples,{rows:[] ,through:400},1,155).points[0].value),'Missing seed fabricated');
                   check(Number.isNaN(f([{time:1,close:NaN}],{rows:source,through:400},1,400).points[0].value),'Invalid price accepted');
+                  const adjusted={rows:source.map(r=>({...r,close:r.close/2,line:r.line/2,signal:r.signal/2})),through:400,splitAdjusted:true,basisAsOf:400,adjustments:[{effective_at:new Date(300000).toISOString(),split_from:1,split_to:2}]};
+                  near(f(samples,adjusted,1,155).points[0].value,projected.points[0].value,'Raw chart restored from adjusted source');
+                  near(f(samples.map(r=>({...r,close:r.close/2})),adjusted,1,155,true).points[0].value,projected.points[0].value/2,'Adjusted chart/source parity');
+                  const rawWithBasis={rows:source,through:400,basisAsOf:400,adjustments:adjusted.adjustments};
+                  near(f(samples.map(r=>({...r,close:r.close/2})),rawWithBasis,1,155,true).points[0].value,projected.points[0].value/2,'Intraday source on adjusted chart');
 
                   // Fixture at the HTTP contract seam; production loader,
                   // React controls and native chart renderer remain real.
@@ -64,6 +69,7 @@ class FormingMacdBrowserTests(unittest.TestCase):
                   check(rejected,'Repeated cursor accepted');
                   window.fetch=async(input,init)=>{
                     const url=new URL(String(input),location.origin);
+                    if(url.pathname==='/api/trading/canvas-chart/macd-source')return new Response(JSON.stringify({rows:source.map(r=>({...r,start:r.start+1787300000,end:r.end+1787300000})),through:1787301180,splitAdjusted:true,adjustments:[]}),{status:200});
                     if(url.pathname!=='/api/trading/canvas-chart/history')return nativeFetch(input,init);
                     const tf=url.searchParams.get('timeframe'),d={'1s':1,'5s':5,'1m':60,'5m':300}[tf];
                     window.macdRequests.push(tf);
@@ -126,7 +132,8 @@ class FormingMacdBrowserTests(unittest.TestCase):
                 page.get_by_role('button', name='MACD difference · 1s,5s,1m', exact=True).click()
                 self.assertTrue(page.get_by_label('MACD source 1s', exact=True).is_checked())
                 page.get_by_label('MACD source 1d', exact=True).check()
-                page.get_by_text('1d: QMD does not provide MACD for this timeframe yet.', exact=False).wait_for(state='visible')
+                self.assertTrue(page.get_by_label('MACD source 1d', exact=True).is_checked())
+                page.wait_for_function("JSON.parse(localStorage.getItem('macd-test.forming-macd')).timeframes.includes('1d')")
                 page.get_by_label('MACD source 1d', exact=True).uncheck()
                 page.keyboard.press('Escape')
                 pane_close.click()
@@ -136,6 +143,18 @@ class FormingMacdBrowserTests(unittest.TestCase):
                 page.get_by_label('Multi-timeframe MACD difference', exact=True).check()
                 pane_close.wait_for(state='visible')
                 self.assertEqual(page.evaluate("JSON.parse(localStorage.getItem('macd-test.forming-macd')).timeframes"), ['1s', '5s', '1m'])
+                page.get_by_role('button', name='Configure multi-timeframe MACD', exact=True).click()
+                for tf in ['1d', '1w', '1mo', '1y']:
+                    page.get_by_label(f'MACD source {tf}', exact=True).check()
+                for tf in ['1s', '5s', '1m']:
+                    page.get_by_label(f'MACD source {tf}', exact=True).uncheck()
+                page.keyboard.press('Escape')
+                page.get_by_role('button', name=re.compile(r'^Indicators')).click()
+                if page.get_by_role('button', name='Expand legend', exact=True).count():
+                    page.get_by_role('button', name='Expand legend', exact=True).last.click()
+                for tf in ['1d', '1w', '1mo', '1y']:
+                    page.get_by_role('button', name=f'Configure MACD − signal · {tf}', exact=True).wait_for(state='visible')
+                page.screenshot(path=str(output / 'macd-four-calendar-lines.png'))
                 page.evaluate('window.macdRoot.unmount()')
                 (output / 'result.json').write_text(json.dumps({'vectors': 9, 'themes': ['light', 'dark'], 'scales': [.8, 1, 1.25], 'errors': errors}), encoding='utf-8')
                 self.assertEqual(errors, [])

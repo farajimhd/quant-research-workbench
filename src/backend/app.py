@@ -6291,6 +6291,20 @@ def trading_canvas_chart_forming(symbol: str, timeframe: str, as_of: str) -> dic
         raise _qmd_http_exception(exc) from exc
 
 
+@app.get("/api/trading/canvas-chart/macd-source")
+def trading_canvas_chart_macd_source(symbol: str, timeframe: str, as_of: str) -> dict[str, Any]:
+    from src.backend.chart_macd import load_calendar_macd
+    ticker = symbol.strip().upper()
+    if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker) or timeframe not in {"1d", "1w", "1mo", "1y"}:
+        raise HTTPException(status_code=400, detail="Invalid MACD symbol or calendar timeframe")
+    try:
+        return load_calendar_macd(ticker, timeframe, as_of)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except QmdServiceError as exc:
+        raise _qmd_http_exception(exc) from exc
+
+
 @app.get("/api/trading/canvas-chart/history")
 @app.get("/api/trading/canvas-live-chart/history", include_in_schema=False)
 def trading_canvas_live_chart_history(

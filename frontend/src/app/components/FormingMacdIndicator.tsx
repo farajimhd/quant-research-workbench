@@ -36,7 +36,7 @@ export function useFormingMacd(storageKey: string, symbol: string, chartTimefram
   const [loaded, setLoaded] = useState<{ key: string; values: Partial<Record<MacdTimeframe, Loaded>> }>({ key: '', values: {} });
   const cache = useRef(loaded);
   const matchingPayload = !payloadTimeframe || payloadTimeframe === chartTimeframe;
-  usePollingTask({ enabled: settings.enabled && first !== undefined && matchingPayload && Number.isFinite(cutoff) && !splitAdjusted,
+  usePollingTask({ enabled: settings.enabled && first !== undefined && matchingPayload && Number.isFinite(cutoff),
     restartKey: identity, intervalMs: 1000, initialDelayMs: 0,
     task: async signal => {
       for (const tf of settings.timeframes) {
@@ -46,7 +46,7 @@ export function useFormingMacd(storageKey: string, symbol: string, chartTimefram
         // Back off failed reads; one active request per chart avoids a
         // request fan-out across all selected timeframes during recovery.
         let result: Loaded;
-        try { result = { source: await loadMacdSource(symbol, tf, first!, cutoff, signal), at: cutoff }; }
+        try { result = { source: await loadMacdSource(symbol, tf, first!, cutoff, signal, splitAdjusted), at: cutoff }; }
         catch (error) {
           if (signal.aborted) return;
           result = { error: error instanceof Error ? error.message : String(error), retryAfter: Date.now() + 15000, at: cutoff };
@@ -60,23 +60,24 @@ export function useFormingMacd(storageKey: string, symbol: string, chartTimefram
   const values = loaded.key === identity ? loaded.values : {};
   const projected = useMemo(() => settings.timeframes.map(tf => {
     const item = loaded.key === identity ? loaded.values[tf] : undefined;
-    const result = item?.source && matchingPayload && !splitAdjusted
-      ? projectFormingMacd(candles, item.source, chartSeconds, cutoff) : { points: [], missing: 0 };
+    const result = item?.source && matchingPayload
+      ? projectFormingMacd(candles, item.source, chartSeconds, cutoff, splitAdjusted) : { points: [], missing: 0 };
     return { tf, ...result };
   }), [selection, loaded, identity, candles, chartSeconds, cutoff, matchingPayload, splitAdjusted]);
   const status = (tf: MacdTimeframe) => {
-    if (splitAdjusted) return 'Unavailable: adjusted chart prices cannot be mixed with unadjusted intraday MACD.';
     if (!matchingPayload) return 'Waiting for chart timeframe';
     if (values[tf]?.error) return values[tf]!.error!;
     if (!values[tf]?.source) return 'Loading canonical MACD…';
     const result = projected.find(row => row.tf === tf)!;
-    return result.missing ? `${result.points.length - result.missing} points · ${result.missing} unavailable (seed or source cutoff)` : `${result.points.length} points`;
+    const seed = values[tf]?.source?.provenance;
+    const seedStatus = seed && seed.periods < 35 ? ` · Short history: ${seed.periods} completed source candles` : '';
+    return (result.missing ? `${result.points.length - result.missing} points · ${result.missing} unavailable (seed or source cutoff)` : `${result.points.length} points`) + seedStatus;
   };
   const series = useMemo(() => settings.enabled ? projected.map(({ tf, points }) => ({
     column: `forming_macd_difference_${tf}`, displayItemId: MACD_DIFFERENCE_ID,
     label: `MACD − signal · ${tf}`, axisTitle: `MACD Δ ${tf}`, paneKey: MACD_DIFFERENCE_PANE,
     chartRole: 'forming-macd-difference', style: 'line' as const, lineWidth: 2,
-    emptyMessage: splitAdjusted || values[tf]?.error ? 'Unavailable' : values[tf]?.source ? 'Seed unavailable' : 'Loading…',
+    emptyMessage: values[tf]?.error ? 'Unavailable' : values[tf]?.source ? 'Seed unavailable' : 'Loading…',
     color: `var(--canvas-link-${palette[MACD_TIMEFRAMES.indexOf(tf) % palette.length]})`,
     lineStyle: MACD_TIMEFRAMES.indexOf(tf) >= palette.length ? 'dashed' as const : 'solid' as const,
     data: points,
@@ -89,7 +90,7 @@ export function useFormingMacd(storageKey: string, symbol: string, chartTimefram
         onChange={event => change({ timeframes: MACD_TIMEFRAMES.filter(candidate => candidate === tf ? event.target.checked : settings.timeframes.includes(candidate)) })} />{tf}</label>)}
     </div></fieldset>
     <p>Each line is forming MACD minus forming signal in price units, sampled at the chart candle’s close or current cursor. Previews never compound or borrow a future candle close. QMD’s completed MACD history supplies the seed.</p>
-    <p>Daily and longer source MACD is currently unavailable from QMD. Split-adjusted chart prices require a matching MACD authority.</p>
+    <p>Calendar MACD uses canonical daily closes, adjusted before weekly, monthly, or yearly aggregation. Values use the chart’s price basis.</p>
     {settings.enabled && <ul className="forming-macd-status" aria-live="polite">{settings.timeframes.map(tf => <li key={tf}><strong>{tf}</strong>: {status(tf)}</li>)}</ul>}
     <div><Button type="button" onClick={() => { change({ enabled: false }); setOpen(false); }}>Remove oscillator</Button></div>
   </div>;
@@ -97,7 +98,7 @@ export function useFormingMacd(storageKey: string, symbol: string, chartTimefram
     checkbox: <div className="forming-macd-menu-row"><label className="chart-setting-row"><span>Multi-timeframe MACD difference</span>
       <input type="checkbox" aria-label="Multi-timeframe MACD difference" checked={settings.enabled} onChange={event => change({ enabled: event.target.checked })} /></label>
       <button className="toolbar-button" type="button" onClick={() => setOpen(true)} aria-label="Configure multi-timeframe MACD">Configure</button></div>,
-    controls: <>{settings.enabled && <button className="toolbar-button" type="button" onClick={() => setOpen(true)} title={settings.timeframes.map(tf => `${tf}: ${status(tf)}`).join('\n')}>MACD difference · {selection}{settings.timeframes.some(tf => values[tf]?.error) || splitAdjusted ? ' · Unavailable' : settings.timeframes.some(tf => !values[tf]?.source) ? ' · Loading' : ''}</button>}
+    controls: <>{settings.enabled && <button className="toolbar-button forming-macd-trigger" type="button" onClick={() => setOpen(true)} title={settings.timeframes.map(tf => `${tf}: ${status(tf)}`).join('\n')}>MACD difference · {selection}{settings.timeframes.some(tf => values[tf]?.error) ? ' · Unavailable' : settings.timeframes.some(tf => !values[tf]?.source) ? ' · Loading' : ''}</button>}
       {open && <Modal title="Multi-timeframe MACD difference" onClose={() => setOpen(false)}>{editor}</Modal>}</>,
   };
 }
