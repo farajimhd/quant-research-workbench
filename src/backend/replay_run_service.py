@@ -2854,6 +2854,17 @@ class ReplayRunController:
         names = sorted({_ticker(row['ticker']) for row in self._selected_assignments()})
         days = market_sessions(self.definition.session_date,
                                self.definition.final_session_date or self.definition.session_date)
+        parameters = (self.definition.configuration_revision['payload'].get('strategy') or {}).get('parameters') or {}
+        if parameters.get('vwap_ladder_contract'):
+            from .filtered_v7_preparation import prepare
+            async def progress(done, total, detail):
+                if getattr(self, '_stop_requested', False):
+                    raise asyncio.CancelledError('Filtered V7 preparation stopped')
+                self._preparation_stage = detail
+                self._preparation_completed_units = done
+                self._preparation_total_units = total
+                await self._publish(force=True)
+            await prepare(names, days, progress)
         self._preparation_stage = 'level_book_coverage'
         self._preparation_completed_units = 0
         self._preparation_total_units = len(names) * len(days)
