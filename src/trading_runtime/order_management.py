@@ -231,6 +231,7 @@ class OrderGroupSnapshot:
     r1_initial_stop: float | None = None
     r1_actual_entry_average: float | None = None
     r1_stop_error: str = ""
+    tight_reentry_stop: float | None = None
     high_water_price: float = 0.0
     low_water_price: float = 0.0
     protection_task: asyncio.Task[None] | None = None
@@ -308,6 +309,7 @@ class _ManagedOrderGroup:
             r1_initial_stop=(self.intent.invalidation_price if self.intent.metadata.get('r1_stop_bounds') else None),
             r1_actual_entry_average=self.intent.metadata.get('r1_actual_entry_average'),
             r1_stop_error=str(self.intent.metadata.get('r1_stop_error') or ''),
+            tight_reentry_stop=(self.intent.invalidation_price if self.intent.metadata.get('tight_reentry_stop') else None),
             fill_role=fill_role,
             broker_order_id=broker_order_id,
             slice_id=slice_id,
@@ -2872,26 +2874,33 @@ class OrderManagementEngine:
         return snapshot
 
     async def _reconcile_r1_entry_stop(self, group, order_id, quantity, average):
-        """Rebase only R1 acquisition stops to actual cumulative fill cost.
+        """Rebase opted-in R1 or tight-reentry stops to actual cumulative fill cost.
 
         Cumulative per-root evidence is persisted with the intent, so partial
         fills, duplicate updates and restart do not double-count notional.
         This is entry reconciliation, never subsequent market-price trailing.
         """
-        bounds = group.intent.metadata.get('r1_stop_bounds')
+        tight = group.intent.metadata.get('tight_reentry_stop')
+        bounds = group.intent.metadata.get('r1_stop_bounds') or tight
         if not bounds or str(group.intent.action) != 'enter_long':
             return
         from .r1_ladder import stop_price
         if not math.isfinite(average) or average <= 0:
             raise ValueError('R1 actual-fill stop requires a positive broker average fill price')
-        fills = dict(group.intent.metadata.get('r1_entry_fill_costs') or {})
+        cost_key = 'tight_reentry_fill_costs' if tight else 'r1_entry_fill_costs'
+        average_key = 'tight_reentry_average' if tight else 'r1_actual_entry_average'
+        event_prefix = 'tight_reentry' if tight else 'r1'
+        fills = dict(group.intent.metadata.get(cost_key) or {})
         prior = fills.get(order_id) or {}
         if quantity < prior.get('quantity', 0):
             return
         fills[order_id] = dict(quantity=quantity, notional=quantity*average)
         total_quantity = sum(item['quantity'] for item in fills.values())
         average = sum(item['notional'] for item in fills.values())/total_quantity
-        desired = stop_price(average, float(bounds['swing_lower']), float(bounds['tick_size']))
+        desired = (math.floor((average-float(tight['tick_size']))/float(tight['tick_size'])+1e-9)*float(tight['tick_size'])
+                   if tight else stop_price(average, float(bounds['swing_lower']), float(bounds['tick_size'])))
+        if tight and not 0 < desired < average:
+            raise ValueError('Tight reentry stop is not representable below the fill')
         if desired is None or group.intent.metadata.get('r1_stop_error'):
             # A fill already exists: keep its broker protection, stop acquiring,
             # and surface a durable full-exit requirement to the strategy. Never
@@ -2910,11 +2919,11 @@ class OrderManagementEngine:
             replace(item, stop=replace(item.stop, price=desired)) for item in profile.slices))
         group.intent = replace(group.intent, invalidation_price=desired, protection_profile=profile,
             metadata={**group.intent.metadata, 'initial_stop': desired, 'active_stop': desired,
-                'confirmed_support_stop': desired, 'r1_entry_fill_costs': fills,
-                'r1_actual_entry_average': average})
+                'confirmed_support_stop': desired, cost_key: fills,
+                average_key: average})
         # Persist the desired repair authority before broker amendments. A
         # failed acknowledgement can then be retried without losing the cost.
-        self._transition(group, group.state, {'event':'r1_actual_fill_stop',
+        self._transition(group, group.state, {'event':event_prefix+'_actual_fill_stop',
             'average_fill_price':average, 'filled_quantity':total_quantity, 'stop_price':desired})
         for order in await self.broker.live_orders():
             broker_id = str(order.orderId)
@@ -2938,7 +2947,7 @@ class OrderManagementEngine:
                 _require_modify_acknowledgement(response)
                 self._record_protection(group, replacement, phase='effective', broker_order_id=broker_id)
             group.orders[index] = replacement
-        self._transition(group, group.state, {'event':'r1_actual_fill_stop_reconciled', 'stop_price':desired})
+        self._transition(group, group.state, {'event':event_prefix+'_actual_fill_stop_reconciled', 'stop_price':desired})
 
     async def reconcile_protection(self, group: _ManagedOrderGroup) -> dict[str, Any]:
         # Portfolio grants this capability only to the isolated threshold backtest.

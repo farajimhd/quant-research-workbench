@@ -1,4 +1,5 @@
 import asyncio
+from math import floor
 from dataclasses import replace
 
 import pytest
@@ -13,13 +14,15 @@ from src.trading_runtime.r1_ladder import stop_price
 from src.trading_runtime.ibkr_schema import OPEN_ORDER_STATUSES
 
 
-@pytest.mark.parametrize('entry,swing,fills,canonical', [
-    (2.,1.95,[(1.99,100.)],False),
-    (2.1,1.5,[(2.05,40.),(1.9,60.)],False),
-    (2.1,1.5,[(1.9,40.),(2.05,60.)],True),
-    (2.1,1.5,[(2.005,40.)],False),
+@pytest.mark.parametrize('entry,swing,fills,canonical,tight', [
+    (2.,1.95,[(1.99,100.)],False,False),
+    (2.1,1.5,[(2.05,40.),(1.9,60.)],False,False),
+    (2.1,1.5,[(1.9,40.),(2.05,60.)],True,False),
+    (2.1,1.5,[(2.005,40.)],False,False),
+    (2.1,1.5,[(2.005,40.),(2.04,60.)],False,True),
+    (2.1,1.5,[(2.04,40.),(2.005,60.)],True,True),
 ])
-def test_actual_partial_fills_rebase_fixed_stop_and_repair(tmp_path,entry,swing,fills,canonical):
+def test_actual_partial_fills_rebase_fixed_stop_and_repair(tmp_path,entry,swing,fills,canonical,tight):
     async def run():
         broker = SimulatedBrokerAdapter(['DU1'],mode=TradingMode.BACKTEST)
         manager,journal = await helpers.OrderManagementPolicyTests()._manager(
@@ -35,6 +38,10 @@ def test_actual_partial_fills_rebase_fixed_stop_and_repair(tmp_path,entry,swing,
                 ProtectionSlice('all',1.,StopRule(StopRuleType.FIXED_PRICE,price=initial_stop),profit_target_price=3.),)),
             metadata={**request.metadata,'r1_stop_bounds':dict(swing_lower=swing,tick_size=.01),
                       'mandatory_broker_target':True})
+        if tight:
+            metadata=dict(request.metadata);metadata.pop('r1_stop_bounds')
+            request=replace(request,metadata={**metadata,'tight_reentry_stop':dict(tick_size=.01)})
+        cost_average_key='tight_reentry_average' if tight else 'r1_actual_entry_average'
         try:
             snap = await manager.submit_intent(helpers.portfolio_approved(journal,request),account_id='DU1',event=None)
             group = manager._groups[snap.group_id]
@@ -49,7 +56,7 @@ def test_actual_partial_fills_rebase_fixed_stop_and_repair(tmp_path,entry,swing,
                 else:
                     updated = await manager.on_order_update(order)
                 quantity+=size;notional+=price*size
-                desired=stop_price(notional/quantity,swing,.01)
+                desired=(floor((notional/quantity-.01)/.01+1e-9)*.01 if tight else stop_price(notional/quantity,swing,.01))
                 if desired is None:
                     assert updated.r1_stop_error == 'actual_fill_stop_not_representable'
                     desired=initial_stop
@@ -57,19 +64,20 @@ def test_actual_partial_fills_rebase_fixed_stop_and_repair(tmp_path,entry,swing,
                     assert current_root.order_status == helpers.OrderStatus.CANCELLED
                 else:
                     assert updated.r1_stop_error == ''
-                assert updated.r1_initial_stop == pytest.approx(desired)
-                assert updated.r1_actual_entry_average == pytest.approx(notional/quantity)
+                assert (updated.tight_reentry_stop if tight else updated.r1_initial_stop) == pytest.approx(desired)
+                if not tight:
+                    assert updated.r1_actual_entry_average == pytest.approx(notional/quantity)
                 assert group.intent.invalidation_price == pytest.approx(desired)
-                assert group.intent.metadata['r1_actual_entry_average'] == pytest.approx(notional/quantity)
+                assert group.intent.metadata[cost_average_key] == pytest.approx(notional/quantity)
                 stops=[x for x in await broker.live_orders() if group.broker_order_roles.get(str(x.orderId))=='protective_stop'
                        and x.order_status in OPEN_ORDER_STATUSES]
                 assert stops and all(x.auxPrice == pytest.approx(desired) for x in stops)
                 await manager.on_order_update(order)  # Duplicate cannot change cumulative cost.
-                assert group.intent.metadata['r1_actual_entry_average'] == pytest.approx(notional/quantity)
+                assert group.intent.metadata[cost_average_key] == pytest.approx(notional/quantity)
                 if canonical and quantity < 100:
                     await manager.recover()
                     group=manager._groups[snap.group_id]
-                    assert group.intent.metadata['r1_actual_entry_average'] == pytest.approx(notional/quantity)
+                    assert group.intent.metadata[cost_average_key] == pytest.approx(notional/quantity)
             stop=next(x for x in await broker.live_orders() if group.broker_order_roles.get(str(x.orderId))=='protective_stop' and x.order_status in OPEN_ORDER_STATUSES)
             await broker.cancel_order('DU1',str(stop.orderId))
             await manager.reconcile_protection(group)
