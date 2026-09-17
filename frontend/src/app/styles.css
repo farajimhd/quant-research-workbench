@@ -8701,16 +8701,20 @@ button {
   overflow-x: auto;
 }
 
-.performance-active-positions { padding: 12px; border-bottom: 1px solid var(--border); }
-.performance-active-positions > header { display: flex; gap: 10px; align-items: baseline; margin-bottom: 8px; }
+.performance-active-positions { min-width: 0; padding: 10px 12px; background: var(--surface); border-right: 1px solid var(--border); }
+.performance-active-positions > header { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; margin-bottom: 8px; font-size: 11px; }
 .performance-active-positions > header span, .performance-active-positions p { color: var(--muted-foreground); font-size: 11px; }
-.performance-active-position { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--border); font-size: 12px; }
-.performance-active-position > strong { display: grid; gap: 4px; }
+.performance-active-position-list { max-height: 220px; overflow: auto; }
+.performance-active-position { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; width: 100%; padding: 10px 4px; border: 0; border-top: 1px solid var(--border); color: var(--foreground); background: transparent; text-align: left; font: inherit; font-size: 12px; cursor: pointer; }
+.performance-active-position:hover { background: var(--muted); }
+.performance-active-position:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
 .performance-active-position small { color: var(--muted-foreground); font-size: 10px; font-weight: 400; }
-.performance-active-position ol { display: flex; flex-wrap: wrap; flex: 1; gap: 16px; padding: 0; margin: 0; list-style-position: inside; font-size: 11px; }
-.performance-active-position li { padding: 4px; }
-.performance-active-position button { padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--foreground); background: var(--surface); }
-.performance-active-position button:hover { border-color: var(--primary); color: var(--primary); }
+.performance-position-identity { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; overflow-wrap: anywhere; }
+.performance-position-pnl { display: grid; gap: 3px; text-align: right; font-variant-numeric: tabular-nums; }
+.performance-position-facts { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, .7fr) minmax(0, 1fr); gap: 8px; font-variant-numeric: tabular-nums; }
+.performance-position-facts > span { display: grid; gap: 3px; overflow-wrap: anywhere; }
+.performance-position-facts > span:not(:first-child) { text-align: right; }
+
 @container (max-width: 850px) { .performance-kpi-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 @container (max-width: 540px) { .performance-kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @container (max-width: 380px) { .performance-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
@@ -8737,7 +8741,7 @@ button {
 .performance-overview-grid {
   display: grid;
   gap: 1px;
-  grid-template-columns: minmax(300px, 1.65fr) minmax(230px, 1fr);
+  grid-template-columns: minmax(260px, 1fr) minmax(300px, 1.65fr);
   min-height: 210px;
 }
 .performance-chart-card,
@@ -8749,7 +8753,7 @@ button {
   min-width: 0;
   padding: 10px 12px;
 }
-.performance-chart-card { border-right: 1px solid var(--border); }
+.performance-chart-card { border-right: 0; }
 .performance-chart-card > header,
 .performance-diagnosis > header,
 .strategy-comparison-chart > header,

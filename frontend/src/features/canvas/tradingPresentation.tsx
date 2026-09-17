@@ -846,26 +846,31 @@ export function TradingJournalPreview({ data, onSymbolSelect, settings }: { data
       <JournalMetric detail={extrema?.extrema_complete ? "Largest marked-equity decline from a prior peak, including fees and open P&L; never resets on close." : "Closed-trade drawdown only; intratrade history was not recorded in this run."} label={extrema?.extrema_complete ? "Max drawdown" : "Closed-trade drawdown"} tone={Number(drawdown || 0) > 0 ? "negative" : "neutral"} value={drawdown == null ? "—" : money(drawdown)} />
     </div>
     {extrema?.max_unrealized_pnl_basis === "unavailable_historical_path" ? <div className="trading-disclosure">This saved run predates retained intratrade metrics. A new backtest records peak/worst unrealized and marked-equity drawdown.</div> : null}
-    <section className="performance-active-positions" aria-label="Active position lifecycles">
-      <header><strong>Active positions</strong><span>{data ? openLifecycles.length : "—"} open</span></header>
-      {openLifecycles.length ? openLifecycles.map(lifecycle => {
-        const row = performanceLifecycleRow(data!,lifecycle);
-        const {symbol,_position:position,_executions:executions,_orders:orders} = row;
-        const pendingOrders = orders.filter(order => !terminalOrderState(String(order.lifecycle_state)));
-        const openingSide = String(lifecycle.side).toUpperCase() === 'SHORT' ? 'SELL' : 'BUY';
-        const phase = pendingOrders.some(order => String((nestedValue(order,'raw','canonical_metadata') as PreviewRow)?.execution_role) === 'exit')
-          ? 'Exit pending' : pendingOrders.some(order => String(order.side).toUpperCase() === openingSide) ? 'Building position' : 'Managing';
-        return <div className="performance-active-position" key={String(lifecycle.lifecycle_id)}>
-          <strong>{symbol} <small>{String(lifecycle.side)} · {String(lifecycle.current_quantity)} shares</small></strong>
-          <ol><li>Requested <MarketTime includeSeconds value={String(lifecycle.requested_at || "")} /></li><li>Opened <MarketTime includeSeconds value={String(lifecycle.opened_at || "")} /></li><li>{executions.length} fills · {phase}</li></ol>
-          <span data-tone={numberTone(position?.unrealized_pnl)}>{signedMoney(position?.unrealized_pnl)}</span>
-          <button type="button" onClick={() => setSelectedLifecycle(String(lifecycle.lifecycle_id))}>View lifecycle</button>
-        </div>;
-      }) : <p>{data ? "No open positions. Completed lifecycles remain in Positions." : "Waiting for position data."}</p>}
-    </section>
     {selectedPosition ? <PositionLifecycleModal row={performanceLifecycleRow(data!,selectedPosition)} onClose={() => setSelectedLifecycle(null)} /> : null}
     <TradingTabs active={view} onChange={(value) => setView(value as typeof view)} tabs={tabs} />
-    {view === "overview" ? <div className="performance-overview-stack"><div className="performance-overview-grid"><section className="performance-chart-card"><header><div><strong>Net P&L trajectory</strong><span>Cumulative closed-episode P&L · ET</span></div><b data-tone={numberTone(summary.net_pnl)}>{summary.net_pnl == null ? "—" : signedMoney(summary.net_pnl)}</b></header><JournalAreaChart rows={report?.equity_curve ?? []} /></section><section className="performance-diagnosis"><header><strong>Edge snapshot</strong><span>Read together, never from win rate alone</span></header><div><JournalFact label="Average win" tone="positive" value={money(summary.average_win)} /><JournalFact label="Average loss" tone="negative" value={money(summary.average_loss)} /><JournalFact label="Largest win" tone="positive" value={money(summary.largest_win)} /><JournalFact label="Largest loss" tone="negative" value={money(summary.largest_loss)} /><JournalFact label="Average hold" value={summary.average_duration_seconds == null ? "—" : compactDuration(Number(summary.average_duration_seconds))} /><JournalFact label="Fees" tone={Number(summary.total_fees || 0) > 0 ? "negative" : "neutral"} value={money(summary.total_fees)} /></div></section></div><JournalPnlCandleChart candles={report?.pnl_candles?.[pnlTimeframe] ?? []} onTimeframeChange={setPnlTimeframe} timeframe={pnlTimeframe} /></div> : null}
+    {view === "overview" ? <div className="performance-overview-stack">
+      <div className="performance-overview-grid">
+        <section className="performance-active-positions" aria-label="Open positions">
+          <header><strong>Open positions</strong><span>{data ? openLifecycles.length : "—"}</span></header>
+          <div className="performance-active-position-list">
+            {openLifecycles.length ? openLifecycles.map(lifecycle => {
+              const {symbol, _position: position} = performanceLifecycleRow(data!, lifecycle);
+              return <button className="performance-active-position" key={String(lifecycle.lifecycle_id)} type="button" aria-label={`View ${symbol} position lifecycle`} onClick={() => setSelectedLifecycle(String(lifecycle.lifecycle_id))}>
+                <span className="performance-position-identity"><strong>{symbol}</strong><small>{String(lifecycle.side)}</small></span>
+                <span className="performance-position-pnl" data-tone={numberTone(position?.unrealized_pnl)}><small>Unrealized P&amp;L</small><strong>{position?.unrealized_pnl == null ? "—" : signedMoney(position.unrealized_pnl)}</strong></span>
+                <span className="performance-position-facts">
+                  <span><small>Opened</small><span><MarketTime includeSeconds value={String(lifecycle.opened_at || "")} /></span></span>
+                  <span><small>Qty</small><span>{formatCell(lifecycle.current_quantity, "quantity")}</span></span>
+                  <span><small>Avg. entry</small><span>{formatCell(lifecycle.entry_price, "entry_price")}</span></span>
+                </span>
+              </button>;
+            }) : <p role="status">{data ? "No open positions." : "Waiting for position data."}</p>}
+          </div>
+        </section>
+        <section className="performance-chart-card"><header><div><strong>Net P&L trajectory</strong><span>Cumulative closed-episode P&L · ET</span></div><b data-tone={numberTone(summary.net_pnl)}>{summary.net_pnl == null ? "—" : signedMoney(summary.net_pnl)}</b></header><JournalAreaChart rows={report?.equity_curve ?? []} /></section>
+      </div>
+      <JournalPnlCandleChart candles={report?.pnl_candles?.[pnlTimeframe] ?? []} onTimeframeChange={setPnlTimeframe} timeframe={pnlTimeframe} />
+    </div> : null}
     {view === "strategies" ? <div className="performance-strategy-view"><StrategyComparisonChart rows={strategyRows} /><TradingDataTable columns={["strategy", "revision", "trades", "net_pnl", "win_rate_pct", "expectancy", "profit_factor", "payoff_ratio", "max_drawdown"]} defaultSort="net_pnl" filterColumn="strategy" filterLabel="All strategies" rows={strategyRows} searchPlaceholder="Search strategies and revisions…" /></div> : null}
     {view === "trades" ? <TradingDataTable columns={settings.showRiskMultiple ? ["closed_at", "symbol", "side", "strategy", "revision", "setup", "quantity", "entry_price", "exit_price", "net_pnl", "risk_multiple", "duration", "exit_reason"] : ["closed_at", "symbol", "side", "strategy", "revision", "setup", "quantity", "entry_price", "exit_price", "net_pnl", "duration", "exit_reason"]} defaultSort="closed_at" filterColumn="strategy" filterLabel="All strategies" onSymbolSelect={onSymbolSelect} renderExpanded={(row) => <JournalEpisodeDetail row={row} />} rows={episodes} searchPlaceholder="Search positions, symbols, setups, exits…" /> : null}
     {view === "execution" ? <ExecutionJournalView execution={execution} /> : null}
