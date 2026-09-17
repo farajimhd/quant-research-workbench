@@ -6458,6 +6458,9 @@ class AssignedLongMomentumStrategy:
                 status = AssignmentStatus.MANAGING
             elif action in {"exit", "take_profit", "cover"}:
                 fill_role = str(getattr(snapshot, "fill_role", "") or "")
+                if assignment.parameters.get('pullback_hod_contract') == 'swing-rise-pullback-hod-v2' and incremental_fill > 0:
+                    from .pullback_hod import record_exit
+                    record_exit(state, snapshot.updated_at, aggregate_position_quantity)
                 if assignment.parameters.get('r1_ladder_contract') and incremental_fill > 0:
                     from .r1_ladder import record_exit
                     record_exit(state, snapshot.updated_at, fill_role, aggregate_position_quantity)

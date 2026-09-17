@@ -162,3 +162,94 @@ def test_candidate_preserves_source_filters_and_parent():
     assert profile['parameters']['historical_hod']['setup_minimum_session_relative_volume']==2.
     assert profile['parameters']['historical_hod']['setup_minimum_volume_ratio']==.5
     assert result['run_plans']['plans'][0]['allowed_environments']==['backtest']
+
+
+def rising_fixture():
+    host,a,o=fixture()
+    a.parameters['pullback_hod_contract']=P.RISE_CONTRACT
+    # Initial entry must work without a preceding high or pullback.
+    o.structural_detector_state['row']['local_swings']=o.structural_detector_state['row']['local_swings'][1:]
+    return host,a,o
+
+
+def test_rising_initial_entry_does_not_require_pullback_but_v1_stays_unchanged():
+    host,a,o=rising_fixture()
+    r=host.evaluate(a,o)
+    assert next(i for i in r.evaluation.intents if i.action=='enter_long').reason=='initial_swing_rise'
+    assert r.state['pullback_entry']['setup']['preceding_high'] is None
+    a.parameters['pullback_hod_contract']=P.CONTRACT
+    assert host.evaluate(a,o).evaluation.signals[0].reason=='preceding_pullback_high_unavailable'
+
+
+def test_actual_flat_exit_arms_reentry_not_a_partial_or_unfilled_exit():
+    from datetime import datetime,timezone
+    state=dict(pullback_entry=dict(confirmed_at=99.,setup=dict(hod=10.2)))
+    P.record_exit(state,datetime.fromtimestamp(101,timezone.utc),0)
+    assert 'pullback_last_exit' not in state
+    active=state['pullback_entry']
+    active.update(first_fill_at=100.,advanced=True,advance_peak=dict(price=10.2,at=100.5))
+    for remaining in (None,50):
+        P.record_exit(state,datetime.fromtimestamp(101,timezone.utc),remaining)
+        assert 'pullback_last_exit' not in state
+    P.record_exit(state,datetime.fromtimestamp(101,timezone.utc),0)
+    assert state['pullback_last_exit']['advanced']
+    assert state['pullback_last_exit']['at']==101.
+
+
+@pytest.mark.parametrize('old_low,deep_enough,allowed',[(False,True,True),(True,True,False),(False,False,False)])
+def test_pullback_reentry_requires_new_post_exit_low_and_held_peak(old_low,deep_enough,allowed):
+    host,a,o=rising_fixture()
+    now=o.observed_at.timestamp()
+    a.state['pullback_last_exit']=dict(at=now-2 if old_low else now-4,advanced=True,
+        peak=dict(price=10.12 if deep_enough else 10.,at=now-5),entry_at=now-8)
+    r=host.evaluate(a,o)
+    entries=[i for i in r.evaluation.intents if i.action=='enter_long']
+    assert bool(entries)==allowed
+    if allowed:
+        assert entries[0].reason=='pullback_reentry'
+        assert r.state['pullback_entry']['setup']['prior_exit']==a.state['pullback_last_exit']
+
+
+def test_unadvanced_loss_allows_new_initial_rise_instead_of_global_lockout():
+    host,a,o=rising_fixture()
+    a.state['pullback_last_exit']=dict(at=o.observed_at.timestamp()-4,advanced=False,peak=None)
+    assert next(i for i in host.evaluate(a,o).evaluation.intents if i.action=='enter_long').reason=='initial_swing_rise'
+
+
+def test_advance_uses_actual_fill_and_excludes_prefill_candle_extreme():
+    from types import SimpleNamespace
+    from datetime import datetime,timezone
+    o=SimpleNamespace(price=10.,average_price=10.,observed_at=datetime.fromtimestamp(101,timezone.utc),
+                      evaluation_events=('quote',),changed_source_ids=())
+    active={}
+    market=dict(bar=candle(101,10.,11.,10.,10.))
+    P.observe_advance(active,o,market,.01,True)
+    assert 'advanced' not in active
+    active['first_fill_at']=100.5
+    P.observe_advance(active,o,market,.01,True)
+    assert not active.get('advanced')
+    o.price=10.02
+    P.observe_advance(active,o,market,.01,False)
+    assert not active.get('advanced')  # A quote cannot invent a post-fill trade.
+    o.evaluation_events=('market_data_update',)
+    o.changed_source_ids=('market.last_price',)
+    P.observe_advance(active,o,market,.01,False)
+    assert active['advanced'] and active['advance_peak']['price']==10.02
+
+
+def test_rise_candidate_changes_only_entry_contract_and_preserves_v1():
+    from src.backend import pullback_hod_candidate as C
+    profile=dict(profile_id=C.PROFILE,parameters=dict(pullback_hod_contract=P.CONTRACT,
+        pullback_hod=dict(P.DEFAULTS),liquidity_admission=dict(minimum_price=1.,maximum_price=20.)),
+        lifecycle=dict(initial_entry=dict(add_steps=[]),trading_behavior=dict(eligible_sessions=['premarket'])))
+    baseline=dict(candidate_id=C.RISE_BASELINE_ID,content_hash=C.RISE_BASELINE_HASH,
+        payload=dict(strategy=dict(profiles=[profile]),run_plans=dict(plans=[dict(
+            run_plan_id=C.PLAN,allowed_environments=['backtest'])])))
+    before=deepcopy(baseline)
+    payload=C.prepare_rise_payload(baseline,{})
+    result=payload['strategy']['profiles'][-1]
+    assert baseline==before and payload['strategy']['profiles'][0]==profile
+    expected=deepcopy(profile['parameters']);expected['pullback_hod_contract']=P.RISE_CONTRACT
+    assert result['parameters']==expected
+    assert result['lifecycle']==profile['lifecycle']
+    assert payload['run_plans']['plans'][0]['allowed_environments']==['backtest']
