@@ -1010,7 +1010,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const hindsight = useHindsightPositions(ticker, hindsightSessionDate);
   const hindsightActions = useHindsightActions(ticker, hindsightSessionDate, (start, end) => {
     executeViewportCommand(() => priceChartRef.current?.timeScale().setVisibleRange({ from: start as Time, to: end as Time }));
-  });
+  }, hindsight.lookbackSeconds);
   const hindsightActionsRef = useRef(hindsightActions);
   hindsightActionsRef.current = hindsightActions;
   const hindsightActionsPrimitiveRef = useRef<HindsightActionsPrimitive | null>(null);
