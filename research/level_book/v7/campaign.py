@@ -31,6 +31,7 @@ from .campaign_source import literal,coverage_sql,bars_sql,decode,source_hash
 VERSION='all-tradable-v7-mle-campaign-1'
 TRACKED=('research/level_book/v7/campaign.py','research/level_book/v7/campaign_source.py','research/level_book/v7/campaign_store.py',
  'scripts/build_level_book_v7_campaign.py','src/market_engine/streaming_level_book.py',
+ 'src/market_engine/derived_trade_policy.py',
  'src/market_engine/reaction_band.py','src/market_engine/reaction_center.py',
  'src/market_engine/historical_session_levels.py','src/market_engine/historical_level_checkpoint.py',
  'src/market_engine/level_book_store.py','src/backend/swing_book_source.py','src/backend/swing_book_indexed_source.py',

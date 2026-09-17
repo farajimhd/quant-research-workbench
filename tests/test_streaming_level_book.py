@@ -19,7 +19,7 @@ def engine(*,historical=False):
 
 def bars(stream):
     prices=[10,10.04,10.08,10.12,10.08,10.04,10,10.04,10.08,10.12,10.08,10.04,10]*2
-    return [dict(t=stream.start+i+1,open=p,high=p,low=p,close=p,volume=100) for i,p in enumerate(prices)]
+    return [dict(t=stream.start+300+i+1,open=p,high=p,low=p,close=p,volume=100) for i,p in enumerate(prices)]
 
 
 def test_new_levels_wait_for_repeated_confirmations_and_start_at_available_time():

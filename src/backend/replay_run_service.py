@@ -1936,6 +1936,7 @@ class ReplayRunController:
                 "frame_cursor": deepcopy(self._frame_cursor),
                 "processed_frames": self._processed_frames,
                 "experimental_session_highs": deepcopy(getattr(self, "_experimental_session_highs", {})),
+                "derived_trade_policy": "exclude-trades-before-0405-et-v1",
                 "completed_range_windows": {ticker: window.checkpoint() for ticker, window
                     in getattr(self, "_completed_range_windows", {}).items()},
                 "level_load_contract": LEVEL_LOAD_CONTRACT,
@@ -3148,6 +3149,9 @@ class ReplayRunController:
         self._source_cursor = dict(controller.get("source_cursor") or {})
         self._frame_cursor = dict(controller.get("frame_cursor") or {})
         self._processed_frames = int(controller.get("processed_frames") or 0)
+        from src.market_engine.derived_trade_policy import POLICY
+        if controller.get('derived_trade_policy') != POLICY:
+            raise ValueError('Replay checkpoint predates the 04:05 derived-trade policy; start a new run')
         self._experimental_session_highs = deepcopy(controller.get("experimental_session_highs") or {})
         from src.trading_runtime.completed_candle_range import CompletedCandleRange
         if self._entry_range_policy().get('require_range_context') and 'completed_range_windows' not in controller:
@@ -3492,6 +3496,23 @@ class ReplayRunController:
         configuration = self.definition.configuration_revision['payload'].get('strategy') or {}
         parameters = configuration.get('parameters') or {}
         historical_hod = bool(parameters.get('historical_hod_contract'))
+        if parameters.get('vwap_ladder_contract') and frame.timeframe == '100ms':
+            from types import SimpleNamespace
+            from src.market_engine.derived_trade_policy import eligible_trade_time
+            from src.trading_runtime.vwap_resistance_ladder import observe_market
+            if not eligible_trade_time(frame.as_of.timestamp()-.1):
+                return
+            snapshot = await self._experimental_structure_snapshot(frame.ticker, frame.as_of, 'frame')
+            stream = self._candle_detector_states.setdefault(frame.ticker, {})
+            market = stream.setdefault('structural_recovery', {})
+            saved = dict(market.get('historical_hod_observation', {}))
+            tracker = deepcopy(saved.get('vwap_ladder_market', {}))
+            observe_market(SimpleNamespace(observed_at=frame.as_of, price=frame.bar['close'],
+                structural_support_levels=(), structural_transition_levels=(),
+                structural_resistance_levels=tuple(snapshot['unified_levels'])), tracker)
+            saved['vwap_ladder_market'] = tracker
+            market['historical_hod_observation'] = saved
+            return
         if historical_hod and frame.timeframe == '5s':
             from src.trading_runtime.historical_hod import observe_frame
             stream = self._candle_detector_states.setdefault(frame.ticker, {})
@@ -5148,7 +5169,7 @@ class ReplayRunController:
         if not getattr(getattr(self, "definition", None), "experimental_structure_book", ""):
             return None
         local = at.astimezone(NEW_YORK)
-        if local.hour < 4 or local.hour >= 20:
+        if (local.hour, local.minute) < (4, 5) or local.hour >= 20:
             return None
         highs = getattr(self, "_experimental_session_highs", {})
         self._experimental_session_highs = highs

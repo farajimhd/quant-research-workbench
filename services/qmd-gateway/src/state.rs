@@ -126,7 +126,7 @@ impl SharedMarketState {
     }
 
     pub async fn apply_event(&self, event: &MarketEvent) -> Option<ScannerRowDelta> {
-        if event.is_delayed_trade_report() {
+        if event.is_excluded_from_derived_state() {
             return None;
         }
         let mut state = self.inner.write().await;

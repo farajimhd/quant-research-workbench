@@ -20,7 +20,10 @@ use tokio::task::JoinHandle;
 use tokio::time::{interval, sleep, Duration, Instant};
 
 pub const INTRADAY_BAR_SCHEMA_VERSION: u16 = 3;
+#[cfg(feature = "historical-campaign-v16")]
 pub const INTRADAY_BAR_CALCULATION_REVISION: &str = "qmd-family-bars-v3";
+#[cfg(not(feature = "historical-campaign-v16"))]
+pub const INTRADAY_BAR_CALCULATION_REVISION: &str = "qmd-family-bars-v4-0405-et";
 pub const BASE_RESOLUTION_US: i64 = 100_000;
 const SESSION_START_US: i64 = 4 * 60 * 60 * 1_000_000;
 const SESSION_END_US: i64 = 20 * 60 * 60 * 1_000_000;
@@ -1562,6 +1565,7 @@ impl IntradayBarWriter {
                 empty(condition_tokens) OR arrayAll(token -> has(known_tokens, token) AND (has(volume_tokens, token) OR (has(form_t_tokens, token) AND form_t_price_eligible)), condition_tokens) AS volume_eligible,
                 last_eligible AS price_eligible
               FROM {source} FINAL WHERE bitAnd(event_meta, 1) = 1{source_filter}
+                AND {trade_time_eligible}
               UNION ALL
               SELECT *, 'quote_bid' AS bar_family,
                 toFloat64(price_secondary_int) / if(bitAnd(event_meta, 4) != 0, 10000., 100.) AS price,
@@ -1587,6 +1591,8 @@ impl IntradayBarWriter {
             filter = filter,
             source_filter = source_filter,
             calculation_revision = INTRADAY_BAR_CALCULATION_REVISION,
+            trade_time_eligible = if cfg!(feature = "historical-campaign-v16") { "1" }
+                else { "(toHour(event_ts_local) * 3600 + toMinute(event_ts_local) * 60 + toSecond(event_ts_local)) >= 14700" },
             source_revision = escape_sql_string(&self.config.qmd_run_id),
         )
     }
@@ -2318,7 +2324,7 @@ mod tests {
 
     #[test]
     fn ordered_replay_matches_live_trade_bars_and_deduplicates() {
-        let start = Utc.with_ymd_and_hms(2026, 8, 21, 8, 0, 0).unwrap().timestamp_micros() as u64;
+        let start = Utc.with_ymd_and_hms(2026, 8, 21, 8, 5, 0).unwrap().timestamp_micros() as u64;
         let mut first = quote_event(start + 10_000, 1, 0, 40_000);
         first.event_meta = 3;
         let mut second = first.clone();

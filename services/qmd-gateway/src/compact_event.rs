@@ -184,8 +184,10 @@ impl CompactEventDecoder {
         let list = |values: &[u8]| format!("[{}]", values.iter().map(u8::to_string).collect::<Vec<_>>().join(","));
         let local_time = format!("fromUnixTimestamp64Micro(toInt64({alias}.sip_timestamp_us), 'America/New_York')");
         let seconds = format!("(toHour({local_time}) * 3600 + toMinute({local_time}) * 60 + toSecond({local_time}))");
-        format!("if(({seconds} < {REGULAR_SESSION_START_SECONDS} OR {seconds} >= {REGULAR_SESSION_END_SECONDS}) AND hasAny({tokens}, {}), NOT hasAny({tokens}, {}), NOT hasAny({tokens}, {}))",
-            list(&form_t_tokens), list(&extended_form_t_denied), list(&regular_denied))
+        let condition_rule = format!("if(({seconds} < {REGULAR_SESSION_START_SECONDS} OR {seconds} >= {REGULAR_SESSION_END_SECONDS}) AND hasAny({tokens}, {}), NOT hasAny({tokens}, {}), NOT hasAny({tokens}, {}))",
+            list(&form_t_tokens), list(&extended_form_t_denied), list(&regular_denied));
+        if cfg!(feature = "historical-campaign-v16") { condition_rule }
+        else { format!("({seconds} >= 14700 AND ({condition_rule}))") }
     }
 
     fn volume_token_rules(&self, rules: &TradeAggregationRules) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
@@ -836,7 +838,8 @@ impl CompactEventReferences {
             })
             .collect::<Vec<_>>();
         rows.sort();
-        rows.join("|")
+        if cfg!(feature = "historical-campaign-v16") { rows.join("|") }
+        else { format!("{}|exclude-trades-before-0405-et-v1", rows.join("|")) }
     }
 
     pub fn volume_eligible_trade_tokens(&self) -> Vec<u8> {
@@ -2454,7 +2457,7 @@ mod tests {
     fn volume_sql_token_rules_match_decoder_and_resolver_combinations() {
         let decoder = CompactEventDecoder::new([], [(1, 0), (2, 12), (3, 5), (4, 6), (5, 7), (6, 99)], [], []);
         let regular = Utc.with_ymd_and_hms(2026, 8, 19, 14, 0, 0).unwrap();
-        let extended = Utc.with_ymd_and_hms(2026, 8, 19, 8, 0, 0).unwrap();
+        let extended = Utc.with_ymd_and_hms(2026, 8, 19, 8, 5, 0).unwrap();
         for form_t_volume in [false, true] {
             let rules = TradeAggregationRules::new([
                 (0, TradeUpdateRule::regular()),
@@ -2481,6 +2484,7 @@ mod tests {
                 }
             }
             let sql = decoder.volume_eligibility_sql(&rules, "events");
+            if !cfg!(feature = "historical-campaign-v16") { assert!(sql.contains(">= 14700 AND")); }
             assert!(sql.contains("America/New_York"));
             assert!(sql.contains("< 34200 OR"));
             assert!(sql.contains(">= 57600"));

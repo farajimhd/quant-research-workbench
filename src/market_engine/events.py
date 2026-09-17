@@ -39,7 +39,8 @@ class TradeEvent:
     @property
     def price_eligible(self) -> bool:
         """Producer-owned price eligibility; synthetic events retain defaults."""
-        return self.raw.get("price_eligible") is not False
+        from .derived_trade_policy import eligible_trade_time
+        return eligible_trade_time(self.ts.timestamp()) and self.raw.get("price_eligible") is not False
 
 
 @dataclass(frozen=True, slots=True)

@@ -218,6 +218,8 @@ def _rule_stage_timeframes(stage: dict[str, Any]) -> set[str]:
 def strategy_rule_timeframes(parameters: dict[str, Any]) -> set[str]:
     """Return every derived-data timeframe referenced by active lifecycle rules."""
 
+    if parameters.get('vwap_ladder_contract'):
+        return {'100ms', '1s', '5s', '10s', '30s'}
     if parameters.get('macd_threshold_contract') or parameters.get('macd_r3_contract'):
         return {'100ms', '1s'}  # 1s produces rolling liquidity; MACD uses only 100ms.
     if parameters.get('historical_hod_contract'):
@@ -891,6 +893,9 @@ def resolve_long_momentum_parameters(
         configure(parameters)
     if parameters.get('r1_ladder_contract'):
         from .r1_ladder import configure
+        configure(parameters)
+    if parameters.get('vwap_ladder_contract'):
+        from .vwap_resistance_ladder import configure
         configure(parameters)
     if parameters.get('pullback_hod_contract'):
         from .pullback_hod import configure
@@ -2782,6 +2787,9 @@ class LongMomentumStrategyEngine:
                 assignment.parameters,
                 revision=self.revision,
             )
+        if parameters.get('vwap_ladder_contract'):
+            from .vwap_resistance_ladder import evaluate
+            return evaluate(self, assignment, observation, parameters, state)
         if parameters.get('pullback_hod_contract'):
             from .pullback_hod import evaluate
             return evaluate(self, assignment, observation, parameters, state)
@@ -6109,6 +6117,9 @@ class AssignedLongMomentumStrategy:
             state = dict(assignment.state)
             if str(intent.action) in {"enter_long", "enter_short"}:
                 state.pop("pending_capital_request", None)
+                if assignment.parameters.get('vwap_ladder_contract'):
+                    from .vwap_resistance_ladder import release_unfilled_episode
+                    release_unfilled_episode(state)
             if str(intent.action) == 'add_long' and intent.metadata.get('cash_tranche'):
                 active = deepcopy(state.get('historical_hod_entry') or {})
                 active['tranches_requested'] = int(intent.metadata['cash_tranche']['index'])
@@ -6121,6 +6132,9 @@ class AssignedLongMomentumStrategy:
                 self._assignments[key] = replace(assignment, state=state, updated_at=event_time)
                 return
             if str(intent.action) == "replace_profit_target":
+                if 'vwap_ladder_previous_target_moves' in intent.metadata:
+                    state['vwap_ladder_entry'] = dict(state['vwap_ladder_entry'],
+                        target_moves=intent.metadata['vwap_ladder_previous_target_moves'])
                 if assignment.strategy_revision >= 37:
                     state["pending_profit_target_advance"] = intent.metadata.get("ratchet_acceptance")
                 previous = float(intent.metadata.get("previous_profit_target") or 0)
@@ -6250,6 +6264,9 @@ class AssignedLongMomentumStrategy:
                 state = dict(assignment.state)
                 state.pop("pending_capital_request", None)
                 state.pop("pending_capital_reasons", None)
+                if intent.metadata.get('unreserved_cash_slice'):
+                    state['vwap_ladder_entry'] = dict(state['vwap_ladder_entry'],
+                        slice_notional=float(intent.metadata['unreserved_slice_notional']))
                 updated = replace(assignment, state=state)
                 self._assignments[key] = updated
                 self._campaigns.register(updated)
@@ -6382,6 +6399,9 @@ class AssignedLongMomentumStrategy:
                         "structural_profit_target_frontier",
                     ):
                         state.pop(field_name, None)
+                    if action == 'enter_long' and assignment.parameters.get('vwap_ladder_contract'):
+                        from .vwap_resistance_ladder import release_unfilled_episode
+                        release_unfilled_episode(state)
                     state["entries"] = max(0, int(state.get("entries") or 0) - 1)
                     state["last_entry_order_cancelled"] = {
                         "intent_id": str(getattr(snapshot, "intent_id", "") or ""),
@@ -6411,6 +6431,9 @@ class AssignedLongMomentumStrategy:
                 return
             if action in {"enter_long", "add_long", "enter_short", "add_short"}:
                 if action == 'enter_long' and incremental_fill > 0:
+                    if assignment.parameters.get('vwap_ladder_contract'):
+                        state['vwap_ladder_entry'] = dict(state['vwap_ladder_entry'],
+                            first_fill_at=snapshot.updated_at.timestamp())
                     if assignment.parameters.get('pullback_hod_contract'):
                         active = deepcopy(state.get('pullback_entry') or {})
                         active.setdefault('first_fill_at', snapshot.updated_at.timestamp())

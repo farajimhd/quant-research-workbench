@@ -124,6 +124,7 @@ def projection(engine,as_of,provenance,include_segments):
             side=1 if row['role']=='support' else -1 if row['role']=='resistance' else 0,role=row['role'],historical=row['historical'],
             transition_from=row.get('transition_from'),
             origin_session=row['origin_session'],book_version=VERSION,lifecycle='active',timeframes=['1s'],
+            input_policy=engine.input_policy,seed_input_policy=engine.seed_input_policy,
             created_at_ms=row['created_at']*1000,confirmed_at_ms=last['start']*1000,
             oldest_member_confirmed_at_ms=origin if row['historical'] else row['created_at']*1000,
             available_at_ms=last['start']*1000,fit=row['fit'],observation_count=row['fit']['count'],

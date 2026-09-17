@@ -226,7 +226,7 @@ class StrategySignal:
 class CapitalRequest:
     """Relative strategy sizing request resolved by Portfolio for one account."""
 
-    mode: Literal["fixed_quantity", "mandate_fraction", "risk_fraction", "all_available"]
+    mode: Literal["fixed_quantity", "fixed_notional", "mandate_fraction", "risk_fraction", "all_available"]
     value: float = 1.0
     minimum_quantity: float = 0.0
     maximum_quantity: float | None = None

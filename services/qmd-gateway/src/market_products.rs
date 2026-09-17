@@ -565,7 +565,7 @@ impl MarketProductEngine {
     }
 
     pub fn apply_event(&mut self, event: &MarketEvent, as_of: DateTime<Utc>) {
-        if event.is_delayed_trade_report() {
+        if event.is_excluded_from_derived_state() {
             return;
         }
         let Some(coordinate) = session_coordinate(event.ts()) else {
@@ -1383,9 +1383,9 @@ mod tests {
             rules(),
             ConditionClassifier::training_aligned(),
         );
-        let first = Utc.with_ymd_and_hms(2026, 7, 10, 8, 1, 30).unwrap();
-        let later = Utc.with_ymd_and_hms(2026, 7, 10, 8, 1, 50).unwrap();
-        let as_of = Utc.with_ymd_and_hms(2026, 7, 10, 8, 2, 30).unwrap();
+        let first = Utc.with_ymd_and_hms(2026, 7, 10, 8, 6, 30).unwrap();
+        let later = Utc.with_ymd_and_hms(2026, 7, 10, 8, 6, 50).unwrap();
+        let as_of = Utc.with_ymd_and_hms(2026, 7, 10, 8, 7, 30).unwrap();
         engine.apply_event(&trade(later, 2, 102.0, 20.0), later);
         let _ = engine.family_snapshot("AAPL", 60_000_000, 10, as_of);
         engine.apply_event(&trade(first, 1, 100.0, 10.0), as_of);
@@ -1553,7 +1553,7 @@ mod tests {
             rules(),
             ConditionClassifier::training_aligned(),
         );
-        let start = Utc.with_ymd_and_hms(2026, 7, 10, 8, 0, 0).unwrap();
+        let start = Utc.with_ymd_and_hms(2026, 7, 10, 8, 5, 0).unwrap();
         for sequence in 0..=1_000_u64 {
             let ts = start + Duration::milliseconds(sequence as i64 * 100);
             engine.apply_event(&trade(ts, sequence + 1, 100.0, 1.0), ts);

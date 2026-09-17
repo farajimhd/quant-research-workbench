@@ -58,6 +58,15 @@ pub struct LuldEvent {
 }
 
 impl MarketEvent {
+    /// Versioned derived-state eligibility, distinct from delayed-report identity.
+    /// Canonical storage retains every event, including excluded early trades.
+    pub fn is_excluded_from_derived_state(&self) -> bool {
+        use chrono::Timelike;
+        self.is_delayed_trade_report() || (!cfg!(feature = "historical-campaign-v16") && matches!(self, MarketEvent::Trade(trade)
+            if trade.ts.with_timezone(&chrono_tz::America::New_York)
+                .num_seconds_from_midnight() < 4 * 3600 + 5 * 60))
+    }
+
     pub fn ticker(&self) -> &str {
         match self {
             MarketEvent::Trade(event) => &event.ticker,
@@ -149,6 +158,20 @@ mod clock_tests {
     fn same_second_form_t_remains_current_state_eligible() {
         let event = trade(1_750_000_000_900, 1_750_000_000_100);
         assert!(!event.is_delayed_trade_report());
+    }
+
+    #[test]
+    #[cfg(not(feature = "historical-campaign-v16"))]
+    fn early_trade_cutoff_is_dst_aware_and_does_not_relabel_delayed_reports() {
+        for (month, hour) in [(1, 9), (8, 8)] {
+            let cutoff = Utc.with_ymd_and_hms(2026, month, 21, hour, 5, 0).unwrap().timestamp_millis();
+            let early = trade(cutoff - 1, cutoff - 1);
+            assert!(early.is_excluded_from_derived_state());
+            assert!(!early.is_delayed_trade_report());
+            assert_eq!(early.ts().timestamp_millis(), cutoff - 1);
+            assert!(!trade(cutoff, cutoff).is_excluded_from_derived_state());
+            assert!(trade(cutoff + 1000, cutoff).is_excluded_from_derived_state());
+        }
     }
 
     #[test]

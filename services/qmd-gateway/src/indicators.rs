@@ -1779,7 +1779,7 @@ impl IndicatorShardStore {
 
 impl IndicatorStore {
     fn apply_event(&mut self, event: &MarketEvent) {
-        if event.is_delayed_trade_report() {
+        if event.is_excluded_from_derived_state() {
             return;
         }
         let ticker = event.ticker().to_ascii_uppercase();
