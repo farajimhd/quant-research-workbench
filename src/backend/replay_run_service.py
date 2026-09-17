@@ -1963,7 +1963,7 @@ class ReplayRunController:
                 "processed_frames": self._processed_frames,
                 "experimental_session_highs": deepcopy(getattr(self, "_experimental_session_highs", {})),
                 "derived_trade_policy": "exclude-trades-before-0405-et-v1",
-                "ladder_swing_continuity": "prepared-native-empty-interval-v1",
+                "ladder_swing_continuity": "prepared-native-empty-interval-v2",
                 "completed_range_windows": {ticker: window.checkpoint() for ticker, window
                     in getattr(self, "_completed_range_windows", {}).items()},
                 "level_load_contract": LEVEL_LOAD_CONTRACT,
@@ -3188,7 +3188,7 @@ class ReplayRunController:
         if controller.get('derived_trade_policy') != POLICY:
             raise ValueError('Replay checkpoint predates the 04:05 derived-trade policy; start a new run')
         parameters = (self.definition.configuration_revision['payload'].get('strategy') or {}).get('parameters') or {}
-        if parameters.get('vwap_ladder_contract') and controller.get('ladder_swing_continuity') != 'prepared-native-empty-interval-v1':
+        if parameters.get('vwap_ladder_contract') and controller.get('ladder_swing_continuity') != 'prepared-native-empty-interval-v2':
             raise ValueError('Replay checkpoint predates ladder swing continuity; start a new run')
         self._experimental_session_highs = deepcopy(controller.get("experimental_session_highs") or {})
         from src.trading_runtime.completed_candle_range import CompletedCandleRange
@@ -3583,6 +3583,9 @@ class ReplayRunController:
                 proof = source.empty_interval(frame.ticker, previous_end, end)
             market = stream.observe(bar, snapshot['unified_levels'], self._recovery_book_identity,
                                     parameters.get('structural_detector_settings'), continuity=proof)
+            if parameters.get('vwap_ladder_contract'):
+                from src.trading_runtime.vwap_resistance_ladder import observe_support_bounces
+                observe_support_bounces(market, saved, bar, snapshot['unified_levels'])
             if historical_hod:
                 from src.trading_runtime.historical_hod import observe_frame
                 market['historical_hod_observation'] = observe_frame(frame,
