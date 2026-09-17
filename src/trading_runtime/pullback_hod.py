@@ -14,7 +14,8 @@ RISE_CONTRACT = 'swing-rise-pullback-hod-v2'
 DEFAULTS = dict(entry_zone_fraction=.3, maximum_swing_age_s=30.,
                 minimum_pullback_ticks=2., minimum_body_fraction=.3,
                 minimum_close_location=.6, top_retreat_atr=.5,
-                top_confirmation_seconds=5., entry_macd_10s_enabled=0)
+                top_confirmation_seconds=5., entry_macd_10s_enabled=0,
+                entry_macd_improving_enabled=0, sustained_rise_enabled=0)
 
 
 def configure(p):
@@ -26,10 +27,13 @@ def configure(p):
     if set(raw)-set(DEFAULTS):
         raise ValueError('Unknown pullback HOD setting')
     s = dict(DEFAULTS, **raw)
-    if type(s['entry_macd_10s_enabled']) not in (int,float) or s['entry_macd_10s_enabled'] not in (0,1):
-        raise ValueError('10s MACD entry gate must be a numeric boolean switch')
+    switches = ('entry_macd_10s_enabled','entry_macd_improving_enabled','sustained_rise_enabled')
+    if any(type(s[k]) not in (int,float) or s[k] not in (0,1) for k in switches):
+        raise ValueError('Pullback switches must be numeric boolean switches')
+    if s['entry_macd_improving_enabled'] and not s['entry_macd_10s_enabled']:
+        raise ValueError('Improving MACD requires the 10s MACD entry gate')
     if any(type(v) not in (int,float) or not isfinite(v) or v <= 0
-           for k,v in s.items() if k != 'entry_macd_10s_enabled'):
+           for k,v in s.items() if k not in switches):
         raise ValueError('Pullback settings must be finite positive numbers')
     if any(s[k] > 1 for k in ('entry_zone_fraction','minimum_body_fraction','minimum_close_location')):
         raise ValueError('Pullback fractions must not exceed one')
@@ -65,6 +69,28 @@ def swing_key(swing):
     return (swing['pivot_at'], swing['lower'])
 
 
+def improving_macd_gate(gate, history):
+    """Persist distinct completed samples; repeated intrabar evaluations do not advance history."""
+    if 'observed_at' not in gate:
+        return gate
+    current = history.get('current')
+    stamp = gate['observed_at']
+    if current is None or stamp > current['observed_at']:
+        history['previous'] = deepcopy(current)
+        history['current'] = dict(observed_at=stamp,histogram=gate['line']-gate['signal'])
+    elif stamp < current['observed_at']:
+        return dict(gate,passed=False,reason='macd_10s_history_out_of_order')
+    previous = history.get('previous')
+    histogram = gate['line']-gate['signal']
+    consecutive = previous is not None and stamp-previous['observed_at']==10
+    improving = consecutive and histogram > previous['histogram']
+    reason = gate['reason'] if not gate['passed'] else (
+        'macd_10s_history_unavailable' if not consecutive else
+        'macd_10s_not_improving' if not improving else 'macd_10s_entry_allowed')
+    return dict(gate,passed=bool(gate['passed'] and improving),reason=reason,
+                histogram=histogram,previous=deepcopy(previous),improving=bool(improving))
+
+
 def entry_setup(row, market, settings, tick, used=None, *, rising=False, last_exit=None):
     """V1 requires a prior pullback; V2 separates initial rise from reentry."""
     bar, prior = market.get('bar') or {}, market.get('prior_bar') or {}
@@ -79,8 +105,16 @@ def entry_setup(row, market, settings, tick, used=None, *, rising=False, last_ex
         price_only=True, maximum_age_s=settings['maximum_swing_age_s'])
     if not swing or swing['pivot_at'] >= bar['time']:
         return None, 'confirmed_pullback_low_unavailable'
+    if settings.get('sustained_rise_enabled') and now-swing['pivot_at'] > settings['maximum_swing_age_s']:
+        return None, 'swing_low_too_old'
     if used and swing_key(swing) <= tuple(used):
         return None, 'waiting_for_new_pullback_low'
+    if settings.get('sustained_rise_enabled') and (
+            # Pivot timestamps are candle closes. Equality is the first
+            # subsequent candle's open, not part of the pivot candle.
+            prior['time'] < swing['pivot_at'] or prior['close'] <= prior['open']
+            or bar['low'] < prior['low']):
+        return None, 'waiting_for_sustained_swing_rise'
     reentry = rising and last_exit and last_exit.get('advanced')
     high = None
     if reentry:
@@ -191,6 +225,7 @@ def evaluate(host,a,o,p,state):
         d.clear(); d['session'] = session
         state.pop('pullback_used_swing',None)
         state.pop('pullback_last_exit',None)
+        state.pop('pullback_macd_history',None)
     adapter,s,tick = p['historical_hod'],p['pullback_hod'],p['execution']['tick_size']
     rising = p['pullback_hod_contract'] == RISE_CONTRACT
     market = o.structural_detector_state or {}
@@ -209,6 +244,8 @@ def evaluate(host,a,o,p,state):
     evidence = dict(contract=p['pullback_hod_contract'],historical_hod_reference=dict(hod=d.get('prior_hod'),at=now))
     active = state.get('pullback_entry') or {}
     macd_gate = macd_entry_gate(o) if s['entry_macd_10s_enabled'] else None
+    if s['entry_macd_improving_enabled']:
+        macd_gate = improving_macd_gate(macd_gate,state.setdefault('pullback_macd_history',{}))
     if macd_gate is not None:evidence['entry_macd_10s']=macd_gate
     macd_blocked = macd_gate is not None and not macd_gate['passed']
     acquired = o.position_quantity > 0
@@ -266,7 +303,7 @@ def evaluate(host,a,o,p,state):
             if stop < proposed < o.bid:
                 state['active_stop'] = proposed
                 return result('replace_protective_stop','pullback_higher_low_trail',Status.MANAGING,
-                    invalidation_price=proposed,profit_target_price=target,
+                    quantity=o.position_quantity,invalidation_price=proposed,profit_target_price=target,
                     metadata=dict(previous_stop=stop,active_stop=proposed,stop_swing=swing))
         return result('hold','pullback_structure_valid',Status.MANAGING,invalidation_price=stop,profit_target_price=target)
     if pending:

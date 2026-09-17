@@ -140,3 +140,43 @@ def create_macd():
     return create_test_candidate(label=MACD_LABEL,canvas_revision=payload['canvas']['revision'],
         canvas_profile=payload['canvas']['profile'],configuration=payload,
         run_plan_id=PLAN,strategy_profile_id=MACD_PROFILE)
+
+
+REFINED_BASELINE_ID = '1e9b3f1a-b8a6-41b0-b384-4c1af1fdc49c'
+REFINED_BASELINE_HASH = '9ce2ff84ab0000a042c20989d9c86ce21092c619f40287cbe954173c82781ef0'
+REFINED_PROFILE = 'swing-rise-pullback-hod-macd10s-v4'
+REFINED_LABEL = 'HOD fresh sustained rise / improving 10s MACD v4'
+
+
+def prepare_refined_payload(baseline,published_profiles):
+    if baseline['candidate_id'] != REFINED_BASELINE_ID or baseline['content_hash'] != REFINED_BASELINE_HASH:
+        raise ValueError('Refined swing-rise source candidate identity changed')
+    payload=deepcopy(baseline['payload'])
+    parent=next(p for p in payload['strategy']['profiles'] if p['profile_id']==MACD_PROFILE)
+    profile=deepcopy(parent)
+    description=parent['description']+' Requires two consecutive completed bullish 1s candles after the '
+    description+='swing low with a higher close and nondecreasing low; the swing pivot must be at most 10s old. '
+    description+='The completed 10s MACD histogram must increase over its immediately preceding completed sample. '
+    description+='Higher-low protective-stop replacements use the actual held quantity.'
+    profile.update(profile_id=REFINED_PROFILE,name=REFINED_LABEL,description=description,
+                   publication_status='draft',editable=True,derived_from_profile_id=MACD_PROFILE)
+    profile['parameters']['pullback_hod'].update(maximum_swing_age_s=10.,
+        sustained_rise_enabled=1,entry_macd_improving_enabled=1)
+    payload['strategy']['profiles']=[deepcopy(published_profiles.get(p['profile_id'],p))
+                                    for p in payload['strategy']['profiles']]+[profile]
+    plan=next(p for p in payload['run_plans']['plans'] if p['run_plan_id']==PLAN)
+    if plan['allowed_environments'] != ['backtest']:
+        raise ValueError('Refined candidate must remain backtest-only')
+    plan.update(profile_id=REFINED_PROFILE,name=REFINED_LABEL,description=description)
+    return payload
+
+
+def create_refined():
+    from .trading_configuration_service import configuration_candidate,configuration_base,create_test_candidate
+    baseline=configuration_candidate(REFINED_BASELINE_ID,required=True)
+    published={p['profile_id']:p for p in configuration_base()['strategy']['profiles']
+               if p.get('publication_status')=='published'}
+    payload=prepare_refined_payload(baseline,published)
+    return create_test_candidate(label=REFINED_LABEL,canvas_revision=payload['canvas']['revision'],
+        canvas_profile=payload['canvas']['profile'],configuration=payload,
+        run_plan_id=PLAN,strategy_profile_id=REFINED_PROFILE)
