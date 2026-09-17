@@ -891,6 +891,9 @@ def resolve_long_momentum_parameters(
     if parameters.get('r1_ladder_contract'):
         from .r1_ladder import configure
         configure(parameters)
+    if parameters.get('pullback_hod_contract'):
+        from .pullback_hod import configure
+        configure(parameters)
     if parameters.get('macd_hod_contract'):
         from .macd_hod import configure
         configure(parameters)
@@ -2778,6 +2781,9 @@ class LongMomentumStrategyEngine:
                 assignment.parameters,
                 revision=self.revision,
             )
+        if parameters.get('pullback_hod_contract'):
+            from .pullback_hod import evaluate
+            return evaluate(self, assignment, observation, parameters, state)
         if parameters.get('r1_ladder_contract'):
             from .r1_ladder import evaluate
             return evaluate(self, assignment, observation, parameters, state)
@@ -5453,8 +5459,8 @@ class LongMomentumStrategyEngine:
                         deadline_ms=max(1,int(assignment.parameters[policy]['confirmation_lifetime_ms']
                             - (observation.observed_at.timestamp()-entry['confirmed_at'])*1000)))),
                 metadata={**i.metadata, 'mandatory_broker_target': True}) for i in intents)
-        if action == 'enter_long' and assignment.parameters.get('r1_ladder_contract') and intents:
-            entry = state['r1_entry']
+        if action == 'enter_long' and (assignment.parameters.get('r1_ladder_contract') or assignment.parameters.get('pullback_hod_contract')) and intents:
+            entry = state['pullback_entry' if assignment.parameters.get('pullback_hod_contract') else 'r1_entry']
             intents = tuple(replace(i, reference_price=observation.ask,
                 execution_policy=replace(i.resolved_execution_policy(), envelope=replace(
                     i.resolved_execution_policy().envelope,
@@ -6404,6 +6410,10 @@ class AssignedLongMomentumStrategy:
                 return
             if action in {"enter_long", "add_long", "enter_short", "add_short"}:
                 if action == 'enter_long' and incremental_fill > 0:
+                    if assignment.parameters.get('pullback_hod_contract'):
+                        active = deepcopy(state.get('pullback_entry') or {})
+                        active.setdefault('first_fill_at', snapshot.updated_at.timestamp())
+                        state['pullback_entry'] = active
                     if assignment.parameters.get('r1_ladder_contract'):
                         state.pop('r1_exit', None)
                         actual_stop = getattr(snapshot, 'r1_initial_stop', None)
