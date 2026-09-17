@@ -438,6 +438,7 @@ export function TradingWorkspace({
   function closeGroup(groupId: string) {
     const rootId = rootForNode(groupId);
     if (!groups[rootId]) return;
+    if (!window.dispatchEvent(new CustomEvent("workspace-before-close", { cancelable: true, detail: { instanceIds: workspaceDescendantContainerIds(rootId, groups) } }))) return;
     setGroups((current) => ({
       ...current,
       [rootId]: { ...current[rootId], closed: true, fullscreen: false, minimized: false },
@@ -462,6 +463,7 @@ export function TradingWorkspace({
   }
 
   function closeContainer(id: string) {
+    if (!window.dispatchEvent(new CustomEvent("workspace-before-close", { cancelable: true, detail: { instanceIds: [id] } }))) return;
     const nextOpenIds = openIdsRef.current.filter((candidate) => candidate !== id);
     openIdsRef.current = nextOpenIds;
     setOpenIds(nextOpenIds);
@@ -1084,6 +1086,7 @@ function createGlobalLayouts(ids: string[], instances: Record<string, WorkspaceC
   const gap = 2;
   const columnWidth = Math.floor((width - margin * 2 - gap) / 2);
   const placements: Record<WorkspaceContainerId, Omit<WorkspaceWindowLayout, "fullscreen" | "minimized" | "z">> = {
+    labeler: { h: 900, w: width, x: margin, y: 0 },
     scanner: { h: 250, w: columnWidth, x: margin, y: 0 },
     signal_stream: { h: 330, w: columnWidth, x: margin, y: 252 },
     watchlist: { h: 300, w: columnWidth, x: margin, y: 584 },
@@ -1255,6 +1258,7 @@ function workspaceRootMinHeight(
 
 function containerIcon(id: WorkspaceContainerId) {
   const icons = {
+    labeler: BookOpenCheck,
     chart: BarChart3,
     charts_quotes: BarChart3,
     facts: BadgeInfo,

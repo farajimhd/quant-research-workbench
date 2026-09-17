@@ -3442,7 +3442,7 @@ def capture(args: argparse.Namespace) -> int:
                     })
                 except Exception as exc:
                     if args.labeler:
-                        result["labeler_state"] = page.locator('.labeler-page').inner_text()
+                        result["labeler_state"] = page.locator('.labeler-page').all_text_contents()
                         page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem + '__failed.png')), full_page=True)
                     if args.hindsight_positions:
                         result["hindsight_status"] = page.locator('.hindsight-controls').all_text_contents()

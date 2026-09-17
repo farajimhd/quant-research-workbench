@@ -40,10 +40,12 @@ def install_labeler_fixture(context):
         else:
             request.fallback()
     context.route("**/api/research/labeler/**", route)
+    context.route("**/api/trading/canvas-context", lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps({"session_date": "2026-09-15", "preview_time": "09:45"})))
     return state
 
 
 def review_labeler(page, state, screenshot_path):
+    page.locator('[data-window-kind="labeler"]').wait_for(state="visible")
     page.locator(".labeler-status").get_by_text("Full session certified", exact=True).wait_for()
     assert state["requests"][0] == ("AAA", "1h"), state["requests"]
     page.get_by_role("button", name="No opportunity & next", exact=True).click()
@@ -62,6 +64,11 @@ def review_labeler(page, state, screenshot_path):
         y = max(box["y"] + 35, min(box["y"] + box["height"] * .2, page.viewport_size["height"] - 35))
         page.mouse.click(box["x"] + box["width"] * left, y)
         page.mouse.click(box["x"] + box["width"] * right, y)
+        before = len(state["reviews"].get("BBB", {}).get("ranges", []))
+        page.get_by_role("button", name="Close Labeler", exact=True).click()
+        assert page.locator('.labeler-page').is_visible()
+        assert len(state["reviews"].get("BBB", {}).get("ranges", [])) == before
+        page.get_by_role("button", name="Submit range", exact=True).click()
         page.wait_for_function("document.querySelector('.labeler-status')?.textContent.includes('Saved · revision')")
     mark("Long", .18, .35)
     assert len(state["reviews"]["BBB"]["ranges"]) == 1
@@ -109,5 +116,14 @@ def review_labeler(page, state, screenshot_path):
     page.get_by_label("View timeframe", exact=True).select_option("100ms")
     page.locator(".labeler-status").get_by_text("Full session certified", exact=True).wait_for()
     assert state["reviews"]["BBB"]["status"] == "completed"
+    final_ranges = copy.deepcopy(state["reviews"]["BBB"]["ranges"])
+    page.reload()
+    page.locator(".labeler-status").get_by_text("Full session certified", exact=True).wait_for()
+    page.get_by_role("button", name="BBB", exact=True).click()
+    page.locator(".labeler-status").get_by_text("Full session certified", exact=True).wait_for()
+    assert state["requests"][-1] == ("BBB", "1h")
+    assert state["reviews"]["BBB"]["ranges"] == final_ranges
+    page.get_by_label("View timeframe", exact=True).select_option("100ms")
+    page.locator(".labeler-status").get_by_text("Full session certified", exact=True).wait_for()
     page.wait_for_timeout(200)
     page.screenshot(path=str(screenshot_path), full_page=True)

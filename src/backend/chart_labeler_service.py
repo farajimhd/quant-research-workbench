@@ -75,6 +75,15 @@ def database():
         db.execute("CREATE TABLE IF NOT EXISTS reviews (key TEXT PRIMARY KEY, revision INTEGER NOT NULL, body TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS revisions (key TEXT, revision INTEGER, body TEXT NOT NULL, PRIMARY KEY(key, revision))")
         db.execute("CREATE TABLE IF NOT EXISTS evidence (id TEXT PRIMARY KEY, body TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS label_ranges (review_key TEXT NOT NULL, range_id TEXT NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY(review_key, range_id))")
+        if db.execute("PRAGMA user_version").fetchone()[0] < 1:
+            # Preserve already submitted intervals when upgrading the original review store.
+            db.execute("BEGIN IMMEDIATE")
+            for key, revision, encoded in db.execute("SELECT key, revision, body FROM reviews").fetchall():
+                for interval in json.loads(encoded)["ranges"]:
+                    db.execute("INSERT OR IGNORE INTO label_ranges VALUES (?, ?, ?, ?)", (key, interval["id"], revision, canonical(interval)))
+            db.execute("PRAGMA user_version=1")
+            db.commit()
         yield db
 
 
@@ -159,7 +168,10 @@ def validate_review(request: SaveReview, evidence: list[dict]) -> dict:
 
 @router.get("/review")
 def get_review(session_date: date, ticker: str, session: Literal["regular", "extended"] = "regular", timeframe: str = "1h", label_set: str = "default"):
-    scope = Scope(session_date=session_date, ticker=ticker, session=session, timeframe=timeframe, label_set=label_set)
+    try:
+        scope = Scope(session_date=session_date, ticker=ticker, session=session, timeframe=timeframe, label_set=label_set)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     with database() as db:
         row = db.execute("SELECT body FROM reviews WHERE key=?", (scope_key(scope),)).fetchone()
     return json.loads(row[0]) if row else empty_review(scope)
@@ -190,6 +202,13 @@ def save_review(request: SaveReview):
             encoded = canonical(body)
             db.execute("INSERT INTO revisions VALUES (?, ?, ?)", (key, body["revision"], encoded))
             db.execute("INSERT OR REPLACE INTO reviews VALUES (?, ?, ?)", (key, body["revision"], encoded))
+            retained = {interval["id"] for interval in body["ranges"]}
+            for (range_id,) in db.execute("SELECT range_id FROM label_ranges WHERE review_key=?", (key,)).fetchall():
+                if range_id not in retained:
+                    db.execute("DELETE FROM label_ranges WHERE review_key=? AND range_id=?", (key, range_id))
+            for interval in body["ranges"]:
+                db.execute("INSERT INTO label_ranges VALUES (?, ?, ?, ?) ON CONFLICT(review_key, range_id) DO UPDATE SET revision=excluded.revision, body=excluded.body WHERE body != excluded.body",
+                           (key, interval["id"], body["revision"], canonical(interval)))
         return body
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc

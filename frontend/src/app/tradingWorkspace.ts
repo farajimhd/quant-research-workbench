@@ -3,6 +3,7 @@ export type TradingWorkspaceMode = "live" | "paper" | "replay" | "backtest" | "b
 export const TRADING_WORKSPACE_LAYOUT_VERSION = 8;
 
 export type WorkspaceContainerId =
+  | "labeler"
   | "chart"
   | "charts_quotes"
   | "facts"
@@ -166,6 +167,14 @@ const brokerSourceByMode = sourceMap(
 );
 
 export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition[] = [
+  {
+    id: "labeler",
+    title: "Labeler",
+    description: "Review historical tickers and submit exact long/short opportunity intervals, one at a time.",
+    modes: allModes,
+    defaultOpen: {},
+    sourceByMode: Object.fromEntries(allModes.map((mode) => [mode, historicalBinding("Historical QMD candles and persisted manual annotations", [qmdHistory])])),
+  },
   {
     id: "chart",
     title: "Chart",
