@@ -156,7 +156,7 @@ class Service:
                 if not book['levels']:
                     raise CoverageUnavailable('Preceding V7 book contains no levels')
                 rows.append(dict(ticker=ticker,eligible=True,checkpoint_session=book['session'],
-                                 checkpoint_hash=book['checkpoint_hash']))
+                                 checkpoint_hash=book['checkpoint_hash'], input_policy=book.get('input_policy')))
             except CoverageUnavailable as exc:
                 rows.append(dict(ticker=ticker,eligible=False,reason=str(exc)))
         return dict(catalog_hash=self.catalog.fingerprint,as_of=at.isoformat(),rows=rows)

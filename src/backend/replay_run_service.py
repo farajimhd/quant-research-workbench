@@ -2818,7 +2818,7 @@ class ReplayRunController:
 
     async def _prepare_v7_coverage(self) -> None:
         if (self.definition.mode == RunMode.BACKTEST_DEBUG
-                or self.definition.experimental_structure_book != 'level-book-v7'
+                or not (self.definition.experimental_structure_book or '').startswith('level-book-v7')
                 or self.definition.execution_mode != 'strategy'):
             return
         from src.backend.qmd_gateway_client import qmd_history_post_json
@@ -2846,6 +2846,13 @@ class ReplayRunController:
                     raise ValueError('V7 catalog changed during coverage preflight')
                 report['catalog_hash'] = packet['catalog_hash']
                 for row in rows:
+                    parameters = (self.definition.configuration_revision['payload'].get('strategy') or {}).get('parameters') or {}
+                    if parameters.get('vwap_ladder_contract') and row['eligible']:
+                        from src.market_engine.derived_trade_policy import POLICY
+                        if row.get('input_policy') != POLICY:
+                            raise ValueError(f"Filtered V7 history unavailable for {row['ticker']} on {day}: "
+                                "rebuild the preceding V7 history with the 04:05 ET policy and restart QMD History; "
+                                "this is a data preparation failure, not a zero-trade strategy result")
                     evidence = dict(row, session=str(day))
                     report['verified' if row['eligible'] else 'excluded'].append(evidence)
                     if not row['eligible']:

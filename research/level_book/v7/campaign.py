@@ -21,6 +21,7 @@ from .campaign_store import read,write,verified_book
 from src.market_engine.historical_level_checkpoint import digest
 from src.market_engine.historical_session_levels import Settings
 from src.market_engine.streaming_level_book import StreamingLevelBook,EXTRACTION_VERSION
+from src.market_engine.derived_trade_policy import POLICY
 from src.market_engine.reaction_band import CONFIG
 from src.backend.swing_book_source import session_bounds,HISTORICAL_POLICY
 from scripts.swing_book_paths import ticker_directory
@@ -99,7 +100,7 @@ def plan(args):
     if not rules:raise ValueError('Trade condition rules missing')
     value=dict(version=VERSION,created_at=now(),start=args.start,end=args.end,universe_date=universe_day,
         population_contract='published tradable membership as of universe_date; not historical membership eligibility',
-        source_policy=HISTORICAL_POLICY,server=server,source_files=hashes(),git_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=REPO,text=True).strip(),
+        source_policy=HISTORICAL_POLICY,input_policy=POLICY,server=server,source_files=hashes(),git_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=REPO,text=True).strip(),
         band_config=CONFIG,extraction_version=EXTRACTION_VERSION,software=dict(python=sys.version,numpy=np.__version__,scipy=scipy.__version__),rules=rules,rows=rows)
     value['plan_hash']=digest(value);write(root/'plan.json',value)
     print(f"Frozen {len(rows):,} symbols as of {universe_day}; {sum(r['status']=='deferred' for r in rows):,} deferred. Server: {server}",flush=True)

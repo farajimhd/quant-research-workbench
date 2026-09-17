@@ -45,6 +45,7 @@ def bars_sql(ticker,day,rules,metadata):
       WHERE ticker={literal(ticker)} AND ordinal>={first} AND ordinal<{stop}
       AND sip_timestamp_us>={int(left.timestamp()*1e6)} AND sip_timestamp_us<{int(right.timestamp()*1e6)}
       AND bitAnd(event_meta,1)=1 AND price_primary_int>0 AND size_primary>0
+      AND sec>=14700
       GROUP BY t ORDER BY t"""
 
 

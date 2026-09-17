@@ -27,6 +27,7 @@ def test_planner_bounds_source_metadata_aggregation(tmp_path,monkeypatch):
     p=c.plan(SimpleNamespace(runtime=tmp_path,start='2025-01-01',end='2026-09-12',tickers=None))
     assert len(batches)==3 and max(map(len,batches))<=128
     assert len(p['rows'])==300 and all(r['status']=='queued' for r in p['rows'])
+    assert p['input_policy'] == c.POLICY
 
 
 def test_indexed_source_preserves_historical_sip_and_eligibility_contract():
@@ -39,6 +40,7 @@ def test_indexed_source_preserves_historical_sip_and_eligibility_contract():
     assert 'argMinIf(price,tuple(sip_timestamp_us,ordinal),last_ok)' in sql
     assert 'sumIf(toFloat64(size_primary),volume_ok)' in sql
     assert 'GROUP BY t ORDER BY t' in sql
+    assert 'AND sec>=14700' in sql  # Filter before OHLCV and discovery-noise fitting.
 
 
 def test_unavailable_seconds_are_counted_not_silently_discarded():
