@@ -43,3 +43,30 @@ def test_corrupt_checkpoint_and_disordered_source_fail_closed(tmp_path,monkeypat
     with pytest.raises(ValueError,match='hash mismatch'):V.Catalog(tmp_path).select('TEST','2026-08-21')
     path=target/'source-plan.json';source=read(path);source['days'].reverse();write(path,source,immutable=False)
     with pytest.raises(ValueError,match='unique, ordered'):V.Catalog(tmp_path).select('TEST','2026-08-21')
+
+
+def test_filtered_successor_is_selected_and_must_certify_its_policy(tmp_path, monkeypatch):
+    import shutil
+    prepared(tmp_path, monkeypatch)
+    root = tmp_path / V.FILTERED_CAMPAIGN
+    shutil.copytree(tmp_path / 'main', root)
+    plan = read(root / 'plan.json')
+    plan['input_policy'] = V.POLICY
+    plan['plan_hash'] = digest({k: v for k, v in plan.items() if k != 'plan_hash'})
+    write(root / 'plan.json', plan, immutable=False)
+    target = root / 'tickers' / 'TEST'
+    source = read(target / 'source-plan.json')
+    source['plan_hash'] = plan['plan_hash']
+    write(target / 'source-plan.json', source, immutable=False)
+    catalog = V.Catalog(tmp_path)
+    book, provenance = catalog.select('TEST', '2026-08-21')
+    assert provenance['campaign'] == V.FILTERED_CAMPAIGN
+    assert book['input_policy'] == V.POLICY
+    book.pop('input_policy')
+    book['checkpoint_hash'] = digest({k: v for k, v in book.items() if k != 'checkpoint_hash'})
+    write(target / 'books' / '2026-08-20.json.gz', book, immutable=False)
+    receipt = read(target / 'receipts' / '2026-08-20.json')
+    receipt['checkpoint_hash'] = book['checkpoint_hash']
+    write(target / 'receipts' / '2026-08-20.json', receipt, immutable=False)
+    with pytest.raises(ValueError, match='does not certify'):
+        catalog.select('TEST', '2026-08-21')

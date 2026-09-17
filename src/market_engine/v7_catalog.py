@@ -10,8 +10,10 @@ from .level_book_store import read, verified_book
 from .historical_level_checkpoint import digest
 from .streaming_level_book import EXTRACTION_VERSION
 from .reaction_band import CONFIG
+from .derived_trade_policy import POLICY
 
 BOOK_ID = 'level-book-v7'
+FILTERED_CAMPAIGN = 'filtered-0405-v1'
 
 
 class CoverageUnavailable(ValueError):
@@ -43,7 +45,7 @@ class Catalog:
     def __init__(self, root=None):
         self.root = Path(root) if root is not None else shared_root()
         self.plans=[];self.by_ticker={}
-        for relative in CAMPAIGNS:
+        for relative in (*CAMPAIGNS, FILTERED_CAMPAIGN):
             path=self.root/relative/'plan.json'
             if not path.exists():
                 if relative==CAMPAIGNS[0]:raise ValueError('Main V7 campaign is unavailable')
@@ -51,7 +53,12 @@ class Catalog:
             plan=checked_json(path,'plan_hash')
             if plan.get('extraction_version')!=EXTRACTION_VERSION or plan.get('band_config')!=CONFIG:
                 raise ValueError('Incompatible V7 extraction/MLE contract')
-            if self.plans and plan.get('parent_plan_hash')!=self.plans[0][1]['plan_hash']:
+            if relative == FILTERED_CAMPAIGN:
+                if plan.get('input_policy') != POLICY:
+                    raise ValueError('Filtered V7 campaign has the wrong input policy')
+                if self.plans and plan['start'] > self.plans[0][1]['start']:
+                    raise ValueError('Filtered V7 campaign must rebuild the full historical prefix')
+            elif self.plans and plan.get('parent_plan_hash')!=self.plans[0][1]['plan_hash']:
                 raise ValueError('V7 supplement/recovery has the wrong parent campaign')
             self.plans.append((path.parent,plan))
             for row in plan['rows']:
@@ -109,6 +116,8 @@ class Catalog:
                     if (receipt['checkpoint_hash']!=book['checkpoint_hash'] or book['ticker']!=ticker
                         or book['session']!=day or receipt['parent_hash']!=book.get('prior_checkpoint_hash')):
                         raise ValueError('V7 checkpoint/receipt identity mismatch')
+                    if plan.get('input_policy') == POLICY and book.get('input_policy') != POLICY:
+                        raise ValueError('Filtered V7 checkpoint does not certify the input policy')
                     return book,dict(campaign=str(target.parent.parent.relative_to(self.root)),
                         plan_hash=plan['plan_hash'],source_plan=source,last_source_session=days[-1],
                         checkpoint_session=day,verified_empty_sessions=empty,book_id=BOOK_ID,catalog_hash=self.fingerprint)

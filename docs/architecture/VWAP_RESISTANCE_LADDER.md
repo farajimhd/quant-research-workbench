@@ -56,6 +56,15 @@ unfiltered seeds. Build a new immutable cumulative V7 campaign from canonical SI
 using the new policy and certify its lineage before historical acceptance.
 Do not overwrite the old campaigns or merely relabel their manifests.
 
+The catalog recognizes the independent `filtered-0405-v1` successor campaign.
+Its plan records the input policy and must cover the original historical prefix;
+each selected checkpoint must certify that policy. Campaign SQL excludes early
+trades before aggregating OHLCV or estimating discovery noise. Single-symbol
+and universe backtests validate the seed policy during preparation, so an
+unrebuilt symbol fails explicitly instead of completing with only wait decisions.
+The initial successor contains SUGP; other symbols require a filtered rebuild
+before using this strategy.
+
 ## Validation
 
 Focused tests exercise the actual strategy executor, Portfolio cash admission,
