@@ -12,7 +12,7 @@ CONTRACT = 'vwap-midpoint-resistance-ladder-v1'
 DEFAULTS = dict(cash_fraction=1., late_entry_breaks=6, stop_offset_ticks=1.)
 RETEST_DEFAULTS = dict(group_resistances=0, require_late_retest=0, allow_retest_stop_fallback=0)
 POST_MOVE_DEFAULTS = dict(post_move_entries=0, pullback_independent_episode=0,
-                          pullback_above_vwap_only=0, breakout_offset_ticks=1.)
+                          pullback_above_vwap_only=0, breakout_offset_ticks=1., pullback_min_rise_pct=0.)
 TIMEFRAMES = {'100ms': .1, '1s': 1., '5s': 5., '10s': 10., '30s': 30.}
 
 
@@ -28,6 +28,8 @@ def configure(p):
     if (any(type(v) not in (int, float) or not isfinite(v) for v in s.values())
             or not 0 < s['cash_fraction'] <= 1 or s['late_entry_breaks'] not in (4, 6)
             or s['stop_offset_ticks'] < 1 or any(s[k] not in (0, 1) for k in RETEST_DEFAULTS)
+            or s['pullback_min_rise_pct'] < 0
+            or s['pullback_min_rise_pct'] and not (s['group_resistances'] and s['post_move_entries'])
             or any(s[k] not in (0, 1) for k in ('post_move_entries','pullback_independent_episode','pullback_above_vwap_only'))
             or s['breakout_offset_ticks'] < 1 or s['breakout_offset_ticks'] != int(s['breakout_offset_ticks'])):
         raise ValueError('Invalid VWAP ladder settings')
@@ -88,13 +90,22 @@ def release_unfilled_episode(state):
             pivot = active['retest_anchor']['pivot_at']
             if pivot in consumed:
                 consumed.remove(pivot)
+            move = active.get('pullback_move')
+            consumed_moves = state.get('post_move_entry_clock', {}).get('consumed_moves', [])
+            if move and move['id'] in consumed_moves:
+                consumed_moves.remove(move['id'])
 
 
 def observe_market(o, state, settings=None):
     """Remember physical resistance IDs before role flips; recrosses count once."""
     if (settings or {}).get('group_resistances'):
         from .resistance_zones import observe
-        return observe(o, state, levels(o))
+        crossed = observe(o, state, levels(o))
+        if settings.get('pullback_min_rise_pct'):
+            from .pullback_impulse import observe as observe_impulse
+            observe_impulse(state.setdefault('pullback_impulse', {}), o.observed_at.timestamp(),
+                            o.price, settings['pullback_min_rise_pct'])
+        return crossed
     session = o.observed_at.astimezone(H.NY).date().isoformat()
     if state.get('session') != session:
         state.clear(); state.update(session=session, known={}, broken=[])
@@ -260,14 +271,29 @@ def evaluate(host, a, o, p, old_state):
             return emit('exit', reason, Status.EXIT_PENDING, quantity=o.position_quantity)
         if not active:
             return emit('hold', 'position_entry_state_unavailable', Status.MANAGING)
+        if active.get('entry_kind') == 'post_move_pullback':
+            # Session counts deduplicate breaks; a new position must still see
+            # its own recrosses of historically broken, overhead resistance.
+            crossed = []
+            if market.get('at', 0) > active.get('cross_at', active['requested_at']):
+                previous = active.get('cross_price', active['entry_price'])
+                crossed = sorted(((k, r) for k, r in market.get('known', {}).items()
+                    if k in active.get('cross_known', market['known'])
+                    and previous <= r['upper'] < market['price'] and k not in active['broken']),
+                    key=lambda item: item[1]['upper'])
+                active.update(cross_at=market['at'], cross_price=market['price'], cross_known=list(market['known']))
         for key, row in crossed:
             if row['upper'] > active['entry_price'] and key not in active['broken']:
                 active['broken'].append(key)
         position_breaks = len(active['broken'])
         # Two physical levels behind, including prior session breaks for a late entry.
         eligible_stop = position_breaks >= (2 if active['late'] else 3)
-        if eligible_stop and count >= 3:
-            reference = market['break_rows'][market['broken'][-3]]
+        if eligible_stop and (count >= 3 or active.get('entry_kind') == 'post_move_pullback'):
+            if active.get('entry_kind') == 'post_move_pullback':
+                trail = [active['retest_anchor']['anchor']]+[market['known'][k] for k in active['broken']]
+                reference = trail[-3]
+            else:
+                reference = market['break_rows'][market['broken'][-3]]
             proposal = floor((reference['lower']-settings['stop_offset_ticks']*tick+1e-9)/tick)*tick
         else:
             proposal = stop
@@ -281,7 +307,8 @@ def evaluate(host, a, o, p, old_state):
         # Never reduce an existing target when the target-distance regime tightens.
         distance = 1 if active['late'] or count >= 6 else 2 if count >= 4 else 3
         overhead = sorted((r for k, r in market.get('known', {}).items()
-            if k not in market.get('broken', []) and r['upper'] > o.ask), key=lambda r: r['lower'])
+            if (active.get('entry_kind') == 'post_move_pullback' or k not in market.get('broken', []))
+            and r['upper'] > o.ask), key=lambda r: r['lower'])
         regrouped = bool(settings.get('group_resistances') and prior_geometry != geometry(market))
         if (crossed or regrouped) and len(overhead) >= distance and (not active['late'] or active['target_moves'] < 2):
             proposal = (floor((overhead[distance-1]['upper']+1e-9)/tick)+1)*tick
@@ -338,23 +365,31 @@ def evaluate(host, a, o, p, old_state):
     if not (a.permissions.reenter if state.get('entries', 0) else a.permissions.enter):
         return emit('wait', 'entry_not_authorized')
     late = count >= settings['late_entry_breaks']
-    post_move = bool(late and settings.get('post_move_entries'))
+    impulse_required = bool(settings.get('pullback_min_rise_pct'))
+    post_move = bool(settings.get('post_move_entries') and
+                     (late or impulse_required and state.get('entries', 0)))
     anchor = None
     breakout = None
     entry_kind = 'initial'
     target_selection = None
+    pullback_move = None
     if post_move:
         from .resistance_zones import entry_anchor
         from .post_move_entries import breakout_crossing, midpoint_target
         one = samples['1s']
         if (one and one['line'] > one['signal']
                 and (settings.get('pullback_independent_episode') or not episode.get('used'))):
-            anchor = entry_anchor(o, market, True, settings['late_entry_breaks'], fresh=True)
+            anchor = entry_anchor(o, market, not impulse_required, settings['late_entry_breaks'], fresh=True)
             if anchor and anchor['pivot_at'] in entry_clock['consumed_pullbacks']:
                 anchor = None
+            if anchor and impulse_required:
+                from .pullback_impulse import qualify
+                pullback_move = qualify(market, anchor, entry_clock.get('consumed_moves', []))
+                if not pullback_move:
+                    anchor = None
         if anchor:
             entry_kind = 'post_move_pullback'
-        elif not episode.get('used') and all(samples[tf] and samples[tf]['line'] > samples[tf]['signal']
+        elif late and not episode.get('used') and all(samples[tf] and samples[tf]['line'] > samples[tf]['signal']
                                            for tf in ('100ms','1s','5s','10s')):
             breakout = breakout_crossing(o, market, previous_entry_price, tick, settings['breakout_offset_ticks'])
             if breakout:
@@ -382,8 +417,9 @@ def evaluate(host, a, o, p, old_state):
     if anchor:
         swing = anchor['swing']
     overhead = sorted((r for k, r in market.get('known', {}).items()
-        if k not in market.get('broken', []) and r['upper'] > o.ask), key=lambda r: r['lower'])
-    distance = 1 if late else 2 if count >= 4 else 3
+        if (entry_kind == 'post_move_pullback' or k not in market.get('broken', []))
+        and r['upper'] > o.ask), key=lambda r: r['lower'])
+    distance = 1 if late or entry_kind == 'post_move_pullback' else 2 if count >= 4 else 3
     if (not breakout and (not swing or len(overhead) < distance)) or (breakout and not target_selection):
         return emit('wait', 'support_swing_or_overhead_resistances_unavailable')
     stop_base = (breakout['anchor']['lower'] if breakout else swing['price'] if post_move and anchor
@@ -396,9 +432,13 @@ def evaluate(host, a, o, p, old_state):
     episode['used'] = True
     if post_move and anchor:
         entry_clock['consumed_pullbacks'].append(anchor['pivot_at'])
-    state.update(vwap_ladder_entry=dict(entry_price=o.ask, requested_at=now, broken=[], late=late,
+        if pullback_move:
+            entry_clock.setdefault('consumed_moves', []).append(pullback_move['id'])
+    state.update(vwap_ladder_entry=dict(entry_price=o.ask, requested_at=now, broken=[], late=late or entry_kind == 'post_move_pullback',
+        cross_known=list(market.get('known', {})),
         target_moves=0, add_opportunities=0, swing=swing, retest_anchor=anchor, episode_id=episode.get('started_at'),
-        entry_kind=entry_kind, breakout_setup=breakout, prior_episode_used=prior_episode_used), initial_stop=stop, active_stop=stop,
+        entry_kind=entry_kind, breakout_setup=breakout, pullback_move=pullback_move,
+        prior_episode_used=prior_episode_used), initial_stop=stop, active_stop=stop,
         structural_profit_targets=[target], entry_at=o.observed_at.isoformat(), entry_reference_price=o.ask,
         entries=state.get('entries', 0)+1, entry_acquisition_exit_latched=False)
     return emit('enter_long', entry_kind if post_move else 'vwap_midpoint_all_macd', Status.ENTRY_PENDING,
@@ -406,5 +446,5 @@ def evaluate(host, a, o, p, old_state):
         capital_request=CapitalRequest(mode='mandate_fraction', value=settings['cash_fraction']/3),
         metadata=dict(unreserved_cash_slice=True, initial_stop=stop, active_stop=stop, profit_targets=[target],
             initial_swing=swing, retest_anchor=anchor, entry_kind=entry_kind, breakout_setup=breakout,
-            target_selection=target_selection, grouping_threshold=market.get('grouping_threshold'),
+            target_selection=target_selection, pullback_move=pullback_move, grouping_threshold=market.get('grouping_threshold'),
             grouping_gap_samples=market.get('grouping_gap_samples')))

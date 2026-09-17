@@ -1,5 +1,34 @@
 # Separate entries after the first upward move
 
+## Impulse-qualified successor
+
+Candidate 317 (`fc03b276-7584-4772-a50f-51424f9bfea3`) clones Candidate 316 into
+the backtest-only `vwap-impulse-pullback-breakout-v4` profile. Its configurable
+`pullback_min_rise_pct=5` requires at least a 5% rise over the preceding 30 seconds.
+The passive completed-100ms stream owns this evidence, including before assignment.
+Native candles are sparse: use the last observed close at or before the boundary,
+never a future close or interpolation. Session changes clear the bounded history.
+
+A threshold excursion freezes its boundary price as the move base and tracks the
+subsequent highest completed close. Threshold chatter cannot rebase that rally.
+A new move requires a correction of at least 20% and a qualifying 30-second
+window starting after the previous peak. The entire pivot candle must follow the peak. Its swing low
+must retrace 20% through 45%, inclusive, of `peak - base`. A completed price deeper
+than 45% invalidates the move. One filled pullback is allowed per move; an unfilled
+order can retry only within the original fresh-recovery window. The 1s MACD,
+above-VWAP, fresh recovery and level-associated stop requirements remain.
+After an initial entry, this impulse test replaces the six-break minimum for
+pullbacks; the initial entry and breakout rules are unchanged.
+
+Pullback targets use the first overhead resistance even if previously broken
+that session. Their position-specific recrosses advance protection, target and
+addition opportunities without increasing the session's unique break count.
+The two-target-move cap and two-level stop spacing remain. This target correction
+also applies to older pullback candidates; the new impulse gate defaults off.
+No symbol, date, trade time, or sample price controls these rules.
+
+## Earlier candidate behavior
+
 Candidate 316 (`3823f64d-26d2-44ad-a35d-a0af731d48ff`) uses the backtest-only
 `vwap-grouped-pullback-breakout-v3` profile cloned from Candidate 314.
 Candidate 315 preserves the intermediate midpoint-gated pullback trial.
